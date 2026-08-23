@@ -1,0 +1,53 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "1",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "EigenLabs\/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp",
+  "modelPath" : "$HOME\/.cache\/huggingface\/hub\/models--EigenLabs--Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp\/snapshots\/baseline-work",
+  "promptLengths" : [
+    8192
+  ],
+  "samples" : [
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.7589229031864241,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6216.3375
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.7579948571602979,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6208.735875
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.7572193718715663,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6202.3838749999995
+    }
+  ],
+  "schemaVersion" : 2,
+  "strategies" : [
+    "cbv2"
+  ]
+}

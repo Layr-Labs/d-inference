@@ -162,8 +162,9 @@ func vlmDecodeVideoDataURIStaysInMemory() async throws {
             .filter { $0.hasPrefix("vlm-") && $0.hasSuffix(".mp4") })
 
     // A real, probeable 64x64 video passes the limits and stays owned by the
-    // memory-backed resource loader. The before/after assertion locks out the
-    // exact plaintext temp-file path this replaced.
+    // memory-backed resource loader. Assert only that decode creates no new
+    // plaintext file: another parallel suite may legitimately delete a stale
+    // pre-existing `vlm-*.mp4` between these snapshots.
     let (video, framePixels) = try await MediaIngest.decodeVideo(tinyMP4DataURI)
     guard case .memoryBacked(let memoryAsset) = video else {
         Issue.record("expected .memoryBacked, got \(video)")
@@ -175,7 +176,8 @@ func vlmDecodeVideoDataURIStaysInMemory() async throws {
     let newTempFiles = try Set(
         fileManager.contentsOfDirectory(atPath: tempDirectory.path)
             .filter { $0.hasPrefix("vlm-") && $0.hasSuffix(".mp4") })
-    #expect(newTempFiles == oldTempFiles)
+    let createdTempFiles = newTempFiles.subtracting(oldTempFiles)
+    #expect(createdTempFiles.isEmpty, "decodeVideo created plaintext temp files: \(createdTempFiles)")
 }
 
 @Test("decodeVideo accepts the coordinator's video/quicktime data URI contract")
@@ -633,8 +635,45 @@ func vlmMediaLimitDefaults() {
     #expect(MediaIngest.maxRequestImagePixels == 384_000_000)
     #expect(MediaIngest.maxMediaDecodedBytes == 25 * 1024 * 1024)
     #expect(MediaIngest.maxVideoDurationSeconds == 600)
+    #expect(MediaIngest.maxImagesPerRequest == 16)
     #expect(MediaIngest.maxVideosPerRequest == 8)
     #expect(MediaIngest.maxRequestVideoFramePixels == 384_000_000)
+}
+
+/// The aggregate PIXEL cap does not bound the image COUNT: the processor
+/// resizes every image down, so a request of tiny images passes it while
+/// still driving one vision-tower forward pass each, under the model
+/// container's lock.
+@Test("buildUserInput caps the number of images per request")
+func vlmBuildUserInputCapsImageCount() async throws {
+    func request(images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: "vlm",
+            messages: [
+                .init(
+                    role: .user,
+                    content: .parts(
+                        (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
+            ])
+    }
+    // At the cap: fine.
+    _ = try await MediaIngest.buildUserInput(from: request(images: 4), maxImagesPerRequest: 4)
+    // One over: refused, and the message says the count and the cap.
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: request(images: 5), maxImagesPerRequest: 4)
+    }
+    // Counted across MESSAGES, not per message — otherwise the cap is trivial
+    // to evade by splitting the images into separate turns.
+    let split = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+        ])
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: split, maxImagesPerRequest: 2)
+    }
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to

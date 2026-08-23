@@ -118,6 +118,22 @@ struct LaunchAgentEnvironmentTests {
         }
     }
 
+    @Test func forwardsMLXMemoryGuardKnobsToDaemon() {
+        // The MLXMemoryGuard operator knobs only matter in the launchd
+        // daemon (the normal `darkbloom start` mode). Without passthrough, a
+        // shell export of the cache cap — the advertised recovery lever for
+        // the 8 GiB buffer-pool default — would silently no-op there.
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_MLX_CACHE_LIMIT_GB": "32",
+            "DARKBLOOM_MLX_MEMORY_RESERVE_GB": "12",
+            "PATH": "/usr/bin",
+        ])
+        #expect(out == [
+            "DARKBLOOM_MLX_CACHE_LIMIT_GB": "32",
+            "DARKBLOOM_MLX_MEMORY_RESERVE_GB": "12",
+        ])
+    }
+
     @Test func forwardsKVBackendGuardPathToDaemonAndWatchdog() {
         // The crash-loop guard record has one writer (the launchd watchdog)
         // and several readers (the launchd daemon's engine factory, a

@@ -107,6 +107,14 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 		GPUMemoryPeakGB:   52.1,
 		GPUMemoryCacheGB:  8.3,
 		TotalMemoryGB:     128,
+		MLXCacheReclaimer: &MLXCacheReclaimerTelemetry{
+			CacheLimitBytes:       8 << 30,
+			SweepSignals:          12,
+			Reclaims:              4,
+			ReclaimedBytes:        24 << 30,
+			LastReclaimedBytes:    6 << 30,
+			LastReclaimDurationMS: 17,
+		},
 	}
 
 	data, err := json.Marshal(cap)
@@ -136,6 +144,18 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 	}
 	if decoded.TotalMemoryGB != 128 {
 		t.Errorf("total_memory_gb = %f, want 128", decoded.TotalMemoryGB)
+	}
+	if decoded.MLXCacheReclaimer == nil {
+		t.Fatal("mlx_cache_reclaimer should survive roundtrip")
+	}
+	if got := decoded.MLXCacheReclaimer.CacheLimitBytes; got != 8<<30 {
+		t.Errorf("cache_limit_bytes = %d, want %d", got, uint64(8<<30))
+	}
+	if got := decoded.MLXCacheReclaimer.Reclaims; got != 4 {
+		t.Errorf("reclaims = %d, want 4", got)
+	}
+	if got := decoded.MLXCacheReclaimer.LastReclaimDurationMS; got != 17 {
+		t.Errorf("last_reclaim_duration_ms = %d, want 17", got)
 	}
 }
 

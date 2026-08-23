@@ -158,17 +158,19 @@ extension ProviderLoop {
         localReservations.isReserved(modelId)
     }
 
-    /// Resolve a tokenizer for the local token-utility endpoints. Read-only, so
-    /// (unlike `acquireModelForLocal`) it takes no reservation.
-    func resolveTokenizerForLocal(_ modelId: String?) async throws -> TokenizerHandle {
+    /// Resolve tokenizer metadata for local token-utility endpoints. Read-only,
+    /// so (unlike `acquireModelForLocal`) it takes no reservation.
+    func resolveTokenizerForLocal(
+        _ modelId: String?
+    ) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution {
         if let modelId {
             guard let slot = modelSlots[modelId] else {
                 throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
             }
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         if let firstKey = modelSlots.keys.sorted().first, let slot = modelSlots[firstKey] {
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
     }

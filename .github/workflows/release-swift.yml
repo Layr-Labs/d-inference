@@ -499,6 +499,9 @@ jobs:
           # existing GPT-OSS paged-kernel shapes. The v0.7.6 artifact still
           # fails here because its resource bundle is absent.
           PRE_SIGN_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
             "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
@@ -708,17 +711,27 @@ jobs:
           test -s "$FINAL_APP_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
           cmp "$FINAL_FLAT_METALLIB" "$FINAL_APP_METALLIB"
-          # Repeat the helper's exact four-part completeness contract against
-          # the final extracted, signed bytes rather than the pre-signing input.
+          # Repeat the helper's completeness contract against the final
+          # extracted, signed bytes rather than the pre-signing input.
           NAX_SYMBOL="_nax"
           GEMV_SYMBOL="gemv"
           R1_BUILDER_SYMBOL="build_gemma4_sorted_expert_tiles_bm32"
+          R1_BUILDER_E256_SYMBOL="build_sorted_expert_tiles_bm32_e256"
           R1_KERNEL_SYMBOL="affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32"
+          QMV_WIDE_W4_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_2_kl_8_batch_0"
+          QMV_WIDE_W4_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_4_kl_8_batch_1"
+          QMV_WIDE_W8_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_2_kl_8_batch_0"
+          QMV_WIDE_W8_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_4_kl_8_batch_1"
           for symbol in \
             "$NAX_SYMBOL" \
             "$GEMV_SYMBOL" \
             "$R1_BUILDER_SYMBOL" \
-            "$R1_KERNEL_SYMBOL"
+            "$R1_BUILDER_E256_SYMBOL" \
+            "$R1_KERNEL_SYMBOL" \
+            "$QMV_WIDE_W4_M2_SYMBOL" \
+            "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
+            "$QMV_WIDE_W8_M2_SYMBOL" \
+            "$QMV_WIDE_W8_M4_BATCHED_SYMBOL"
           do
             MATCHES=$(strings "$FINAL_FLAT_METALLIB" | grep -F -c "$symbol" || true)
             if [ "$MATCHES" -eq 0 ]; then
@@ -743,6 +756,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 \
             "$SMOKE_ROOT/Darkbloom.app"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
             "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \

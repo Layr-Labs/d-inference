@@ -220,5 +220,26 @@ public enum ProviderCore {
     // target_prefix + single-forward drafts (1.13x, behind the mtp beta
     // flag), symlink-proof inline-MTP inspection, MTP /metrics counters,
     // and hardened plaintext egress paths.
-    public static let version = "0.8.5"
+    // 0.8.6 ships the default-on CBv2 prefill stack: expert-tile trust
+    // serving default, solo-prefill stripe (2048), Qwen prompt narrowing,
+    // and packed prefill — 8k cold prefill -27.6% (~1,766 tok/s, +38%) and
+    // 4x8k aggregate +13-17% vs 0.8.5 defaults; plus the opt-in mean-TTFT
+    // partial-prefill cap and adaptive persistent-history MTP (mtp beta).
+    // 0.8.7 restores the Qwen3.5/3.6 late-system-message normalizer that
+    // shipped from the v0.8.5 release branch but was absent from master and
+    // therefore v0.8.6. Text-only system turns are folded into Qwen's required
+    // leading system slot; structured/media system content remains fail-closed.
+    // 0.8.8 enables the merged upstream qmv_wide route automatically for
+    // generation-15+ affine small-M projections. M=1 remains on ordinary QMV,
+    // matrix-sized inputs remain on QMM, and gathered expert projections are
+    // unchanged. Existing Gemma and CBv2 default-on optimization postures stay
+    // enabled; no beta flag or provider-config migration is required.
+    // 0.8.9 rolls Qwen3.6 execution back to the v0.8.7 mlx-swift-lm pin after
+    // v0.8.8's GDN input fusion/direct expert reduction reduced production
+    // decode throughput and triggered client timeouts. The Gemma qmv_wide
+    // MLX/MLX-Swift pins remain enabled.
+    // 0.8.10 passes retained Gemma latch variables before exec in installer,
+    // self-update, and paged-preflight runtime-smoke children so eager MLX
+    // initialization cannot latch safe R1 off before validation runs.
+    public static let version = "0.8.10"
 }

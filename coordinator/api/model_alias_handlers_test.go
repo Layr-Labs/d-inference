@@ -12,6 +12,7 @@ import (
 
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +41,47 @@ func seedActiveModel(t *testing.T, st store.Store, modelID, displayName string) 
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type aliasMutationRaceStore struct {
+	store.Store
+	mu      sync.Mutex
+	armed   bool
+	calls   int
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *aliasMutationRaceStore) arm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+	s.calls = 0
+	s.release = make(chan struct{})
+	s.once = sync.Once{}
+}
+
+func (s *aliasMutationRaceStore) ListModelAliases() ([]store.ModelAlias, error) {
+	aliases, err := s.Store.ListModelAliases()
+	s.mu.Lock()
+	if !s.armed {
+		s.mu.Unlock()
+		return aliases, err
+	}
+	s.calls++
+	call := s.calls
+	if call == 2 {
+		s.once.Do(func() { close(s.release) })
+	}
+	release := s.release
+	s.mu.Unlock()
+	if call <= 2 {
+		select {
+		case <-release:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return aliases, err
 }
 
 const (
@@ -1046,8 +1088,8 @@ func TestModelAliasTakeoverOfConcreteID(t *testing.T) {
 	}
 }
 
-// An OpenRouter-only alias clones every feed detail from a standard source
-// alias while overriding only id, marketplace slug, and Hugging Face identity.
+// An OpenRouter-only alias clones every model-list and dedicated-feed detail
+// from a standard source alias while overriding its configured identities.
 
 func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
@@ -1115,7 +1157,8 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 		t.Fatalf("PublicNameForBuild = %q, want source alias %s", got, baseAlias)
 	}
 
-	// The OpenRouter-only alias is intentionally absent from the normal catalog.
+	// OpenRouter-only aliases remain callable but are not advertised in the
+	// standard consumer catalog.
 	listRec := httptest.NewRecorder()
 	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if listRec.Code != http.StatusOK {
@@ -1129,14 +1172,29 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	for _, m := range listResp.Data {
 		listByID[m.ID] = m
 	}
-	if _, ok := listByID[baseAlias]; !ok {
-		t.Fatalf("source alias missing from /v1/models: %+v", listResp.Data)
+	if _, baseOK := listByID[baseAlias]; !baseOK {
+		t.Fatalf("standard source alias missing from /v1/models: %+v", listResp.Data)
 	}
 	if _, leaked := listByID[paidAlias]; leaked {
 		t.Fatalf("OpenRouter-only alias leaked into /v1/models: %+v", listResp.Data)
 	}
 	if _, leaked := listByID[aliasQAT]; leaked {
 		t.Fatalf("shared build leaked into /v1/models: %+v", listResp.Data)
+	}
+
+	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+paidAlias, nil)
+	retrieveReq.SetPathValue("id", paidAlias)
+	retrieveRec := httptest.NewRecorder()
+	srv.handleGetModel(retrieveRec, retrieveReq)
+	if retrieveRec.Code != http.StatusOK {
+		t.Fatalf("retrieve hidden OpenRouter alias: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
+	}
+	var retrieved types.ModelEntry
+	if err := json.Unmarshal(retrieveRec.Body.Bytes(), &retrieved); err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.ID != paidAlias || retrieved.HuggingFaceID != paidHFID {
+		t.Fatalf("retrieved alias identities: %+v", retrieved)
 	}
 
 	// The dedicated feed clone differs from its source only in the three public
@@ -1177,6 +1235,359 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	srv.Handler().ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusOK || reg.IsAlias(paidAlias) {
 		t.Fatalf("delete OpenRouter alias: status=%d still_registered=%v body=%s", deleteRec.Code, reg.IsAlias(paidAlias), deleteRec.Body.String())
+	}
+}
+
+// A concrete source remains independently listed while its OpenRouter-only
+// clone shares routing, pricing, capacity, and every non-identity feed field.
+func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const (
+		sourceID = "gpt-oss-20b"
+		aliasID  = "openai-gpt-oss-20b"
+		slug     = "openai/gpt-oss-20b"
+		hfID     = "openai/gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn := connectAndPrepareProvider(t, ctx, ts.URL, reg, sourceID, testPublicKeyB64(), 50.0)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	body, _ := json.Marshal(map[string]any{
+		"id": aliasID, "source_model": sourceID,
+		"openrouter_slug": slug, "hugging_face_id": hfID,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create concrete-source OpenRouter alias: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if build, isAlias, ok := reg.ResolveModel(aliasID); !ok || !isAlias || build != sourceID {
+		t.Fatalf("resolve clone = %q isAlias=%v ok=%v, want concrete source %q", build, isAlias, ok, sourceID)
+	}
+	if got := reg.PublicNameForBuild(sourceID); got != sourceID {
+		t.Fatalf("OpenRouter alias became canonical name: got %q want %q", got, sourceID)
+	}
+
+	listRec := httptest.NewRecorder()
+	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listResp types.ModelListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	listByID := make(map[string]types.ModelEntry, len(listResp.Data))
+	for _, model := range listResp.Data {
+		listByID[model.ID] = model
+	}
+	sourceModel, sourceOK := listByID[sourceID]
+	_, aliasLeaked := listByID[aliasID]
+	if !sourceOK || aliasLeaked {
+		t.Fatalf("standard catalog must list only the concrete source: %+v", listResp.Data)
+	}
+	if sourceModel.Pricing == nil || sourceModel.Pricing.Prompt != "0.00000002" || sourceModel.Pricing.Completion != "0.0000001" {
+		t.Fatalf("source pricing = %+v", sourceModel.Pricing)
+	}
+
+	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+aliasID, nil)
+	retrieveReq.SetPathValue("id", aliasID)
+	retrieveRec := httptest.NewRecorder()
+	srv.handleGetModel(retrieveRec, retrieveReq)
+	if retrieveRec.Code != http.StatusOK {
+		t.Fatalf("retrieve hidden concrete-source alias: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
+	}
+	var retrieved types.ModelEntry
+	if err := json.Unmarshal(retrieveRec.Body.Bytes(), &retrieved); err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.ID != aliasID || retrieved.HuggingFaceID != hfID || !reflect.DeepEqual(retrieved.Pricing, sourceModel.Pricing) {
+		t.Fatalf("retrieved concrete-source alias: %+v", retrieved)
+	}
+
+	openRouterRec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(openRouterRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if openRouterRec.Code != http.StatusOK {
+		t.Fatalf("OpenRouter feed status = %d body=%s", openRouterRec.Code, openRouterRec.Body.String())
+	}
+	var openRouterResp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(openRouterRec.Body.Bytes(), &openRouterResp); err != nil {
+		t.Fatal(err)
+	}
+	openRouterByID := make(map[string]types.OpenRouterModel, len(openRouterResp.Data))
+	for _, model := range openRouterResp.Data {
+		openRouterByID[model.ID] = model
+	}
+	sourceFeed, sourceOK := openRouterByID[sourceID]
+	aliasFeed, aliasOK := openRouterByID[aliasID]
+	if !sourceOK || !aliasOK {
+		t.Fatalf("source and clone must both remain in OpenRouter feed: %+v", openRouterResp.Data)
+	}
+	if aliasFeed.HuggingFaceID != hfID || aliasFeed.OpenRouter == nil || aliasFeed.OpenRouter.Slug != slug {
+		t.Fatalf("clone identities: hugging_face_id=%q openrouter=%+v", aliasFeed.HuggingFaceID, aliasFeed.OpenRouter)
+	}
+	aliasFeed.ID = sourceFeed.ID
+	aliasFeed.HuggingFaceID = sourceFeed.HuggingFaceID
+	aliasFeed.OpenRouter = sourceFeed.OpenRouter
+	if !reflect.DeepEqual(aliasFeed, sourceFeed) {
+		t.Fatalf("OpenRouter clone differs beyond identities: source=%+v clone=%+v", sourceFeed, aliasFeed)
+	}
+}
+
+func TestOpenRouterAliasConcreteRetrievalWithoutProviders(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const (
+		sourceID = "gpt-oss-20b"
+		aliasID  = "openai-gpt-oss-20b"
+		hfID     = "openai/gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	body, _ := json.Marshal(map[string]any{
+		"id": aliasID, "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": hfID,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	createReq.Header.Set("Authorization", "Bearer publish-secret")
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create concrete clone: status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+aliasID, nil)
+	retrieveReq.SetPathValue("id", aliasID)
+	retrieveRec := httptest.NewRecorder()
+	srv.handleGetModel(retrieveRec, retrieveReq)
+	if retrieveRec.Code != http.StatusOK {
+		t.Fatalf("retrieve zero-provider concrete clone: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
+	}
+	var retrieved types.ModelEntry
+	if err := json.Unmarshal(retrieveRec.Body.Bytes(), &retrieved); err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.ID != aliasID || retrieved.HuggingFaceID != hfID {
+		t.Fatalf("retrieved identities: %+v", retrieved)
+	}
+	if retrieved.Pricing == nil || retrieved.Pricing.Prompt != "0.00000002" || retrieved.Pricing.Completion != "0.0000001" {
+		t.Fatalf("retrieved pricing: %+v", retrieved.Pricing)
+	}
+	if retrieved.Metadata.ProviderCount != 0 || retrieved.Metadata.RoutableProviders != 0 {
+		t.Fatalf("zero-provider metadata: %+v", retrieved.Metadata)
+	}
+}
+
+func TestOpenRouterAliasRejectsCoveredConcreteModel(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const sourceID = "gpt-oss-20b"
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gpt-oss-public", DesiredBuild: sourceID, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	body, _ := json.Marshal(map[string]any{
+		"id": "openai-gpt-oss-20b", "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "covered by standard alias gpt-oss-public") {
+		t.Fatalf("covered concrete source: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, found, err := st.GetModelAlias("openai-gpt-oss-20b"); err != nil || found {
+		t.Fatalf("rejected clone persisted: found=%v err=%v", found, err)
+	}
+}
+
+func TestOpenRouterAliasUsesConcreteModelShadowedByInactiveAlias(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const (
+		sourceID = "gpt-oss-20b"
+		cloneID  = "openai-gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	seedActiveModel(t, st, "gpt-oss-20b-v2", "GPT-OSS 20B v2")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: sourceID, DesiredBuild: "gpt-oss-20b-v2",
+		PreviousBuild: sourceID, Active: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	body, _ := json.Marshal(map[string]any{
+		"id": cloneID, "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create clone from concrete model shadowed by inactive alias: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	saved, found, err := st.GetModelAlias(cloneID)
+	if err != nil || !found || saved.SourceKind != store.ModelAliasSourceConcrete {
+		t.Fatalf("stored source kind: alias=%+v found=%v err=%v", saved, found, err)
+	}
+	if build, isAlias, ok := reg.ResolveModel(cloneID); !ok || !isAlias || build != sourceID {
+		t.Fatalf("concrete clone resolve: build=%q isAlias=%v ok=%v", build, isAlias, ok)
+	}
+}
+
+func TestStandardAliasRejectsConcreteSourceTakeover(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const (
+		sourceID      = "gpt-oss-20b"
+		replacementID = "gpt-oss-20b-v2"
+		cloneID       = "openai-gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	seedActiveModel(t, st, replacementID, "GPT-OSS 20B v2")
+	srv.SyncModelCatalog()
+
+	post := func(path string, payload map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post("/v1/admin/models/openrouter-aliases", map[string]any{
+		"id": cloneID, "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("create concrete clone: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	saved, found, err := st.GetModelAlias(cloneID)
+	if err != nil || !found || saved.SourceKind != store.ModelAliasSourceConcrete {
+		t.Fatalf("stored source kind: alias=%+v found=%v err=%v", saved, found, err)
+	}
+
+	rec := post("/v1/admin/models/aliases", map[string]any{
+		"alias_id": sourceID, "desired_build": replacementID,
+		"previous_build": sourceID, "takeover": true,
+	})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "pinned by OpenRouter alias "+cloneID) {
+		t.Fatalf("takeover conflict: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if build, isAlias, ok := reg.ResolveModel(cloneID); !ok || !isAlias || build != sourceID {
+		t.Fatalf("clone retargeted after rejected takeover: build=%q isAlias=%v ok=%v", build, isAlias, ok)
+	}
+	if _, found, err := st.GetModelAlias(sourceID); err != nil || found {
+		t.Fatalf("rejected takeover persisted: found=%v err=%v", found, err)
+	}
+}
+
+func TestStandardAliasCoversEveryBuildState(t *testing.T) {
+	for name, alias := range map[string]store.ModelAlias{
+		"desired":  {Active: true, DesiredBuild: "source"},
+		"previous": {Active: true, PreviousBuild: "source"},
+		"retired":  {Active: true, RetiredBuilds: []string{"source"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !standardAliasCoversBuild(alias, "source") {
+				t.Fatalf("%s build was not covered: %+v", name, alias)
+			}
+		})
+	}
+}
+
+func TestAliasMutationEndpointsSerializeOwnershipChecks(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	memoryStore := store.NewMemory(store.Config{})
+	raceStore := &aliasMutationRaceStore{Store: memoryStore}
+	srv := NewServer(registry.New(logger), raceStore, ServerConfig{}, logger)
+
+	const sourceID = "gpt-oss-20b"
+	seedActiveModel(t, raceStore, sourceID, "GPT-OSS 20B")
+	srv.SyncModelCatalog()
+	raceStore.arm()
+
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	post := func(path string, payload map[string]any) {
+		<-start
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		statuses <- rec.Code
+	}
+	go post("/v1/admin/models/openrouter-aliases", map[string]any{
+		"id": "openai-gpt-oss-20b", "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	})
+	go post("/v1/admin/models/aliases", map[string]any{
+		"alias_id": "gpt-oss-public", "desired_build": sourceID,
+	})
+	close(start)
+
+	successes, conflicts := 0, 0
+	for range 2 {
+		switch status := <-statuses; status {
+		case http.StatusOK:
+			successes++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent mutation status: %d", status)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent mutations: successes=%d conflicts=%d", successes, conflicts)
+	}
+	aliases, err := memoryStore.ListModelAliases()
+	if err != nil || len(aliases) != 1 {
+		t.Fatalf("persisted aliases after concurrent mutations: aliases=%+v err=%v", aliases, err)
 	}
 }
 

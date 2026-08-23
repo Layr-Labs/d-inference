@@ -24,7 +24,9 @@ extension ProviderLoop {
     /// Best-effort and cheap; safe to call from the trust handler and the
     /// periodic capacity loop.
     internal func writeDaemonState() {
-        DaemonStateFile.write(currentDaemonState())
+        DaemonStateFile.write(
+            currentDaemonState(),
+            to: daemonStateFileOverride ?? DaemonStateFile.path())
     }
 
     /// The snapshot `writeDaemonState` persists. Split out so a test can

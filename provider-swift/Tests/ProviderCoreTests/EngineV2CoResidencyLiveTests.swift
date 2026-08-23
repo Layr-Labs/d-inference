@@ -395,8 +395,8 @@ struct EngineV2CoResidencyLiveTests {
     /// Tokenize a user turn with the LOADED model's tokenizer (chat template
     /// applied) — the same shape the production submit path produces.
     private func tokenize(_ text: String, loop: ProviderLoop) async throws -> [Int] {
-        let tokenizer = try await loop.resolveTokenizerForLocal(Self.gptossID)
-        return try tokenizer.inner.applyChatTemplate(
+        let resolved = try await loop.resolveTokenizerForLocal(Self.gptossID)
+        return try resolved.tokenizer.inner.applyChatTemplate(
             messages: [["role": "user", "content": text]],
             tools: nil, additionalContext: nil)
     }

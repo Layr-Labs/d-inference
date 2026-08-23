@@ -85,7 +85,7 @@ struct GemmaOptimizationEnvironmentTests {
         "MLX_GATHER_QMM_EXPERT_SLICES",
     ]
 
-    @Test("projection emits exactly the three selected controls")
+    @Test("projection emits the selected controls")
     func exactProjection() {
         let enabled = GemmaOptimizationEnvironment.projection(
             for: GemmaOptimizationSettings(),

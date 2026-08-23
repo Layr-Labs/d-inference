@@ -296,13 +296,19 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	knownKVBackend := KVBackendPaged
 	unknownKVBackend := KVBackendContiguous
 	freeForLoadGB := 24.0
+	reclaimerTelemetry := &protocol.MLXCacheReclaimerTelemetry{
+		CacheLimitBytes: 8 << 30,
+		SweepSignals:    12,
+		Reclaims:        4,
+	}
 	hb := &protocol.HeartbeatMessage{
 		Type:        protocol.TypeHeartbeat,
 		Status:      "serving",
 		ActiveModel: &activeModel,
 		WarmModels:  []string{knownModel, leakSentinel, knownModel},
 		BackendCapacity: &protocol.BackendCapacity{
-			FreeForLoadGB: &freeForLoadGB,
+			FreeForLoadGB:     &freeForLoadGB,
+			MLXCacheReclaimer: reclaimerTelemetry,
 			Slots: []protocol.BackendSlotCapacity{
 				{
 					Model:             leakSentinel,
@@ -351,6 +357,9 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	if strings.Contains(snapshot.Slots[0].Model, leakSentinel) {
 		t.Fatalf("unknown model reached public capacity snapshot: %+v", snapshot)
 	}
+	if snapshot.MLXCacheReclaimer == nil || snapshot.MLXCacheReclaimer.Reclaims != 4 {
+		t.Fatalf("public reclaimer telemetry snapshot = %+v, want 4 reclaims", snapshot.MLXCacheReclaimer)
+	}
 
 	if got := reg.tpsRegistry.Median(leakSentinel, msg.Hardware.ChipFamily); got != 0 {
 		t.Fatalf("unknown model TPS = %v, want no sample", got)
@@ -381,6 +390,8 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	hb.BackendCapacity.Slots[1].Model = leakSentinel
 	snapshot.Slots[0].Model = leakSentinel
 	freeForLoadGB = 1
+	reclaimerTelemetry.Reclaims = 99
+	snapshot.MLXCacheReclaimer.Reclaims = 88
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.WarmModels) != 1 || p.WarmModels[0] != knownModel || p.BackendCapacity.Slots[0].Model != knownModel {
@@ -388,6 +399,9 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	}
 	if got := *p.BackendCapacity.FreeForLoadGB; got != 24 {
 		t.Fatalf("retained free_for_load_gb = %v after decoded value changed, want 24", got)
+	}
+	if got := p.BackendCapacity.MLXCacheReclaimer.Reclaims; got != 4 {
+		t.Fatalf("retained mlx cache reclaims = %d after source/snapshot mutation, want 4", got)
 	}
 }
 

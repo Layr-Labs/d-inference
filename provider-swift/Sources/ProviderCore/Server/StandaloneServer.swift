@@ -216,6 +216,17 @@ public actor StandaloneServer {
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
+    /// Periodic driver for the proactive MLX buffer-pool sweep. ProviderLoop
+    /// drives the same sweep from its capacity-refresh tick; the standalone
+    /// path has no such tick, so it runs its own. Without one, freed
+    /// KV/activation buffers accumulate in MLX's cache under sustained local
+    /// serving and are only returned to the OS on unload/shutdown.
+    private var kvSweepTask: Task<Void, Never>?
+    /// Sweep cadence. Fixed (ProviderLoop derives its cadence from
+    /// heartbeat/2; there is no heartbeat here); the reclaimer itself
+    /// rate-limits and threshold-gates, so this only bounds reaction
+    /// latency. Tests lower it via `setKVSweepIntervalForTesting`.
+    private var kvSweepInterval: Duration = .seconds(5)
     private enum LifecycleState {
         case stopped
         case running
@@ -324,6 +335,15 @@ public actor StandaloneServer {
                 self.markBindFailed()
             }
         }
+        kvSweepTask?.cancel()
+        let sweepInterval = kvSweepInterval
+        kvSweepTask = Task { [kvBudget] in
+            while !Task.isCancelled {
+                try? await taskSleep(sweepInterval)
+                if Task.isCancelled { break }
+                kvBudget.proactiveReclaimSweep()
+            }
+        }
         lifecycleState = .running
     }
 
@@ -396,6 +416,8 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        kvSweepTask?.cancel()
+        kvSweepTask = nil
         serviceTask?.cancel()
         _ = await serviceTask?.value
         await specDecFunnel.shutdown()
@@ -441,6 +463,18 @@ public actor StandaloneServer {
 
     func debugOutstandingKVReservationBytes() async -> UInt64 {
         await kvBudget.outstandingReservedBytes()
+    }
+
+    /// Sweep signals the budget's reclaimer has received — wiring assertion
+    /// seam for the periodic `kvSweepTask` (see `KVPoolReclaimer.sweepSignalCount`).
+    func debugKVSweepSignalCount() async -> UInt64 {
+        await kvBudget.reclaimerForTesting.sweepSignalCount
+    }
+
+    /// Lower the sweep cadence so a wiring test observes a signal without
+    /// waiting out the production interval. Call before `start()`.
+    func setKVSweepIntervalForTesting(_ interval: Duration) {
+        kvSweepInterval = interval
     }
 
     func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
@@ -1083,14 +1117,16 @@ public actor StandaloneServer {
         )
     }
 
-    /// Resolve a tokenizer for the OpenAI token-utility endpoints
+    /// Resolve tokenizer metadata for the OpenAI token-utility endpoints
     /// (`/tokenize`, `/detokenize`, `/apply-template`). Unlike
     /// `acquireModel`, this does NOT bump a reservation: tokenizer
     /// access is read-only and finishes synchronously inside the
     /// upstream handler, so eviction races are not a concern.
-    func resolveTokenizer(_ modelId: String?) async throws -> TokenizerHandle {
+    func resolveTokenizer(
+        _ modelId: String?
+    ) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution {
         if let modelId, let slot = slots[modelId] {
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         if let modelId, slots[modelId] == nil {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
@@ -1098,7 +1134,7 @@ public actor StandaloneServer {
         if let firstKey = slots.keys.sorted().first,
            let slot = slots[firstKey]
         {
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
     }

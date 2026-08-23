@@ -1,0 +1,79 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "1",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "EigenLabs\/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp",
+  "modelPath" : "$HOME\/.cache\/huggingface\/hub\/models--EigenLabs--Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp\/snapshots\/baseline-work",
+  "promptLengths" : [
+    8192,
+    16384
+  ],
+  "samples" : [
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.7522627323892076,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6161.784041
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.7691686149432304,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6300.260125000001
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.7609145861311195,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6232.6513749999995
+    },
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.8413852697918575,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13784.414875
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.8607086308978821,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 14100.989500000001
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.8526892434230605,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13969.607875
+    }
+  ],
+  "schemaVersion" : 2,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

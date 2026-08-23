@@ -1,0 +1,78 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "1",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "EigenLabs\/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp",
+  "modelPath" : "$HOME\/.cache\/huggingface\/hub\/models--EigenLabs--Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp\/snapshots\/baseline-work",
+  "promptLengths" : [
+    8192,
+    16384
+  ],
+  "samples" : [
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.7516962113295079,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6157.143666999999
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.7774827299475033,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6368.361041
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.7728375350994996,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 6330.312250000001
+    },
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.8877067463224073,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 14543.299625
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.8456946708173106,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13855.015792
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.9161677424769579,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 15009.576125000001
+    }
+  ],
+  "schemaVersion" : 2,
+  "strategies" : [
+    "cbv2"
+  ]
+}

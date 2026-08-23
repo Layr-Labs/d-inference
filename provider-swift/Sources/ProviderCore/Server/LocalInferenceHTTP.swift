@@ -52,7 +52,7 @@ public typealias LocalInferenceApplication =
 ///   - defaultMaxTokens: completion cap applied when a request omits `max_tokens`.
 ///   - acquire: ensure the model is loaded and return a reservation-held handle
 ///     (the release token is dropped by the engine when the request finishes).
-///   - tokenizerProvider: resolve a tokenizer for the token-utility endpoints.
+///   - tokenizerProvider: resolve tokenizer + loaded model type for token utilities.
 ///   - availableModels: the advertised `/v1/models` catalog (not just the
 ///     currently-resident subset — discovery clients call it before loading).
 ///   - mtpSlots: per-slot MTP posture samples for the `/metrics` MTP lines
@@ -67,7 +67,7 @@ func makeLocalInferenceApplication(
     config: LocalInferenceHTTPConfig,
     defaultMaxTokens: Int,
     acquire: @escaping @Sendable (String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel,
-    tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
+    tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }

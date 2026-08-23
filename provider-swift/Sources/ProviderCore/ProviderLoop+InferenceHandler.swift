@@ -857,6 +857,7 @@ extension ProviderLoop {
                 let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
                     request: streamingRequest,
                     tokenizer: tokenizer,
+                    modelType: modelType,
                     reasoningEffort: reasoningEffort
                 ))
                 guard case .complete(let settledUsage) = terminal else {
@@ -912,6 +913,7 @@ extension ProviderLoop {
                     promptTokens = Self.promptTokenFloor(
                         request: streamingRequest,
                         tokenizer: tokenizer,
+                        modelType: modelType,
                         reasoningEffort: reasoningEffort
                     )
                     if promptTokens > 0 {

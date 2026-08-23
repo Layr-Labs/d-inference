@@ -201,14 +201,21 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 // MARK: - BackendCapacity wire compatibility
 
 @Test func backendCapacityRoundTripsFreeForLoad() throws {
+    let telemetry = MLXCacheReclaimerTelemetry(
+        cacheLimitBytes: 8 * gib, sweepSignals: 12, reclaims: 4,
+        reclaimedBytes: 24 * gib, lastReclaimedBytes: 6 * gib,
+        lastReclaimDurationMs: 17)
     let cap = BackendCapacity(
         slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2,
-        gpuMemoryCacheGb: 0.5, totalMemoryGb: 64, freeForLoadGb: 17.5)
+        gpuMemoryCacheGb: 0.5, totalMemoryGb: 64, freeForLoadGb: 17.5,
+        mlxCacheReclaimer: telemetry)
     let data = try JSONEncoder().encode(cap)
     #expect(String(decoding: data, as: UTF8.self).contains("free_for_load_gb"))
+    #expect(String(decoding: data, as: UTF8.self).contains("mlx_cache_reclaimer"))
     let decoded = try JSONDecoder().decode(BackendCapacity.self, from: data)
     #expect(decoded == cap)
     #expect(abs(decoded.freeForLoadGb - 17.5) < 0.001)
+    #expect(decoded.mlxCacheReclaimer == telemetry)
 }
 
 @Test func backendCapacityDecodesLegacyWithoutFreeForLoad() throws {
@@ -216,4 +223,5 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     let decoded = try JSONDecoder().decode(BackendCapacity.self, from: Data(legacy.utf8))
     #expect(decoded.freeForLoadGb == 0, "legacy payload defaults to 0, no throw")
     #expect(abs(decoded.totalMemoryGb - 64) < 0.001)
+    #expect(decoded.mlxCacheReclaimer == nil, "legacy payload has no reclaimer telemetry")
 }

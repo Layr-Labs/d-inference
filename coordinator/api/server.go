@@ -151,7 +151,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.5"
+var LatestProviderVersion = "0.8.10"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -181,6 +181,7 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
+	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
 	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
 	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
@@ -1025,20 +1026,27 @@ func (s *Server) SyncModelCatalog() {
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
-	s.syncModelAliases()
+	s.syncModelAliases(registryRows)
 	s.invalidateCatalogCache()
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves
-// OpenRouter-only aliases through their source alias. The latter route requests
-// but do not participate in provider convergence or canonical public naming.
-func (s *Server) syncModelAliases() {
+// OpenRouter-only aliases through either a standard alias or an active concrete
+// catalog model. OpenRouter-only targets route requests but do not participate
+// in provider convergence or canonical public naming.
+func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
 		s.logger.Error("model alias sync failed", "error", err)
 		return
 	}
 	resolved := make(map[string]registry.AliasTarget, len(aliases))
+	activeConcreteModels := make(map[string]struct{}, len(registryRows))
+	for _, row := range registryRows {
+		if row.ActiveVersion != nil {
+			activeConcreteModels[row.ID] = struct{}{}
+		}
+	}
 	for _, a := range aliases {
 		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
 			continue
@@ -1053,9 +1061,17 @@ func (s *Server) syncModelAliases() {
 		if !a.Active || !a.OpenRouterOnly {
 			continue
 		}
-		target, ok := resolved[a.SourceModel]
+		var target registry.AliasTarget
+		var ok bool
+		if openRouterAliasUsesConcreteSource(a) {
+			if _, ok = activeConcreteModels[a.SourceModel]; ok {
+				target = registry.AliasTarget{Desired: a.SourceModel}
+			}
+		} else {
+			target, ok = resolved[a.SourceModel]
+		}
 		if !ok {
-			s.logger.Warn("OpenRouter alias source is not an active standard alias", "alias_id", a.AliasID, "source_model", a.SourceModel)
+			s.logger.Warn("OpenRouter alias source is unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
 			continue
 		}
 		target.OpenRouterOnly = true

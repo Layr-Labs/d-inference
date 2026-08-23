@@ -153,6 +153,7 @@ async fn preload_failure_gates_plans_until_active_set_recovers() {
 }
 
 #[tokio::test]
+#[ignore = "workstation latency probe; run via make prompt-sidecar-probe"]
 async fn measure_fixture_planning_latency() {
     let fixture = Fixture::new();
     let planner = Planner::new(fixture.root(), 1, 1, 200_000);
@@ -176,6 +177,7 @@ async fn measure_fixture_planning_latency() {
 }
 
 #[tokio::test]
+#[ignore = "workstation latency probe; run via make prompt-sidecar-probe"]
 async fn measure_fixture_unix_http_latency() {
     let fixture = Fixture::new();
     fs::set_permissions(fixture._temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -234,6 +236,7 @@ async fn measure_fixture_unix_http_latency() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "large-token overload probe; run via make prompt-sidecar-probe"]
 async fn health_remains_fast_while_planner_is_busy_and_overloaded() {
     let fixture = Fixture::new();
     fs::set_permissions(fixture._temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -262,20 +265,22 @@ async fn health_remains_fast_while_planner_is_busy_and_overloaded() {
     let first_socket = socket.clone();
     let first =
         tokio::spawn(async move { unix_request(&first_socket, "/v1/plan", &large_body).await });
-    let mut observed_busy = false;
-    for _ in 0..500 {
-        let (status, metrics) = unix_get(&socket, "/metrics").await;
-        assert_eq!(status, 200);
-        let metrics: serde_json::Value = serde_json::from_slice(&metrics).unwrap();
-        if metrics["planning_permits_available"] == 0 {
-            observed_busy = true;
-            break;
+    let observed_busy = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (status, metrics) = unix_get(&socket, "/metrics").await;
+            assert_eq!(status, 200);
+            let metrics: serde_json::Value = serde_json::from_slice(&metrics).unwrap();
+            if metrics["planning_permits_available"] == 0 {
+                return true;
+            }
+            if first.is_finished() {
+                return false;
+            }
+            tokio::task::yield_now().await;
         }
-        if first.is_finished() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    })
+    .await
+    .expect("timed out while observing the planner permit");
     assert!(observed_busy, "long plan never occupied the worker permit");
 
     let overload_body = serde_json::to_vec(&fixture.request("hello")).unwrap();
@@ -343,11 +348,10 @@ async fn planning_timeout_has_one_terminal_metric_outcome() {
     assert_eq!(status, 504, "{}", String::from_utf8_lossy(&response));
     assert!(String::from_utf8_lossy(&response).contains("deadline_exceeded"));
 
-    // The blocking tokenizer may still finish after the HTTP deadline. It
-    // must not publish a second success/failure outcome when it does.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let (_, metrics) = unix_get(&socket, "/metrics").await;
-    let metrics: serde_json::Value = serde_json::from_slice(&metrics).unwrap();
+    // The blocking tokenizer may still finish after the HTTP deadline. Wait
+    // for its permit to be released before asserting that it did not publish
+    // a second success/failure outcome.
+    let metrics = wait_for_planning_permits(&socket, 1).await;
     let plans = &metrics["metrics"]["plans"];
     assert_eq!(plans["started"], 1);
     assert_eq!(plans["succeeded"], 0);
@@ -503,17 +507,39 @@ async fn wait_for_server(
     socket: &std::path::Path,
     server: &tokio::task::JoinHandle<Result<(), promptsidecar::server::ServerError>>,
 ) {
-    for _ in 0..500 {
-        if UnixStream::connect(socket).await.is_ok() {
-            return;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if UnixStream::connect(socket).await.is_ok() {
+                return;
+            }
+            assert!(
+                !server.is_finished(),
+                "Unix server terminated during startup"
+            );
+            tokio::task::yield_now().await;
         }
-        assert!(
-            !server.is_finished(),
-            "Unix server terminated during startup"
-        );
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    panic!("Unix server did not start");
+    })
+    .await
+    .expect("Unix server did not start");
+}
+
+async fn wait_for_planning_permits(
+    socket: &std::path::Path,
+    expected: u64,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (status, metrics) = unix_get(socket, "/metrics").await;
+            assert_eq!(status, 200);
+            let metrics: serde_json::Value = serde_json::from_slice(&metrics).unwrap();
+            if metrics["planning_permits_available"].as_u64() == Some(expected) {
+                return metrics;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("planner permits did not reach the expected count")
 }
 
 async fn preload_fixture(socket: &std::path::Path, contract_id: &str) -> serde_json::Value {

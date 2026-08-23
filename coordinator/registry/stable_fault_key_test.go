@@ -615,3 +615,90 @@ func TestIsNodeCapacityRejectStrike(t *testing.T) {
 		}
 	}
 }
+
+// Identity enrichment can merge a stale source history into a destination
+// that already has fresh state from a previous connection. Every timestamp
+// history must remain oldest-to-newest because the bounded-map sweeps use the
+// tail as the newest outcome. This exercises the real sekey -> serial rebind
+// and the >1024 cleanup consequence for both rate maps.
+func TestFaultTimestampHistoriesStayOrderedAcrossIdentityRebind(t *testing.T) {
+	r := New(testLogger())
+	const (
+		provider  = "rate-rebind-session"
+		model     = "gemma-4-26b-qat-4bit"
+		publicKey = "PK-RATE-REBIND"
+		serial    = "SER-RATE-REBIND"
+	)
+
+	p := makeSchedulerProvider(t, r, provider, model, 100)
+	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: publicKey})
+	oldID := "sekey:" + publicKey
+	newID := "serial:" + serial
+	if got := faultKeyOf(r, provider); got != oldID {
+		t.Fatalf("initial fault key = %q, want %q", got, oldID)
+	}
+
+	now := time.Now()
+	expired := now.Add(-capacityRateWindow - time.Minute)
+	fresh := now.Add(-time.Minute)
+	oldRateKey := capacityRejectKey{ProviderID: oldID, ModelID: model}
+	newRateKey := capacityRejectKey{ProviderID: newID, ModelID: model}
+	oldInferenceKey := inferenceErrorKey{ProviderID: oldID, ModelID: model, Shape: "base"}
+	newInferenceKey := inferenceErrorKey{ProviderID: newID, ModelID: model, Shape: "base"}
+
+	r.mu.Lock()
+	r.inferenceErrorStrikes[oldInferenceKey] = []time.Time{expired}
+	r.inferenceErrorStrikes[newInferenceKey] = []time.Time{fresh}
+	r.capacityRejectStrikes[oldRateKey] = []time.Time{expired}
+	r.capacityRejectStrikes[newRateKey] = []time.Time{fresh}
+	r.capacityRateRejects[oldRateKey] = []time.Time{expired}
+	r.capacityRateRejects[newRateKey] = []time.Time{fresh}
+	r.capacityRateAccepts[oldRateKey] = []time.Time{expired}
+	r.capacityRateAccepts[newRateKey] = []time.Time{fresh}
+	for i := range 1024 {
+		key := capacityRejectKey{ProviderID: fmt.Sprintf("expired-rate-%d", i), ModelID: model}
+		r.capacityRateRejects[key] = []time.Time{expired}
+		r.capacityRateAccepts[key] = []time.Time{expired}
+	}
+	r.mu.Unlock()
+
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, PublicKey: publicKey, SerialNumber: serial,
+	})
+	if got := faultKeyOf(r, provider); got != newID {
+		t.Fatalf("enriched fault key = %q, want %q", got, newID)
+	}
+
+	r.mu.Lock()
+	mergedInference := append([]time.Time(nil), r.inferenceErrorStrikes[newInferenceKey]...)
+	mergedCapacity := append([]time.Time(nil), r.capacityRejectStrikes[newRateKey]...)
+	mergedRejects := append([]time.Time(nil), r.capacityRateRejects[newRateKey]...)
+	mergedAccepts := append([]time.Time(nil), r.capacityRateAccepts[newRateKey]...)
+	_, oldInferenceRemains := r.inferenceErrorStrikes[oldInferenceKey]
+	_, oldCapacityRemains := r.capacityRejectStrikes[oldRateKey]
+	_, oldRejectsRemain := r.capacityRateRejects[oldRateKey]
+	_, oldAcceptsRemain := r.capacityRateAccepts[oldRateKey]
+	sweepCapacityRateMapLocked(r.capacityRateRejects, now)
+	sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
+	freshRejects := countInWindow(r.capacityRateRejects[newRateKey], now)
+	freshAccepts := countInWindow(r.capacityRateAccepts[newRateKey], now)
+	r.mu.Unlock()
+
+	for name, history := range map[string][]time.Time{
+		"inference strikes": mergedInference,
+		"capacity strikes":  mergedCapacity,
+		"rate rejects":      mergedRejects,
+		"rate accepts":      mergedAccepts,
+	} {
+		if len(history) != 2 || history[0] != expired || history[1] != fresh {
+			t.Errorf("%s after rebind = %v, want [expired, fresh]", name, history)
+		}
+	}
+	if oldInferenceRemains || oldCapacityRemains || oldRejectsRemain || oldAcceptsRemain {
+		t.Fatalf("source identity retained timestamp state: inference=%v capacity=%v rejects=%v accepts=%v",
+			oldInferenceRemains, oldCapacityRemains, oldRejectsRemain, oldAcceptsRemain)
+	}
+	if freshRejects != 1 || freshAccepts != 1 {
+		t.Fatalf("fresh migrated rate history was lost by bounded sweep: rejects=%d accepts=%d, want 1/1", freshRejects, freshAccepts)
+	}
+}

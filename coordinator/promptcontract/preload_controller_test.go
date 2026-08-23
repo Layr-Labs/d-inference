@@ -128,16 +128,27 @@ func TestPreloadControllerBacksOffDeterministicFailures(t *testing.T) {
 	if preloadCalls.Load() != 1 {
 		t.Fatalf("failure retried without backoff: calls=%d", preloadCalls.Load())
 	}
-	time.Sleep(45 * time.Millisecond)
+	controller.mu.RLock()
+	firstBackoff := controller.failureBackoff
+	controller.mu.RUnlock()
+	if firstBackoff != 40*time.Millisecond {
+		t.Fatalf("first backoff = %s, want 40ms", firstBackoff)
+	}
+	expireControllerRetry(controller)
 	controller.reconcile(context.Background())
 	controller.reconcile(context.Background())
 	if preloadCalls.Load() != 2 {
 		t.Fatalf("first retry calls=%d, want 2", preloadCalls.Load())
 	}
-	time.Sleep(45 * time.Millisecond)
+	controller.mu.RLock()
+	secondBackoff := controller.failureBackoff
+	controller.mu.RUnlock()
+	if secondBackoff != 80*time.Millisecond {
+		t.Fatalf("second backoff = %s, want 80ms", secondBackoff)
+	}
 	controller.reconcile(context.Background())
 	if preloadCalls.Load() != 2 {
-		t.Fatalf("exponential backoff did not grow: calls=%d", preloadCalls.Load())
+		t.Fatalf("exponential backoff did not defer retry: calls=%d", preloadCalls.Load())
 	}
 
 	// A new child generation is new state and retries immediately.
@@ -148,4 +159,10 @@ func TestPreloadControllerBacksOffDeterministicFailures(t *testing.T) {
 	if preloadCalls.Load() != 3 {
 		t.Fatalf("new generation did not reset failure backoff: calls=%d", preloadCalls.Load())
 	}
+}
+
+func expireControllerRetry(controller *PreloadController) {
+	controller.mu.Lock()
+	controller.retryAt = time.Now().Add(-time.Nanosecond)
+	controller.mu.Unlock()
 }

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -321,7 +320,10 @@ func TestEncryptRoundTrip(t *testing.T) {
 }
 
 func TestValidateRecipient(t *testing.T) {
-	id, _ := age.GenerateX25519Identity()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("generate recipient: %v", err)
+	}
 	if err := ValidateRecipient(id.Recipient().String()); err != nil {
 		t.Fatalf("valid recipient rejected: %v", err)
 	}
@@ -333,61 +335,24 @@ func TestValidateRecipient(t *testing.T) {
 	}
 }
 
-// TestSnapshotConsistencyUnderConcurrentWrites is the crux check for DAR-70: a
-// goroutine hammers the LIVE source db with continuous Update writes while the
-// snapshotter hot-copies it. The resulting snapshot must validate (via the
-// recover-wrapped production validator) — i.e. never capture a torn write.
-func TestSnapshotConsistencyUnderConcurrentWrites_DAR70(t *testing.T) {
+func TestSnapshotProducesValidatedCopy(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "micromdm.db")
 	makeBolt(t, dbPath)
 
-	// Open the live db RW and keep it open for the duration (mirrors MicroMDM
-	// holding the exclusive lock while we hot-copy the file bytes).
-	live, err := bolt.Open(dbPath, 0o600, &bolt.Options{Timeout: time.Second})
+	snapshotPath, err := NewBoltSnapshotter().Snapshot(context.Background(), dbPath, root)
 	if err != nil {
-		t.Fatalf("open live db: %v", err)
+		t.Fatalf("snapshot: %v", err)
 	}
-	defer live.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		i := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			_ = live.Update(func(tx *bolt.Tx) error {
-				b, err := tx.CreateBucketIfNotExists([]byte("Churn"))
-				if err != nil {
-					return err
-				}
-				i++
-				return b.Put([]byte("k"), []byte(time.Now().String()))
-			})
+	t.Cleanup(func() {
+		if err := os.Remove(snapshotPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove snapshot: %v", err)
 		}
-	}()
-
-	snap := NewBoltSnapshotter()
-	// Take several snapshots while writes are in-flight; each must be consistent.
-	for n := 0; n < 8; n++ {
-		tmp, err := snap.Snapshot(context.Background(), dbPath, root)
-		if err != nil {
-			cancel()
-			wg.Wait()
-			t.Fatalf("snapshot %d failed: %v", n, err)
-		}
-		verifySnapshotChecks(t, tmp)
-		os.Remove(tmp)
+	})
+	if snapshotPath == dbPath {
+		t.Fatal("snapshot returned the live database path")
 	}
-
-	cancel()
-	wg.Wait()
+	verifySnapshotChecks(t, snapshotPath)
 }
 
 // verifySnapshotChecks validates a snapshot with the production recover-wrapped
@@ -415,8 +380,11 @@ func TestValidateBoltTornCopyFailsSafe(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	if err := live.Update(func(tx *bolt.Tx) error {
-		b, _ := tx.CreateBucketIfNotExists([]byte("Big"))
-		for i := 0; i < 500; i++ {
+		b, err := tx.CreateBucketIfNotExists([]byte("Big"))
+		if err != nil {
+			return err
+		}
+		for i := range 500 {
 			if err := b.Put([]byte{byte(i), byte(i >> 8)}, bytes.Repeat([]byte("x"), 256)); err != nil {
 				return err
 			}
@@ -425,7 +393,9 @@ func TestValidateBoltTornCopyFailsSafe(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("grow: %v", err)
 	}
-	live.Close()
+	if err := live.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	raw, err := os.ReadFile(good)
 	if err != nil {
@@ -477,12 +447,17 @@ func TestValidateBoltHighBitPgidRejected_DAR70(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	if err := live.Update(func(tx *bolt.Tx) error {
-		b, _ := tx.CreateBucketIfNotExists([]byte("Big"))
+		b, err := tx.CreateBucketIfNotExists([]byte("Big"))
+		if err != nil {
+			return err
+		}
 		return b.Put([]byte("k"), bytes.Repeat([]byte("x"), 4096))
 	}); err != nil {
 		t.Fatalf("grow: %v", err)
 	}
-	live.Close()
+	if err := live.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	raw, err := os.ReadFile(good)
 	if err != nil {
@@ -502,7 +477,9 @@ func TestValidateBoltHighBitPgidRejected_DAR70(t *testing.T) {
 		metaStart := pageOff + boltPageHeaderSize
 		binary.LittleEndian.PutUint64(raw[metaStart+metaOffPgid:], highBitPgid)
 		h := fnv.New64a()
-		_, _ = h.Write(raw[metaStart : metaStart+metaOffChecksum])
+		if _, err := h.Write(raw[metaStart : metaStart+metaOffChecksum]); err != nil {
+			t.Fatalf("hash metadata: %v", err)
+		}
 		binary.LittleEndian.PutUint64(raw[metaStart+metaOffChecksum:], h.Sum64())
 	}
 

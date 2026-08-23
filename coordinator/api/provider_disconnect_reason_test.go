@@ -8,12 +8,9 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
 	"os"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -79,13 +76,7 @@ func newSessionReasonHarnessWith(t *testing.T, ctx context.Context, wrap func(*r
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-
-	regMsg := protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			ChipName: "Apple M3 Max",
@@ -93,19 +84,13 @@ func newSessionReasonHarnessWith(t *testing.T, ctx context.Context, wrap func(*r
 		},
 		Models:  []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
 		Backend: "mlx-swift",
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
+	})
+	conn := fixture.Conn
 
 	// Registration and OpenProviderSession are async — wait for both so the
 	// disconnect under test can never race the session row's creation.
 	h := &sessionReasonHarness{reg: reg, st: st, conn: conn}
-	waitFor(t, 5*time.Second, "provider registered with open session row", func() bool {
-		if reg.ProviderCount() != 1 {
-			return false
-		}
+	awaitTestCondition(t, ctx, "provider registered with open session row", func() bool {
 		ps, ok := h.sessionRow(t)
 		return ok && ps.DisconnectedAt == nil
 	})
@@ -133,7 +118,7 @@ func (h *sessionReasonHarness) sessionRow(t *testing.T) (store.ProviderSession, 
 func (h *sessionReasonHarness) closedReason(t *testing.T) string {
 	t.Helper()
 	var reason string
-	waitFor(t, 5*time.Second, "session row closed", func() bool {
+	awaitTestCondition(t, context.Background(), "session row closed", func() bool {
 		ps, ok := h.sessionRow(t)
 		if !ok || ps.DisconnectedAt == nil {
 			return false
@@ -141,20 +126,12 @@ func (h *sessionReasonHarness) closedReason(t *testing.T) string {
 		reason = ps.DisconnectReason
 		return true
 	})
+	awaitTestCondition(t, context.Background(), "provider removed after session close", func() bool {
+		return h.reg.ProviderCount() == 0
+	})
 	return reason
 }
 
-func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
 
 // A peer-initiated clean close must be stamped with its close code, not the
 // registry's generic "disconnect".
@@ -204,18 +181,18 @@ func TestProviderSessionReasonRegistryDisconnectWins(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("provider ids = %d, want 1", len(ids))
 	}
-	// Same call the stale-eviction sweep makes.
+	// Same public hook the stale-eviction sweep uses: it removes the registry
+	// entry, closes the provider writer/socket, and stamps the session.
 	h.reg.Disconnect(ids[0])
+
+	// Drain any challenge/trust frames already buffered before observing the
+	// server-side teardown. A single Read can succeed on such a frame even
+	// though Disconnect has already closed the socket.
+	assertSocketClosed(t, h.conn)
 
 	if reason := h.closedReason(t); reason != "disconnect" {
 		t.Errorf("disconnect_reason = %q, want %q", reason, "disconnect")
 	}
-
-	// The read loop's own teardown (unblocked by the registry's socket close)
-	// must not flip the reason afterwards. Disconnect is synchronous from the
-	// registry map's perspective, so any overwrite would land within the poll
-	// window below.
-	time.Sleep(300 * time.Millisecond)
 	if ps, ok := h.sessionRow(t); !ok || ps.DisconnectReason != "disconnect" {
 		t.Errorf("disconnect_reason after read-loop teardown = %q, want %q", ps.DisconnectReason, "disconnect")
 	}
@@ -229,16 +206,13 @@ type sessionWriteRecord struct {
 	status     registry.ProviderStatus
 }
 
-// sessionStampRecorder wraps the store and, on every CloseProviderSession,
-// records whether the session's provider was still in the registry and its
-// status, then holds the write for delay before delegating — simulating a
-// slow/stalled DB on the durable disconnect-reason path.
+// sessionStampRecorder blocks the first read_error session write on an explicit
+// release channel, simulating a stalled DB without coupling correctness to time.
 type sessionStampRecorder struct {
 	store.Store
-	reg    *registry.Registry
-	delay  time.Duration
-	mu     sync.Mutex
-	writes []sessionWriteRecord
+	reg     *registry.Registry
+	entered chan sessionWriteRecord
+	release chan struct{}
 }
 
 func (r *sessionStampRecorder) CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error {
@@ -249,25 +223,21 @@ func (r *sessionStampRecorder) CloseProviderSession(ctx context.Context, session
 		rec.status = p.Status
 		p.Mu().Unlock()
 	}
-	r.mu.Lock()
-	r.writes = append(r.writes, rec)
-	r.mu.Unlock()
-	if r.delay > 0 {
-		time.Sleep(r.delay)
+	if reason == "read_error" {
+		select {
+		case r.entered <- rec:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return r.Store.CloseProviderSession(ctx, sessionID, reason, when)
 }
 
-func (r *sessionStampRecorder) firstWrite(reason string) (sessionWriteRecord, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, w := range r.writes {
-		if w.reason == reason {
-			return w, true
-		}
-	}
-	return sessionWriteRecord{}, false
-}
 
 // Regression for the PR #512 review finding: when the read loop exits, the
 // provider must already be unroutable when the durable disconnect-reason write
@@ -278,7 +248,10 @@ func TestProviderUnroutableBeforeSessionStamp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rec := &sessionStampRecorder{delay: 300 * time.Millisecond}
+	rec := &sessionStampRecorder{
+		entered: make(chan sessionWriteRecord, 1),
+		release: make(chan struct{}),
+	}
 	h := newSessionReasonHarnessWith(t, ctx, func(reg *registry.Registry, st *store.MemoryStore) store.Store {
 		rec.reg = reg
 		rec.Store = st
@@ -289,18 +262,21 @@ func TestProviderUnroutableBeforeSessionStamp(t *testing.T) {
 		t.Fatalf("client close now: %v", err)
 	}
 
-	if reason := h.closedReason(t); reason != "read_error" {
-		t.Errorf("disconnect_reason = %q, want %q (delayed stamp must still win first-close)", reason, "read_error")
-	}
-
-	stamp, ok := rec.firstWrite("read_error")
-	if !ok {
-		t.Fatal("no read_error session write reached the store")
+	var stamp sessionWriteRecord
+	select {
+	case stamp = <-rec.entered:
+	case <-ctx.Done():
+		t.Fatalf("waiting for read_error session write: %v", ctx.Err())
 	}
 	// Unroutable means either already removed from the registry, or still
 	// present but StatusOffline — which fails every routing-eligibility gate.
 	if stamp.inRegistry && stamp.status != registry.StatusOffline {
 		t.Errorf("provider status when the session stamp arrived = %q, want %q (dead provider was routable during the durable write)",
 			stamp.status, registry.StatusOffline)
+	}
+
+	close(rec.release)
+	if reason := h.closedReason(t); reason != "read_error" {
+		t.Errorf("disconnect_reason = %q, want %q (blocked stamp must win first-close)", reason, "read_error")
 	}
 }

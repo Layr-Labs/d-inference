@@ -5,97 +5,109 @@ import (
 	"testing"
 )
 
-func makePayload(size int) []byte {
+
+func makePayload(tb testing.TB, size int) []byte {
+	tb.Helper()
 	data := make([]byte, size)
-	rand.Read(data)
+	if _, err := rand.Read(data); err != nil {
+		tb.Fatalf("fill payload: %v", err)
+	}
 	return data
 }
 
 func BenchmarkEncrypt_Small(b *testing.B) {
 	b.ReportAllocs()
-	plaintext := makePayload(100) // 100 bytes
-	session, _ := GenerateSessionKeys()
-	var recipientPub [32]byte
-	rand.Read(recipientPub[:])
+	plaintext := makePayload(b, 100) // 100 bytes
+	session := generateSessionKeys(b)
+	recipientPub, _ := generateBoxKeys(b)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Encrypt(plaintext, recipientPub, session)
+		if _, err := Encrypt(plaintext, *recipientPub, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func BenchmarkEncrypt_Medium(b *testing.B) {
 	b.ReportAllocs()
-	plaintext := makePayload(4096) // 4KB
-	session, _ := GenerateSessionKeys()
-	var recipientPub [32]byte
-	rand.Read(recipientPub[:])
+	plaintext := makePayload(b, 4096) // 4KB
+	session := generateSessionKeys(b)
+	recipientPub, _ := generateBoxKeys(b)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Encrypt(plaintext, recipientPub, session)
+		if _, err := Encrypt(plaintext, *recipientPub, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func BenchmarkEncrypt_Large(b *testing.B) {
 	b.ReportAllocs()
-	plaintext := makePayload(65536) // 64KB
-	session, _ := GenerateSessionKeys()
-	var recipientPub [32]byte
-	rand.Read(recipientPub[:])
+	plaintext := makePayload(b, 65536) // 64KB
+	session := generateSessionKeys(b)
+	recipientPub, _ := generateBoxKeys(b)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Encrypt(plaintext, recipientPub, session)
+		if _, err := Encrypt(plaintext, *recipientPub, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 // setupEncryptedPayload creates a valid encrypted payload for decrypt benchmarks.
-func setupEncryptedPayload(size int) (*EncryptedPayload, *SessionKeys) {
-	plaintext := makePayload(size)
-	sender, _ := GenerateSessionKeys()
-	recipient, _ := GenerateSessionKeys()
-	payload, _ := Encrypt(plaintext, recipient.PublicKey, sender)
-	// To decrypt, we need the recipient's session and the sender's public key
-	// is embedded in the payload. So we return the recipient session.
+func setupEncryptedPayload(tb testing.TB, size int) (*EncryptedPayload, *SessionKeys) {
+	tb.Helper()
+	plaintext := makePayload(tb, size)
+	sender := generateSessionKeys(tb)
+	recipient := generateSessionKeys(tb)
+	payload := encryptForTest(tb, plaintext, recipient.PublicKey, sender)
 	return payload, recipient
 }
 
 func BenchmarkDecrypt_Small(b *testing.B) {
 	b.ReportAllocs()
-	payload, session := setupEncryptedPayload(100)
+	payload, session := setupEncryptedPayload(b, 100)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Decrypt(payload, session)
+		if _, err := Decrypt(payload, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func BenchmarkDecrypt_Medium(b *testing.B) {
 	b.ReportAllocs()
-	payload, session := setupEncryptedPayload(4096)
+	payload, session := setupEncryptedPayload(b, 4096)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Decrypt(payload, session)
+		if _, err := Decrypt(payload, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func BenchmarkDecrypt_Large(b *testing.B) {
 	b.ReportAllocs()
-	payload, session := setupEncryptedPayload(65536)
+	payload, session := setupEncryptedPayload(b, 65536)
 
 	b.ResetTimer()
 	for range b.N {
-		_, _ = Decrypt(payload, session)
+		if _, err := Decrypt(payload, session); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
 func BenchmarkEncryptDecryptRoundtrip(b *testing.B) {
 	b.ReportAllocs()
-	plaintext := makePayload(4096) // 4KB representative payload
-	sender, _ := GenerateSessionKeys()
-	recipient, _ := GenerateSessionKeys()
+	plaintext := makePayload(b, 4096) // 4KB representative payload
+	sender := generateSessionKeys(b)
+	recipient := generateSessionKeys(b)
 
 	b.ResetTimer()
 	for range b.N {

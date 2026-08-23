@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -472,3 +473,127 @@ func TestReserveProviderAllowedProviderSerialsWithExclusion(t *testing.T) {
 		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
 	}
 }
+
+// Queue cost prefers an idle provider over a faster provider with work in flight.
+func TestQueuePenaltyPrefersIdleProvider(t *testing.T) { reg := New(testLogger())
+	model := "p3-queue-penalty-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	schedulerScenarioProvider{id: "ultra", decodeTPS: 80, totalMemGB: 512, gpuActiveGB: 30,
+		pending: 1, backendRun: 1,}.register(t, reg, model)
+	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,}.register(t, reg, model)
+
+	p := reserveSchedulerScenario(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected pro-idle, got nil")
+	}
+	if p.ID != "pro-idle" {
+		t.Fatalf("got %q, want idle provider pro-idle", p.ID)
+	}
+ }
+
+// Repeated short reservations do not collapse onto one idle provider.
+func TestSchedulerDistributesSequentialIdleRequests(t *testing.T) { reg := New(testLogger())
+	model := "p3-distribution-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	schedulerScenarioProvider{id: "ultra", decodeTPS: 80, totalMemGB: 512}.register(t, reg, model)
+	schedulerScenarioProvider{id: "max", decodeTPS: 60, totalMemGB: 128}.register(t, reg, model)
+	schedulerScenarioProvider{id: "pro", decodeTPS: 20, totalMemGB: 24}.register(t, reg, model)
+
+	counts := map[string]int{}
+	const N = 100
+	for i := range N {
+		pr := &PendingRequest{
+			RequestID:          fmt.Sprintf("dist-%d", i),
+			Model:              model,
+			RequestedMaxTokens: 256,
+		}
+		p := reg.ReserveProvider(model, pr)
+		if p == nil {
+			t.Fatalf("reservation %d returned nil", i)
+		}
+		counts[p.ID]++
+		// Release immediately so the next iteration sees idle providers.
+		// Models the steady-state where requests complete quickly relative
+		// to arrival rate.
+		p.RemovePending(pr.RequestID)
+		reg.SetProviderIdle(p.ID)
+	}
+
+	dominant := 0
+	for _, count := range counts {
+		if count > dominant {
+			dominant = count
+		}
+	}
+	maxShare := float64(dominant) / float64(N)
+	if maxShare > 0.70 {
+		t.Fatalf("dominant provider has %.0f%% of selections (counts=%v), want at most 70%%", maxShare*100, counts)
+	}
+ }
+
+// Queue cost prefers an idle peer over a heavily batched provider.
+func TestQueuePenaltyPrefersIdleOverHighlyBatchedProvider(t *testing.T) { reg := New(testLogger())
+	model := "p4-batched-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	schedulerScenarioProvider{id: "ultra-batched", decodeTPS: 80, totalMemGB: 512, gpuActiveGB: 60,
+		pending: 8, backendRun: 8,}.register(t, reg, model)
+	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,}.register(t, reg, model)
+
+	p := reserveSchedulerScenario(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected pro-idle, got nil")
+	}
+	if p.ID != "pro-idle" {
+		t.Fatalf("got %q, want idle provider pro-idle over the heavily batched peer", p.ID)
+	}
+ }
+
+// Backend load scales effective TPS before cross-provider ranking.
+func TestLoadScaledTPSPrefersIdlePeer(t *testing.T) { reg := New(testLogger())
+	model := "p4-load-scaled-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 8}})
+
+	// Big provider: batch=4 in flight (running, no waiting), no
+	// pending-token backlog reported, healthy. Static TPS=80, with
+	// k=0.4 effective TPS = 80/(1+0.4*4) = 80/2.6 ≈ 30.8.
+	schedulerScenarioProvider{id: "big-batched", decodeTPS: 80, totalMemGB: 128,
+		gpuActiveGB: 8, // model resident, low headroom impact
+		backendRun:  4,
+		slotState:   "running",}.register(t, reg, model)
+
+	// Small idle: static TPS=30, no batch scaling applies.
+	schedulerScenarioProvider{id: "small-idle", decodeTPS: 30, totalMemGB: 24,
+		gpuActiveGB: 1,
+		slotState:   "running",}.register(t, reg, model)
+
+	p := reserveSchedulerScenario(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected small-idle, got nil")
+	}
+	if p.ID != "small-idle" {
+		t.Fatalf("got %q, want small-idle after load-scaled TPS ranking", p.ID)
+	}
+ }
+
+// A resident running slot beats an otherwise equivalent cold slot.
+func TestWarmSlotPreferredOverIdleShutdown(t *testing.T) { reg := New(testLogger())
+	model := "warm-vs-cold-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	schedulerScenarioProvider{id: "warm", decodeTPS: 80, totalMemGB: 128,}.register(t, reg, model)
+	schedulerScenarioProvider{id: "cold", decodeTPS: 80, totalMemGB: 128,
+		slotState: "idle_shutdown",}.register(t, reg, model)
+
+	p := reserveSchedulerScenario(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected warm, got nil")
+	}
+	if p.ID != "warm" {
+		t.Fatalf("got %q, want warm. slotStatePenaltyIdleShutdown must "+
+			"keep cold providers at higher cost than running peers.", p.ID)
+	}
+ }
+

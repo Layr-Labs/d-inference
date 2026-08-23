@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
@@ -37,10 +38,6 @@ func testBillingServer(t *testing.T) (*Server, *store.MemoryStore) {
 	return srv, st
 }
 
-// testWithdrawServer is an alias for testBillingServer for backward compatibility.
-func testWithdrawServer(t *testing.T) (*Server, *store.MemoryStore) {
-	return testBillingServer(t)
-}
 
 // withPrivyUser returns a request with the given user set in context, simulating
 // Privy authentication without requiring JWT verification.
@@ -59,15 +56,38 @@ func testServer(t *testing.T) (*Server, *store.MemoryStore) {
 	return srv, st
 }
 
-func newAuthRequest(t *testing.T, ctx context.Context, url, body, key string) (*http.Request, error) {
+func newAuthRequest(t *testing.T, ctx context.Context, url, body, key string) *http.Request {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
-		return nil, err
+		t.Fatalf("create authenticated request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	return req, nil
+	return req
+}
+
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	if cond() {
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if cond() {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
 }
 
 // billingTestServer creates a test server with billing enabled in mock mode.

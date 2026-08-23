@@ -2,10 +2,11 @@ package registry
 
 import (
 	"context"
-	"math/rand"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -297,76 +298,65 @@ func TestProviderWriterQueueFullPerLane(t *testing.T) {
 	}
 }
 
-// TestProviderWriterWatchdogClosesStalledWrite stalls a write by never reading
-// on the client side and pushing an incompressible frame far larger than the
-// kernel TCP buffers. With an injected 50ms deadline, the watchdog must close
-// the socket and the write must surface errProviderWriteTimeout.
-func TestProviderWriterWatchdogClosesStalledWrite(t *testing.T) {
-	serverConn, _ := testWebSocketPair(t) // client never reads
-	w := &providerWriter{
-		conn:       serverConn,
-		queue:      make(chan *providerWriteRequest, 1),
-		control:    make(chan *providerWriteRequest, 1),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		timeoutFor: func(int) time.Duration { return 50 * time.Millisecond },
+func TestProviderWriterWatchdogInterruptsActiveWrite(t *testing.T) {
+	writeStarted := make(chan struct{})
+	transportClosed := make(chan struct{})
+	ticks := make(chan time.Time)
+	var closeOnce sync.Once
+
+	var w *providerWriter
+	w = &providerWriter{
+		queue:         make(chan *providerWriteRequest, providerWriteQueueSize),
+		control:       make(chan *providerWriteRequest, providerControlQueueSize),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		timeoutFor:    func(int) time.Duration { return time.Hour },
+		watchdogTicks: ticks,
+		watchdogNow: func() time.Time {
+			return time.Unix(0, w.writeDeadline.Load()+1)
+		},
+		writeConn: func(context.Context, websocket.MessageType, []byte) error {
+			close(writeStarted)
+			<-transportClosed
+			return errors.New("transport closed")
+		},
+		closeConn: func() error {
+			closeOnce.Do(func() { close(transportClosed) })
+			return nil
+		},
 	}
 	go w.run()
-	t.Cleanup(w.closeNow)
 
-	payload := make([]byte, 32<<20)
-	rng := rand.New(rand.NewSource(1)) // incompressible so negotiated compression cannot shrink it
-	rng.Read(payload)
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- w.write(context.Background(), []byte(`{"x":1}`))
+	}()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.write(context.Background(), payload) }()
 	select {
-	case err := <-errCh:
-		if err != errProviderWriteTimeout {
-			t.Fatalf("stalled write error = %v, want errProviderWriteTimeout", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("timed out waiting for watchdog to abort the stalled write")
+	case <-writeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not begin the transport write")
 	}
-	if !w.writeTimedOut.Load() {
-		t.Fatal("writeTimedOut not set by watchdog")
+	select {
+	case ticks <- time.Time{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer watchdog did not receive the injected tick")
+	}
+	select {
+	case err := <-writeErr:
+		if err != errProviderWriteTimeout {
+			t.Fatalf("interrupted write = %v, want errProviderWriteTimeout", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog did not interrupt the active transport write")
 	}
 	select {
 	case <-w.done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("writer did not shut down after watchdog closed the socket")
+		t.Fatal("writer loop did not terminate after the timed-out write")
 	}
-	if err := w.write(context.Background(), []byte(`{"after":"close"}`)); err != errProviderWriterStopped {
-		t.Fatalf("write after watchdog close = %v, want errProviderWriterStopped", err)
-	}
-}
-
-// TestProviderWriterWatchdogFiresOnPastDeadline unit-tests watchWrites: a
-// published deadline in the past makes the watchdog set writeTimedOut and
-// close the socket within one tick.
-func TestProviderWriterWatchdogFiresOnPastDeadline(t *testing.T) {
-	serverConn, _ := testWebSocketPair(t)
-	w := &providerWriter{
-		conn: serverConn,
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
-	}
-	w.writeDeadline.Store(time.Now().Add(-time.Second).UnixNano())
-	watchdogStop := make(chan struct{})
-	defer close(watchdogStop)
-	go w.watchWrites(watchdogStop)
-
-	deadline := time.Now().Add(5 * time.Second)
-	for !w.writeTimedOut.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("watchdog did not fire on a past write deadline")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelWrite()
-	if err := serverConn.Write(writeCtx, websocket.MessageText, []byte(`{"x":1}`)); err == nil {
-		t.Fatal("expected write on watchdog-closed socket to fail")
+	if err := w.write(context.Background(), []byte(`{"x":2}`)); err != errProviderWriterStopped {
+		t.Fatalf("write after watchdog termination = %v, want errProviderWriterStopped", err)
 	}
 }
 

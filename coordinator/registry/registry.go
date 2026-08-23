@@ -5141,15 +5141,21 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 	ticker := time.NewTicker(timeout / 3)
 	saferun.Go(r.logger, "registry.evictionLoop", func() {
 		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.evictStale(timeout)
-			}
-		}
+		r.runEvictionLoop(ctx, timeout, ticker.C)
 	})
+}
+
+// runEvictionLoop accepts an explicit tick channel so cancellation and sweep
+// behavior can be synchronized without sleeping in tests.
+func (r *Registry) runEvictionLoop(ctx context.Context, timeout time.Duration, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			r.evictStale(timeout)
+		}
+	}
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {

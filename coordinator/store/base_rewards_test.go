@@ -498,3 +498,18 @@ func countSessions(sessions []ProviderSession, serial string) int {
 	}
 	return n
 }
+
+func TestEpochSettlementLockStoreContract(t *testing.T) {
+	for name, st := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			err := st.WithEpochSettlementLock(context.Background(), uniqueID("epoch"), func() error {
+				calls++
+				return nil
+			})
+			if err != nil || calls != 1 {
+				t.Fatalf("settlement lock callback calls = %d err=%v, want 1/nil", calls, err)
+			}
+		})
+	}
+}

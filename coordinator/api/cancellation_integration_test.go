@@ -29,7 +29,7 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 	model := "cancel-test-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Handle the first attestation challenge so the provider becomes routable.
@@ -37,7 +37,6 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 	waitForChallenge(t, challengeCtx, conn, pubKey)
 	challengeCancel()
 
-	time.Sleep(200 * time.Millisecond)
 	makeProviderRoutable(reg)
 
 	// Provider goroutine: reads the inference request, sends one chunk,
@@ -73,8 +72,7 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}`+"\n\n")
+				writeEncryptedTestChunk(t, ctx, conn.Conn, inferReq, pubKey, `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}`+"\n\n")
 				break
 			}
 		}
@@ -168,7 +166,7 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 	model := "cancel-cleanup-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Handle the first attestation challenge.
@@ -176,7 +174,6 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 	waitForChallenge(t, challengeCtx, conn, pubKey)
 	challengeCancel()
 
-	time.Sleep(200 * time.Millisecond)
 	makeProviderRoutable(reg)
 
 	// Capture the provider ID for later checks.
@@ -211,8 +208,7 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
+				writeEncryptedTestChunk(t, ctx, conn.Conn, inferReq, pubKey, `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
 				continue
 			}
 
@@ -249,8 +245,13 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 		t.Fatal("timed out waiting for provider goroutine to finish")
 	}
 
-	// Give the coordinator a moment to process the cleanup.
-	time.Sleep(300 * time.Millisecond)
+	awaitTestCondition(t, ctx, "provider cancellation cleanup", func() bool {
+		p := reg.GetProvider(providerID)
+		if p == nil || p.PendingCount() != 0 {
+			return false
+		}
+		return p.GetStatus() == registry.StatusOnline
+	})
 
 	// Verify cleanup: pending request count should be 0.
 	p := reg.GetProvider(providerID)
@@ -290,16 +291,12 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 
 	// --- Provider A: connect with serial ABC123 ---
 	attestA := createTestAttestationJSONWithSerial(t, serial, pubKeyA)
-	connA := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyA, attestA)
-
-	// Wait for attestation verification to process (including dedup check).
-	time.Sleep(300 * time.Millisecond)
+	connA := connectProviderWithAttestation(t, ctx, ts.URL, reg, models, pubKeyA, attestA)
 
 	// Handle the first challenge for provider A.
 	challengeCtx, challengeCancel := context.WithTimeout(ctx, 5*time.Second)
 	waitForChallenge(t, challengeCtx, connA, pubKeyA)
 	challengeCancel()
-	time.Sleep(200 * time.Millisecond)
 
 	// Set trust level for provider A.
 	makeProviderRoutable(reg)
@@ -318,11 +315,8 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 
 	// --- Provider B: connect with the SAME serial ABC123 ---
 	attestB := createTestAttestationJSONWithSerial(t, serial, pubKeyB)
-	connB := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyB, attestB)
+	connB := connectProviderWithAttestation(t, ctx, ts.URL, reg, models, pubKeyB, attestB)
 	defer connB.Close(websocket.StatusNormalClosure, "")
-
-	// Wait for attestation verification and deduplication to complete.
-	time.Sleep(500 * time.Millisecond)
 
 	// Verify provider A was evicted (only 1 provider should remain).
 	if count := reg.ProviderCount(); count != 1 {
@@ -356,7 +350,6 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 	challengeCtx2, challengeCancel2 := context.WithTimeout(ctx, 5*time.Second)
 	waitForChallenge(t, challengeCtx2, connB, pubKeyB)
 	challengeCancel2()
-	time.Sleep(200 * time.Millisecond)
 
 	makeProviderRoutable(reg)
 
@@ -385,24 +378,18 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 
 	// --- Provider A: connect with serial ---
 	attestA := createTestAttestationJSONWithSerial(t, serial, pubKeyA)
-	connA := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyA, attestA)
-
-	time.Sleep(300 * time.Millisecond)
+	connA := connectProviderWithAttestation(t, ctx, ts.URL, reg, models, pubKeyA, attestA)
 
 	// Handle challenge for A.
 	challengeCtxA, challengeCancelA := context.WithTimeout(ctx, 5*time.Second)
 	waitForChallenge(t, challengeCtxA, connA, pubKeyA)
 	challengeCancelA()
-	time.Sleep(200 * time.Millisecond)
 	makeProviderRoutable(reg)
 
 	// --- Provider B: connect with same serial, replacing A ---
 	attestB := createTestAttestationJSONWithSerial(t, serial, pubKeyB)
-	connB := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyB, attestB)
+	connB := connectProviderWithAttestation(t, ctx, ts.URL, reg, models, pubKeyB, attestB)
 	defer connB.Close(websocket.StatusNormalClosure, "")
-
-	// Wait for deduplication.
-	time.Sleep(500 * time.Millisecond)
 
 	// Verify A was evicted.
 	if count := reg.ProviderCount(); count != 1 {
@@ -429,7 +416,6 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 	challengeCtxB, challengeCancelB := context.WithTimeout(ctx, 5*time.Second)
 	waitForChallenge(t, challengeCtxB, connB, pubKeyB)
 	challengeCancelB()
-	time.Sleep(200 * time.Millisecond)
 	makeProviderRoutable(reg)
 
 	// Provider B should be the one serving requests. Send a request and
@@ -464,7 +450,7 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 				providerBReceivedRequest = true
 				mu.Unlock()
 
-				writeEncryptedTestChunk(t, ctx, connB, inferReq, pubKeyB,
+				writeEncryptedTestChunk(t, ctx, connB.Conn, inferReq, pubKeyB,
 					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"from-B"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{

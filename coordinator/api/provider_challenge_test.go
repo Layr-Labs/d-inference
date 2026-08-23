@@ -33,67 +33,25 @@ func TestChallengeResponseSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Register with a public key.
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "challenge-model", ModelType: "chat", Quantization: "4bit"}},
 		Backend:   "mlx-swift",
 		PublicKey: pubKey,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	// Wait for the attestation challenge to arrive.
-	challengeReceived := false
-	for range 20 {
-		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, data, err := conn.Read(readCtx)
-		readCancel()
-		if err != nil {
-			continue
-		}
-
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &envelope)
-
-		if envelope.Type == protocol.TypeAttestationChallenge {
-			challengeReceived = true
-
-			// Parse the challenge.
-			var challenge protocol.AttestationChallengeMessage
-			json.Unmarshal(data, &challenge)
-
-			respData := makeValidChallengeResponse(data, pubKey)
-			conn.Write(ctx, websocket.MessageText, respData)
-			break
-		}
-	}
-
-	if !challengeReceived {
-		t.Fatal("did not receive attestation challenge")
-	}
-
-	// Wait for verification to complete.
-	time.Sleep(200 * time.Millisecond)
+	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	fixture.RespondToChallenge(func(data []byte) []byte {
+		return makeValidChallengeResponse(data, pubKey)
+	})
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "successful challenge verification", func() bool {
+		return !p.GetLastChallengeVerified().IsZero()
+	})
 
 	// Verify provider is still online (not untrusted).
-	p := findProviderByModel(reg, "challenge-model")
-	if p == nil {
-		t.Fatal("provider not found")
-	}
-	if p.Status == registry.StatusUntrusted {
+	if p.GetStatus() == registry.StatusUntrusted {
 		t.Error("provider should not be untrusted after successful challenge")
 	}
 }
@@ -115,49 +73,19 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "rdma-enabled-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	challengeReceived := false
-	for range 20 {
-		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, data, err := conn.Read(readCtx)
-		readCancel()
-		if err != nil {
-			continue
-		}
-
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &envelope)
-		if envelope.Type != protocol.TypeAttestationChallenge {
-			continue
-		}
-		challengeReceived = true
-
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "rdma-enabled-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Backend = registry.BackendMLXSwift })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	fixture.RespondToChallenge(func(data []byte) []byte {
 		var challenge protocol.AttestationChallengeMessage
-		json.Unmarshal(data, &challenge)
+		if err := json.Unmarshal(data, &challenge); err != nil {
+			t.Fatalf("unmarshal challenge: %v", err)
+		}
 		rdmaDisabled := false
-		hypervisorActive := false // legacy (< v0.6.31) providers still send this retired field
+		hypervisorActive := false
 		sipEnabled := true
 		secureBootEnabled := true
 		response := protocol.AttestationResponseMessage{
@@ -170,22 +98,21 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 			SIPEnabled:        &sipEnabled,
 			SecureBootEnabled: &secureBootEnabled,
 		}
-		respData, _ := json.Marshal(response)
-		conn.Write(ctx, websocket.MessageText, respData)
-		break
-	}
+		respData, err := json.Marshal(response)
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return respData
+	})
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "RDMA challenge verification", func() bool {
+		return !p.GetLastChallengeVerified().IsZero()
+	})
 
-	if !challengeReceived {
-		t.Fatal("did not receive attestation challenge")
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	p := findProviderByModel(reg, "rdma-enabled-model")
 	if p == nil {
 		t.Fatal("provider not found")
 	}
-	if p.Status == registry.StatusUntrusted {
+	if p.GetStatus() == registry.StatusUntrusted {
 		t.Error("provider should not be marked untrusted when RDMA is enabled")
 	}
 	if p.GetLastChallengeVerified().IsZero() {
@@ -359,68 +286,43 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "missing-sip-model", ModelType: "chat", Quantization: "4bit"}},
 		Backend:   "mlx-swift",
 		PublicKey: pubKey,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	challengeReceived := false
-	for range 20 {
-		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, data, err := conn.Read(readCtx)
-		readCancel()
+	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	fixture.RespondToChallenge(func(data []byte) []byte {
+		var challenge protocol.AttestationChallengeMessage
+		if err := json.Unmarshal(data, &challenge); err != nil {
+			t.Fatalf("unmarshal challenge: %v", err)
+		}
+		rdmaDisabled := true
+		secureBootEnabled := true
+		response := protocol.AttestationResponseMessage{
+			Type:              protocol.TypeAttestationResponse,
+			Nonce:             challenge.Nonce,
+			Signature:         "dGVzdHNpZ25hdHVyZQ==",
+			PublicKey:         pubKey,
+			RDMADisabled:      &rdmaDisabled,
+			SecureBootEnabled: &secureBootEnabled,
+		}
+		respData, err := json.Marshal(response)
 		if err != nil {
-			continue
+			t.Fatalf("marshal response: %v", err)
 		}
+		return respData
+	})
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "missing SIP challenge rejection", func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.FailedChallenges > 0
+	})
 
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &envelope)
-
-		if envelope.Type == protocol.TypeAttestationChallenge {
-			challengeReceived = true
-
-			var challenge protocol.AttestationChallengeMessage
-			json.Unmarshal(data, &challenge)
-
-			rdmaDisabled := true
-			secureBootEnabled := true
-			response := protocol.AttestationResponseMessage{
-				Type:              protocol.TypeAttestationResponse,
-				Nonce:             challenge.Nonce,
-				Signature:         "dGVzdHNpZ25hdHVyZQ==",
-				PublicKey:         pubKey,
-				RDMADisabled:      &rdmaDisabled,
-				SecureBootEnabled: &secureBootEnabled,
-			}
-			respData, _ := json.Marshal(response)
-			conn.Write(ctx, websocket.MessageText, respData)
-			break
-		}
-	}
-
-	if !challengeReceived {
-		t.Fatal("did not receive attestation challenge")
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	p := findProviderByModel(reg, "missing-sip-model")
 	if p == nil {
 		t.Fatal("provider not found")
 	}
@@ -494,61 +396,22 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "sip-rotation-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	var providerID string
-	for _, id := range reg.ProviderIDs() {
-		providerID = id
-	}
-	if providerID == "" {
-		t.Fatal("provider was not registered")
-	}
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "sip-rotation-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey)
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	providerID := fixture.providerID
 	reg.SetTrustLevel(providerID, registry.TrustHardware)
 
 	readChallenge := func() protocol.AttestationChallengeMessage {
 		t.Helper()
-		for range 20 {
-			readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-			_, data, err := conn.Read(readCtx)
-			readCancel()
-			if err != nil {
-				continue
-			}
-
-			var envelope struct {
-				Type string `json:"type"`
-			}
-			json.Unmarshal(data, &envelope)
-			if envelope.Type != protocol.TypeAttestationChallenge {
-				continue
-			}
-
-			var challenge protocol.AttestationChallengeMessage
-			json.Unmarshal(data, &challenge)
-			return challenge
+		data := fixture.ReadType(protocol.TypeAttestationChallenge)
+		var challenge protocol.AttestationChallengeMessage
+		if err := json.Unmarshal(data, &challenge); err != nil {
+			t.Fatalf("unmarshal challenge: %v", err)
 		}
-
-		t.Fatal("did not receive attestation challenge")
-		return protocol.AttestationChallengeMessage{}
+		return challenge
 	}
 
 	sendChallengeResponse := func(challenge protocol.AttestationChallengeMessage, includeSIP bool) {
@@ -567,13 +430,15 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 			sipEnabled := true
 			response.SIPEnabled = &sipEnabled
 		}
-		respData, _ := json.Marshal(response)
-		conn.Write(ctx, websocket.MessageText, respData)
+		fixture.WriteJSON(response)
 	}
 
 	firstChallenge := readChallenge()
 	sendChallengeResponse(firstChallenge, true)
-	time.Sleep(200 * time.Millisecond)
+	p := reg.GetProvider(providerID)
+	awaitTestCondition(t, ctx, "initial SIP challenge verification", func() bool {
+		return !p.GetLastChallengeVerified().IsZero() && len(reg.ListModels()) == 1
+	})
 
 	if models := reg.ListModels(); len(models) != 1 {
 		t.Fatalf("models after valid challenge = %d, want 1", len(models))
@@ -581,9 +446,13 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 
 	secondChallenge := readChallenge()
 	sendChallengeResponse(secondChallenge, false)
-	time.Sleep(200 * time.Millisecond)
+	awaitTestCondition(t, ctx, "SIP eligibility removal", func() bool {
+		p.Mu().Lock()
+		failed := p.FailedChallenges > 0
+		p.Mu().Unlock()
+		return failed && p.GetLastChallengeVerified().IsZero() && len(reg.ListModels()) == 0
+	})
 
-	p := findProviderByModel(reg, "sip-rotation-model")
 	if p == nil {
 		t.Fatal("provider not found")
 	}
@@ -613,72 +482,43 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "below-min-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		Version:                 "0.3.8",
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "below-min-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Version = "0.3.8" })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+
+	fixture.RespondToChallenge(func(data []byte) []byte {
+		return makeValidChallengeResponse(data, pubKey)
+	})
+	// The version gate runs while processing the response, before
+	// RecordChallengeSuccess. Receiving the next serial challenge proves the
+	// first response was consumed without waiting for an impossible success
+	// timestamp.
+	fixture.ReadType(protocol.TypeAttestationChallenge)
+
+	p := reg.GetProvider(fixture.providerID)
+	if p == nil {
+		t.Fatal("below-minimum provider was removed from the registry")
 	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	var providerID string
-	for _, id := range reg.ProviderIDs() {
-		providerID = id
+	p.Mu().Lock()
+	runtimeVerified := p.RuntimeVerified
+	p.Mu().Unlock()
+	if runtimeVerified {
+		t.Fatal("below-minimum provider became runtime verified")
 	}
-	if providerID == "" {
-		t.Fatal("provider was not registered")
+	if !p.GetLastChallengeVerified().IsZero() {
+		t.Fatal("below-minimum provider recorded a successful challenge")
 	}
-	reg.SetTrustLevel(providerID, registry.TrustHardware)
-
-	challengeReceived := false
-	for range 20 {
-		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		_, data, err := conn.Read(readCtx)
-		readCancel()
-		if err != nil {
-			continue
-		}
-
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &envelope)
-		if envelope.Type != protocol.TypeAttestationChallenge {
-			continue
-		}
-
-		challengeReceived = true
-		respData := makeValidChallengeResponse(data, pubKey)
-		conn.Write(ctx, websocket.MessageText, respData)
-		break
-	}
-
-	if !challengeReceived {
-		t.Fatal("did not receive attestation challenge")
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
 	if models := reg.ListModels(); len(models) != 0 {
 		t.Fatalf("models after below-min version challenge = %d, want 0", len(models))
 	}
 }
 
-// TestChallengeResponseWrongKey tests that a response with wrong public key fails.
+// TestChallengeResponseWrongKey tests that a response signed by a different
+// valid X25519 identity fails after the provider's valid key is registered.
 func TestChallengeResponseWrongKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -692,63 +532,38 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	regMsg := protocol.RegisterMessage{
+	pubKey := testPublicKeyB64()
+	wrongPubKey := testPublicKeyB64()
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "wrongkey-model", ModelType: "chat", Quantization: "4bit"}},
 		Backend:   "mlx-swift",
-		PublicKey: "Y29ycmVjdGtleQ==",
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
+		PublicKey: pubKey,
+	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	// Answer challenges with the wrong public key repeatedly.
-	// We need registry.MaxFailedChallenges (3) failures for the provider to be marked untrusted.
-	failCount := 0
-	for failCount < registry.MaxFailedChallenges {
-		readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
-		_, data, err := conn.Read(readCtx)
-		readCancel()
-		if err != nil {
-			continue
-		}
-
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		json.Unmarshal(data, &envelope)
-
-		if envelope.Type == protocol.TypeAttestationChallenge {
-			var challenge protocol.AttestationChallengeMessage
-			json.Unmarshal(data, &challenge)
-
-			response := protocol.AttestationResponseMessage{
-				Type:      protocol.TypeAttestationResponse,
-				Nonce:     challenge.Nonce,
-				Signature: "c2lnbmF0dXJl",
-				PublicKey: "d3Jvbmdrb3k=", // wrong key
-			}
-			respData, _ := json.Marshal(response)
-			conn.Write(ctx, websocket.MessageText, respData)
-			failCount++
-		}
+	for range registry.MaxFailedChallenges {
+		fixture.RespondToChallenge(func(data []byte) []byte {
+			return makeValidChallengeResponse(data, wrongPubKey)
+		})
 	}
 
-	// Wait for the last failure to be processed and provider marked untrusted.
-	time.Sleep(500 * time.Millisecond)
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "wrong-key provider untrust", func() bool {
+		return p.GetStatus() == registry.StatusUntrusted
+	})
+	p.Mu().Lock()
+	failedChallenges := p.FailedChallenges
+	p.Mu().Unlock()
+	if failedChallenges != registry.MaxFailedChallenges {
+		t.Fatalf("failed challenges = %d, want %d", failedChallenges, registry.MaxFailedChallenges)
+	}
 
-	// The provider should still be in the registry (just untrusted).
-	// We can't use findProviderByModel because it skips untrusted providers.
-	// Instead check directly via GetProvider — but we don't know the ID.
-	// Verify the model is no longer available (untrusted providers are excluded).
+	// Hard-untrusted providers remain connected for diagnostics but are derouted.
+	if reg.GetProvider(fixture.providerID) == nil {
+		t.Fatal("untrusted provider was removed from registry")
+	}
 	models := reg.ListModels()
 	for _, m := range models {
 		if m.ID == "wrongkey-model" {
@@ -771,34 +586,19 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, pubKey)
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "trust-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		Attestation:             attestationJSON,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "trust-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
 	// Provider goroutine — handle challenge then respond with completion.
 	go func() {
 		var inferReq protocol.InferenceRequestMessage
 		for {
-			_, data, err := conn.Read(ctx)
+			_, data, err := fixture.Conn.Read(ctx)
 			if err != nil {
 				return
 			}
@@ -807,7 +607,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 				msgType, _ := raw["type"].(string)
 				if msgType == protocol.TypeAttestationChallenge {
 					respData := makeValidChallengeResponse(data, pubKey)
-					conn.Write(ctx, websocket.MessageText, respData)
+					fixture.Conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
 				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus {
@@ -818,7 +618,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 			break
 		}
 
-		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+		writeEncryptedTestChunk(t, ctx, fixture.Conn, inferReq, pubKey,
 			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
 
 		complete := protocol.InferenceCompleteMessage{
@@ -827,18 +627,15 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 			Usage:     protocol.UsageInfo{PromptTokens: 1, CompletionTokens: 1},
 		}
 		completeData, _ := json.Marshal(complete)
-		conn.Write(ctx, websocket.MessageText, completeData)
+		fixture.Conn.Write(ctx, websocket.MessageText, completeData)
 	}()
 
 	// Upgrade provider to hardware trust so it's eligible for routing.
-	p := findProviderByModel(reg, "trust-model")
-	if p != nil {
-		reg.SetTrustLevel(p.ID, registry.TrustHardware)
-		reg.RecordChallengeSuccess(p.ID)
-	}
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	chatBody := `{"model":"trust-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
-	httpReq, _ := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)
@@ -873,36 +670,16 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, pubKey)
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "trust-list-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             attestationJSON,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "trust-list-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	// Upgrade provider to hardware trust so it appears in model list.
-	// Use thread-safe setter to avoid racing with the WebSocket goroutine.
-	p := findProviderByModel(reg, "trust-list-model")
-	if p != nil {
-		reg.SetTrustLevel(p.ID, registry.TrustHardware)
-		reg.RecordChallengeSuccess(p.ID)
-	}
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer test-key")

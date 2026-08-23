@@ -24,7 +24,7 @@ type accountEarningsResponse struct {
 }
 
 func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
-	srv, st := testWithdrawServer(t)
+	srv, st := testBillingServer(t)
 
 	accountID := "acct-provider-earnings"
 	now := time.Now()

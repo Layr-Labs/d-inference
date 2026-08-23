@@ -2,16 +2,20 @@ package ratelimit
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"sync"
 	"testing"
 	"time"
 )
 
+func useFixedClock(l *Limiter) func(time.Duration) {
+	now := time.Unix(1_700_000_000, 0)
+	l.now = func() time.Time { return now }
+	return func(elapsed time.Duration) { now = now.Add(elapsed) }
+}
+
 func TestAllowEmptyAccountUnconditional(t *testing.T) {
 	l := New(Config{RPS: 0.1, Burst: 1})
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ok, _ := l.Allow("")
 		if !ok {
 			t.Fatalf("empty account should always be allowed")
@@ -45,22 +49,18 @@ func TestAllowBurstThenDeny(t *testing.T) {
 
 func TestAllowRefill(t *testing.T) {
 	l := New(Config{RPS: 100, Burst: 1})
+	advance := useFixedClock(l)
 	const account = "acct-refill"
 
-	ok, _ := l.Allow(account)
-	if !ok {
+	if ok, _ := l.Allow(account); !ok {
 		t.Fatal("first request should succeed")
 	}
-	// Immediately deny.
-	ok, _ = l.Allow(account)
-	if ok {
+	if ok, _ := l.Allow(account); ok {
 		t.Fatal("second immediate request should be denied with Burst=1")
 	}
-	// At 100 RPS the bucket refills in ~10ms; wait 30ms for headroom.
-	time.Sleep(30 * time.Millisecond)
-	ok, _ = l.Allow(account)
-	if !ok {
-		t.Fatal("after refill window the request should succeed")
+	advance(10 * time.Millisecond)
+	if ok, _ := l.Allow(account); !ok {
+		t.Fatal("request should succeed after one token refill interval")
 	}
 }
 
@@ -79,14 +79,14 @@ func TestAccountsIndependent(t *testing.T) {
 
 func TestPruneEvictsIdle(t *testing.T) {
 	l := New(Config{RPS: 1, Burst: 1, IdleEvict: 10 * time.Millisecond})
+	advance := useFixedClock(l)
 	l.Allow("acct-a")
 	l.Allow("acct-b")
 	if got := l.Size(); got != 2 {
 		t.Fatalf("size = %d, want 2", got)
 	}
-	time.Sleep(20 * time.Millisecond)
-	dropped := l.Prune()
-	if dropped != 2 {
+	advance(10*time.Millisecond + time.Nanosecond)
+	if dropped := l.Prune(); dropped != 2 {
 		t.Errorf("dropped = %d, want 2", dropped)
 	}
 	if got := l.Size(); got != 0 {
@@ -95,15 +95,15 @@ func TestPruneEvictsIdle(t *testing.T) {
 }
 
 func TestPrunerLoopStopsOnContext(t *testing.T) {
-	l := New(Config{RPS: 1, Burst: 1, PruneEvery: 5 * time.Millisecond})
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	l := New(Config{RPS: 1, Burst: 1, PruneEvery: time.Hour})
 	ctx, cancel := context.WithCancel(context.Background())
-	l.StartPruner(ctx, logger, nil)
-	time.Sleep(20 * time.Millisecond)
+	done := l.StartPruner(ctx, nil, nil)
 	cancel()
-	// If StartPruner doesn't honor cancel, the goroutine leaks but the test
-	// will still pass — we just can't observe it directly. At minimum
-	// verify we didn't crash.
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pruner did not stop after context cancellation")
+	}
 }
 
 func TestConcurrentAllowSafe(t *testing.T) {
@@ -123,24 +123,21 @@ func TestConcurrentAllowSafe(t *testing.T) {
 	// If the map were unsafe, -race would catch it. Confirming no panic.
 }
 
-// TestNoPhantomDebtUnderContention guards the AllowN+TokensAt fix. The
-// previous ReserveN+Cancel pattern could leave a bucket under-credited
-// if many goroutines were denied concurrently. With the corrected pattern
-// a denied request must NOT consume any tokens, so after the burst is
-// exhausted and we wait for one full refill window, exactly the burst
-// capacity should once again be available.
+// TestNoPhantomDebtUnderContention guards the AllowN+TokensAt fix. Denied
+// requests must not consume tokens, so advancing a fixed clock by one full
+// refill interval restores exactly the configured burst.
 func TestNoPhantomDebtUnderContention(t *testing.T) {
 	const burst = 10
-	const rps = 1000.0 // 1ms per token refill
+	const rps = 1000.0
 	l := New(Config{RPS: rps, Burst: burst})
+	advance := useFixedClock(l)
 	const account = "phantom-test"
 
-	// Drain the bucket and pile on many concurrent denials.
 	var wg sync.WaitGroup
 	wg.Add(200)
 	denied := int64(0)
 	var deniedMu sync.Mutex
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		go func() {
 			defer wg.Done()
 			ok, _ := l.Allow(account)
@@ -152,24 +149,18 @@ func TestNoPhantomDebtUnderContention(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-
 	if denied < 1 {
-		t.Fatalf("expected at least one denial after draining burst; got 0 (test broken)")
+		t.Fatal("expected at least one denial after draining burst")
 	}
 
-	// Wait for full refill (burst tokens at 1000/sec = 10ms), plus margin.
-	time.Sleep(100 * time.Millisecond)
-
-	// The bucket should now be back to capacity. Verify by observing that
-	// at least burst-1 immediate Allows succeed (allowing 1 token of slack
-	// for the rate.Limiter's own internal accounting).
+	advance(time.Duration(float64(burst)/rps*float64(time.Second)))
 	successes := 0
-	for i := 0; i < burst; i++ {
+	for range burst {
 		if ok, _ := l.Allow(account); ok {
 			successes++
 		}
 	}
-	if successes < burst-1 {
-		t.Fatalf("phantom debt detected: after refill window, only %d/%d burst Allows succeeded — denied requests appear to have consumed tokens", successes, burst)
+	if successes != burst {
+		t.Fatalf("phantom debt detected: after refill only %d/%d requests succeeded", successes, burst)
 	}
 }

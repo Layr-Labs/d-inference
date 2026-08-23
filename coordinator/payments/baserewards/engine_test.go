@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -17,18 +15,13 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// engineStore is a store.Store test double: it serves seeded sessions and
-// earnings (with explicit timestamps the engine math depends on) while
-// delegating all settlement bookkeeping — the idempotent floor-draw row and the
-// balance credit — to a real *store.MemoryStore. This keeps the
-// idempotency/credit semantics exact (the production memory impl) while letting
-// the test control session/earnings inputs deterministically. The store's own
-// SQL-level correctness is covered separately by store/base_rewards_test.go.
+// engineStore implements only the persistence operations the settlement engine
+// collaborates with. Durable credit/idempotency behavior is delegated to the
+// memory store, whose backend contract is covered in the store package.
 type engineStore struct {
-	store.Store // embedded: any method the engine does not call panics if hit
-	inner       *store.MemoryStore
-	sessions    []store.ProviderSession
-	earnings    []store.ProviderEarning // organic earning rows, keyed by ProviderKey
+	inner    *store.MemoryStore
+	sessions []store.ProviderSession
+	earnings []store.ProviderEarning
 }
 
 func newEngineStore() *engineStore {
@@ -87,37 +80,38 @@ func (s *engineStore) balance(accountID string) (int64, int64) {
 	return s.inner.GetBalanceWithWithdrawable(accountID)
 }
 
-// --- registry helpers ---
-
-// addProvider registers an eligible-by-default provider on reg and returns its
-// live pointer so the test can override individual gate fields.
-func addProvider(reg *registry.Registry, id, providerKey, serial, hardwareModel string, memGB int) *registry.Provider {
-	msg := &protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{MachineModel: hardwareModel, MemoryGB: memGB},
-		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               providerKey,
-		EncryptedResponseChunks: true,
-	}
-	p := reg.Register(id, nil, msg)
-	// Register clears PublicKey unless it is a valid 32-byte base64 X25519 key;
-	// the engine identifies machines by it, so set it directly on the live
-	// pointer (the test seeds matching sessions/earnings under the same key).
-	p.PublicKey = providerKey
-	p.Attested = true
-	p.TrustLevel = registry.TrustHardware
-	p.CurrentModel = "test-model" // model loaded for routing (gate 4)
-	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, ThermalState: "nominal"}
-	return p
+type engineRegistry struct {
+	providers []registry.ProviderSnapshot
 }
 
-// setSerial attaches the SE-signed serial + hardware model the registry snapshot
-// reads from AttestationResult.
-func setSerial(p *registry.Provider, serial, hardwareModel string) {
-	p.AttestationResult = &attestation.VerificationResult{
-		SerialNumber:  serial,
-		HardwareModel: hardwareModel,
-	}
+func newEngineRegistry() *engineRegistry {
+	return &engineRegistry{}
+}
+
+func (r *engineRegistry) ListProviders() []registry.ProviderSnapshot {
+	return append([]registry.ProviderSnapshot(nil), r.providers...)
+}
+
+func (r *engineRegistry) TrustMeetsMinimum(level registry.TrustLevel) bool {
+	return level == registry.TrustHardware
+}
+
+func addProvider(reg *engineRegistry, id, providerKey, serial, hardwareModel string, memGB int) *registry.ProviderSnapshot {
+	reg.providers = append(reg.providers, registry.ProviderSnapshot{
+		ID:             id,
+		ProviderKey:    providerKey,
+		SerialNumber:   serial,
+		HardwareModel:  hardwareModel,
+		MemoryGB:       memGB,
+		TrustLevel:     registry.TrustHardware,
+		Attested:       true,
+		Online:         true,
+		ModelLoaded:    true,
+		CurrentModel:   "test-model",
+		MemoryPressure: 0.1,
+		ThermalState:   "nominal",
+	})
+	return &reg.providers[len(reg.providers)-1]
 }
 
 // epoch helpers: pick a fully-closed past settlement period and a clock just
@@ -155,11 +149,11 @@ func organicEarning(providerKey, account, jobID string, amount int64, when time.
 	}
 }
 
-func newTestEngine(st store.Store, reg *registry.Registry, clock time.Time) *Engine {
+func newTestEngine(st settlementStore, reg providerRegistry, clock time.Time) *Engine {
 	cfg := DefaultConfig()
 	cfg.Enabled = true
 	cfg.PerAccountCapFrac = 0 // disable the cap unless a test sets it
-	e := NewEngine(st, reg, cfg, testLogger())
+	e := newEngine(st, reg, cfg, testLogger())
 	e.now = func() time.Time { return clock }
 	return e
 }
@@ -167,14 +161,14 @@ func newTestEngine(st store.Store, reg *registry.Registry, clock time.Time) *Eng
 func TestSettleEpoch_Disabled(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
 	cfg := DefaultConfig() // Enabled=false
-	e := NewEngine(st, reg, cfg, testLogger())
+	e := newEngine(st, reg, cfg, testLogger())
 	e.now = func() time.Time { return clock }
 
 	res, err := e.SettleEpoch(context.Background(), epochID)
@@ -192,9 +186,9 @@ func TestSettleEpoch_Disabled(t *testing.T) {
 func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 	epochID, start, end, _ := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -216,9 +210,9 @@ func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "air", "PKair", "Sair", "MacBookAir10,1", 512) // lies: 512GB
-	setSerial(p, "Sair", "MacBookAir10,1")                               // cap = 16GB
+	reg := newEngineRegistry()
+	addProvider(reg, "air", "PKair", "Sair", "MacBookAir10,1", 512) // lies: 512GB
+	                               // cap = 16GB
 	st.sessions = []store.ProviderSession{fullUptimeSession("air", "PKair", "Sair", "accAir", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKair", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -238,9 +232,9 @@ func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "unknown", "PKunknown", "Sunknown", "Mac99,1", 512)
-	setSerial(p, "Sunknown", "Mac99,1")
+	reg := newEngineRegistry()
+	addProvider(reg, "unknown", "PKunknown", "Sunknown", "Mac99,1", 512)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("unknown", "PKunknown", "Sunknown", "accUnknown", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKunknown", "consumer", "j1", 1_000_000, start.Add(time.Minute))}
 
@@ -263,9 +257,9 @@ func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// $5 organic + 64GB floor $18/mo, additive (k=0) → full prorated 5-minute
 	// base reward on top.
@@ -300,9 +294,9 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 func TestSettleEpoch_RestartSafe(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// A prior job contributes $0 to this period's earned; eligibility no longer
 	// depends on demand, so the machine draws its prorated floor.
@@ -331,10 +325,10 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 func TestSettleEpoch_PreAttestationUnpaid(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
-	p.Attested = false // un-attested → gate 1 fails
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
+	reg.providers[0].Attested = false // un-attested → gate 1 fails
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -353,9 +347,9 @@ func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
 	// eligible session still earns the prorated floor.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = nil // self-route leaves no billed earning row
 
@@ -373,17 +367,17 @@ func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
 func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
+	reg := newEngineRegistry()
 
 	// Many idle workhorses, each wanting the full $18 floor, over-subscribing a
 	// tiny pool. Σ granted must equal the pool exactly.
 	const n = 10
 	budget := int64(50_000_000) // monthly pool; prorated period budget is below demand
-	for i := 0; i < n; i++ {
+	for i := range n {
 		pk := "PK" + string(rune('A'+i))
 		acc := "acc" + string(rune('A'+i))
-		p := addProvider(reg, "p"+string(rune('A'+i)), pk, pk, "Mac15,8", 64)
-		setSerial(p, pk, "Mac15,8")
+		addProvider(reg, "p"+string(rune('A'+i)), pk, pk, "Mac15,8", 64)
+		
 		st.sessions = append(st.sessions, fullUptimeSession("p"+pk, pk, pk, acc, start, end))
 		st.earnings = append(st.earnings, organicEarning(pk, "consumer", "j"+pk, 1_000_000, start.Add(time.Hour)))
 	}
@@ -401,7 +395,10 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 	if res.TotalDrawMicroUSD != wantBudget {
 		t.Fatalf("over-subscribed Σ granted = %d, want exactly period pool %d", res.TotalDrawMicroUSD, wantBudget)
 	}
-	used, _ := st.SumFloorDrawsForEpoch(context.Background(), epochID)
+	used, err := st.SumFloorDrawsForEpoch(context.Background(), epochID)
+	if err != nil {
+		t.Fatalf("sum settled draws: %v", err)
+	}
 	if used != wantBudget {
 		t.Fatalf("settled pool used = %d, want %d", used, wantBudget)
 	}
@@ -410,7 +407,7 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 func TestSettleEpoch_EmptyFleet_NoNaN(t *testing.T) {
 	epochID, _, _, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
+	reg := newEngineRegistry()
 	e := newTestEngine(st, reg, clock)
 	res, err := e.SettleEpoch(context.Background(), epochID)
 	if err != nil {
@@ -426,9 +423,9 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	// to at most 100% uptime — never >1.0, which would over-pay the floor.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 
 	// Two sessions, each covering most of the epoch, heavily overlapping. Closed
 	// at end so they fully cover the period.
@@ -460,9 +457,9 @@ func TestSettleEpoch_BelowUptimeGate(t *testing.T) {
 	// 80% uptime is below the 90% hard gate → $0.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
-	reg := registry.New(testLogger())
-	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	setSerial(p, "S1", "Mac15,8")
+	reg := newEngineRegistry()
+	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
+	
 
 	covered := time.Duration(float64(end.Sub(start)) * 0.80)
 	disc := start.Add(covered)

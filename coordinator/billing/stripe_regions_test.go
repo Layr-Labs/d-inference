@@ -7,7 +7,6 @@ package billing
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,10 +61,10 @@ func captureAccountCreate(t *testing.T, country string) url.Values {
 	t.Helper()
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"acct_x","country":"` + country + `"}`))
+		writeTestResponse(t, w, `{"id":"acct_x","country":"` + country + `"}`)
 	})
 	if _, err := client.CreateExpressAccount(CreateExpressAccountParams{
 		Email:   "a@b.com",
@@ -125,9 +124,9 @@ func TestUpdateAccountPayoutScheduleAuto(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		captured = r
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
-		_, _ = w.Write([]byte(`{"id":"acct_heal"}`))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
+		writeTestResponse(t, w, `{"id":"acct_heal"}`)
 	})
 
 	if err := client.UpdateAccountPayoutScheduleAuto("acct_heal", "US"); err != nil {
@@ -144,9 +143,9 @@ func TestUpdateAccountPayoutScheduleAuto(t *testing.T) {
 func TestUpdateAccountPayoutScheduleAutoJapanUsesWeekly(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
-		_, _ = w.Write([]byte(`{"id":"acct_jp"}`))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
+		writeTestResponse(t, w, `{"id":"acct_jp"}`)
 	})
 	if err := client.UpdateAccountPayoutScheduleAuto("acct_jp", "JP"); err != nil {
 		t.Fatalf("update schedule: %v", err)
@@ -168,14 +167,14 @@ func TestUpdateAccountPayoutScheduleAutoRequiresAccount(t *testing.T) {
 
 func TestGetAccountParsesAgreementCountryAndSchedule(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
+		writeTestResponse(t, w, `{
 			"id": "acct_au_1",
 			"country": "AU",
 			"default_currency": "aud",
 			"payouts_enabled": true,
 			"tos_acceptance": {"service_agreement": "recipient"},
 			"settings": {"payouts": {"schedule": {"interval": "manual"}}}
-		}`))
+		}`)
 	})
 	acct, err := client.GetAccount("acct_au_1")
 	if err != nil {
@@ -198,7 +197,7 @@ func TestGetAccountParsesAgreementCountryAndSchedule(t *testing.T) {
 func TestStripeErrorSurfacesCode(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":{"code":"account_invalid","message":"The provided key does not have access to account 'acct_x'"}}`))
+		writeTestResponse(t, w, `{"error":{"code":"account_invalid","message":"The provided key does not have access to account 'acct_x'"}}`)
 	})
 	_, err := client.GetAccount("acct_x")
 	if err == nil {

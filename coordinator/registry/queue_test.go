@@ -124,11 +124,8 @@ func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
 		Models: []protocol.ModelInfo{{ID: "test-model"}},
 	}
 
-	// Send provider on the response channel in a goroutine.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		req.ResponseCh <- provider
-	}()
+	// Assignment may already be available when a waiter starts.
+	req.ResponseCh <- provider
 
 	// WaitForProviderContext should succeed.
 	p, err := q.WaitForProviderContext(context.Background(), req)
@@ -144,7 +141,7 @@ func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
 }
 
 func TestQueueTimeoutReturnsError(t *testing.T) {
-	q := NewRequestQueue(10, 100*time.Millisecond)
+	q := NewRequestQueue(10, 0)
 
 	req := &QueuedRequest{
 		RequestID:  "req-timeout",
@@ -156,7 +153,7 @@ func TestQueueTimeoutReturnsError(t *testing.T) {
 		t.Fatalf("enqueue: %v", err)
 	}
 
-	// No provider becomes available — should timeout.
+	// Zero max-wait exercises timeout cleanup without sleeping.
 	_, err := q.WaitForProviderContext(context.Background(), req)
 	if !errors.Is(err, ErrQueueTimeout) {
 		t.Errorf("expected ErrQueueTimeout, got %v", err)

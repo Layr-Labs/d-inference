@@ -12,7 +12,6 @@ package registry
 // behavior.
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -75,19 +74,19 @@ func TestDrainFailsPureTTFTRejectedWaiterPromptly(t *testing.T) {
 	}
 	req := enqueueTTFTWaiter(t, reg, pr)
 
-	start := time.Now()
 	reg.DrainQueuedRequestsForModel(model)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := reg.Queue().WaitForProviderContext(ctx, req)
-	elapsed := time.Since(start)
-
+	select {
+	case p := <-req.ResponseCh:
+		if p != nil {
+			t.Fatalf("terminal TTFT rejection assigned provider %q", p.ID)
+		}
+	default:
+		t.Fatal("terminal TTFT rejection did not resolve the waiter synchronously")
+	}
+	err := req.FailureReason
 	if !errors.Is(err, ErrQueueTTFTTooSlow) {
 		t.Fatalf("waiter error = %v, want ErrQueueTTFTTooSlow", err)
-	}
-	if elapsed > time.Second {
-		t.Fatalf("waiter resolved in %v, want prompt failure well under maxWait", elapsed)
 	}
 	if req.Decision.TTFTRejections == 0 {
 		t.Fatal("Decision must carry the drain-time TTFT rejection tally")
@@ -133,14 +132,16 @@ func TestDrainMixedRejectionKeepsWaiting(t *testing.T) {
 	freeBudget(busy)
 	reg.DrainQueuedRequestsForModel(model)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	p, err := reg.Queue().WaitForProviderContext(ctx, req)
-	if err != nil {
-		t.Fatalf("waiter error = %v, want assignment after the busy provider freed", err)
-	}
-	if p.ID != busy.ID {
-		t.Fatalf("assigned provider = %q, want the freed fast provider %q", p.ID, busy.ID)
+	select {
+	case p := <-req.ResponseCh:
+		if p == nil {
+			t.Fatal("drain returned a nil provider after capacity became available")
+		}
+		if p.ID != busy.ID {
+			t.Fatalf("assigned provider = %q, want the freed fast provider %q", p.ID, busy.ID)
+		}
+	default:
+		t.Fatal("drain did not assign the freed provider synchronously")
 	}
 }
 
@@ -213,14 +214,16 @@ func TestDrainSoftGateUnaffectedByTTFT(t *testing.T) {
 	req := enqueueTTFTWaiter(t, reg, pr)
 	reg.DrainQueuedRequestsForModel(model)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	p, err := reg.Queue().WaitForProviderContext(ctx, req)
-	if err != nil {
-		t.Fatalf("soft-gate waiter error = %v, want the best-available provider", err)
-	}
-	if p.ID != slow.ID {
-		t.Fatalf("assigned provider = %q, want %q", p.ID, slow.ID)
+	select {
+	case p := <-req.ResponseCh:
+		if p == nil {
+			t.Fatal("soft-gate drain returned a nil provider")
+		}
+		if p.ID != slow.ID {
+			t.Fatalf("assigned provider = %q, want %q", p.ID, slow.ID)
+		}
+	default:
+		t.Fatal("soft-gate drain did not assign the provider synchronously")
 	}
 
 	// Busy soft-gate fleet: still a plain requeue (no TTFT failing).

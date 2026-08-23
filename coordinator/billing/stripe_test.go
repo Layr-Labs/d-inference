@@ -1,7 +1,6 @@
 package billing
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,18 +15,17 @@ func TestCreateCheckoutSessionAddsDashboardMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 		capturedAuth = r.Header.Get("Authorization")
-		body, _ := io.ReadAll(r.Body)
-		capturedForm, _ = url.ParseQuery(string(body))
+		body := readTestBody(t, r)
+		capturedForm = parseTestForm(t, body)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"cs_test_123","url":"https://checkout.stripe.com/c/pay/cs_test_123"}`))
+		writeTestResponse(t, w, `{"id":"cs_test_123","url":"https://checkout.stripe.com/c/pay/cs_test_123"}`)
 	}))
 	defer srv.Close()
 
-	prev := stripeAPIBase
-	stripeAPIBase = srv.URL
-	t.Cleanup(func() { stripeAPIBase = prev })
+	prev := SetStripeAPIBaseForTest(srv.URL)
+	t.Cleanup(func() { SetStripeAPIBaseForTest(prev) })
 
 	proc := NewStripeProcessor("sk_test_dashboard", "whsec_test", "https://app.darkbloom.dev/billing", "https://app.darkbloom.dev/billing", silentLogger())
 	resp, err := proc.CreateCheckoutSession(CheckoutSessionRequest{

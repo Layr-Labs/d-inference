@@ -30,15 +30,7 @@ func TestProviderWebSocketConnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Send register.
-	regMsg := protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			MachineModel: "Mac15,8",
@@ -49,17 +41,11 @@ func TestProviderWebSocketConnect(t *testing.T) {
 			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		},
 		Backend: "mlx-swift",
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
+	})
+	defer fixture.Close(websocket.StatusNormalClosure, "done")
 
-	// Wait for registration.
-	time.Sleep(100 * time.Millisecond)
-
-	if reg.ProviderCount() != 1 {
-		t.Errorf("provider count = %d, want 1", reg.ProviderCount())
+	if got := reg.ProviderCount(); got != 1 {
+		t.Fatalf("provider count = %d, want 1", got)
 	}
 
 	// Send heartbeat.
@@ -68,20 +54,13 @@ func TestProviderWebSocketConnect(t *testing.T) {
 		Status: "idle",
 		Stats:  protocol.HeartbeatStats{RequestsServed: 1, TokensGenerated: 100},
 	}
-	hbData, _ := json.Marshal(hbMsg)
-	if err := conn.Write(ctx, websocket.MessageText, hbData); err != nil {
-		t.Fatalf("write heartbeat: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Close connection and verify disconnect.
-	conn.Close(websocket.StatusNormalClosure, "done")
-	time.Sleep(200 * time.Millisecond)
-
-	if reg.ProviderCount() != 0 {
-		t.Errorf("provider count after disconnect = %d, want 0", reg.ProviderCount())
-	}
+	fixture.WriteJSON(hbMsg)
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "heartbeat state", func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.Stats.RequestsServed == 1 && p.Stats.TokensGenerated == 100
+	})
 }
 
 func TestProviderHeartbeatBeforeRegistrationIsRejected(t *testing.T) {
@@ -139,34 +118,15 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-
-	// Connect two providers.
-	for i := range 2 {
-		conn, _, err := websocket.Dial(ctx, wsURL, nil)
-		if err != nil {
-			t.Fatalf("websocket dial %d: %v", i, err)
-		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-
-		pubKey := testPublicKeyB64()
-		regMsg := protocol.RegisterMessage{
-			Type:                    protocol.TypeRegister,
-			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-			Models:                  []protocol.ModelInfo{{ID: "shared-model", ModelType: "chat", Quantization: "4bit"}},
-			Backend:                 "mlx-swift",
-			PublicKey:               pubKey,
-			EncryptedResponseChunks: true,
-			PrivacyCapabilities:     testPrivacyCaps(),
-		}
-		regData, _ := json.Marshal(regMsg)
-		conn.Write(ctx, websocket.MessageText, regData)
+	for range 2 {
+		fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+			[]protocol.ModelInfo{{ID: "shared-model", ModelType: "chat", Quantization: "4bit"}},
+			testPublicKeyB64())
+		defer fixture.Close(websocket.StatusNormalClosure, "")
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	if reg.ProviderCount() != 2 {
-		t.Errorf("provider count = %d, want 2", reg.ProviderCount())
+	if got := reg.ProviderCount(); got != 2 {
+		t.Fatalf("provider count = %d, want 2", got)
 	}
 
 	// Upgrade both providers to hardware trust for routing eligibility.
@@ -196,39 +156,19 @@ func TestProviderInferenceError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "error-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	// Upgrade provider to hardware trust for routing.
-	p := findProviderByModel(reg, "error-model")
-	if p != nil {
-		reg.SetTrustLevel(p.ID, registry.TrustHardware)
-		reg.RecordChallengeSuccess(p.ID)
-	}
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "error-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey)
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	// Provider goroutine — handle challenges and always respond with error
 	// for inference requests. Loops to handle retry attempts from the coordinator.
 	go func() {
 		for {
-			_, data, err := conn.Read(ctx)
+			_, data, err := fixture.Conn.Read(ctx)
 			if err != nil {
 				return
 			}
@@ -239,7 +179,7 @@ func TestProviderInferenceError(t *testing.T) {
 			switch raw["type"] {
 			case protocol.TypeAttestationChallenge:
 				respData := makeValidChallengeResponse(data, pubKey)
-				conn.Write(ctx, websocket.MessageText, respData)
+				fixture.Conn.Write(ctx, websocket.MessageText, respData)
 			case protocol.TypeInferenceRequest:
 				reqID, _ := raw["request_id"].(string)
 				// Assert a GENUINE provider fault (5xx) propagates to the consumer
@@ -253,14 +193,14 @@ func TestProviderInferenceError(t *testing.T) {
 					StatusCode: 500,
 				}
 				errData, _ := json.Marshal(errMsg)
-				conn.Write(ctx, websocket.MessageText, errData)
+				fixture.Conn.Write(ctx, websocket.MessageText, errData)
 			}
 		}
 	}()
 
 	// Consumer request.
 	chatBody := `{"model":"error-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
-	httpReq, _ := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {

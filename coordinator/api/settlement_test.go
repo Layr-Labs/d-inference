@@ -7,122 +7,127 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// settlementHolder: claim before expiry wins and the expiry callback never runs.
+type settlementTestTimer struct {
+	callbacks []func()
+}
+
+func (timer *settlementTestTimer) afterFunc(_ time.Duration, callback func()) *time.Timer {
+	timer.callbacks = append(timer.callbacks, callback)
+	return nil
+}
+
+func (timer *settlementTestTimer) fireNext(t *testing.T) {
+	t.Helper()
+	if len(timer.callbacks) == 0 {
+		t.Fatal("no settlement expiry callback scheduled")
+	}
+	callback := timer.callbacks[0]
+	timer.callbacks = timer.callbacks[1:]
+	callback()
+}
+
+func installSettlementTestTimer(srv *Server) *settlementTestTimer {
+	timer := &settlementTestTimer{}
+	srv.settlements = newSettlementHolderWithTimer(timer.afterFunc)
+	return timer
+}
+
 func TestSettlementHolderClaimBeatsExpiry(t *testing.T) {
-	h := newSettlementHolder()
+	timer := &settlementTestTimer{}
+	holder := newSettlementHolderWithTimer(timer.afterFunc)
 	pr := &registry.PendingRequest{RequestID: "r1"}
-	expired := make(chan struct{}, 1)
-	h.hold(pr, 100*time.Millisecond, func(*registry.PendingRequest) { expired <- struct{}{} })
+	expired := false
+	holder.hold(pr, time.Hour, func(*registry.PendingRequest) { expired = true })
 
-	if got := h.claim("r1"); got != pr {
-		t.Fatalf("claim returned %v, want the held pr", got)
+	if got := holder.claim("r1"); got != pr {
+		t.Fatalf("claim returned %v, want the held request", got)
 	}
-	if got := h.claim("r1"); got != nil {
-		t.Fatal("second claim should return nil (record consumed)")
+	if got := holder.claim("r1"); got != nil {
+		t.Fatal("second claim returned an already-consumed record")
 	}
-	select {
-	case <-expired:
+	timer.fireNext(t)
+	if expired {
 		t.Fatal("expiry callback ran for an already-claimed record")
-	case <-time.After(250 * time.Millisecond):
 	}
 }
 
-// settlementHolder: with no claim, the expiry callback fires exactly once.
-func TestSettlementHolderExpiryFires(t *testing.T) {
-	h := newSettlementHolder()
+func TestSettlementHolderExpiryFiresExactlyOnce(t *testing.T) {
+	timer := &settlementTestTimer{}
+	holder := newSettlementHolderWithTimer(timer.afterFunc)
 	pr := &registry.PendingRequest{RequestID: "r2"}
-	got := make(chan *registry.PendingRequest, 2)
-	h.hold(pr, 30*time.Millisecond, func(p *registry.PendingRequest) { got <- p })
+	var expired []*registry.PendingRequest
+	holder.hold(pr, time.Hour, func(got *registry.PendingRequest) {
+		expired = append(expired, got)
+	})
 
-	select {
-	case p := <-got:
-		if p != pr {
-			t.Fatalf("expiry got %v, want held pr", p)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expiry callback never fired")
+	timer.fireNext(t)
+	if len(expired) != 1 || expired[0] != pr {
+		t.Fatalf("expiry callbacks = %v, want exactly the held request", expired)
 	}
-	if c := h.claim("r2"); c != nil {
-		t.Fatal("record should be gone after expiry claimed it")
+	if got := holder.claim("r2"); got != nil {
+		t.Fatal("record remained claimable after expiry")
 	}
 }
 
-// holdForSettlement refunds the reservation when no terminal arrives — the
-// pre-existing leak (consumer disconnects mid-stream, provider never settles).
 func TestHoldForSettlementRefundsOnExpiry(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
-	srv.settleGrace = 50 * time.Millisecond
-
-	acct := testConsumerID
-	base := ledger.Balance(acct)
+	timer := installSettlementTestTimer(srv)
+	account := testConsumerID
+	base := ledger.Balance(account)
 	const reserved int64 = 2_000_000
 	pr := &registry.PendingRequest{
 		RequestID:            "settle-refund",
 		Model:                "m",
-		ConsumerKey:          acct,
+		ConsumerKey:          account,
 		BaseReservedMicroUSD: reserved,
 		ReservedMicroUSD:     reserved,
 	}
 
 	srv.holdForSettlement(pr)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ledger.Balance(acct) == base+reserved {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := ledger.Balance(acct); got != base+reserved {
-		t.Fatalf("balance after grace = %d, want %d (reservation refunded)", got, base+reserved)
+	timer.fireNext(t)
+	if got := ledger.Balance(account); got != base+reserved {
+		t.Fatalf("balance after expiry = %d, want %d", got, base+reserved)
 	}
 }
 
-// When a terminal claims the parked record first, the grace timer must NOT also
-// refund — the terminal path settles it. (Single-winner + FinalizeReservation.)
 func TestHoldForSettlementClaimedNotRefunded(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
-	srv.settleGrace = 50 * time.Millisecond
-
-	acct := testConsumerID
-	base := ledger.Balance(acct)
+	timer := installSettlementTestTimer(srv)
+	account := testConsumerID
+	base := ledger.Balance(account)
 	pr := &registry.PendingRequest{
 		RequestID:            "settle-claimed",
 		Model:                "m",
-		ConsumerKey:          acct,
+		ConsumerKey:          account,
 		BaseReservedMicroUSD: 1_000_000,
 		ReservedMicroUSD:     1_000_000,
 	}
 
 	srv.holdForSettlement(pr)
-	// Simulate the terminal handler claiming the record before grace expiry.
-	if claimed := srv.claimSettlement("settle-claimed"); claimed != pr {
+	if claimed := srv.claimSettlement(pr.RequestID); claimed != pr {
 		t.Fatal("claimSettlement did not return the held record")
 	}
-
-	time.Sleep(200 * time.Millisecond) // let the grace timer fire (it should no-op)
-	if got := ledger.Balance(acct); got != base {
-		t.Fatalf("balance = %d, want %d (claimed record must not be auto-refunded)", got, base)
+	timer.fireNext(t)
+	if got := ledger.Balance(account); got != base {
+		t.Fatalf("balance after claimed expiry = %d, want unchanged %d", got, base)
 	}
 }
 
-// Defensive: a Server without a settlement holder still refunds rather than
-// leaking the reservation.
 func TestHoldForSettlementNilHolderRefunds(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
 	srv.settlements = nil
-	acct := testConsumerID
-	base := ledger.Balance(acct)
+	account := testConsumerID
+	base := ledger.Balance(account)
 	const reserved int64 = 500_000
 	pr := &registry.PendingRequest{
 		RequestID:            "nil-holder",
 		Model:                "m",
-		ConsumerKey:          acct,
+		ConsumerKey:          account,
 		BaseReservedMicroUSD: reserved,
 		ReservedMicroUSD:     reserved,
 	}
 	srv.holdForSettlement(pr)
-	if got := ledger.Balance(acct); got != base+reserved {
-		t.Fatalf("balance = %d, want %d (nil holder must refund immediately)", got, base+reserved)
+	if got := ledger.Balance(account); got != base+reserved {
+		t.Fatalf("balance = %d, want %d", got, base+reserved)
 	}
 }

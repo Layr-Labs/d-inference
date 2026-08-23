@@ -56,7 +56,7 @@ func TestServiceReasoningPolicyProviderBody(t *testing.T) {
 	keypair := value.(testProviderKeyPair)
 	const otherModel = "reasoning-policy-other-model"
 	const qwenAlias = "reasoning-policy-qwen-alias"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: serviceReasoningOptInModel},
 		{ID: otherModel},
 	}, publicKey)
@@ -117,8 +117,7 @@ func TestServiceReasoningPolicyProviderBody(t *testing.T) {
 				return
 			}
 
-			writeEncryptedTestChunk(t, ctx, conn, request, publicKey,
-				`data: {"id":"chatcmpl-reasoning-policy","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
+			writeEncryptedTestChunk(t, ctx, conn.Conn, request, publicKey, `data: {"id":"chatcmpl-reasoning-policy","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 			complete, _ := json.Marshal(protocol.InferenceCompleteMessage{
 				Type:      protocol.TypeInferenceComplete,
 				RequestID: request.RequestID,

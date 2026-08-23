@@ -34,45 +34,14 @@ func TestStreamingE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	// Send register message (with public key — encryption is mandatory).
-	regMsg := protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
-		Hardware: protocol.Hardware{
-			MachineModel: "Mac15,8",
-			ChipName:     "Apple M3 Max",
-			MemoryGB:     64,
-		},
-		Models: []protocol.ModelInfo{
-			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
-		},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-
-	// Give the server a moment to process registration.
-	time.Sleep(100 * time.Millisecond)
-
-	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (routing requires a
-	// recent LastChallengeVerified).
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"}},
+		pubKey)
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	conn := fixture.Conn
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	// Start a goroutine to handle inference on the provider side.
 	// The provider must handle the immediate attestation challenge that
@@ -190,35 +159,14 @@ func TestNonStreamingE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
-	// Register (with public key — encryption is mandatory).
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(100 * time.Millisecond)
-
-	// Upgrade provider to hardware trust and mark challenge as verified
-	// so it's eligible for routing (routing requires a
-	// recent LastChallengeVerified).
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
+		pubKey)
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	conn := fixture.Conn
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	// Provider goroutine — handles immediate challenge, then inference.
 	providerDone := make(chan struct{})
@@ -305,40 +253,20 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	trustAllProviders := func() {
-		for _, id := range reg.ProviderIDs() {
-			reg.SetTrustLevel(id, registry.TrustHardware)
-			reg.RecordChallengeSuccess(id)
-		}
-	}
-	connectProvider := func(pubKey string) *websocket.Conn {
+	connectProvider := func(pubKey string) *providerWSFixture {
 		t.Helper()
-		wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-		conn, _, err := websocket.Dial(ctx, wsURL, nil)
-		if err != nil {
-			t.Fatalf("websocket dial: %v", err)
-		}
-		regMsg := protocol.RegisterMessage{
-			Type:                    protocol.TypeRegister,
-			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-			Models:                  []protocol.ModelInfo{{ID: "retry-model", ModelType: "test", Quantization: "4bit"}},
-			Backend:                 "mlx-swift",
-			PublicKey:               pubKey,
-			EncryptedResponseChunks: true,
-			PrivacyCapabilities:     testPrivacyCaps(),
-		}
-		regData, _ := json.Marshal(regMsg)
-		if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-			t.Fatalf("write register: %v", err)
-		}
-		time.Sleep(100 * time.Millisecond)
-		trustAllProviders()
-		return conn
+		fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+			[]protocol.ModelInfo{{ID: "retry-model", ModelType: "test", Quantization: "4bit"}},
+			pubKey)
+		reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(fixture.providerID)
+		return fixture
 	}
 
 	pubKey1 := testPublicKeyB64()
-	conn1 := connectProvider(pubKey1)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
+	provider1 := connectProvider(pubKey1)
+	defer provider1.Close(websocket.StatusNormalClosure, "")
+	conn1 := provider1.Conn
 
 	firstGotRequest := make(chan protocol.InferenceRequestMessage, 1)
 	secondReady := make(chan struct{})
@@ -372,7 +300,6 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 				t.Errorf("first provider write accepted: %v", err)
 				return
 			}
-			time.Sleep(50 * time.Millisecond)
 			errMsg := protocol.InferenceErrorMessage{
 				Type:       protocol.TypeInferenceError,
 				RequestID:  inferReq.RequestID,
@@ -417,8 +344,9 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 	<-firstGotRequest
 
 	pubKey2 := testPublicKeyB64()
-	conn2 := connectProvider(pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
+	provider2 := connectProvider(pubKey2)
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	conn2 := provider2.Conn
 
 	secondDone := make(chan struct{})
 	go func() {

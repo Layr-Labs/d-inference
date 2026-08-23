@@ -14,15 +14,6 @@ func registerProviderWithModel(reg *Registry, id, modelID string) *Provider {
 	return reg.Register(id, nil, msg)
 }
 
-func makeProviderRoutable(p *Provider) {
-	p.mu.Lock()
-	p.TrustLevel = TrustHardware
-	p.RuntimeVerified = true
-	p.RuntimeManifestChecked = true
-	p.ChallengeVerifiedSIP = true
-	p.LastChallengeVerified = time.Now()
-	p.mu.Unlock()
-}
 
 const (
 	aliasFP8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
@@ -37,16 +28,16 @@ func TestRoutableProviderIDsExcludeUnroutable(t *testing.T) {
 	const build = aliasQAT
 
 	good := registerProviderWithModel(reg, "good", build)
-	makeProviderRoutable(good)
+	testMakeTextRoutable(good)
 
 	stale := registerProviderWithModel(reg, "stale", build)
-	makeProviderRoutable(stale)
+	testMakeTextRoutable(stale)
 	stale.mu.Lock()
 	stale.LastChallengeVerified = time.Time{} // never challenged → unroutable
 	stale.mu.Unlock()
 
 	crashed := registerProviderWithModel(reg, "crashed", build)
-	makeProviderRoutable(crashed)
+	testMakeTextRoutable(crashed)
 	crashed.mu.Lock()
 	crashed.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
@@ -74,8 +65,8 @@ func TestResolveModelPassthroughForNonAlias(t *testing.T) {
 // Desired build is routable → resolution always picks it.
 func TestResolveModelPrefersDesired(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "p-desired", aliasQAT))
-	makeProviderRoutable(registerProviderWithModel(reg, "p-prev", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p-desired", aliasQAT))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p-prev", aliasFP8))
 	reg.SetModelAliases(map[string]AliasTarget{
 		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
 	})
@@ -93,7 +84,7 @@ func TestResolveModelPrefersDesired(t *testing.T) {
 func TestResolveModelAcceptsPreviousWhenDesiredUnroutable(t *testing.T) {
 	reg := New(testLogger())
 	// Only the previous build has a routable provider; desired has none yet.
-	makeProviderRoutable(registerProviderWithModel(reg, "p-prev", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p-prev", aliasFP8))
 	reg.SetModelAliases(map[string]AliasTarget{
 		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
 	})
@@ -143,13 +134,13 @@ func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
 	reg := New(testLogger())
 
 	owner := registerProviderWithModel(reg, "owner", aliasFP8)
-	makeProviderRoutable(owner)
+	testMakeTextRoutable(owner)
 	owner.mu.Lock()
 	owner.AccountID = "acct-1"
 	owner.mu.Unlock()
 
 	other := registerProviderWithModel(reg, "other", aliasQAT)
-	makeProviderRoutable(other)
+	testMakeTextRoutable(other)
 	other.mu.Lock()
 	other.AccountID = "acct-2"
 	other.mu.Unlock()
@@ -176,13 +167,13 @@ func TestResolveModelConstrainedSelfRoutePrefersOwnerBuild(t *testing.T) {
 
 func TestResolveModelConstrainedPreferOwnerUsesOwnedBuildBeforePublicDesired(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "public-qat", aliasQAT))
+	testMakeTextRoutable(registerProviderWithModel(reg, "public-qat", aliasQAT))
 
 	ownedPrev := registerProviderWithModel(reg, "owned-fp8", aliasFP8)
 	ownedPrev.mu.Lock()
 	ownedPrev.AccountID = "acct-1"
 	ownedPrev.mu.Unlock()
-	makeProviderRoutable(ownedPrev)
+	testMakeTextRoutable(ownedPrev)
 
 	reg.SetModelAliases(map[string]AliasTarget{
 		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
@@ -202,7 +193,7 @@ func TestResolveModelConstrainedNoFallbackWhenUnsatisfiable(t *testing.T) {
 
 	// Only a NON-owned provider (acct-2) serves a build; acct-1 owns nothing.
 	other := registerProviderWithModel(reg, "other", aliasQAT)
-	makeProviderRoutable(other)
+	testMakeTextRoutable(other)
 	other.mu.Lock()
 	other.AccountID = "acct-2"
 	other.mu.Unlock()
@@ -250,7 +241,7 @@ func TestPublicNameForBuild(t *testing.T) {
 
 func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8)) // serves only fp8
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", aliasFP8)) // serves only fp8
 
 	if got := reg.RoutableProviderIDsForBuild(aliasQAT); len(got) != 0 {
 		t.Fatalf("qat should have no providers yet, got %v", got)
@@ -289,7 +280,7 @@ func TestMergeProviderModelsMakesProviderServeBuild(t *testing.T) {
 func TestMergeProviderModelsHardSwapDropsPreviousBuild(t *testing.T) {
 	reg := New(testLogger())
 	// p1 serves the previous build (fp8) and is the alias's desired→previous pair.
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
 	reg.SetModelAliases(map[string]AliasTarget{
 		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
 	})
@@ -315,7 +306,7 @@ func TestMergeProviderModelsHardSwapDropsPreviousBuild(t *testing.T) {
 // rejected — a bad/buggy swap must never become routable.
 func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", "mlx-community/base"))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", "mlx-community/base"))
 	reg.SetModelCatalog([]CatalogEntry{{ID: aliasQAT, WeightHash: "EXPECTED"}})
 
 	if m, _ := reg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: aliasQAT, WeightHash: "WRONG"}}); len(m) != 0 {
@@ -340,7 +331,7 @@ func TestMergeProviderModelsRejectsHashMismatch(t *testing.T) {
 func TestMergeProviderModelsRejectedDesiredDoesNotDropPrevious(t *testing.T) {
 	reg := New(testLogger())
 	// p1 serves the previous build (fp8); the catalog pins qat's expected hash.
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
 	reg.SetModelCatalog([]CatalogEntry{
 		{ID: aliasFP8},
 		{ID: aliasQAT, WeightHash: "EXPECTED"},
@@ -380,7 +371,7 @@ func TestMergeProviderModelsRejectedDesiredDoesNotDropPrevious(t *testing.T) {
 // unverified build while retiring the last known-good previous build.
 func TestMergeProviderModelsRejectsMissingHashAndKeepsPrevious(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
 	reg.SetModelCatalog([]CatalogEntry{
 		{ID: aliasFP8},
 		{ID: aliasQAT, WeightHash: "EXPECTED"},
@@ -431,7 +422,7 @@ func TestMergeProviderModelsDoesNotDropSiblingForUnrelatedSharedAlias(t *testing
 		protocol.ModelInfo{ID: other, ModelType: "gemma"},
 	)
 	p.mu.Unlock()
-	makeProviderRoutable(p)
+	testMakeTextRoutable(p)
 	reg.SetModelCatalog([]CatalogEntry{{ID: oldA}, {ID: shared}, {ID: other}})
 	reg.SetModelAliases(map[string]AliasTarget{
 		"alias-a": {Desired: shared, Previous: oldA},
@@ -522,7 +513,7 @@ func TestDesiredModelsForProviderMatchesRetiredLineage(t *testing.T) {
 // behavior, mirroring modelAllowedByCatalogLocked.
 func TestMergeProviderModelsRejectsNonCatalogBuild(t *testing.T) {
 	reg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(reg, "p1", aliasFP8))
 	reg.SetModelCatalog([]CatalogEntry{{ID: aliasFP8}, {ID: aliasQAT}})
 
 	merged, dropped := reg.MergeProviderModels("p1", []protocol.ModelInfo{
@@ -550,7 +541,7 @@ func TestMergeProviderModelsRejectsNonCatalogBuild(t *testing.T) {
 
 	// Nil catalog (dev mode): non-catalog ids still merge.
 	devReg := New(testLogger())
-	makeProviderRoutable(registerProviderWithModel(devReg, "p1", aliasFP8))
+	testMakeTextRoutable(registerProviderWithModel(devReg, "p1", aliasFP8))
 	if m, _ := devReg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: "anything/goes"}}); len(m) != 1 {
 		t.Fatalf("nil catalog should keep permissive merge, got %v", m)
 	}

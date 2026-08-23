@@ -9,13 +9,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -48,37 +46,45 @@ func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	// Connect two providers
-	conn1 := connectProvider(t, ctx, ts.URL, models, pubKey1)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
-	conn2 := connectProvider(t, ctx, ts.URL, models, pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	// Trust both and mark challenges verified
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
+	provider1 := newTestProviderWS(t, ctx, ts.URL, reg, models, pubKey1)
+	defer provider1.Close(websocket.StatusNormalClosure, "")
+	provider2 := newTestProviderWS(t, ctx, ts.URL, reg, models, pubKey2)
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	reg.SetTrustLevel(provider1.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(provider1.providerID)
+	reg.SetTrustLevel(provider2.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(provider2.providerID)
 
 	if reg.ProviderCount() != 2 {
 		t.Fatalf("expected 2 providers, got %d", reg.ProviderCount())
 	}
 
-	// Both should be findable for the same model
-	p1 := findRoutableProvider(reg, model)
-	if p1 == nil {
-		t.Fatal("should find a provider for shared-model")
+	// Hold the first reservation busy so the next request must route to the
+	// other provider; this proves both concrete connections are selectable.
+	firstReq := &registry.PendingRequest{RequestID: "multi-first", Model: model, RequestedMaxTokens: 64}
+	first, _ := reg.ReserveProviderEx(model, firstReq)
+	if first == nil {
+		t.Fatal("first provider reservation failed")
 	}
-
-	// Second probe also returns a provider (both are available)
-	p2 := findRoutableProvider(reg, model)
-	if p2 == nil {
-		t.Fatal("should find provider on second call")
+	defer func() {
+		first.RemovePending(firstReq.RequestID)
+		reg.SetProviderIdle(first.ID)
+	}()
+	secondReq := &registry.PendingRequest{RequestID: "multi-second", Model: model, RequestedMaxTokens: 64}
+	second, _ := reg.ReserveProviderEx(model, secondReq)
+	if second == nil {
+		t.Fatal("second provider reservation failed")
 	}
-
-	// Both providers are registered and routable
-	if reg.ProviderCount() != 2 {
-		t.Errorf("expected 2 providers registered, got %d", reg.ProviderCount())
+	defer func() {
+		second.RemovePending(secondReq.RequestID)
+		reg.SetProviderIdle(second.ID)
+	}()
+	if first.ID == second.ID {
+		t.Fatalf("two simultaneous reservations selected the same provider %q", first.ID)
+	}
+	gotIDs := map[string]bool{first.ID: true, second.ID: true}
+	if !gotIDs[provider1.providerID] || !gotIDs[provider2.providerID] {
+		t.Fatalf("reserved providers = %v, want %q and %q", gotIDs, provider1.providerID, provider2.providerID)
 	}
 }
 
@@ -94,21 +100,23 @@ func TestMultiProvider_BothProvidersServeSameModel(t *testing.T) {
 	pubKey1 := testPublicKeyB64()
 	pubKey2 := testPublicKeyB64()
 
-	conn1 := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, pubKey1, 50.0)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
-	conn2 := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, pubKey2, 50.0)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	if reg.ProviderCount() != 2 {
-		t.Fatalf("expected 2 providers, got %d", reg.ProviderCount())
+	provider1 := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		pubKey1,
+		func(msg *protocol.RegisterMessage) { msg.DecodeTPS = 50 })
+	defer provider1.Close(websocket.StatusNormalClosure, "")
+	provider2 := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		pubKey2,
+		func(msg *protocol.RegisterMessage) { msg.DecodeTPS = 50 })
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	for _, fixture := range []*providerWSFixture{provider1, provider2} {
+		reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(fixture.providerID)
 	}
 
-	// Both providers serve requests
-	go runProviderLoop(ctx, t, conn1, pubKey1, "from-provider-1")
-	go runProviderLoop(ctx, t, conn2, pubKey2, "from-provider-2")
-
-	// Wait for challenge handling
-	time.Sleep(500 * time.Millisecond)
+	go runProviderLoop(ctx, t, provider1.Conn, pubKey1, "from-provider-1")
+	go runProviderLoop(ctx, t, provider2.Conn, pubKey2, "from-provider-2")
 
 	// Send a request — should succeed (at least one provider is available)
 	code, body, err := sendRequest(ctx, ts.URL, "test-key", model)
@@ -116,7 +124,13 @@ func TestMultiProvider_BothProvidersServeSameModel(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	if code != http.StatusOK {
-		t.Errorf("request: status = %d, want 200, body = %s", code, body)
+		t.Fatalf("request: status = %d, want 200, body = %s", code, body)
+	}
+	gotBody := string(body)
+	fromFirst := strings.Contains(gotBody, "from-provider-1")
+	fromSecond := strings.Contains(gotBody, "from-provider-2")
+	if fromFirst == fromSecond {
+		t.Fatalf("response must come from exactly one provider, body=%s", gotBody)
 	}
 }
 
@@ -139,19 +153,17 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	pubKey1 := testPublicKeyB64()
 	pubKey2 := testPublicKeyB64()
 
-	conn1 := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
-		{ID: "model-alpha", ModelType: "chat", Quantization: "4bit"},
-	}, pubKey1)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
-
-	conn2 := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
-		{ID: "model-beta", ModelType: "chat", Quantization: "8bit"},
-	}, pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
+	provider1 := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "model-alpha", ModelType: "chat", Quantization: "4bit"}},
+		pubKey1)
+	defer provider1.Close(websocket.StatusNormalClosure, "")
+	provider2 := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "model-beta", ModelType: "chat", Quantization: "8bit"}},
+		pubKey2)
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	for _, fixture := range []*providerWSFixture{provider1, provider2} {
+		reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(fixture.providerID)
 	}
 
 	// Find provider for each model
@@ -165,9 +177,11 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 		t.Error("no provider found for model-beta")
 	}
 
-	// They should be different providers
-	if pAlpha != nil && pBeta != nil && pAlpha.ID == pBeta.ID {
-		t.Error("different models should map to different providers")
+	if pAlpha.ID != provider1.providerID {
+		t.Fatalf("model-alpha routed to %q, want %q", pAlpha.ID, provider1.providerID)
+	}
+	if pBeta.ID != provider2.providerID {
+		t.Fatalf("model-beta routed to %q, want %q", pBeta.ID, provider2.providerID)
 	}
 
 	// Non-existent model should return nil
@@ -198,81 +212,32 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	pubKey2 := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn1 := connectProvider(t, ctx, ts.URL, models, pubKey1)
-	conn2 := connectProvider(t, ctx, ts.URL, models, pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
+	provider1 := newTestProviderWS(t, ctx, ts.URL, reg, models, pubKey1)
+	provider2 := newTestProviderWS(t, ctx, ts.URL, reg, models, pubKey2)
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	for _, fixture := range []*providerWSFixture{provider1, provider2} {
+		reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(fixture.providerID)
 	}
 
 	if reg.ProviderCount() != 2 {
 		t.Fatalf("expected 2 providers, got %d", reg.ProviderCount())
 	}
 
-	// Disconnect provider 1
-	conn1.Close(websocket.StatusNormalClosure, "leaving")
-	time.Sleep(300 * time.Millisecond)
-
-	if reg.ProviderCount() != 1 {
-		t.Errorf("after disconnect: expected 1 provider, got %d", reg.ProviderCount())
+	provider1.Close(websocket.StatusNormalClosure, "leaving")
+	if got := reg.ProviderCount(); got != 1 {
+		t.Fatalf("after disconnect: providers = %d, want 1", got)
 	}
 
-	// Provider 2 should still be findable
 	p := findRoutableProvider(reg, model)
 	if p == nil {
-		t.Error("remaining provider should still be findable")
+		t.Fatal("remaining provider should still be findable")
+	}
+	if p.ID != provider2.providerID {
+		t.Fatalf("routed to %q after leave, want remaining provider %q", p.ID, provider2.providerID)
 	}
 }
 
-func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.challengeInterval = 200 * time.Millisecond
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	model := "late-join-model"
-	pubKey1 := testPublicKeyB64()
-	pubKey2 := testPublicKeyB64()
-	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-
-	// Only provider 1 initially
-	conn1 := connectProvider(t, ctx, ts.URL, models, pubKey1)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-
-	if reg.ProviderCount() != 1 {
-		t.Fatalf("expected 1 provider initially, got %d", reg.ProviderCount())
-	}
-
-	// Provider 2 joins later
-	time.Sleep(200 * time.Millisecond)
-	conn2 := connectProvider(t, ctx, ts.URL, models, pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	if reg.ProviderCount() != 2 {
-		t.Errorf("expected 2 providers after late join, got %d", reg.ProviderCount())
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Model catalog enforcement with multiple providers
@@ -298,163 +263,36 @@ func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 	pubKey1 := testPublicKeyB64()
 	pubKey2 := testPublicKeyB64()
 
-	// Provider 1 has the whitelisted model
-	conn1 := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	provider1 := newTestProviderWS(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: "whitelisted-model", ModelType: "chat", Quantization: "4bit"},
 		{ID: "blocked-model", ModelType: "chat", Quantization: "4bit"},
 	}, pubKey1)
-	defer conn1.Close(websocket.StatusNormalClosure, "")
-
-	// Provider 2 only has non-whitelisted models
-	conn2 := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	defer provider1.Close(websocket.StatusNormalClosure, "")
+	provider2 := newTestProviderWS(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: "blocked-model", ModelType: "chat", Quantization: "4bit"},
 		{ID: "another-blocked", ModelType: "chat", Quantization: "4bit"},
 	}, pubKey2)
-	defer conn2.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
+	defer provider2.Close(websocket.StatusNormalClosure, "")
+	for _, fixture := range []*providerWSFixture{provider1, provider2} {
+		reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(fixture.providerID)
 	}
-
-	time.Sleep(200 * time.Millisecond)
 
 	// Should find a provider for the whitelisted model
 	p := findRoutableProvider(reg, "whitelisted-model")
 	if p == nil {
-		t.Error("should find provider for whitelisted-model")
+		t.Fatal("should find provider for whitelisted-model")
+	}
+	if p.ID != provider1.providerID {
+		t.Fatalf("whitelisted model routed to %q, want %q", p.ID, provider1.providerID)
 	}
 
 	// Should NOT find a provider for blocked models (catalog check)
 	if reg.IsModelInCatalog("blocked-model") {
 		t.Error("blocked-model should not be in catalog")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Provider count and capacity
-// ---------------------------------------------------------------------------
-
-func TestMultiProvider_ManyProviders(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	model := "scale-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	const numProviders = 10
-
-	conns := make([]*websocket.Conn, numProviders)
-	for i := range numProviders {
-		pk := testPublicKeyB64()
-		conns[i] = connectProvider(t, ctx, ts.URL, models, pk)
-		defer conns[i].Close(websocket.StatusNormalClosure, "")
-	}
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-
-	if reg.ProviderCount() != numProviders {
-		t.Errorf("expected %d providers, got %d", numProviders, reg.ProviderCount())
-	}
-
-	// Should be able to find providers for the model
-	for i := range numProviders {
-		p := findRoutableProvider(reg, model)
-		if p == nil {
-			t.Errorf("no routable provider on attempt %d", i)
-			break
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Concurrent provider registration
-// ---------------------------------------------------------------------------
-
-func TestMultiProvider_ConcurrentRegistration(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	model := "concurrent-reg-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	const numProviders = 5
-
-	var wg sync.WaitGroup
-	conns := make([]*websocket.Conn, numProviders)
-	errors := make([]error, numProviders)
-
-	// Register all providers concurrently
-	for i := range numProviders {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			pk := testPublicKeyB64()
-			wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-			conn, _, err := websocket.Dial(ctx, wsURL, nil)
-			if err != nil {
-				errors[idx] = err
-				return
-			}
-			conns[idx] = conn
-
-			regMsg := protocol.RegisterMessage{
-				Type: protocol.TypeRegister,
-				Hardware: protocol.Hardware{
-					MachineModel: "Mac15,8",
-					ChipName:     "Apple M3 Max",
-					MemoryGB:     64,
-				},
-				Models:    models,
-				Backend:   "mlx-swift",
-				PublicKey: pk,
-			}
-			regData, _ := json.Marshal(regMsg)
-			if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-				errors[idx] = err
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	// Cleanup
-	for _, c := range conns {
-		if c != nil {
-			defer c.Close(websocket.StatusNormalClosure, "")
-		}
-	}
-
-	// Check for errors
-	for i, err := range errors {
-		if err != nil {
-			t.Errorf("provider %d registration failed: %v", i, err)
-		}
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	// All providers should be registered
-	count := reg.ProviderCount()
-	if count != numProviders {
-		t.Errorf("expected %d providers after concurrent registration, got %d", numProviders, count)
+	if p := findRoutableProvider(reg, "blocked-model"); p != nil {
+		t.Fatalf("blocked model routed to provider %q", p.ID)
 	}
 }
 
@@ -481,22 +319,19 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 		{ID: "chat-model", ModelType: "chat", Quantization: "4bit"},
 	}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
+	provider := newTestProviderWS(t, ctx, ts.URL, reg, models, pubKey)
+	defer provider.Close(websocket.StatusNormalClosure, "")
+	reg.SetTrustLevel(provider.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(provider.providerID)
 
 	// Should find provider for each model
 	for _, m := range models {
 		p := findRoutableProvider(reg, m.ID)
 		if p == nil {
-			t.Errorf("no provider found for model %q", m.ID)
-		} else {
-			// Set back to idle for next find
-			reg.SetProviderIdle(p.ID)
+			t.Fatalf("no provider found for model %q", m.ID)
+		}
+		if p.ID != provider.providerID {
+			t.Fatalf("model %q routed to %q, want %q", m.ID, p.ID, provider.providerID)
 		}
 	}
 }

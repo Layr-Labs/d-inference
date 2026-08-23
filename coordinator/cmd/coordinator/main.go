@@ -64,6 +64,20 @@ import (
 // EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
 const defaultPrefillKeepaliveInterval = 5 * time.Second
 
+func parsePrefillKeepaliveInterval(value string) (time.Duration, error) {
+	if value == "" {
+		return defaultPrefillKeepaliveInterval, nil
+	}
+	interval, err := time.ParseDuration(value)
+	if err != nil {
+		return defaultPrefillKeepaliveInterval, fmt.Errorf("parse prefill keepalive interval: %w", err)
+	}
+	if interval < 0 {
+		return defaultPrefillKeepaliveInterval, fmt.Errorf("prefill keepalive interval must not be negative")
+	}
+	return interval, nil
+}
+
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -601,13 +615,10 @@ func main() {
 	// long prefills commit HTTP 200 early and emit ": keepalive" comments. Override
 	// the cadence (or set 0 to disable) via
 	// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration).
-	prefillKeepalive := defaultPrefillKeepaliveInterval
-	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			prefillKeepalive = d
-		} else {
-			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", v, "default", defaultPrefillKeepaliveInterval.String())
-		}
+	prefillKeepaliveValue := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL")
+	prefillKeepalive, err := parsePrefillKeepaliveInterval(prefillKeepaliveValue)
+	if err != nil {
+		logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", prefillKeepaliveValue, "default", defaultPrefillKeepaliveInterval.String())
 	}
 	srv.SetPrefillKeepaliveInterval(prefillKeepalive)
 	if prefillKeepalive > 0 {

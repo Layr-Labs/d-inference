@@ -34,40 +34,21 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, pubKey)
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             attestationJSON,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "attestation verification", func() bool {
+		return p.GetAttestationResult() != nil
+	})
 
-	if reg.ProviderCount() != 1 {
-		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
-	}
-
-	// Upgrade to hardware trust (simulates MDM verification completing).
-	p := findProviderByModel(reg, "attested-model")
-	if p != nil {
-		reg.SetTrustLevel(p.ID, registry.TrustHardware)
-		reg.RecordChallengeSuccess(p.ID)
-	}
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	models := reg.ListModels()
 	if len(models) != 1 {
@@ -393,33 +374,21 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	// Invalid attestation: garbage JSON that won't verify
 	invalidAttestation := json.RawMessage(`{"attestation":{"chipName":"Fake","hardwareModel":"Bad","osVersion":"0","publicKey":"dGVzdA==","secureBootEnabled":true,"secureEnclaveAvailable":true,"sipEnabled":true,"timestamp":"2025-01-01T00:00:00Z"},"signature":"YmFkc2ln"}`)
+	pubKey := testPublicKeyB64()
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "unattested-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = invalidAttestation })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "invalid attestation result", func() bool {
+		return p.GetAttestationResult() != nil
+	})
 
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "unattested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               testPublicKeyB64(),
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             invalidAttestation,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
-
-	// Provider should still be registered but not routable (no hardware trust).
-	if reg.ProviderCount() != 1 {
-		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
+	if got := reg.ProviderCount(); got != 1 {
+		t.Fatalf("provider count = %d, want 1", got)
 	}
 
 	// Without hardware trust, models should not be listed.
@@ -443,26 +412,16 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	regMsg := protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 		Type:     protocol.TypeRegister,
 		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:   []protocol.ModelInfo{{ID: "open-model", ModelType: "chat", Quantization: "4bit"}},
 		Backend:  "mlx-swift",
-		// No attestation — Open Mode
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
+	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	if reg.ProviderCount() != 1 {
-		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
+	if got := reg.ProviderCount(); got != 1 {
+		t.Fatalf("provider count = %d, want 1", got)
 	}
 
 	// Without attestation, provider has no hardware trust and should not be listed.
@@ -528,37 +487,19 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-
-	// Register an attested provider
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, pubKey)
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             attestationJSON,
-	}
-	regData, _ := json.Marshal(regMsg)
-	conn.Write(ctx, websocket.MessageText, regData)
-	time.Sleep(200 * time.Millisecond)
-
-	// Upgrade to hardware trust for model listing.
-	p := findProviderByModel(reg, "attested-model")
-	if p != nil {
-		reg.SetTrustLevel(p.ID, registry.TrustHardware)
-		reg.RecordChallengeSuccess(p.ID)
-	}
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	p := reg.GetProvider(fixture.providerID)
+	awaitTestCondition(t, ctx, "attestation verification", func() bool {
+		return p.GetAttestationResult() != nil
+	})
+	reg.SetTrustLevel(fixture.providerID, registry.TrustHardware)
+	reg.RecordChallengeSuccess(fixture.providerID)
 
 	// Check /v1/models
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -609,39 +550,20 @@ func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, "")
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "binding-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             attestationJSON,
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond)
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "binding-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	p := findProviderByModel(reg, "binding-model")
-	if p == nil {
-		t.Fatal("expected provider to be registered")
-	}
-	ar := p.GetAttestationResult()
-	if ar == nil {
-		t.Fatal("expected attestation result to be recorded")
-	}
+	p := reg.GetProvider(fixture.providerID)
+	var ar *attestation.VerificationResult
+	awaitTestCondition(t, ctx, "attestation rejection", func() bool {
+		ar = p.GetAttestationResult()
+		return ar != nil
+	})
 	if ar.Valid {
 		t.Fatal("attestation should be invalid when encryptionPublicKey is missing")
 	}
@@ -662,39 +584,20 @@ func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	pubKey := testPublicKeyB64()
 	attestationJSON := createTestAttestationJSON(t, testPublicKeyB64())
-	regMsg := protocol.RegisterMessage{
-		Type:                    protocol.TypeRegister,
-		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:                  []protocol.ModelInfo{{ID: "binding-mismatch-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "mlx-swift",
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: true,
-		PrivacyCapabilities:     testPrivacyCaps(),
-		Attestation:             attestationJSON,
-	}
-	regData, _ := json.Marshal(regMsg)
-	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-		t.Fatalf("write register: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond)
+	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
+		[]protocol.ModelInfo{{ID: "binding-mismatch-model", ModelType: "chat", Quantization: "4bit"}},
+		pubKey,
+		func(msg *protocol.RegisterMessage) { msg.Attestation = attestationJSON })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
 
-	p := findProviderByModel(reg, "binding-mismatch-model")
-	if p == nil {
-		t.Fatal("expected provider to be registered")
-	}
-	ar := p.GetAttestationResult()
-	if ar == nil {
-		t.Fatal("expected attestation result to be recorded")
-	}
+	p := reg.GetProvider(fixture.providerID)
+	var ar *attestation.VerificationResult
+	awaitTestCondition(t, ctx, "attestation rejection", func() bool {
+		ar = p.GetAttestationResult()
+		return ar != nil
+	})
 	if ar.Valid {
 		t.Fatal("attestation should be invalid when encryptionPublicKey mismatches")
 	}

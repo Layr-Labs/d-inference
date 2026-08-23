@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
-        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
+        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-probe prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -36,6 +36,11 @@ prompt-sidecar-check: ## Check and lint all Rust sidecar targets
 
 prompt-sidecar-test: ## Run Rust sidecar tests
 	cd coordinator/promptsidecar && cargo test --locked --all-targets
+
+prompt-sidecar-probe: ## Run explicit Rust sidecar workstation probes
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture measure_fixture_planning_latency -- --exact --ignored --nocapture
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture measure_fixture_unix_http_latency -- --exact --ignored --nocapture
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture health_remains_fast_while_planner_is_busy_and_overloaded -- --exact --ignored --nocapture
 
 prompt-sidecar-build: ## Build the Rust sidecar for the host platform
 	cd coordinator/promptsidecar && cargo build --locked --release --bin promptsidecar

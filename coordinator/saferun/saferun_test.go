@@ -29,32 +29,32 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// waitForLog polls until the buffer contains substr or the deadline expires.
-func waitForLog(buf *syncBuffer, substr string, deadline time.Duration) bool {
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		if strings.Contains(buf.String(), substr) {
-			return true
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	return strings.Contains(buf.String(), substr)
-}
 
 // A panic inside a goroutine started with Go must be contained: the
 // surrounding code continues to run and the panic is logged.
 func TestGoRecoversPanic(t *testing.T) {
 	buf := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
+	observed := make(chan string, 1)
+	SetPanicObserver(func(name string) { observed <- name })
+	t.Cleanup(func() { SetPanicObserver(nil) })
 
 	Go(logger, "test-panic", func() {
 		panic("boom")
 	})
 
-	if !waitForLog(buf, "panic in goroutine", time.Second) {
-		t.Fatalf("expected panic log, got: %s", buf.String())
+	select {
+	case name := <-observed:
+		if name != "test-panic" {
+			t.Fatalf("observer name = %q, want test-panic", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("panic observer was not called")
 	}
 	logged := buf.String()
+	if !strings.Contains(logged, "panic in goroutine") {
+		t.Fatalf("expected panic log, got: %s", logged)
+	}
 	if !strings.Contains(logged, "goroutine=test-panic") {
 		t.Fatalf("expected goroutine name in log, got: %s", logged)
 	}
@@ -67,15 +67,21 @@ func TestGoRecoversPanic(t *testing.T) {
 func TestGoNoPanicNoLog(t *testing.T) {
 	buf := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
+	observed := make(chan string, 1)
+	SetPanicObserver(func(name string) { observed <- name })
+	t.Cleanup(func() { SetPanicObserver(nil) })
 
 	done := make(chan struct{})
 	Go(logger, "test-ok", func() {
 		close(done)
 	})
 	<-done
-	// Give the outer goroutine a chance to finish. We expect no log.
-	time.Sleep(20 * time.Millisecond)
 
+	select {
+	case name := <-observed:
+		t.Fatalf("unexpected panic observation for %q", name)
+	default:
+	}
 	if strings.Contains(buf.String(), "panic") {
 		t.Fatalf("unexpected panic log: %s", buf.String())
 	}

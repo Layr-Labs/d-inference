@@ -1098,3 +1098,21 @@ func TestQualityCapPrefersMeasuredSoloRateOverProxyAndSeed(t *testing.T) {
 		}
 	})
 }
+
+// A provider at its effective concurrency cap spills to a peer with headroom.
+func TestConcurrencyCapSpillsToProviderWithHeadroom(t *testing.T) { reg := New(testLogger())
+	model := "p2-cap-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+
+	schedulerScenarioProvider{id: "ultra", decodeTPS: 100, totalMemGB: 512, gpuActiveGB: 50,
+		pending: 12, backendRun: 12,}.register(t, reg, model)
+	schedulerScenarioProvider{id: "max-128", decodeTPS: 60, totalMemGB: 128, gpuActiveGB: 5,}.register(t, reg, model)
+
+	p := reserveSchedulerScenario(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected fallback to max-128, got nil")
+	}
+	if p.ID != "max-128" {
+		t.Fatalf("got %q, want max-128 because ultra is at its effective cap", p.ID)
+	}
+ }

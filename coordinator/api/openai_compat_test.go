@@ -381,9 +381,7 @@ func TestOpenAI_ListModelsFormat(t *testing.T) {
 
 	// Connect a provider with a model.
 	pubKey := testPublicKeyB64()
-	conn := connectProvider(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: "gpt-test", ModelType: "chat", Quantization: "4bit"}},
-		pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{{ID: "gpt-test", ModelType: "chat", Quantization: "4bit"}}, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Trust the provider.

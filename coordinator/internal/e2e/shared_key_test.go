@@ -107,8 +107,8 @@ func TestPrecomputedSharedKeyProviderToCoordinatorDirection(t *testing.T) {
 }
 
 func TestDecryptWithSharedKeyTamperedCiphertext(t *testing.T) {
-	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
-	sender, _ := GenerateSessionKeys()
+	recipientPub, recipientPriv := generateBoxKeys(t)
+	sender := generateSessionKeys(t)
 
 	payload, err := Encrypt([]byte("authentic message"), *recipientPub, sender)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestDecryptWithSharedKeyTamperedCiphertext(t *testing.T) {
 	}
 	shared := PrecomputeSharedKey(&sender.PublicKey, recipientPriv)
 
-	ct, _ := base64.StdEncoding.DecodeString(payload.Ciphertext)
+	ct := decodeBase64ForTest(t, payload.Ciphertext)
 	ct[len(ct)-1] ^= 0xFF
 	payload.Ciphertext = base64.StdEncoding.EncodeToString(ct)
 
@@ -126,8 +126,8 @@ func TestDecryptWithSharedKeyTamperedCiphertext(t *testing.T) {
 }
 
 func TestDecryptWithSharedKeyTruncatedCiphertext(t *testing.T) {
-	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
-	sender, _ := GenerateSessionKeys()
+	recipientPub, recipientPriv := generateBoxKeys(t)
+	sender := generateSessionKeys(t)
 	shared := PrecomputeSharedKey(&sender.PublicKey, recipientPriv)
 
 	payload, err := Encrypt([]byte("authentic message"), *recipientPub, sender)
@@ -142,8 +142,8 @@ func TestDecryptWithSharedKeyTruncatedCiphertext(t *testing.T) {
 	}
 
 	// Truncated mid-ciphertext (nonce intact, Poly1305 tag broken).
-	full, _ := Encrypt([]byte("authentic message"), *recipientPub, sender)
-	ct, _ := base64.StdEncoding.DecodeString(full.Ciphertext)
+	full := encryptForTest(t, []byte("authentic message"), *recipientPub, sender)
+	ct := decodeBase64ForTest(t, full.Ciphertext)
 	full.Ciphertext = base64.StdEncoding.EncodeToString(ct[:len(ct)-1])
 	if _, err := DecryptWithSharedKey(full, shared); err == nil {
 		t.Error("truncated ciphertext should fail authentication")
@@ -151,8 +151,8 @@ func TestDecryptWithSharedKeyTruncatedCiphertext(t *testing.T) {
 }
 
 func TestDecryptWithSharedKeyInvalidBase64(t *testing.T) {
-	_, recipientPriv, _ := box.GenerateKey(rand.Reader)
-	sender, _ := GenerateSessionKeys()
+	_, recipientPriv := generateBoxKeys(t)
+	sender := generateSessionKeys(t)
 	shared := PrecomputeSharedKey(&sender.PublicKey, recipientPriv)
 
 	payload := &EncryptedPayload{
@@ -165,9 +165,9 @@ func TestDecryptWithSharedKeyInvalidBase64(t *testing.T) {
 }
 
 func TestDecryptWithSharedKeyWrongKey(t *testing.T) {
-	recipientPub, _, _ := box.GenerateKey(rand.Reader)
-	_, wrongPriv, _ := box.GenerateKey(rand.Reader)
-	sender, _ := GenerateSessionKeys()
+	recipientPub, _ := generateBoxKeys(t)
+	_, wrongPriv := generateBoxKeys(t)
+	sender := generateSessionKeys(t)
 
 	payload, err := Encrypt([]byte("secret"), *recipientPub, sender)
 	if err != nil {

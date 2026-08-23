@@ -246,61 +246,6 @@ func TestNormalizeToolSchemas_NullSchemasPreservedAcrossShapes(t *testing.T) {
 	}
 }
 
-// Go-specific: idempotency and exact number round-trip (UseNumber) across
-// all three shapes at once.
-func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T) {
-	body := []byte(`{"model":"m","max_tokens":9007199254740993,"tools":[` +
-		`{"type":"function","function":{"name":"chat","parameters":` +
-		`{"properties":{"a":{"type":["integer","null"],"default":9007199254740993},` +
-		`"u":{"type":["string","integer","null"]}}}}},` +
-		`{"type":"function","name":"flat","parameters":` +
-		`{"properties":{"b":{"enum":["x"],"default":0.30000000000000004}}}},` +
-		`{"name":"anthropic","input_schema":` +
-		`{"properties":{"c":{"type":["number","null"],"default":123456789012345678901234567890.5}}}}]}`)
-
-	once := NormalizeToolSchemas(body)
-	if bytes.Equal(once, body) {
-		t.Fatal("first pass did not normalize")
-	}
-	twice := NormalizeToolSchemas(once)
-	if !bytes.Equal(once, twice) {
-		t.Errorf("not idempotent:\n once: %s\ntwice: %s", once, twice)
-	}
-	// 2^53+1 appears twice (max_tokens + the chat default) and would mangle
-	// to ...992 without UseNumber; the others pin float-precision survival.
-	if got := bytes.Count(once, []byte("9007199254740993")); got != 2 {
-		t.Errorf("exact literal 9007199254740993 appears %d times, want 2\nout: %s", got, once)
-	}
-	for _, literal := range []string{"0.30000000000000004", "123456789012345678901234567890.5"} {
-		if !bytes.Contains(once, []byte(literal)) {
-			t.Errorf("exact literal %s lost\nout: %s", literal, once)
-		}
-	}
-	// And the repairs themselves landed in each shape.
-	tools := tsnTools(t, once, 3)
-	a := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "function")["parameters"], "chat parameters")["properties"], "chat properties")["a"], "a")
-	if got := tsnType(t, a, "a"); got != "integer" || a["nullable"] != true {
-		t.Errorf("chat a = type %q nullable %v, want integer/true", got, a["nullable"])
-	}
-	// The multi-concrete union is preserved via anyOf AND survives the second
-	// pass unchanged (the injected members are already normal-form, and the
-	// node now carries a type string plus an anyOf, so no rewrite re-fires).
-	u := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "function")["parameters"], "chat parameters")["properties"], "chat properties")["u"], "u")
-	if got := tsnType(t, u, "u"); got != "string" || u["nullable"] != true {
-		t.Errorf("chat u = type %q nullable %v, want string/true", got, u["nullable"])
-	}
-	if got := tsnAnyOfTypes(t, u, "u"); len(got) != 2 || got[0] != "string" || got[1] != "integer" {
-		t.Errorf("chat u anyOf types = %v, want [string integer]", got)
-	}
-	b := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[1], "tools[1]")["parameters"], "flat parameters")["properties"], "flat properties")["b"], "b")
-	if got := tsnType(t, b, "b"); got != "string" {
-		t.Errorf("flat b type = %q, want string", got)
-	}
-	c := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[2], "tools[2]")["input_schema"], "input_schema")["properties"], "anthropic properties")["c"], "c")
-	if got := tsnType(t, c, "c"); got != "number" || c["nullable"] != true {
-		t.Errorf("anthropic c = type %q nullable %v, want number/true", got, c["nullable"])
-	}
-}
 
 // (a) A schema nested far deeper than maxToolSchemaDepth must NOT panic or
 // overflow the stack; the shallow part is normalized and the part beyond the

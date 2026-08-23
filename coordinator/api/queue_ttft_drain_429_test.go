@@ -52,7 +52,7 @@ func TestQueuedDedicatedRequestFailsFastOnDrainTTFTReject(t *testing.T) {
 	defer cancel()
 
 	gemma := "gemma-4-26b-test"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
 	}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
@@ -60,7 +60,7 @@ func TestQueuedDedicatedRequestFailsFastOnDrainTTFTReject(t *testing.T) {
 
 	// Phase 1: saturated token budget — the preflight capacity-spills and the
 	// dispatch path queues the request.
-	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                 gemma,
@@ -104,7 +104,7 @@ func TestQueuedDedicatedRequestFailsFastOnDrainTTFTReject(t *testing.T) {
 	// Phase 2: capacity frees, but the measured prefill rate collapses — the
 	// drain reservation now fails PURELY on the TTFT ceiling.
 	drainAt := time.Now()
-	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                gemma,

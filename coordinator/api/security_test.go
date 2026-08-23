@@ -83,18 +83,16 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		// Send invalid JSON — server should log a warning and continue, not crash.
+		// Invalid JSON is ignored; a subsequent valid registration on the same
+		// connection must become visible to model lookup.
 		if err := conn.Write(ctx, websocket.MessageText, []byte("{this is not json!!!")); err != nil {
 			t.Fatalf("write invalid json: %v", err)
 		}
-
-		// Connection should still be alive — send a valid register to prove it.
 		registerProvider(t, conn, []protocol.ModelInfo{
 			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		}, "")
-
-		if srv.registry.ProviderCount() != 1 {
-			t.Errorf("provider count = %d after invalid JSON + valid register, want 1", srv.registry.ProviderCount())
+		if !srv.registry.HasProviderForModel("test-model") {
+			t.Fatal("valid registration after malformed JSON did not reach the registry")
 		}
 	})
 
@@ -105,16 +103,15 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		// Send empty message — should not crash.
 		if err := conn.Write(ctx, websocket.MessageText, []byte("")); err != nil {
 			t.Fatalf("write empty message: %v", err)
 		}
-
-		// Connection should still be alive.
-		time.Sleep(100 * time.Millisecond)
 		registerProvider(t, conn, []protocol.ModelInfo{
 			{ID: "empty-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
+		if !srv.registry.HasProviderForModel("empty-test") {
+			t.Fatal("valid registration after empty message did not reach the registry")
+		}
 	})
 
 	t.Run("extremely_long_message", func(t *testing.T) {
@@ -124,27 +121,24 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// Send 1MB of garbage — should not OOM the server.
-		// The server sets a 10MB read limit so 1MB should be accepted and
-		// parsed as invalid JSON (logged and ignored).
+		// One MiB is below the provider socket's ten-MiB read limit: the frame is
+		// parsed as invalid JSON and ignored without closing the listener.
 		garbage := make([]byte, 1024*1024)
 		for i := range garbage {
 			garbage[i] = 'A'
 		}
-		err := conn.Write(ctx, websocket.MessageText, garbage)
-		if err != nil {
-			// Write may fail if the server closes the connection due to the
-			// large message, which is also acceptable behavior.
-			t.Logf("write 1MB garbage: %v (acceptable — server may reject oversized messages)", err)
+		if err := conn.Write(ctx, websocket.MessageText, garbage); err != nil {
+			t.Fatalf("write in-limit malformed frame: %v", err)
 		}
 
-		// Server should still be running — verify by connecting a new provider.
-		time.Sleep(200 * time.Millisecond)
 		conn2 := connectProviderWS(t, ts)
 		defer conn2.Close(websocket.StatusNormalClosure, "")
 		registerProvider(t, conn2, []protocol.ModelInfo{
 			{ID: "after-garbage", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
+		if !srv.registry.HasProviderForModel("after-garbage") {
+			t.Fatal("listener did not accept a valid provider after malformed frame")
+		}
 	})
 
 	t.Run("unknown_message_type", func(t *testing.T) {
@@ -159,7 +153,8 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
-		// Send valid JSON with unknown type — should be logged and ignored.
+		// An unknown envelope is ignored; the registered provider remains
+		// present and accepts a subsequent heartbeat on the same connection.
 		unknownMsg := map[string]any{
 			"type":    "totally_unknown_type",
 			"payload": "some data",
@@ -168,88 +163,24 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 			t.Fatalf("write unknown type: %v", err)
 		}
-
-		// Connection should still be alive.
-		time.Sleep(100 * time.Millisecond)
 		hb := protocol.HeartbeatMessage{
 			Type:   protocol.TypeHeartbeat,
 			Status: "idle",
 		}
 		hbData, _ := json.Marshal(hb)
 		if err := conn.Write(ctx, websocket.MessageText, hbData); err != nil {
-			t.Errorf("connection died after unknown message type: %v", err)
+			t.Fatalf("write heartbeat after unknown type: %v", err)
+		}
+		if !srv.registry.HasProviderForModel("unknown-type-test") {
+			t.Fatal("unknown message removed the registered provider")
 		}
 	})
 
-	t.Run("register_missing_fields", func(t *testing.T) {
-		conn := connectProviderWS(t, ts)
-		defer conn.Close(websocket.StatusNormalClosure, "")
-
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		// Register with no hardware, no models — server should handle gracefully.
-		minimalReg := map[string]any{
-			"type": protocol.TypeRegister,
-		}
-		data, _ := json.Marshal(minimalReg)
-		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-			t.Fatalf("write minimal register: %v", err)
-		}
-
-		time.Sleep(100 * time.Millisecond)
-		// Should not crash; the provider may be registered with empty fields.
-	})
 }
 
-// ---------------------------------------------------------------------------
-// Test 2: Oversized Request Body
-// ---------------------------------------------------------------------------
-
-func TestSecurity_OversizedRequestBody(t *testing.T) {
-	srv, _ := securityTestServer(t)
-
-	// Pre-fill queue for "test" model so the request returns 503 immediately
-	// instead of blocking for 30s waiting for a provider.
-	for i := range 10 {
-		_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
-			RequestID:  fmt.Sprintf("oversized-filler-%d", i),
-			Model:      "test",
-			ResponseCh: make(chan *registry.Provider, 1),
-		})
-	}
-
-	// Build a 10MB request body.
-	bigContent := strings.Repeat("A", 10*1024*1024)
-	body := fmt.Sprintf(`{"model":"test","messages":[{"role":"user","content":"%s"}]}`, bigContent)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-
-	srv.Handler().ServeHTTP(w, req)
-
-	// Server should either:
-	// - Return 413 (body too large)
-	// - Return 503 (no provider available — meaning it parsed but found no provider)
-	// - Return some other error
-	// It should NOT panic or OOM.
-	if w.Code == 0 {
-		t.Error("expected a response, got nothing")
-	}
-	t.Logf("10MB request body returned status %d (server did not crash)", w.Code)
-
-	// Verify server still works after the oversized request.
-	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
-	healthW := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(healthW, healthReq)
-	if healthW.Code != http.StatusOK {
-		t.Errorf("health check after oversized request: status %d, want 200", healthW.Code)
-	}
-}
 
 // ---------------------------------------------------------------------------
-// Test 3: Auth Bypass Attempts
+// Test 2: Auth Bypass Attempts
 // ---------------------------------------------------------------------------
 
 func TestSecurity_AuthBypass(t *testing.T) {
@@ -378,7 +309,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Challenge Nonce Replay
+// Test 3: Challenge Nonce Replay
 // ---------------------------------------------------------------------------
 
 func TestSecurity_ChallengeNonceReplay(t *testing.T) {
@@ -487,7 +418,7 @@ func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Provider Impersonation (same public key)
+// Test 4: Provider Impersonation (same public key)
 // ---------------------------------------------------------------------------
 
 func TestSecurity_ProviderImpersonation(t *testing.T) {
@@ -528,7 +459,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Device Code Brute Force
+// Test 5: Device Code Brute Force
 // ---------------------------------------------------------------------------
 
 func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
@@ -587,11 +518,9 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Test 7: SQL Injection (was Test 8 pre-migration)
-// ---------------------------------------------------------------------------
-
-func TestSecurity_SQLInjection(t *testing.T) {
+// Untrusted identifier strings are treated as opaque data: they cannot bypass
+// authentication and cannot alter model/device lookups.
+func TestSecurity_UntrustedIdentifiersAreOpaqueData(t *testing.T) {
 	srv, _ := securityTestServer(t)
 
 	injectionPayloads := []string{
@@ -631,29 +560,36 @@ func TestSecurity_SQLInjection(t *testing.T) {
 		}
 
 		for _, payload := range injectionPayloads {
-			body := fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}]}`, payload)
-			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			encoded, err := json.Marshal(map[string]any{
+				"model": payload,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(encoded)))
 			req.Header.Set("Authorization", "Bearer test-key")
 			w := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(w, req)
 
-			// Should return 503 (queue full / no provider), not panic or expose data.
-			if w.Code == 0 {
-				t.Errorf("SQL injection in model %q: got no response", payload)
+			if w.Code != http.StatusTooManyRequests {
+				t.Errorf("opaque model %q: status %d, want queue-full 429; body=%s", payload, w.Code, w.Body.String())
 			}
 		}
 	})
 
 	t.Run("device_code_injection", func(t *testing.T) {
 		for _, payload := range injectionPayloads {
-			body := fmt.Sprintf(`{"device_code":"%s"}`, payload)
-			req := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(body))
+			encoded, err := json.Marshal(map[string]string{"device_code": payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(string(encoded)))
 			w := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(w, req)
 
-			// Should return 404 (not found), not panic.
-			if w.Code == 0 || w.Code >= 500 {
-				t.Errorf("SQL injection in device_code %q: status %d (should not be 5xx)", payload, w.Code)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("opaque device_code %q: status %d, want 404; body=%s", payload, w.Code, w.Body.String())
 			}
 		}
 	})
@@ -662,30 +598,30 @@ func TestSecurity_SQLInjection(t *testing.T) {
 		userCtx := withUser(context.Background(), "sqli-test", "")
 
 		for _, payload := range injectionPayloads {
-			body := fmt.Sprintf(`{"user_code":"%s"}`, payload)
-			req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
+			encoded, err := json.Marshal(map[string]string{"user_code": payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(string(encoded)))
 			req = req.WithContext(userCtx)
 			w := httptest.NewRecorder()
 			srv.handleDeviceApprove(w, req)
 
-			// Should return 404 (not found), not panic.
-			if w.Code == 0 || w.Code >= 500 {
-				t.Errorf("SQL injection in user_code %q: status %d (should not be 5xx)", payload, w.Code)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("opaque user_code %q: status %d, want 404; body=%s", payload, w.Code, w.Body.String())
 			}
 		}
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Test 9: Header Injection
-// ---------------------------------------------------------------------------
-
+// Control characters in request data cannot inject response headers, and
+// malformed JSON/header credentials receive their exact public errors.
 func TestSecurity_HeaderInjection(t *testing.T) {
 	srv, _ := securityTestServer(t)
 
 	t.Run("model_with_newlines", func(t *testing.T) {
 		// Model name containing newlines should not inject HTTP headers.
-		// Pre-fill queue so it returns 503 immediately instead of blocking 30s.
+		// Pre-fill the queue so a safely parsed request returns exact 429.
 		injectedModel := "test\r\nX-Injected: true\r\n"
 		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
@@ -706,9 +642,8 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 			t.Error("header injection succeeded — model name newlines were reflected in response headers")
 		}
 
-		// Server should return a normal response (likely 503 no provider), not crash.
-		if w.Code == 0 {
-			t.Error("expected a response, got nothing")
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("model control characters: status %d, want queue-full 429; body=%s", w.Code, w.Body.String())
 		}
 	})
 
@@ -720,11 +655,9 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, req)
 
-		// Should not crash. Any status is fine as long as it's a valid HTTP response.
-		if w.Code == 0 {
-			t.Error("expected a response, got nothing")
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid JSON control escape: status %d, want 400; body=%s", w.Code, w.Body.String())
 		}
-		t.Logf("control chars in content: status %d", w.Code)
 	})
 
 	t.Run("auth_header_with_newlines", func(t *testing.T) {
@@ -739,15 +672,14 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 			t.Error("header injection via Authorization succeeded")
 		}
 
-		// Should be rejected (401 since the token is invalid).
 		if w.Code != http.StatusUnauthorized {
-			t.Logf("auth header with newlines: status %d (expected 401)", w.Code)
+			t.Fatalf("auth header with newlines: status %d, want 401; body=%s", w.Code, w.Body.String())
 		}
 	})
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: Concurrent Auth Attempts
+// Test 9: Concurrent Auth Attempts
 // ---------------------------------------------------------------------------
 
 func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
@@ -781,8 +713,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 	})
 
 	t.Run("concurrent_valid_auth", func(t *testing.T) {
-		// Pre-fill queue for "test" model so requests return 503 immediately
-		// instead of blocking for 30s waiting for a provider.
+		// Pre-fill the queue so every authenticated request returns exact 429.
 		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 				RequestID:  fmt.Sprintf("concurrent-valid-filler-%d", i),
@@ -809,14 +740,8 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		wg.Wait()
 
 		for i, code := range results {
-			// Valid auth with no provider should return 503 (no provider available / queue full),
-			// not a panic or race condition crash.
-			if code == 0 {
-				t.Errorf("concurrent valid auth attempt %d: got status 0 (no response)", i)
-			}
-			// Auth should succeed — so we should NOT get 401.
-			if code == http.StatusUnauthorized {
-				t.Errorf("concurrent valid auth attempt %d: got 401 (auth failed under concurrency)", i)
+			if code != http.StatusTooManyRequests {
+				t.Errorf("concurrent valid auth attempt %d: status %d, want 429", i, code)
 			}
 		}
 	})

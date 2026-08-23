@@ -53,14 +53,14 @@ func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 	gemma := "gemma-4-26b-test"
 	qwen := "qwen-3-test"
 	// A single MIXED provider: advertises gemma-4 AND qwen -> not dedicated.
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
 		{ID: qwen, ModelType: "chat", Quantization: "4bit"},
 	}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{
 			{Model: gemma, State: "running", MaxConcurrency: 8, ActiveTokenBudgetMax: 32_768},
@@ -132,7 +132,7 @@ func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 // the preflight capacity-rejection branch. The servability gate is disabled
 // (it would shed the known-insufficient budget before the capacity ladder) and
 // cold-dispatch is off to keep the tests pinned on the queue path.
-func setupSaturatedDedicatedGemma(t *testing.T, ctx context.Context) (ts *httptest.Server, reg *registry.Registry, conn *websocket.Conn, pubKey, gemma string) {
+func setupSaturatedDedicatedGemma(t *testing.T, ctx context.Context) (ts *httptest.Server, reg *registry.Registry, conn *providerWSFixture, pubKey, gemma string) {
 	t.Helper()
 	ts, reg = setupAdaptiveCapacityIntegration(t)
 	t.Cleanup(ts.Close)
@@ -143,12 +143,12 @@ func setupSaturatedDedicatedGemma(t *testing.T, ctx context.Context) (ts *httpte
 
 	gemma = "gemma-4-26b-test"
 	pubKey = testPublicKeyB64()
-	conn = connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn = connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: gemma, ModelType: "chat", Quantization: "4bit"},
 	}, pubKey)
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                 gemma,
@@ -196,7 +196,7 @@ func TestDedicatedSaturatedBoxQueuesAndDrains(t *testing.T) {
 			var inferReq protocol.InferenceRequestMessage
 			json.Unmarshal(data, &inferReq)
 			sseData := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"dedicated-drained"}}]}` + "\n\n"
-			writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, sseData)
+			writeEncryptedTestChunk(t, ctx, conn.Conn, inferReq, pubKey, sseData)
 			complete := protocol.InferenceCompleteMessage{
 				Type:      protocol.TypeInferenceComplete,
 				RequestID: inferReq.RequestID,
@@ -236,7 +236,7 @@ func TestDedicatedSaturatedBoxQueuesAndDrains(t *testing.T) {
 
 	// Free the box: the heartbeat drain must assign the queued request and the
 	// provider loop serves it to completion.
-	writeAdaptiveHeartbeat(t, ctx, conn, gemma, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, gemma, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                gemma,

@@ -55,30 +55,6 @@ func TestSetProviderIdle(t *testing.T) {
 	}
 }
 
-func TestEviction(t *testing.T) {
-	reg := New(testLogger())
-	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
-
-	// Backdate the heartbeat.
-	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
-
-	// Eviction now requires two consecutive stale sweeps (grace against a
-	// transient coordinator stall mass-reaping a live fleet). First sweep =
-	// strike, second = evict.
-	reg.evictStale(90 * time.Second)
-	if reg.GetProvider("p1") == nil {
-		t.Error("provider should survive the first stale sweep (grace)")
-	}
-	reg.evictStale(90 * time.Second)
-
-	if reg.GetProvider("p1") != nil {
-		t.Error("provider should have been evicted after two stale sweeps")
-	}
-	if reg.ProviderCount() != 0 {
-		t.Errorf("count = %d, want 0", reg.ProviderCount())
-	}
-}
 
 func TestEvictionKeepsFreshProviders(t *testing.T) {
 	reg := New(testLogger())
@@ -132,15 +108,20 @@ func TestDisconnectDuplicatesBySerial(t *testing.T) {
 func TestEvictionLoopStopsOnCancel(t *testing.T) {
 	reg := New(testLogger())
 	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time)
+	stopped := make(chan struct{})
 
-	reg.StartEvictionLoop(ctx, 100*time.Millisecond)
-
-	// Give the goroutine time to start.
-	time.Sleep(50 * time.Millisecond)
+	go func() {
+		defer close(stopped)
+		reg.runEvictionLoop(ctx, 90*time.Second, ticks)
+	}()
 	cancel()
-	// Give the goroutine time to stop.
-	time.Sleep(100 * time.Millisecond)
-	// If we get here without hanging, the test passes.
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("eviction loop did not stop after cancellation")
+	}
 }
 
 // TestProviderEviction verifies that a provider with a stale heartbeat is
@@ -169,10 +150,13 @@ func TestProviderEviction(t *testing.T) {
 	}
 	reg.SetProviderIdle(found.ID)
 
-	// Backdate heartbeat to 2 minutes ago and evict with 90s timeout. Eviction
-	// takes two consecutive stale sweeps (grace); the second one reaps.
+	// Backdate heartbeat to 2 minutes ago. The first stale sweep records a
+	// strike but keeps the provider; the second consecutive sweep evicts it.
 	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
 	reg.evictStale(90 * time.Second)
+	if reg.GetProvider("evict-me") == nil {
+		t.Fatal("provider should survive the first stale sweep")
+	}
 	reg.evictStale(90 * time.Second)
 
 	// Verify complete removal.
@@ -347,4 +331,44 @@ func TestRemoveProviderBySerialRaceWithAttestation(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestEvictionStrikeResetsAfterRecovery(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("recovering", nil, testRegisterMessage())
+	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
+
+	reg.evictStale(90 * time.Second)
+	if reg.GetProvider(p.ID) == nil {
+		t.Fatal("provider should survive its first stale sweep")
+	}
+
+	p.LastHeartbeat = time.Now()
+	reg.evictStale(90 * time.Second)
+
+	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
+	reg.evictStale(90 * time.Second)
+	if reg.GetProvider(p.ID) == nil {
+		t.Fatal("a recovered provider should receive a fresh first-strike grace")
+	}
+	reg.evictStale(90 * time.Second)
+	if reg.GetProvider(p.ID) != nil {
+		t.Fatal("provider should be evicted after two new consecutive stale sweeps")
+	}
+}
+
+func TestDurationStats(t *testing.T) {
+	input := []time.Duration{4 * time.Second, time.Second, 3 * time.Second, 2 * time.Second}
+	min, median, p90, max := durationStats(input)
+	if min != time.Second || median != 3*time.Second || p90 != 4*time.Second || max != 4*time.Second {
+		t.Fatalf("durationStats = (%v, %v, %v, %v), want (1s, 3s, 4s, 4s)", min, median, p90, max)
+	}
+	if input[0] != 4*time.Second || input[1] != time.Second {
+		t.Fatalf("durationStats mutated its input: %v", input)
+	}
+
+	min, median, p90, max = durationStats(nil)
+	if min != 0 || median != 0 || p90 != 0 || max != 0 {
+		t.Fatalf("durationStats(nil) = (%v, %v, %v, %v), want all zero", min, median, p90, max)
+	}
 }

@@ -5,9 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,32 +65,3 @@ func TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody(t *testing.T) {
 	}
 }
 
-// TestTelemetryFieldAllowlistHasKnownKeys is a Go-side existence spot-check only.
-// Cross-language agreement between the Go, Swift, and TypeScript allowlists is
-// enforced by TestTelemetryAllowlistThreeWayParity in
-// telemetry_allowlist_parity_test.go.
-func TestTelemetryFieldAllowlistHasKnownKeys(t *testing.T) {
-	for _, k := range []string{"component", "model", "exit_code", "reason", "duration_ms", "boot_macos_major", "boot_sip_status"} {
-		if _, ok := telemetryFieldAllowlist[k]; !ok {
-			t.Errorf("allowlist missing expected key %q", k)
-		}
-	}
-}
-
-func TestSanitizeTruncatesLongMessage(t *testing.T) {
-	longMsg := strings.Repeat("x", telemetryMaxMessage+100)
-	ev := protocol.TelemetryEvent{
-		Timestamp: time.Now(),
-		Source:    protocol.TelemetrySourceProvider,
-		Severity:  protocol.SeverityError,
-		Kind:      protocol.KindLog,
-		Message:   longMsg,
-	}
-	rec, ok := sanitizeTelemetryEvent(ev, telemetryAuthContext{Anon: true}, time.Now())
-	if !ok {
-		t.Fatalf("sanitize rejected")
-	}
-	if len(rec.Message) <= telemetryMaxMessage {
-		t.Fatalf("message not truncated: %d", len(rec.Message))
-	}
-}

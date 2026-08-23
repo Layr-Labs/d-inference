@@ -83,7 +83,11 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "referral settlement", func() bool {
+		totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+		return ledger.Balance(consumerID) == consumerBalance-totalCost &&
+			st.GetBalance(providerAccountID) == payments.ProviderPayout(totalCost)
+	})
 
 	// Calculate expected amounts.
 	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
@@ -225,11 +229,13 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	model := "device-auth-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token)
+	conn := connectProviderWithToken(t, ctx, ts.URL, srv.registry, models, pubKey, tokenResult.Token)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Wait for registration to complete.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for registration to become observable before applying trust state.
+	waitFor(t, 2*time.Second, "device-auth provider registration", func() bool {
+		return srv.registry.ProviderCount() == 1
+	})
 
 	// Set trust level and mark challenge as verified.
 	for _, id := range srv.registry.ProviderIDs() {
@@ -247,7 +253,10 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "device-auth provider payout", func() bool {
+		expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+		return st.GetBalance(accountID) == expectedPayout
+	})
 
 	// Step 7: Verify earnings went to the linked account.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
@@ -327,19 +336,19 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	model1 := "multi-node-model-a"
 	model2 := "multi-node-model-b"
 
-	conn1 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}},
-		pubKey1, rawToken)
+	conn1 := connectProviderWithToken(t, ctx, ts.URL, srv.registry, []protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}}, pubKey1, rawToken)
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, 2*time.Second, "first provider registration", func() bool {
+		return srv.registry.ProviderCount() == 1
+	})
 
-	conn2 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}},
-		pubKey2, rawToken)
+	conn2 := connectProviderWithToken(t, ctx, ts.URL, srv.registry, []protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}}, pubKey2, rawToken)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, 2*time.Second, "second provider registration", func() bool {
+		return srv.registry.ProviderCount() == 2
+	})
 
 	// Set trust level and challenge success for all providers.
 	for _, id := range srv.registry.ProviderIDs() {
@@ -364,7 +373,10 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 		t.Fatalf("inference 1 status = %d, want 200", status1)
 	}
 	<-provider1Done
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "first provider payout", func() bool {
+		expected := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))
+		return st.GetBalance(accountID) == expected
+	})
 
 	// Inference 2: model2 → provider 2.
 	provider2Done := serveOneInference(ctx, t, conn2, pubKey2, usage2)
@@ -373,7 +385,11 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 		t.Fatalf("inference 2 status = %d, want 200", status2)
 	}
 	<-provider2Done
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "second provider payout", func() bool {
+		expected1 := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))
+		expected2 := payments.ProviderPayout(payments.CalculateCost(model2, usage2.PromptTokens, usage2.CompletionTokens))
+		return st.GetBalance(accountID) == expected1+expected2
+	})
 
 	// Verify the SAME account got credited twice.
 	expectedPayout1 := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))

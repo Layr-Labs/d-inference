@@ -15,13 +15,14 @@ import (
 
 func TestClientControlPlaneUsesIndependentHealthPool(t *testing.T) {
 	planStarted := make(chan struct{})
+	releasePlan := make(chan struct{})
 	server, socket := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
 			_ = json.NewEncoder(w).Encode(ReadinessStatus{Status: "ok", Ready: true})
 		case "/v1/plan":
 			close(planStarted)
-			time.Sleep(200 * time.Millisecond)
+			<-releasePlan
 			http.Error(w, "late", http.StatusServiceUnavailable)
 		default:
 			http.NotFound(w, r)
@@ -50,7 +51,9 @@ func TestClientControlPlaneUsesIndependentHealthPool(t *testing.T) {
 	if err := client.Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+	elapsed := time.Since(started)
+	close(releasePlan)
+	if elapsed >= 100*time.Millisecond {
 		t.Fatalf("health was blocked behind plan traffic: %s", elapsed)
 	}
 	<-planDone

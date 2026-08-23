@@ -52,19 +52,21 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 	// Credit the default test consumer ("test-key") with $100 so
 	// the pre-flight balance check passes. Tests that need zero
 	// balance should use a different consumer key.
-	_ = st.Credit(testConsumerID, 100_000_000, store.LedgerDeposit, "test-setup")
+	if err := st.Credit(testConsumerID, 100_000_000, store.LedgerDeposit, "test-setup"); err != nil {
+		t.Fatalf("seed consumer balance: %v", err)
+	}
 
 	return srv, st, ledger
 }
 
 // setupProviderForBilling connects a provider, sets trust, records challenge
 // success, and returns the WebSocket connection, provider ID, and public key.
-func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
+func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*providerWSFixture, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, "")
+	conn := connectProviderWithToken(t, ctx, ts.URL, reg, models, pubKey, "")
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -88,12 +90,12 @@ func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Ser
 	return conn, providerIDs[len(providerIDs)-1], pubKey
 }
 
-func setupProviderForBillingNoPayoutDestination(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
+func setupProviderForBillingNoPayoutDestination(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*providerWSFixture, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -111,7 +113,7 @@ func setupProviderForBillingNoPayoutDestination(t *testing.T, ctx context.Contex
 // serveOneInference handles challenges and exactly one inference request on the
 // provider WebSocket, sending a chunk and complete message with the given usage.
 // pubKey should match the key the provider registered with (used in challenge responses).
-func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, pubKey string, usage protocol.UsageInfo) <-chan struct{} {
+func serveOneInference(ctx context.Context, t *testing.T, conn *providerWSFixture, pubKey string, usage protocol.UsageInfo) <-chan struct{} {
 	t.Helper()
 	done := make(chan struct{})
 
@@ -136,7 +138,7 @@ func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, 
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+				writeEncryptedTestChunk(t, ctx, conn.Conn, inferReq, pubKey,
 					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
@@ -159,7 +161,7 @@ func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, 
 
 // serveChunkThenProviderError commits the request with one encrypted chunk, then
 // returns a provider error instead of a completion message.
-func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *websocket.Conn, pubKey string, statusCode int) <-chan struct{} {
+func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *providerWSFixture, pubKey string, statusCode int) <-chan struct{} {
 	t.Helper()
 	done := make(chan struct{})
 
@@ -184,7 +186,7 @@ func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *websoc
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+				writeEncryptedTestChunk(t, ctx, conn.Conn, inferReq, pubKey,
 					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
 
 				errMsg := protocol.InferenceErrorMessage{
@@ -211,7 +213,10 @@ func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *websoc
 func sendInferenceRequest(t *testing.T, ctx context.Context, tsURL, model, apiKey string) int {
 	t.Helper()
 	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true}`
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+"/v1/chat/completions", strings.NewReader(chatBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+"/v1/chat/completions", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatalf("create inference request: %v", err)
+	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := http.DefaultClient.Do(httpReq)
@@ -219,7 +224,9 @@ func sendInferenceRequest(t *testing.T, ctx context.Context, tsURL, model, apiKe
 		t.Fatalf("http request: %v", err)
 	}
 	defer resp.Body.Close()
-	io.ReadAll(resp.Body)
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read inference response: %v", err)
+	}
 
 	return resp.StatusCode
 }

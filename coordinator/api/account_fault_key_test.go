@@ -10,11 +10,9 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -45,34 +43,19 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 		t.Fatalf("create provider token: %v", err)
 	}
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	connect := func() (*websocket.Conn, string) {
+	connect := func() (*providerWSFixture, string) {
 		t.Helper()
-		conn, _, err := websocket.Dial(ctx, wsURL, nil)
-		if err != nil {
-			t.Fatalf("websocket dial: %v", err)
-		}
-		regMsg := protocol.RegisterMessage{
+		fixture := newProviderWSFixture(t, ctx, ts.URL, reg, protocol.RegisterMessage{
 			Type:      protocol.TypeRegister,
 			Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 			Models:    []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
 			Backend:   "mlx-swift",
 			AuthToken: rawToken,
-		}
-		regData, _ := json.Marshal(regMsg)
-		if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
-			t.Fatalf("write register: %v", err)
-		}
-		var id string
-		waitFor(t, 5*time.Second, "provider registered and account-linked", func() bool {
-			ids := reg.ProviderIDs()
-			if len(ids) != 1 {
-				return false
-			}
-			id = ids[0]
-			return reg.GetProviderStableIdentity(id) == "acct:"+acct
 		})
-		return conn, id
+		awaitTestCondition(t, ctx, "provider account linkage", func() bool {
+			return reg.GetProviderStableIdentity(fixture.providerID) == "acct:"+acct
+		})
+		return fixture, fixture.providerID
 	}
 
 	// Session 1 registers without attestation: the linked account is its ONLY
@@ -86,19 +69,16 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 	}
 
 	conn1.Close(websocket.StatusNormalClosure, "churn")
-	waitFor(t, 5*time.Second, "session 1 disconnected", func() bool {
-		return reg.ProviderCount() == 0
-	})
 
 	// Reconnect: fresh session UUID, same account token. The open breaker must
 	// re-attach via the acct: binding — without the account-linkage rebind the
 	// fresh session resolves to its own UUID and reads a clean record.
 	conn2, sess2 := connect()
-	defer conn2.CloseNow()
+	defer conn2.Close(websocket.StatusNormalClosure, "")
 	if sess2 == sess1 {
 		t.Fatalf("expected a fresh session id, got %q twice", sess1)
 	}
-	waitFor(t, 5*time.Second, "breaker state re-attached to the new session", func() bool {
+	awaitTestCondition(t, ctx, "breaker state re-attached to the new session", func() bool {
 		return reg.ProviderBreakerOpen(sess2)
 	})
 }

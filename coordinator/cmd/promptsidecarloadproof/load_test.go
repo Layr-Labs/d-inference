@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
+
 
 func TestProductionInventoryCoversFourModelsAndEverySupportedVector(t *testing.T) {
 	inventory, err := readProductionInventory(filepath.Join(
@@ -22,15 +25,42 @@ func TestProductionInventoryCoversFourModelsAndEverySupportedVector(t *testing.T
 	if len(inventory.Contracts) != 3 {
 		t.Fatalf("deduplicated contracts = %d, want 3", len(inventory.Contracts))
 	}
-	if len(inventory.Vectors) != 42 {
-		t.Fatalf("supported vectors = %d, want 42", len(inventory.Vectors))
+	expectedCaseIDs := namedProductionCaseIDs(t)
+	expectedCases := make(map[string]struct{}, len(expectedCaseIDs))
+	for _, caseID := range expectedCaseIDs {
+		expectedCases[caseID] = struct{}{}
 	}
-	coveredModels := make(map[string]bool)
+	wantVectors := inventory.EligibleModels * len(expectedCases)
+	if len(inventory.Vectors) != wantVectors {
+		t.Fatalf("supported vectors = %d, want %d named cases across %d models",
+			len(inventory.Vectors), len(expectedCases), inventory.EligibleModels)
+	}
+	coveredModels := make(map[string]map[string]struct{})
 	for _, vector := range inventory.Vectors {
-		coveredModels[vector.ModelID] = true
+		modelID, caseID, ok := strings.Cut(vector.Name, "/")
+		if !ok || modelID != vector.ModelID {
+			t.Fatalf("vector name %q does not bind model %q", vector.Name, vector.ModelID)
+		}
+		if _, ok := expectedCases[caseID]; !ok {
+			t.Fatalf("unexpected production case %q", caseID)
+		}
+		if coveredModels[modelID] == nil {
+			coveredModels[modelID] = make(map[string]struct{}, len(expectedCases))
+		}
+		coveredModels[modelID][caseID] = struct{}{}
 	}
 	if len(coveredModels) != inventory.EligibleModels {
 		t.Fatalf("covered routable models = %d, want %d", len(coveredModels), inventory.EligibleModels)
+	}
+	for modelID, cases := range coveredModels {
+		if len(cases) != len(expectedCases) {
+			t.Fatalf("model %q covers %d named cases, want %d", modelID, len(cases), len(expectedCases))
+		}
+		for caseID := range expectedCases {
+			if _, ok := cases[caseID]; !ok {
+				t.Fatalf("model %q is missing production case %q", modelID, caseID)
+			}
+		}
 	}
 }
 
@@ -102,15 +132,17 @@ func TestPlanDifferenceRejectsNonParticipatingAndMismatchedPlans(t *testing.T) {
 }
 
 func TestValidateSummaryRequiresStableProcessAndCleanMetrics(t *testing.T) {
+	supportedVectors := 3 * len(namedProductionCaseIDs(t))
+	coldStartRequests := supportedVectors + 2*3
 	summary := proofSummary{
-		Inventory: inventorySummary{UniqueContracts: 3, SupportedVectors: 42},
+		Inventory: inventorySummary{UniqueContracts: 3, SupportedVectors: supportedVectors},
 		ColdStart: coldStartSummary{
-			Contracts: 3, Requests: 48, Succeeded: 48,
-			ColdLoads: 3, WarmLoads: 42, WaitedLoads: 3,
+			Contracts: 3, Requests: coldStartRequests, Succeeded: coldStartRequests,
+			ColdLoads: 3, WarmLoads: uint64(supportedVectors), WaitedLoads: 3,
 			ChildGenerationStart: 1, ChildGenerationEnd: 1,
 			RSSBaselineBytes: 32 << 20, RSSPeakBytes: 600 << 20,
 			RSSEndBytes: 520 << 20, RSSLimitBytes: 1024 << 20,
-			Metrics: planMetricsSummary{Started: 48, Succeeded: 48},
+			Metrics: planMetricsSummary{Started: uint64(coldStartRequests), Succeeded: uint64(coldStartRequests)},
 		},
 		Preload: preloadSummary{
 			Requested: 3, Cold: 3, RepeatWarm: 3,
@@ -118,7 +150,7 @@ func TestValidateSummaryRequiresStableProcessAndCleanMetrics(t *testing.T) {
 		},
 		Load: loadSummary{
 			TargetQPS: 25, Requests: 375, Succeeded: 375,
-			CoveredVectors: 42, AchievedStartQPS: 25,
+			CoveredVectors: supportedVectors, AchievedStartQPS: 25,
 			ContractLoads: contractLoadSummary{Warm: 375},
 		},
 		Process: processSummary{
@@ -142,6 +174,41 @@ func TestValidateSummaryRequiresStableProcessAndCleanMetrics(t *testing.T) {
 	if err := validateSummary(summary); err == nil {
 		t.Fatal("restart and overload were accepted")
 	}
+}
+
+func namedProductionCaseIDs(t *testing.T) []string {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "fixtures", "prompt-contract", "v1", "corpus.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		SchemaVersion uint32 `json:"schema_version"`
+		Cases         []struct {
+			ID string `json:"id"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(encoded, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if corpus.SchemaVersion != 1 || len(corpus.Cases) == 0 {
+		t.Fatalf("invalid named prompt case corpus: schema=%d cases=%d",
+			corpus.SchemaVersion, len(corpus.Cases))
+	}
+	ids := make([]string, 0, len(corpus.Cases))
+	seen := make(map[string]struct{}, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		if fixture.ID == "" {
+			t.Fatal("named prompt case has an empty ID")
+		}
+		if _, duplicate := seen[fixture.ID]; duplicate {
+			t.Fatalf("duplicate named prompt case %q", fixture.ID)
+		}
+		seen[fixture.ID] = struct{}{}
+		ids = append(ids, fixture.ID)
+	}
+	return ids
 }
 
 func TestPrivateRuntimeDirectoryLeavesRoomForDarwinUnixSocket(t *testing.T) {

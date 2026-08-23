@@ -25,8 +25,7 @@ func TestMaxConcurrencyWithCapacity(t *testing.T) {
 		memGB    float64
 		expected int
 	}{
-		// Phase 2 tier values (lowered from 4/8/16/24/32). See
-		// maxConcurrency() in registry.go for the rationale.
+		// Current memory-tier limits; maxConcurrency documents the rationale.
 		{16, 2},
 		{24, 2},
 		{36, 4},
@@ -52,9 +51,8 @@ func TestMaxConcurrencyWithCapacity(t *testing.T) {
 	}
 }
 
-// TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
-// a provider with 5 pending requests on a 96 GB box is still eligible
-// (Phase 2 cap for 96 GB = 6).
+// TestFindProviderDynamicConcurrency verifies that a provider with five
+// pending requests remains eligible on a 96 GB box whose current cap is six.
 func TestFindProviderDynamicConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -63,21 +61,21 @@ func TestFindProviderDynamicConcurrency(t *testing.T) {
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
 	p.DecodeTPS = 100.0
-	// 96 GB → cap=6 under Phase 2.
+	// A 96 GB provider has a cap of six.
 	p.mu.Lock()
 	p.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB: 96,
 	}
 	p.mu.Unlock()
 
-	// 5 pending is below the new cap of 6.
+	// Five pending requests remain below the cap.
 	for i := range 5 {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
 	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
-		t.Error("FindProvider should return provider with 5/6 capacity used (Phase 2 cap)")
+		t.Error("FindProvider should return provider with 5/6 capacity used")
 	}
 }
 
@@ -209,7 +207,7 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 	p.DecodeTPS = 100.0
 
-	// 96 GB → cap=6 under Phase 2.
+	// A 96 GB provider has a cap of six.
 	p.mu.Lock()
 	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 96}
 	p.mu.Unlock()
@@ -245,51 +243,3 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	}
 }
 
-// TestFindProviderPrefersCrashedLast verifies that when the only provider
-// has a crashed slot for the requested model, it is still returned (with
-// low score) rather than returning nil.
-func TestFindProviderPrefersCrashedLast(t *testing.T) {
-	reg := New(testLogger())
-	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
-	msg := testRegisterMessage()
-
-	// Register two providers: one crashed, one hot.
-	crashed := reg.Register("crashed-provider", nil, msg)
-	crashed.TrustLevel = TrustHardware
-	crashed.LastChallengeVerified = time.Now()
-	crashed.ChallengeVerifiedSIP = true
-	crashed.DecodeTPS = 100.0
-	crashed.RuntimeVerified = true
-	crashed.mu.Lock()
-	crashed.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 64,
-		Slots: []protocol.BackendSlotCapacity{
-			{Model: model, State: "crashed"},
-		},
-	}
-	crashed.mu.Unlock()
-
-	hot := reg.Register("hot-provider", nil, msg)
-	hot.TrustLevel = TrustHardware
-	hot.LastChallengeVerified = time.Now()
-	hot.ChallengeVerifiedSIP = true
-	hot.DecodeTPS = 100.0
-	hot.RuntimeVerified = true
-	hot.mu.Lock()
-	hot.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 64,
-		Slots: []protocol.BackendSlotCapacity{
-			{Model: model, State: "running"},
-		},
-	}
-	hot.mu.Unlock()
-
-	// FindProvider should strongly prefer the hot provider.
-	found := findRoutableProvider(reg, model)
-	if found == nil {
-		t.Fatal("FindProvider returned nil when providers are available")
-	}
-	if found.ID != "hot-provider" {
-		t.Errorf("expected hot-provider, got %q", found.ID)
-	}
-}

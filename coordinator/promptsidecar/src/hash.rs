@@ -102,13 +102,54 @@ mod tests {
             contract in proptest::collection::vec(any::<u8>(), 1..64),
             scope in proptest::collection::vec(any::<u8>(), 0..64),
             tokens in proptest::collection::vec(any::<u32>(), 1..512),
+            parent in any::<[u8; 32]>(),
+            block_index in any::<u32>(),
         ) {
-            let parent = ZERO_PARENT;
-            let hash = block_hash(&contract, &scope, &parent, 0, &tokens).unwrap();
-            let mut changed = tokens.clone();
-            changed[0] ^= 1;
-            prop_assert_ne!(hash, block_hash(&contract, &scope, &parent, 0, &changed).unwrap());
-            prop_assert_ne!(hash, block_hash(&contract, &scope, &parent, 1, &tokens).unwrap());
+            let hash = block_hash(&contract, &scope, &parent, block_index, &tokens).unwrap();
+
+            let mut changed_contract = contract.clone();
+            changed_contract[0] ^= 1;
+            prop_assert_ne!(
+                hash,
+                block_hash(&changed_contract, &scope, &parent, block_index, &tokens).unwrap()
+            );
+
+            let mut changed_scope = scope.clone();
+            if changed_scope.is_empty() {
+                changed_scope.push(0);
+            } else {
+                changed_scope[0] ^= 1;
+            }
+            prop_assert_ne!(
+                hash,
+                block_hash(&contract, &changed_scope, &parent, block_index, &tokens).unwrap()
+            );
+
+            let mut changed_parent = parent;
+            changed_parent[0] ^= 1;
+            prop_assert_ne!(
+                hash,
+                block_hash(&contract, &scope, &changed_parent, block_index, &tokens).unwrap()
+            );
+
+            prop_assert_ne!(
+                hash,
+                block_hash(
+                    &contract,
+                    &scope,
+                    &parent,
+                    block_index.wrapping_add(1),
+                    &tokens,
+                )
+                .unwrap()
+            );
+
+            let mut changed_tokens = tokens.clone();
+            changed_tokens[0] ^= 1;
+            prop_assert_ne!(
+                hash,
+                block_hash(&contract, &scope, &parent, block_index, &changed_tokens).unwrap()
+            );
         }
     }
 }

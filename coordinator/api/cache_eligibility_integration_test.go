@@ -26,17 +26,8 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(
-		ctx,
-		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider",
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	initialStatuses := []protocol.PrefixCacheModelStatus{
+
 		{
 			ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
 			State: "disabled", Reason: "weight_hash_unavailable",
@@ -50,7 +41,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		{Outcome: "donated", Count: 2},
 		{Outcome: "future_outcome", Count: 100},
 	}
-	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, httpServer.URL, reg, protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Models: []protocol.ModelInfo{
 			{ID: "model"},
@@ -61,6 +52,8 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &initialStatuses,
 		PrefixCacheDonationOutcomes: &initialOutcomes,
 	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	conn := fixture.Conn
 	waitCacheCondition(t, func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return reg.ProviderCount() == 1 &&
@@ -132,18 +125,22 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	})
 
 	// An old-provider-style omission does not recreate or fabricate status.
+	p := reg.GetProvider(fixture.providerID)
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
-		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+		Type: protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 1},
 	})
-	time.Sleep(25 * time.Millisecond)
+	waitCacheCondition(t, func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.Stats.RequestsServed == 1
+	})
 	if got := reg.PrefixCacheProtocolStatus().ReportedLoadedModels; got != 0 {
 		t.Fatalf("omitted snapshot changed authoritative clear: %d", got)
 	}
 
-	if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
-		t.Fatal(err)
-	}
-	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 0 })
+	fixture.Close(websocket.StatusNormalClosure, "done")
 	if got := reg.PrefixCacheProtocolStatus().LoadedModels; got != 0 {
 		t.Fatalf("disconnect retained loaded status: %d", got)
 	}
@@ -159,22 +156,13 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(
-		ctx,
-		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider",
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	oversizedStatuses := make([]protocol.PrefixCacheModelStatus, 17)
+
 	duplicateOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
 		{Outcome: "donated", Count: 1},
 		{Outcome: "donated", Count: 2},
 	}
-	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, httpServer.URL, reg, protocol.RegisterMessage{
 		Type:                        protocol.TypeRegister,
 		Models:                      []protocol.ModelInfo{{ID: "owner-local"}},
 		Backend:                     "mlx-swift",
@@ -182,7 +170,8 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 		PrefixCacheStatuses:         &oversizedStatuses,
 		PrefixCacheDonationOutcomes: &duplicateOutcomes,
 	})
-	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 1 })
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	conn := fixture.Conn
 	status := reg.PrefixCacheProtocolStatus()
 	if status.ReportedLoadedModels != 0 ||
 		reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] != 0 {
@@ -192,9 +181,16 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 
 	// A subsequent heartbeat proves the provider socket remained usable.
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
-		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+		Type: protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 1},
 	})
-	time.Sleep(25 * time.Millisecond)
+	p := reg.GetProvider(fixture.providerID)
+	waitCacheCondition(t, func() bool {
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		return p.Stats.RequestsServed == 1
+	})
 	if reg.ProviderCount() != 1 {
 		t.Fatal("optional structural telemetry closed provider registration")
 	}
@@ -209,23 +205,14 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(
-		ctx,
-		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider",
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
 	capability := cacheEligibilityV2Capability("model")
+
 	ready := protocol.PrefixCacheModelStatus{
 		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
 		State: "ready", Reason: "ready",
 	}
 	statuses := []protocol.PrefixCacheModelStatus{ready}
-	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+	fixture := newProviderWSFixture(t, ctx, httpServer.URL, reg, protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Models: []protocol.ModelInfo{{
 			ID: capability.ModelID, WeightHash: capability.ModelAggregateHash,
@@ -235,6 +222,8 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
 		PrefixCacheStatuses: &statuses,
 	})
+	defer fixture.Close(websocket.StatusNormalClosure, "")
+	conn := fixture.Conn
 	waitCacheCondition(t, func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return status.V2ReadyModels == 1 && status.ByState["ready"] == 1
@@ -310,12 +299,5 @@ func writeProviderJSON(t *testing.T, ctx context.Context, conn *websocket.Conn, 
 
 func waitCacheCondition(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for cache telemetry state")
+	awaitTestCondition(t, context.Background(), "cache telemetry state", condition)
 }

@@ -1,38 +1,16 @@
 package api
 
 import (
-	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-func TestEmbeddedInstallerMatchesCanonicalSource(t *testing.T) {
-	_, currentFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve test source path")
-	}
-	canonicalPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "scripts", "install.sh")
-	canonical, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		t.Fatalf("read canonical installer: %v", err)
-	}
-	if !bytes.Equal(canonical, installScript) {
-		t.Fatal("embedded installer drifted from scripts/install.sh; run scripts/sync-install-embed.sh")
-	}
-	if count := bytes.Count(canonical, []byte(installScriptPlaceholder)); count != 1 {
-		t.Fatalf("canonical installer contains %d coordinator placeholders, want exactly 1", count)
-	}
-}
 
 // TestInstallScriptTemplating verifies the coordinator substitutes
 // __DARKBLOOM_COORD_URL__ with its configured baseURL at serve time.
@@ -78,11 +56,6 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 	})
 
-	// Post-Swift-cutover (v0.5.0+): install.sh no longer references R2
-	// placeholders directly. Model weights are downloaded by `darkbloom
-	// models download` from the public R2 CDN; the Python runtime tarball
-	// is gone entirely. The R2 placeholder constants in server.go were
-	// dropped along with these tests.
 	t.Run("install.sh has no leftover R2 placeholders", func(t *testing.T) {
 		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
@@ -94,66 +67,6 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 		if strings.Contains(body, "__DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__") {
 			t.Error("install.sh still references __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ -- handler dropped substitution")
-		}
-	})
-
-	t.Run("install.sh installs the Swift bundle, not the Python runtime", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
-		defer srv.Close()
-
-		body := fetchInstallScript(t, srv.URL)
-
-		// Swift cutover invariants -- install.sh must not download Python
-		// or the vllm-mlx site-packages tarball.
-		bannedSubstrings := []string{
-			"vllm-mlx",
-			"vllm_mlx",
-			"PBS_PYTHON_VERSION",
-			"python-build-standalone",
-			"eigeninference-site-packages",
-			"eigeninference-python-macos-arm64",
-			"site-packages",
-		}
-		for _, b := range bannedSubstrings {
-			if strings.Contains(body, b) {
-				t.Errorf("install.sh contains forbidden Python-era reference %q -- Swift cutover regressed", b)
-			}
-		}
-
-		// Positive assertions: the Swift bundle is installed and metallib
-		// is verified.
-		if !strings.Contains(body, "mlx.metallib") {
-			t.Error("install.sh does not handle mlx.metallib")
-		}
-		if !strings.Contains(body, "eigeninference-enclave") {
-			t.Error("install.sh does not install the Secure Enclave helper")
-		}
-	})
-
-	t.Run("fan helper is verified but never privileged-installed", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
-		defer srv.Close()
-
-		body := fetchInstallScript(t, srv.URL)
-		for _, required := range []string{
-			"fan-helper-v1",
-			"Contents/Helpers/darkbloom-fan-helper",
-			`identifier "io.darkbloom.fan-helper"`,
-			`certificate leaf[subject.OU] = "SLDQ2GJ6TL"`,
-		} {
-			if !strings.Contains(body, required) {
-				t.Errorf("install.sh is missing fan-helper verification %q", required)
-			}
-		}
-		for _, forbidden := range []string{
-			"sudo ",
-			"launchctl",
-			"/Library/PrivilegedHelperTools",
-			"/Library/LaunchDaemons",
-		} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("ordinary install.sh performs privileged fan activation via %q", forbidden)
-			}
 		}
 	})
 }

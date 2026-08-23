@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,10 @@ func TestProvisionerBoundsWorkAndTracksPerModelReadiness(t *testing.T) {
 	body := []byte(`{"version":"1.0"}`)
 	var active atomic.Int64
 	var maximum atomic.Int64
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		current := active.Add(1)
 		defer active.Add(-1)
@@ -25,7 +30,8 @@ func TestProvisionerBoundsWorkAndTracksPerModelReadiness(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		entered <- struct{}{}
+		<-release
 		_, _ = w.Write(body)
 	}))
 	defer server.Close()
@@ -56,6 +62,17 @@ func TestProvisionerBoundsWorkAndTracksPerModelReadiness(t *testing.T) {
 	if err := provisioner.Reconcile(manifests); err != nil {
 		t.Fatal(err)
 	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("provisioning did not occupy both configured workers")
+		}
+	}
+	if active.Load() != 2 {
+		t.Fatalf("active provision workers = %d, want 2", active.Load())
+	}
+	releaseOnce.Do(func() { close(release) })
 	waitForProvision(t, provisioner, 4)
 	if maximum.Load() > 2 {
 		t.Fatalf("provision concurrency = %d, want <= 2", maximum.Load())

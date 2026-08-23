@@ -345,3 +345,134 @@ func TestCapacityRatePreRejectCommitCountsExactlyOnce(t *testing.T) {
 		t.Fatalf("samples = %d, want %d — one request must count exactly once", samples, capacityRateMinSample+2)
 	}
 }
+
+// Recent accepts must already be in the denominator when a pair records its
+// first capacity reject. Otherwise a short reject burst after sustained healthy
+// traffic reads as a 100% reject rate and applies the maximum derating penalty.
+func TestCapacityRateFirstRejectIncludesRecentAccepts(t *testing.T) {
+	r := New(testLogger())
+	const provider, model = "prov-pre-reject-accepts", "gemma-4-26b-qat-4bit"
+
+	for i := range 100 {
+		if recorded := r.RecordCapacityAccept(provider, model); !recorded {
+			t.Fatalf("healthy accept %d was not retained for a later reject window", i+1)
+		}
+	}
+	if rate, samples := r.CapacityRejectRate(provider, model); rate != 0 || samples != 0 {
+		t.Fatalf("accept-only history must stay observationally inactive: rate=%v samples=%d, want 0/0", rate, samples)
+	}
+
+	for range capacityRateMinSample {
+		r.RecordCapacityReject(provider, model)
+	}
+
+	rate, samples := r.CapacityRejectRate(provider, model)
+	wantRate := float64(capacityRateMinSample) / float64(100+capacityRateMinSample)
+	if samples != 100+capacityRateMinSample {
+		t.Fatalf("samples = %d, want %d recent accepts + rejects", samples, 100+capacityRateMinSample)
+	}
+	if math.Abs(rate-wantRate) > 1e-12 {
+		t.Fatalf("rate = %v, want %v", rate, wantRate)
+	}
+	if penalty, _ := capacityRatePenaltyOf(r, provider, model); penalty != 0 {
+		t.Fatalf("penalty = %v at healthy-window rate %v, want 0", penalty, rate)
+	}
+}
+
+// The first reject prunes accept-only history against the same strict window
+// boundary: exactly-window-old outcomes are excluded, while a newer outcome is
+// retained. Use a fixed clock so nanosecond boundary behavior is deterministic.
+func TestCapacityRateFirstRejectPrunesExpiredAccepts(t *testing.T) {
+	r := New(testLogger())
+	const provider, model = "prov-accept-window", "gemma-4-26b-qat-4bit"
+	now := time.Now()
+	key := capacityRejectKey{ProviderID: provider, ModelID: model}
+
+	r.mu.Lock()
+	r.capacityRateAccepts[key] = []time.Time{
+		now.Add(-capacityRateWindow - time.Nanosecond),
+		now.Add(-capacityRateWindow),
+		now.Add(-capacityRateWindow + time.Nanosecond),
+	}
+	r.recordCapacityRateRejectLocked(key, now)
+	rejects := countInWindow(r.capacityRateRejects[key], now)
+	accepts := countInWindow(r.capacityRateAccepts[key], now)
+	r.mu.Unlock()
+
+	if rejects != 1 || accepts != 1 {
+		t.Fatalf("windowed outcomes = rejects %d accepts %d, want 1/1", rejects, accepts)
+	}
+}
+
+// Pruning runs while the global registry lock is held. Once a hot pair reaches
+// the five-minute horizon, an expired prefix is normal on nearly every accept;
+// the helper must advance the slice rather than copy the whole live window back
+// to index zero each time.
+func TestPruneWindowedOutcomesDropsPrefixWithoutCompaction(t *testing.T) {
+	now := time.Now()
+	outcomes := []time.Time{
+		now.Add(-capacityRateWindow - time.Second),
+		now.Add(-time.Minute),
+		now,
+	}
+	pruned := pruneWindowedOutcomes(outcomes, now)
+	if len(pruned) != 2 {
+		t.Fatalf("pruned length = %d, want 2", len(pruned))
+	}
+	if &pruned[0] != &outcomes[1] {
+		t.Fatal("pruning compacted the live window instead of advancing the expired prefix")
+	}
+}
+
+func TestMergeChronologicalTimestampsPreservesEqualOutcomes(t *testing.T) {
+	ts := time.Now()
+	merged := mergeChronologicalTimestamps([]time.Time{ts}, []time.Time{ts})
+	if len(merged) != 2 || merged[0] != ts || merged[1] != ts {
+		t.Fatalf("equal timestamp merge = %v, want two distinct outcomes", merged)
+	}
+}
+
+// Rate calculation must depend only on the five-minute multiset, not whether
+// the healthy traffic came before, after, or between the rejects.
+func TestCapacityRateIsIndependentOfOutcomeOrder(t *testing.T) {
+	const model = "gemma-4-26b-qat-4bit"
+	for _, tc := range []struct {
+		name   string
+		record func(r *Registry, provider string)
+	}{
+		{
+			name: "accepts first",
+			record: func(r *Registry, provider string) {
+				seedRateOutcomes(r, provider, model, 0, 12)
+				seedRateOutcomes(r, provider, model, 4, 0)
+			},
+		},
+		{
+			name: "rejects first",
+			record: func(r *Registry, provider string) {
+				seedRateOutcomes(r, provider, model, 4, 12)
+			},
+		},
+		{
+			name: "interleaved",
+			record: func(r *Registry, provider string) {
+				for range 4 {
+					r.RecordCapacityReject(provider, model)
+					for range 3 {
+						r.RecordCapacityAccept(provider, model)
+					}
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(testLogger())
+			provider := "prov-order-" + tc.name
+			tc.record(r, provider)
+			rate, samples := r.CapacityRejectRate(provider, model)
+			if samples != 16 || math.Abs(rate-0.25) > 1e-12 {
+				t.Fatalf("rate window = (%v, %d), want (0.25, 16)", rate, samples)
+			}
+		})
+	}
+}

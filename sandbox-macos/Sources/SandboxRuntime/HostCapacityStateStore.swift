@@ -46,7 +46,8 @@ struct SandboxCapacityStateStore: Sendable {
     }
 
     func acquireLeaseOperationLock(
-        sandboxID: SandboxID
+        sandboxID: SandboxID,
+        wait: Bool = true
     ) throws -> SandboxLeaseOperationLock {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
@@ -62,9 +63,14 @@ struct SandboxCapacityStateStore: Sendable {
         }
         do {
             try Self.validateFileDescriptor(lockDescriptor)
-            while flock(lockDescriptor, LOCK_EX) != 0 {
-                guard errno == EINTR else {
-                    throw SandboxCapacityError.io(errno)
+            let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
+            while flock(lockDescriptor, lockOperation) != 0 {
+                let code = errno
+                if !wait && (code == EWOULDBLOCK || code == EAGAIN) {
+                    throw SandboxCapacityError.leaseOperationInProgress
+                }
+                guard code == EINTR else {
+                    throw SandboxCapacityError.io(code)
                 }
             }
             return SandboxLeaseOperationLock(descriptor: lockDescriptor)

@@ -106,12 +106,19 @@ package actor LumeVirtualMachineRuntime:
                     "lease-fenced Lume operation requires an operation scope"
                 )
             }
-            return try capacityArbiter.authorizeMutation(
-                scope: scope,
-                virtualMachineName: virtualMachineName,
-                operation: operation,
-                resources: resources
-            )
+            do {
+                return try capacityArbiter.authorizeMutation(
+                    scope: scope,
+                    virtualMachineName: virtualMachineName,
+                    operation: operation,
+                    resources: resources
+                )
+            } catch SandboxCapacityError.leaseOperationInProgress {
+                throw SandboxRuntimeError.operationInProgress(
+                    name: virtualMachineName,
+                    operation: operation.rawValue
+                )
+            }
         }
         if scope != nil {
             throw SandboxRuntimeError.unsupported(

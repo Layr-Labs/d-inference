@@ -114,6 +114,7 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
         requested: SandboxGeneration
     )
     case leaseExpired
+    case leaseOperationInProgress
     case staleFencingToken
     case leaseNotFound
     case leaseVirtualMachineMismatch
@@ -146,6 +147,8 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "sandbox generation \(existing.rawValue) is already active; requested \(requested.rawValue)"
         case .leaseExpired:
             return "sandbox capacity lease has expired and cannot be renewed"
+        case .leaseOperationInProgress:
+            return "sandbox capacity lease already has an active mutation"
         case .staleFencingToken:
             return "sandbox capacity command carries a stale fencing token"
         case .leaseNotFound:

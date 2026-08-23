@@ -413,6 +413,13 @@ final class HostCapacityArbiterTests: XCTestCase {
                 virtualMachineName: lease.virtualMachineName,
                 operation: .execute
             )
+        assertCapacityError(.leaseOperationInProgress) {
+            _ = try arbiter.authorizeMutation(
+                scope: lease.scope,
+                virtualMachineName: "sandbox-other-name",
+                operation: .start
+            )
+        }
         let status = RenewalStatus()
         let renewal = Task.detached {
             await status.markStarted()

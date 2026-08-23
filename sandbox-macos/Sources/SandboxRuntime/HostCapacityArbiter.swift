@@ -91,7 +91,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
         resources: SandboxResourceSpecification? = nil
     ) throws -> SandboxLeaseMutationAuthorization {
         let operationLock = try store.acquireLeaseOperationLock(
-            sandboxID: scope.sandboxID
+            sandboxID: scope.sandboxID,
+            wait: false
         )
         _ = try authorize(
             scope: scope,

@@ -86,28 +86,80 @@ enum LumeGuestCommandEncoder {
             /usr/bin/mkfifo "$stdout_fifo" "$stderr_fifo" || exit 70
             exec 7<>"$stdout_fifo" || exit 70
             exec 8<>"$stderr_fifo" || exit 70
+            #region agent log
+            ( /usr/bin/printf \
+            '{"hypothesisId":"A","location":"LumeGuestCommandEncoder.swift:89",'\
+            '"message":"FIFO guard descriptors opened",'\
+            '"data":{},"timestamp":%s}\\n' "$(/bin/date +%s)000" \
+            >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+            #endregion
 
             capture_stream() {
               local fifo="$1"
               local output="$2"
               local overflow="$3"
+              local stream="$4"
               local capture_status=0
+              local fd7_open=false
+              local fd8_open=false
+              [[ -e /dev/fd/7 ]] && fd7_open=true
+              [[ -e /dev/fd/8 ]] && fd8_open=true
+              #region agent log
+              ( /usr/bin/printf \
+              '{"hypothesisId":"A",'\
+              '"location":"LumeGuestCommandEncoder.swift:104",'\
+              '"message":"capture reader started",'\
+              '"data":{"stream":"%s","fd7Open":%s,"fd8Open":%s},'\
+              '"timestamp":%s}\\n' "$stream" "$fd7_open" "$fd8_open" \
+              "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+              ) 2>/dev/null || true
+              #endregion
               /bin/dd bs=\(captureBlockBytes) count=\(captureBlockCount) \
             iflag=fullblock of="$output" 2>/dev/null
-              [[ "$?" -eq 0 ]] || capture_status=1
+              main_capture_status=$?
+              #region agent log
+              ( /usr/bin/printf \
+              '{"hypothesisId":"D",'\
+              '"location":"LumeGuestCommandEncoder.swift:113",'\
+              '"message":"bounded capture finished",'\
+              '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
+              "$stream" "$main_capture_status" "$(/bin/date +%s)000" \
+              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              #endregion
+              [[ "$main_capture_status" -eq 0 ]] || capture_status=1
               /bin/dd bs=1 count=1 iflag=fullblock \
             of="$overflow" 2>/dev/null
-              [[ "$?" -eq 0 ]] || capture_status=1
+              overflow_capture_status=$?
+              #region agent log
+              ( /usr/bin/printf \
+              '{"hypothesisId":"D",'\
+              '"location":"LumeGuestCommandEncoder.swift:124",'\
+              '"message":"overflow probe finished",'\
+              '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
+              "$stream" "$overflow_capture_status" "$(/bin/date +%s)000" \
+              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              #endregion
+              [[ "$overflow_capture_status" -eq 0 ]] || capture_status=1
               /bin/cat >/dev/null
-              [[ "$?" -eq 0 ]] || capture_status=1
+              drain_status=$?
+              #region agent log
+              ( /usr/bin/printf \
+              '{"hypothesisId":"D",'\
+              '"location":"LumeGuestCommandEncoder.swift:135",'\
+              '"message":"capture drain finished",'\
+              '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
+              "$stream" "$drain_status" "$(/bin/date +%s)000" \
+              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              #endregion
+              [[ "$drain_status" -eq 0 ]] || capture_status=1
               return "$capture_status"
             }
 
             capture_stream "$stdout_fifo" "$stdout_file" \
-            "$stdout_overflow" < "$stdout_fifo" &
+            "$stdout_overflow" stdout < "$stdout_fifo" &
             stdout_capture_pid=$!
             capture_stream "$stderr_fifo" "$stderr_file" \
-            "$stderr_overflow" < "$stderr_fifo" &
+            "$stderr_overflow" stderr < "$stderr_fifo" &
             stderr_capture_pid=$!
 
             /usr/bin/printf '%s' '\(propertyList)' \
@@ -124,6 +176,15 @@ enum LumeGuestCommandEncoder {
             bootstrap_status=$?
             exec 7>&-
             exec 8>&-
+            #region agent log
+            ( /usr/bin/printf \
+            '{"hypothesisId":"B",'\
+            '"location":"LumeGuestCommandEncoder.swift:171",'\
+            '"message":"launchd bootstrap returned and parent guards closed",'\
+            '"data":{"status":%s},"timestamp":%s}\\n' "$bootstrap_status" \
+            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            ) 2>/dev/null || true
+            #endregion
             [[ "$bootstrap_status" -eq 0 ]] || exit 70
             job_loaded=true
             [[ ! -e "$cancel_file" ]] || exit 125
@@ -143,9 +204,30 @@ enum LumeGuestCommandEncoder {
               ''|*[!0-9]*) exit 70 ;;
             esac
             [[ "$command_status" -le 255 ]] || exit 70
+            #region agent log
+            ( /usr/bin/printf \
+            '{"hypothesisId":"B",'\
+            '"location":"LumeGuestCommandEncoder.swift:198",'\
+            '"message":"atomic command status observed",'\
+            '"data":{"status":%s},"timestamp":%s}\\n' "$command_status" \
+            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            ) 2>/dev/null || true
+            #endregion
             /bin/launchctl bootout "$launch_domain/$job_label" \
             >/dev/null 2>&1 || exit 70
             job_loaded=false
+            job_present=false
+            /bin/launchctl print "$launch_domain/$job_label" \
+            >/dev/null 2>&1 && job_present=true
+            #region agent log
+            ( /usr/bin/printf \
+            '{"hypothesisId":"C",'\
+            '"location":"LumeGuestCommandEncoder.swift:212",'\
+            '"message":"launchd bootout finished before capture waits",'\
+            '"data":{"jobPresent":%s},"timestamp":%s}\\n' "$job_present" \
+            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            ) 2>/dev/null || true
+            #endregion
 
             wait "$stdout_capture_pid"
             stdout_capture_status=$?

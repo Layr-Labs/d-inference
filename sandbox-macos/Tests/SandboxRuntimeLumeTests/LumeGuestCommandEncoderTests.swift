@@ -33,11 +33,81 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
 
         XCTAssertEqual(result.exitCode, 0)
+        let decoded = try LumeGuestCommandResultDecoder.decode(
+            result.standardOutput
+        )
         XCTAssertEqual(
-            String(decoding: result.standardOutput, as: UTF8.self),
+            String(decoding: decoded.standardOutput, as: UTF8.self),
             hostileArgument
         )
+        XCTAssertTrue(decoded.standardError.isEmpty)
+        XCTAssertFalse(decoded.standardOutputTruncated)
+        XCTAssertFalse(decoded.standardErrorTruncated)
         XCTAssertFalse(FileManager.default.fileExists(atPath: injectedPath.path))
+    }
+
+    func testEnvelopeSeparatesStreamsAndPreservesExitCode() async throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/zsh",
+            arguments: [
+                "-c",
+                "/usr/bin/printf stdout; /usr/bin/printf stderr >&2; exit 7",
+            ],
+            timeoutSeconds: 5
+        )
+
+        let process = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-c", LumeGuestCommandEncoder.encode(request)],
+            timeoutSeconds: 5,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
+        )
+        let result = try LumeGuestCommandResultDecoder.decode(
+            process.standardOutput
+        )
+
+        XCTAssertEqual(process.exitCode, 0)
+        XCTAssertEqual(result.exitCode, 7)
+        XCTAssertEqual(result.standardOutput, Data("stdout".utf8))
+        XCTAssertEqual(result.standardError, Data("stderr".utf8))
+        XCTAssertFalse(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardErrorTruncated)
+    }
+
+    func testEnvelopeBoundsAndDrainsGuestOutput() async throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/dd",
+            arguments: [
+                "if=/dev/zero",
+                "bs=\(LumeGuestCommandEnvelope.maximumStreamBytes)",
+                "count=2",
+            ],
+            timeoutSeconds: 5
+        )
+
+        let process = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-c", LumeGuestCommandEncoder.encode(request)],
+            timeoutSeconds: 5,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
+        )
+        let result = try LumeGuestCommandResultDecoder.decode(
+            process.standardOutput
+        )
+
+        XCTAssertEqual(process.exitCode, 0)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(
+            result.standardOutput.count,
+            LumeGuestCommandEnvelope.maximumStreamBytes
+        )
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardError.isEmpty)
+        XCTAssertFalse(result.standardErrorTruncated)
     }
 
     func testScriptCarriesDeterministicEnvironmentAndIdempotencyKey() throws {
@@ -61,5 +131,6 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 "'DARKBLOOM_IDEMPOTENCY_KEY=b57a4fa2-bca8-45ef-a7d8-f4a20fe85dba'"
             )
         )
+        XCTAssertFalse(script.contains("exec /usr/bin/env"))
     }
 }

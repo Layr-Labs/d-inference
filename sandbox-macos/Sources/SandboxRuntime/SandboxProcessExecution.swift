@@ -71,7 +71,9 @@ final class ProcessExecution: @unchecked Sendable {
         defer { posix_spawnattr_destroy(&attributes) }
 
         try addFileActions(&fileActions)
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
+        let flags = Int16(
+            POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+        )
         guard posix_spawnattr_setflags(&attributes, flags) == 0,
               posix_spawnattr_setpgroup(&attributes, 0) == 0
         else {

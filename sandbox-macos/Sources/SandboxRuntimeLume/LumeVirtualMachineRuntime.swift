@@ -79,7 +79,9 @@ public actor LumeVirtualMachineRuntime:
                 encodedCommand,
             ],
             environment: workspace.environment,
-            timeoutSeconds: request.timeoutSeconds + 10
+            timeoutSeconds: request.timeoutSeconds + 10,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
         )
         guard !result.standardOutputTruncated,
               !result.standardErrorTruncated
@@ -88,10 +90,19 @@ public actor LumeVirtualMachineRuntime:
                 "Lume guest-command output exceeded the capture limit"
             )
         }
-        return SandboxGuestCommandResult(
-            exitCode: result.exitCode,
-            standardOutput: result.standardOutput,
-            standardError: result.standardError
+        guard result.exitCode == 0 else {
+            let standardError = String(
+                decoding: result.standardError,
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SandboxRuntimeError.commandFailed(
+                command: "lume ssh",
+                exitCode: result.exitCode,
+                stderr: standardError
+            )
+        }
+        return try LumeGuestCommandResultDecoder.decode(
+            result.standardOutput
         )
     }
 

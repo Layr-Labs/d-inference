@@ -54,15 +54,21 @@ public struct SandboxGuestCommandResult: Equatable, Sendable {
     public let exitCode: Int32
     public let standardOutput: Data
     public let standardError: Data
+    public let standardOutputTruncated: Bool
+    public let standardErrorTruncated: Bool
 
     public init(
         exitCode: Int32,
         standardOutput: Data,
-        standardError: Data
+        standardError: Data,
+        standardOutputTruncated: Bool = false,
+        standardErrorTruncated: Bool = false
     ) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
+        self.standardOutputTruncated = standardOutputTruncated
+        self.standardErrorTruncated = standardErrorTruncated
     }
 }
 

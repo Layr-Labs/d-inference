@@ -148,6 +148,42 @@ final class SandboxProcessRunnerTests: XCTestCase {
         XCTAssertTrue(output.contains("DARKBLOOM_EXPLICIT=present"))
     }
 
+    func testSpawnedChildDoesNotInheritAmbientDescriptors() async throws {
+        let source = Darwin.open("/dev/null", O_RDONLY | O_CLOEXEC)
+        guard source >= 0 else {
+            throw POSIXError(.EIO)
+        }
+        defer { Darwin.close(source) }
+        let ambientDescriptor = fcntl(source, F_DUPFD, 200)
+        guard ambientDescriptor >= 200 else {
+            throw POSIXError(.EIO)
+        }
+        defer { Darwin.close(ambientDescriptor) }
+        let flags = fcntl(ambientDescriptor, F_GETFD)
+        guard flags >= 0,
+              fcntl(
+                  ambientDescriptor,
+                  F_SETFD,
+                  flags & ~FD_CLOEXEC
+              ) == 0
+        else {
+            throw POSIXError(.EIO)
+        }
+
+        let result = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "test ! -e \"/dev/fd/$1\"",
+                "darkbloom-fd-probe",
+                String(ambientDescriptor),
+            ],
+            timeoutSeconds: 5
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
     func testTimeoutTerminatesDescendantProcessGroup() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(

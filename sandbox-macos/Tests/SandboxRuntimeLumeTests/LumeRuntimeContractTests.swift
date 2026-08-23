@@ -129,8 +129,9 @@ final class LumeRuntimeContractTests: XCTestCase {
         }
 
         let resources = try SandboxResourceSpecification.macOSSmall()
-        let firstName = "darkbloom-phase0-a"
-        let secondName = "darkbloom-phase0-b"
+        let runID = UUID().uuidString.lowercased().prefix(8)
+        let firstName = "darkbloom-phase0-a-\(runID)"
+        let secondName = "darkbloom-phase0-b-\(runID)"
         for name in [firstName, secondName] {
             try await runtime.create(SandboxVirtualMachineSpecification(
                 name: name,
@@ -186,6 +187,9 @@ final class LumeRuntimeContractTests: XCTestCase {
             async let firstCleanup: Void? = try? runtime.stop(name: firstName)
             async let secondCleanup: Void? = try? runtime.stop(name: secondName)
             _ = await (firstCleanup, secondCleanup)
+            async let firstDelete: Void? = try? runtime.delete(name: firstName)
+            async let secondDelete: Void? = try? runtime.delete(name: secondName)
+            _ = await (firstDelete, secondDelete)
             throw error
         }
 
@@ -193,6 +197,13 @@ final class LumeRuntimeContractTests: XCTestCase {
         let secondState = try await runtime.inspect(name: secondName)?.state
         XCTAssertEqual(firstState, .stopped)
         XCTAssertEqual(secondState, .stopped)
+        async let firstDelete: Void = runtime.delete(name: firstName)
+        async let secondDelete: Void = runtime.delete(name: secondName)
+        _ = try await (firstDelete, secondDelete)
+        let firstDeleted = try await runtime.inspect(name: firstName)
+        let secondDeleted = try await runtime.inspect(name: secondName)
+        XCTAssertNil(firstDeleted)
+        XCTAssertNil(secondDeleted)
     }
 
     func testConfigurationRejectsRelativeStoragePath() {

@@ -221,6 +221,108 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testDeleteRemovesStoppedOwnedVirtualMachine() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        try await runtime.delete(name: fixture.virtualMachineName)
+
+        let record = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )
+        XCTAssertNil(record)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
+    func testDeleteMissingVirtualMachineIsIdempotent() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        try await runtime.delete(name: fixture.virtualMachineName)
+        try await runtime.delete(name: fixture.virtualMachineName)
+
+        let record = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )
+        XCTAssertNil(record)
+    }
+
+    func testDeleteRefusesRunningVirtualMachine() async throws {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        do {
+            try await runtime.delete(name: fixture.virtualMachineName)
+            XCTFail("a running VM must not be deleted")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "refusing to delete VM \(fixture.virtualMachineName) while state is running"
+                )
+            )
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
+    func testDeleteRequiresOwnershipMarker() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        try FileManager.default.removeItem(at: fixture.ownershipMarker)
+        let runtime = try fixture.makeRuntime()
+
+        do {
+            try await runtime.delete(name: fixture.virtualMachineName)
+            XCTFail("an unowned VM must not be deleted")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "VM \(fixture.virtualMachineName) is not owned by Darkbloom"
+                )
+            )
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
+    func testDeleteFailsClosedWhenVirtualMachineRemainsListed() async throws {
+        let fixture = try FakeLumeFixture(behavior: "delete-noop")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        do {
+            try await runtime.delete(name: fixture.virtualMachineName)
+            XCTFail("delete must verify the VM disappeared")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .malformedOutput(
+                    "Lume delete completed but VM still exists"
+                )
+            )
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
     func testSeparateRuntimesCannotCreateSameVirtualMachine() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,
@@ -315,6 +417,19 @@ private struct FakeLumeFixture {
     let createStarted: URL
     let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
+
+    var virtualMachineDirectory: URL {
+        storage.appendingPathComponent(
+            virtualMachineName,
+            isDirectory: true
+        )
+    }
+
+    var ownershipMarker: URL {
+        virtualMachineDirectory.appendingPathComponent(
+            LumeVirtualMachineOwnership.fileName
+        )
+    }
 
     init(
         writeProvenance: Bool = true,
@@ -588,6 +703,9 @@ private struct FakeLumeFixture {
               ;;
           esac
         done
+        if [ "$behavior" = "delete-noop" ]; then
+          exit 0
+        fi
         rm -rf "$storage/$name"
         rm -f "$state_file"
         ;;

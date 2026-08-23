@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SandboxRuntime
 @testable import SandboxRuntimeLume
@@ -184,6 +185,69 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
     }
 
+    func testReplayRejectsSymbolicLinkResult() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let request = try fixture.request()
+        _ = try fixture.journal.claim(
+            installationID: installationID,
+            request: request
+        )
+        try FileManager.default.createSymbolicLink(
+            at: fixture.commandDirectory(
+                installationID: installationID,
+                idempotencyKey: request.idempotencyKey
+            ).appendingPathComponent(LumeGuestCommandJournal.resultFileName),
+            withDestinationURL: URL(fileURLWithPath: "/dev/zero")
+        )
+
+        XCTAssertThrowsError(
+            try fixture.journal.replay(
+                installationID: installationID,
+                request: request
+            )
+        ) { error in
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "guest command journal file is unsafe"
+                )
+            )
+        }
+    }
+
+    func testReplayRejectsNonPrivateCommandDirectory() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let request = try fixture.request()
+        _ = try fixture.journal.claim(
+            installationID: installationID,
+            request: request
+        )
+        let commandDirectory = fixture.commandDirectory(
+            installationID: installationID,
+            idempotencyKey: request.idempotencyKey
+        )
+        guard chmod(commandDirectory.path, 0o755) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+
+        XCTAssertThrowsError(
+            try fixture.journal.replay(
+                installationID: installationID,
+                request: request
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxRuntimeError,
+                .unsupported(
+                    "guest command journal directory failed ownership or mode checks"
+                )
+            )
+        }
+    }
+
     private static func envelope(
         for result: SandboxGuestCommandResult
     ) throws -> Data {
@@ -243,6 +307,29 @@ private struct JournalFixture {
 
     func remove() throws {
         try FileManager.default.removeItem(at: root)
+    }
+
+    func commandDirectory(
+        installationID: UUID,
+        idempotencyKey: UUID
+    ) -> URL {
+        storage
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.supportDirectoryName,
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.commandJournalDirectoryName,
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                installationID.uuidString.lowercased(),
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                LumeGuestCommandIdentity.identifier(for: idempotencyKey),
+                isDirectory: true
+            )
     }
 }
 

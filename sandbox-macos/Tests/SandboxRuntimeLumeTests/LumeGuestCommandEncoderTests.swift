@@ -47,6 +47,40 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: injectedPath.path))
     }
 
+    func testRapidExitAlwaysProducesEnvelope() async throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
+            timeoutSeconds: 5
+        )
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+
+        for iteration in 0..<32 {
+            let process = try await SandboxProcessRunner().run(
+                executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-c", encodedCommand],
+                timeoutSeconds: 5,
+                maximumOutputBytes:
+                    LumeGuestCommandEnvelope.maximumEnvelopeBytes
+            )
+            guard process.exitCode == 0 else {
+                XCTFail(
+                    "rapid command wrapper failed at iteration \(iteration): "
+                        + "exit=\(process.exitCode)"
+                )
+                return
+            }
+            let result = try LumeGuestCommandResultDecoder.decode(
+                process.standardOutput
+            )
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertTrue(result.standardOutput.isEmpty)
+            XCTAssertTrue(result.standardError.isEmpty)
+        }
+    }
+
     func testEnvelopeSeparatesStreamsAndPreservesExitCode() async throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
@@ -151,25 +185,43 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 of: #"/bin/launchctl bootstrap "$launch_domain" "$job_plist""#
             )
         )
-        let completedBootout = try XCTUnwrap(
+        let teardownBootout = try XCTUnwrap(
             script.range(
-                of: """
-                    >/dev/null 2>&1 || exit 70
-                    job_loaded=false
-                    """
+                of: #"/bin/launchctl bootout "$launch_domain/$job_label""#,
+                range: bootstrap.upperBound..<script.endIndex
             )
+        )
+        let unloadVerification = try XCTUnwrap(
+            script.range(
+                of: #"if /bin/launchctl print "$launch_domain/$job_label""#,
+                range: teardownBootout.upperBound..<script.endIndex
+            )
+        )
+        let jobMarkedUnloaded = try XCTUnwrap(
+            script.range(
+                of: "job_loaded=false",
+                range: unloadVerification.upperBound..<script.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            teardownBootout.lowerBound,
+            unloadVerification.lowerBound
+        )
+        XCTAssertLessThan(
+            unloadVerification.lowerBound,
+            jobMarkedUnloaded.lowerBound
         )
         let parentGuardClosure = "exec 7>&-\nexec 8>&-"
         XCTAssertNil(
             script.range(
                 of: parentGuardClosure,
-                range: bootstrap.upperBound..<completedBootout.lowerBound
+                range: bootstrap.upperBound..<jobMarkedUnloaded.lowerBound
             )
         )
         let guardsClosedAfterBootout = try XCTUnwrap(
             script.range(
                 of: parentGuardClosure,
-                range: completedBootout.upperBound..<script.endIndex
+                range: jobMarkedUnloaded.upperBound..<script.endIndex
             )
         )
         let captureWait = try XCTUnwrap(
@@ -186,6 +238,9 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             script.contains(
                 "job_loaded=true\n/usr/bin/lockf -t 30 \"$command_lock\""
             )
+        )
+        XCTAssertTrue(
+            script.contains(#"[[ -f "$status_file" ]] || exit 70"#)
         )
         XCTAssertTrue(
             LumeGuestCommandScript.cancellation(request.idempotencyKey)
@@ -299,6 +354,40 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 124)
         XCTAssertTrue(result.timedOut)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testRepeatedGuestDeadlinesAlwaysProduceEnvelope() async throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/sleep",
+            arguments: ["2"],
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
+            timeoutSeconds: 1
+        )
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+
+        for iteration in 0..<4 {
+            let process = try await SandboxProcessRunner().run(
+                executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-c", encodedCommand],
+                timeoutSeconds: 5,
+                maximumOutputBytes:
+                    LumeGuestCommandEnvelope.maximumEnvelopeBytes
+            )
+            guard process.exitCode == 0 else {
+                XCTFail(
+                    "deadline wrapper failed at iteration \(iteration): "
+                        + "exit=\(process.exitCode)"
+                )
+                return
+            }
+            let result = try LumeGuestCommandResultDecoder.decode(
+                process.standardOutput
+            )
+            XCTAssertEqual(result.exitCode, 124)
+            XCTAssertTrue(result.timedOut)
+        }
     }
 
     func testOneMiBBoundAvoidsArgumentLimitAndDrainsGuestOutput() async throws {

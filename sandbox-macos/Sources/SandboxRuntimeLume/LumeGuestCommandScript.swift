@@ -139,7 +139,7 @@ enum LumeGuestCommandScript {
               "$launch_domain/$job_label" 2>/dev/null) || exit 70
               if [[ "$job_description" == *"active count = 0"* \
               && "$job_description" == *"runs = 1"* ]]; then
-                exit 70
+                [[ -f "$status_file" ]] || exit 70
               fi
               /bin/sleep 0.05
             done
@@ -151,7 +151,7 @@ enum LumeGuestCommandScript {
             if /bin/launchctl print "$launch_domain/$job_label" \
             >/dev/null 2>&1; then
               /bin/launchctl bootout "$launch_domain/$job_label" \
-              >/dev/null 2>&1 || exit 70
+              >/dev/null 2>&1 || true
             fi
             if /bin/launchctl print "$launch_domain/$job_label" \
             >/dev/null 2>&1; then

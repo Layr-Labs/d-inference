@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SandboxCore
 
@@ -107,9 +108,10 @@ public struct SandboxEncryptedFileCodec: Sendable {
     public static let supportedChunkSize = 65_536...8_388_608
 
     private static let magic = Data([0x44, 0x42, 0x53, 0x42, 0x45, 0x4E, 0x43, 0x31])
-    private static let version: UInt16 = 1
+    private static let version: UInt16 = 2
     private static let algorithmAES256GCM: UInt8 = 1
-    private static let headerByteCount = 64
+    private static let revisionByteCount = 32
+    private static let headerByteCount = 96
     private static let authenticationByteCount = 28
 
     public let chunkSize: Int
@@ -127,72 +129,92 @@ public struct SandboxEncryptedFileCodec: Sendable {
         key: SandboxDataEncryptionKey,
         context: SandboxEncryptionContext
     ) throws {
-        try requireAbsent(destination)
-        let sourceValues = try source.resourceValues(forKeys: [.isRegularFileKey])
-        guard sourceValues.isRegularFile == true else {
-            throw SandboxEncryptedFileError.sourceNotRegularFile
-        }
-
-        let sourceHandle = try FileHandle(forReadingFrom: source)
-        defer { try? sourceHandle.close() }
-        let plaintextLength = try sourceHandle.seekToEnd()
-        try sourceHandle.seek(toOffset: 0)
-        let chunkCount = plaintextLength == 0
-            ? 0
-            : ((plaintextLength - 1) / UInt64(chunkSize)) + 1
-        let header = makeHeader(
-            plaintextLength: plaintextLength,
-            chunkCount: chunkCount,
-            contextDigest: context.digest
-        )
-        let headerAuthentication: Data
         do {
-            headerAuthentication = try AES.GCM.seal(
-                Data(),
-                using: key.symmetricKey,
-                authenticating: header
-            ).combined!
-        } catch {
-            throw SandboxEncryptedFileError.authenticationFailed
-        }
-        guard headerAuthentication.count == Self.authenticationByteCount else {
-            throw SandboxEncryptedFileError.malformedHeader
-        }
-
-        try withAtomicDestination(destination) { destinationHandle in
-            try destinationHandle.write(contentsOf: header)
-            try destinationHandle.write(contentsOf: headerAuthentication)
-
-            var totalRead: UInt64 = 0
-            for index in 0..<chunkCount {
-                let remaining = plaintextLength - totalRead
-                let expectedCount = Int(min(UInt64(chunkSize), remaining))
-                let plaintext = try readExactly(expectedCount, from: sourceHandle)
-                let aad = chunkAAD(
-                    header: header,
-                    index: index,
-                    plaintextLength: UInt32(expectedCount)
+            try SandboxDescriptorIO.withStableSourceAndExclusiveDestination(
+                source: source,
+                destination: destination
+            ) { sourceDescriptor, sourceMetadata, destinationDescriptor in
+                let plaintextLength = UInt64(sourceMetadata.st_size)
+                let chunkCount = plaintextLength == 0
+                    ? 0
+                    : ((plaintextLength - 1) / UInt64(chunkSize)) + 1
+                let revisionID = SymmetricKey(size: .bits256).withUnsafeBytes {
+                    Data($0)
+                }
+                let header = makeHeader(
+                    plaintextLength: plaintextLength,
+                    chunkCount: chunkCount,
+                    contextDigest: context.digest,
+                    revisionID: revisionID
                 )
-                let sealed: Data
+                let headerAuthentication: Data
                 do {
-                    sealed = try AES.GCM.seal(
-                        plaintext,
+                    guard let combined = try AES.GCM.seal(
+                        Data(),
                         using: key.symmetricKey,
-                        authenticating: aad
-                    ).combined!
+                        authenticating: header
+                    ).combined else {
+                        throw SandboxEncryptedFileError.authenticationFailed
+                    }
+                    headerAuthentication = combined
                 } catch {
                     throw SandboxEncryptedFileError.authenticationFailed
                 }
-                try destinationHandle.write(contentsOf: sealed)
-                totalRead += UInt64(expectedCount)
-            }
+                guard headerAuthentication.count == Self.authenticationByteCount else {
+                    throw SandboxEncryptedFileError.malformedHeader
+                }
 
-            guard totalRead == plaintextLength else {
-                throw SandboxEncryptedFileError.sourceChanged
+                try SandboxDescriptorIO.writeAll(header, to: destinationDescriptor)
+                try SandboxDescriptorIO.writeAll(
+                    headerAuthentication,
+                    to: destinationDescriptor
+                )
+
+                var totalRead: UInt64 = 0
+                for index in 0..<chunkCount {
+                    let remaining = plaintextLength - totalRead
+                    let expectedCount = Int(min(UInt64(chunkSize), remaining))
+                    let plaintext = try SandboxDescriptorIO.readExactly(
+                        expectedCount,
+                        from: sourceDescriptor,
+                        truncated: SandboxEncryptedFileError.sourceChanged
+                    )
+                    let aad = chunkAAD(
+                        header: header,
+                        index: index,
+                        plaintextLength: UInt32(expectedCount)
+                    )
+                    let sealed: Data
+                    do {
+                        guard let combined = try AES.GCM.seal(
+                            plaintext,
+                            using: key.symmetricKey,
+                            authenticating: aad
+                        ).combined else {
+                            throw SandboxEncryptedFileError.authenticationFailed
+                        }
+                        sealed = combined
+                    } catch {
+                        throw SandboxEncryptedFileError.authenticationFailed
+                    }
+                    try SandboxDescriptorIO.writeAll(
+                        sealed,
+                        to: destinationDescriptor
+                    )
+                    totalRead += UInt64(expectedCount)
+                }
+
+                guard totalRead == plaintextLength,
+                      try SandboxDescriptorIO.readUpTo(
+                          1,
+                          from: sourceDescriptor
+                      ).isEmpty
+                else {
+                    throw SandboxEncryptedFileError.sourceChanged
+                }
             }
-            if let extra = try sourceHandle.read(upToCount: 1), !extra.isEmpty {
-                throw SandboxEncryptedFileError.sourceChanged
-            }
+        } catch {
+            throw Self.mapDescriptorError(error)
         }
     }
 
@@ -202,75 +224,96 @@ public struct SandboxEncryptedFileCodec: Sendable {
         key: SandboxDataEncryptionKey,
         context: SandboxEncryptionContext
     ) throws {
-        try requireAbsent(destination)
-        let sourceValues = try source.resourceValues(forKeys: [.isRegularFileKey])
-        guard sourceValues.isRegularFile == true else {
-            throw SandboxEncryptedFileError.sourceNotRegularFile
-        }
-
-        let sourceHandle = try FileHandle(forReadingFrom: source)
-        defer { try? sourceHandle.close() }
-
-        let header = try readExactly(Self.headerByteCount, from: sourceHandle)
-        let parsed = try parseHeader(header)
-        guard parsed.contextDigest == context.digest else {
-            throw SandboxEncryptedFileError.contextMismatch
-        }
-        let headerAuthentication = try readExactly(
-            Self.authenticationByteCount,
-            from: sourceHandle
-        )
         do {
-            let box = try AES.GCM.SealedBox(combined: headerAuthentication)
-            _ = try AES.GCM.open(box, using: key.symmetricKey, authenticating: header)
-        } catch {
-            throw SandboxEncryptedFileError.authenticationFailed
-        }
-
-        try withAtomicDestination(destination) { destinationHandle in
-            var totalWritten: UInt64 = 0
-            for index in 0..<parsed.chunkCount {
-                let remaining = parsed.plaintextLength - totalWritten
-                let plaintextCount = Int(min(UInt64(parsed.chunkSize), remaining))
-                let sealedCount = plaintextCount + Self.authenticationByteCount
-                let combined = try readExactly(sealedCount, from: sourceHandle)
-                let aad = chunkAAD(
-                    header: header,
-                    index: index,
-                    plaintextLength: UInt32(plaintextCount)
+            try SandboxDescriptorIO.withStableSourceAndExclusiveDestination(
+                source: source,
+                destination: destination
+            ) { sourceDescriptor, _, destinationDescriptor in
+                let header = try SandboxDescriptorIO.readExactly(
+                    Self.headerByteCount,
+                    from: sourceDescriptor,
+                    truncated: SandboxEncryptedFileError.truncated
                 )
-                let plaintext: Data
+                let parsed = try parseHeader(header)
+                let headerAuthentication = try SandboxDescriptorIO.readExactly(
+                    Self.authenticationByteCount,
+                    from: sourceDescriptor,
+                    truncated: SandboxEncryptedFileError.truncated
+                )
                 do {
-                    let box = try AES.GCM.SealedBox(combined: combined)
-                    plaintext = try AES.GCM.open(
+                    let box = try AES.GCM.SealedBox(combined: headerAuthentication)
+                    _ = try AES.GCM.open(
                         box,
                         using: key.symmetricKey,
-                        authenticating: aad
+                        authenticating: header
                     )
                 } catch {
                     throw SandboxEncryptedFileError.authenticationFailed
                 }
-                guard plaintext.count == plaintextCount else {
-                    throw SandboxEncryptedFileError.authenticationFailed
+                guard parsed.contextDigest == context.digest else {
+                    throw SandboxEncryptedFileError.contextMismatch
                 }
-                try destinationHandle.write(contentsOf: plaintext)
-                totalWritten += UInt64(plaintext.count)
-            }
 
-            guard totalWritten == parsed.plaintextLength else {
-                throw SandboxEncryptedFileError.truncated
+                var totalWritten: UInt64 = 0
+                for index in 0..<parsed.chunkCount {
+                    let remaining = parsed.plaintextLength - totalWritten
+                    let plaintextCount = Int(
+                        min(UInt64(parsed.chunkSize), remaining)
+                    )
+                    let sealedCount = plaintextCount + Self.authenticationByteCount
+                    let combined = try SandboxDescriptorIO.readExactly(
+                        sealedCount,
+                        from: sourceDescriptor,
+                        truncated: SandboxEncryptedFileError.truncated
+                    )
+                    let aad = chunkAAD(
+                        header: header,
+                        index: index,
+                        plaintextLength: UInt32(plaintextCount)
+                    )
+                    let plaintext: Data
+                    do {
+                        let box = try AES.GCM.SealedBox(combined: combined)
+                        plaintext = try AES.GCM.open(
+                            box,
+                            using: key.symmetricKey,
+                            authenticating: aad
+                        )
+                    } catch {
+                        throw SandboxEncryptedFileError.authenticationFailed
+                    }
+                    guard plaintext.count == plaintextCount else {
+                        throw SandboxEncryptedFileError.authenticationFailed
+                    }
+                    try SandboxDescriptorIO.writeAll(
+                        plaintext,
+                        to: destinationDescriptor
+                    )
+                    totalWritten += UInt64(plaintext.count)
+                }
+
+                guard totalWritten == parsed.plaintextLength else {
+                    throw SandboxEncryptedFileError.truncated
+                }
+                guard try SandboxDescriptorIO.readUpTo(
+                    1,
+                    from: sourceDescriptor
+                ).isEmpty else {
+                    throw SandboxEncryptedFileError.trailingData
+                }
             }
-            if let extra = try sourceHandle.read(upToCount: 1), !extra.isEmpty {
-                throw SandboxEncryptedFileError.trailingData
-            }
+        } catch {
+            throw Self.mapDescriptorError(error)
         }
     }
 
     private func makeHeader(
         plaintextLength: UInt64,
         chunkCount: UInt64,
-        contextDigest: Data
+        contextDigest: Data,
+        revisionID: Data
     ) -> Data {
+        precondition(revisionID.count == Self.revisionByteCount)
         var header = Data()
         header.append(Self.magic)
         header.appendUInt16(Self.version)
@@ -280,6 +323,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
         header.appendUInt64(plaintextLength)
         header.appendUInt64(chunkCount)
         header.append(contextDigest)
+        header.append(revisionID)
         precondition(header.count == Self.headerByteCount)
         return header
     }
@@ -310,11 +354,16 @@ public struct SandboxEncryptedFileCodec: Sendable {
             ? 0
             : ((plaintextLength - 1) / UInt64(encodedChunkSize)) + 1
         guard chunkCount == expectedChunkCount,
-              cursor + SHA256.byteCount == header.count
+              cursor + SHA256.byteCount + Self.revisionByteCount == header.count
         else {
             throw SandboxEncryptedFileError.malformedHeader
         }
         let contextDigest = header[cursor..<(cursor + SHA256.byteCount)]
+        cursor += SHA256.byteCount
+        let revisionID = header[cursor..<(cursor + Self.revisionByteCount)]
+        guard revisionID.contains(where: { $0 != 0 }) else {
+            throw SandboxEncryptedFileError.malformedHeader
+        }
         return ParsedHeader(
             chunkSize: encodedChunkSize,
             plaintextLength: plaintextLength,
@@ -334,70 +383,25 @@ public struct SandboxEncryptedFileCodec: Sendable {
         return aad
     }
 
-    private func requireAbsent(_ destination: URL) throws {
-        if FileManager.default.fileExists(atPath: destination.path) {
-            throw SandboxEncryptedFileError.destinationExists
+    private static func mapDescriptorError(_ error: Error) -> SandboxEncryptedFileError {
+        if let error = error as? SandboxEncryptedFileError {
+            return error
         }
-    }
-
-    private func withAtomicDestination(
-        _ destination: URL,
-        operation: (FileHandle) throws -> Void
-    ) throws {
-        let fileManager = FileManager.default
-        let parent = destination.deletingLastPathComponent()
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: parent.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            throw SandboxEncryptedFileError.io("destination directory does not exist")
+        guard let error = error as? SandboxDescriptorIOError else {
+            return .io(String(describing: error))
         }
-
-        let temporary = parent.appendingPathComponent(
-            ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
-        )
-        guard fileManager.createFile(
-            atPath: temporary.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw SandboxEncryptedFileError.io("failed to create temporary destination")
+        switch error {
+        case .sourceNotRegularFile:
+            return .sourceNotRegularFile
+        case .sourceChanged:
+            return .sourceChanged
+        case .destinationExists:
+            return .destinationExists
+        case .unsafeDestination:
+            return .io("destination path is unsafe")
+        case .io(let code):
+            return .io("errno \(code)")
         }
-
-        do {
-            let handle = try FileHandle(forWritingTo: temporary)
-            do {
-                try operation(handle)
-                try handle.synchronize()
-                try handle.close()
-            } catch {
-                try? handle.close()
-                throw error
-            }
-            try fileManager.moveItem(at: temporary, to: destination)
-        } catch {
-            try? fileManager.removeItem(at: temporary)
-            if let typed = error as? SandboxEncryptedFileError {
-                throw typed
-            }
-            throw SandboxEncryptedFileError.io(String(describing: error))
-        }
-    }
-
-    private func readExactly(_ count: Int, from handle: FileHandle) throws -> Data {
-        guard count >= 0 else {
-            throw SandboxEncryptedFileError.malformedHeader
-        }
-        var result = Data()
-        result.reserveCapacity(count)
-        while result.count < count {
-            let next = try handle.read(upToCount: count - result.count) ?? Data()
-            guard !next.isEmpty else {
-                throw SandboxEncryptedFileError.truncated
-            }
-            result.append(next)
-        }
-        return result
     }
 
     private struct ParsedHeader {

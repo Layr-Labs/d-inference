@@ -179,6 +179,143 @@ final class SandboxEncryptedFileTests: XCTestCase {
             Data("keep".utf8)
         )
     }
+
+    func testEqualLengthCiphertextRevisionChunkSpliceIsRejected() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let secondPlaintext = fixture.directory.appendingPathComponent("plain-b")
+        let secondEncrypted = fixture.directory.appendingPathComponent("encrypted-b")
+        let hybrid = fixture.directory.appendingPathComponent("hybrid")
+        let first = Data(repeating: 0x11, count: 3 * 65_536)
+        let second = Data(repeating: 0x22, count: 3 * 65_536)
+        try first.write(to: fixture.plaintext)
+        try second.write(to: secondPlaintext)
+        let codec = try SandboxEncryptedFileCodec(chunkSize: 65_536)
+        try codec.encrypt(
+            source: fixture.plaintext,
+            destination: fixture.encrypted,
+            key: fixture.key,
+            context: fixture.context
+        )
+        try codec.encrypt(
+            source: secondPlaintext,
+            destination: secondEncrypted,
+            key: fixture.key,
+            context: fixture.context
+        )
+
+        let headerAndAuthenticationBytes = 96 + 28
+        let sealedChunkBytes = 65_536 + 28
+        let secondChunk = headerAndAuthenticationBytes + sealedChunkBytes
+        let range = secondChunk..<(secondChunk + sealedChunkBytes)
+        let firstCiphertext = try Data(contentsOf: fixture.encrypted)
+        var hybridCiphertext = try Data(contentsOf: secondEncrypted)
+        hybridCiphertext.replaceSubrange(range, with: firstCiphertext[range])
+        try hybridCiphertext.write(to: hybrid)
+
+        XCTAssertThrowsError(try codec.decrypt(
+            source: hybrid,
+            destination: fixture.decrypted,
+            key: fixture.key,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxEncryptedFileError,
+                .authenticationFailed
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.decrypted.path)
+        )
+    }
+
+    func testEachEncryptionHasDistinctAuthenticatedRevision() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let secondEncrypted = fixture.directory.appendingPathComponent("encrypted-b")
+        try Data(repeating: 0x5A, count: 100_000).write(to: fixture.plaintext)
+        let codec = try SandboxEncryptedFileCodec(chunkSize: 65_536)
+        for destination in [fixture.encrypted, secondEncrypted] {
+            try codec.encrypt(
+                source: fixture.plaintext,
+                destination: destination,
+                key: fixture.key,
+                context: fixture.context
+            )
+        }
+
+        let first = try Data(contentsOf: fixture.encrypted)
+        let second = try Data(contentsOf: secondEncrypted)
+        XCTAssertNotEqual(first[64..<96], second[64..<96])
+
+        var tampered = first
+        tampered[64] ^= 0x80
+        let tamperedURL = fixture.directory.appendingPathComponent("tampered")
+        try tampered.write(to: tamperedURL)
+        XCTAssertThrowsError(try codec.decrypt(
+            source: tamperedURL,
+            destination: fixture.decrypted,
+            key: fixture.key,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxEncryptedFileError,
+                .authenticationFailed
+            )
+        }
+    }
+
+    func testRejectsLegacySpliceableFormatVersion() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try Data("legacy".utf8).write(to: fixture.plaintext)
+        let codec = try SandboxEncryptedFileCodec()
+        try codec.encrypt(
+            source: fixture.plaintext,
+            destination: fixture.encrypted,
+            key: fixture.key,
+            context: fixture.context
+        )
+        var encrypted = try Data(contentsOf: fixture.encrypted)
+        encrypted[8] = 0
+        encrypted[9] = 1
+        try encrypted.write(to: fixture.encrypted, options: .atomic)
+
+        XCTAssertThrowsError(try codec.decrypt(
+            source: fixture.encrypted,
+            destination: fixture.decrypted,
+            key: fixture.key,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxEncryptedFileError,
+                .unsupportedVersion(1)
+            )
+        }
+    }
+
+    func testRejectsSymbolicLinkSource() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try Data("source".utf8).write(to: fixture.plaintext)
+        let link = fixture.directory.appendingPathComponent("plain-link")
+        try FileManager.default.createSymbolicLink(
+            at: link,
+            withDestinationURL: fixture.plaintext
+        )
+
+        XCTAssertThrowsError(try SandboxEncryptedFileCodec().encrypt(
+            source: link,
+            destination: fixture.encrypted,
+            key: fixture.key,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxEncryptedFileError,
+                .sourceNotRegularFile
+            )
+        }
+    }
 }
 
 private struct Fixture {

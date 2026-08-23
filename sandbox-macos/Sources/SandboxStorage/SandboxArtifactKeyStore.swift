@@ -15,6 +15,7 @@ public enum SandboxArtifactKeyStoreError:
     case contextMismatch
     case keyIdentityMismatch
     case authenticationFailed
+    case sourceChanged
     case unsafePermissions(UInt16)
     case unsafeOwner(UInt32)
     case io(String)
@@ -33,6 +34,8 @@ public enum SandboxArtifactKeyStoreError:
             return "wrapped sandbox key belongs to another Secure Enclave identity"
         case .authenticationFailed:
             return "wrapped sandbox key authentication failed"
+        case .sourceChanged:
+            return "wrapped sandbox key changed while it was being read"
         case .unsafePermissions(let mode):
             return "wrapped sandbox key permissions are too broad: \(String(mode, radix: 8))"
         case .unsafeOwner(let owner):
@@ -60,9 +63,6 @@ public struct SandboxArtifactKeyStore: Sendable {
         context: SandboxEncryptionContext,
         createdAt: Date = Date()
     ) throws -> SandboxDataEncryptionKey {
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw SandboxArtifactKeyStoreError.destinationExists
-        }
         let dataEncryptionKey = SandboxDataEncryptionKey.generate()
         let publicKeyDigest = try keyIdentityDigest()
         let payload = Self.makePayload(
@@ -97,14 +97,25 @@ public struct SandboxArtifactKeyStore: Sendable {
         from source: URL,
         context: SandboxEncryptionContext
     ) throws -> SandboxDataEncryptionKey {
-        try Self.requireSafeFile(source)
         let data: Data
         do {
-            let handle = try FileHandle(forReadingFrom: source)
-            defer { try? handle.close() }
-            data = try handle.read(upToCount: Self.maximumEnvelopeBytes + 1) ?? Data()
+            data = try SandboxDescriptorIO.withStableSource(
+                at: source
+            ) { descriptor, metadata in
+                let mode = UInt16(metadata.st_mode & 0o777)
+                guard mode & 0o077 == 0 else {
+                    throw SandboxArtifactKeyStoreError.unsafePermissions(mode)
+                }
+                guard metadata.st_uid == geteuid() else {
+                    throw SandboxArtifactKeyStoreError.unsafeOwner(metadata.st_uid)
+                }
+                return try SandboxDescriptorIO.readUpTo(
+                    Self.maximumEnvelopeBytes + 1,
+                    from: descriptor
+                )
+            }
         } catch {
-            throw SandboxArtifactKeyStoreError.io(String(describing: error))
+            throw Self.mapDescriptorError(error)
         }
         guard !data.isEmpty, data.count <= Self.maximumEnvelopeBytes else {
             throw SandboxArtifactKeyStoreError.invalidEnvelope
@@ -189,80 +200,38 @@ public struct SandboxArtifactKeyStore: Sendable {
         }
     }
 
-    private static func requireSafeFile(_ source: URL) throws {
-        let values: URLResourceValues
+    private static func writeAtomically(_ data: Data, to destination: URL) throws {
         do {
-            values = try source.resourceValues(forKeys: [
-                .isRegularFileKey,
-                .isSymbolicLinkKey,
-            ])
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: destination
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(data, to: descriptor)
+            }
         } catch {
-            throw SandboxArtifactKeyStoreError.io(String(describing: error))
-        }
-        guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw SandboxArtifactKeyStoreError.invalidEnvelope
-        }
-        let attributes: [FileAttributeKey: Any]
-        do {
-            attributes = try FileManager.default.attributesOfItem(
-                atPath: source.path
-            )
-        } catch {
-            throw SandboxArtifactKeyStoreError.io(String(describing: error))
-        }
-        let mode = (attributes[.posixPermissions] as? NSNumber)?.uint16Value
-            ?? UInt16.max
-        guard mode & 0o077 == 0 else {
-            throw SandboxArtifactKeyStoreError.unsafePermissions(mode)
-        }
-        let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value
-            ?? UInt32.max
-        guard owner == geteuid() else {
-            throw SandboxArtifactKeyStoreError.unsafeOwner(owner)
+            throw mapDescriptorError(error)
         }
     }
 
-    private static func writeAtomically(_ data: Data, to destination: URL) throws {
-        let fileManager = FileManager.default
-        let parent = destination.deletingLastPathComponent()
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: parent.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            throw SandboxArtifactKeyStoreError.io(
-                "destination directory does not exist"
-            )
+    private static func mapDescriptorError(
+        _ error: Error
+    ) -> SandboxArtifactKeyStoreError {
+        if let error = error as? SandboxArtifactKeyStoreError {
+            return error
         }
-        let temporary = parent.appendingPathComponent(
-            ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
-        )
-        guard fileManager.createFile(
-            atPath: temporary.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw SandboxArtifactKeyStoreError.io(
-                "failed to create temporary key envelope"
-            )
+        guard let error = error as? SandboxDescriptorIOError else {
+            return .io(String(describing: error))
         }
-
-        do {
-            let handle = try FileHandle(forWritingTo: temporary)
-            do {
-                try handle.write(contentsOf: data)
-                try handle.synchronize()
-                try handle.close()
-            } catch {
-                try? handle.close()
-                throw error
-            }
-            try fileManager.moveItem(at: temporary, to: destination)
-        } catch {
-            try? fileManager.removeItem(at: temporary)
-            if let typed = error as? SandboxArtifactKeyStoreError {
-                throw typed
-            }
-            throw SandboxArtifactKeyStoreError.io(String(describing: error))
+        switch error {
+        case .sourceNotRegularFile:
+            return .invalidEnvelope
+        case .sourceChanged:
+            return .sourceChanged
+        case .destinationExists:
+            return .destinationExists
+        case .unsafeDestination:
+            return .io("destination path is unsafe")
+        case .io(let code):
+            return .io("errno \(code)")
         }
     }
 

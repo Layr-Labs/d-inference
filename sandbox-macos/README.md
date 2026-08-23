@@ -23,10 +23,11 @@ approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
 host-substrate proof, not a multi-tenant service.
 
-Artifact authentication currently binds sandbox generation and disk role, but
-does not establish which of two otherwise valid ciphertext revisions is newest.
-Cached-image restore therefore remains disabled until the coordinator-backed
-artifact manifest supplies and verifies a monotonic revision.
+Artifact authentication binds sandbox generation, disk role, and a random
+per-encryption revision ID, so chunks from separate revisions cannot be spliced.
+It does not establish which of two complete, valid ciphertext revisions is
+newest. Cached-image restore therefore remains disabled until the
+coordinator-backed artifact manifest supplies and verifies a monotonic revision.
 
 ## Build and test
 

@@ -162,6 +162,35 @@ final class SandboxArtifactKeyStoreTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: fixture.envelope), Data("keep".utf8))
     }
+
+    func testLoadRejectsSymbolicLinkEnvelope() throws {
+        try XCTSkipUnless(
+            SandboxSecureEnclaveKey.isAvailable,
+            "test requires Apple Secure Enclave hardware"
+        )
+        let fixture = try KeyFixture()
+        defer { fixture.remove() }
+        let keyStore = SandboxArtifactKeyStore(
+            enclaveKey: try SandboxSecureEnclaveKey.makeTransient()
+        )
+        _ = try keyStore.create(at: fixture.envelope, context: fixture.context)
+        let target = fixture.directory.appendingPathComponent("workspace.target")
+        try FileManager.default.moveItem(at: fixture.envelope, to: target)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.envelope,
+            withDestinationURL: target
+        )
+
+        XCTAssertThrowsError(try keyStore.load(
+            from: fixture.envelope,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxArtifactKeyStoreError,
+                .invalidEnvelope
+            )
+        }
+    }
 }
 
 private struct KeyFixture {

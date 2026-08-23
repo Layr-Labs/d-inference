@@ -30,6 +30,7 @@ public struct MacOSRestoreImageRecord: Codable, Equatable, Sendable {
 public enum MacOSRestoreImageError: Error, Equatable, Sendable, CustomStringConvertible {
     case unsupportedHost
     case noSupportedConfiguration
+    case fetchFailed(String)
 
     public var description: String {
         switch self {
@@ -37,6 +38,8 @@ public enum MacOSRestoreImageError: Error, Equatable, Sendable, CustomStringConv
             return "this host cannot fetch a supported macOS restore image"
         case .noSupportedConfiguration:
             return "the restore image has no configuration supported by this host"
+        case .fetchFailed(let message):
+            return "failed to fetch the supported macOS restore image: \(message)"
         }
     }
 }
@@ -45,7 +48,33 @@ public struct MacOSRestoreImageCatalog: Sendable {
     public init() {}
 
     public func latestSupported() async throws -> MacOSRestoreImageRecord {
-        let image = try await fetchLatestSupported()
+        try await withCheckedThrowingContinuation { continuation in
+            VZMacOSRestoreImage.fetchLatestSupported { result in
+                switch result {
+                case .success(let image):
+                    do {
+                        continuation.resume(returning: try Self.makeRecord(from: image))
+                    } catch {
+                        continuation.resume(
+                            throwing: MacOSRestoreImageError.fetchFailed(
+                                String(describing: error)
+                            )
+                        )
+                    }
+                case .failure(let error):
+                    continuation.resume(
+                        throwing: MacOSRestoreImageError.fetchFailed(
+                            String(describing: error)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private static func makeRecord(
+        from image: VZMacOSRestoreImage
+    ) throws -> MacOSRestoreImageRecord {
         guard let requirements = image.mostFeaturefulSupportedConfiguration else {
             throw MacOSRestoreImageError.noSupportedConfiguration
         }
@@ -57,14 +86,6 @@ public struct MacOSRestoreImageCatalog: Sendable {
             minimumMemoryBytes: requirements.minimumSupportedMemorySize,
             hardwareModelData: requirements.hardwareModel.dataRepresentation
         )
-    }
-
-    private func fetchLatestSupported() async throws -> VZMacOSRestoreImage {
-        try await withCheckedThrowingContinuation { continuation in
-            VZMacOSRestoreImage.fetchLatestSupported { result in
-                continuation.resume(with: result)
-            }
-        }
     }
 
     private static func versionString(_ version: OperatingSystemVersion) -> String {

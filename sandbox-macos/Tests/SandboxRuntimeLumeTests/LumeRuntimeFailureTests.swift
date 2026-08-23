@@ -276,6 +276,153 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testAuthenticatedReadinessRetriesTransientFailuresBeforeSuccess()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "authenticated-readiness-transient"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 4,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        try await runtime.start(name: fixture.virtualMachineName)
+
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 4)
+        XCTAssertFalse(fixture.invalidGuestReadinessProbeWasObserved)
+        let timedOutProbeProcessIdentifier =
+            try await fixture.waitForGuestReadinessProbeToStart()
+        try await fixture.waitForProcessExit(
+            timedOutProbeProcessIdentifier
+        )
+        let record = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )
+        XCTAssertEqual(record?.state, .running)
+        XCTAssertEqual(record?.guestReady, true)
+        try await runtime.stop(name: fixture.virtualMachineName)
+    }
+
+    func testAlreadyRunningTCPReadyGuestStillRequiresAuthenticatedProbe()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            initialState: "ready",
+            behavior: "authenticated-readiness-blocking"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 30,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        do {
+            try await runtime.start(name: fixture.virtualMachineName)
+            XCTFail("TCP readiness must not bypass authentication")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationTimedOut(
+                    "\(fixture.virtualMachineName) guest readiness"
+                )
+            )
+        }
+
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
+        let probeProcessIdentifier =
+            try await fixture.waitForGuestReadinessProbeToStart()
+        try await fixture.waitForProcessExit(probeProcessIdentifier)
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .running)
+        try await runtime.stop(name: fixture.virtualMachineName)
+    }
+
+    func testAuthenticatedReadinessDeadlineStopsNewlyStartedVirtualMachine()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "authenticated-readiness-blocking"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 30,
+                retryDelay: .milliseconds(10)
+            )
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        do {
+            try await runtime.start(name: fixture.virtualMachineName)
+            XCTFail("unauthenticated guest readiness must time out")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationTimedOut(
+                    "\(fixture.virtualMachineName) guest readiness"
+                )
+            )
+        }
+
+        XCTAssertLessThan(clock.now - startedAt, .seconds(5))
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
+        XCTAssertFalse(fixture.invalidGuestReadinessProbeWasObserved)
+        let probeProcessIdentifier =
+            try await fixture.waitForGuestReadinessProbeToStart()
+        try await fixture.waitForProcessExit(probeProcessIdentifier)
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+    }
+
+    func testCancelledAuthenticatedReadinessCleansUpProbeAndVirtualMachine()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "authenticated-readiness-blocking"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 30,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 30,
+                retryDelay: .milliseconds(10)
+            )
+        )
+        let start = Task {
+            try await runtime.start(name: fixture.virtualMachineName)
+        }
+        let probeProcessIdentifier =
+            try await fixture.waitForGuestReadinessProbeToStart()
+
+        start.cancel()
+
+        do {
+            try await start.value
+            XCTFail("cancelled readiness probe should throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        try await fixture.waitForProcessExit(probeProcessIdentifier)
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.invalidGuestReadinessProbeWasObserved)
+    }
+
     func testCancelledStartStopsNewlyStartedVirtualMachine() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }
@@ -610,6 +757,10 @@ private struct FakeLumeFixture {
     let createStarted: URL
     let listStarted: URL
     let guestCommandStarted: URL
+    let guestReadinessProbeAttemptsFile: URL
+    let guestReadinessProbeStarted: URL
+    let guestReadinessProbeProcessIdentifier: URL
+    let invalidGuestReadinessProbe: URL
     let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
 
@@ -651,6 +802,18 @@ private struct FakeLumeFixture {
         listStarted = directory.appendingPathComponent("list-started")
         guestCommandStarted = directory.appendingPathComponent(
             "guest-command-started"
+        )
+        guestReadinessProbeAttemptsFile = directory.appendingPathComponent(
+            "guest-readiness-probe-attempts"
+        )
+        guestReadinessProbeStarted = directory.appendingPathComponent(
+            "guest-readiness-probe-started"
+        )
+        guestReadinessProbeProcessIdentifier = directory.appendingPathComponent(
+            "guest-readiness-probe-pid"
+        )
+        invalidGuestReadinessProbe = directory.appendingPathComponent(
+            "invalid-guest-readiness-probe"
         )
         restoreImage = directory.appendingPathComponent("restore.ipsw")
         try FileManager.default.createDirectory(
@@ -701,15 +864,19 @@ private struct FakeLumeFixture {
     }
 
     func makeRuntime(
-        commandTimeoutSeconds: UInt32 = 1
+        commandTimeoutSeconds: UInt32 = 1,
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .production
     ) throws -> LumeVirtualMachineRuntime {
-        LumeVirtualMachineRuntime(configuration: try LumeRuntimeConfiguration(
-            executable: executable,
-            storageDirectory: storage,
-            commandTimeoutSeconds: commandTimeoutSeconds,
-            createTimeoutSeconds: commandTimeoutSeconds,
-            trustPolicy: .developmentAdHoc
-        ))
+        LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: executable,
+                storageDirectory: storage,
+                commandTimeoutSeconds: commandTimeoutSeconds,
+                createTimeoutSeconds: commandTimeoutSeconds,
+                trustPolicy: .developmentAdHoc
+            ),
+            guestReadinessPolicy: guestReadinessPolicy
+        )
     }
 
     func waitForState(_ expected: String) async throws {
@@ -754,6 +921,60 @@ private struct FakeLumeFixture {
 
     var guestCommandWasStarted: Bool {
         FileManager.default.fileExists(atPath: guestCommandStarted.path)
+    }
+
+    var guestReadinessProbeAttempts: Int {
+        guard let contents = try? String(
+            contentsOf: guestReadinessProbeAttemptsFile,
+            encoding: .utf8
+        ) else {
+            return 0
+        }
+        return Int(
+            contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) ?? 0
+    }
+
+    var invalidGuestReadinessProbeWasObserved: Bool {
+        FileManager.default.fileExists(
+            atPath: invalidGuestReadinessProbe.path
+        )
+    }
+
+    func waitForGuestReadinessProbeToStart() async throws -> pid_t {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        repeat {
+            if FileManager.default.fileExists(
+                atPath: guestReadinessProbeStarted.path
+            ),
+               let contents = try? String(
+                   contentsOf: guestReadinessProbeProcessIdentifier,
+                   encoding: .utf8
+               ),
+               let processIdentifier = Int32(
+                   contents.trimmingCharacters(
+                       in: .whitespacesAndNewlines
+                   )
+               )
+            {
+                return processIdentifier
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.guestReadinessProbeStartTimeout
+    }
+
+    func waitForProcessExit(_ processIdentifier: pid_t) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        repeat {
+            if kill(processIdentifier, 0) != 0, errno == ESRCH {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.processExitTimeout(processIdentifier)
     }
 
     func remove() throws {
@@ -899,6 +1120,12 @@ private struct FakeLumeFixture {
         if [ "$state" = "ready" ]; then
           ready=true
           state=running
+        elif [ "$state" = "running" ]; then
+          case "$behavior" in
+            authenticated-readiness-*)
+              ready=true
+              ;;
+          esac
         fi
         printf '[{"name":"sandbox-failure-test","cpuCount":4,'
         printf '"memorySize":8589934592,"diskSize":{"total":107374182400},'
@@ -915,6 +1142,65 @@ private struct FakeLumeFixture {
         ;;
       ssh)
         : > "$root/guest-command-started"
+        case "$behavior" in
+          authenticated-readiness-*)
+            expected_probe="/usr/bin/env -i HOME=/Users/lume LANG=C LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/tmp /usr/bin/true"
+            if [ "$#" -ne 8 ] \
+              || [ "$2" != "sandbox-failure-test" ] \
+              || [ "$3" != "--storage" ] \
+              || [ "$4" != "$root/vms" ] \
+              || [ "$5" != "--timeout" ] \
+              || [ "$6" != "1" ] \
+              || [ "$7" != "--nio-only" ] \
+              || [ "$8" != "$expected_probe" ] \
+              || [ "${LUME_HOME:-}" != "$root/vms/.darkbloom-runtime" ] \
+              || [ "${LUME_LOG_LEVEL:-}" != "error" ] \
+              || [ "${LUME_TELEMETRY_ENABLED:-}" != "false" ] \
+              || [ "${LANG:-}" != "C" ] \
+              || [ "${LC_ALL:-}" != "C" ] \
+              || [ "${NO_COLOR:-}" != "1" ] \
+              || [ "${XDG_CACHE_HOME:-}" != "$root/vms/.darkbloom-runtime/cache" ] \
+              || [ "${XDG_CONFIG_HOME:-}" != "$root/vms/.darkbloom-runtime/config" ]; then
+              : > "$root/invalid-guest-readiness-probe"
+              printf '%s\\n' "invalid authenticated readiness probe" >&2
+              exit 64
+            fi
+            probe_attempts=0
+            if [ -f "$root/guest-readiness-probe-attempts" ]; then
+              probe_attempts="$(tr -d '\\n' < "$root/guest-readiness-probe-attempts")"
+            fi
+            probe_attempts=$((probe_attempts + 1))
+            printf '%s\\n' "$probe_attempts" \
+              > "$root/guest-readiness-probe-attempts"
+            case "$behavior" in
+              authenticated-readiness-transient)
+                case "$probe_attempts" in
+                  1)
+                    printf '%s\\n' "SSH authentication failed" >&2
+                    exit 69
+                    ;;
+                  2)
+                    printf '%s\\n' "$$" > "$root/guest-readiness-probe-pid"
+                    : > "$root/guest-readiness-probe-started"
+                    while :; do :; done
+                    ;;
+                  3)
+                    /bin/dd if=/dev/zero bs=8192 count=1 2>/dev/null
+                    exit 0
+                    ;;
+                  *)
+                    exit 0
+                    ;;
+                esac
+                ;;
+              authenticated-readiness-blocking)
+                printf '%s\\n' "$$" > "$root/guest-readiness-probe-pid"
+                : > "$root/guest-readiness-probe-started"
+                while :; do :; done
+                ;;
+            esac
+            ;;
+        esac
         printf '%s\\n' "unexpected fake Lume guest command" >&2
         exit 64
         ;;
@@ -981,4 +1267,6 @@ private enum FakeLumeFixtureError: Error {
     case stateTimeout(String)
     case createStartTimeout
     case listStartTimeout
+    case guestReadinessProbeStartTimeout
+    case processExitTimeout(pid_t)
 }

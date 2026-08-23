@@ -43,7 +43,8 @@ extension LumeVirtualMachineRuntime {
         var guestCommandMayBeRunning = false
         var requiresVMStop = false
         do {
-            guard try await inspect(name: name)?.state == .running else {
+            let preflight = try await inspect(name: name)
+            guard preflight?.state == .running else {
                 throw SandboxRuntimeError.unsupported(
                     "guest commands require a running VM"
                 )
@@ -51,20 +52,16 @@ extension LumeVirtualMachineRuntime {
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             let sshTimeoutSeconds = request.timeoutSeconds + 5
             guestCommandMayBeRunning = true
-            let result = try await processRunner.run(
+            let result = try await Self.runGuestSSH(
+                runner: processRunner,
                 executable: configuration.executable,
-                arguments: [
-                    "ssh",
-                    name,
-                    "--storage", configuration.storageDirectory.path,
-                    "--timeout", String(sshTimeoutSeconds),
-                    "--nio-only",
-                    encodedCommand,
-                ],
+                storagePath: configuration.storageDirectory.path,
                 environment: workspace.environment,
-                timeoutSeconds: request.timeoutSeconds + 10,
-                maximumOutputBytes:
-                    LumeGuestCommandEnvelope.maximumEnvelopeBytes
+                name: name,
+                encodedCommand: encodedCommand,
+                lumeTimeoutSeconds: sshTimeoutSeconds,
+                hostTimeoutSeconds: request.timeoutSeconds + 10,
+                maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
             )
             guard !result.standardOutputTruncated,
                   !result.standardErrorTruncated
@@ -162,18 +159,17 @@ extension LumeVirtualMachineRuntime {
             idempotencyKey: idempotencyKey
         )
         let cleanup = Task.detached {
-            let result = try await runner.run(
+            let result = try await Self.runGuestSSH(
+                runner: runner,
                 executable: executable,
-                arguments: [
-                    "ssh",
-                    name,
-                    "--storage", storagePath,
-                    "--timeout", String(timeoutSeconds),
-                    "--nio-only",
-                    cancellation,
-                ],
+                storagePath: storagePath,
                 environment: environment,
-                timeoutSeconds: timeoutSeconds + 10
+                name: name,
+                encodedCommand: cancellation,
+                lumeTimeoutSeconds: timeoutSeconds,
+                hostTimeoutSeconds: timeoutSeconds + 10,
+                maximumOutputBytes:
+                    SandboxProcessRunner.defaultMaximumOutputBytes
             )
             guard result.exitCode == 0,
                   !result.standardOutputTruncated,
@@ -191,5 +187,32 @@ extension LumeVirtualMachineRuntime {
             }
         }
         try await cleanup.value
+    }
+
+    private static func runGuestSSH(
+        runner: SandboxProcessRunner,
+        executable: URL,
+        storagePath: String,
+        environment: [String: String],
+        name: String,
+        encodedCommand: String,
+        lumeTimeoutSeconds: UInt32,
+        hostTimeoutSeconds: UInt32,
+        maximumOutputBytes: Int
+    ) async throws -> SandboxProcessResult {
+        try await runner.run(
+            executable: executable,
+            arguments: [
+                "ssh",
+                name,
+                "--storage", storagePath,
+                "--timeout", String(lumeTimeoutSeconds),
+                "--nio-only",
+                encodedCommand,
+            ],
+            environment: environment,
+            timeoutSeconds: hostTimeoutSeconds,
+            maximumOutputBytes: maximumOutputBytes
+        )
     }
 }

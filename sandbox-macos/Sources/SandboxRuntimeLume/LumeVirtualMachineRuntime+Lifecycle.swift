@@ -190,12 +190,10 @@ extension LumeVirtualMachineRuntime {
             in: configuration.storageDirectory
         )
         if existing.state == .running {
-            if existing.guestReady != true {
-                try await waitForGuestReady(
-                    name: name,
-                    timeoutSeconds: configuration.commandTimeoutSeconds
-                )
-            }
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
             return
         }
         if existing.state == .starting {
@@ -491,10 +489,52 @@ extension LumeVirtualMachineRuntime {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
         repeat {
-            if try await inspect(name: name)?.guestReady == true {
-                return
+            let record: SandboxVirtualMachineRecord?
+            do {
+                record = try await LumeGuestReadinessDeadline.run(
+                    clock: clock,
+                    deadline: deadline
+                ) {
+                    try await self.inspect(name: name)
+                }
+            } catch is LumeGuestReadinessDeadlineExceeded {
+                break
             }
-            try await Task.sleep(for: .milliseconds(500))
+            if record?.guestReady == true {
+                do {
+                    if try await LumeGuestReadinessProbe.run(
+                        runner: processRunner,
+                        executable: configuration.executable,
+                        storagePath: configuration.storageDirectory.path,
+                        environment: workspace.environment,
+                        name: name,
+                        policy: guestReadinessPolicy,
+                        clock: clock,
+                        deadline: deadline
+                    ) {
+                        return
+                    }
+                } catch let error as CancellationError {
+                    throw error
+                } catch is LumeGuestReadinessDeadlineExceeded {
+                    break
+                } catch {
+                    if clock.now >= deadline {
+                        break
+                    }
+                }
+            }
+            guard clock.now < deadline else {
+                break
+            }
+            let retryDeadline = min(
+                clock.now.advanced(by: guestReadinessPolicy.retryDelay),
+                deadline
+            )
+            try await clock.sleep(
+                until: retryDeadline,
+                tolerance: .zero
+            )
         } while clock.now < deadline
         throw SandboxRuntimeError.operationTimedOut(
             "\(name) guest readiness"

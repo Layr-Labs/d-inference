@@ -9,6 +9,7 @@ package actor LumeVirtualMachineRuntime:
     let configuration: LumeRuntimeConfiguration
     let workspace: LumeRuntimeWorkspace
     let processRunner: SandboxProcessRunner
+    let guestReadinessPolicy: LumeGuestReadinessPolicy
     let capacityArbiter: SandboxHostCapacityArbiter?
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
@@ -17,13 +18,15 @@ package actor LumeVirtualMachineRuntime:
     package init(
         configuration: LumeRuntimeConfiguration,
         capacityArbiter: SandboxHostCapacityArbiter? = nil,
-        processRunner: SandboxProcessRunner = SandboxProcessRunner()
+        processRunner: SandboxProcessRunner = SandboxProcessRunner(),
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .production
     ) {
         self.configuration = configuration
         self.workspace = LumeRuntimeWorkspace(
             storageDirectory: configuration.storageDirectory
         )
         self.processRunner = processRunner
+        self.guestReadinessPolicy = guestReadinessPolicy
         self.capacityArbiter = capacityArbiter
     }
 

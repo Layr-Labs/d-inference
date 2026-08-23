@@ -5,7 +5,7 @@ index a3ec3813..157ad9f0 100644
 @@ -38,6 +38,12 @@ struct SSH: AsyncParsableCommand {
      @Option(name: [.short, .long], help: "Command timeout in seconds (0 for no timeout, default: 60)")
      var timeout: Int = 60
- 
+
 +    @Flag(
 +        name: .customLong("nio-only"),
 +        help: "Fail instead of falling back to the system SSH client"
@@ -29,7 +29,7 @@ index 8b08accb..4bef1802 100644
 --- a/libs/lume/src/SSH/SSHClient.swift
 +++ b/libs/lume/src/SSH/SSHClient.swift
 @@ -17,6 +17,8 @@ public struct SSHResult: Sendable {
- 
+
  /// SSH client using SwiftNIO SSH for typed, versioned API
  public actor SSHClient {
 +    public static let maximumCommandOutputBytes = 4 * 1_048_576
@@ -49,14 +49,14 @@ index 8b08accb..4bef1802 100644
                          try childChannel.pipeline.syncOperations.addHandler(execHandler)
                      }
 @@ -304,13 +308,19 @@ private final class CommandExecHandler: ChannelDuplexHandler, @unchecked Sendabl
- 
+
      private let command: String
      private let resultState: CommandResultState
 +    private let maximumOutputBytes: Int
      private var outputBuffer: ByteBuffer
      private var exitStatus: Int32?
      private var channelClosed = false
- 
+
 -    init(command: String, resultState: CommandResultState) {
 +    init(
 +        command: String,
@@ -68,9 +68,9 @@ index 8b08accb..4bef1802 100644
 +        self.maximumOutputBytes = maximumOutputBytes
          self.outputBuffer = ByteBuffer()
      }
- 
+
 @@ -337,7 +347,15 @@ private final class CommandExecHandler: ChannelDuplexHandler, @unchecked Sendabl
- 
+
          switch channelData.data {
          case .byteBuffer(let buffer):
 -            // Collect all output (stdout and stderr)

@@ -14,7 +14,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedPatchPath =
         "ThirdParty/lume-patches/0001-bound-ssh-command-output.patch"
     public static let pinnedPatchSHA256 =
-        "08b850f841b3301f9d579315c1e5b259d37acf695a9eea1949e52c6c768c83df"
+        "4d10399041b64a60ebde176009ffff761235cc1e70013b7e1549a2c79a34a430"
 
     public let executable: URL
     public let storageDirectory: URL

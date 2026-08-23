@@ -26,13 +26,40 @@ public struct ProviderLaunchSnapshot: Codable, Sendable, Equatable {
 }
 
 extension LaunchAgent {
-    public static func launchSnapshot() -> ProviderLaunchSnapshot? {
-        for label in supportedLabels {
+    /// SIGINFO is ignored by older macOS provider builds, so a new CLI cannot
+    /// accidentally terminate an old daemon that lacks operator drain support.
+    static let operatorDrainSignal = "SIGINFO"
+
+    /// One snapshot per loaded canonical or legacy provider job. A loaded job
+    /// may have no live process, in which case `process` is nil.
+    public static func launchSnapshots() -> [ProviderLaunchSnapshot] {
+        supportedLabels.compactMap { label in
             let output = LaunchctlControl.printOutput(label: label)
-            guard output.succeeded else { continue }
+            guard output.succeeded else { return nil }
             return parseLaunchSnapshot(label: label, output: output.stdout)
         }
-        return nil
+    }
+
+    public static func launchSnapshot() -> ProviderLaunchSnapshot? {
+        launchSnapshots().first
+    }
+
+    /// Send the backward-safe operator signal through launchd, targeting the
+    /// loaded job rather than an untrusted PID read from disk. The caller still
+    /// waits on the captured `ProcessIdentity`, so a later launch cannot be
+    /// mistaken for completion of the process that was asked to drain.
+    public static func requestGracefulExit(label: String) throws {
+        guard supportedLabels.contains(label) else {
+            throw LaunchAgentError.signalFailed("unsupported service label \(label)")
+        }
+        let result = LaunchctlControl.run(
+            ["kill", operatorDrainSignal, LaunchctlControl.target(label: label)],
+            captureStderr: true
+        )
+        guard result.succeeded else {
+            throw LaunchAgentError.signalFailed(
+                result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     static func parseLaunchSnapshot(

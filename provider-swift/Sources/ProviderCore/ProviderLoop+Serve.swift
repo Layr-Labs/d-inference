@@ -270,7 +270,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDrainingForUpdate {
+                    if isDrainingForLifecycle {
                         sendDrainingPrefetchFailure(modelId: modelId, send: send)
                     } else {
                         staleDesiredPrefetches.remove(modelId)
@@ -278,13 +278,13 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDrainingForUpdate {
+                    if isDrainingForLifecycle {
                         // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
+                        // declarative). A successful restart makes it moot,
+                        // since registration receives fresh desired state. An
+                        // aborted drain replays it before normal serving resumes.
                         deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
+                        logger.info("Deferring desired_models during lifecycle drain (\(entries.count) entr(ies)); replayed if the drain is aborted")
                     } else {
                         await reconcileDesiredModels(entries, send: send)
                     }

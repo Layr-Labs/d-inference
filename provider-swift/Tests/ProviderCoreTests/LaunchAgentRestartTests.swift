@@ -23,6 +23,18 @@ struct LaunchAgentRestartTests {
         #expect(message.contains("boom"))
     }
 
+    @Test("signalFailed explains that the drain request failed")
+    func signalFailedDescription() {
+        let message = LaunchAgentError.signalFailed("boom").description
+        #expect(message.contains("drain"))
+        #expect(message.contains("boom"))
+    }
+
+    @Test("operator drain uses the backward-safe macOS signal")
+    func operatorDrainSignal() {
+        #expect(LaunchAgent.operatorDrainSignal == "SIGINFO")
+    }
+
     // `darkbloom stop` must persistently disable the agent (launchctl disable)
     // in addition to bootout: bootout only affects the current login session,
     // and the plist left on disk (RunAtLoad=true) would otherwise restart the
@@ -167,6 +179,7 @@ struct LaunchAgentServicePlistTests {
         // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == false)
+        #expect(plist["ExitTimeOut"] as? Int == 600)
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 

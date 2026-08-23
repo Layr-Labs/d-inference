@@ -226,6 +226,9 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    /// True while a manual stop/restart is waiting for paid work to finish.
+    /// Unlike auto-update, a timeout reopens admission instead of cancelling.
+    internal var isOperatorDraining: Bool = false
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before

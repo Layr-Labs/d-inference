@@ -41,6 +41,15 @@ extension Start {
             throw ExitCode.failure
         }
 
+        if LaunchAgent.isAnySupportedLabelLoaded() {
+            do {
+                _ = try await drainProviderBeforeLifecycleAction("replacing the running service")
+            } catch {
+                printError("Start cancelled: \(error)")
+                throw ExitCode.failure
+            }
+        }
+
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,

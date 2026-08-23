@@ -407,8 +407,17 @@ extension Start {
     }
 
     private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
-        try await withFanActivityLease(providerVersion: ProviderCore.version) {
-            try await loop.run()
+        await ProviderTerminationRelay.shared.install {
+            await loop.requestOperatorShutdown()
+        }
+        do {
+            try await withFanActivityLease(providerVersion: ProviderCore.version) {
+                try await loop.run()
+            }
+            await ProviderTerminationRelay.shared.uninstall()
+        } catch {
+            await ProviderTerminationRelay.shared.uninstall()
+            throw error
         }
     }
 

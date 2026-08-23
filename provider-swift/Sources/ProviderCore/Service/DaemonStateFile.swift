@@ -37,6 +37,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var system: SystemInfo?
     public var capacity: Capacity?
     public var lastModelLoadError: ModelLoadError?
+    /// Optional for compatibility with state files written before operator
+    /// drains were exposed in local status.
+    public var lifecycle: Lifecycle?
     /// Per-slot KV-backend and MTP posture, one entry per model this daemon
     /// has an engine for, plus one synthetic entry for a model whose load
     /// FAILED (`kvBackend == nil`, `loadError != nil`) — a refused explicit
@@ -188,6 +191,22 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
 
+    public struct Lifecycle: Codable, Sendable, Equatable {
+        public enum Phase: String, Codable, Sendable {
+            case serving
+            case draining
+            case shuttingDown = "shutting_down"
+        }
+
+        public var phase: Phase
+        public var inflightRequests: Int
+
+        public init(phase: Phase, inflightRequests: Int) {
+            self.phase = phase
+            self.inflightRequests = max(0, inflightRequests)
+        }
+    }
+
     public init(
         schema: Int = DaemonState.currentSchema,
         pid: Int32,
@@ -203,6 +222,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
+        lifecycle: Lifecycle? = nil,
         slots: [SlotPosture]? = nil,
         connectivity: Connectivity? = nil
     ) {
@@ -220,6 +240,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.system = system
         self.capacity = capacity
         self.lastModelLoadError = lastModelLoadError
+        self.lifecycle = lifecycle
         self.slots = slots
         self.connectivity = connectivity
     }

@@ -35,7 +35,7 @@ extension ProviderLoop {
             ))
             return
         }
-        if isDrainingForUpdate {
+        if isDrainingForLifecycle {
             sendDrainingLoadModelFailure(modelId: modelId, send: send)
             return
         }

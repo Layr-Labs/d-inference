@@ -112,4 +112,21 @@ struct ProcessLifecycleTests {
         #expect(telemetryPurgeCount == 0)
         #expect(videoPurgeCount == 0)
     }
+
+    @Test("wait-for-exit accepts an already stale process identity")
+    func waitForStaleIdentity() async {
+        let stale = ProcessIdentity(pid: 999_999, startTimeMicros: 1)
+        #expect(await ProcessLifecycle.waitForExit(stale, timeout: .seconds(1)))
+    }
+
+    @Test("wait-for-exit times out without terminating the exact live process")
+    func waitForLiveIdentityTimesOut() async throws {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let current = try #require(ProcessIdentity.read(pid: pid))
+        #expect(await ProcessLifecycle.waitForExit(
+            current,
+            timeout: .milliseconds(1)
+        ) == false)
+        #expect(current.isCurrent())
+    }
 }

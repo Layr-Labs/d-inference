@@ -220,6 +220,26 @@ public enum ProcessLifecycle {
         return !identity.isCurrent()
     }
 
+    /// Wait for one exact process identity to disappear. This never signals or
+    /// force-kills the process.
+    public static func waitForExit(
+        _ identity: ProcessIdentity,
+        timeout: Duration
+    ) async -> Bool {
+        guard identity.isCurrent() else { return true }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while identity.isCurrent() {
+            if Task.isCancelled || clock.now >= deadline { return false }
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return false
+            }
+        }
+        return true
+    }
+
     // MARK: - Internals
 
     private static func readPID(at url: URL) -> Int32? {

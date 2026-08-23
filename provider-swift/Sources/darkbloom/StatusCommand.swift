@@ -119,6 +119,10 @@ struct Status: AsyncParsableCommand {
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
+        if state.lifecycle?.phase == .draining {
+            let count = state.lifecycle?.inflightRequests ?? 0
+            print("Drain: active (\(count) request\(count == 1 ? "" : "s") remaining)")
+        }
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
         }

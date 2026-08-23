@@ -31,6 +31,9 @@ extension ProviderLoop {
     /// synchronous + actor-isolated, so the authoritative call is atomic with the
     /// registration that follows (no suspension in between).
     internal var isDrainingForUpdate: Bool { updatePhase == .draining }
+    internal var isDrainingForLifecycle: Bool {
+        isDrainingForUpdate || isOperatorDraining
+    }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining.
@@ -39,7 +42,7 @@ extension ProviderLoop {
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDrainingForUpdate else { return false }
+        guard isDrainingForLifecycle else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
@@ -59,7 +62,7 @@ extension ProviderLoop {
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
-        if isDrainingForUpdate {
+        if isDrainingForLifecycle {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
         }
     }

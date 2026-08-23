@@ -56,6 +56,11 @@ extension ProviderLoop {
                     gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
             },
             lastModelLoadError: lastModelLoadError,
+            lifecycle: DaemonState.Lifecycle(
+                phase: isShuttingDown ? .shuttingDown
+                    : (isOperatorDraining ? .draining : .serving),
+                inflightRequests: requestToModel.count + localReservations.totalInFlight
+            ),
             // Joined at WRITE time, not at sample time: a refused explicit
             // paged request builds no engine, so its only trace is
             // `lastModelLoadError` — and `recordModelLoadError` writes the

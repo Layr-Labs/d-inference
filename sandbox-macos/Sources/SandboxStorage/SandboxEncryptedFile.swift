@@ -71,6 +71,7 @@ public enum SandboxEncryptedFileError: Error, Equatable, Sendable, CustomStringC
     case truncated
     case trailingData
     case sourceChanged
+    case publicationUncertain(Int32)
     case io(String)
 
     public var description: String {
@@ -97,6 +98,8 @@ public enum SandboxEncryptedFileError: Error, Equatable, Sendable, CustomStringC
             return "encrypted file contains trailing data"
         case .sourceChanged:
             return "source file changed while encryption was in progress"
+        case .publicationUncertain(let code):
+            return "encrypted-file destination may be committed but not durable: errno \(code)"
         case .io(let message):
             return "encrypted-file I/O failed: \(message)"
         }
@@ -407,6 +410,8 @@ public struct SandboxEncryptedFileCodec: Sendable {
             return .destinationExists
         case .unsafeDestination:
             return .io("destination path is unsafe")
+        case .publicationUncertain(let code):
+            return .publicationUncertain(code)
         case .io(let code):
             return .io("errno \(code)")
         }

@@ -29,6 +29,16 @@ It does not establish which of two complete, valid ciphertext revisions is
 newest. Cached-image restore therefore remains disabled until the
 coordinator-backed artifact manifest supplies and verifies a monotonic revision.
 
+Storage destinations must be inside a `0700` directory owned by the daemon's
+dedicated Unix identity. The codec writes to an unlinked file descriptor and
+publishes it with APFS `fclonefileat`, so there is no temporary pathname to
+replace and an existing destination is never overwritten. A post-clone sync
+failure is reported as `publicationUncertain`: the destination may exist and
+must be reconciled, never blindly deleted. Filesystem permissions are not a
+security boundary against another hostile process running as that same Unix
+identity; production launchd packaging must reserve the identity for the
+sandbox broker.
+
 ## Build and test
 
 The package requires Apple Silicon macOS 14 or newer with a full Xcode

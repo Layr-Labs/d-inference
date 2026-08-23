@@ -18,6 +18,7 @@ public enum SandboxArtifactKeyStoreError:
     case sourceChanged
     case unsafePermissions(UInt16)
     case unsafeOwner(UInt32)
+    case publicationUncertain(Int32)
     case io(String)
 
     public var description: String {
@@ -40,6 +41,8 @@ public enum SandboxArtifactKeyStoreError:
             return "wrapped sandbox key permissions are too broad: \(String(mode, radix: 8))"
         case .unsafeOwner(let owner):
             return "wrapped sandbox key has unexpected owner \(owner)"
+        case .publicationUncertain(let code):
+            return "wrapped sandbox key may be committed but not durable: errno \(code)"
         case .io(let message):
             return "wrapped sandbox key I/O failed: \(message)"
         }
@@ -231,6 +234,8 @@ public struct SandboxArtifactKeyStore: Sendable {
             return .destinationExists
         case .unsafeDestination:
             return .io("destination path is unsafe")
+        case .publicationUncertain(let code):
+            return .publicationUncertain(code)
         case .io(let code):
             return .io("errno \(code)")
         }

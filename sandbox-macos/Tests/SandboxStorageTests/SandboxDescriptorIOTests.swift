@@ -117,44 +117,31 @@ final class SandboxDescriptorIOTests: XCTestCase {
         XCTAssertFalse(try fixture.hasPartialFiles())
     }
 
-    func testReplacedTemporaryNameIsNeverPublished() throws {
+    func testStagingFileIsUnlinkedBeforeWriting() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }
         let validated = Data("validated".utf8)
 
-        XCTAssertThrowsError(
-            try SandboxDescriptorIO.withExclusiveDestination(
-                at: fixture.destination
-            ) { descriptor in
-                try SandboxDescriptorIO.writeAll(
-                    validated,
-                    to: descriptor
-                )
-                let partial = try XCTUnwrap(
-                    FileManager.default.contentsOfDirectory(
-                        at: fixture.directory,
-                        includingPropertiesForKeys: nil
-                    ).first { $0.lastPathComponent.hasSuffix(".partial") }
-                )
-                try FileManager.default.moveItem(
-                    at: partial,
-                    to: fixture.directory.appendingPathComponent("moved-original")
-                )
-                try Data("replacement".utf8).write(to: partial)
-                return sha256(validated)
-            }
-        ) { error in
-            XCTAssertEqual(
-                error as? SandboxDescriptorIOError,
-                .unsafeDestination
+        try SandboxDescriptorIO.withExclusiveDestination(
+            at: fixture.destination
+        ) { descriptor in
+            var metadata = stat()
+            XCTAssertEqual(fstat(descriptor, &metadata), 0)
+            XCTAssertEqual(metadata.st_nlink, 0)
+            XCTAssertFalse(try fixture.hasPartialFiles())
+            try SandboxDescriptorIO.writeAll(
+                validated,
+                to: descriptor
             )
+            return sha256(validated)
         }
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: fixture.destination.path)
+        XCTAssertEqual(
+            try Data(contentsOf: fixture.destination),
+            validated
         )
     }
 
-    func testSameInodeMutationIsNeverPublished() throws {
+    func testStagingDescriptorMutationIsNeverCommitted() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }
         let validated = Data("validated".utf8)
@@ -180,6 +167,33 @@ final class SandboxDescriptorIOTests: XCTestCase {
             FileManager.default.fileExists(atPath: fixture.destination.path)
         )
         XCTAssertFalse(try fixture.hasPartialFiles())
+    }
+
+    func testDestinationRequiresPrivateOwnedParent() throws {
+        let fixture = try DescriptorFixture()
+        defer { fixture.remove() }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fixture.directory.path
+        )
+        let blocked = Data("blocked".utf8)
+
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: fixture.destination
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(blocked, to: descriptor)
+                return sha256(blocked)
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .unsafeDestination
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.destination.path)
+        )
     }
 
     func testDestinationParentSymlinkIsRejected() throws {

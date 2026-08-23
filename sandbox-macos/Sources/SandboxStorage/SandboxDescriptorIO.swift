@@ -7,6 +7,7 @@ enum SandboxDescriptorIOError: Error, Equatable {
     case sourceChanged
     case destinationExists
     case unsafeDestination
+    case publicationUncertain(Int32)
     case io(Int32)
 }
 
@@ -255,12 +256,9 @@ private final class PendingDestination {
     private let canonicalParentPath: String
     private let parentDevice: dev_t
     private let parentInode: ino_t
-    private let temporaryName: String
     private let destinationName: String
     private var destinationDescriptor: Int32
     private var synchronizedMetadata: stat?
-    private var publishedCandidate = false
-    private var isPublished = false
 
     init(_ destination: URL) throws {
         guard destination.isFileURL,
@@ -299,7 +297,10 @@ private final class PendingDestination {
         guard fstat(parentDescriptor, &descriptorMetadata) == 0,
               (descriptorMetadata.st_mode & S_IFMT) == S_IFDIR,
               descriptorMetadata.st_dev == pathMetadata.st_dev,
-              descriptorMetadata.st_ino == pathMetadata.st_ino
+              descriptorMetadata.st_ino == pathMetadata.st_ino,
+              descriptorMetadata.st_uid == geteuid(),
+              descriptorMetadata.st_mode & 0o700 == 0o700,
+              descriptorMetadata.st_mode & 0o077 == 0
         else {
             Darwin.close(parentDescriptor)
             throw SandboxDescriptorIOError.unsafeDestination
@@ -321,15 +322,28 @@ private final class PendingDestination {
         }
         var temporaryMetadata = stat()
         guard fstat(destinationDescriptor, &temporaryMetadata) == 0,
-              (temporaryMetadata.st_mode & S_IFMT) == S_IFREG,
-              temporaryMetadata.st_uid == geteuid(),
-              temporaryMetadata.st_nlink == 1,
-              temporaryMetadata.st_mode & 0o077 == 0
+              Self.isSafeStagingFile(temporaryMetadata, linkCount: 1)
         else {
             Darwin.close(destinationDescriptor)
             temporaryName.withCString {
                 _ = unlinkat(parentDescriptor, $0, 0)
             }
+            Darwin.close(parentDescriptor)
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        let unlinkResult = temporaryName.withCString {
+            unlinkat(parentDescriptor, $0, 0)
+        }
+        guard unlinkResult == 0 else {
+            let code = errno
+            Darwin.close(destinationDescriptor)
+            Darwin.close(parentDescriptor)
+            throw SandboxDescriptorIOError.io(code)
+        }
+        guard fstat(destinationDescriptor, &temporaryMetadata) == 0,
+              Self.isSafeStagingFile(temporaryMetadata, linkCount: 0)
+        else {
+            Darwin.close(destinationDescriptor)
             Darwin.close(parentDescriptor)
             throw SandboxDescriptorIOError.unsafeDestination
         }
@@ -339,7 +353,6 @@ private final class PendingDestination {
         self.canonicalParentPath = canonicalParentPath
         self.parentDevice = descriptorMetadata.st_dev
         self.parentInode = descriptorMetadata.st_ino
-        self.temporaryName = temporaryName
         self.destinationName = destinationName
         self.destinationDescriptor = destinationDescriptor
         self.descriptor = destinationDescriptor
@@ -349,13 +362,13 @@ private final class PendingDestination {
         guard destinationDescriptor >= 0 else {
             throw SandboxDescriptorIOError.io(EBADF)
         }
-        try requireContentSHA256(expectedSHA256)
         guard fsync(destinationDescriptor) == 0 else {
             throw SandboxDescriptorIOError.io(errno)
         }
+        try requireContentSHA256(expectedSHA256, descriptor: destinationDescriptor)
         var metadata = stat()
         guard fstat(destinationDescriptor, &metadata) == 0,
-              Self.isSafeTemporary(metadata)
+              Self.isSafeStagingFile(metadata, linkCount: 0)
         else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
@@ -369,31 +382,26 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.io(EBADF)
         }
         try requireParentBinding()
-        try requireContentSHA256(expectedSHA256)
-        var namedMetadata = stat()
-        let namedResult = temporaryName.withCString {
-            fstatat(
-                parentDescriptor,
-                $0,
-                &namedMetadata,
-                AT_SYMLINK_NOFOLLOW
-            )
-        }
-        guard namedResult == 0,
-              Self.matches(synchronizedMetadata, namedMetadata)
+        try requireContentSHA256(
+            expectedSHA256,
+            descriptor: destinationDescriptor
+        )
+        var descriptorMetadata = stat()
+        guard fstat(destinationDescriptor, &descriptorMetadata) == 0,
+              Self.matchesStagingFile(
+                  synchronizedMetadata,
+                  descriptorMetadata
+              )
         else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
-        let result = temporaryName.withCString { temporary in
-            destinationName.withCString { destination in
-                renameatx_np(
-                    parentDescriptor,
-                    temporary,
-                    parentDescriptor,
-                    destination,
-                    UInt32(RENAME_EXCL)
-                )
-            }
+        let result = destinationName.withCString { destination in
+            fclonefileat(
+                destinationDescriptor,
+                parentDescriptor,
+                destination,
+                UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+            )
         }
         guard result == 0 else {
             if errno == EEXIST {
@@ -401,56 +409,13 @@ private final class PendingDestination {
             }
             throw SandboxDescriptorIOError.io(errno)
         }
-        publishedCandidate = true
-
-        var descriptorMetadata = stat()
-        var publishedMetadata = stat()
-        let publishedResult = destinationName.withCString {
-            fstatat(
-                parentDescriptor,
-                $0,
-                &publishedMetadata,
-                AT_SYMLINK_NOFOLLOW
-            )
-        }
-        guard fstat(destinationDescriptor, &descriptorMetadata) == 0,
-              publishedResult == 0,
-              Self.matches(synchronizedMetadata, descriptorMetadata),
-              Self.matches(synchronizedMetadata, publishedMetadata)
-        else {
-            removePublishedCandidate(
-                observed: publishedResult == 0 ? publishedMetadata : nil
-            )
-            throw SandboxDescriptorIOError.unsafeDestination
-        }
-        do {
-            try requireContentSHA256(expectedSHA256)
-            try requireParentBinding()
-        } catch {
-            removePublishedCandidate(observed: publishedMetadata)
-            throw error
-        }
-        isPublished = true
-        publishedCandidate = false
-        Darwin.close(destinationDescriptor)
-        destinationDescriptor = -1
-        guard fsync(parentDescriptor) == 0 else {
-            throw SandboxDescriptorIOError.io(errno)
-        }
+        try validateCommittedDestination(expectedSHA256: expectedSHA256)
     }
 
     func cleanup() {
         if destinationDescriptor >= 0 {
             Darwin.close(destinationDescriptor)
             destinationDescriptor = -1
-        }
-        if !isPublished {
-            temporaryName.withCString {
-                _ = unlinkat(parentDescriptor, $0, 0)
-            }
-        }
-        if publishedCandidate {
-            removePublishedCandidate(observed: nil)
         }
         Darwin.close(parentDescriptor)
     }
@@ -474,39 +439,65 @@ private final class PendingDestination {
         }
     }
 
-    private func requireContentSHA256(_ expected: Data) throws {
+    private func requireContentSHA256(
+        _ expected: Data,
+        descriptor: Int32
+    ) throws {
         guard expected.count == SHA256.byteCount else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
-        let actual = try Self.sha256(of: destinationDescriptor)
+        let actual = try Self.sha256(of: descriptor)
         guard actual == expected else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
     }
 
-    private func removePublishedCandidate(observed: stat?) {
-        var current = stat()
-        let result = destinationName.withCString {
-            fstatat(
-                parentDescriptor,
-                $0,
-                &current,
-                AT_SYMLINK_NOFOLLOW
+    private func validateCommittedDestination(
+        expectedSHA256: Data
+    ) throws {
+        do {
+            try requireParentBinding()
+        } catch {
+            throw SandboxDescriptorIOError.publicationUncertain(
+                Self.errorCode(error)
             )
         }
-        guard result == 0 else {
-            publishedCandidate = false
-            return
+        let committedDescriptor = destinationName.withCString {
+            openat(
+                parentDescriptor,
+                $0,
+                O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
+            )
         }
-        if let observed,
-           current.st_dev != observed.st_dev || current.st_ino != observed.st_ino
-        {
-            return
+        guard committedDescriptor >= 0 else {
+            throw SandboxDescriptorIOError.publicationUncertain(errno)
         }
-        destinationName.withCString {
-            _ = unlinkat(parentDescriptor, $0, 0)
+        defer { Darwin.close(committedDescriptor) }
+
+        var metadata = stat()
+        guard fstat(committedDescriptor, &metadata) == 0,
+              Self.isSafeCommittedFile(metadata)
+        else {
+            throw SandboxDescriptorIOError.publicationUncertain(
+                errno == 0 ? EIO : errno
+            )
         }
-        publishedCandidate = false
+        do {
+            try requireContentSHA256(
+                expectedSHA256,
+                descriptor: committedDescriptor
+            )
+        } catch {
+            throw SandboxDescriptorIOError.publicationUncertain(
+                Self.errorCode(error)
+            )
+        }
+        guard fsync(committedDescriptor) == 0 else {
+            throw SandboxDescriptorIOError.publicationUncertain(errno)
+        }
+        guard fsync(parentDescriptor) == 0 else {
+            throw SandboxDescriptorIOError.publicationUncertain(errno)
+        }
     }
 
     private static func sha256(of descriptor: Int32) throws -> Data {
@@ -551,15 +542,21 @@ private final class PendingDestination {
         return Data(hasher.finalize())
     }
 
-    private static func isSafeTemporary(_ metadata: stat) -> Bool {
+    private static func isSafeStagingFile(
+        _ metadata: stat,
+        linkCount: nlink_t
+    ) -> Bool {
         (metadata.st_mode & S_IFMT) == S_IFREG
             && metadata.st_uid == geteuid()
-            && metadata.st_nlink == 1
+            && metadata.st_nlink == linkCount
             && metadata.st_mode & 0o077 == 0
     }
 
-    private static func matches(_ expected: stat, _ actual: stat) -> Bool {
-        isSafeTemporary(actual)
+    private static func matchesStagingFile(
+        _ expected: stat,
+        _ actual: stat
+    ) -> Bool {
+        isSafeStagingFile(actual, linkCount: 0)
             && expected.st_dev == actual.st_dev
             && expected.st_ino == actual.st_ino
             && expected.st_mode == actual.st_mode
@@ -569,6 +566,28 @@ private final class PendingDestination {
             && expected.st_size == actual.st_size
             && expected.st_flags == actual.st_flags
             && expected.st_gen == actual.st_gen
+    }
+
+    private static func isSafeCommittedFile(_ metadata: stat) -> Bool {
+        (metadata.st_mode & S_IFMT) == S_IFREG
+            && metadata.st_uid == geteuid()
+            && metadata.st_nlink == 1
+            && metadata.st_mode & 0o077 == 0
+    }
+
+    private static func errorCode(_ error: Error) -> Int32 {
+        guard let error = error as? SandboxDescriptorIOError else {
+            return EIO
+        }
+        switch error {
+        case .io(let code), .publicationUncertain(let code):
+            return code
+        case .sourceNotRegularFile,
+             .sourceChanged,
+             .destinationExists,
+             .unsafeDestination:
+            return EIO
+        }
     }
 }
 

@@ -335,7 +335,8 @@ private struct Fixture {
             .appendingPathComponent("darkbloom-sandbox-storage-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             at: directory,
-            withIntermediateDirectories: false
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
         )
         plaintext = directory.appendingPathComponent("plain")
         encrypted = directory.appendingPathComponent("encrypted")

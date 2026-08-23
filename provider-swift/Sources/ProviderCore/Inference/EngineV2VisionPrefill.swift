@@ -286,14 +286,17 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil
+        reasoningEffort: String? = nil,
+        enableThinkingOverride: Bool? = nil
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: reasoningEffort)
+            from: request,
+            reasoningEffort: reasoningEffort,
+            enableThinkingOverride: enableThinkingOverride)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
@@ -740,12 +743,12 @@ public enum EngineV2VisionPrefill {
 /// preparer so the full routing seam is exercisable without model weights.
 public struct EngineV2VisionPlumbing: Sendable {
     let prepare:
-        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?) async throws
+        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?, Bool?) async throws
             -> EngineV2VisionPrefill.PreparedSubmission
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?)
+        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?, Bool?)
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {
@@ -754,9 +757,12 @@ public struct EngineV2VisionPlumbing: Sendable {
     }
 
     static let production = EngineV2VisionPlumbing(
-        prepare: { container, request, reasoningEffort in
+        prepare: { container, request, reasoningEffort, enableThinkingOverride in
             try await EngineV2VisionPrefill.prepare(
-                container: container, request: request, reasoningEffort: reasoningEffort)
+                container: container,
+                request: request,
+                reasoningEffort: reasoningEffort,
+                enableThinkingOverride: enableThinkingOverride)
         },
         emitTelemetry: { TelemetryClient.shared.emit($0) }
     )

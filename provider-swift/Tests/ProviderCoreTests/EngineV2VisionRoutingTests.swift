@@ -514,6 +514,17 @@ struct MediaKindClassificationTests {
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
     }
 
+    @Test("media processor honors enableThinkingOverride when nested reasoning absent")
+    func enableThinkingOverrideTemplateContext() async throws {
+        let request = imageRequest()
+        let disabled = try await MediaIngest.buildUserInput(
+            from: request, enableThinkingOverride: false)
+        #expect(disabled.additionalContext?["enable_thinking"] as? Bool == false)
+        let enabled = try await MediaIngest.buildUserInput(
+            from: request, enableThinkingOverride: true)
+        #expect(enabled.additionalContext?["enable_thinking"] as? Bool == true)
+    }
+
     @Test("image-only request has no video and classifies as .image")
     func imageOnly() {
         #expect(!MediaIngest.hasVideo(imageRequest()))
@@ -739,7 +750,7 @@ struct EngineV2VisionRoutingTests {
         let (prepared, _) = makePreparedSubmission()
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 counter.increment()
                 return prepared
             },
@@ -770,7 +781,7 @@ struct EngineV2VisionRoutingTests {
         let (prepared, _) = makePreparedSubmission()
         let capture = VisionRequestCapture()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, request, _ in
+            prepare: { _, request, _, enableThinkingOverride in
                 capture.record(request)
                 return prepared
             },
@@ -811,7 +822,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let (prepared, _) = makePreparedSubmission()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in prepared },
+            prepare: { _, _, _, enableThinkingOverride in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
@@ -882,7 +893,7 @@ struct EngineV2VisionRoutingTests {
             kvBudget: budget
         )
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in prepared },
+            prepare: { _, _, _, enableThinkingOverride in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
@@ -916,7 +927,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw PrepFailure() },
+            prepare: { _, _, _, enableThinkingOverride in throw PrepFailure() },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -967,7 +978,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 throw MediaIngest.MediaError.mediaTooLarge("test-cap")
             },
             emitTelemetry: telemetry.callback()
@@ -1003,7 +1014,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw EngineV2VisionPrefillError.noProcessedMedia },
+            prepare: { _, _, _, enableThinkingOverride in throw EngineV2VisionPrefillError.noProcessedMedia },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -1038,7 +1049,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 throw EngineV2VisionPrefillError.unsupportedMedia(
                     "Qwen35MoE video media is not production-proven")
             },
@@ -1080,7 +1091,7 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
+            prepare: { _, _, reasoningEffort, enableThinkingOverride in
                 effort.set(reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
@@ -1100,7 +1111,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw PrepFailure() },
+            prepare: { _, _, _, enableThinkingOverride in throw PrepFailure() },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -1140,7 +1151,7 @@ struct EngineV2VisionRoutingTests {
         // preparer must not be consulted on the way to the backstop.
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -1175,7 +1186,7 @@ struct EngineV2VisionRoutingTests {
         let (prepared, _) = makePreparedSubmission(mediaKind: .video)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 counter.increment()
                 return prepared
             },
@@ -1215,7 +1226,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -1253,7 +1264,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, _, _, enableThinkingOverride in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -1292,7 +1303,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw CancellationError() },
+            prepare: { _, _, _, enableThinkingOverride in throw CancellationError() },
             emitTelemetry: telemetry.callback()
         )
         let releaseCount = PrepareCallCounter()
@@ -1346,7 +1357,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let (prepared, _) = makePreparedSubmission()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in prepared },
+            prepare: { _, _, _, enableThinkingOverride in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(

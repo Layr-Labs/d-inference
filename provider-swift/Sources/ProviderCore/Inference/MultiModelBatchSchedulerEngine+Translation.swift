@@ -20,7 +20,8 @@ extension MultiModelBatchSchedulerEngine {
     /// 1. Nested OpenAI `reasoning.enabled` on the decoded request shape
     /// 2. `enableThinkingOverride` from sealed-body probes (top-level
     ///    `enable_thinking`, `chat_template_kwargs.enable_thinking`)
-    /// 3. Soft map from `reasoning_effort` in {none, minimal, off, 0} → false
+    /// 3. Soft map from `reasoning_effort` in {none, off, 0} → false
+    ///    (`minimal` is a *small* budget, not disabled — do not map it off)
     ///
     /// Without (2)/(3), Qwen-native and “effort none” clients silently fail to
     /// disable thinking (see Layr-Labs/d-inference#639).
@@ -39,7 +40,7 @@ extension MultiModelBatchSchedulerEngine {
         }
         if enableThinking == nil,
            let effort = reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-           ["none", "minimal", "off", "0"].contains(effort)
+           Self.reasoningEffortDisablesThinking(effort)
         {
             enableThinking = false
         }
@@ -47,6 +48,11 @@ extension MultiModelBatchSchedulerEngine {
             context["enable_thinking"] = enableThinking
         }
         return context.isEmpty ? nil : context
+    }
+
+    /// Values that unambiguously mean "no reasoning", not a reduced budget.
+    static func reasoningEffortDisablesThinking(_ effort: String) -> Bool {
+        ["none", "off", "0"].contains(effort)
     }
 
     /// Translate an upstream `OpenAIChatCompletionRequest` into the

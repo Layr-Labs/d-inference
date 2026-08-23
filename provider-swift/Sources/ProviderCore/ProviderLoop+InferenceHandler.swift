@@ -860,7 +860,8 @@ extension ProviderLoop {
                     request: streamingRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
-                    reasoningEffort: reasoningEffort
+                    reasoningEffort: reasoningEffort,
+                    enableThinkingOverride: enableThinkingOverride
                 ))
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
@@ -916,7 +917,8 @@ extension ProviderLoop {
                         request: streamingRequest,
                         tokenizer: tokenizer,
                         modelType: modelType,
-                        reasoningEffort: reasoningEffort
+                        reasoningEffort: reasoningEffort,
+                        enableThinkingOverride: enableThinkingOverride
                     )
                     if promptTokens > 0 {
                         log.warning(

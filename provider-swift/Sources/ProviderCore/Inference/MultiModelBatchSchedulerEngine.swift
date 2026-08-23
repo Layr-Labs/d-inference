@@ -114,6 +114,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// requests have no such trusted boundary and must reject that metadata.
     private let allowInternalToolSchemaMetadata: Bool
 
+    /// Constructor value, falling back to local-HTTP task-local controls.
+    private var effectiveReasoningEffort: String? {
+        reasoningEffort ?? ThinkingRequestControls.current?.reasoningEffort
+    }
+
+    private var effectiveEnableThinking: Bool? {
+        enableThinkingOverride ?? ThinkingRequestControls.current?.enableThinkingOverride
+    }
+
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
         ensureLoaded: @escaping @Sendable (String) async throws -> Void = { _ in },
@@ -365,7 +374,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, reasoningEffort)
+                        container, visionRequest, effectiveReasoningEffort, effectiveEnableThinking)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -522,8 +531,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort,
-                enableThinkingOverride: enableThinkingOverride)
+                reasoningEffort: effectiveReasoningEffort,
+                enableThinkingOverride: effectiveEnableThinking)
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",

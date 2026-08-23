@@ -280,9 +280,9 @@ struct GemmaVLMVideoEngineV2LiveTests {
     ) async throws -> (content: String, ttft: TimeInterval) {
         let recorder = VideoLiveRefusalRecorder()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { container, request, reasoningEffort in
+            prepare: { container, request, reasoningEffort, enableThinkingOverride in
                 try await EngineV2VisionPrefill.prepare(
-                    container: container, request: request, reasoningEffort: reasoningEffort)
+                    container: container, request: request, reasoningEffort: reasoningEffort, enableThinkingOverride: enableThinkingOverride)
             },
             emitTelemetry: { recorder.append($0) }
         )

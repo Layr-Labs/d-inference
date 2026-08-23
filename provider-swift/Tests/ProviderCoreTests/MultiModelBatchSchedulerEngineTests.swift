@@ -236,18 +236,23 @@ func templateContextHonorsEnableThinkingOverride() {
     #expect(enabled?["enable_thinking"] as? Bool == true)
 }
 
-@Test("template context maps reasoning_effort none/minimal/off to enable_thinking false")
+@Test("template context maps reasoning_effort none/off to enable_thinking false; minimal stays on")
 func templateContextMapsNoneEffortToDisableThinking() {
     let request = OpenAIChatCompletionRequest(
         model: "qwen",
         messages: [.init(role: .user, content: .text("hi"))])
 
-    for effort in ["none", "minimal", "off", "0", "NONE"] {
+    for effort in ["none", "off", "0", "NONE"] {
         let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, reasoningEffort: effort)
         #expect(context?["enable_thinking"] as? Bool == false, "effort=\(effort)")
         #expect(context?["reasoning_effort"] as? String == effort)
     }
+
+    let minimal = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "minimal")
+    #expect(minimal?["enable_thinking"] as? Bool == nil, "minimal must not force disable")
+    #expect(minimal?["reasoning_effort"] as? String == "minimal")
 }
 
 @Test("nested reasoning.enabled wins over enableThinkingOverride and none effort")

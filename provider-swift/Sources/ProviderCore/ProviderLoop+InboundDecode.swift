@@ -158,13 +158,16 @@ extension ProviderLoop {
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,
         modelType: String?,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        enableThinkingOverride: Bool? = nil
     ) -> Int {
         guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request, reasoningEffort: reasoningEffort)
+            for: request,
+            reasoningEffort: reasoningEffort,
+            enableThinkingOverride: enableThinkingOverride)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

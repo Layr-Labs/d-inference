@@ -302,6 +302,66 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testCancelledExecuteDuringPreflightStopsVirtualMachine() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "block-first-list"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let execution = Task {
+            try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: try SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    timeoutSeconds: 30
+                )
+            )
+        }
+        try await fixture.waitForListToStart()
+        execution.cancel()
+
+        do {
+            _ = try await execution.value
+            XCTFail("cancelled execute should throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
+    func testExecutePreflightFailureDoesNotCancelGuestCommand() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: try SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    timeoutSeconds: 30
+                )
+            )
+            XCTFail("execute should reject a stopped virtual machine")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported("guest commands require a running VM")
+            )
+        }
+
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
     func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,
@@ -548,6 +608,8 @@ private struct FakeLumeFixture {
     let state: URL
     let behavior: URL
     let createStarted: URL
+    let listStarted: URL
+    let guestCommandStarted: URL
     let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
 
@@ -586,6 +648,10 @@ private struct FakeLumeFixture {
         state = directory.appendingPathComponent("state")
         self.behavior = directory.appendingPathComponent("behavior")
         createStarted = directory.appendingPathComponent("create-started")
+        listStarted = directory.appendingPathComponent("list-started")
+        guestCommandStarted = directory.appendingPathComponent(
+            "guest-command-started"
+        )
         restoreImage = directory.appendingPathComponent("restore.ipsw")
         try FileManager.default.createDirectory(
             at: directory,
@@ -672,6 +738,22 @@ private struct FakeLumeFixture {
             try await Task.sleep(for: .milliseconds(25))
         } while clock.now < deadline
         throw FakeLumeFixtureError.createStartTimeout
+    }
+
+    func waitForListToStart() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        repeat {
+            if FileManager.default.fileExists(atPath: listStarted.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.listStartTimeout
+    }
+
+    var guestCommandWasStarted: Bool {
+        FileManager.default.fileExists(atPath: guestCommandStarted.path)
     }
 
     func remove() throws {
@@ -801,6 +883,10 @@ private struct FakeLumeFixture {
               ;;
           esac
         done
+        if [ "$behavior" = "block-first-list" ] && [ ! -f "$root/list-started" ]; then
+          : > "$root/list-started"
+          while :; do :; done
+        fi
         if [ ! -f "$state_file" ] || [ ! -d "$storage/sandbox-failure-test" ]; then
           printf '%s\\n' '[]'
           exit 0
@@ -826,6 +912,11 @@ private struct FakeLumeFixture {
             exit 0
           fi
         done
+        ;;
+      ssh)
+        : > "$root/guest-command-started"
+        printf '%s\\n' "unexpected fake Lume guest command" >&2
+        exit 64
         ;;
       stop)
         printf '%s\\n' "stopped" > "$state_file"
@@ -889,4 +980,5 @@ private struct FakeLumeFixture {
 private enum FakeLumeFixtureError: Error {
     case stateTimeout(String)
     case createStartTimeout
+    case listStartTimeout
 }

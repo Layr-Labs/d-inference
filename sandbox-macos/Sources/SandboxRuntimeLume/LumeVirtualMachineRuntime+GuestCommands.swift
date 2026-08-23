@@ -40,15 +40,17 @@ extension LumeVirtualMachineRuntime {
             name: name,
             in: configuration.storageDirectory
         )
-        guard try await inspect(name: name)?.state == .running else {
-            throw SandboxRuntimeError.unsupported(
-                "guest commands require a running VM"
-            )
-        }
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        var guestCommandMayBeRunning = false
         var requiresVMStop = false
         do {
+            guard try await inspect(name: name)?.state == .running else {
+                throw SandboxRuntimeError.unsupported(
+                    "guest commands require a running VM"
+                )
+            }
+            let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             let sshTimeoutSeconds = request.timeoutSeconds + 5
+            guestCommandMayBeRunning = true
             let result = try await processRunner.run(
                 executable: configuration.executable,
                 arguments: [
@@ -93,17 +95,21 @@ extension LumeVirtualMachineRuntime {
             }
             return decoded
         } catch {
+            let executionWasCancelled =
+                Task.isCancelled || error is CancellationError
             var cancellationFailure: Error?
-            do {
-                try await cancelGuestCommandIgnoringCancellation(
-                    name: name,
-                    idempotencyKey: request.idempotencyKey
-                )
-            } catch let cleanupError {
-                cancellationFailure = cleanupError
+            if guestCommandMayBeRunning {
+                do {
+                    try await cancelGuestCommandIgnoringCancellation(
+                        name: name,
+                        idempotencyKey: request.idempotencyKey
+                    )
+                } catch let cleanupError {
+                    cancellationFailure = cleanupError
+                }
             }
             let mustStopVM = requiresVMStop
-                || error is CancellationError
+                || executionWasCancelled
                 || cancellationFailure != nil
             if mustStopVM {
                 do {

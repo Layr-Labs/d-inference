@@ -60,8 +60,7 @@ public struct SandboxProcessRunner: Sendable {
         arguments: [String],
         environment: [String: String] = [:],
         currentDirectory: URL? = nil,
-        maximumOutputBytes: Int = defaultMaximumOutputBytes,
-        debugTraceID: String? = nil
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) throws -> SandboxManagedProcess {
         try validate(
             executable: executable,
@@ -78,8 +77,7 @@ public struct SandboxProcessRunner: Sendable {
             arguments: arguments,
             environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
-            maximumOutputBytes: maximumOutputBytes,
-            debugTraceID: debugTraceID
+            maximumOutputBytes: maximumOutputBytes
         )
         do {
             try execution.start()
@@ -96,8 +94,7 @@ public struct SandboxProcessRunner: Sendable {
         environment: [String: String] = [:],
         currentDirectory: URL? = nil,
         timeoutSeconds: UInt32,
-        maximumOutputBytes: Int = defaultMaximumOutputBytes,
-        debugTraceID: String? = nil
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) async throws -> SandboxProcessResult {
         try validate(
             executable: executable,
@@ -115,8 +112,7 @@ public struct SandboxProcessRunner: Sendable {
             arguments: arguments,
             environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
-            maximumOutputBytes: maximumOutputBytes,
-            debugTraceID: debugTraceID
+            maximumOutputBytes: maximumOutputBytes
         )
         defer { execution.cleanup() }
 

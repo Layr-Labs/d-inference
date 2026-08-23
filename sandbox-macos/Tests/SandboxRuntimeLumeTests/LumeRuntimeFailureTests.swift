@@ -35,6 +35,17 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testSuppressesDependencyDiagnosticsForMachineReadableOutput() async throws {
+        let fixture = try FakeLumeFixture(behavior: "log-info-on-list")
+        defer { try? fixture.remove() }
+
+        let records = try await fixture.makeRuntime().list()
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.name, fixture.virtualMachineName)
+        XCTAssertEqual(records.first?.state, .stopped)
+    }
+
     func testFixtureCleanupRemovesReadOnlyRuntimeTree() throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }
@@ -509,6 +520,9 @@ private struct FakeLumeFixture {
         if [ ! -f "$state_file" ] || [ ! -d "$storage/sandbox-failure-test" ]; then
           printf '%s\\n' '[]'
           exit 0
+        fi
+        if [ "$behavior" = "log-info-on-list" ] && [ "${LUME_LOG_LEVEL:-info}" != "error" ]; then
+          printf '%s\\n' '[2026-08-23T02:50:37Z] INFO: dependency diagnostic'
         fi
         state="$(tr -d '\\n' < "$state_file")"
         ready=false

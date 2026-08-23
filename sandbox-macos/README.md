@@ -109,8 +109,10 @@ commit and post-signing SHA-256 for every runtime file. Before executing Lume,
 the adapter requires the complete immutable directory tree and provenance to
 match the audited lock; it rejects added, removed, replaced, or modified runtime
 entries. Every invocation sets
-`LUME_TELEMETRY_ENABLED=false`. Moving the pin requires source review plus the
-opt-in real-binary and VM lifecycle tests.
+`LUME_TELEMETRY_ENABLED=false` and `LUME_LOG_LEVEL=error`; the latter prevents
+Lume informational diagnostics from corrupting its machine-readable JSON
+output. Moving the pin requires source review plus the opt-in real-binary and VM
+lifecycle tests.
 
 ```bash
 DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \

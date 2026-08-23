@@ -54,6 +54,7 @@ struct LumeRuntimeWorkspace: Sendable {
     var environment: [String: String] {
         [
             "LUME_HOME": supportDirectory.path,
+            "LUME_LOG_LEVEL": "error",
             "LUME_TELEMETRY_ENABLED": "false",
             "NO_COLOR": "1",
             "XDG_CACHE_HOME": cacheDirectory.path,
@@ -114,6 +115,7 @@ struct LumeRuntimeWorkspace: Sendable {
             operationDirectory: operationDirectory,
             environment: [
                 "LUME_HOME": operationDirectory.path,
+                "LUME_LOG_LEVEL": "error",
                 "LUME_TELEMETRY_ENABLED": "false",
                 "NO_COLOR": "1",
                 "XDG_CACHE_HOME": operationCacheDirectory.path,

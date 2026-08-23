@@ -36,38 +36,12 @@ public actor LumeVirtualMachineRuntime:
     }
 
     public func list() async throws -> [SandboxVirtualMachineRecord] {
-        let debugInvocationID = UUID().uuidString
-        // #region agent log
-        SandboxAgentDebugLog.write(
-            hypothesisId: "E",
-            location: "\(#fileID):\(#line)",
-            message: "entered Lume list",
-            data: [
-                "activeOperations": activeOperations,
-                "invocationId": debugInvocationID,
-                "runningProcessNames": runningProcesses.keys.sorted(),
-            ]
-        )
-        // #endregion
         _ = try await validateRuntime()
         let details: [LumeVMDetails] = try await runJSON(
             arguments: storageArguments(["ls", "--format", "json"]),
             timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "list",
-            debugTraceID: debugInvocationID
+            operation: "list"
         )
-        // #region agent log
-        SandboxAgentDebugLog.write(
-            hypothesisId: "E",
-            location: "\(#fileID):\(#line)",
-            message: "decoded Lume list",
-            data: [
-                "invocationId": debugInvocationID,
-                "recordCount": details.count,
-                "states": details.map { "\($0.name)=\($0.status)" },
-            ]
-        )
-        // #endregion
         return details.map(Self.makeRecord)
     }
 
@@ -165,15 +139,13 @@ public actor LumeVirtualMachineRuntime:
         arguments: [String],
         timeoutSeconds: UInt32,
         operation: String,
-        environment: [String: String]? = nil,
-        debugTraceID: String? = nil
+        environment: [String: String]? = nil
     ) async throws -> SandboxProcessResult {
         let result = try await processRunner.run(
             executable: configuration.executable,
             arguments: arguments,
             environment: environment ?? workspace.environment,
-            timeoutSeconds: timeoutSeconds,
-            debugTraceID: debugTraceID
+            timeoutSeconds: timeoutSeconds
         )
         guard result.exitCode == 0 else {
             let standardError = String(
@@ -199,66 +171,16 @@ public actor LumeVirtualMachineRuntime:
     private func runJSON<T: Decodable>(
         arguments: [String],
         timeoutSeconds: UInt32,
-        operation: String,
-        debugTraceID: String
+        operation: String
     ) async throws -> T {
-        // #region agent log
-        SandboxAgentDebugLog.write(
-            hypothesisId: "A",
-            location: "\(#fileID):\(#line)",
-            message: "entered Lume JSON command",
-            data: [
-                "argumentCount": arguments.count,
-                "operation": operation,
-                "traceId": debugTraceID,
-            ]
-        )
-        // #endregion
         let result = try await run(
             arguments: arguments,
             timeoutSeconds: timeoutSeconds,
-            operation: operation,
-            debugTraceID: debugTraceID
+            operation: operation
         )
-        let debugRedactions = [
-            configuration.storageDirectory.path,
-            FileManager.default.homeDirectoryForCurrentUser.path,
-            workspace.supportDirectory.path,
-        ]
-        // #region agent log
-        SandboxAgentDebugLog.write(
-            hypothesisId: "A",
-            location: "\(#fileID):\(#line)",
-            message: "received raw Lume JSON command output",
-            data: [
-                "operation": operation,
-                "stderr": SandboxAgentDebugLog.output(
-                    result.standardError,
-                    redacting: debugRedactions
-                ),
-                "stdout": SandboxAgentDebugLog.output(
-                    result.standardOutput,
-                    redacting: debugRedactions
-                ),
-                "traceId": debugTraceID,
-            ]
-        )
-        // #endregion
         do {
             return try JSONDecoder().decode(T.self, from: result.standardOutput)
         } catch {
-            // #region agent log
-            SandboxAgentDebugLog.write(
-                hypothesisId: "D",
-                location: "\(#fileID):\(#line)",
-                message: "failed to decode Lume JSON command output",
-                data: [
-                    "decodeError": String(reflecting: error),
-                    "operation": operation,
-                    "traceId": debugTraceID,
-                ]
-            )
-            // #endregion
             throw SandboxRuntimeError.malformedOutput(
                 "Lume \(operation) returned invalid JSON"
             )

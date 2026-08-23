@@ -7,10 +7,6 @@ final class ProcessExecution: @unchecked Sendable {
     private let arguments: [String]
     private let environment: [String: String]
     private let currentDirectory: URL?
-    private let debugTraceID: String?
-    private let debugCaptureID = UUID().uuidString
-    private let debugCreatedUptimeNanoseconds =
-        DispatchTime.now().uptimeNanoseconds
     private let exitSignal = ProcessExitSignal()
     private let standardOutput: BoundedProcessOutput
     private let standardError: BoundedProcessOutput
@@ -18,16 +14,13 @@ final class ProcessExecution: @unchecked Sendable {
     private var started = false
     private var processIdentifier: pid_t = 0
     private var exitCode: Int32?
-    private var debugSpawnedUptimeNanoseconds: UInt64?
-    private var debugDidLogOutputCapture = false
 
     init(
         executable: URL,
         arguments: [String],
         environment: [String: String],
         currentDirectory: URL?,
-        maximumOutputBytes: Int,
-        debugTraceID: String?
+        maximumOutputBytes: Int
     ) throws {
         let standardOutput = try BoundedProcessOutput(
             maximumBytes: maximumOutputBytes
@@ -47,7 +40,6 @@ final class ProcessExecution: @unchecked Sendable {
         self.arguments = arguments
         self.environment = environment
         self.currentDirectory = currentDirectory
-        self.debugTraceID = debugTraceID
     }
 
     var terminationStatus: Int32 {
@@ -61,10 +53,6 @@ final class ProcessExecution: @unchecked Sendable {
     func start() throws {
         var fileActions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
-        let debugStandardOutputReader = standardOutput.readerFileDescriptor
-        let debugStandardOutputWriter = standardOutput.writer.fileDescriptor
-        let debugStandardErrorReader = standardError.readerFileDescriptor
-        let debugStandardErrorWriter = standardError.writer.fileDescriptor
         guard posix_spawn_file_actions_init(&fileActions) == 0 else {
             standardOutput.closeParentWriter()
             standardError.closeParentWriter()
@@ -123,34 +111,9 @@ final class ProcessExecution: @unchecked Sendable {
             )
         }
 
-        let debugSpawnedAt = DispatchTime.now().uptimeNanoseconds
         lock.withLock {
             started = true
             processIdentifier = child
-            debugSpawnedUptimeNanoseconds = debugSpawnedAt
-        }
-        if let debugTraceID {
-            // #region agent log
-            SandboxAgentDebugLog.write(
-                hypothesisId: "B",
-                location: "\(#fileID):\(#line)",
-                message: "spawned traced process with isolated capture descriptors",
-                data: [
-                    "captureId": debugCaptureID,
-                    "createdToSpawnNanoseconds": String(
-                        debugSpawnedAt - debugCreatedUptimeNanoseconds
-                    ),
-                    "executable": executable.lastPathComponent,
-                    "operation": arguments.first ?? "",
-                    "pid": Int(child),
-                    "stderrReaderFd": Int(debugStandardErrorReader),
-                    "stderrWriterFd": Int(debugStandardErrorWriter),
-                    "stdoutReaderFd": Int(debugStandardOutputReader),
-                    "stdoutWriterFd": Int(debugStandardOutputWriter),
-                    "traceId": debugTraceID,
-                ]
-            )
-            // #endregion
         }
         let spawnedChild = child
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -199,64 +162,10 @@ final class ProcessExecution: @unchecked Sendable {
     }
 
     func finishOutputCapture() -> ProcessOutput {
-        let output = ProcessOutput(
+        ProcessOutput(
             standardOutput: standardOutput.finish(),
             standardError: standardError.finish()
         )
-        let captureMetadata = lock.withLock {
-            let shouldLog = !debugDidLogOutputCapture
-            debugDidLogOutputCapture = true
-            return (
-                shouldLog,
-                processIdentifier,
-                exitCode ?? -1,
-                debugSpawnedUptimeNanoseconds
-            )
-        }
-        if let debugTraceID, captureMetadata.0 {
-            let capturedAt = DispatchTime.now().uptimeNanoseconds
-            var redactions = [environment["HOME"] ?? ""]
-            let storageOptions = Set([
-                "--storage",
-                "--source-storage",
-                "--dest-storage",
-            ])
-            for index in arguments.indices
-            where storageOptions.contains(arguments[index]) {
-                let valueIndex = arguments.index(after: index)
-                if valueIndex < arguments.endIndex {
-                    redactions.append(arguments[valueIndex])
-                }
-            }
-            // #region agent log
-            SandboxAgentDebugLog.write(
-                hypothesisId: "C",
-                location: "\(#fileID):\(#line)",
-                message: "finished traced process output capture",
-                data: [
-                    "captureId": debugCaptureID,
-                    "exitCode": Int(captureMetadata.2),
-                    "operation": arguments.first ?? "",
-                    "pid": Int(captureMetadata.1),
-                    "spawnToCaptureNanoseconds": captureMetadata.3.map {
-                        String(capturedAt - $0)
-                    } ?? "not-spawned",
-                    "stderr": SandboxAgentDebugLog.output(
-                        output.standardError.data,
-                        redacting: redactions
-                    ),
-                    "stderrTruncated": output.standardError.truncated,
-                    "stdout": SandboxAgentDebugLog.output(
-                        output.standardOutput.data,
-                        redacting: redactions
-                    ),
-                    "stdoutTruncated": output.standardOutput.truncated,
-                    "traceId": debugTraceID,
-                ]
-            )
-            // #endregion
-        }
-        return output
     }
 
     func result(output: ProcessOutput? = nil) -> SandboxProcessResult {

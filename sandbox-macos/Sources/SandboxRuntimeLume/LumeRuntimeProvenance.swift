@@ -36,13 +36,31 @@ enum LumeRuntimeProvenanceValidator {
         let provenanceURL = configuration.executable
             .deletingLastPathComponent()
             .appendingPathComponent(fileName)
-        let provenanceFile = try inspectRegularFile(
-            at: provenanceURL,
-            maximumBytes: maximumProvenanceBytes,
-            requiresExecutableMode: false,
-            captureData: true,
-            computeDigest: true
-        )
+        let provenanceFile: InspectedRegularFile
+        do {
+            provenanceFile = try inspectRegularFile(
+                at: provenanceURL,
+                maximumBytes: maximumProvenanceBytes,
+                requiresExecutableMode: false,
+                captureData: true,
+                computeDigest: true
+            )
+        } catch {
+            // #region agent log
+            agentDebugLog(
+                hypothesisId: "D",
+                location: "LumeRuntimeProvenance.swift:39",
+                message: "provenance file inspection failed",
+                data: [
+                    "fileExists": FileManager.default.fileExists(
+                        atPath: provenanceURL.path
+                    ),
+                    "error": String(describing: error),
+                ]
+            )
+            // #endregion
+            throw error
+        }
         let provenance: LumeRuntimeProvenance
         do {
             let decoder = JSONDecoder()
@@ -55,18 +73,71 @@ enum LumeRuntimeProvenanceValidator {
             throw unsupported("Lume provenance is unreadable")
         }
 
-        guard provenance.schemaVersion == schemaVersion,
-              provenance.repository == LumeRuntimeConfiguration.pinnedRepository,
-              provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
-              provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
-              provenance.version == LumeRuntimeConfiguration.pinnedVersion,
-              Set(provenance.directories).count == provenance.directories.count,
-              provenance.directories.allSatisfy(Self.isSafeRelativePath),
-              provenance.files.keys.allSatisfy(Self.isSafeRelativePath),
-              provenance.files.values.allSatisfy(Self.isSHA256),
-              Set(provenance.directories) == Set(runtimeTree.directories.keys),
-              Set(provenance.files.keys) == Set(runtimeTree.files.keys),
-              provenance.files["lume"] != nil
+        let schemaMatches = provenance.schemaVersion == schemaVersion
+        let repositoryMatches =
+            provenance.repository == LumeRuntimeConfiguration.pinnedRepository
+        let commitMatches =
+            provenance.commit == LumeRuntimeConfiguration.pinnedCommit
+        let sourcePathMatches =
+            provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath
+        let versionMatches =
+            provenance.version == LumeRuntimeConfiguration.pinnedVersion
+        let directoriesAreUnique =
+            Set(provenance.directories).count == provenance.directories.count
+        let directoryPathsAreSafe =
+            provenance.directories.allSatisfy(Self.isSafeRelativePath)
+        let filePathsAreSafe =
+            provenance.files.keys.allSatisfy(Self.isSafeRelativePath)
+        let digestsAreValid =
+            provenance.files.values.allSatisfy(Self.isSHA256)
+        let directoriesMatch =
+            Set(provenance.directories) == Set(runtimeTree.directories.keys)
+        let filesMatch =
+            Set(provenance.files.keys) == Set(runtimeTree.files.keys)
+        let containsLume = provenance.files["lume"] != nil
+        if !schemaMatches || !repositoryMatches || !commitMatches
+            || !sourcePathMatches || !versionMatches || !directoriesAreUnique
+            || !directoryPathsAreSafe || !filePathsAreSafe || !digestsAreValid
+            || !directoriesMatch || !filesMatch || !containsLume
+        {
+            // #region agent log
+            agentDebugLog(
+                hypothesisId: "C",
+                location: "LumeRuntimeProvenance.swift:88",
+                message: "audited provenance predicate failed",
+                data: [
+                    "schemaMatches": schemaMatches,
+                    "repositoryMatches": repositoryMatches,
+                    "commitMatches": commitMatches,
+                    "sourcePathMatches": sourcePathMatches,
+                    "versionMatches": versionMatches,
+                    "directoriesAreUnique": directoriesAreUnique,
+                    "directoryPathsAreSafe": directoryPathsAreSafe,
+                    "filePathsAreSafe": filePathsAreSafe,
+                    "digestsAreValid": digestsAreValid,
+                    "directoriesMatch": directoriesMatch,
+                    "filesMatch": filesMatch,
+                    "containsLume": containsLume,
+                    "runtimeDirectories": runtimeTree.directories.keys.sorted(),
+                    "runtimeFiles": runtimeTree.files.keys.sorted(),
+                    "provenanceDirectories": provenance.directories.sorted(),
+                    "provenanceFiles": provenance.files.keys.sorted(),
+                ]
+            )
+            // #endregion
+        }
+        guard schemaMatches,
+              repositoryMatches,
+              commitMatches,
+              sourcePathMatches,
+              versionMatches,
+              directoriesAreUnique,
+              directoryPathsAreSafe,
+              filePathsAreSafe,
+              digestsAreValid,
+              directoriesMatch,
+              filesMatch,
+              containsLume
         else {
             throw unsupported("Lume provenance does not match the audited pin")
         }
@@ -341,4 +412,38 @@ struct LumeFileIdentity: Equatable, Sendable {
     let modificationNanoseconds: Int
     let statusChangeSeconds: Int
     let statusChangeNanoseconds: Int
+}
+
+private func agentDebugLog(
+    hypothesisId: String,
+    location: String,
+    message: String,
+    data: [String: Any]
+) {
+    let payload: [String: Any] = [
+        "hypothesisId": hypothesisId,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": Date().timeIntervalSince1970 * 1_000,
+    ]
+    guard let encoded = try? JSONSerialization.data(
+        withJSONObject: payload,
+        options: [.sortedKeys]
+    ) else {
+        return
+    }
+    let logURL = URL(fileURLWithPath: "/opt/cursor/logs/debug.log")
+    if !FileManager.default.fileExists(atPath: logURL.path) {
+        _ = FileManager.default.createFile(
+            atPath: logURL.path,
+            contents: nil
+        )
+    }
+    guard let handle = try? FileHandle(forWritingTo: logURL) else {
+        return
+    }
+    defer { try? handle.close() }
+    try? handle.seekToEnd()
+    try? handle.write(contentsOf: encoded + Data([0x0A]))
 }

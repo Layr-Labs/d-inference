@@ -389,7 +389,41 @@ private struct FakeLumeFixture {
     }
 
     func remove() {
-        try? FileManager.default.removeItem(at: directory)
+        let attributes = try? FileManager.default.attributesOfItem(
+            atPath: runtimeDirectory.path
+        )
+        let permissions = (
+            attributes?[.posixPermissions] as? NSNumber
+        )?.uint16Value ?? 0
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "B",
+            location: "LumeRuntimeFailureTests.swift:397",
+            message: "removing fake Lume fixture",
+            data: [
+                "runtimePermissions": Int(permissions),
+            ]
+        )
+        // #endregion
+        var cleanupError = ""
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            cleanupError = String(describing: error)
+        }
+        // #region agent log
+        agentDebugLog(
+            hypothesisId: "B",
+            location: "LumeRuntimeFailureTests.swift:414",
+            message: "fake Lume fixture removal completed",
+            data: [
+                "directoryStillExists": FileManager.default.fileExists(
+                    atPath: directory.path
+                ),
+                "error": cleanupError,
+            ]
+        )
+        // #endregion
     }
 
     private static func writeProvenance(
@@ -559,4 +593,38 @@ private struct FakeLumeFixture {
 private enum FakeLumeFixtureError: Error {
     case stateTimeout(String)
     case createStartTimeout
+}
+
+private func agentDebugLog(
+    hypothesisId: String,
+    location: String,
+    message: String,
+    data: [String: Any]
+) {
+    let payload: [String: Any] = [
+        "hypothesisId": hypothesisId,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": Date().timeIntervalSince1970 * 1_000,
+    ]
+    guard let encoded = try? JSONSerialization.data(
+        withJSONObject: payload,
+        options: [.sortedKeys]
+    ) else {
+        return
+    }
+    let logURL = URL(fileURLWithPath: "/opt/cursor/logs/debug.log")
+    if !FileManager.default.fileExists(atPath: logURL.path) {
+        _ = FileManager.default.createFile(
+            atPath: logURL.path,
+            contents: nil
+        )
+    }
+    guard let handle = try? FileHandle(forWritingTo: logURL) else {
+        return
+    }
+    defer { try? handle.close() }
+    try? handle.seekToEnd()
+    try? handle.write(contentsOf: encoded + Data([0x0A]))
 }

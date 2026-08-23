@@ -904,6 +904,11 @@ private final class TestDirectorySynchronizer: @unchecked Sendable {
         if let error {
             return error
         }
-        return fsync(descriptor) == 0 ? nil : errno
+        while fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                return errno
+            }
+        }
+        return nil
     }
 }

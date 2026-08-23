@@ -23,7 +23,7 @@ struct SandboxCapacityStateStore: Sendable {
         try self.init(
             stateDirectory: stateDirectory,
             directorySynchronizationError: { descriptor in
-                fsync(descriptor) == 0 ? nil : errno
+                Self.systemSynchronizationError(descriptor)
             }
         )
     }
@@ -67,10 +67,11 @@ struct SandboxCapacityStateStore: Sendable {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
         let lockName = "lease-\(sandboxID.description).lock"
-        let lockDescriptor = try Self.openLockFile(
+        let openedLock = try Self.openLockFile(
             named: lockName,
             in: directoryDescriptor
         )
+        let lockDescriptor = openedLock.descriptor
         do {
             let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
             while flock(lockDescriptor, lockOperation) != 0 {
@@ -80,6 +81,14 @@ struct SandboxCapacityStateStore: Sendable {
                 }
                 guard code == EINTR else {
                     throw SandboxCapacityError.io(code)
+                }
+            }
+            if openedLock.created {
+                try Self.synchronizeFileDescriptor(lockDescriptor)
+                if let code = Self.systemSynchronizationError(
+                    directoryDescriptor
+                ) {
+                    throw SandboxCapacityError.publicationUncertain(code)
                 }
             }
             try Self.requireLockBinding(
@@ -207,9 +216,7 @@ struct SandboxCapacityStateStore: Sendable {
 
         try Self.validateFileDescriptor(descriptor)
         try Self.writeAll(data, to: descriptor)
-        guard fsync(descriptor) == 0 else {
-            throw SandboxCapacityError.io(errno)
-        }
+        try Self.synchronizeFileDescriptor(descriptor)
         try Self.validateFileDescriptor(descriptor)
         let stagedMetadata = try Self.fileMetadata(descriptor)
         var pathMetadata = stat()
@@ -261,8 +268,16 @@ struct SandboxCapacityStateStore: Sendable {
             guard committedData == data else {
                 throw SandboxCapacityError.unsafeStatePath
             }
-            guard fsync(committedDescriptor) == 0 else {
-                throw SandboxCapacityError.publicationUncertain(errno)
+            do {
+                try SandboxAuthorityFileSystem.synchronize(
+                    committedDescriptor
+                )
+            } catch {
+                let mapped = Self.authorityError(error)
+                guard case .io(let code) = mapped else {
+                    throw mapped
+                }
+                throw SandboxCapacityError.publicationUncertain(code)
             }
         } catch let error as SandboxCapacityError {
             throw error
@@ -315,7 +330,7 @@ struct SandboxCapacityStateStore: Sendable {
     private static func openLockFile(
         named name: String,
         in directoryDescriptor: Int32
-    ) throws -> Int32 {
+    ) throws -> (descriptor: Int32, created: Bool) {
         var created = false
         var descriptor = openat(
             directoryDescriptor,
@@ -337,20 +352,9 @@ struct SandboxCapacityStateStore: Sendable {
         }
         do {
             try validateFileDescriptor(descriptor)
-            if created {
-                guard fsync(descriptor) == 0 else {
-                    throw SandboxCapacityError.io(errno)
-                }
-                guard fsync(directoryDescriptor) == 0 else {
-                    throw SandboxCapacityError.publicationUncertain(errno)
-                }
-            }
-            return descriptor
+            return (descriptor, created)
         } catch {
             close(descriptor)
-            if created {
-                _ = unlinkat(directoryDescriptor, name, 0)
-            }
             throw error
         }
     }
@@ -399,6 +403,16 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
+    private static func synchronizeFileDescriptor(
+        _ descriptor: Int32
+    ) throws {
+        do {
+            try SandboxAuthorityFileSystem.synchronize(descriptor)
+        } catch {
+            throw authorityError(error)
+        }
+    }
+
     private static func pathError(_ code: Int32) -> SandboxCapacityError {
         switch code {
         case ELOOP, ENOTDIR:
@@ -406,6 +420,17 @@ struct SandboxCapacityStateStore: Sendable {
         default:
             return .io(code)
         }
+    }
+
+    private static func systemSynchronizationError(
+        _ descriptor: Int32
+    ) -> Int32? {
+        while fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                return errno
+            }
+        }
+        return nil
     }
 
     private static func authorityError(_ error: Error) -> SandboxCapacityError {

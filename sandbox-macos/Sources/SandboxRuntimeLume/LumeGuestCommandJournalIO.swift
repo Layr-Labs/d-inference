@@ -85,9 +85,7 @@ enum LumeGuestCommandJournalIO {
         }
         defer { close(descriptor) }
         try writeAll(data, descriptor: descriptor)
-        guard fsync(descriptor) == 0 else {
-            throw ioFailure("failed to synchronize guest command claim")
-        }
+        try synchronize(descriptor, subject: "guest command claim")
         do {
             _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
                 descriptor,
@@ -141,9 +139,10 @@ enum LumeGuestCommandJournalIO {
         }
         defer { close(temporaryDescriptor) }
         try writeAll(envelope, descriptor: temporaryDescriptor)
-        guard fsync(temporaryDescriptor) == 0 else {
-            throw ioFailure("failed to synchronize guest command result")
-        }
+        try synchronize(
+            temporaryDescriptor,
+            subject: "guest command result"
+        )
         do {
             _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
                 temporaryDescriptor,
@@ -194,7 +193,8 @@ enum LumeGuestCommandJournalIO {
     static func readFileIfPresent(
         named name: String,
         parentDescriptor: Int32,
-        maximumBytes: Int
+        maximumBytes: Int,
+        synchronizeBeforeReturn: Bool = false
     ) throws -> Data? {
         try requirePrivateDirectory(parentDescriptor)
         let descriptor = openat(
@@ -210,11 +210,22 @@ enum LumeGuestCommandJournalIO {
         }
         defer { close(descriptor) }
         do {
-            return try SandboxAuthorityFileSystem.readStablePrivateFile(
+            let data = try SandboxAuthorityFileSystem.readStablePrivateFile(
                 descriptor,
                 maximumBytes: maximumBytes,
                 allowEmpty: true
             )
+            if synchronizeBeforeReturn {
+                try synchronize(
+                    descriptor,
+                    subject: "guest command journal replay file"
+                )
+                try synchronize(
+                    parentDescriptor,
+                    subject: "guest command journal replay directory"
+                )
+            }
+            return data
         } catch {
             throw SandboxRuntimeError.unsupported(
                 "guest command journal file failed ownership, ACL, link, or stability checks"
@@ -253,12 +264,17 @@ enum LumeGuestCommandJournalIO {
         } catch {
             throw ioFailure("committed guest command journal file is unsafe")
         }
-        guard committed == expected,
-              fsync(descriptor) == 0,
-              fsync(parentDescriptor) == 0
-        else {
+        guard committed == expected else {
             throw ioFailure("guest command journal publication is uncertain")
         }
+        try synchronize(
+            descriptor,
+            subject: "committed guest command journal file"
+        )
+        try synchronize(
+            parentDescriptor,
+            subject: "guest command journal directory"
+        )
     }
 
     private static func requirePrivateDirectory(
@@ -270,6 +286,17 @@ enum LumeGuestCommandJournalIO {
             throw SandboxRuntimeError.unsupported(
                 "guest command journal directory failed ownership, mode, or ACL checks"
             )
+        }
+    }
+
+    static func synchronize(
+        _ descriptor: Int32,
+        subject: String
+    ) throws {
+        do {
+            try SandboxAuthorityFileSystem.synchronize(descriptor)
+        } catch {
+            throw ioFailure("failed to synchronize \(subject)")
         }
     }
 

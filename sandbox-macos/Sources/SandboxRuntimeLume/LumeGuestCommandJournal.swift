@@ -98,7 +98,8 @@ struct LumeGuestCommandJournal {
         guard let envelope = try LumeGuestCommandJournalIO.readFileIfPresent(
             named: Self.resultFileName,
             parentDescriptor: commandDescriptor,
-            maximumBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
+            maximumBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes,
+            synchronizeBeforeReturn: true
         ) else {
             return .indeterminate
         }
@@ -155,14 +156,18 @@ struct LumeGuestCommandJournal {
                 named: Self.commitmentFileName,
                 parentDescriptor: commandDescriptor
             )
-            guard fsync(commandDescriptor) == 0,
-                  fsync(installationDescriptor) == 0,
-                  fsync(rootDescriptor) == 0
-            else {
-                throw LumeGuestCommandJournalIO.ioFailure(
-                    "failed to synchronize guest command claim"
-                )
-            }
+            try LumeGuestCommandJournalIO.synchronize(
+                commandDescriptor,
+                subject: "guest command directory"
+            )
+            try LumeGuestCommandJournalIO.synchronize(
+                installationDescriptor,
+                subject: "guest command installation directory"
+            )
+            try LumeGuestCommandJournalIO.synchronize(
+                rootDescriptor,
+                subject: "guest command journal root"
+            )
         } catch {
             close(commandDescriptor)
             throw error

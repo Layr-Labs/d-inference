@@ -44,8 +44,12 @@ package enum SandboxAuthorityFileSystem {
         }
         do {
             try requirePrivateDirectory(descriptor)
-            if created, fsync(parentDescriptor) != 0 {
-                throw SandboxAuthorityFileSystemError.publicationUncertain(errno)
+            if created {
+                do {
+                    try synchronize(parentDescriptor)
+                } catch {
+                    throw publicationError(error)
+                }
             }
             return descriptor
         } catch {
@@ -84,8 +88,12 @@ package enum SandboxAuthorityFileSystem {
         }
         do {
             try requirePrivateDirectory(descriptor)
-            if created, fsync(parentDescriptor) != 0 {
-                throw SandboxAuthorityFileSystemError.publicationUncertain(errno)
+            if created {
+                do {
+                    try synchronize(parentDescriptor)
+                } catch {
+                    throw publicationError(error)
+                }
             }
             return descriptor
         } catch {
@@ -349,6 +357,14 @@ package enum SandboxAuthorityFileSystem {
         }
     }
 
+    package static func synchronize(_ descriptor: Int32) throws {
+        while fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                throw SandboxAuthorityFileSystemError.io(errno)
+            }
+        }
+    }
+
     package static func fileMetadata(_ descriptor: Int32) throws -> stat {
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0 else {
@@ -422,5 +438,16 @@ package enum SandboxAuthorityFileSystem {
         default:
             .io(code)
         }
+    }
+
+    private static func publicationError(
+        _ error: Error
+    ) -> SandboxAuthorityFileSystemError {
+        guard let error = error as? SandboxAuthorityFileSystemError,
+              case .io(let code) = error
+        else {
+            return .publicationUncertain(EIO)
+        }
+        return .publicationUncertain(code)
     }
 }

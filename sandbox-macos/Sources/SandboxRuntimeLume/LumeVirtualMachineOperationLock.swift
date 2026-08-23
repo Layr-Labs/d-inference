@@ -52,20 +52,8 @@ final class LumeVirtualMachineOperationLock: @unchecked Sendable {
             _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
                 descriptor
             )
-            if created {
-                guard fsync(descriptor) == 0,
-                      fsync(directoryDescriptor) == 0
-                else {
-                    throw Self.failure(
-                        "failed to synchronize VM operation lock"
-                    )
-                }
-            }
         } catch {
             close(descriptor)
-            if created {
-                _ = unlinkat(directoryDescriptor, lockName, 0)
-            }
             throw SandboxRuntimeError.unsupported(
                 "VM operation lock failed ownership or mode checks"
             )
@@ -87,6 +75,12 @@ final class LumeVirtualMachineOperationLock: @unchecked Sendable {
             )
         }
         do {
+            if created {
+                try SandboxAuthorityFileSystem.synchronize(descriptor)
+                try SandboxAuthorityFileSystem.synchronize(
+                    directoryDescriptor
+                )
+            }
             let locked = try SandboxAuthorityFileSystem.fileMetadata(descriptor)
             let rebound = openat(
                 directoryDescriptor,

@@ -78,9 +78,7 @@ enum LumeVirtualMachineOwnership {
                 )
             defer { close(descriptor) }
             try SandboxAuthorityFileSystem.writeAll(data, to: descriptor)
-            guard fsync(descriptor) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
+            try SandboxAuthorityFileSystem.synchronize(descriptor)
             _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
                 descriptor,
                 maximumBytes: maximumBytes,
@@ -120,11 +118,12 @@ enum LumeVirtualMachineOwnership {
             guard committed == data else {
                 throw POSIXError(.EIO)
             }
-            guard fsync(committedDescriptor) == 0,
-                  fsync(directoryDescriptor) == 0
-            else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
+            try SandboxAuthorityFileSystem.synchronize(
+                committedDescriptor
+            )
+            try SandboxAuthorityFileSystem.synchronize(
+                directoryDescriptor
+            )
         } catch {
             throw SandboxRuntimeError.unsupported(
                 "failed to persist Darkbloom VM ownership marker"

@@ -467,6 +467,23 @@ public actor EngineV2Bridge {
             return stream
         }
 
+        // Prefill deadline admission. Under FCFS prefill serialization every
+        // row ahead of this one finishes before it starts, so this request's
+        // time-to-first-token is the whole prefill queue, not its own prompt.
+        // Admitting a row that cannot make the consumer's TTFT budget converts
+        // a servable request into a timeout; refusing it yields the canonical
+        // queue-full string, which the coordinator classifies as retryable and
+        // re-dispatches to a different provider. Fails OPEN whenever the rate
+        // is unmeasured, so a fresh process never refuses on a guess.
+        if let refusal = prefillDeadlineRefusal(promptTokens: promptTokens.count) {
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+            continuation.yield(.error(refusal))
+            continuation.finish()
+            return stream
+        }
+
         // Translate with a PLACEHOLDER engine id — the real id is minted
         // below, AFTER the shared-budget await, in the same synchronous
         // stretch as `engine.submit` and the `idMap` registration. Validate
@@ -1367,6 +1384,79 @@ public actor EngineV2Bridge {
                 firstTokenAt: state.firstTokenAt)
         }
         return (prompt, completion, tps)
+    }
+
+    // MARK: - Prefill deadline admission
+
+    /// Consumer TTFT budget base (ms). Mirrors the coordinator's verified
+    /// OpenRouter SLA base (`registry/ttft_shadow.go`
+    /// `defaultTTFTDeadlineBaseMs`): observed cancels fit
+    /// `10_000 ms + 1 ms x prompt_tokens` at a median ratio of 1.002.
+    static let defaultPrefillDeadlineBaseMs = 10_000.0
+
+    /// Override / kill switch. A non-positive value disables the gate and
+    /// restores the accept-everything behaviour as the A/B control.
+    static let prefillDeadlineBaseMsKey = "DARKBLOOM_PREFILL_DEADLINE_BASE_MS"
+
+    static let resolvedPrefillDeadlineBaseMs: Double = {
+        guard let raw = ProcessInfo.processInfo.environment[prefillDeadlineBaseMsKey],
+            let value = Double(raw.trimmingCharacters(in: .whitespaces))
+        else { return defaultPrefillDeadlineBaseMs }
+        return value
+    }()
+
+    /// Pure verdict: can a row of `promptTokens` reach first token inside its
+    /// own budget, given `queuedAheadTokens` of prefill still to run before it?
+    ///
+    /// Budget is `baseMs + 1 ms x promptTokens`. Separated from the bridge so
+    /// the arithmetic is testable without an engine.
+    /// Returns `nil` when the row fits or when the inputs cannot support a
+    /// verdict (non-positive rate or disabled gate) — never refuse on a guess.
+    static func prefillDeadlineProjection(
+        queuedAheadTokens: Int,
+        promptTokens: Int,
+        prefillTps: Double,
+        baseMs: Double
+    ) -> (projectedMs: Double, budgetMs: Double)? {
+        guard promptTokens > 0, prefillTps > 0, baseMs > 0 else { return nil }
+        let projectedMs = Double(max(0, queuedAheadTokens) + promptTokens) / prefillTps * 1000.0
+        let budgetMs = baseMs + Double(promptTokens)
+        guard projectedMs > budgetMs else { return nil }
+        return (projectedMs, budgetMs)
+    }
+
+    /// Prompt tokens still unprocessed on rows that have not reached first
+    /// token. Elapsed time at the measured rate discounts what each has already
+    /// consumed, so a nearly-drained queue does not refuse its successor.
+    func queuedPrefillTokensAhead(now: ContinuousClock.Instant, prefillTps: Double) -> Int {
+        guard prefillTps > 0 else { return 0 }
+        var queued = 0
+        for state in active.values where state.firstTokenAt == nil {
+            let elapsed = WedgeMonitor.seconds(now - state.submittedAt)
+            let consumed = elapsed > 0 ? Int((elapsed * prefillTps).rounded(.down)) : 0
+            queued += max(0, state.promptTokens - consumed)
+        }
+        return queued
+    }
+
+    /// Refusal message for a row that cannot land in time, `nil` when it can
+    /// (or when we cannot tell).
+    func prefillDeadlineRefusal(promptTokens: Int) -> String? {
+        // Unmeasured rate: admit. The EWMA is cold-prefill-fed and starts at 0,
+        // so gating on a guess would refuse real traffic on a fresh process.
+        let tps = observedPrefillTpsEwma
+        guard tps > 0 else { return nil }
+        let queuedAhead = queuedPrefillTokensAhead(now: .now, prefillTps: tps)
+        guard let projection = Self.prefillDeadlineProjection(
+            queuedAheadTokens: queuedAhead,
+            promptTokens: promptTokens,
+            prefillTps: tps,
+            baseMs: Self.resolvedPrefillDeadlineBaseMs)
+        else { return nil }
+        return "token_budget_exhausted: request queue full, prefill deadline "
+            + "(projected \(Int(projection.projectedMs)) ms over budget "
+            + "\(Int(projection.budgetMs)) ms; \(queuedAhead) prompt tokens "
+            + "queued at \(Int(tps)) tok/s)"
     }
 
     // MARK: - Prefill sampling (observed_prefill_tps)

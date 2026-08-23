@@ -2186,3 +2186,96 @@ struct EngineV2KVBackendFallbackHeartbeatTests {
         #expect(EngineV2Bridge.heartbeatFallbackReason(nil) == nil)
     }
 }
+
+@Suite("Prefill deadline admission + FCFS prefill serialization")
+struct PrefillDeadlineAdmissionTests {
+
+    // The consumer budget mirrored from the coordinator's verified SLA base:
+    // 10_000 ms + 1 ms x prompt_tokens.
+    private let baseMs = EngineV2Bridge.defaultPrefillDeadlineBaseMs
+    // Measured best-case solo prefill rate for Qwen 3.6 35B at 8K (trust+stripe).
+    private let tps = 1531.0
+    private let prompt8K = 8192
+
+    @Test("an 8K row on an idle box is admitted")
+    func idleBoxAdmits() {
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 0, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("8K rows are admitted while the queue can still land them in time")
+    func admitsWhileTheQueueFits() {
+        for rowsAhead in 0 ... 2 {
+            #expect(
+                EngineV2Bridge.prefillDeadlineProjection(
+                    queuedAheadTokens: rowsAhead * prompt8K, promptTokens: prompt8K,
+                    prefillTps: tps, baseMs: baseMs) == nil,
+                "row behind \(rowsAhead) x 8K should still fit its budget")
+        }
+    }
+
+    /// The row this whole change exists for: four concurrent 8K prompts need
+    /// 4 x 8192 / 18.2 s = ~1,800 tok/s aggregate and the box measures 1,531.
+    /// It can never land, so it must be refused here and re-dispatched rather
+    /// than accepted and timed out.
+    @Test("the fourth concurrent 8K row is refused, not accepted and missed")
+    func refusesTheRowThatCannotLand() throws {
+        let projection = try #require(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: baseMs))
+        #expect(projection.projectedMs > projection.budgetMs)
+        #expect(projection.budgetMs == baseMs + Double(prompt8K))
+    }
+
+    /// Head-of-line protection: a short prompt has a SMALLER budget, so it is
+    /// refused behind a long queue even though its own prefill is trivial.
+    @Test("a short prompt stuck behind long ones is refused")
+    func refusesShortPromptBehindLongQueue() {
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: 512,
+                prefillTps: tps, baseMs: baseMs) != nil)
+        // ...and is admitted immediately on an idle box.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 0, promptTokens: 512,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("the gate fails open when it cannot form a verdict")
+    func failsOpen() {
+        // Unmeasured prefill rate (fresh process: the EWMA starts at 0).
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: 0, baseMs: baseMs) == nil)
+        // Kill switch: a non-positive base disables the gate.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: 0) == nil)
+        // Degenerate prompt.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: 0,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("prefill serialization is the serving default, with an env escape")
+    func fcfsIsTheDefault() {
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: [:]) == 1)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "3"]) == 3)
+        // Non-positive / unparseable restores the unlimited interleave.
+        for escape in ["0", "-1", "off"] {
+            #expect(
+                EngineV2Factory.maxConcurrentPartialPrefills(
+                    environment: [EngineV2Factory.maxPartialPrefillsKey: escape]) == nil,
+                "\(escape) should restore the pre-fix unlimited interleave")
+        }
+    }
+}

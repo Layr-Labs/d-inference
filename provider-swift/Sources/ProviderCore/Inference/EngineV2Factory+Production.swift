@@ -117,6 +117,34 @@ extension EngineV2Factory {
     /// and the measured winner with trust + prompt narrowing.
     public static let defaultSoloPrefillStripeTokens = 2048
 
+    /// Env override for the concurrent-partial-prefill cap.
+    public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
+
+    /// Serving default for the concurrent-partial-prefill cap.
+    ///
+    /// Unlimited partial prefills interleave every prompt at `prefillChunkSize`,
+    /// which is fair and mean-TTFT-pessimal: a burst of N prompts all finish at
+    /// the makespan instead of one after another, so they cross the consumer's
+    /// TTFT deadline together rather than most of them landing. Measured at 4x8K:
+    /// every row 24.98 s, against 6.2 s for the same prompt served alone.
+    /// Serialising prefill costs nothing in aggregate throughput (rows already run
+    /// as separate forwards) and additionally re-arms the solo stripe, which can
+    /// only engage when at most one prefill is in flight.
+    public static let defaultMaxConcurrentPartialPrefills = 1
+
+    /// Resolve the cap: absent env -> the serving default; an explicit positive
+    /// value overrides; any other explicit value (`0`, garbage) restores the
+    /// unlimited pre-fix behaviour as the A/B control and incident escape.
+    public static func maxConcurrentPartialPrefills(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        guard let raw = environment[maxPartialPrefillsKey] else {
+            return defaultMaxConcurrentPartialPrefills
+        }
+        guard let value = Int(raw), value > 0 else { return nil }
+        return value
+    }
+
     /// Resolve the solo-stripe setting: absent env -> the serving default;
     /// an explicit value above the plain chunk overrides; any other
     /// explicit value (`0`, garbage, <= plain chunk) DISARMS — the escape
@@ -820,8 +848,7 @@ extension EngineV2Factory {
             abovePlainChunk: schedulerConfig.prefillChunkSize,
             environment: environment)
         schedulerConfig.maxConcurrentPartialPrefills =
-            environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
-            .flatMap { $0 > 0 ? $0 : nil }
+            Self.maxConcurrentPartialPrefills(environment: environment)
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(

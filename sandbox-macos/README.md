@@ -152,6 +152,15 @@ Lume informational diagnostics from corrupting its machine-readable JSON
 output. Moving the pin requires source review plus the opt-in real-binary and VM
 lifecycle tests.
 
+Guest-command idempotency is enforced on the host, outside the guest's trust
+boundary. Before SSH launch, the runtime durably commits the VM installation ID,
+idempotency key, and a canonical request digest under the private runtime
+directory. A completed bounded result is replayed without a second guest
+execution. Reusing a key for different input, or retrying a claim whose outcome
+was not durably recorded, fails closed. Journal entries are namespaced by VM
+installation and retained; their bytes are part of the host's cached-sandbox
+storage footprint.
+
 The default build is ad-hoc signed for local testing. A production build must
 have the Darkbloom Developer ID identity installed and select it explicitly:
 

@@ -5,6 +5,7 @@ import SandboxRuntime
 struct LumeRuntimeWorkspace: Sendable {
     static let supportDirectoryName = ".darkbloom-runtime"
     static let operationsDirectoryName = "operations"
+    static let commandJournalDirectoryName = "command-journal"
 
     let storageDirectory: URL
     let supportDirectory: URL
@@ -12,6 +13,7 @@ struct LumeRuntimeWorkspace: Sendable {
     let cacheDirectory: URL
     let locksDirectory: URL
     let operationsDirectory: URL
+    let commandJournalDirectory: URL
 
     init(storageDirectory: URL) {
         self.storageDirectory = storageDirectory
@@ -35,6 +37,10 @@ struct LumeRuntimeWorkspace: Sendable {
             Self.operationsDirectoryName,
             isDirectory: true
         )
+        commandJournalDirectory = supportDirectory.appendingPathComponent(
+            Self.commandJournalDirectoryName,
+            isDirectory: true
+        )
     }
 
     func prepare() throws {
@@ -44,6 +50,7 @@ struct LumeRuntimeWorkspace: Sendable {
         try Self.ensurePrivateDirectory(cacheDirectory)
         try Self.ensurePrivateDirectory(locksDirectory)
         try Self.ensurePrivateDirectory(operationsDirectory)
+        try Self.ensurePrivateDirectory(commandJournalDirectory)
         try Self.writeConfiguration(
             configurationHome: configurationHome,
             homeDirectory: storageDirectory,

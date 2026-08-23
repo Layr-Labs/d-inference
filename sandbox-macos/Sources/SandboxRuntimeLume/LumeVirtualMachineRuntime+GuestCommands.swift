@@ -36,11 +36,23 @@ extension LumeVirtualMachineRuntime {
         let owner = LumeVirtualMachineOwnership.Owner(
             operationScope: scope
         )
-        _ = try LumeVirtualMachineOwnership.requireOwned(
+        let identity = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
             owner: owner,
             in: configuration.storageDirectory
         )
+        let commandJournal = LumeGuestCommandJournal(workspace: workspace)
+        if let replay = try commandJournal.replay(
+            installationID: identity.installationID,
+            request: request
+        ) {
+            if replay.timedOut {
+                throw SandboxRuntimeError.operationTimedOut(
+                    "\(name) guest command"
+                )
+            }
+            return replay
+        }
         var guestCommandMayBeRunning = false
         var requiresVMStop = false
         do {
@@ -51,6 +63,10 @@ extension LumeVirtualMachineRuntime {
                 )
             }
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+            let commandClaim = try commandJournal.claim(
+                installationID: identity.installationID,
+                request: request
+            )
             let sshTimeoutSeconds = request.timeoutSeconds + 5
             guestCommandMayBeRunning = true
             let result = try await Self.runGuestSSH(
@@ -85,6 +101,7 @@ extension LumeVirtualMachineRuntime {
             let decoded = try LumeGuestCommandResultDecoder.decode(
                 result.standardOutput
             )
+            try commandClaim.complete(envelope: result.standardOutput)
             if decoded.timedOut {
                 requiresVMStop = true
                 throw SandboxRuntimeError.operationTimedOut(

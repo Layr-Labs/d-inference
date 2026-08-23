@@ -600,6 +600,72 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testExecuteReplaysCompletedIdempotencyKeyWithoutSecondSSH() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "authenticated-readiness-executor"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            timeoutSeconds: 30
+        )
+
+        let first = try await runtime.execute(
+            name: fixture.virtualMachineName,
+            request: request
+        )
+        let attemptsAfterFirstExecution = fixture.guestReadinessProbeAttempts
+        let replay = try await runtime.execute(
+            name: fixture.virtualMachineName,
+            request: request
+        )
+
+        XCTAssertEqual(first, replay)
+        XCTAssertEqual(attemptsAfterFirstExecution, 1)
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
+    }
+
+    func testExecuteRejectsIdempotencyKeyReuseForDifferentRequest() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "authenticated-readiness-executor"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let idempotencyKey = UUID()
+        _ = try await runtime.execute(
+            name: fixture.virtualMachineName,
+            request: SandboxGuestCommandRequest(
+                idempotencyKey: idempotencyKey,
+                executable: "/usr/bin/true",
+                timeoutSeconds: 30
+            )
+        )
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: idempotencyKey,
+                    executable: "/usr/bin/false",
+                    timeoutSeconds: 30
+                )
+            )
+            XCTFail("an idempotency key must commit to exactly one request")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "guest command idempotency key was already used for a different request"
+                )
+            )
+        }
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
+    }
+
     func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,

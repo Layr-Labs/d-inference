@@ -27,7 +27,7 @@ let package = Package(
         ),
         .target(
             name: "SandboxStorage",
-            dependencies: ["SandboxCore"],
+            dependencies: ["SandboxCore", "SandboxSecurity"],
             path: "Sources/SandboxStorage"
         ),
         .target(

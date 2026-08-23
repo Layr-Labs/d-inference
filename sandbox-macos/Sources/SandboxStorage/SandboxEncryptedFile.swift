@@ -7,6 +7,10 @@ public struct SandboxDataEncryptionKey: Sendable {
 
     private let bytes: Data
 
+    private init(validatedBytes: Data) {
+        self.bytes = validatedBytes
+    }
+
     public init(rawRepresentation: Data) throws {
         guard rawRepresentation.count == Self.byteCount else {
             throw SandboxEncryptedFileError.invalidKeyLength(rawRepresentation.count)
@@ -16,8 +20,8 @@ public struct SandboxDataEncryptionKey: Sendable {
 
     public static func generate() -> SandboxDataEncryptionKey {
         let key = SymmetricKey(size: .bits256)
-        return try! SandboxDataEncryptionKey(
-            rawRepresentation: key.withUnsafeBytes { Data($0) }
+        return SandboxDataEncryptionKey(
+            validatedBytes: key.withUnsafeBytes { Data($0) }
         )
     }
 
@@ -45,7 +49,7 @@ public struct SandboxEncryptionContext: Equatable, Sendable {
         self.role = role
     }
 
-    fileprivate var digest: Data {
+    var digest: Data {
         var canonical = Data("darkbloom-sandbox-encrypted-file-context-v1".utf8)
         canonical.appendLengthPrefixed(Data(sandboxID.description.utf8))
         canonical.appendUInt64(generation.rawValue)

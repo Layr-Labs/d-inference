@@ -81,6 +81,32 @@ extension ProviderLoop {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// Probe thinking-disable flags that are **not** on the upstream
+    /// `OpenAIChatCompletionRequest` shape (only `reasoning.enabled` is).
+    ///
+    /// Order: top-level `enable_thinking`, then
+    /// `chat_template_kwargs.enable_thinking`. Used to populate template
+    /// context for Qwen-class models (issue #639).
+    internal static func extractEnableThinking(from data: Data) -> Bool? {
+        struct TopLevel: Decodable { let enable_thinking: Bool? }
+        struct KwargsProbe: Decodable {
+            struct ChatTemplateKwargs: Decodable { let enable_thinking: Bool? }
+            let chat_template_kwargs: ChatTemplateKwargs?
+        }
+        let decoder = JSONDecoder()
+        if let top = try? decoder.decode(TopLevel.self, from: data),
+           let value = top.enable_thinking
+        {
+            return value
+        }
+        if let kwargs = try? decoder.decode(KwargsProbe.self, from: data),
+           let value = kwargs.chat_template_kwargs?.enable_thinking
+        {
+            return value
+        }
+        return nil
+    }
+
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
     /// `reasoning_effort` and the cache scope, neither field is on the
     /// upstream `OpenAIChatCompletionRequest`, so decode them straight from

@@ -228,6 +228,7 @@ extension ProviderLoop {
         // Harmony reads it to set the reasoning budget; other models
         // ignore the extra template variable.
         let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        let enableThinkingOverride = Self.extractEnableThinking(from: decryptedData)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -491,6 +492,7 @@ extension ProviderLoop {
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 reasoningEffort: reasoningEffort,
+                enableThinkingOverride: enableThinkingOverride,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 engineV2Logprobs: logprobsChannel.map {

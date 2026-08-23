@@ -77,6 +77,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
     private let reasoningEffort: String?
+    /// Sealed-body `enable_thinking` / `chat_template_kwargs.enable_thinking`
+    /// when nested `reasoning.enabled` is absent (issue #639).
+    private let enableThinkingOverride: Bool?
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -118,6 +121,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
+        enableThinkingOverride: Bool? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -131,6 +135,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
+        self.enableThinkingOverride = enableThinkingOverride
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -170,6 +175,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
+        self.enableThinkingOverride = nil
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -516,7 +522,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                reasoningEffort: reasoningEffort,
+                enableThinkingOverride: enableThinkingOverride)
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",

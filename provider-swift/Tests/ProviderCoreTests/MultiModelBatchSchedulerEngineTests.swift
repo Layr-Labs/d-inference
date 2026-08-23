@@ -221,6 +221,61 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
+@Test("template context honors enableThinkingOverride when reasoning.enabled absent")
+func templateContextHonorsEnableThinkingOverride() {
+    let request = OpenAIChatCompletionRequest(
+        model: "qwen",
+        messages: [.init(role: .user, content: .text("hi"))])
+
+    let disabled = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: nil, enableThinkingOverride: false)
+    let enabled = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: nil, enableThinkingOverride: true)
+
+    #expect(disabled?["enable_thinking"] as? Bool == false)
+    #expect(enabled?["enable_thinking"] as? Bool == true)
+}
+
+@Test("template context maps reasoning_effort none/minimal/off to enable_thinking false")
+func templateContextMapsNoneEffortToDisableThinking() {
+    let request = OpenAIChatCompletionRequest(
+        model: "qwen",
+        messages: [.init(role: .user, content: .text("hi"))])
+
+    for effort in ["none", "minimal", "off", "0", "NONE"] {
+        let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, reasoningEffort: effort)
+        #expect(context?["enable_thinking"] as? Bool == false, "effort=\(effort)")
+        #expect(context?["reasoning_effort"] as? String == effort)
+    }
+}
+
+@Test("nested reasoning.enabled wins over enableThinkingOverride and none effort")
+func nestedReasoningEnabledWins() {
+    let request = OpenAIChatCompletionRequest(
+        model: "qwen",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: true))
+
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "none", enableThinkingOverride: false)
+
+    #expect(context?["enable_thinking"] as? Bool == true)
+}
+
+@Test("extractEnableThinking reads top-level and chat_template_kwargs")
+func extractEnableThinkingFromBody() throws {
+    let top = #"{"model":"q","messages":[],"enable_thinking":false}"#.data(using: .utf8)!
+    #expect(ProviderLoop.extractEnableThinking(from: top) == false)
+
+    let kwargs = #"{"model":"q","messages":[],"chat_template_kwargs":{"enable_thinking":false}}"#
+        .data(using: .utf8)!
+    #expect(ProviderLoop.extractEnableThinking(from: kwargs) == false)
+
+    let missing = #"{"model":"q","messages":[]}"#.data(using: .utf8)!
+    #expect(ProviderLoop.extractEnableThinking(from: missing) == nil)
+}
+
 // MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`

@@ -14,16 +14,37 @@ import MLXLMServer
 
 extension MultiModelBatchSchedulerEngine {
 
+    /// Build chat-template `additionalContext` for reasoning / thinking controls.
+    ///
+    /// Priority for `enable_thinking`:
+    /// 1. Nested OpenAI `reasoning.enabled` on the decoded request shape
+    /// 2. `enableThinkingOverride` from sealed-body probes (top-level
+    ///    `enable_thinking`, `chat_template_kwargs.enable_thinking`)
+    /// 3. Soft map from `reasoning_effort` in {none, minimal, off, 0} → false
+    ///
+    /// Without (2)/(3), Qwen-native and “effort none” clients silently fail to
+    /// disable thinking (see Layr-Labs/d-inference#639).
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        enableThinkingOverride: Bool? = nil
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
         if let reasoningEffort {
             context["reasoning_effort"] = reasoningEffort
         }
-        if let reasoningEnabled = request.reasoning?.enabled {
-            context["enable_thinking"] = reasoningEnabled
+        var enableThinking = request.reasoning?.enabled
+        if enableThinking == nil {
+            enableThinking = enableThinkingOverride
+        }
+        if enableThinking == nil,
+           let effort = reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           ["none", "minimal", "off", "0"].contains(effort)
+        {
+            enableThinking = false
+        }
+        if let enableThinking {
+            context["enable_thinking"] = enableThinking
         }
         return context.isEmpty ? nil : context
     }

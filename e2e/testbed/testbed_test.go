@@ -1,6 +1,7 @@
 package testbed
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +59,50 @@ func TestEventBufferReset(t *testing.T) {
 	assert.Len(t, buf.Events(), 0)
 }
 
+func TestEventBufferSnapshotsDoNotAliasMetadata(t *testing.T) {
+	buf := NewEventBuffer()
+	metadata := []byte(`{"chunk_index":1}`)
+	buf.Consume(Event{Kind: EventStreamChunk, Metadata: metadata})
+
+	metadata[2] = 'X'
+	first := buf.Events()
+	assert.JSONEq(t, `{"chunk_index":1}`, string(first[0].Metadata))
+
+	first[0].Metadata[2] = 'Y'
+	second := buf.Events()
+	assert.JSONEq(t, `{"chunk_index":1}`, string(second[0].Metadata))
+}
+
+func TestEventBufferConcurrentConsumeAndSnapshot(t *testing.T) {
+	const (
+		writers         = 16
+		eventsPerWriter = 64
+	)
+	buf := NewEventBuffer()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for writer := range writers {
+		go func() {
+			defer wg.Done()
+			<-start
+			for event := range eventsPerWriter {
+				buf.Consume(Event{
+					Kind:      EventStreamChunk,
+					RequestID: "concurrent",
+					Metadata:  []byte{byte(writer), byte(event)},
+				})
+				_ = buf.Events()
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	assert.Len(t, buf.Events(), writers*eventsPerWriter)
+	assert.Len(t, buf.ByRequest("concurrent"), writers*eventsPerWriter)
+}
+
 func TestEventFan(t *testing.T) {
 	b1 := NewEventBuffer()
 	b2 := NewEventBuffer()
@@ -80,28 +125,25 @@ func TestEventSchemaVersion(t *testing.T) {
 }
 
 func TestDefaultConfigs(t *testing.T) {
+	t.Setenv("DARKBLOOM_TESTBED_MODEL", "")
+	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "")
+
 	cfg := DefaultTestConfig()
-	assert.Equal(t, "mlx-community/gemma-3-270m", cfg.Model.ModelID)
+	assert.Equal(t, DefaultTestModelID(), cfg.Model.ModelID)
 	assert.Equal(t, TrustNone, cfg.Provider.TrustLevel)
-	assert.Equal(t, 64, cfg.Request.PromptTokens)
 	assert.Equal(t, 128, cfg.Request.MaxTokens)
 	assert.Equal(t, 0.0, cfg.Request.Temperature)
 	assert.True(t, cfg.Request.Streaming)
 	assert.Equal(t, 1, cfg.Request.Concurrency)
 	assert.Equal(t, 10, cfg.Request.TotalRequests)
+	assert.Equal(t, 10, cfg.Request.ExpectedSuccesses)
+	assert.Equal(t, 10, cfg.Request.MinimumSuccesses)
 
-	// v0.7.5 ONE-ENGINE: the suite default is the CBv2 default fixture
-	// (gpt-oss-20b), overridable via DARKBLOOM_TESTBED_MODEL — pin the env
-	// so both helper branches are covered deterministically.
-	t.Setenv("DARKBLOOM_TESTBED_MODEL", "")
 	assert.Equal(t, "mlx-community/gpt-oss-20b-MXFP4-Q8", DefaultTestModelID())
 	t.Setenv("DARKBLOOM_TESTBED_MODEL", "org/custom-model")
 	assert.Equal(t, "org/custom-model", DefaultTestModelID())
 	t.Setenv("DARKBLOOM_TESTBED_MODEL", "")
 
-	// Secondary (multi-model) fixture: gemma-4-26B QAT by default,
-	// overridable via DARKBLOOM_TESTBED_MODEL_B.
-	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "")
 	assert.Equal(t, "mlx-community/gemma-4-26B-A4B-it-qat-4bit", SecondaryTestModelID())
 	t.Setenv("DARKBLOOM_TESTBED_MODEL_B", "org/custom-model-b")
 	assert.Equal(t, "org/custom-model-b", SecondaryTestModelID())

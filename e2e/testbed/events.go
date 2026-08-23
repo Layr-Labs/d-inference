@@ -2,6 +2,7 @@ package testbed
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,7 @@ func (f EventFan) Consume(event Event) {
 }
 
 type EventBuffer struct {
+	mu     sync.RWMutex
 	events []Event
 }
 
@@ -70,45 +72,69 @@ func NewEventBuffer() *EventBuffer {
 }
 
 func (b *EventBuffer) Consume(event Event) {
-	b.events = append(b.events, event)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.events = append(b.events, cloneEvent(event))
 }
 
 func (b *EventBuffer) Events() []Event {
-	out := make([]Event, len(b.events))
-	copy(out, b.events)
-	return out
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return cloneEvents(b.events)
 }
 
 func (b *EventBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	clear(b.events)
 	b.events = b.events[:0]
 }
 
 func (b *EventBuffer) ByKind(kind EventKind) []Event {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.Kind == kind {
-			out = append(out, e)
+			out = append(out, cloneEvent(e))
 		}
 	}
 	return out
 }
 
 func (b *EventBuffer) BySegment(seg Segment) []Event {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.Segment == seg {
-			out = append(out, e)
+			out = append(out, cloneEvent(e))
 		}
 	}
 	return out
 }
 
 func (b *EventBuffer) ByRequest(requestID string) []Event {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.RequestID == requestID {
-			out = append(out, e)
+			out = append(out, cloneEvent(e))
 		}
 	}
 	return out
+}
+
+func cloneEvents(events []Event) []Event {
+	out := make([]Event, len(events))
+	for i := range events {
+		out[i] = cloneEvent(events[i])
+	}
+	return out
+}
+
+func cloneEvent(event Event) Event {
+	event.Metadata = append(json.RawMessage(nil), event.Metadata...)
+	return event
 }

@@ -157,6 +157,26 @@ func NewSuite(cfg SuiteConfig) *Suite {
 	}
 }
 
+type suiteTestLifecycle interface {
+	Helper()
+	Cleanup(func())
+	Fatalf(format string, args ...any)
+	Context() context.Context
+}
+
+// StartSuite creates a suite, starts every real dependency, and registers its
+// cleanup with the calling test.
+func StartSuite(t suiteTestLifecycle, cfg SuiteConfig) *Suite {
+	t.Helper()
+	suite := NewSuite(cfg)
+	if err := suite.Start(t.Context()); err != nil {
+		t.Fatalf("suite startup failed: %v", err)
+		return nil
+	}
+	t.Cleanup(suite.Stop)
+	return suite
+}
+
 func resolveModelID(modelID string) string {
 	if modelID != "" {
 		return modelID

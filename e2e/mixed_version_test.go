@@ -20,8 +20,8 @@ import (
 	"github.com/eigeninference/d-inference/e2e/testbed"
 )
 
-// mixedVersionSIPRequired is the named reason the PROVIDER-BOOTED half of
-// this lane cannot run. The pinned v0.7.12 artifact is a RELEASE build, and
+// mixedVersionSIPRequired is the named reason the FULL selector cannot run on
+// this host. The pinned v0.7.12 artifact is a RELEASE build, and
 // at that tag the SIP check is startup-fatal with no escape hatch:
 //
 //	git show v0.7.12:provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
@@ -39,181 +39,119 @@ const mixedVersionSIPRequired = "MIXED_VERSION_SIP_REQUIRED: the hash-pinned rel
 	"provider is a release build whose verifySecurityPosture() throws SecurityError.sipDisabled " +
 	"before serving (SecurityHardening.swift:371-375, called under #if !DEBUG from " +
 	"ProviderLoop+Serve.swift:378-379, no env override at that tag), so it cannot register on a " +
-	"host whose SIP is not enabled and the provider-booted half of this gate cannot run here"
+	"host whose SIP is not enabled and the full compatibility gate cannot run here"
 
-// Coverage markers this lane prints, one per tier it actually reached.
+// Coverage markers this lane prints, one per test it actually completed.
 //
 // CI asserts on these rather than on the exit code because `go test` exits 0
 // for a skipped test, for a test whose `-run` pattern matched nothing, and
-// for a package with no tests at all. The exit code therefore cannot tell
-// "verified the pinned bundle" apart from "ran nothing" — which is precisely
-// how this lane came to report green while never executing. integration.yml
-// greps for the artifact marker and fails the step when it is absent.
+// for a package with no tests at all. The names intentionally say whether the
+// released provider booted: SIP-disabled CI only proves the artifact contract.
 const (
-	mixedVersionTierArtifactOK = "MIXED_VERSION_TIER_ARTIFACT_OK"
-	mixedVersionTierFullOK     = "MIXED_VERSION_TIER_FULL_OK"
+	mixedVersionArtifactOnlyOK = "MIXED_VERSION_TIER_ARTIFACT_ONLY_NO_LEGACY_BOOT_OK"
+	mixedVersionFullBootOK      = "MIXED_VERSION_TIER_FULL_LEGACY_BOOT_OK"
 )
 
-// mixedVersionExpect is the coverage tier a runner is DESIGNATED to reach,
-// read from DARKBLOOM_MIXED_VERSION_EXPECT.
-//
-// It exists because two different things were previously collapsed into one
-// `t.Skip`: whether a host CAN boot the released provider (a fact about the
-// host's SIP state) and whether a host is ALLOWED to leave that half unrun
-// (a policy about CI). Collapsing them means the designated runner skips
-// silently and forever. Blacksmith's macOS runners are SIP-disabled, so the
-// honest designation there is `artifact`; point this lane at a SIP-enabled
-// runner and set `full`, and a skip is red instead of green.
+// releasedProviderV0712 is an independent, structured compatibility fixture.
+// Do not derive these values by scraping the fetch shell script: changing the
+// fetcher and the downloaded artifact together must not silently rewrite the
+// test's expectation of which released bundle it is certifying.
+var releasedProviderV0712 = releasedProviderArtifact{
+	version:        "0.7.12",
+	binarySHA256:   "c74b4829454bc4e2e40a0d9791458d17ba3dd278a5238ec628145b172016584d",
+	metallibName:   "mlx.metallib",
+	metallibSHA256: "e2d5853b79925b3661861fed79f30b1aeb636a52ebbde15b054711ce865edfaa",
+}
+
+type releasedProviderArtifact struct {
+	version        string
+	binarySHA256   string
+	metallibName   string
+	metallibSHA256 string
+}
+
+// mixedVersionExpect is the explicit tier owned by this invocation, read from
+// DARKBLOOM_MIXED_VERSION_EXPECT. There is no implicit developer tier: an
+// unset or misspelled value must not make either exact selector ambiguous.
 type mixedVersionExpect string
 
 const (
-	// expectAny is a developer laptop: whatever the host can do is fine.
-	expectAny mixedVersionExpect = ""
-	// expectArtifact designates a runner that MUST verify the pinned bundle.
-	// The booted half may skip with a named reason.
+	// expectArtifact designates the SIP-independent, no-provider-boot gate.
 	expectArtifact mixedVersionExpect = "artifact"
-	// expectFull designates a runner that MUST reach the booted half. A skip
-	// there is a CI regression, not a property of the artifact.
+	// expectFull designates a SIP-enabled runner that boots the legacy provider.
 	expectFull mixedVersionExpect = "full"
 )
 
-// parseMixedVersionExpect rejects unrecognised values instead of folding them
-// into expectAny: a typo'd `ful` must not silently downgrade a designated
-// runner back to a permanently green skip.
 func parseMixedVersionExpect(raw string) (mixedVersionExpect, error) {
 	switch expect := mixedVersionExpect(raw); expect {
-	case expectAny, expectArtifact, expectFull:
+	case expectArtifact, expectFull:
 		return expect, nil
 	default:
-		return expectAny, fmt.Errorf(
-			"DARKBLOOM_MIXED_VERSION_EXPECT=%q is not %q, %q or unset", raw, expectArtifact, expectFull)
+		return "", fmt.Errorf(
+			"DARKBLOOM_MIXED_VERSION_EXPECT=%q is not %q or %q",
+			raw, expectArtifact, expectFull)
 	}
 }
 
-// mixedVersionDecision is the fate of the provider-booted half, decided after
-// the artifact half has already run.
-type mixedVersionDecision int
-
-const (
-	// mixedVersionRun boots the released provider and asserts the whole surface.
-	mixedVersionRun mixedVersionDecision = iota
-	// mixedVersionSkipBooted: the host cannot boot the released provider and
-	// was not designated to. The artifact half has still gated.
-	mixedVersionSkipBooted
-	// mixedVersionFail: the host cannot boot the released provider but was
-	// designated to.
-	mixedVersionFail
-)
-
-// mixedVersionDecide maps (designated tier, measured SIP) to the fate of the
-// booted half and the reason to print. Pure, so the whole matrix is testable
-// without a SIP-disabled host. Both regressions this lane has suffered — the
-// opaque suite.Start timeout, and the permanent green skip on the only runner
-// that executes it — were silent changes to this decision.
-func mixedVersionDecide(expect mixedVersionExpect, state sipState) (mixedVersionDecision, string) {
-	if state == sipEnabled {
-		return mixedVersionRun, ""
-	}
-	if expect == expectFull {
-		return mixedVersionFail, mixedVersionSIPRequired +
-			"; DARKBLOOM_MIXED_VERSION_EXPECT=full designated this runner as one that MUST " +
-			"reach the released provider, so this is a CI misconfiguration rather than a " +
-			"property of the artifact — point the lane at a SIP-enabled runner, or set the " +
-			"expectation to artifact and accept that only the bundle pins are gated here"
-	}
-	return mixedVersionSkipBooted, mixedVersionSIPRequired
-}
-
-// TestIntegrationMixedVersionReleasedV0712Provider is the forward
-// compatibility gate: the CANDIDATE coordinator must keep serving the
-// hash-pinned RELEASED v0.7.12 provider across every public endpoint.
-//
-// The lane has two tiers, and the split is the whole point
-// -------------------------------------------------------
-// ARTIFACT tier — verifies that DARKBLOOM_PROVIDER_BINARY is the exact
-// released bundle, both the executable and the metallib beside it, by
-// SHA-256 read from scripts/fetch-v0712-provider.sh. It needs no provider
-// process, no SIP and no GPU, so it runs on EVERY host. This is the check
-// that catches a mis-registered release or a hand-assembled bundle, and it
-// is unconditional for that reason.
-//
-// BOOTED tier — everything below, which requires the released provider to
-// register. It cannot run on a SIP-disabled host, for the reason named on
-// mixedVersionSIPRequired.
-//
-// Why the booted tier skips rather than hangs, and why that is not enough
-// ----------------------------------------------------------------------
-// An earlier revision removed the `csrutil status` precondition on the
-// premise that "the provider's own SIP check is a warning —
-// collectSecurityPosture logs and returns a posture anyway". That premise
-// is false for the artifact under test. collectSecurityPosture does not
-// exist at v0.7.12 (`git grep collectSecurityPosture v0.7.12` matches
-// nothing); it is a CANDIDATE-tree symbol. The released binary runs the
-// throwing verifySecurityPosture path quoted on mixedVersionSIPRequired
-// above. Dropping the precondition therefore did not make the lane run on
-// SIP-disabled hosts — it converted an explicit red into an opaque
-// suite.Start timeout.
-//
-// Replacing that timeout with a named skip was honest but insufficient: the
-// Blacksmith runner in .github/workflows/integration.yml IS SIP-disabled, so
-// the named skip meant the only released-provider lane we have never ran and
-// always reported green. A gate that cannot fail is not a gate. Hence the
-// artifact tier above, which that runner does execute, and
-// DARKBLOOM_MIXED_VERSION_EXPECT, which lets CI declare the tier a given
-// runner must reach so a skip below the declared tier is red.
-//
-// What it asserts WHEN it runs is unchanged and unweakened: every
-// precondition past the SIP decision is a require, never a Skip.
-func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
+func requireMixedVersionTier(t *testing.T, required mixedVersionExpect) {
+	t.Helper()
 	if os.Getenv("DARKBLOOM_MIXED_VERSION") != "1" {
-		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.12 binary")
+		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.12 bundle")
 	}
 	expect, err := parseMixedVersionExpect(os.Getenv("DARKBLOOM_MIXED_VERSION_EXPECT"))
 	require.NoError(t, err)
+	require.Equal(t, required, expect,
+		"this exact selector owns only the %q tier; set "+
+			"DARKBLOOM_MIXED_VERSION_EXPECT=%s", required, required)
+}
 
-	// ---- ARTIFACT tier: runs on every host, SIP or not. ----
-	//
-	// Deliberately ahead of the SIP decision. Opting in with
-	// DARKBLOOM_MIXED_VERSION=1 and no bundle, or with the wrong bundle, is
-	// now red on a SIP-disabled host too, where it used to be a silent skip.
-	binaryPath := os.Getenv("DARKBLOOM_PROVIDER_BINARY")
-	require.NotEmpty(t, binaryPath,
-		"mandatory v0.7.12 compatibility gate requires DARKBLOOM_PROVIDER_BINARY "+
-			"(scripts/fetch-v0712-provider.sh prints the path)")
-	if !t.Run("pinned_released_artifact", func(t *testing.T) {
-		requirePinnedReleasedProvider(t, binaryPath)
-	}) {
-		t.Fatal("released bundle failed its pins; not proceeding to the booted half")
-	}
-	t.Log(mixedVersionTierArtifactOK + ": the executable and metallib at " +
-		"DARKBLOOM_PROVIDER_BINARY match the digests pinned in " +
-		"scripts/fetch-v0712-provider.sh")
+func mixedVersionProviderBinary(t *testing.T) string {
+	t.Helper()
+	path := os.Getenv("DARKBLOOM_PROVIDER_BINARY")
+	require.NotEmpty(t, path,
+		"v0.7.12 compatibility gates require DARKBLOOM_PROVIDER_BINARY "+
+			"(scripts/fetch-v0712-provider.sh prints the verified path)")
+	return path
+}
 
-	// ---- BOOTED tier: needs the released provider to register. ----
-	//
-	// Measured once, before anything can block on a provider that will not
-	// start. The security_posture subtest reuses this value rather than
-	// re-shelling out.
+// TestIntegrationMixedVersionArtifactOnlyV0712 is the SIP-independent gate.
+// It verifies the released executable and metallib and deliberately does not
+// start a provider, coordinator, database, or model. Its name and completion
+// marker make that limitation explicit in SIP-disabled CI.
+func TestIntegrationMixedVersionArtifactOnlyV0712(t *testing.T) {
+	requireMixedVersionTier(t, expectArtifact)
+	requirePinnedReleasedProvider(t, mixedVersionProviderBinary(t))
+	t.Log(mixedVersionArtifactOnlyOK +
+		": verified the independent v0.7.12 executable and metallib pins; " +
+		"the legacy provider was NOT booted")
+}
+
+// TestIntegrationMixedVersionFullV0712Provider is the forward compatibility
+// gate: the candidate coordinator must serve the hash-pinned released v0.7.12
+// provider across the public inference endpoints. This selector is owned only
+// by a SIP-enabled runner; selecting it anywhere else is a failure, never a
+// skip. It independently verifies the bundle before starting the provider, so
+// the full compatibility claim cannot be made against a local build.
+func TestIntegrationMixedVersionFullV0712Provider(t *testing.T) {
+	requireMixedVersionTier(t, expectFull)
+	requirePinnedReleasedProvider(t, mixedVersionProviderBinary(t))
+
+	// Measured before suite.Start, which would otherwise wait for a release
+	// binary that exits on its startup-fatal SIP check.
 	hostSIP := hostSIPState(t)
-	switch decision, reason := mixedVersionDecide(expect, hostSIP); decision {
-	case mixedVersionFail:
-		t.Fatal(reason)
-	case mixedVersionSkipBooted:
-		t.Skip(reason)
-	case mixedVersionRun:
-	}
+	require.Equal(t, sipEnabled, hostSIP, mixedVersionSIPRequired+
+		"; the full selector requires explicit ownership by a SIP-enabled runner")
+
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
 
 	const model = "mlx-community/gemma-4-e2b-it-4bit"
-	suite := testbed.NewSuite(testbed.SuiteConfig{
+	suite := testbed.StartSuite(t, testbed.SuiteConfig{
 		ModelSpecs: []testbed.ModelSpec{{
 			ModelID: model, NumProviders: 1,
 		}},
 		EnableEphemeralPrefixCache: true,
 	})
-	require.NoError(t, suite.Start(t.Context()))
-	t.Cleanup(suite.Stop)
 	warmup, err := json.Marshal(map[string]any{
 		"model": model,
 		"messages": []map[string]string{{
@@ -259,9 +197,8 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	require.Zero(t, donationOutcomes,
 		"released provider unexpectedly advertised candidate donation telemetry")
 
-	// The one SIP-dependent claim on this wire surface. It is asserted
-	// against the values the provider actually reported, not against the
-	// registry copy the testbed has since overwritten.
+	// Assert against the provider's original registration values, not the
+	// registry copy the testbed subsequently normalizes.
 	t.Run("security_posture", func(t *testing.T) {
 		// waitForProviderRegistration force-sets TextBackendInprocess and
 		// TextProxyDisabled to true, and materialises the whole block when the
@@ -281,22 +218,9 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 			"privacy_capabilities decoded to zero values — wire break, not a posture change")
 		require.True(t, privacy.TextProxyDisabled,
 			"privacy_capabilities decoded to zero values — wire break, not a posture change")
-		switch hostSIP {
-		case sipEnabled:
-			require.True(t, privacy.SIPEnabled,
-				"host SIP is enabled but the released provider reported sip_enabled=false; "+
-					"the posture field stopped round-tripping")
-		case sipDisabled:
-			require.False(t, privacy.SIPEnabled,
-				"host SIP is disabled but the released provider reported sip_enabled=true; "+
-					"the posture field is no longer host-derived")
-			t.Log("host SIP is disabled: sip_enabled=false is asserted, but a zero " +
-				"value is indistinguishable from an omitted field on the wire — only a " +
-				"SIP-enabled runner proves the positive round-trip")
-		case sipIndeterminate:
-			t.Log("csrutil reported neither enabled nor disabled; asserting only that " +
-				"privacy_capabilities round-tripped, not the value of sip_enabled")
-		}
+		require.True(t, privacy.SIPEnabled,
+			"the SIP-enabled full runner received sip_enabled=false from the released "+
+				"provider; the posture field stopped round-tripping")
 	})
 
 	tool := map[string]any{
@@ -391,8 +315,8 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	// above was exercised. common.Fail propagates to the parent, so a failed
 	// subtest suppresses it.
 	if !t.Failed() {
-		t.Log(mixedVersionTierFullOK + ": booted the hash-pinned released v0.7.12 " +
-			"provider and exercised the whole compatibility surface")
+		t.Log(mixedVersionFullBootOK + ": booted the hash-pinned released v0.7.12 " +
+			"provider and exercised endpoints, response bodies, privacy, and cache behavior")
 	}
 }
 
@@ -458,11 +382,9 @@ const (
 	sipDisabled
 )
 
-// hostSIPState measures the runner's SIP state. It only measures: what the
-// state means for the lane is mixedVersionDecide's job, and which posture
-// assertion is correct is the security_posture subtest's. Keeping the probe
-// free of policy is what makes the whole decision matrix testable on a host
-// of any SIP state.
+// hostSIPState measures without policy. The full selector requires sipEnabled
+// before suite.Start and reuses the same value for the provider-reported
+// security posture assertion.
 func hostSIPState(t *testing.T) sipState {
 	t.Helper()
 	output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput()
@@ -482,37 +404,22 @@ func hostSIPState(t *testing.T) sipState {
 	}
 }
 
-// releasedMetallibName is the Metal shader library shipped beside the
-// released executable inside the bundle, per scripts/fetch-v0712-provider.sh
-// (it resolves "$EXTRACTED/Darkbloom.app/Contents/MacOS/mlx.metallib").
-const releasedMetallibName = "mlx.metallib"
-
-// requirePinnedReleasedProvider is the anti-vacuous-pass check for this
-// gate. It proves the lane is running against the exact released v0.7.12
-// artifact the compatibility claim is about.
-//
-// Both halves of the bundle are pinned, because both determine behaviour
-// the gate observes. The executable fixes the wire contract; the metallib
-// fixes the kernels that produce the tokens, and it is a separate file that
-// can be swapped without touching the binary. The fetch script already
-// verifies both (BINARY_SHA256 at :38, METALLIB_SHA256 at :51) — checking
-// only one here would let a hand-assembled bundle through a gate whose
-// entire value is that it cannot be fooled by a local build.
+// requirePinnedReleasedProvider is the anti-vacuous check shared by both
+// exact selectors. Both halves determine observed behavior: the executable
+// fixes the wire contract and the separately swappable metallib fixes the
+// kernels producing tokens.
 func requirePinnedReleasedProvider(t *testing.T, path string) {
 	t.Helper()
-	require.NoError(t, verifyPinnedBundle(path,
-		pinnedReleasedDigest(t, "BINARY_SHA256"),
-		pinnedReleasedDigest(t, "METALLIB_SHA256")),
-		"the bundle at DARKBLOOM_PROVIDER_BINARY is not the hash-pinned released "+
-			"v0.7.12 artifact; re-fetch it with scripts/fetch-v0712-provider.sh")
+	require.NoError(t, verifyPinnedBundle(path, releasedProviderV0712),
+		"the bundle at DARKBLOOM_PROVIDER_BINARY is not the independently "+
+			"hash-pinned released v0.7.12 artifact; re-fetch it with "+
+			"scripts/fetch-v0712-provider.sh")
 }
 
-// verifyPinnedBundle checks both halves of the bundle against their pinned
-// digests and returns the first mismatch. It is split out from
-// requirePinnedReleasedProvider so every rejection path — including a
-// drifted or missing metallib beside a correct executable — is testable
-// without a copy of the real released artifact.
-func verifyPinnedBundle(binaryPath, wantBinary, wantMetallib string) error {
+// verifyPinnedBundle checks both halves of a structured release fixture and
+// returns the first mismatch. Keeping the fixture independent from the fetch
+// shell means a fetch-script edit cannot silently change this gate's identity.
+func verifyPinnedBundle(binaryPath string, artifact releasedProviderArtifact) error {
 	info, err := os.Stat(binaryPath)
 	if err != nil {
 		return fmt.Errorf("released provider binary is unreadable: %w", err)
@@ -527,26 +434,28 @@ func verifyPinnedBundle(binaryPath, wantBinary, wantMetallib string) error {
 	if err != nil {
 		return err
 	}
-	if got != wantBinary {
+	if got != artifact.binarySHA256 {
 		return fmt.Errorf("released provider binary digest %s does not match pinned %s (%s)",
-			got, wantBinary, binaryPath)
+			got, artifact.binarySHA256, binaryPath)
 	}
 
-	metallib := filepath.Join(filepath.Dir(binaryPath), releasedMetallibName)
+	metallib := filepath.Join(filepath.Dir(binaryPath), artifact.metallibName)
 	metallibInfo, err := os.Stat(metallib)
 	if err != nil {
-		return fmt.Errorf("released v0.7.12 metallib is missing beside the binary: %w", err)
+		return fmt.Errorf("released v%s metallib is missing beside the binary: %w",
+			artifact.version, err)
 	}
 	if metallibInfo.IsDir() {
-		return fmt.Errorf("released v0.7.12 metallib is a directory: %s", metallib)
+		return fmt.Errorf("released v%s metallib is a directory: %s",
+			artifact.version, metallib)
 	}
 	got, err = digestFile(metallib)
 	if err != nil {
 		return err
 	}
-	if got != wantMetallib {
-		return fmt.Errorf("released v0.7.12 metallib digest %s does not match pinned %s (%s)",
-			got, wantMetallib, metallib)
+	if got != artifact.metallibSHA256 {
+		return fmt.Errorf("released v%s metallib digest %s does not match pinned %s (%s)",
+			artifact.version, got, artifact.metallibSHA256, metallib)
 	}
 	return nil
 }
@@ -565,147 +474,94 @@ func digestFile(path string) (string, error) {
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-// pinnedReleasedDigest reads the named <VAR>_SHA256 assignment out of
-// scripts/fetch-v0712-provider.sh rather than restating it, so each pin has
-// exactly one definition and the test cannot drift away from the fetcher.
-func pinnedReleasedDigest(t *testing.T, variable string) string {
-	t.Helper()
-	root := os.Getenv("DARKBLOOM_REPO_ROOT")
-	if root == "" {
-		cwd, err := os.Getwd()
-		require.NoError(t, err)
-		root = filepath.Clean(filepath.Join(cwd, ".."))
-	}
-	script := filepath.Join(root, "scripts", "fetch-v0712-provider.sh")
-	contents, err := os.ReadFile(script)
-	require.NoError(t, err,
-		"released-provider fetch script is the single source of truth for the %s pin",
-		variable)
-	for _, line := range strings.Split(string(contents), "\n") {
-		value, found := strings.CutPrefix(strings.TrimSpace(line), variable+"=")
-		if !found {
-			continue
-		}
-		value = strings.Trim(value, `"'`)
-		require.Len(t, value, 64,
-			"%s in %s is not a SHA-256 hex digest", variable, script)
-		return value
-	}
-	require.FailNow(t, "no "+variable+" pin found in "+script)
-	return ""
-}
 
-// TestIntegrationMixedVersionGateContract pins the properties whose loss
-// produced blocker B3 and its follow-on: the lane must announce that its
-// booted half cannot run rather than stalling in suite.Start, a runner
-// DESIGNATED to reach that half must go red instead of skipping, and both
-// halves of the released bundle must stay pinned. It needs no host, no
-// binary and no SIP state, so it runs wherever the compatibility lane itself
-// is filtered in.
+// TestIntegrationMixedVersionGateContract is the pure contract for tier
+// ownership, anti-vacuous completion markers, and structured artifact pins.
+// It starts no process and reads no shell source.
 func TestIntegrationMixedVersionGateContract(t *testing.T) {
-	t.Run("booted_half_decision_matrix", func(t *testing.T) {
-		// A SIP-enabled host runs the booted half whatever CI declares.
-		for _, expect := range []mixedVersionExpect{expectAny, expectArtifact, expectFull} {
-			decision, reason := mixedVersionDecide(expect, sipEnabled)
-			require.Equal(t, mixedVersionRun, decision, "expect=%q", expect)
-			require.Empty(t, reason)
-		}
-		// The released v0.7.12 binary throws SecurityError.sipDisabled before
-		// it registers in both non-enabled states, so neither can boot it.
-		for _, state := range []sipState{sipDisabled, sipIndeterminate} {
-			for _, expect := range []mixedVersionExpect{expectAny, expectArtifact} {
-				decision, reason := mixedVersionDecide(expect, state)
-				require.Equal(t, mixedVersionSkipBooted, decision,
-					"state=%d expect=%q", state, expect)
-				require.Equal(t, mixedVersionSIPRequired, reason)
-			}
-			// This is the case the reviewer caught: on the runner designated
-			// to execute this lane, a skip must be red. Without it the only
-			// released-provider gate we have reports green while never
-			// starting the released provider.
-			decision, reason := mixedVersionDecide(expectFull, state)
-			require.Equal(t, mixedVersionFail, decision,
-				"a runner designated full must fail, not skip (state=%d)", state)
-			require.Contains(t, reason, "MIXED_VERSION_SIP_REQUIRED")
-			require.Contains(t, reason, "DARKBLOOM_MIXED_VERSION_EXPECT=full",
-				"failure must name the designation that turned the skip red")
-		}
-		require.Contains(t, mixedVersionSIPRequired, "MIXED_VERSION_SIP_REQUIRED",
-			"skip reason must be greppable in CI output")
-	})
-
 	t.Run("expectation_parses_or_rejects", func(t *testing.T) {
 		for raw, want := range map[string]mixedVersionExpect{
-			"": expectAny, "artifact": expectArtifact, "full": expectFull,
+			"artifact": expectArtifact, "full": expectFull,
 		} {
 			got, err := parseMixedVersionExpect(raw)
 			require.NoError(t, err, "%q", raw)
 			require.Equal(t, want, got)
 		}
-		// A typo must be red, never a silent downgrade to expectAny — that
-		// would hand back the permanent green skip this designation exists
-		// to prevent.
-		for _, raw := range []string{"ful", "FULL", "artifacts", "1", "true"} {
+		for _, raw := range []string{"", "ful", "FULL", "artifacts", "1", "true"} {
 			_, err := parseMixedVersionExpect(raw)
-			require.Error(t, err, "%q must be rejected, not folded into unset", raw)
+			require.Error(t, err, "%q must be rejected, not silently assigned a tier", raw)
 		}
 	})
 
-	t.Run("tier_markers_are_distinct_and_greppable", func(t *testing.T) {
-		// integration.yml greps these out of the job log; `go test` exits 0
-		// for a skip and for a `-run` pattern that matched nothing, so the
-		// markers are the only evidence a tier actually executed.
-		require.NotEqual(t, mixedVersionTierArtifactOK, mixedVersionTierFullOK)
-		require.NotContains(t, mixedVersionTierFullOK, mixedVersionTierArtifactOK,
-			"a grep for the artifact marker must not be satisfied by the full marker alone "+
-				"or vice versa")
-		require.NotContains(t, mixedVersionTierArtifactOK, mixedVersionTierFullOK)
+	t.Run("tier_markers_name_distinct_completion_contracts", func(t *testing.T) {
+		// CI greps exact markers because a zero-match or all-skipped `go test`
+		// exits successfully. Neither marker may be a substring of the other.
+		require.Contains(t, mixedVersionArtifactOnlyOK, "ARTIFACT_ONLY")
+		require.Contains(t, mixedVersionArtifactOnlyOK, "NO_LEGACY_BOOT")
+		require.Contains(t, mixedVersionFullBootOK, "FULL_LEGACY_BOOT")
+		require.NotEqual(t, mixedVersionArtifactOnlyOK, mixedVersionFullBootOK)
+		require.NotContains(t, mixedVersionFullBootOK, mixedVersionArtifactOnlyOK)
+		require.NotContains(t, mixedVersionArtifactOnlyOK, mixedVersionFullBootOK)
+		require.Contains(t, mixedVersionSIPRequired, "MIXED_VERSION_SIP_REQUIRED")
 	})
 
-	t.Run("both_bundle_pins_are_read_from_the_fetch_script", func(t *testing.T) {
-		binary := pinnedReleasedDigest(t, "BINARY_SHA256")
-		metallib := pinnedReleasedDigest(t, "METALLIB_SHA256")
-		require.NotEqual(t, binary, metallib,
-			"metallib pin resolved to the binary pin — the parser matched the wrong line")
-		for name, pin := range map[string]string{"BINARY_SHA256": binary, "METALLIB_SHA256": metallib} {
-			_, err := hex.DecodeString(pin)
-			require.NoError(t, err, "%s is not hex", name)
+	t.Run("released_fixture_pins_both_bundle_members", func(t *testing.T) {
+		require.Equal(t, "0.7.12", releasedProviderV0712.version)
+		require.Equal(t, "mlx.metallib", releasedProviderV0712.metallibName)
+		require.NotEqual(t, releasedProviderV0712.binarySHA256,
+			releasedProviderV0712.metallibSHA256)
+		for name, pin := range map[string]string{
+			"binary":   releasedProviderV0712.binarySHA256,
+			"metallib": releasedProviderV0712.metallibSHA256,
+		} {
+			require.Len(t, pin, sha256.Size*2, "%s pin is not SHA-256", name)
+			decoded, err := hex.DecodeString(pin)
+			require.NoError(t, err, "%s pin is not hex", name)
+			require.Len(t, decoded, sha256.Size)
 		}
 	})
 
-	// The executable is correct in every case below; only the metallib
-	// varies. Before this gate verified METALLIB_SHA256 all three passed.
-	t.Run("metallib_is_enforced_beside_a_correct_binary", func(t *testing.T) {
-		wantMetallib := pinnedReleasedDigest(t, "METALLIB_SHA256")
-		newBundle := func(t *testing.T, metallib []byte) (dir, binary, binaryDigest string) {
+	t.Run("verifier_rejects_drift_and_requires_both_members", func(t *testing.T) {
+		newBundle := func(t *testing.T, metallib []byte) (string, releasedProviderArtifact) {
 			t.Helper()
-			dir = t.TempDir()
-			binary = filepath.Join(dir, "darkbloom")
-			require.NoError(t, os.WriteFile(binary, []byte("released executable"), 0o755))
-			digest, err := digestFile(binary)
-			require.NoError(t, err)
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "darkbloom")
+			binaryBytes := []byte("released executable")
+			require.NoError(t, os.WriteFile(binary, binaryBytes, 0o755))
+			fixture := releasedProviderArtifact{
+				version:        releasedProviderV0712.version,
+				binarySHA256:   hex.EncodeToString(sha256Sum(binaryBytes)),
+				metallibName:   releasedProviderV0712.metallibName,
+				metallibSHA256: hex.EncodeToString(sha256Sum(metallib)),
+			}
 			if metallib != nil {
 				require.NoError(t,
-					os.WriteFile(filepath.Join(dir, releasedMetallibName), metallib, 0o644))
+					os.WriteFile(filepath.Join(dir, fixture.metallibName), metallib, 0o644))
 			}
-			return dir, binary, digest
+			return binary, fixture
 		}
 
-		_, binary, binaryDigest := newBundle(t, []byte("drifted metallib"))
-		require.ErrorContains(t, verifyPinnedBundle(binary, binaryDigest, wantMetallib),
-			"metallib digest",
-			"a drifted metallib beside a correct binary was accepted")
-
-		_, binary, binaryDigest = newBundle(t, nil)
-		require.ErrorContains(t, verifyPinnedBundle(binary, binaryDigest, wantMetallib),
-			"metallib is missing",
-			"a bundle with no metallib at all was accepted")
-
-		// Matching metallib beside a matching binary is the only accepted case.
 		matching := []byte("released metallib bytes")
-		matchingDigest := sha256.Sum256(matching)
-		_, binary, binaryDigest = newBundle(t, matching)
-		require.NoError(t, verifyPinnedBundle(
-			binary, binaryDigest, hex.EncodeToString(matchingDigest[:])))
+		binary, fixture := newBundle(t, matching)
+		require.NoError(t, verifyPinnedBundle(binary, fixture))
+
+		driftedBinary := fixture
+		driftedBinary.binarySHA256 = strings.Repeat("0", sha256.Size*2)
+		require.ErrorContains(t, verifyPinnedBundle(binary, driftedBinary),
+			"binary digest")
+
+		driftedMetallib := fixture
+		driftedMetallib.metallibSHA256 = strings.Repeat("0", sha256.Size*2)
+		require.ErrorContains(t, verifyPinnedBundle(binary, driftedMetallib),
+			"metallib digest")
+
+		binary, fixture = newBundle(t, nil)
+		require.ErrorContains(t, verifyPinnedBundle(binary, fixture),
+			"metallib is missing")
 	})
+}
+
+func sha256Sum(contents []byte) []byte {
+	sum := sha256.Sum256(contents)
+	return sum[:]
 }

@@ -206,24 +206,28 @@ func DefaultProviderConfig() ProviderConfig {
 }
 
 type RequestConfig struct {
-	PromptTokens  int
-	MaxTokens     int
-	Streaming     bool
-	Temperature   float64
-	Concurrency   int
-	TotalRequests int
-	ModelID       string
-	PromptBytes   int
+	MaxTokens         int
+	Streaming         bool
+	Temperature       float64
+	Concurrency       int
+	TotalRequests     int
+	// ExpectedSuccesses is the target used for reporting. MinimumSuccesses is
+	// the hard floor: Run returns an error below it. Both must be configured.
+	ExpectedSuccesses int
+	MinimumSuccesses  int
+	ModelID           string
+	PromptBytes       int
 }
 
 func DefaultRequestConfig() RequestConfig {
 	return RequestConfig{
-		PromptTokens:  64,
-		MaxTokens:     128,
-		Streaming:     true,
-		Temperature:   0.0,
-		Concurrency:   1,
-		TotalRequests: 10,
+		MaxTokens:         128,
+		Streaming:         true,
+		Temperature:       0.0,
+		Concurrency:       1,
+		TotalRequests:     10,
+		ExpectedSuccesses: 10,
+		MinimumSuccesses:  10,
 	}
 }
 
@@ -250,7 +254,7 @@ type ModelConfig struct {
 
 func DefaultModelConfig() ModelConfig {
 	return ModelConfig{
-		ModelID:     "mlx-community/gemma-3-270m",
+		ModelID:     DefaultTestModelID(),
 		BackendPort: 8000,
 	}
 }

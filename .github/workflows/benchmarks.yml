@@ -76,12 +76,20 @@ jobs:
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit', revision=os.environ['GEMMA_REVISION'], token=False)"
 
-      - name: Run benchmarks
+      - name: Run approved benchmark lane
         run: |
+          set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
+          benchmark_log="$RUNNER_TEMP/e2e-benchmarks.log"
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestBenchmark'
+            -run '^TestBenchmark_' \
+            2>&1 | tee "$benchmark_log"
+          run_count=$(grep -c '^=== RUN   TestBenchmark_' "$benchmark_log" || true)
+          if [ "$run_count" -lt 1 ]; then
+            echo "::error::approved benchmark lane matched no TestBenchmark_ test"
+            exit 1
+          fi
 
       - name: Post benchmark results
         if: always()

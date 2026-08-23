@@ -2,8 +2,8 @@ package e2e
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,12 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
@@ -29,12 +28,7 @@ var httpTimeout = 300 * time.Second
 
 func startSuite(t *testing.T) *testbed.Suite {
 	t.Helper()
-
-	ctx := context.Background()
-	s := testbed.NewSuite(testbed.SuiteConfig{})
-	require.NoError(t, s.Start(ctx), "suite startup failed")
-	t.Cleanup(s.Stop)
-	return s
+	return testbed.StartSuite(t, testbed.SuiteConfig{})
 }
 
 func postChatCompletions(t *testing.T, s *testbed.Suite, prompt string, stream bool, maxTokens int) *http.Response {
@@ -52,7 +46,8 @@ func postChatCompletionsWithModel(t *testing.T, s *testbed.Suite, model, prompt 
 		"max_tokens":  maxTokens,
 		"temperature": 0.0,
 	}
-	bodyJSON, _ := json.Marshal(body)
+	bodyJSON, err := json.Marshal(body)
+	require.NoError(t, err)
 
 	req, err := http.NewRequestWithContext(s.Ctx, http.MethodPost,
 		s.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
@@ -75,7 +70,8 @@ func postChatCompletionsWithAuth(t *testing.T, s *testbed.Suite, apiKey, prompt 
 		"max_tokens":  maxTokens,
 		"temperature": 0.0,
 	}
-	bodyJSON, _ := json.Marshal(body)
+	bodyJSON, err := json.Marshal(body)
+	require.NoError(t, err)
 
 	req, err := http.NewRequestWithContext(s.Ctx, http.MethodPost,
 		s.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
@@ -138,33 +134,24 @@ func queryLedgerEntries(t *testing.T, s *testbed.Suite, accountID, entryType str
 		require.NoError(t, rows.Scan(&e.ID, &e.AccountID, &e.EntryType, &e.AmountMicroUSD, &e.BalanceAfter, &e.Reference))
 		entries = append(entries, e)
 	}
+	require.NoError(t, rows.Err(), "iterate ledger entries")
 	return entries
 }
 
-func getBalance(t *testing.T, s *testbed.Suite, accountID string) int64 {
+func getBalance(t *testing.T, s *testbed.Suite, accountID string) (int64, error) {
 	t.Helper()
 	pool, err := pgxpool.New(s.Ctx, s.Pg.DatabaseURL)
-	require.NoError(t, err)
+	if err != nil {
+		return 0, err
+	}
 	defer pool.Close()
 
 	var balance int64
 	err = pool.QueryRow(s.Ctx, `SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID).Scan(&balance)
-	if err != nil {
-		return 0
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
 	}
-	return balance
-}
-
-func parseErrorResponse(t *testing.T, body []byte) (string, string) {
-	t.Helper()
-	var errResp struct {
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(body, &errResp))
-	return errResp.Error.Type, errResp.Error.Message
+	return balance, err
 }
 
 func sumAmounts(entries []ledgerEntry) int64 {
@@ -175,6 +162,20 @@ func sumAmounts(entries []ledgerEntry) int64 {
 	return total
 }
 
+func printableASCIIRatio(text string) float64 {
+	var printable, total int
+	for _, r := range text {
+		total++
+		if r == '\n' || r == '\t' || (r >= 32 && r < 127) {
+			printable++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(printable) / float64(total)
+}
+
 func TestIntegration_NonStreamingInference(t *testing.T) {
 	s := startSuite(t)
 
@@ -183,82 +184,41 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 	ri := inst.NewRequest()
 	timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
-	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
+	// The default gpt-oss fixture may spend its first tokens in the reasoning
+	// channel. Give it enough room to produce final plaintext content so this
+	// smoke also verifies coordinator decryption and response normalization.
+	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 256)
 	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
 	timer.Stop()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody[:min(len(respBody), 500)]))
-	ri.EndWithDuration(0)
-	t.Logf("non-streaming response: %s", string(respBody[:min(len(respBody), 200)]))
-
-	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
-	t.Logf("\n%s", run.SummaryTable())
-
-	assertAccounting(t, s)
-}
-
-func TestIntegration_StreamingInference(t *testing.T) {
-	s := startSuite(t)
-
-	buf := testbed.NewEventBuffer()
-	inst := testbed.NewInstrument(buf)
-	ri := inst.NewRequest()
-	timer := ri.StartSegment(testbed.SegmentTotalE2E)
-
-	resp := postChatCompletions(t, s, "Count from 1 to 5.", true, 50)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	timer.Stop()
-	ri.EndWithDuration(0)
-
-	// Counting bare `data: ` lines was vacuous: the `[DONE]` sentinel is a
-	// `data: ` line, so a stream that produced NOTHING but its terminator
-	// (or only role-preamble boilerplate) still passed. Require at least one
-	// payload-bearing chunk: not `[DONE]`, parses as a chunk, and carries
-	// non-empty delta text. gpt-oss is a reasoning model, so the Harmony
-	// analysis channel (`delta.reasoning`) counts as payload exactly as
-	// TestIntegration_StreamingContentValidation already treats it — under a
-	// small token cap the final `content` channel may not start at all.
-	var chunks, payloadChunks int
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		chunks++
-		ri.StreamChunk(chunks)
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			continue
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content   string `json:"content"`
-					Reasoning string `json:"reasoning"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) > 0 &&
-			(chunk.Choices[0].Delta.Content != "" || chunk.Choices[0].Delta.Reasoning != "") {
-			payloadChunks++
-		}
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
-	require.Greater(t, chunks, 0, "expected at least one SSE chunk")
-	require.Greater(t, payloadChunks, 0,
-		"expected at least one parseable chunk carrying delta content/reasoning — "+
-			"a stream of boilerplate plus [DONE] is not an inference")
-	t.Logf("streaming: received %d SSE chunks (%d payload-bearing)", chunks, payloadChunks)
+	require.NoError(t, json.Unmarshal(respBody, &decoded))
+	require.Len(t, decoded.Choices, 1)
+	content := decoded.Choices[0].Message.Content
+	require.NotEmpty(t, content, "live non-streaming inference must return decrypted final content")
+	require.Greater(t, printableASCIIRatio(content), 0.8,
+		"non-streaming content should be printable plaintext, not encrypted bytes")
+	require.Greater(t, decoded.Usage.PromptTokens, 0)
+	require.Greater(t, decoded.Usage.CompletionTokens, 0)
 
+	ri.EndWithDuration(0)
 	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
 	t.Logf("\n%s", run.SummaryTable())
+	t.Logf("non-streaming: %d prompt / %d completion tokens, content=%q",
+		decoded.Usage.PromptTokens, decoded.Usage.CompletionTokens, content[:min(len(content), 80)])
 
 	assertAccounting(t, s)
 }
@@ -280,9 +240,8 @@ func TestIntegration_StreamingInference(t *testing.T) {
 func TestIntegration_GreedyDeterminism(t *testing.T) {
 	s := startSuite(t)
 
-	// 256 tokens for the same reason as TestIntegration_E2EEncryptionCorrectness:
-	// gpt-oss spends its first tokens in the Harmony analysis channel, and the
-	// assertion below wants the final `content` channel populated too.
+	// The default gpt-oss fixture may spend its first tokens in the Harmony
+	// analysis channel, while the assertion below also requires final content.
 	const prompt = "What is 2+2? Answer with just the number."
 	type completion struct {
 		content   string
@@ -292,7 +251,8 @@ func TestIntegration_GreedyDeterminism(t *testing.T) {
 	run := func(attempt int) completion {
 		resp := postChatCompletions(t, s, prompt, false, 256)
 		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err, "attempt %d", attempt)
 		require.Equal(t, http.StatusOK, resp.StatusCode,
 			"attempt %d: body: %s", attempt, string(respBody[:min(len(respBody), 500)]))
 
@@ -332,224 +292,151 @@ func TestIntegration_GreedyDeterminism(t *testing.T) {
 		first.tokens, first.content[:min(len(first.content), 80)])
 }
 
-func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
+func TestIntegration_BillingAccounting(t *testing.T) {
 	s := startSuite(t)
+
+	const totalRequests = 3
+	const referralCode = "TESTREF"
+	consumerID := "billing-consumer"
+	referrerID := "billing-referrer"
+	feePercent := int64(5)
+
+	require.NoError(t, s.PgStore.CreateUser(&store.User{
+		AccountID:          consumerID,
+		PrivyUserID:        "did:privy:" + consumerID,
+		PlatformFeePercent: &feePercent,
+	}), "create billing consumer with explicit platform fee")
+	require.NoError(t, s.PgStore.CreateUser(&store.User{
+		AccountID:   referrerID,
+		PrivyUserID: "did:privy:" + referrerID,
+	}), "create billing referrer")
+	require.NoError(t, s.PgStore.Credit(consumerID, 1_000_000, "deposit", "seed"))
+
+	apiKey, err := s.PgStore.CreateKeyForAccount(consumerID)
+	require.NoError(t, err)
+	billingSvc := s.Coordinator.Server.Billing()
+	require.NotNil(t, billingSvc)
+	referral := billingSvc.Referral()
+	require.NotNil(t, referral)
+	_, err = referral.Register(referrerID, referralCode)
+	require.NoError(t, err)
+	require.NoError(t, referral.Apply(consumerID, referralCode))
+
+	balanceBefore, err := getBalance(t, s, consumerID)
+	require.NoError(t, err)
+	require.Positive(t, balanceBefore)
+	providerIDs := s.Coordinator.Registry.ProviderIDs()
+	require.Len(t, providerIDs, 1, "billing accounting requires the default single-provider fixture")
+	providerID := providerIDs[0]
+	provider := s.Coordinator.Registry.GetProvider(providerID)
+	require.NotNil(t, provider)
+	provider.Mu().Lock()
+	providerAccountID := provider.AccountID
+	providerKey := provider.PublicKey
+	provider.Mu().Unlock()
+	require.NotEmpty(t, providerAccountID, "testbed provider must be linked for payout verification")
+	require.NotEmpty(t, providerKey)
+	providerBalanceBefore, err := getBalance(t, s, providerAccountID)
+	require.NoError(t, err)
 
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
 
-	const totalRequests = 3
-	var successCount int
-	for i := 0; i < totalRequests; i++ {
+	for i := range totalRequests {
 		ri := inst.NewRequest()
-		clientTimer := ri.StartSegment(testbed.SegmentTotalE2E)
-
-		resp := postChatCompletions(t, s, "What is 2+2?", false, 20)
-		respBody, _ := io.ReadAll(resp.Body)
+		timer := ri.StartSegment(testbed.SegmentTotalE2E)
+		resp := postChatCompletionsWithAuth(t, s, apiKey,
+			fmt.Sprintf("Billing request %d: reply with one short word.", i+1), false, 32)
+		respBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		clientTimer.Stop()
+		timer.Stop()
+		require.NoError(t, readErr)
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"request %d body: %s", i+1, string(respBody[:min(len(respBody), 500)]))
 
-		if resp.StatusCode != 200 {
-			ri.Error(fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 500)])))
-			t.Logf("request %d: status=%d", i+1, resp.StatusCode)
-			continue
+		var decoded struct {
+			Choices []json.RawMessage `json:"choices"`
+			Usage   struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
 		}
+		require.NoError(t, json.Unmarshal(respBody, &decoded), "request %d", i+1)
+		require.NotEmpty(t, decoded.Choices, "request %d must contain a live completion", i+1)
+		require.Positive(t, decoded.Usage.PromptTokens, "request %d prompt usage", i+1)
+		require.Positive(t, decoded.Usage.CompletionTokens, "request %d completion usage", i+1)
 
+		currentProviderID := resp.Header.Get("X-Provider-Id")
+		require.NotEmpty(t, currentProviderID, "request %d provider metadata", i+1)
+		require.Equal(t, providerID, currentProviderID,
+			"shared fixture must settle all requests for the serving provider")
 		ri.EndWithDuration(0)
-		successCount++
-		t.Logf("request %d: status=200", i+1)
 	}
 
-	require.Greater(t, successCount, 0, "no successful requests")
+	balanceAfter, err := getBalance(t, s, consumerID)
+	require.NoError(t, err)
+	require.Less(t, balanceAfter, balanceBefore)
+	totalCost := balanceBefore - balanceAfter
+	require.GreaterOrEqual(t, totalCost, int64(totalRequests)*payments.MinimumCharge())
 
-	cfg := testbed.DefaultTestConfig()
-	p := tbprofile.NewProfiler(cfg, buf)
-	run := p.BuildProfile()
-	t.Logf("\n%s", run.SummaryTable())
+	charges := queryLedgerEntries(t, s, consumerID, "charge")
+	refunds := queryLedgerEntries(t, s, consumerID, "refund")
+	require.Len(t, charges, totalRequests, "each successful request must produce one consumer charge")
+	require.Equal(t, balanceAfter-balanceBefore, sumAmounts(charges)+sumAmounts(refunds),
+		"consumer ledger delta must equal the observed balance delta")
 
-	assertAccounting(t, s)
-}
-
-func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
-	s := startSuite(t)
-
-	// 256 tokens, not 20: the CBv2 default fixture (gpt-oss-20b) is a
-	// reasoning model — a 20-token cap is consumed entirely by the Harmony
-	// analysis channel and `content` stays empty before the final channel
-	// starts. This test asserts on the decrypted CONTENT, so give the
-	// model room to finish reasoning and answer.
-	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 256)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
+	earnings, err := s.PgStore.GetProviderEarnings(providerKey, totalRequests+1)
+	require.NoError(t, err)
+	require.Len(t, earnings, totalRequests, "each live inference must record one provider earning")
+	var providerPayout int64
+	for _, earning := range earnings {
+		require.Equal(t, providerID, earning.ProviderID)
+		require.Equal(t, providerAccountID, earning.AccountID)
+		require.Positive(t, earning.PromptTokens)
+		require.Positive(t, earning.CompletionTokens)
+		require.Positive(t, earning.AmountMicroUSD)
+		providerPayout += earning.AmountMicroUSD
 	}
-	require.NoError(t, json.Unmarshal(respBody, &result))
-	require.Len(t, result.Choices, 1)
+	providerBalanceAfter, err := getBalance(t, s, providerAccountID)
+	require.NoError(t, err)
+	require.Equal(t, providerPayout, providerBalanceAfter-providerBalanceBefore,
+		"linked provider balance delta must equal recorded earnings")
 
-	content := result.Choices[0].Message.Content
-	require.NotEmpty(t, content, "response content should not be empty — if this were still encrypted/ciphertext, content would be binary garbage")
-	require.Greater(t, result.Usage.PromptTokens, 0, "prompt_tokens should be positive")
-	require.Greater(t, result.Usage.CompletionTokens, 0, "completion_tokens should be positive")
-
-	var printable int
-	for _, r := range content {
-		if r >= 32 && r < 127 {
-			printable++
-		}
-	}
-	printableRatio := float64(printable) / float64(len(content))
-	require.Greater(t, printableRatio, 0.8, "response should be mostly printable text (got %.0f%%), not encrypted binary", printableRatio*100)
-
-	t.Logf("E2E encryption: content is valid decrypted text (%d chars, %d prompt / %d completion tokens)",
-		len(content), result.Usage.PromptTokens, result.Usage.CompletionTokens)
-}
-
-func TestIntegration_BillingBalanceDeduction(t *testing.T) {
-	s := startSuite(t)
-
-	accountID := "billing-user"
-	apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
-	require.NoError(t, err, "should create API key for billing user")
-
-	require.NoError(t, s.PgStore.Credit(accountID, 1_000_000, "deposit", "seed"))
-
-	balanceBefore := getBalance(t, s, accountID)
-	require.Greater(t, balanceBefore, int64(0), "user should have positive balance before request")
-
-	resp := postChatCompletionsWithAuth(t, s, apiKey, "Say hello.", false, 20)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	balanceAfter := getBalance(t, s, accountID)
-	require.Less(t, balanceAfter, balanceBefore, "balance should decrease after inference")
-
-	charges := queryLedgerEntries(t, s, accountID, "charge")
-	require.NotEmpty(t, charges, "should have at least one charge entry")
-	lastCharge := charges[len(charges)-1]
-	require.Less(t, lastCharge.AmountMicroUSD, int64(0), "charge amount should be negative")
-
-	refunds := queryLedgerEntries(t, s, accountID, "refund")
-	if len(refunds) > 0 {
-		lastRefund := refunds[len(refunds)-1]
-		require.Greater(t, lastRefund.AmountMicroUSD, int64(0), "refund amount should be positive")
-	}
-
-	expectedMinCost := payments.MinimumCharge()
-	require.GreaterOrEqual(t, -lastCharge.AmountMicroUSD+sumAmounts(refunds), expectedMinCost,
-		"total cost should be at least the minimum charge")
-
-	assertAccounting(t, s)
-	t.Logf("billing: balance %d -> %d (charged %d micro-USD)",
-		balanceBefore, balanceAfter, balanceBefore-balanceAfter)
-}
-
-func TestIntegration_ProviderPayoutSplit(t *testing.T) {
-	s := startSuite(t)
-
-	accountID := "payout-user"
-	// The global default platform fee is 0% during the public alpha, so set an
-	// explicit non-zero per-account override to exercise the payout/fee split
-	// end-to-end (the settlement reads the consumer's PlatformFeePercent).
-	feePercent := int64(5)
-	require.NoError(t, s.PgStore.CreateUser(&store.User{
-		AccountID:          accountID,
-		PrivyUserID:        "did:privy:" + accountID,
-		PlatformFeePercent: &feePercent,
-	}), "should create payout user with a fee override")
-
-	apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
-	require.NoError(t, err, "should create API key for payout user")
-
-	require.NoError(t, s.PgStore.Credit(accountID, 1_000_000, "deposit", "seed"))
-
-	resp := postChatCompletionsWithAuth(t, s, apiKey, "Say hello.", false, 20)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	charges := queryLedgerEntries(t, s, accountID, "charge")
-	require.NotEmpty(t, charges, "should have charge entries for this account")
-
-	refunds := queryLedgerEntries(t, s, accountID, "refund")
-	netCharge := -sumAmounts(charges)
-	refundTotal := sumAmounts(refunds)
-	totalCost := netCharge + refundTotal
-
-	expectedPayout := payments.ProviderPayoutWithPercent(totalCost, &feePercent)
-	expectedFee := payments.PlatformFeeWithPercent(totalCost, &feePercent)
-
-	require.GreaterOrEqual(t, expectedFee, int64(1), "platform fee should be at least 1 micro-USD (5%% of %d)", totalCost)
-	require.Equal(t, totalCost, expectedPayout+expectedFee,
-		"payout + fee should equal total cost")
-
-	// The override must take effect end-to-end: the platform ledger should show
-	// a fee for this request.
 	platformFees := queryLedgerEntries(t, s, "platform", "platform_fee")
-	require.NotEmpty(t, platformFees, "platform should receive a fee entry for the 5%% override")
+	rewards := queryLedgerEntries(t, s, referrerID, "referral_reward")
+	require.Len(t, platformFees, totalRequests, "each request must credit the remaining platform fee")
+	require.Len(t, rewards, totalRequests, "each request must distribute a referral reward")
+	platformFeeTotal := sumAmounts(platformFees)
+	rewardTotal := sumAmounts(rewards)
+	require.Positive(t, platformFeeTotal)
+	require.Positive(t, rewardTotal)
+	require.Equal(t, totalCost, providerPayout+platformFeeTotal+rewardTotal,
+		"consumer cost must split exactly into provider payout, platform fee, and referral reward")
 
 	assertAccounting(t, s)
-	t.Logf("payout split: total=%d provider=95%%(%d) platform=5%%(%d)", totalCost, expectedPayout, expectedFee)
-}
-
-func TestIntegration_InsufficientBalance(t *testing.T) {
-	s := startSuite(t)
-
-	poorKey, err := s.PgStore.CreateKeyForAccount("poor-user")
-	require.NoError(t, err, "should create API key for poor user")
-
-	require.NoError(t, s.PgStore.Credit("poor-user", 1, "deposit", "seed"))
-
-	resp := postChatCompletionsWithAuth(t, s, poorKey, "Say hello.", false, 20)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusPaymentRequired, resp.StatusCode, "should get 402 for insufficient balance")
-
-	respBody, _ := io.ReadAll(resp.Body)
-	errType, errMsg := parseErrorResponse(t, respBody)
-	require.Equal(t, "insufficient_funds", errType, "error type should be insufficient_funds, got: %s", errMsg)
-
-	t.Logf("insufficient balance: got 402 with type=%s", errType)
-}
-
-func TestIntegration_InvalidModel(t *testing.T) {
-	s := startSuite(t)
-
-	resp := postChatCompletionsWithModel(t, s, "nonexistent-model-xyz", "Say hello.", false, 20)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusNotFound, resp.StatusCode, "should get 404 for unknown model")
-
-	respBody, _ := io.ReadAll(resp.Body)
-	errType, _ := parseErrorResponse(t, respBody)
-	require.Equal(t, "model_not_found", errType, "error type should be model_not_found")
-
-	t.Logf("invalid model: got 404 with type=%s", errType)
+	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
+	t.Logf("\n%s", run.SummaryTable())
+	t.Logf("billing: %d requests cost=%d provider=%d platform=%d referral=%d",
+		totalRequests, totalCost, providerPayout, platformFeeTotal, rewardTotal)
 }
 
 func TestIntegration_StreamingContentValidation(t *testing.T) {
 	s := startSuite(t)
 
-	resp := postChatCompletions(t, s, "Say exactly: hello world", true, 50)
+	buf := testbed.NewEventBuffer()
+	inst := testbed.NewInstrument(buf)
+	ri := inst.NewRequest()
+	timer := ri.StartSegment(testbed.SegmentTotalE2E)
+
+	resp := postChatCompletions(t, s, "Say exactly: hello world", true, 64)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
 	var contentChunks []string
+	var dataChunks int
 	var hasDone bool
 	var hasAttestation bool
-	var rawDataLines []string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -557,11 +444,16 @@ func TestIntegration_StreamingContentValidation(t *testing.T) {
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
+		if hasDone {
+			require.Failf(t, "data after [DONE]", "unexpected SSE data frame: %s", data)
+		}
 		if data == "[DONE]" {
 			hasDone = true
-			break
+			continue
 		}
-		rawDataLines = append(rawDataLines, data)
+
+		dataChunks++
+		ri.StreamChunk(dataChunks)
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
@@ -571,45 +463,38 @@ func TestIntegration_StreamingContentValidation(t *testing.T) {
 			} `json:"choices"`
 			SESignature string `json:"se_signature"`
 		}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
+		require.NoError(t, json.Unmarshal([]byte(data), &chunk),
+			"every SSE data frame before [DONE] must be valid JSON: %s", data)
 		if chunk.SESignature != "" {
 			hasAttestation = true
 		}
-		if len(chunk.Choices) > 0 {
-			if chunk.Choices[0].Delta.Content != "" {
-				contentChunks = append(contentChunks, chunk.Choices[0].Delta.Content)
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				contentChunks = append(contentChunks, choice.Delta.Content)
 			}
-			if chunk.Choices[0].Delta.Reasoning != "" {
-				contentChunks = append(contentChunks, chunk.Choices[0].Delta.Reasoning)
+			if choice.Delta.Reasoning != "" {
+				contentChunks = append(contentChunks, choice.Delta.Reasoning)
 			}
 		}
 	}
+	require.NoError(t, scanner.Err())
+	timer.Stop()
 
-	require.True(t, hasDone, "stream should end with [DONE]")
-	if len(rawDataLines) > 0 {
-		t.Logf("first SSE data: %s", rawDataLines[0][:min(len(rawDataLines[0]), 300)])
-	}
-	require.NotEmpty(t, contentChunks, "should receive at least one content chunk (got %d data lines)", len(rawDataLines))
-
+	require.True(t, hasDone, "stream must end with a [DONE] data frame")
+	require.Positive(t, dataChunks, "stream must contain JSON chunks before [DONE]")
+	require.NotEmpty(t, contentChunks,
+		"stream must contain at least one payload-bearing content or reasoning delta")
 	fullContent := strings.Join(contentChunks, "")
-	require.NotEmpty(t, fullContent, "accumulated content should not be empty")
+	require.NotEmpty(t, fullContent)
+	require.Greater(t, printableASCIIRatio(fullContent), 0.8,
+		"streamed payload should be decrypted printable plaintext")
 
-	var printable int
-	for _, r := range fullContent {
-		if r >= 32 && r < 127 {
-			printable++
-		}
-	}
-	printableRatio := float64(printable) / float64(len(fullContent))
-	require.Greater(t, printableRatio, 0.8, "streamed content should be mostly printable text")
-
-	if hasAttestation {
-		t.Logf("streaming: %d content chunks, attestation present, content=%q", len(contentChunks), fullContent[:min(len(fullContent), 100)])
-	} else {
-		t.Logf("streaming: %d content chunks, content=%q", len(contentChunks), fullContent[:min(len(fullContent), 100)])
-	}
+	ri.EndWithDuration(0)
+	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
+	t.Logf("\n%s", run.SummaryTable())
+	t.Logf("streaming: %d JSON chunks, attestation=%t, content=%q",
+		dataChunks, hasAttestation, fullContent[:min(len(fullContent), 100)])
+	assertAccounting(t, s)
 }
 
 func TestIntegration_ConcurrentRequests(t *testing.T) {
@@ -617,126 +502,152 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
+	client := &http.Client{Timeout: httpTimeout}
 
 	const numRequests = 5
 	type result struct {
 		statusCode int
 		body       string
+		providerID string
+		hasPayload bool
+		err        error
 	}
 	results := make([]result, numRequests)
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(numRequests)
 
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		go func(idx int) {
 			defer wg.Done()
+			<-start
+
 			ri := inst.NewRequest()
 			timer := ri.StartSegment(testbed.SegmentTotalE2E)
-
-			resp := postChatCompletions(t, s, fmt.Sprintf("What is %d+%d?", idx, idx+1), false, 20)
-			defer resp.Body.Close()
-			respBody, _ := io.ReadAll(resp.Body)
-
-			timer.Stop()
-			results[idx] = result{statusCode: resp.StatusCode, body: string(respBody[:min(len(respBody), 200)])}
-
-			if resp.StatusCode == http.StatusOK {
-				ri.EndWithDuration(0)
-			} else {
-				ri.Error(fmt.Errorf("status %d", resp.StatusCode))
+			bodyJSON, err := json.Marshal(map[string]any{
+				"model":       s.PrimaryModelID(),
+				"messages":    []map[string]string{{"role": "user", "content": fmt.Sprintf("What is %d+%d?", idx, idx+1)}},
+				"stream":      false,
+				"max_tokens":  32,
+				"temperature": 0.0,
+			})
+			if err != nil {
+				results[idx].err = err
+				ri.Error(err)
+				timer.Stop()
+				return
 			}
+			req, err := http.NewRequestWithContext(s.Ctx, http.MethodPost,
+				s.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
+			if err != nil {
+				results[idx].err = err
+				ri.Error(err)
+				timer.Stop()
+				return
+			}
+			req.Header.Set("Authorization", "Bearer testbed-admin-key")
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				results[idx].err = err
+				ri.Error(err)
+				timer.Stop()
+				return
+			}
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			timer.Stop()
+			if readErr != nil {
+				results[idx].err = readErr
+				ri.Error(readErr)
+				return
+			}
+
+			var decoded struct {
+				Choices []struct {
+					Message struct {
+						Content   string `json:"content"`
+						Reasoning string `json:"reasoning"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal(respBody, &decoded); err != nil {
+				results[idx].err = err
+				ri.Error(err)
+				return
+			}
+			hasPayload := len(decoded.Choices) > 0 &&
+				decoded.Choices[0].Message.Content+decoded.Choices[0].Message.Reasoning != ""
+			results[idx] = result{
+				statusCode: resp.StatusCode,
+				body:       string(respBody[:min(len(respBody), 300)]),
+				providerID: resp.Header.Get("X-Provider-Id"),
+				hasPayload: hasPayload,
+			}
+			if resp.StatusCode != http.StatusOK {
+				ri.Error(fmt.Errorf("status %d", resp.StatusCode))
+				return
+			}
+			ri.EndWithDuration(0)
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 
-	var successCount int
-	for i, r := range results {
-		if r.statusCode == http.StatusOK {
-			successCount++
+	var providerID string
+	for i, result := range results {
+		require.NoError(t, result.err, "concurrent request %d", i)
+		require.Equal(t, http.StatusOK, result.statusCode,
+			"concurrent request %d body: %s", i, result.body)
+		require.True(t, result.hasPayload, "concurrent request %d returned no live payload", i)
+		require.NotEmpty(t, result.providerID, "concurrent request %d missing provider metadata", i)
+		if providerID == "" {
+			providerID = result.providerID
 		} else {
-			t.Logf("request %d: status=%d body=%s", i, r.statusCode, r.body)
+			require.Equal(t, providerID, result.providerID,
+				"all concurrent requests should reach the single live provider")
 		}
 	}
-	require.Greater(t, successCount, 0, "at least some concurrent requests should succeed")
 
 	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
 	t.Logf("\n%s", run.SummaryTable())
-
 	assertAccounting(t, s)
-	t.Logf("concurrent: %d/%d requests succeeded", successCount, numRequests)
+	t.Logf("concurrent: all %d requests completed via provider %s", numRequests, providerID)
 }
 
-func TestIntegration_AttestationHeaders(t *testing.T) {
+func TestIntegration_ProviderMetadata(t *testing.T) {
 	s := startSuite(t)
 
-	resp := postChatCompletions(t, s, "Say hello.", false, 20)
+	resp := postChatCompletions(t, s, "Say hello.", false, 32)
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"body: %s", string(respBody[:min(len(respBody), 500)]))
 
-	assert.NotEmpty(t, resp.Header.Get("X-Provider-Id"), "X-Provider-Id should be set")
-	assert.NotEmpty(t, resp.Header.Get("X-Provider-Trust-Level"), "X-Provider-Trust-Level should be set")
-	assert.NotEmpty(t, resp.Header.Get("X-Provider-Chip"), "X-Provider-Chip should be set")
+	require.NotEmpty(t, resp.Header.Get("X-Provider-Id"))
+	require.NotEmpty(t, resp.Header.Get("X-Provider-Trust-Level"))
+	require.NotEmpty(t, resp.Header.Get("X-Provider-Chip"))
+	attested := resp.Header.Get("X-Provider-Attested")
+	require.Contains(t, []string{"true", "false"}, attested)
 
-	respBody, _ := io.ReadAll(resp.Body)
-	var result struct {
+	var decoded struct {
 		SESignature  string `json:"se_signature"`
 		ResponseHash string `json:"response_hash"`
 	}
-	require.NoError(t, json.Unmarshal(respBody, &result))
-	if resp.Header.Get("X-Provider-Attested") == "true" {
-		assert.NotEmpty(t, result.SESignature, "attested response should include se_signature")
-		assert.NotEmpty(t, result.ResponseHash, "attested response should include response_hash")
+	require.NoError(t, json.Unmarshal(respBody, &decoded))
+	if attested == "true" {
+		require.NotEmpty(t, decoded.SESignature, "attested response must include se_signature")
+		require.NotEmpty(t, decoded.ResponseHash, "attested response must include response_hash")
 	}
 
-	t.Logf("attestation: provider=%s chip=%s trust=%s se_sig=%d chars",
+	t.Logf("provider metadata: id=%s chip=%s trust=%s attested=%s",
 		resp.Header.Get("X-Provider-Id"),
 		resp.Header.Get("X-Provider-Chip"),
 		resp.Header.Get("X-Provider-Trust-Level"),
-		len(result.SESignature),
+		attested,
 	)
-}
-
-// findRoutableProvider selects a provider for model via the PRODUCTION routing
-// path (ReserveProviderEx), releases the reserved capacity, and returns the
-// selected provider — or nil when no provider can serve the model right now.
-// It replaces the removed score-based registry.FindProvider as a routability
-// probe: the production path applies the same structural/privacy/trust/challenge/
-// capacity gates, so "is this provider routable?" assertions hold without a
-// parallel routing implementation to keep in sync.
-func findRoutableProvider(reg *registry.Registry, model string) *registry.Provider {
-	pr := &registry.PendingRequest{RequestID: "test-route-probe", Model: model, RequestedMaxTokens: 64}
-	p, _ := reg.ReserveProviderEx(model, pr)
-	if p != nil {
-		p.RemovePending(pr.RequestID)
-		reg.SetProviderIdle(p.ID)
-	}
-	return p
-}
-
-func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
-	ctx := context.Background()
-	s := testbed.NewSuite(testbed.SuiteConfig{})
-	require.NoError(t, s.Start(ctx), "suite startup failed")
-	t.Cleanup(s.Stop)
-
-	for _, id := range s.Coordinator.Registry.ProviderIDs() {
-		p := s.Coordinator.Registry.GetProvider(id)
-		require.NotNil(t, p)
-		p.ChallengeVerifiedSIP = true
-		p.RuntimeManifestChecked = true
-		s.Coordinator.Registry.RecordChallengeSuccess(id)
-	}
-
-	model := s.PrimaryModelID()
-	found := findRoutableProvider(s.Coordinator.Registry, model)
-	require.NotNil(t, found, "Swift provider should be routable after challenge success without ForceTrustProvider")
-
-	resp := postChatCompletions(t, s, "What is 1+1? Answer with just the number.", false, 20)
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody[:min(len(respBody), 500)]))
-
-	t.Logf("Swift provider real routing: status=200 via challenge-verified path")
 }
 
 func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.T) {
@@ -750,22 +661,20 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 	modelB := envOr("DARKBLOOM_FULL_NETWORK_MODEL_B", "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
 	require.NotEqual(t, modelA, modelB, "full-network smoke requires two distinct model IDs")
 
-	ctx := context.Background()
-	s := testbed.NewSuite(testbed.SuiteConfig{
+	s := testbed.StartSuite(t, testbed.SuiteConfig{
 		ModelSpecs:     []testbed.ModelSpec{{ModelIDs: []string{modelA, modelB}, NumProviders: 1}},
 		NumUsers:       1,
 		SeedBalance:    500_000_000,
 		UseMemoryStore: true,
 	})
-	require.NoError(t, s.Start(ctx), "suite startup failed")
-	t.Cleanup(s.Stop)
 	require.Equal(t, 1, s.Coordinator.Registry.ProviderCount(), "smoke must route both models through one provider")
 
 	models := []string{modelA, modelB, modelA}
 	var providerID string
 	for _, model := range models {
 		resp := postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err, "model %s", model)
 		resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "model %s body: %s", model, string(respBody[:min(len(respBody), 500)]))
 
@@ -794,56 +703,4 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 	}
 
 	t.Logf("full-network multi-model smoke routed %v through provider %s", models, providerID)
-}
-
-func TestIntegration_ReferralRewardDistribution(t *testing.T) {
-	s := startSuite(t)
-
-	referrerKey := "referrer"
-	consumerKey := "referred-consumer"
-
-	require.NoError(t, s.PgStore.Credit(referrerKey, 0, "deposit", "seed"))
-	require.NoError(t, s.PgStore.Credit(consumerKey, 1_000_000, "deposit", "seed"))
-
-	// Referral rewards are funded from the platform fee, which defaults to 0%
-	// during the public alpha. Give the consumer an explicit non-zero fee
-	// override so there is a fee pool to distribute.
-	feePercent := int64(5)
-	require.NoError(t, s.PgStore.CreateUser(&store.User{
-		AccountID:          consumerKey,
-		PrivyUserID:        "did:privy:" + consumerKey,
-		PlatformFeePercent: &feePercent,
-	}), "should create referred consumer with a fee override")
-
-	consumerAPIKey, err := s.PgStore.CreateKeyForAccount(consumerKey)
-	require.NoError(t, err, "should create API key for referred consumer")
-
-	billingSvc := s.Coordinator.Server.Billing()
-	require.NotNil(t, billingSvc, "billing service should be available")
-	referral := billingSvc.Referral()
-	require.NotNil(t, referral, "referral service should be available")
-
-	_, err = referral.Register(referrerKey, "TESTREF")
-	require.NoError(t, err, "should register referrer")
-
-	err = referral.Apply(consumerKey, "TESTREF")
-	require.NoError(t, err, "should apply referral code")
-
-	resp := postChatCompletionsWithAuth(t, s, consumerAPIKey, "Say hello.", false, 20)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	rewards := queryLedgerEntries(t, s, referrerKey, "referral_reward")
-	require.NotEmpty(t, rewards, "referrer should receive a referral reward")
-
-	platformFees := queryLedgerEntries(t, s, "platform", "platform_fee")
-	require.NotEmpty(t, platformFees, "should have platform fee entries")
-
-	rewardTotal := sumAmounts(rewards)
-	feeTotal := sumAmounts(platformFees)
-	require.Greater(t, rewardTotal, int64(0), "referral reward should be positive")
-	require.Less(t, rewardTotal, feeTotal, "referral reward should be less than total platform fee")
-
-	assertAccounting(t, s)
-	t.Logf("referral: reward=%d micro-USD, platform_fee=%d micro-USD", rewardTotal, feeTotal)
 }

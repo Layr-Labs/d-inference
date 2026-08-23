@@ -1,7 +1,10 @@
 package testbed
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,12 +16,17 @@ import (
 )
 
 type LoadResult struct {
-	TotalRequests  int
-	SuccessCount   int
-	ErrorCount     int
-	TotalDuration  time.Duration
-	ProfileRun     *ProfileRun
-	RequestResults []RequestResult
+	TotalRequests     int
+	ExpectedSuccesses int
+	MinimumSuccesses  int
+	SuccessCount      int
+	ErrorCount        int
+	TotalDuration     time.Duration
+	ProfileRun        *ProfileRun
+	RequestResults    []RequestResult
+	Failures          []RequestFailure
+	ModelCohorts      map[string]CohortStats
+	UserCohorts       map[int]CohortStats
 }
 
 type RequestResult struct {
@@ -26,16 +34,40 @@ type RequestResult struct {
 	StatusCode int
 	Error      error
 	Duration   time.Duration
+	TTFT       time.Duration
 	UserIndex  int
 	ModelID    string
 
-	ParseUs    int64
-	ReserveUs  int64
-	RouteUs    int64
-	QueueUs    int64
-	EncryptUs  int64
-	DispatchUs int64
-	ProviderUs int64
+	ParseUs      int64
+	ReserveUs    int64
+	MediaFetchUs int64
+	RouteUs      int64
+	QueueUs      int64
+	EncryptUs    int64
+	DispatchUs   int64
+	ProviderUs   int64
+}
+
+type RequestFailure struct {
+	Index     int
+	UserIndex int
+	ModelID   string
+	Err       error
+}
+
+func (f RequestFailure) Error() string {
+	return fmt.Sprintf("request %d (model=%q user=%d): %v", f.Index, f.ModelID, f.UserIndex, f.Err)
+}
+
+func (f RequestFailure) Unwrap() error {
+	return f.Err
+}
+
+type CohortStats struct {
+	TotalRequests int
+	SuccessCount  int
+	ErrorCount    int
+	Failures      []RequestFailure
 }
 
 type ProfileRun struct {
@@ -79,18 +111,23 @@ func (ms *ModelSelector) Next() string {
 }
 
 type LoadGenerator struct {
-	Suite         *Suite
-	Config        RequestConfig
-	Auth          string
-	UserPool      *UserPool
-	ModelSelector *ModelSelector
+	Suite              *Suite
+	Config             RequestConfig
+	Auth               string
+	UserPool           *UserPool
+	ModelSelector      *ModelSelector
+	userIndexByAccount map[string]int
 }
 
 func NewLoadGenerator(suite *Suite, cfg RequestConfig) *LoadGenerator {
 	lg := &LoadGenerator{
-		Suite:  suite,
-		Config: cfg,
-		Auth:   "testbed-admin-key",
+		Suite:              suite,
+		Config:             cfg,
+		Auth:               "testbed-admin-key",
+		userIndexByAccount: make(map[string]int, len(suite.Users)),
+	}
+	for i, user := range suite.Users {
+		lg.userIndexByAccount[user.AccountID] = i
 	}
 	if len(suite.Users) > 0 {
 		lg.UserPool = NewUserPool(suite.Users)
@@ -116,31 +153,36 @@ func (lg *LoadGenerator) WithModelSelector(selector *ModelSelector) *LoadGenerat
 	return lg
 }
 
-func (lg *LoadGenerator) Run() *LoadResult {
+func (lg *LoadGenerator) Run() (*LoadResult, error) {
 	result := &LoadResult{
-		TotalRequests: lg.Config.TotalRequests,
+		TotalRequests:     lg.Config.TotalRequests,
+		ExpectedSuccesses: lg.Config.ExpectedSuccesses,
+		MinimumSuccesses:  lg.Config.MinimumSuccesses,
 	}
+	if err := validateRequestConfig(lg.Config); err != nil {
+		return result, err
+	}
+
 	segmentTimings := make(map[Segment][]time.Duration)
 	var timingsMu sync.Mutex
 	var successCount atomic.Int32
 	var errorCount atomic.Int32
 
 	start := time.Now()
-
+	client := &http.Client{Timeout: 300 * time.Second}
 	sem := make(chan struct{}, lg.Config.Concurrency)
 	var wg sync.WaitGroup
 	wg.Add(lg.Config.TotalRequests)
 
 	requestResults := make([]RequestResult, lg.Config.TotalRequests)
 
-	for i := 0; i < lg.Config.TotalRequests; i++ {
+	for i := range lg.Config.TotalRequests {
 		sem <- struct{}{}
 		go func(idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
 			reqStart := time.Now()
-
 			modelID := lg.Config.ModelID
 			if modelID == "" && lg.ModelSelector != nil {
 				modelID = lg.ModelSelector.Next()
@@ -150,127 +192,118 @@ func (lg *LoadGenerator) Run() *LoadResult {
 			}
 
 			auth := lg.Auth
-			var userIndex int
+			userIndex := -1
 			if lg.UserPool != nil {
 				user := lg.UserPool.Next()
 				auth = user.APIKey
-				for ui, u := range lg.Suite.Users {
-					if u.AccountID == user.AccountID {
-						userIndex = ui
-						break
-					}
+				if idx, ok := lg.userIndexByAccount[user.AccountID]; ok {
+					userIndex = idx
 				}
 			}
 
+			rr := RequestResult{Index: idx, UserIndex: userIndex, ModelID: modelID}
 			prompt := fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)
-			if lg.Config.PromptBytes > 0 {
-				padding := lg.Config.PromptBytes - len(prompt)
-				if padding > 0 {
-					prompt += strings.Repeat(" ", padding)
-				}
+			if padding := lg.Config.PromptBytes - len(prompt); padding > 0 {
+				prompt += strings.Repeat(" ", padding)
 			}
 
-			body := map[string]any{
+			bodyJSON, err := json.Marshal(map[string]any{
 				"model":       modelID,
 				"messages":    []map[string]string{{"role": "user", "content": prompt}},
 				"stream":      lg.Config.Streaming,
 				"max_tokens":  lg.Config.MaxTokens,
 				"temperature": lg.Config.Temperature,
-			}
-			bodyJSON, _ := json.Marshal(body)
-
-			req, err := http.NewRequestWithContext(lg.Suite.Ctx, http.MethodPost,
-				lg.Suite.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
+			})
 			if err != nil {
+				rr.Error = fmt.Errorf("encode request body: %w", err)
+				rr.Duration = time.Since(reqStart)
 				errorCount.Add(1)
-				requestResults[idx] = RequestResult{Index: idx, Error: err, UserIndex: userIndex, ModelID: modelID}
+				requestResults[idx] = rr
+				return
+			}
+
+			req, err := http.NewRequestWithContext(
+				lg.Suite.Ctx,
+				http.MethodPost,
+				lg.Suite.Coordinator.BaseURL()+"/v1/chat/completions",
+				bytes.NewReader(bodyJSON),
+			)
+			if err != nil {
+				rr.Error = fmt.Errorf("create request: %w", err)
+				rr.Duration = time.Since(reqStart)
+				errorCount.Add(1)
+				requestResults[idx] = rr
 				return
 			}
 			req.Header.Set("Authorization", "Bearer "+auth)
 			req.Header.Set("Content-Type", "application/json")
 
-			resp, err := (&http.Client{Timeout: 300 * time.Second}).Do(req)
-			e2eDuration := time.Since(reqStart)
-
+			resp, err := client.Do(req)
 			if err != nil {
+				rr.Error = fmt.Errorf("send request: %w", err)
+				rr.Duration = time.Since(reqStart)
 				errorCount.Add(1)
-				requestResults[idx] = RequestResult{Index: idx, Error: err, Duration: e2eDuration, UserIndex: userIndex, ModelID: modelID}
+				requestResults[idx] = rr
+				return
+			}
+			rr.StatusCode = resp.StatusCode
+
+			timing, timingErr := parseResponseTiming(resp.Header.Get("X-Timing"))
+			rr.ParseUs = timing.ParseUs
+			rr.ReserveUs = timing.ReserveUs
+			rr.MediaFetchUs = timing.MediaFetchUs
+			rr.RouteUs = timing.RouteUs
+			rr.QueueUs = timing.QueueUs
+			rr.EncryptUs = timing.EncryptUs
+			rr.DispatchUs = timing.DispatchUs
+			rr.ProviderUs = timing.ProviderUs
+
+			respBody, observedTTFT, readErr := readResponseBody(resp.Body, reqStart, lg.Config.Streaming)
+			closeErr := resp.Body.Close()
+			rr.Duration = time.Since(reqStart)
+			rr.TTFT = observedTTFT
+			if rr.TTFT <= 0 && timingErr == nil {
+				rr.TTFT = timing.TTFT()
+			}
+
+			var responseErrors []error
+			if timingErr != nil {
+				responseErrors = append(responseErrors, fmt.Errorf("invalid X-Timing response header: %w", timingErr))
+			}
+			if readErr != nil {
+				responseErrors = append(responseErrors, fmt.Errorf("drain response body: %w", readErr))
+			}
+			if closeErr != nil {
+				responseErrors = append(responseErrors, fmt.Errorf("close response body: %w", closeErr))
+			}
+			if resp.StatusCode != http.StatusOK {
+				responseErrors = append(responseErrors, fmt.Errorf(
+					"status %d: %s",
+					resp.StatusCode,
+					strings.TrimSpace(string(respBody)),
+				))
+			}
+			if resp.StatusCode == http.StatusOK && lg.Config.Streaming && rr.TTFT <= 0 && timingErr == nil {
+				responseErrors = append(responseErrors, errors.New(
+					"streaming response contained no content event and X-Timing had no positive pre-first-chunk duration",
+				))
+			}
+
+			rr.Error = errors.Join(responseErrors...)
+			if rr.Error != nil {
+				errorCount.Add(1)
+				requestResults[idx] = rr
 				return
 			}
 
-			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-
-			rr := RequestResult{
-				Index:      idx,
-				StatusCode: resp.StatusCode,
-				Duration:   e2eDuration,
-				UserIndex:  userIndex,
-				ModelID:    modelID,
+			successCount.Add(1)
+			timingsMu.Lock()
+			segmentTimings[SegmentTotalE2E] = append(segmentTimings[SegmentTotalE2E], rr.Duration)
+			appendTimingSegments(segmentTimings, rr)
+			if rr.TTFT > 0 {
+				segmentTimings[SegmentTTFT] = append(segmentTimings[SegmentTTFT], rr.TTFT)
 			}
-
-			if v := resp.Header.Get("X-Timing"); v != "" {
-				var tj struct {
-					ParseUs    int64 `json:"parse_us"`
-					ReserveUs  int64 `json:"reserve_us"`
-					RouteUs    int64 `json:"route_us"`
-					QueueUs    int64 `json:"queue_us"`
-					EncryptUs  int64 `json:"encrypt_us"`
-					DispatchUs int64 `json:"dispatch_us"`
-					ProviderUs int64 `json:"provider_us"`
-				}
-				if json.Unmarshal([]byte(v), &tj) == nil {
-					rr.ParseUs = tj.ParseUs
-					rr.ReserveUs = tj.ReserveUs
-					rr.RouteUs = tj.RouteUs
-					rr.QueueUs = tj.QueueUs
-					rr.EncryptUs = tj.EncryptUs
-					rr.DispatchUs = tj.DispatchUs
-					rr.ProviderUs = tj.ProviderUs
-				}
-			}
-
-			if resp.StatusCode == http.StatusOK {
-				successCount.Add(1)
-
-				timingsMu.Lock()
-				segmentTimings[SegmentTotalE2E] = append(segmentTimings[SegmentTotalE2E], e2eDuration)
-				if rr.ParseUs > 0 {
-					segmentTimings[SegmentParse] = append(segmentTimings[SegmentParse], time.Duration(rr.ParseUs)*time.Microsecond)
-				}
-				if rr.ReserveUs > 0 {
-					segmentTimings[SegmentReserve] = append(segmentTimings[SegmentReserve], time.Duration(rr.ReserveUs)*time.Microsecond)
-				}
-				if rr.RouteUs > 0 {
-					segmentTimings[SegmentRoute] = append(segmentTimings[SegmentRoute], time.Duration(rr.RouteUs)*time.Microsecond)
-				}
-				if rr.QueueUs > 0 {
-					segmentTimings[SegmentQueueWait] = append(segmentTimings[SegmentQueueWait], time.Duration(rr.QueueUs)*time.Microsecond)
-				}
-				if rr.EncryptUs > 0 {
-					segmentTimings[SegmentEncrypt] = append(segmentTimings[SegmentEncrypt], time.Duration(rr.EncryptUs)*time.Microsecond)
-				}
-				if rr.DispatchUs > 0 {
-					segmentTimings[SegmentDispatch] = append(segmentTimings[SegmentDispatch], time.Duration(rr.DispatchUs)*time.Microsecond)
-				}
-				if rr.ProviderUs > 0 {
-					segmentTimings[SegmentCoordinatorToProvider] = append(segmentTimings[SegmentCoordinatorToProvider], time.Duration(rr.ProviderUs)*time.Microsecond)
-				}
-				timingsMu.Unlock()
-
-				if lg.Config.Streaming {
-					ttft := lg.extractTTFT(respBody)
-					if ttft > 0 {
-						timingsMu.Lock()
-						segmentTimings[SegmentTTFT] = append(segmentTimings[SegmentTTFT], ttft)
-						timingsMu.Unlock()
-					}
-				}
-			} else {
-				errorCount.Add(1)
-				rr.Error = fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 200)]))
-			}
-
+			timingsMu.Unlock()
 			requestResults[idx] = rr
 		}(i)
 	}
@@ -281,28 +314,265 @@ func (lg *LoadGenerator) Run() *LoadResult {
 	result.SuccessCount = int(successCount.Load())
 	result.ErrorCount = int(errorCount.Load())
 	result.RequestResults = requestResults
-	result.ProfileRun = &ProfileRun{SegmentTimings: segmentTimings}
+	result.ProfileRun = &ProfileRun{
+		SegmentTimings: segmentTimings,
+		TTFTs:          append([]time.Duration(nil), segmentTimings[SegmentTTFT]...),
+	}
+	result.Failures, result.ModelCohorts, result.UserCohorts = buildCohorts(requestResults)
 
-	return result
+	if result.SuccessCount < lg.Config.MinimumSuccesses {
+		errs := make([]error, len(result.Failures))
+		for i := range result.Failures {
+			errs[i] = result.Failures[i]
+		}
+		thresholdErr := fmt.Errorf(
+			"load success threshold unmet: got %d successes, expected %d, minimum %d",
+			result.SuccessCount,
+			lg.Config.ExpectedSuccesses,
+			lg.Config.MinimumSuccesses,
+		)
+		if requestErr := errors.Join(errs...); requestErr != nil {
+			thresholdErr = errors.Join(thresholdErr, requestErr)
+		}
+		return result, thresholdErr
+	}
+
+	return result, nil
 }
 
-func (lg *LoadGenerator) extractTTFT(body []byte) time.Duration {
-	var resp struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	json.Unmarshal(body, &resp)
-	if resp.Usage.CompletionTokens > 0 {
+type responseTiming struct {
+	ParseUs      int64 `json:"parse_us"`
+	ReserveUs    int64 `json:"reserve_us"`
+	MediaFetchUs int64 `json:"media_fetch_us"`
+	RouteUs      int64 `json:"route_us"`
+	QueueUs      int64 `json:"queue_us"`
+	EncryptUs    int64 `json:"encrypt_us"`
+	DispatchUs   int64 `json:"dispatch_us"`
+	ProviderUs   int64 `json:"provider_us"`
+}
+
+func (t responseTiming) TTFT() time.Duration {
+	if t.ProviderUs <= 0 {
 		return 0
 	}
-	return 0
+	return time.Duration(t.ProviderUs) * time.Microsecond
+}
+
+func validateRequestConfig(cfg RequestConfig) error {
+	switch {
+	case cfg.TotalRequests <= 0:
+		return fmt.Errorf("total requests must be positive, got %d", cfg.TotalRequests)
+	case cfg.Concurrency <= 0:
+		return fmt.Errorf("concurrency must be positive, got %d", cfg.Concurrency)
+	case cfg.ExpectedSuccesses <= 0:
+		return fmt.Errorf("expected successes must be positive, got %d", cfg.ExpectedSuccesses)
+	case cfg.ExpectedSuccesses > cfg.TotalRequests:
+		return fmt.Errorf(
+			"expected successes %d exceed total requests %d",
+			cfg.ExpectedSuccesses,
+			cfg.TotalRequests,
+		)
+	case cfg.MinimumSuccesses <= 0:
+		return fmt.Errorf("minimum successes must be positive, got %d", cfg.MinimumSuccesses)
+	case cfg.MinimumSuccesses > cfg.ExpectedSuccesses:
+		return fmt.Errorf(
+			"minimum successes %d exceed expected successes %d",
+			cfg.MinimumSuccesses,
+			cfg.ExpectedSuccesses,
+		)
+	default:
+		return nil
+	}
+}
+
+func parseResponseTiming(header string) (responseTiming, error) {
+	if header == "" {
+		return responseTiming{}, nil
+	}
+	var timing responseTiming
+	if err := json.Unmarshal([]byte(header), &timing); err != nil {
+		return responseTiming{}, fmt.Errorf("decode X-Timing %q: %w", header, err)
+	}
+	if err := validateTimingValue("parse_us", timing.ParseUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("reserve_us", timing.ReserveUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("media_fetch_us", timing.MediaFetchUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("route_us", timing.RouteUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("queue_us", timing.QueueUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("encrypt_us", timing.EncryptUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("dispatch_us", timing.DispatchUs); err != nil {
+		return responseTiming{}, err
+	}
+	if err := validateTimingValue("provider_us", timing.ProviderUs); err != nil {
+		return responseTiming{}, err
+	}
+	return timing, nil
+}
+
+func validateTimingValue(name string, value int64) error {
+	if value < 0 {
+		return fmt.Errorf("X-Timing %s must be non-negative, got %d", name, value)
+	}
+	return nil
+}
+
+func readResponseBody(body io.Reader, requestStart time.Time, streaming bool) ([]byte, time.Duration, error) {
+	if !streaming {
+		data, err := io.ReadAll(body)
+		return data, 0, err
+	}
+
+	reader := bufio.NewReader(body)
+	var response bytes.Buffer
+	var ttft time.Duration
+	for {
+		line, err := reader.ReadBytes('\n')
+		_, _ = response.Write(line)
+		if ttft <= 0 && sseLineHasContent(line) {
+			ttft = time.Since(requestStart)
+		}
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return response.Bytes(), ttft, nil
+		}
+		return response.Bytes(), ttft, err
+	}
+}
+
+func sseLineHasContent(line []byte) bool {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return false
+	}
+	payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return false
+	}
+
+	var event map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return false
+	}
+	return eventHasContent(event)
+}
+
+func eventHasContent(event map[string]json.RawMessage) bool {
+	for _, key := range []string{
+		"content",
+		"reasoning",
+		"reasoning_content",
+		"reasoning_details",
+		"refusal",
+		"text",
+		"tool_calls",
+		"function_call",
+		"audio",
+	} {
+		if rawHasContent(event[key]) {
+			return true
+		}
+	}
+	for _, key := range []string{"choices", "output"} {
+		var nested []map[string]json.RawMessage
+		if err := json.Unmarshal(event[key], &nested); err == nil {
+			for _, item := range nested {
+				if eventHasContent(item) {
+					return true
+				}
+			}
+		}
+	}
+	for _, key := range []string{"delta", "message"} {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(event[key], &nested); err == nil && eventHasContent(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func rawHasContent(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 ||
+		bytes.Equal(raw, []byte("null")) ||
+		bytes.Equal(raw, []byte(`""`)) ||
+		bytes.Equal(raw, []byte("[]")) ||
+		bytes.Equal(raw, []byte("{}")) {
+		return false
+	}
+	if raw[0] != '"' {
+		return true
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && value != ""
+}
+
+func appendTimingSegments(segmentTimings map[Segment][]time.Duration, rr RequestResult) {
+	appendTimingSegment(segmentTimings, SegmentParse, rr.ParseUs)
+	appendTimingSegment(segmentTimings, SegmentReserve, rr.ReserveUs)
+	appendTimingSegment(segmentTimings, SegmentRoute, rr.RouteUs)
+	appendTimingSegment(segmentTimings, SegmentQueueWait, rr.QueueUs)
+	appendTimingSegment(segmentTimings, SegmentEncrypt, rr.EncryptUs)
+	appendTimingSegment(segmentTimings, SegmentDispatch, rr.DispatchUs)
+	appendTimingSegment(segmentTimings, SegmentCoordinatorToProvider, rr.ProviderUs)
+}
+
+func appendTimingSegment(segmentTimings map[Segment][]time.Duration, segment Segment, micros int64) {
+	if micros > 0 {
+		segmentTimings[segment] = append(segmentTimings[segment], time.Duration(micros)*time.Microsecond)
+	}
+}
+
+func buildCohorts(results []RequestResult) ([]RequestFailure, map[string]CohortStats, map[int]CohortStats) {
+	failures := make([]RequestFailure, 0)
+	models := make(map[string]CohortStats)
+	users := make(map[int]CohortStats)
+	for _, result := range results {
+		modelStats := models[result.ModelID]
+		userStats := users[result.UserIndex]
+		modelStats.TotalRequests++
+		userStats.TotalRequests++
+
+		if result.Error == nil && result.StatusCode == http.StatusOK {
+			modelStats.SuccessCount++
+			userStats.SuccessCount++
+		} else {
+			failure := RequestFailure{
+				Index:     result.Index,
+				UserIndex: result.UserIndex,
+				ModelID:   result.ModelID,
+				Err:       result.Error,
+			}
+			failures = append(failures, failure)
+			modelStats.ErrorCount++
+			userStats.ErrorCount++
+			modelStats.Failures = append(modelStats.Failures, failure)
+			userStats.Failures = append(userStats.Failures, failure)
+		}
+		models[result.ModelID] = modelStats
+		users[result.UserIndex] = userStats
+	}
+	return failures, models, users
 }
 
 func (r *LoadResult) SummaryTable() string {
 	var s strings.Builder
 
+	s.WriteString(fmt.Sprintf("%-20s %d\n", "Expected Success:", r.ExpectedSuccesses))
+	s.WriteString(fmt.Sprintf("%-20s %d\n", "Minimum Success:", r.MinimumSuccesses))
 	s.WriteString(fmt.Sprintf("%-20s %d\n", "Total Requests:", r.TotalRequests))
 	s.WriteString(fmt.Sprintf("%-20s %d\n", "Success:", r.SuccessCount))
 	s.WriteString(fmt.Sprintf("%-20s %d\n", "Errors:", r.ErrorCount))
@@ -363,6 +633,8 @@ func (r *LoadResult) SummaryMarkdown() string {
 
 	s.WriteString(fmt.Sprintf("| Metric | Value |\n|---|---|\n"))
 	s.WriteString(fmt.Sprintf("| Total Requests | %d |\n", r.TotalRequests))
+	s.WriteString(fmt.Sprintf("| Expected Success | %d |\n", r.ExpectedSuccesses))
+	s.WriteString(fmt.Sprintf("| Minimum Success | %d |\n", r.MinimumSuccesses))
 	s.WriteString(fmt.Sprintf("| Success | %d |\n", r.SuccessCount))
 	s.WriteString(fmt.Sprintf("| Errors | %d |\n", r.ErrorCount))
 	s.WriteString(fmt.Sprintf("| Total Duration | %s |\n", r.TotalDuration.Round(time.Millisecond)))

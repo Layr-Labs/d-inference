@@ -124,11 +124,33 @@ public struct ModelCatalogClient: Sendable {
         }
     }
 
+    /// `created_at` arrives in two shapes and both are live on paths this
+    /// decoder serves. The coordinator marshals a Go `time.Time`, which
+    /// RFC3339Nano-encodes with 1-9 fractional digits and omits the fraction
+    /// entirely when it is exactly zero; `darkbloom-publish` writes CDN
+    /// `manifest.json` through `JSONEncoder.iso8601`, which always truncates to
+    /// whole seconds. `.iso8601` decoding resolves against whichever Foundation
+    /// the host ships, so the accepted shape varies by macOS version -- parse
+    /// the wire format explicitly instead of inheriting the platform default.
     static let manifestDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { dateDecoder in
+            let container = try dateDecoder.singleValueContainer()
+            let text = try container.decode(String.self)
+            if let date = try? fractionalSecondsISO8601.parse(text) { return date }
+            if let date = try? wholeSecondsISO8601.parse(text) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "expected an RFC 3339 timestamp, got \"\(text)\"")
+        }
         return decoder
     }()
+
+    /// Value types rather than `ISO8601DateFormatter`: they are `Sendable` (this
+    /// decoder is shared across concurrent downloads) and they retain sub-
+    /// millisecond precision, which the formatter truncates.
+    private static let fractionalSecondsISO8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let wholeSecondsISO8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 
     private static func escapeModelIDForPath(_ modelID: String) -> String? {
         var allowed = CharacterSet.urlPathAllowed

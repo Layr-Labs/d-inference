@@ -156,6 +156,111 @@ struct ModelCatalogTests {
         #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
+    // MARK: - created_at wire shapes (#673)
+
+    /// Minimal registry manifest in the coordinator's wire shape, with a
+    /// caller-supplied `created_at` so each case exercises one timestamp form.
+    private static func manifestJSON(createdAt: String) -> Data {
+        Data("""
+        {
+          "schema_version": 1,
+          "model_id": "gpt-oss-20b",
+          "version": "2026-05-25",
+          "r2_prefix": "v2/gpt-oss-20b/2026-05-25",
+          "aggregate_sha256": "\(String(repeating: "a", count: 64))",
+          "total_size_bytes": 16738,
+          "file_count": 1,
+          "files": [
+            {
+              "path": "chat_template.jinja",
+              "size_bytes": 16738,
+              "sha256": "\(String(repeating: "b", count: 64))",
+              "role": "template"
+            }
+          ],
+          "created_at": "\(createdAt)"
+        }
+        """.utf8)
+    }
+
+    /// Regression for #673: every model download failed at the manifest hop.
+    /// `2026-05-25T22:46:27.580497Z` is the literal `created_at` the production
+    /// coordinator serves for `gpt-oss-20b`; all five live manifests carry a
+    /// fractional part, so this was a total download outage, not a flake.
+    ///
+    /// `JSONDecoder.DateDecodingStrategy.iso8601` resolves against whichever
+    /// Foundation the host ships: the pre-fix decoder rejects this payload on
+    /// macOS 15.4.1 and accepts it on macOS 26.2, so this test only fails
+    /// without the fix on the former. Pinning the parse is the actual fix --
+    /// the wire contract stops depending on the provider's macOS version.
+    @Test("fetchManifest decodes the coordinator's fractional-second created_at")
+    func fetchManifestDecodesFractionalSeconds() async throws {
+        RegistryURLProtocol.manifestData = Self.manifestJSON(
+            createdAt: "2026-05-25T22:46:27.580497Z")
+        RegistryURLProtocol.files = [:]
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RegistryURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        let manifest = try await client.fetchManifest(modelID: "gpt-oss-20b")
+        #expect(manifest.modelID == "gpt-oss-20b")
+        #expect(abs(manifest.createdAt.timeIntervalSince1970 - 1_779_749_187.580497) < 0.000_001)
+    }
+
+    /// Go's RFC3339Nano emits 1-9 fractional digits and strips trailing zeros,
+    /// so a timestamp landing exactly on a whole second serializes with no
+    /// fraction at all. A decoder pinned to `.withFractionalSeconds` would take
+    /// the common case and reject that one, trading a constant failure for an
+    /// intermittent one. Both shapes have to parse.
+    @Test("manifest decoder accepts whole seconds and 1-9 fractional digits")
+    func manifestDecoderAcceptsEveryRFC3339NanoShape() throws {
+        let shapes: [(text: String, epoch: TimeInterval)] = [
+            ("2026-05-25T22:46:27Z", 1_779_749_187),
+            ("2026-05-25T22:46:27.5Z", 1_779_749_187.5),
+            ("2026-05-25T22:46:27.58Z", 1_779_749_187.58),
+            ("2026-05-25T22:46:27.580Z", 1_779_749_187.58),
+            ("2026-05-25T22:46:27.580497Z", 1_779_749_187.580497),
+            ("2026-05-25T22:46:27.580497123Z", 1_779_749_187.580497123),
+            ("2026-05-25T22:46:27+00:00", 1_779_749_187),
+            ("2026-05-25T22:46:27.580497+00:00", 1_779_749_187.580497),
+        ]
+        for shape in shapes {
+            let manifest = try ModelCatalogClient.manifestDecoder.decode(
+                ModelManifest.self, from: Self.manifestJSON(createdAt: shape.text))
+            #expect(
+                abs(manifest.createdAt.timeIntervalSince1970 - shape.epoch) < 0.000_001,
+                "created_at \(shape.text) did not decode to \(shape.epoch)")
+        }
+    }
+
+    /// `ISO8601DateFormatter` truncates to milliseconds, which would silently
+    /// round the microseconds every live manifest carries. A tolerance tighter
+    /// than one millisecond keeps a formatter-based strategy from creeping back.
+    @Test("manifest decoder preserves sub-millisecond precision")
+    func manifestDecoderPreservesSubMillisecondPrecision() throws {
+        let manifest = try ModelCatalogClient.manifestDecoder.decode(
+            ModelManifest.self,
+            from: Self.manifestJSON(createdAt: "2026-05-25T22:46:27.580497Z"))
+        #expect(
+            abs(manifest.createdAt.timeIntervalSince1970 - 1_779_749_187.580497) < 0.000_000_5)
+    }
+
+    /// Tolerating two shapes must not mean tolerating anything: a `created_at`
+    /// that is not RFC 3339 still has to fail loudly rather than decode to some
+    /// default instant.
+    @Test("manifest decoder rejects a created_at that is not RFC 3339")
+    func manifestDecoderRejectsNonRFC3339CreatedAt() {
+        #expect(throws: (any Error).self) {
+            try ModelCatalogClient.manifestDecoder.decode(
+                ModelManifest.self,
+                from: Self.manifestJSON(createdAt: "25/05/2026 22:46:27"))
+        }
+    }
+
+
     @Test("catalog streaming accepts the exact response-byte boundary")
     func catalogResponseExactBoundary() async throws {
         let base = Data(#"{"models":[]}"#.utf8)

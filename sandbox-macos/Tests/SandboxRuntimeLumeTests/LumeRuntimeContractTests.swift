@@ -132,16 +132,16 @@ final class LumeRuntimeContractTests: XCTestCase {
         let runID = UUID().uuidString.lowercased().prefix(8)
         let firstName = "darkbloom-phase0-a-\(runID)"
         let secondName = "darkbloom-phase0-b-\(runID)"
-        for name in [firstName, secondName] {
-            try await runtime.create(SandboxVirtualMachineSpecification(
-                name: name,
-                resources: resources,
-                imageSource: .localTemplate(name: baseName),
-                diskBytes: 100 * SandboxResourcePolicy.gibibyte
-            ))
-        }
 
         do {
+            for name in [firstName, secondName] {
+                try await runtime.create(SandboxVirtualMachineSpecification(
+                    name: name,
+                    resources: resources,
+                    imageSource: .localTemplate(name: baseName),
+                    diskBytes: 100 * SandboxResourcePolicy.gibibyte
+                ))
+            }
             async let firstStart: Void = runtime.start(name: firstName)
             async let secondStart: Void = runtime.start(name: secondName)
             _ = try await (firstStart, secondStart)

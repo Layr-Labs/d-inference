@@ -207,7 +207,7 @@ enum LumeRuntimeProvenanceValidator {
                 try SandboxAuthorityFileSystem.openExistingDirectory(at: url)
         } catch {
             throw unsupported(
-                "Lume runtime directory cannot be opened safely"
+                "Lume runtime directory failed path or ACL checks"
             )
         }
         defer { close(descriptor) }

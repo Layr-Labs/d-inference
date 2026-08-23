@@ -169,7 +169,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                 name: secondName,
                 request: SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
-                    executable: "/usr/bin/test",
+                    executable: "/bin/test",
                     arguments: ["!", "-e", marker],
                     timeoutSeconds: 30
                 )

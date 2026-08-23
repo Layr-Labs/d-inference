@@ -60,6 +60,98 @@ final class LumeRuntimeFailureTests: XCTestCase {
         }
     }
 
+    func testProductionRequirementPinsDarkbloomIdentifierAndTeam() {
+        XCTAssertEqual(
+            LumeRuntimeCodeSignature.designatedRequirement,
+            "anchor apple generic and identifier "
+                + "\"io.darkbloom.sandbox.lume\" "
+                + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
+        )
+    }
+
+    func testLeaseFencedRuntimeRejectsStaleAndMismatchedMutations() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let capacityDirectory = fixture.directory.appendingPathComponent(
+            "capacity",
+            isDirectory: true
+        )
+        let arbiter = try SandboxHostCapacityArbiter(
+            stateDirectory: capacityDirectory,
+            policy: try SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte
+            )
+        )
+        _ = try arbiter.initialize()
+        _ = try arbiter.setMode(.sandboxDedicated)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: resources,
+            expiresAt: now.addingTimeInterval(120),
+            now: now
+        )
+        let runtime = LumeLeaseFencedVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 1,
+                createTimeoutSeconds: 1,
+                trustPolicy: .developmentAdHoc
+            ),
+            capacityArbiter: arbiter
+        )
+        let staleScope = SandboxOperationScope(
+            sandboxID: lease.scope.sandboxID,
+            generation: lease.scope.generation,
+            fencingToken: try XCTUnwrap(
+                SandboxFencingToken(rawValue: UInt64.max)
+            )
+        )
+
+        do {
+            try await runtime.start(
+                scope: staleScope,
+                name: fixture.virtualMachineName,
+                now: now
+            )
+            XCTFail("stale fencing token should reject VM mutation")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .staleFencingToken)
+        }
+        do {
+            try await runtime.start(
+                scope: lease.scope,
+                name: "sandbox-other",
+                now: now
+            )
+            XCTFail("lease should not authorize another VM")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseVirtualMachineMismatch)
+        }
+        do {
+            try await runtime.start(
+                scope: lease.scope,
+                name: fixture.virtualMachineName,
+                now: lease.expiresAt
+            )
+            XCTFail("expired lease should reject start")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseExpired)
+        }
+
+        try await runtime.stop(
+            scope: lease.scope,
+            name: fixture.virtualMachineName,
+            now: lease.expiresAt
+        )
+    }
+
     func testRejectsProvenanceWithUnpinnedPatchDigest() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }

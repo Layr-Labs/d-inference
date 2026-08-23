@@ -6,6 +6,18 @@ extension LumeVirtualMachineRuntime {
     public func create(
         _ specification: SandboxVirtualMachineSpecification
     ) async throws {
+        try await create(
+            specification,
+            scope: nil,
+            now: Date()
+        )
+    }
+
+    func create(
+        _ specification: SandboxVirtualMachineSpecification,
+        scope: SandboxOperationScope?,
+        now: Date
+    ) async throws {
         let operationLock = try beginOperation(
             "create",
             name: specification.name
@@ -15,6 +27,14 @@ extension LumeVirtualMachineRuntime {
             withExtendedLifetime(operationLock) {}
         }
 
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .create,
+            virtualMachineName: specification.name,
+            resources: specification.resources,
+            now: now
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
         _ = try await validateRuntime()
         try ensureStorageDirectory()
         if let existing = try await inspect(name: specification.name) {
@@ -136,6 +156,14 @@ extension LumeVirtualMachineRuntime {
     }
 
     public func start(name: String) async throws {
+        try await start(name: name, scope: nil, now: Date())
+    }
+
+    func start(
+        name: String,
+        scope: SandboxOperationScope?,
+        now: Date
+    ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -145,6 +173,13 @@ extension LumeVirtualMachineRuntime {
             withExtendedLifetime(operationLock) {}
         }
 
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .start,
+            virtualMachineName: name,
+            now: now
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
         guard let existing = try await inspect(name: name) else {
             throw SandboxRuntimeError.unsupported(
                 "cannot start missing VM \(name)"
@@ -218,6 +253,14 @@ extension LumeVirtualMachineRuntime {
     }
 
     public func stop(name: String) async throws {
+        try await stop(name: name, scope: nil, now: Date())
+    }
+
+    func stop(
+        name: String,
+        scope: SandboxOperationScope?,
+        now: Date
+    ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -226,10 +269,25 @@ extension LumeVirtualMachineRuntime {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
         }
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .stop,
+            virtualMachineName: name,
+            now: now
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
         try await stopWithoutOperationFence(name: name)
     }
 
     public func delete(name: String) async throws {
+        try await delete(name: name, scope: nil, now: Date())
+    }
+
+    func delete(
+        name: String,
+        scope: SandboxOperationScope?,
+        now: Date
+    ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -239,6 +297,13 @@ extension LumeVirtualMachineRuntime {
             withExtendedLifetime(operationLock) {}
         }
 
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .delete,
+            virtualMachineName: name,
+            now: now
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
         guard let existing = try await inspect(name: name) else {
             return
         }

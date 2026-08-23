@@ -73,6 +73,32 @@ public struct SandboxCapacitySnapshot: Equatable, Sendable {
     }
 }
 
+public enum SandboxLeaseOperation: String, Codable, CaseIterable, Sendable {
+    case create
+    case start
+    case execute
+    case inspect
+    case stop
+    case delete
+
+    var requiresActiveLease: Bool {
+        switch self {
+        case .create, .start, .execute, .inspect:
+            true
+        case .stop, .delete:
+            false
+        }
+    }
+}
+
+package struct SandboxLeaseMutationAuthorization: @unchecked Sendable {
+    private let operationLock: SandboxLeaseOperationLock
+
+    init(operationLock: SandboxLeaseOperationLock) {
+        self.operationLock = operationLock
+    }
+}
+
 public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConvertible {
     case invalidPolicy
     case uninitialized
@@ -90,6 +116,8 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
     case leaseExpired
     case staleFencingToken
     case leaseNotFound
+    case leaseVirtualMachineMismatch
+    case leaseResourceMismatch
     case fencingTokenExhausted
     case unsafeStatePath
     case io(Int32)
@@ -122,6 +150,10 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "sandbox capacity command carries a stale fencing token"
         case .leaseNotFound:
             return "sandbox capacity lease was not found"
+        case .leaseVirtualMachineMismatch:
+            return "sandbox capacity lease does not authorize this virtual machine"
+        case .leaseResourceMismatch:
+            return "sandbox capacity lease does not authorize these resources"
         case .fencingTokenExhausted:
             return "sandbox capacity fencing-token space is exhausted"
         case .unsafeStatePath:

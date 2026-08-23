@@ -104,6 +104,14 @@ caller-owned `0700` directory. The state machine requires
 requires all leases to be released before returning to inference mode. Every
 reservation receives a monotonically increasing fencing token. Retries are
 idempotent only when sandbox generation, VM name, CPU, and memory match.
+`LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
+create, start, execute, inspect, stop, and delete carry the complete operation
+scope. The underlying Lume actor is package-only, validates the scope while
+holding the per-VM operation lock, and binds create authorization to the
+reserved CPU and memory. A per-sandbox inter-process lease lock spans each VM
+mutation and serializes renewal or release, so a newer fencing token cannot race
+an already-authorized mutation. Expired or draining leases may only stop or
+delete their own VM; they cannot start or execute additional work.
 
 The alpha policy admits exactly two running sandboxes and enforces aggregate CPU
 and memory limits under an inter-process `flock`. Lease expiry is discovery-only:
@@ -113,23 +121,37 @@ plane from overbooking a host whose guest may still be running.
 
 ## Pinned Lume substrate
 
-`ThirdParty/lume.lock.json` pins the exact Cua source commit and expected
-version. Build it without a background service:
+`ThirdParty/lume.lock.json` pins the exact Cua source commit, expected version,
+and the SHA-256 of every Darkbloom patch. Build it without a background service:
 
 ```bash
 sandbox-macos/Scripts/build-pinned-lume.sh \
   "$HOME/.local/libexec/darkbloom-sandbox/lume/bin"
 ```
 
-The build writes `lume.provenance.json` beside the executable with the source
-commit and post-signing SHA-256 for every runtime file. Before executing Lume,
-the adapter requires the complete immutable directory tree and provenance to
-match the audited lock; it rejects added, removed, replaced, or modified runtime
-entries. Every invocation sets
+The build verifies and applies the pinned patch before compilation, then writes
+`lume.provenance.json` beside the executable with the source commit, patch
+digests, and post-signing SHA-256 for every runtime file. Production validation
+also requires the Apple-designated requirement for
+`io.darkbloom.sandbox.lume` under team `SLDQ2GJ6TL`; the
+`--development-ad-hoc-lume` daemon flag is an explicit local-only bypass.
+Before executing Lume, the adapter requires the complete immutable directory
+tree and provenance to match the audited lock; it rejects added, removed,
+replaced, or modified runtime entries. The production installation must be
+root-owned and non-writable by the dedicated broker identity so those checks
+form a durable boundary. Every invocation sets
 `LUME_TELEMETRY_ENABLED=false` and `LUME_LOG_LEVEL=error`; the latter prevents
 Lume informational diagnostics from corrupting its machine-readable JSON
 output. Moving the pin requires source review plus the opt-in real-binary and VM
 lifecycle tests.
+
+The default build is ad-hoc signed for local testing. A production build must
+have the Darkbloom Developer ID identity installed and select it explicitly:
+
+```bash
+DARKBLOOM_LUME_CODESIGN_IDENTITY='Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)' \
+  sandbox-macos/Scripts/build-pinned-lume.sh /absolute/install/path
+```
 
 ```bash
 DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \

@@ -210,6 +210,102 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
     }
 
+    func testMutationAuthorizationBindsLeaseScopeNameResourcesAndLifetime() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let resources = try makeResources()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-authorized",
+            resources: resources,
+            expiresAt: now.addingTimeInterval(120),
+            now: now
+        )
+
+        XCTAssertEqual(
+            try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .create,
+                resources: resources,
+                now: now
+            ),
+            lease
+        )
+        assertCapacityError(.leaseVirtualMachineMismatch) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: "sandbox-other",
+                operation: .start,
+                now: now
+            )
+        }
+        assertCapacityError(.leaseResourceMismatch) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .create,
+                resources: try makeResources(cpuCount: 2),
+                now: now
+            )
+        }
+        let staleScope = SandboxOperationScope(
+            sandboxID: lease.scope.sandboxID,
+            generation: lease.scope.generation,
+            fencingToken: try fencingToken(UInt64.max)
+        )
+        assertCapacityError(.staleFencingToken) {
+            _ = try arbiter.authorize(
+                scope: staleScope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .execute,
+                now: now
+            )
+        }
+        assertCapacityError(.leaseExpired) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .execute,
+                now: lease.expiresAt
+            )
+        }
+        XCTAssertEqual(
+            try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .stop,
+                now: lease.expiresAt
+            ),
+            lease,
+            "expired leases must retain cleanup authority"
+        )
+
+        _ = try arbiter.setMode(.draining)
+        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .inspect,
+                now: now
+            )
+        }
+        XCTAssertEqual(
+            try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .delete,
+                now: lease.expiresAt
+            ),
+            lease,
+            "draining hosts must retain cleanup authority"
+        )
+    }
+
     func testConcurrentReservationsCannotOverbookHost() async throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -303,6 +399,65 @@ final class HostCapacityArbiterTests: XCTestCase {
                 now: now.addingTimeInterval(1)
             )
         }
+    }
+
+    func testRenewalWaitsForAuthorizedMutationToReleaseFence() async throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-linearized",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120),
+            now: now
+        )
+        var authorization: SandboxLeaseMutationAuthorization? =
+            try arbiter.authorizeMutation(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .execute,
+                now: now
+            )
+        let status = RenewalStatus()
+        let renewal = Task.detached {
+            await status.markStarted()
+            do {
+                let renewed = try arbiter.renew(
+                    scope: lease.scope,
+                    expiresAt: now.addingTimeInterval(180),
+                    now: now
+                )
+                await status.markCompleted()
+                return renewed
+            } catch {
+                await status.markCompleted()
+                throw error
+            }
+        }
+
+        while !(await status.started) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let completedWhileAuthorized = await status.completed
+        XCTAssertFalse(
+            completedWhileAuthorized,
+            "renewal must not rotate a fence during an authorized mutation"
+        )
+        XCTAssertNotNil(authorization)
+        authorization = nil
+
+        let renewed = try await renewal.value
+        XCTAssertGreaterThan(
+            renewed.scope.fencingToken,
+            lease.scope.fencingToken
+        )
+        let completedAfterRelease = await status.completed
+        XCTAssertTrue(completedAfterRelease)
     }
 
     func testRejectsInsecureAndCorruptPersistentState() throws {
@@ -447,4 +602,17 @@ private enum ReservationOutcome: Equatable, Sendable {
     case reserved
     case exhausted
     case failed(String)
+}
+
+private actor RenewalStatus {
+    private(set) var started = false
+    private(set) var completed = false
+
+    func markStarted() {
+        started = true
+    }
+
+    func markCompleted() {
+        completed = true
+    }
 }

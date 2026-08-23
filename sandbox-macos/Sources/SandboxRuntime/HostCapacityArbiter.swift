@@ -30,6 +30,65 @@ public struct SandboxHostCapacityArbiter: Sendable {
         Self.snapshot(from: try store.read())
     }
 
+    public func authorize(
+        scope: SandboxOperationScope,
+        virtualMachineName: String,
+        operation: SandboxLeaseOperation,
+        resources: SandboxResourceSpecification? = nil,
+        now: Date = Date()
+    ) throws -> SandboxCapacityLease {
+        guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
+            throw SandboxCapacityError.invalidVirtualMachineName
+        }
+        let state = try store.read()
+        let index = try Self.leaseIndex(for: scope, in: state.leases)
+        let lease = state.leases[index]
+        guard lease.scope.fencingToken == scope.fencingToken else {
+            throw SandboxCapacityError.staleFencingToken
+        }
+        guard lease.virtualMachineName == virtualMachineName else {
+            throw SandboxCapacityError.leaseVirtualMachineMismatch
+        }
+        if let resources {
+            guard lease.cpuCount == resources.cpuCount,
+                  lease.memoryBytes == resources.memoryBytes
+            else {
+                throw SandboxCapacityError.leaseResourceMismatch
+            }
+        }
+        if operation.requiresActiveLease {
+            guard state.mode == .sandboxDedicated else {
+                throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
+            }
+            guard lease.expiresAt > now else {
+                throw SandboxCapacityError.leaseExpired
+            }
+        }
+        return lease
+    }
+
+    package func authorizeMutation(
+        scope: SandboxOperationScope,
+        virtualMachineName: String,
+        operation: SandboxLeaseOperation,
+        resources: SandboxResourceSpecification? = nil,
+        now: Date = Date()
+    ) throws -> SandboxLeaseMutationAuthorization {
+        let operationLock = try store.acquireLeaseOperationLock(
+            sandboxID: scope.sandboxID
+        )
+        _ = try authorize(
+            scope: scope,
+            virtualMachineName: virtualMachineName,
+            operation: operation,
+            resources: resources,
+            now: now
+        )
+        return SandboxLeaseMutationAuthorization(
+            operationLock: operationLock
+        )
+    }
+
     @discardableResult
     public func setMode(_ mode: SandboxHostMode) throws
         -> SandboxCapacitySnapshot
@@ -61,6 +120,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
         }
+        let operationLock = try store.acquireLeaseOperationLock(
+            sandboxID: sandboxID
+        )
+        defer { withExtendedLifetime(operationLock) {} }
         return try store.update { state in
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
@@ -149,6 +212,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
         expiresAt: Date,
         now: Date = Date()
     ) throws -> SandboxCapacityLease {
+        let operationLock = try store.acquireLeaseOperationLock(
+            sandboxID: scope.sandboxID
+        )
+        defer { withExtendedLifetime(operationLock) {} }
         try store.update { state in
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
@@ -194,6 +261,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
     }
 
     public func release(scope: SandboxOperationScope) throws {
+        let operationLock = try store.acquireLeaseOperationLock(
+            sandboxID: scope.sandboxID
+        )
+        defer { withExtendedLifetime(operationLock) {} }
         try store.update { state in
             let index = try Self.leaseIndex(for: scope, in: state.leases)
             guard state.leases[index].scope.fencingToken == scope.fencingToken else {

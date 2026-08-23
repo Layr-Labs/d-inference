@@ -11,6 +11,9 @@ EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PACKAGE_DIR/Thir
 PATCH_RELATIVE_PATH="$(/usr/bin/plutil -extract patches.0.path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 EXPECTED_PATCH_SHA256="$(/usr/bin/plutil -extract patches.0.sha256 raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 PATCH_FILE="$PACKAGE_DIR/$PATCH_RELATIVE_PATH"
+CODESIGN_IDENTITY="${DARKBLOOM_LUME_CODESIGN_IDENTITY:--}"
+PRODUCTION_CODESIGN_IDENTITY="Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
+PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.sandbox.lume" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
@@ -35,6 +38,11 @@ if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] \
 fi
 if [[ ! -f "$PATCH_FILE" ]]; then
     echo "required Lume hardening patch is missing: $PATCH_FILE" >&2
+    exit 1
+fi
+if [[ "$CODESIGN_IDENTITY" != "-" ]] \
+    && [[ "$CODESIGN_IDENTITY" != "$PRODUCTION_CODESIGN_IDENTITY" ]]; then
+    echo "refusing unexpected Lume code-signing identity" >&2
     exit 1
 fi
 ACTUAL_PATCH_SHA256="$(/usr/bin/shasum -a 256 "$PATCH_FILE" | /usr/bin/awk '{print $1}')"
@@ -98,12 +106,24 @@ if [[ ! -x "$BUILT_EXECUTABLE" ]] || [[ ! -d "$RESOURCE_BUNDLE" ]]; then
 fi
 
 /usr/bin/xattr -c "$BUILT_EXECUTABLE" 2>/dev/null || true
-/usr/bin/codesign \
-    --force \
-    --identifier io.darkbloom.sandbox.lume \
-    --entitlements "$SOURCE_ROOT/resources/lume.local.entitlements" \
-    --sign - \
-    "$BUILT_EXECUTABLE"
+CODESIGN_ARGUMENTS=(
+    --force
+    --identifier io.darkbloom.sandbox.lume
+    --entitlements "$SOURCE_ROOT/resources/lume.local.entitlements"
+    --sign "$CODESIGN_IDENTITY"
+)
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+    CODESIGN_ARGUMENTS+=(--options runtime --timestamp)
+fi
+/usr/bin/codesign "${CODESIGN_ARGUMENTS[@]}" "$BUILT_EXECUTABLE"
+/usr/bin/codesign --verify --strict "$BUILT_EXECUTABLE"
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+    /usr/bin/codesign \
+        --verify \
+        --strict \
+        "-R=$PRODUCTION_REQUIREMENT" \
+        "$BUILT_EXECUTABLE"
+fi
 
 ACTUAL_VERSION="$("$BUILT_EXECUTABLE" --version)"
 if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then

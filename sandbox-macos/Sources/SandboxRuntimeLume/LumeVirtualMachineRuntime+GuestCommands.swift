@@ -1,10 +1,25 @@
 import Foundation
+import SandboxCore
 import SandboxRuntime
 
 extension LumeVirtualMachineRuntime {
     public func execute(
         name: String,
         request: SandboxGuestCommandRequest
+    ) async throws -> SandboxGuestCommandResult {
+        try await execute(
+            name: name,
+            scope: nil,
+            request: request,
+            now: Date()
+        )
+    }
+
+    func execute(
+        name: String,
+        scope: SandboxOperationScope?,
+        request: SandboxGuestCommandRequest,
+        now: Date
     ) async throws -> SandboxGuestCommandResult {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
@@ -14,6 +29,13 @@ extension LumeVirtualMachineRuntime {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
         }
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .execute,
+            virtualMachineName: name,
+            now: now
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
         try LumeVirtualMachineOwnership.requireOwned(
             name: name,
             in: configuration.storageDirectory

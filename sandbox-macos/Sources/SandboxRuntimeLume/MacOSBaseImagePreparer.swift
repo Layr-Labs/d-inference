@@ -51,14 +51,14 @@ public enum MacOSBaseImagePreparationError:
     }
 }
 
-public struct MacOSBaseImagePreparer: Sendable {
+package struct MacOSBaseImagePreparer: Sendable {
     private let runtime: LumeVirtualMachineRuntime
 
-    public init(runtime: LumeVirtualMachineRuntime) {
+    package init(runtime: LumeVirtualMachineRuntime) {
         self.runtime = runtime
     }
 
-    public func prepare(
+    package func prepare(
         specification: SandboxVirtualMachineSpecification
     ) async throws -> MacOSBaseImagePreparationReport {
         let capabilities = try await runtime.capabilities()

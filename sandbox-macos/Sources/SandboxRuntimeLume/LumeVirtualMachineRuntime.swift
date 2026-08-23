@@ -2,19 +2,21 @@ import Foundation
 import SandboxCore
 import SandboxRuntime
 
-public actor LumeVirtualMachineRuntime:
+package actor LumeVirtualMachineRuntime:
     SandboxVirtualMachineRuntime,
     SandboxGuestCommandRuntime
 {
     let configuration: LumeRuntimeConfiguration
     let workspace: LumeRuntimeWorkspace
     let processRunner: SandboxProcessRunner
+    let capacityArbiter: SandboxHostCapacityArbiter?
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
     var runningProcesses: [String: SandboxManagedProcess] = [:]
 
-    public init(
+    package init(
         configuration: LumeRuntimeConfiguration,
+        capacityArbiter: SandboxHostCapacityArbiter? = nil,
         processRunner: SandboxProcessRunner = SandboxProcessRunner()
     ) {
         self.configuration = configuration
@@ -22,6 +24,7 @@ public actor LumeVirtualMachineRuntime:
             storageDirectory: configuration.storageDirectory
         )
         self.processRunner = processRunner
+        self.capacityArbiter = capacityArbiter
     }
 
     public func capabilities() async throws -> SandboxRuntimeCapabilities {
@@ -86,6 +89,35 @@ public actor LumeVirtualMachineRuntime:
 
     func ensureStorageDirectory() throws {
         try workspace.prepare()
+    }
+
+    func authorize(
+        scope: SandboxOperationScope?,
+        operation: SandboxLeaseOperation,
+        virtualMachineName: String,
+        resources: SandboxResourceSpecification? = nil,
+        now: Date
+    ) throws -> SandboxLeaseMutationAuthorization? {
+        if let capacityArbiter {
+            guard let scope else {
+                throw SandboxRuntimeError.unsupported(
+                    "lease-fenced Lume operation requires an operation scope"
+                )
+            }
+            return try capacityArbiter.authorizeMutation(
+                scope: scope,
+                virtualMachineName: virtualMachineName,
+                operation: operation,
+                resources: resources,
+                now: now
+            )
+        }
+        if scope != nil {
+            throw SandboxRuntimeError.unsupported(
+                "unfenced Lume runtime cannot accept an operation scope"
+            )
+        }
+        return nil
     }
 
     func storageArguments(_ arguments: [String]) -> [String] {

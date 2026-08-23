@@ -45,6 +45,35 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
+    func acquireLeaseOperationLock(
+        sandboxID: SandboxID
+    ) throws -> SandboxLeaseOperationLock {
+        let directoryDescriptor = try openStateDirectory()
+        defer { close(directoryDescriptor) }
+        let lockName = "lease-\(sandboxID.description).lock"
+        let lockDescriptor = openat(
+            directoryDescriptor,
+            lockName,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR
+        )
+        guard lockDescriptor >= 0 else {
+            throw Self.pathError(errno)
+        }
+        do {
+            try Self.validateFileDescriptor(lockDescriptor)
+            while flock(lockDescriptor, LOCK_EX) != 0 {
+                guard errno == EINTR else {
+                    throw SandboxCapacityError.io(errno)
+                }
+            }
+            return SandboxLeaseOperationLock(descriptor: lockDescriptor)
+        } catch {
+            close(lockDescriptor)
+            throw error
+        }
+    }
+
     func update<T>(
         _ operation: (inout SandboxCapacityState) throws -> T
     ) throws -> T {
@@ -333,5 +362,18 @@ struct SandboxCapacityStateStore: Sendable {
                 offset += count
             }
         }
+    }
+}
+
+final class SandboxLeaseOperationLock: @unchecked Sendable {
+    private let descriptor: Int32
+
+    init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
     }
 }

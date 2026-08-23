@@ -33,6 +33,34 @@ final class LumeRuntimeContractTests: XCTestCase {
         XCTAssertEqual(lock.telemetry, "disabled")
     }
 
+    func testBuildScriptPinsProductionSigningRequirement() throws {
+        let scriptURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Scripts/build-pinned-lume.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            script.contains(
+                #"CODESIGN_IDENTITY="${DARKBLOOM_LUME_CODESIGN_IDENTITY:--}""#
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                #"PRODUCTION_CODESIGN_IDENTITY="Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)""#
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                #"certificate leaf[subject.OU] = "SLDQ2GJ6TL""#
+            )
+        )
+        XCTAssertTrue(
+            script.contains(#""-R=$PRODUCTION_REQUIREMENT""#)
+        )
+    }
+
     func testPinnedRealLumeBinaryAndEmptyStorageContract() async throws {
         guard let executablePath = ProcessInfo.processInfo.environment[
             "DARKBLOOM_SANDBOX_LUME_PATH"

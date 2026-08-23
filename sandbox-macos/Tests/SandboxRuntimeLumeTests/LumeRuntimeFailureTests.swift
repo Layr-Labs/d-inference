@@ -600,6 +600,44 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testGuestTransportFailureStopsVirtualMachineAfterCancellationAcknowledges()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "guest-command-transport-failure"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    timeoutSeconds: 30
+                )
+            )
+            XCTFail("an indeterminate guest command must fail closed")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .commandFailed(
+                    command: "lume ssh",
+                    exitCode: 69,
+                    stderr: "simulated SSH transport failure"
+                )
+            )
+        }
+
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
+    }
+
     func testExecuteReplaysCompletedIdempotencyKeyWithoutSecondSSH() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
@@ -1466,6 +1504,20 @@ private struct FakeLumeFixture {
             printf '%s\\n' "$command_attempts" \
               > "$root/guest-readiness-probe-attempts"
             printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":0,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":false,"stdout_base64":"","stderr_base64":""}'
+            exit 0
+            ;;
+          guest-command-transport-failure)
+            command_attempts=0
+            if [ -f "$root/guest-readiness-probe-attempts" ]; then
+              command_attempts="$(tr -d '\\n' < "$root/guest-readiness-probe-attempts")"
+            fi
+            command_attempts=$((command_attempts + 1))
+            printf '%s\\n' "$command_attempts" \
+              > "$root/guest-readiness-probe-attempts"
+            if [ "$command_attempts" -eq 1 ]; then
+              printf '%s\\n' "simulated SSH transport failure" >&2
+              exit 69
+            fi
             exit 0
             ;;
           authenticated-readiness-*)

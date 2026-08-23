@@ -123,7 +123,8 @@ extension LumeVirtualMachineRuntime {
                     cancellationFailure = cleanupError
                 }
             }
-            let mustStopVM = requiresVMStop
+            let mustStopVM = guestCommandMayBeRunning
+                || requiresVMStop
                 || executionWasCancelled
                 || cancellationFailure != nil
             if mustStopVM {

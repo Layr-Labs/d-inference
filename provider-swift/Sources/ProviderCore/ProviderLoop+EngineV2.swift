@@ -166,6 +166,9 @@ extension ProviderLoop {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            // The serving set's resolved reserve, so engine grants carve the
+            // same activation floor the load gate and runtime KV gate hold.
+            activationReserveBytes: resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
     }

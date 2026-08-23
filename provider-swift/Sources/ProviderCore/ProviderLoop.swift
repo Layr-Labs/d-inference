@@ -536,7 +536,13 @@ public actor ProviderLoop {
         // (loadReserveBytes = max(configReserve, physical − cap)) — so runtime KV
         // can't grow into memory the operator explicitly reserved once a model is
         // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
+        // The activation reserve is resolved for the advertised serving set
+        // (measured per-model floors; env raise-only above them) and re-pushed
+        // via refreshActivationReserve() whenever that set changes, so the
+        // runtime KV gate and the load gate always carve the same reserve.
         self.kvBudget = GlobalKVCacheBudget(
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
@@ -548,6 +554,18 @@ public actor ProviderLoop {
         self.liveModelHashes = config.modelHashes
         self.modelHashFingerprints = config.modelHashFingerprints
         // Phase-1 complete — safe to touch self.logger now.
+        // Operator-visible record of the resolved floor: on a measured-only
+        // set this is the model's measured floor; ANY unmeasured id (a new
+        // build id included — exact match only) pins the flat default, which
+        // on small boxes is the difference between serving and not.
+        logger.info(
+            "Activation reserve resolved to "
+                + String(
+                    format: "%.1f",
+                    Double(
+                        UnifiedMemoryCap.resolvedActivationReserveBytes(
+                            modelIDs: Array(advertised.keys))) / (1024.0 * 1024.0 * 1024.0))
+                + " GiB for serving set [\(advertised.keys.sorted().joined(separator: ", "))]")
         if !unsupportedModelIds.isEmpty {
             logger.warning(
                 "Not advertising \(unsupportedModelIds.count) model(s) without a CBv2 adapter "

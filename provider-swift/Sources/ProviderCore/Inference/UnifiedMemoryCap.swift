@@ -34,10 +34,12 @@ public enum UnifiedMemoryCap {
     /// OS (e.g. an 8 GiB box gets a 6 GiB cap, not 7.2 GiB).
     static let minimumReserveBytes: UInt64 = 2 * 1024 * 1024 * 1024  // 2 GiB
 
-    /// The activation/working-memory reserve carved out INSIDE the cap — for
-    /// every model, every attention posture, every batch. FLAT. Nothing in
-    /// this type scales it; only an explicit operator or programmatic override
-    /// moves it (`DARKBLOOM_ACTIVATION_RESERVE_GB`, which may only RAISE it).
+    /// The DEFAULT activation/working-memory reserve carved out INSIDE the cap
+    /// — every attention posture, every batch, and every model that has no
+    /// measured floor of its own (``measuredActivationFloorsBytes``). Nothing
+    /// in this type SCALES it — resolution picks between measured constants —
+    /// and the operator env override (`DARKBLOOM_ACTIVATION_RESERVE_GB`) may
+    /// only RAISE the resolved floor, never lower it.
     ///
     /// 5.5 GiB as of v0.8.0, sized against the table below: this release
     /// raises the decode batch to 8, and the measured gemma-4 peak at B=8 is
@@ -64,7 +66,12 @@ public enum UnifiedMemoryCap {
     /// set, which no attention-shape estimate models: a `[rows, heads, C, kL]`
     /// score estimate predicts ~205 MB for the 3.40 GiB actually measured, and
     /// exactly 0 for the 2.20 GiB. Sizing the reserve off the score tensor
-    /// would track the smaller, better-behaved half of the cost.
+    /// would track the smaller, better-behaved half of the cost. That rules
+    /// out formulas, not measurements: the same sweep that sized this default
+    /// off gemma-4's peak measured gpt-oss-20b's, and
+    /// ``measuredActivationFloorsBytes`` carries those measured floors so a
+    /// provider serving ONLY measured models is not charged a reserve sized
+    /// for a model it can never run.
     ///
     /// This is also a FORWARD-LOOKING hold-back, not an accounting of live
     /// bytes. Transient growth during a step is already visible to
@@ -72,8 +79,8 @@ public enum UnifiedMemoryCap {
     /// reserve only has to keep the NEXT step's working set from crossing the
     /// cap. Retune it against a measurement, in one place, for the whole fleet
     /// — and mirror any change in `coordinator/registry/servability.go`
-    /// (`servabilityActivationFloorGB`), which predicts this exact arithmetic
-    /// for cold providers.
+    /// (`servabilityActivationFloorGB` / `servabilityModelActivationFloorsGB`),
+    /// which predicts this exact arithmetic for cold providers.
     ///
     /// KNOWN EXCEPTIONS, neither new nor yet measured as harmful. A composed
     /// attention model (head_dim outside MLX's fused-SDPA set {64, 80, 128})
@@ -98,6 +105,50 @@ public enum UnifiedMemoryCap {
     // the two MUST move in the same commit — see the doc comment above.
     static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
 
+    /// Measured per-model activation floors. The default above is sized for
+    /// the WORST measured model (gemma-4's 5.05 GiB B=8 peak); a model whose
+    /// measured peak sits far below it carries a floor of its own, so a
+    /// provider serving ONLY such models does not hold back memory sized for
+    /// a model it can never run. On the catalog's 24 GB gpt-oss tier that
+    /// difference is the whole margin: weights 13.5 + 5.5 + 1 = 20.0 GB
+    /// required exceeds what macOS can ever leave reclaimable on a 24 GB box,
+    /// while 13.5 + 3.5 + 1 = 18.0 fits — the flat default made that tier
+    /// show online and fail every request.
+    ///
+    /// Keyed by catalog model id, EXACT match only: a variant or new build id
+    /// without its own measurement falls back to the default — unmeasured
+    /// means unmeasured. Values cover the WORST measured execution path for
+    /// the model, eager or compiled, plus slack — the same basis the default
+    /// carries (gemma-4: max(5.05 eager, 5.34 compiled) → 5.5; gpt-oss-20b:
+    /// max(2.56 eager, 3.20 compiled) → 3.5), from the same sweep
+    /// (`libs/mlx-swift-lm/benchmarks/reports/`, `*-paged-gate-2026-07-09.md`,
+    /// run 2026-07-10; compiled figures are the `v2-compiled B=8`
+    /// peak-over-resident rows).
+    ///
+    /// Mirrored by coordinator/registry/servability.go
+    /// (`servabilityModelActivationFloorsGB` +
+    /// `servabilityPerModelFloorMinVersion`); the tables MUST move in the
+    /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
+    static let measuredActivationFloorsBytes: [String: UInt64] = [
+        // Measured B=8 activation peak: 2.56 GiB eager, 3.20 GiB compiled
+        // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack.
+        "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2
+    ]
+
+    /// The activation floor for a SERVING SET of models: the max of each
+    /// member's measured floor, with ``defaultActivationReserveBytes`` for any
+    /// unmeasured member — the reserve must cover every model that can run a
+    /// step, so a single unmeasured member pins the default. An EMPTY set is
+    /// an open world (no declared serving set) and takes the default.
+    static func activationFloorBytes(forModelIDs ids: [String]) -> UInt64 {
+        guard !ids.isEmpty else { return defaultActivationReserveBytes }
+        var floor: UInt64 = 0
+        for id in ids {
+            floor = max(floor, measuredActivationFloorsBytes[id] ?? defaultActivationReserveBytes)
+        }
+        return floor
+    }
+
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
     /// to be worth loading — a model that loads but can serve no KV is useless.
     /// Small (1 GiB): the load gate only needs to guarantee the model can serve
@@ -121,11 +172,15 @@ public enum UnifiedMemoryCap {
     /// then rejects every request for (the load gate's old flat 2 GiB one-request
     /// headroom was LESS than the 3 GiB activation reserve, so a near-cap model
     /// loaded with zero serveable KV). Returns
-    /// `activationReserve + minimumLoadKV`.
+    /// `activationReserve + minimumLoadKV`. `modelIDs` is the serving set the
+    /// reserve must cover (see ``activationFloorBytes(forModelIDs:)``); nil
+    /// keeps the flat default.
     public static func loadHeadroomBytes(
-        activationReserveBytes: UInt64? = nil
+        activationReserveBytes: UInt64? = nil,
+        modelIDs: [String]? = nil
     ) -> UInt64 {
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let activations =
+            activationReserveBytes ?? resolvedActivationReserveBytes(modelIDs: modelIDs)
         return saturatingAdd(activations, minimumLoadKVBytes)
     }
 
@@ -283,30 +338,36 @@ public enum UnifiedMemoryCap {
     }
 
     /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the serving-set floor
+    /// (``activationFloorBytes(forModelIDs:)`` when `modelIDs` is given,
+    /// ``defaultActivationReserveBytes`` otherwise).
     ///
     /// The env override is RAISE-ONLY, enforced, not just documented: the
-    /// resolved value is `max(env, default)`. A value below the floor —
-    /// most likely a legacy `3` set when 3 GiB WAS the default — would
-    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
-    /// prevent, while the coordinator keeps predicting capacity with the
-    /// floor (`servability.go`). A `<= 0` or non-finite env value is
-    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
-    /// the activation headroom the cap exists to guarantee. An explicit
-    /// programmatic value (tests) is honored as given, below the floor
-    /// included — test fixtures legitimately model small boxes.
+    /// resolved value is `max(env, floor)` where the floor is the serving
+    /// set's. A value below the floor — most likely a legacy `3` set when
+    /// 3 GiB WAS the default — would silently recreate the B=8 activation
+    /// OOM the floor exists to prevent, while the coordinator keeps
+    /// predicting capacity with the floor (`servability.go`). A `<= 0` or
+    /// non-finite env value is likewise treated as UNSET (→ the floor): a
+    /// `0` reserve would remove the activation headroom the cap exists to
+    /// guarantee. An explicit programmatic value (tests) is honored as
+    /// given, below the floor included — test fixtures legitimately model
+    /// small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        modelIDs: [String]? = nil
     ) -> UInt64 {
         if let explicit { return explicit }
+        let floor = modelIDs.map { activationFloorBytes(forModelIDs: $0) }
+            ?? defaultActivationReserveBytes
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
             let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
-            return max(bytes, defaultActivationReserveBytes)
+            return max(bytes, floor)
         }
-        return defaultActivationReserveBytes
+        return floor
     }
 
     // MARK: - Helpers

@@ -322,7 +322,7 @@ extension ProviderLoop {
                 extraWeightBytes: 0)
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: targetWeightsGb,
-                headroomGb: Self.loadHeadroomGb)
+                headroomGb: loadHeadroomGb)
             do {
                 try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
             } catch let InferenceError.modelLoadFailed(message) {
@@ -474,10 +474,10 @@ extension ProviderLoop {
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
             MLX.Memory.clearCache()
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            if !KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -579,7 +579,8 @@ extension ProviderLoop {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
-                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                activationReserveBytes: resolvedActivationReserveBytes)
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
             if engineBundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -620,12 +621,13 @@ extension ProviderLoop {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
-                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                    activationReserveBytes: resolvedActivationReserveBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident
@@ -762,6 +764,10 @@ extension ProviderLoop {
         // load-admission counts as used — without this the box 503s every load
         // until restart.
         MLX.Memory.clearCache()
+        // The unloaded model can no longer run a step: the serving-set floor
+        // (advertised ∪ resident) may relax now — BEFORE the survivors regrow,
+        // so their new grants are sized against the reserve they'll live under.
+        await refreshActivationReserve()
         // Re-slice GROW the survivors: with this model's weights gone the
         // fleet KV budget rises, and the remaining engines take their new
         // fair shares (a lone survivor gets the FULL budget back).
@@ -846,13 +852,42 @@ extension ProviderLoop {
             outstandingReservationBytes: outstanding)
     }
 
+    /// The activation reserve resolved for the CURRENT serving set —
+    /// advertised models UNION resident slots (measured per-model floors, env
+    /// raise-only above them —
+    /// `UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)`).
+    /// Computed live so a prefetch-advertised build raises it the moment the
+    /// build joins the set. Resident slots are included because a
+    /// hard-swapped build leaves `advertisedModels` while its slot keeps
+    /// serving in-flight decodes (the lazy drop) — the reserve must keep
+    /// covering every model that can still run a step, so the relax lands
+    /// only after the retired slot actually unloads.
+    var resolvedActivationReserveBytes: UInt64 {
+        UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys))
+    }
+
     /// Headroom (GB) reserved above the weights at load time. Must be at least
     /// the runtime activation reserve + a minimum serveable KV, or the gate would
     /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
     /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
-    /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
-    static let loadHeadroomGb =
-        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
+    /// from UnifiedMemoryCap — including the serving set's measured per-model
+    /// floor — so the load gate and the runtime KV path agree. Computed, not
+    /// stored: the advertised set can change at runtime.
+    var loadHeadroomGb: Double {
+        Double(UnifiedMemoryCap.loadHeadroomBytes(
+            activationReserveBytes: resolvedActivationReserveBytes))
+            / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    /// Push the reserve resolved for the CURRENT advertised set into the KV
+    /// budget actor. Call after every advertised-set mutation — for an ADD,
+    /// before the new model can be loaded, so its decode steps never run
+    /// against a reserve resolved without it; for a removal it lets the
+    /// reserve relax back to the remaining set's floor.
+    func refreshActivationReserve() async {
+        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
+    }
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -932,7 +967,7 @@ extension ProviderLoop {
         // preparation (and any prefetch) itself.
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: Self.loadHeadroomGb)
+            headroomGb: loadHeadroomGb)
 
         // Sample live memory FIRST — this is the only suspension point in the
         // method (it awaits the KV-budget actor). Reading all the actor-local

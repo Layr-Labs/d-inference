@@ -66,15 +66,22 @@ public actor EngineV2Runtime {
         public let totalResidentWeightBytes: UInt64
         /// Operator `memory_reserve_gb`, in bytes (see `EngineV2KVSizing`).
         public let configReserveBytes: UInt64
+        /// The serving set's resolved activation reserve
+        /// (`UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)`);
+        /// nil keeps the flat default. Must match what the grants were sized
+        /// with, or the heartbeat clamp disagrees with the grant it clamps.
+        public let activationReserveBytes: UInt64?
         /// Injectable for tests; the machine's real memory in production.
         public let physicalBytes: UInt64
 
         public init(
             totalResidentWeightBytes: UInt64,
+            activationReserveBytes: UInt64? = nil,
             configReserveBytes: UInt64 = 0,
             physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
         ) {
             self.totalResidentWeightBytes = totalResidentWeightBytes
+            self.activationReserveBytes = activationReserveBytes
             self.configReserveBytes = configReserveBytes
             self.physicalBytes = physicalBytes
         }
@@ -115,6 +122,7 @@ public actor EngineV2Runtime {
                     grantedKVBytesCapacity: grant,
                     totalResidentWeightBytes: fleetKV.totalResidentWeightBytes,
                     otherEngineKVCapacities: otherClaims,
+                    activationReserveBytes: fleetKV.activationReserveBytes,
                     configReserveBytes: fleetKV.configReserveBytes,
                     physicalBytes: fleetKV.physicalBytes)
             }

@@ -369,3 +369,25 @@ private func makeAuditBudget(
 
     #expect(log.operations().isEmpty, "audit fired despite interleaved successful commits")
 }
+
+@Test func globalKVCacheBudgetHonorsAReplacedActivationReserve() async {
+    // The serving set changes at runtime (prefetch advertises a build, a
+    // retired slot unloads) and ProviderLoop re-pushes the resolved reserve
+    // via setActivationReserveBytes — admission must follow the CURRENT
+    // value, not the construction-time one.
+    //
+    // 8 GiB box, capFraction 1.0 → hardCap = 8 − 2 (OS floor) = 6 GiB.
+    // With the flat 5.5 GiB reserve, headroom = 0.5 GiB → a 1 GiB
+    // reservation rejects. After the reserve relaxes to the measured
+    // 3.5 GiB floor, headroom = 2.5 GiB → the same reservation admits;
+    // raising it back to 5.5 rejects again.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 11 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    await budget.setActivationReserveBytes(7 * gib / 2)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+}

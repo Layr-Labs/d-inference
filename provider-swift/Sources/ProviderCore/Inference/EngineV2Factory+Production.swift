@@ -869,7 +869,7 @@ extension EngineV2Factory {
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 inputs: .init(
                     physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes,
+                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(),
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):

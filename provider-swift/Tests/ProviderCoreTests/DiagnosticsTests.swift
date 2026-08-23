@@ -571,3 +571,54 @@ struct DesiredModelsForPostureTests {
     #expect(WarmModelsFormat.mostRecentlyUsedLabel == "Most recently used")
     #expect(WarmModelsFormat.mostRecentlyUsedLabel != "Current model")
 }
+
+@Test func modelFitRequiredUsesPerModelActivationFloor() {
+    // gpt-oss-20b: padded weights 13.5 + (3.5 GiB measured floor + 1 GiB min
+    // serveable KV) = 18.0 — NOT 13.5 + 6.5 = 20.0 sized off gemma-4's B=8
+    // peak. The flat floor made every 24 GB catalog-tier box unserveable
+    // (#653): usable ≥ 20 GB needs ~22.7 GiB reclaimable out of 24.
+    #expect(abs(
+        ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 13.5, modelID: "gpt-oss-20b") - 18.0)
+        < 0.01)
+    // Unmeasured model keeps the flat default: 28 + 6.5 = 34.5.
+    #expect(abs(
+        ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 28.0, modelID: "gemma-4-26b") - 34.5)
+        < 0.01)
+    // No id → flat default (regression): 13.5 + 6.5 = 20.0.
+    #expect(abs(ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 13.5) - 20.0) < 0.01)
+}
+
+@Test func modelFitVerdictReflectsPerModelFloor() {
+    // The #653 repro shape: 24 GB box, ~18.5 GB usable headless, gpt-oss-20b
+    // padded 13.53. Flat floor demanded 20.0 → permanent fail; the measured
+    // floor needs 18.03 → pass.
+    let d = ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5)
+    #expect(d.level == .pass)
+    // An unmeasured model on the same box still fails (25 + 6.5 = 31.5 > 18.5)
+    // AND the alternatives suggestion evaluates each candidate with ITS OWN
+    // floor — the suggestion models what enabled_models = [candidate] would do.
+    let alt = ModelFitDiagnostic.diagnose(
+        modelID: "gemma-4-26b", weightGb: 25.0, usableGb: 18.5,
+        alternatives: [.init(id: "gpt-oss-20b", weightGb: 13.53)])
+    #expect(alt.level == .fail)
+    #expect(alt.fix?.contains("gpt-oss-20b") == true)
+    #expect(alt.fix?.contains("18.0") == true)
+}
+
+@Test func modelFitVerdictUsesTheServingSetFloorNotTheTargetsOwn() {
+    // A multi-model box: enabled_models = [gpt-oss-20b, gemma-4-26b]. The
+    // daemon's load gate carves the max floor over the WHOLE set (6.5 GiB
+    // headroom), so gpt-oss needs 13.53 + 6.5 = 20.03 on this box even
+    // though its solo requirement is 18.03 — the verdict must say FAIL, not
+    // the false PASS a target-only floor would print (the doctor promise:
+    // never drift from what the daemon enforces).
+    let d = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5,
+        servingSetIDs: ["gpt-oss-20b", "gemma-4-26b"])
+    #expect(d.level == .fail)
+    // Same target, single-model set: back to the solo floor → pass.
+    let solo = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(solo.level == .pass)
+}

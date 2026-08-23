@@ -213,10 +213,24 @@ extension ProviderLoop {
         // build can be held resident alongside the model currently being served
         // during a zero-downtime migration -- bounded by the configured hard
         // cap (`configuredMaxModelSlots`).
+        // Raise the runtime KV reserve for the grown serving set BEFORE the
+        // build joins `advertisedModels` (and so before it is announced or
+        // loadable) — a decode step of the new model must never run against a
+        // reserve resolved without it.
+        await kvBudget.setActivationReserveBytes(
+            UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys) + [modelId]))
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
         syncWarmModelState()
+        // Re-refresh AFTER the insert too: a concurrent refresh (idle unload,
+        // retire) interleaving in the pre-insert await computed WITHOUT the
+        // incoming id and could land last — this post-insert refresh, now
+        // resolving over the set that includes it, makes the final value
+        // authoritative either way (the pre-insert push handles raise-early,
+        // this one handles lost-update).
+        await refreshActivationReserve()
         logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
@@ -249,6 +263,9 @@ extension ProviderLoop {
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
         syncWarmModelState()
+        // The shrunken set may carry a lower measured floor; let the runtime
+        // KV budget relax to it. (Raising happened on the add side.)
+        await refreshActivationReserve()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 

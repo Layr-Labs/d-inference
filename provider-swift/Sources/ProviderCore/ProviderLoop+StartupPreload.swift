@@ -140,7 +140,7 @@ extension ProviderLoop {
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
                         weightsGb: info.estimatedMemoryGb,
-                        headroomGb: Self.loadHeadroomGb)))
+                        headroomGb: loadHeadroomGb)))
         }
         return plan
     }
@@ -301,6 +301,9 @@ extension ProviderLoop {
     private func retireModelAfterFailedSelfTest(modelId: String) async {
         await unloadModel(modelId)
         advertisedModels.removeValue(forKey: modelId)
+        // The shrunken set may carry a lower measured activation floor; let
+        // the runtime KV budget relax to it.
+        await refreshActivationReserve()
         if let client = coordinatorClient {
             await client.unadvertiseModel(modelId)
             await client.forceReconnect()

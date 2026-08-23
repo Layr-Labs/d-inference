@@ -107,10 +107,22 @@ enum DoctorRunner {
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
+            // The daemon's load gate holds the max activation floor over its
+            // WHOLE serving set (scan ∩ enabled_models; everything scanned
+            // when the filter is empty) — mirror that basis so this verdict
+            // cannot pass a target the daemon would still gate at a larger
+            // co-enabled model's floor. Alternatives keep their solo floors:
+            // each models `enabled_models = [candidate]`.
+            let enabled = snapshot.config.backend.enabledModels
+            let servingSetIDs: [String] =
+                enabled.isEmpty
+                ? allModels.map(\.id)
+                : allModels.map(\.id).filter(enabled.contains)
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
-                    usableGb: usableGb, alternatives: alternatives))
+                    usableGb: usableGb, alternatives: alternatives,
+                    servingSetIDs: servingSetIDs.isEmpty ? nil : servingSetIDs))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

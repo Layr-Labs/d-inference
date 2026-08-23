@@ -982,9 +982,16 @@ struct EngineV2ReslicingWiringTests {
         // paged neighbour, whose identical regrow clamps to pool truth — it
         // takes every byte.
         await loop.unloadModel("gemma-4-26b-qat-4bit")
+        // With the unmeasured gemma gone, the surviving set is {gpt-oss-20b}
+        // and the activation reserve relaxes to its measured floor
+        // (unloadModel refreshes BEFORE the regrow) — the survivor's regrow
+        // is sized against that relaxed reserve, gaining the difference over
+        // the flat default.
         let regrowB = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: wiringPhysicalBytes,
             residentWeightBytes: UInt64(sizingB.weightsBytes),
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: ["gpt-oss-20b"]),
             configReserveBytes: wiringReserveBytes)
         #expect(regrowB > UInt64(targetB))
         #expect(engineB.capacityUpdates.last == Int(regrowB))

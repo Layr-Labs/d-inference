@@ -100,6 +100,7 @@ extension ProviderLoop {
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
+                    activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),
                     physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
@@ -140,6 +141,11 @@ extension ProviderLoop {
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
+            // The serving set's resolved headroom (measured per-model floors),
+            // not the flat default — free_for_load_gb must mirror the load
+            // gate this box actually applies (ensureModelLoaded), or the
+            // coordinator's cold-load routing desyncs from it.
+            headroomGb: loadHeadroomGb,
             outstandingReservationBytes: outstandingKV)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(

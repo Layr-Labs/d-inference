@@ -1,8 +1,10 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production prefix-cache policy. The provider has one local kill switch
-// and one production tier: encrypted SSD. In-memory prefix caching remains
-// an upstream engine capability, but it is never selected or funded here.
+// Production prefix-cache policy. One local kill switch controls both
+// complementary tiers on a paged slot:
+//
+//   * resident, ref-counted physical pages (L1; bounded by the paged pool),
+//   * encrypted SSD snapshots (L2; bounded by the box-wide disk budget).
 
 import Foundation
 import MLXLMCommon
@@ -10,7 +12,7 @@ import MLXLMCommon
 enum PrefixCachePolicy {
 
     /// Local cache kill switch. Unset defaults to enabled. Any explicitly
-    /// non-affirmative value disables the encrypted SSD cache.
+    /// non-affirmative value disables resident L1 and encrypted SSD L2.
     static let environmentFlag = "DARKBLOOM_PREFIX_CACHE"
 
     /// Stats-logger cadence override (seconds). Shared semantics with the
@@ -22,10 +24,14 @@ enum PrefixCachePolicy {
     /// `CBv2BlockHasher.defaultBlockSize` (and the legacy block tier's 256).
     static let blockSize = CBv2BlockHasher.defaultBlockSize
 
+    /// Resident L1 indexes one physical page per hash block, matching vLLM's
+    /// allocator/index identity. SSD keeps the coarser durable format above.
+    static let residentBlockSize = CBv2PagedDefaults.pageSize
+
     // MARK: - Gate
 
-    /// Encrypted SSD is on by default. Explicit affirmative values keep it
-    /// enabled; any other non-empty value disables it.
+    /// Prefix reuse is on by default. Explicit affirmative values keep it
+    /// enabled; any other non-empty value disables both local tiers.
     static func isEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
@@ -36,6 +42,31 @@ enum PrefixCachePolicy {
             return true
         }
         return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
+    /// Configuration for the paged backend's copy-free resident L1. The
+    /// backend is model-local, so `modelId` scopes unscoped/standalone calls;
+    /// authenticated remote requests replace that base scope with their
+    /// coordinator-authored `cacheSalt` inside the engine hasher.
+    ///
+    /// There is deliberately no separate memory budget: indexed zero-ref
+    /// pages remain allocator-visible and are invalidated immediately before
+    /// reuse, so the paged pool itself is the natural hard bound (vLLM's
+    /// unified-pool posture). SSD keeps its independent disk budget.
+    static func residentConfig(
+        modelId: String,
+        promptContractID: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> CBv2PagedPrefixCacheConfig? {
+        guard isEnabled(environment: environment),
+            let promptContractID = promptContractID?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !promptContractID.isEmpty
+        else { return nil }
+        return CBv2PagedPrefixCacheConfig(
+            blockSize: residentBlockSize,
+            promptContractID: promptContractID,
+            scopeID: modelId)
     }
 
     /// Is prefix ADOPTION bit-exact on the backend a slot actually built?

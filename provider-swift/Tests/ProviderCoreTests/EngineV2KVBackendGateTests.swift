@@ -582,6 +582,60 @@ struct EngineV2KVBackendGateTests {
         #expect(!prepared.schedulerConfig.enablePrefixCache)
     }
 
+    @Test("resident cache policy is prompt-bound and follows the master gate")
+    func residentPrefixCachePolicy() throws {
+        let config = try #require(PrefixCachePolicy.residentConfig(
+            modelId: "tiny-gemma",
+            promptContractID: " prompt-contract ",
+            environment: [:]))
+        #expect(config.blockSize == PrefixCachePolicy.residentBlockSize)
+        #expect(config.promptContractID == "prompt-contract")
+        #expect(config.scopeID == "tiny-gemma")
+        #expect(PrefixCachePolicy.residentConfig(
+            modelId: "tiny-gemma",
+            promptContractID: nil,
+            environment: [:]) == nil)
+        #expect(PrefixCachePolicy.residentConfig(
+            modelId: "tiny-gemma",
+            promptContractID: "contract",
+            environment: [PrefixCachePolicy.environmentFlag: "0"]) == nil)
+    }
+
+    @Test("resolved paged backend installs resident L1; contiguous ignores it")
+    func residentPrefixCacheFollowsResolvedBackend() throws {
+        let model = try tinyGemma4Text()
+        let config = try #require(PrefixCachePolicy.residentConfig(
+            modelId: "tiny-gemma",
+            promptContractID: "prompt-contract",
+            environment: [:]))
+        let paged = try EngineV2Factory.prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBackend: .paged,
+            maxContextLength: 2048,
+            environment: gateEnvironment(),
+            residentPrefixCache: config)
+        #expect(paged.kind == .paged)
+        #expect(paged.residentPrefixCacheEnabled)
+        let (backend, _) = try paged.consume(model: model, maxConcurrentRequests: 2)
+        let pagedBackend = try #require(backend as? PagedKVBackend)
+        #expect(
+            pagedBackend.pool.config.prefixSharingBlockSize
+                == PrefixCachePolicy.residentBlockSize)
+
+        let contiguous = try EngineV2Factory.prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBackend: .contiguous,
+            maxContextLength: 2048,
+            environment: gateEnvironment(),
+            residentPrefixCache: config)
+        #expect(contiguous.kind == .contiguous)
+        #expect(!contiguous.residentPrefixCacheEnabled)
+    }
+
     @Test("slot factory hands the cache factory the RESOLVED backend's capability")
     func slotFactoryOrdersResolvedBackendBeforeCache() async throws {
         let model = try tinyGemma4Text()

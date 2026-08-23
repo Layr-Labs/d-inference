@@ -103,9 +103,10 @@ public enum ProviderCore {
     //   * Media: image + video prefill through CBv2 multimodal
     //     (EngineV2VisionPrefill spans per image / per sampled video frame),
     //     media_kind-tagged telemetry.
-    //   * Prefix cache: encrypted SSD offload is the only production tier,
-    //     ships default-on with no serving-memory carve, and applies the
-    //     adoption bound plus effective-token floor to each donation.
+    //   * Prefix cache: paged slots use resident physical-page L1 plus
+    //     encrypted SSD snapshot L2, default-on with no separate
+    //     serving-memory carve. SSD applies the adoption bound plus
+    //     effective-token floor to each durable donation.
     //     DARKBLOOM_PREFIX_CACHE=0 is the single local kill switch.
     //   * Liveness: wedge self-recovery rebuilds the engine over the
     //     retained container with the same grant (drain → rebuild →

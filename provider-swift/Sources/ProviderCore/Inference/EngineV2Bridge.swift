@@ -495,6 +495,19 @@ public actor EngineV2Bridge {
             return stream
         }
 
+        // Strict L1→L2 ordering: a positive resident-page candidate avoids an
+        // SSD read/decrypt/stage before submission. The probe pins nothing;
+        // EngineV2 revalidates generations on its serial queue. A rare reuse
+        // race therefore falls back cold (and is reported as a memory-tier
+        // refusal), never to stale KV. SSD donation still receives a receipt
+        // below, so skipping its read side does not disable durable promotion.
+        let residentPrefixCandidate: CBv2ResidentPrefixCandidate? =
+            cacheEnabled && multimodal == nil
+            ? ownedEngine?.residentPrefixCandidate(for: cbv2Request) : nil
+        if residentPrefixCandidate != nil {
+            usageSignal?.recordResidentPrefixCandidate()
+        }
+
         // The SSD staging ticket must be submission-unique even when seeded
         // sampling intentionally reuses a deterministic engine request id.
         // Mint it before staging and pass the same identity through
@@ -513,8 +526,8 @@ public actor EngineV2Bridge {
             prefixCacheReceiptID = nil
         }
 
-        // PRE-SUBMIT SSD STAGING (v0.7.5 read-through adoption): probe the
-        // SSD tier's index for this prompt's chain prefix and, on a hit
+        // PRE-SUBMIT SSD STAGING (v0.7.5 read-through adoption): after a
+        // resident L1 miss, probe the SSD tier's index for this prompt's chain prefix and, on a hit
         // that clears the benefit gate, reserve the staged bytes in the
         // shared KV budget and rehydrate the blocks OFF the engine/submit
         // threads — so the engine's synchronous `lookup()` (inside
@@ -533,7 +546,9 @@ public actor EngineV2Bridge {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
-        } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID {
+        } else if residentPrefixCandidate == nil,
+            let ssd = ssdPrefixCache, let prefixCacheReceiptID
+        {
             let stageResult = await ssd.stage(
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,

@@ -87,6 +87,76 @@ struct PrefixCacheReceiptTests {
         #expect(result.prefillTokensSaved == 2560)
     }
 
+    @Test("resident L1 wins are memory even when SSD staging also matched")
+    func residentTierOverridesStagedSSD() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.record(stageResult: SSDPrefixCacheStageResult(
+            disposition: .staged(
+                matchedTokens: 4096,
+                expectedPrefillTokensSaved: 2560,
+                shortenedByCorruption: false),
+            stageMs: 8.5))
+        signal.record(usage: CBv2Usage(
+            promptTokens: 5000,
+            completionTokens: 1,
+            prefixCacheOutcome: .hit,
+            prefixCacheTier: .resident,
+            prefixCacheMatchedTokens: 4096,
+            prefixCachePrefillTokensSaved: 2560))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.outcome == .hit)
+        #expect(result.tier == .memory)
+        #expect(result.cachedTokens == 4096)
+        #expect(result.prefillTokensSaved == 2560)
+        #expect(result.stageMs == nil)
+        #expect(result.promptAnchor == nil)
+        #expect(result.matchedAnchor == nil)
+    }
+
+    @Test("snapshot L2 wins retain SSD staging evidence")
+    func snapshotTierUsesStagedSSD() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.record(stageResult: SSDPrefixCacheStageResult(
+            disposition: .staged(
+                matchedTokens: 256,
+                expectedPrefillTokensSaved: 256,
+                shortenedByCorruption: false),
+            stageMs: 3,
+            chainHashes: [Data(repeating: 7, count: 32)],
+            blockSize: 256))
+        signal.record(usage: CBv2Usage(
+            promptTokens: 300,
+            completionTokens: 1,
+            prefixCacheOutcome: .hit,
+            prefixCacheTier: .snapshot,
+            prefixCacheMatchedTokens: 256,
+            prefixCachePrefillTokensSaved: 256))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.tier == .ssd)
+        #expect(result.stageMs == 3)
+        #expect(result.promptAnchor?.tokenCount == 256)
+        #expect(result.matchedAnchor?.tokenCount == 256)
+    }
+
+    @Test("stale resident preflight falls back without inventing an SSD miss")
+    func staleResidentPreflightUsesMemoryTier() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.recordResidentPrefixCandidate()
+        signal.record(usage: CBv2Usage(
+            promptTokens: 300,
+            completionTokens: 1,
+            prefixCacheOutcome: .adoptionFailed))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.outcome == .skippedPolicy)
+        #expect(result.tier == .memory)
+        #expect(result.stageMs == nil)
+        #expect(result.promptAnchor == nil)
+        #expect(result.matchedAnchor == nil)
+    }
+
     @Test("engine outcomes map precisely; adoption failure is conservative policy")
     func outcomeMapping() throws {
         for (engine, wire) in [
@@ -427,6 +497,39 @@ struct PrefixCacheReceiptTests {
         if let only = values.first {
             guard case .inferenceError = only else {
                 Issue.record("proof mismatch emitted cache evidence")
+                return
+            }
+        }
+    }
+
+    @Test("resident memory hits never emit durable v2 holder evidence")
+    func v2ResidentHitPreservesTerminalWithoutCacheReceipt() async throws {
+        let capability = v2Capability(epoch: "11111111-1111-1111-1111-111111111111")
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        defer { sequencer.shutdown() }
+        let messages = V2Messages()
+        let send = SendHandle { message in
+            messages.lock.withLock { messages.values.append(message) }
+        }
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "request",
+            nonce: "nonce",
+            send: send))
+        callbacks.lookup(PrefixCacheLookupResult(
+            outcome: .hit,
+            tier: .memory,
+            cachedTokens: 256,
+            prefillTokensSaved: 256))
+        callbacks.terminal(.inferenceError(
+            requestId: "request",
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
+
+        await waitForMessages(messages, count: 1)
+        let values = messages.lock.withLock { messages.values }
+        #expect(values.count == 1)
+        if let only = values.first {
+            guard case .inferenceError = only else {
+                Issue.record("resident hit emitted durable cache evidence")
                 return
             }
         }

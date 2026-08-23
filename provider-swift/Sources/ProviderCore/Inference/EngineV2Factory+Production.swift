@@ -308,8 +308,9 @@ extension EngineV2Factory {
     ///   - tokenizer: the model's tokenizer, for incremental detokenization.
     ///   - kvBytesCapacity: admission ceiling for live sequence KV, in bytes
     ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`).
-    ///   - prefixCache: the provider's encrypted `SSDPrefixCache`, with
-    ///     per-donation benefit gating and zero serving-memory carve.
+    ///   - prefixCache: the provider's encrypted SSD L2, with per-donation
+    ///     benefit gating and zero serving-memory carve. Resident L1 is
+    ///     configured separately because it belongs to the paged backend.
     ///     Widened to the existential (`any CBv2PrefixCache`) so
     ///     provider-side conformers plug in with ZERO mlx-swift-lm
     ///     changes (the engine already stores the cache existentially).
@@ -333,6 +334,7 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
+        residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -345,6 +347,7 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             prefixCache: prefixCache,
+            residentPrefixCache: residentPrefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
@@ -424,6 +427,10 @@ extension EngineV2Factory {
         /// contiguous. Carried so `assembleProductionBuild` can put it on
         /// `ProductionBuild` without re-deriving it from the environment.
         let pagedPoolDType: String?
+        /// True when this preparation contains a resident physical-page
+        /// prefix index. It survives backend type erasure so final assembly
+        /// enables the scheduler even when the SSD snapshot L2 is absent.
+        let residentPrefixCacheEnabled: Bool
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -441,7 +448,8 @@ extension EngineV2Factory {
             kind: EngineV2KVBackendKind,
             fallbackReason: String?,
             schedulerConfig: CBv2SchedulerConfig,
-            pagedPoolDType: String?
+            pagedPoolDType: String?,
+            residentPrefixCacheEnabled: Bool = false
         ) {
             self.modelIdentity = ObjectIdentifier(model)
             self.maxConcurrentRequests = max(1, maxConcurrentRequests)
@@ -453,6 +461,7 @@ extension EngineV2Factory {
             self.fallbackReason = fallbackReason
             self.schedulerConfig = schedulerConfig
             self.pagedPoolDType = pagedPoolDType
+            self.residentPrefixCacheEnabled = residentPrefixCacheEnabled
         }
 
         func consume(
@@ -501,6 +510,7 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
+        residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -515,6 +525,7 @@ extension EngineV2Factory {
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment,
+            residentPrefixCache: residentPrefixCache,
             pagedPreflightOverride: pagedPreflightOverride)
         return try assembleProductionBuild(
             model: model,
@@ -536,6 +547,7 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
@@ -872,7 +884,9 @@ extension EngineV2Factory {
                         // eligibility threw catchably in `PagedKVPool.init`
                         // above, and the commitment happens before any row
                         // exists, so no admitted page is ever unbacked.
-                        slabCommitment: plan.commitment)
+                        slabCommitment: plan.commitment,
+                        residentPrefixCache: modelCapabilities.supportsPrefixReuse
+                            ? residentPrefixCache : nil)
                     let pagedCaches = paged.makeLayerCaches()
                     let caches = try newCaches { index, _ in pagedCaches[index] }
                     return ProductionBackendPreparation(
@@ -890,7 +904,10 @@ extension EngineV2Factory {
                         // stamped every group's slabs with it, so this is
                         // the built artifact reporting itself.
                         pagedPoolDType: Self.pagedPoolDTypeName(
-                            paged.pool.config.dtype))
+                            paged.pool.config.dtype),
+                        residentPrefixCacheEnabled:
+                            modelCapabilities.supportsPrefixReuse
+                                && residentPrefixCache != nil)
                 } catch let error as CBv2KVError {
                     // Paged ineligibility/capacity under `.auto` is a
                     // supported degradation: fall back to the contiguous
@@ -959,7 +976,8 @@ extension EngineV2Factory {
         // `prefillChunkSize` above all, reaches the engine byte-identical
         // to what the paged pool's `maxPrefillChunk` was sized from.
         var schedulerConfig = preparedBackend.schedulerConfig
-        schedulerConfig.enablePrefixCache = effectivePrefixCache != nil
+        schedulerConfig.enablePrefixCache =
+            effectivePrefixCache != nil || preparedBackend.residentPrefixCacheEnabled
         let engine = makeEngineV2(
             model: model,
             tokenizer: tokenizer,
@@ -1006,8 +1024,9 @@ extension EngineV2Factory {
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
             loopConfig: loopConfig,
-            // Production reusable prefixes use only the encrypted SSD tier.
-            // The coordinator-authored cache scope isolates accounts.
+            // Snapshot L2 is the encrypted SSD tier. The paged backend owns
+            // resident physical-page L1; both use the coordinator-authored
+            // cache scope to isolate accounts.
             prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig

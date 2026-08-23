@@ -31,6 +31,10 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private var _stageResult: SSDPrefixCacheStageResult?
     private var _lookupResult: PrefixCacheLookupResult?
     private var _cacheDisabled = false
+    /// A positive, advisory resident probe caused the bridge to skip SSD
+    /// staging. If the page claim later races with allocator reuse, classify
+    /// the cold fallback as memory rather than inventing an SSD miss.
+    private var _residentCandidateSeen = false
     private var didEmitLookup = false
     private let onLookupResolved: (@Sendable (PrefixCacheLookupResult) -> Void)?
     let onCacheReady: (@Sendable (PrefixCacheReadyResult) -> Void)?
@@ -57,19 +61,37 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             let engineOutcome: CBv2PrefixCacheOutcome =
                 usage.prefixCacheOutcome == .disabled && usage.prefixCacheHitTokens > 0
                 ? .hit : usage.prefixCacheOutcome
+            // EngineV2 reports the tier that ACTUALLY won adoption. This is
+            // essential when resident L1 and staged SSD L2 both match: SSD
+            // may have completed its pre-submit read, but a zero-copy L1 win
+            // must be billed/telemetried as memory and must not mint a durable
+            // holder receipt. nil preserves scripted/older-engine fallback.
+            let engineTier: PrefixCacheTier? = switch usage.prefixCacheTier {
+            case .resident: .memory
+            case .snapshot: .ssd
+            case nil: nil
+            }
             _prefixCacheHitTokens = matched
             _prefixCachePrefillTokensSaved = saved
             if _cacheDisabled { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
             switch engineOutcome {
             case .hit:
-                if let stage = _stageResult {
+                if engineTier == .memory {
+                    _lookupResult = PrefixCacheLookupResult(
+                        outcome: .hit,
+                        tier: .memory,
+                        cachedTokens: matched,
+                        prefillTokensSaved: saved)
+                } else if let stage = _stageResult {
                     _lookupResult = stage.resolved(
                         actualCachedTokens: matched,
                         actualPrefillTokensSaved: saved)
                 } else {
                     _lookupResult = PrefixCacheLookupResult(
                         outcome: .hit,
-                        tier: fallbackTier,
+                        tier: engineTier ?? unresolvedTier,
                         cachedTokens: matched,
                         prefillTokensSaved: saved)
                 }
@@ -78,16 +100,16 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
                     _lookupResult = stage.resolved(actualCachedTokens: 0)
                 } else {
                     _lookupResult = PrefixCacheLookupResult(
-                        outcome: .missAbsent, tier: fallbackTier)
+                        outcome: .missAbsent, tier: unresolvedTier)
                 }
             case .skippedCapacity:
                 _lookupResult = _stageResult?.resolved(failure: .capacity)
                     ?? PrefixCacheLookupResult(
-                        outcome: .skippedCapacity, tier: fallbackTier)
+                        outcome: .skippedCapacity, tier: unresolvedTier)
             case .skippedPolicy, .disabled, .adoptionFailed:
                 _lookupResult = _stageResult?.resolved(failure: .policy)
                     ?? PrefixCacheLookupResult(
-                        outcome: .skippedPolicy, tier: fallbackTier)
+                        outcome: .skippedPolicy, tier: unresolvedTier)
             }
             guard !didEmitLookup, let result = _lookupResult else { return nil }
             didEmitLookup = true
@@ -114,16 +136,22 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         lock.withLock { _stageResult = stageResult }
     }
 
+    func recordResidentPrefixCandidate() {
+        lock.withLock { _residentCandidateSeen = true }
+    }
+
     func finalizeLookup(
         failure: PrefixCacheLookupFailureClass,
         fallbackTier: PrefixCacheTier
     ) {
         let resolved: PrefixCacheLookupResult? = lock.withLock {
             guard !didEmitLookup else { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
             let result = _stageResult?.resolved(failure: failure)
                 ?? PrefixCacheLookupResult(
                     outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
-                    tier: fallbackTier)
+                    tier: unresolvedTier)
             _lookupResult = result
             didEmitLookup = true
             return result

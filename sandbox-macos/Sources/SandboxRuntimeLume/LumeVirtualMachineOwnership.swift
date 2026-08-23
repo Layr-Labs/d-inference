@@ -120,7 +120,9 @@ enum LumeVirtualMachineOwnership {
             guard committed == data else {
                 throw POSIXError(.EIO)
             }
-            guard fsync(directoryDescriptor) == 0 else {
+            guard fsync(committedDescriptor) == 0,
+                  fsync(directoryDescriptor) == 0
+            else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
         } catch {

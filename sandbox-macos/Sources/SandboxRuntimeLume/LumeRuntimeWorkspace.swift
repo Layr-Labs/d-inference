@@ -244,6 +244,7 @@ struct LumeRuntimeWorkspace: Sendable {
                     maximumBytes: data.count
                 )
             guard committed == data,
+                  fsync(committedDescriptor) == 0,
                   fsync(directoryDescriptor) == 0
             else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

@@ -135,7 +135,6 @@ final class HostCapacityArbiterTests: XCTestCase {
         let sandboxID = SandboxID()
         let firstGeneration = try generation(1)
         let secondGeneration = try generation(2)
-        let now = Date(timeIntervalSince1970: 2_000_000_000)
         let first = try arbiter.reserve(
             sandboxID: sandboxID,
             generation: firstGeneration,
@@ -392,11 +391,12 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
-    func testRenewConfirmsVisibleStateAfterDirectorySyncError() throws {
+    func testRenewReportsUncertainPublicationAfterDirectorySyncError() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let clock = TestWallClock(now)
+        let synchronizer = TestDirectorySynchronizer()
         let arbiter = try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
             policy: SandboxCapacityPolicy(
@@ -405,7 +405,9 @@ final class HostCapacityArbiterTests: XCTestCase {
                     16 * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { clock.now() },
-            directorySynchronizationError: { _ in EIO }
+            directorySynchronizationError: {
+                synchronizer.synchronizationError(for: $0)
+            }
         )
         try initializeDedicated(arbiter)
         let initial = try arbiter.reserve(
@@ -415,19 +417,19 @@ final class HostCapacityArbiterTests: XCTestCase {
             resources: try makeResources(),
             expiresAt: now.addingTimeInterval(120)
         )
+        synchronizer.fail(with: EIO)
 
-        let renewed = try arbiter.renew(
-            scope: initial.scope,
-            expiresAt: now.addingTimeInterval(240)
-        )
-
+        assertCapacityError(.publicationUncertain(EIO)) {
+            _ = try arbiter.renew(
+                scope: initial.scope,
+                expiresAt: now.addingTimeInterval(240)
+            )
+        }
+        let visible = try XCTUnwrap(arbiter.snapshot().leases.first)
         XCTAssertNotEqual(
-            renewed.scope.fencingToken,
-            initial.scope.fencingToken
-        )
-        XCTAssertEqual(
-            try arbiter.snapshot().leases,
-            [renewed]
+            visible.scope.fencingToken,
+            initial.scope.fencingToken,
+            "visible state does not make the failed durability barrier safe"
         )
     }
 
@@ -699,6 +701,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
         try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
         let sandboxID = SandboxID()
         let lease = try arbiter.reserve(
             sandboxID: sandboxID,
@@ -881,5 +884,26 @@ private final class TestWallClock: @unchecked Sendable {
         lock.lock()
         self.value = value
         lock.unlock()
+    }
+}
+
+private final class TestDirectorySynchronizer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var injectedError: Int32?
+
+    func fail(with error: Int32) {
+        lock.lock()
+        injectedError = error
+        lock.unlock()
+    }
+
+    func synchronizationError(for descriptor: Int32) -> Int32? {
+        lock.lock()
+        let error = injectedError
+        lock.unlock()
+        if let error {
+            return error
+        }
+        return fsync(descriptor) == 0 ? nil : errno
     }
 }

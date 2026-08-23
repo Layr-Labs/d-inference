@@ -109,13 +109,12 @@ enum LumeGuestCommandJournalIO {
         guard cloneStatus == 0 else {
             throw ioFailure("failed to persist guest command claim")
         }
-        guard let committed = try readFileIfPresent(
+        try synchronizeCommittedFile(
+            expected: data,
             named: name,
             parentDescriptor: parentDescriptor,
             maximumBytes: data.count
-        ), committed == data else {
-            throw ioFailure("guest command claim publication is uncertain")
-        }
+        )
     }
 
     static func publishResult(
@@ -173,19 +172,23 @@ enum LumeGuestCommandJournalIO {
                ),
                existing == envelope
             {
+                try synchronizeCommittedFile(
+                    expected: envelope,
+                    named: LumeGuestCommandJournal.resultFileName,
+                    parentDescriptor: commandDescriptor,
+                    maximumBytes:
+                        LumeGuestCommandEnvelope.maximumEnvelopeBytes
+                )
                 return
             }
             throw ioFailure("failed to publish guest command result")
         }
-        guard let committed = try readFileIfPresent(
+        try synchronizeCommittedFile(
+            expected: envelope,
             named: LumeGuestCommandJournal.resultFileName,
             parentDescriptor: commandDescriptor,
             maximumBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
-        ), committed == envelope,
-              fsync(commandDescriptor) == 0
-        else {
-            throw ioFailure("guest command result publication is uncertain")
-        }
+        )
     }
 
     static func readFileIfPresent(
@@ -221,6 +224,41 @@ enum LumeGuestCommandJournalIO {
 
     static func ioFailure(_ detail: String) -> SandboxRuntimeError {
         .unsupported("\(detail) (errno \(errno))")
+    }
+
+    private static func synchronizeCommittedFile(
+        expected: Data,
+        named name: String,
+        parentDescriptor: Int32,
+        maximumBytes: Int
+    ) throws {
+        try requirePrivateDirectory(parentDescriptor)
+        let descriptor = openat(
+            parentDescriptor,
+            name,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw ioFailure("committed guest command journal file is unavailable")
+        }
+        defer { close(descriptor) }
+        let committed: Data
+        do {
+            committed =
+                try SandboxAuthorityFileSystem.readStablePrivateFile(
+                    descriptor,
+                    maximumBytes: maximumBytes,
+                    allowEmpty: expected.isEmpty
+                )
+        } catch {
+            throw ioFailure("committed guest command journal file is unsafe")
+        }
+        guard committed == expected,
+              fsync(descriptor) == 0,
+              fsync(parentDescriptor) == 0
+        else {
+            throw ioFailure("guest command journal publication is uncertain")
+        }
     }
 
     private static func requirePrivateDirectory(

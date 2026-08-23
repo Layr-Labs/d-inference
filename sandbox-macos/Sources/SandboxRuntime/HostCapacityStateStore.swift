@@ -261,6 +261,9 @@ struct SandboxCapacityStateStore: Sendable {
             guard committedData == data else {
                 throw SandboxCapacityError.unsafeStatePath
             }
+            guard fsync(committedDescriptor) == 0 else {
+                throw SandboxCapacityError.publicationUncertain(errno)
+            }
         } catch let error as SandboxCapacityError {
             throw error
         } catch {
@@ -269,11 +272,6 @@ struct SandboxCapacityStateStore: Sendable {
         if let synchronizationError =
             directorySynchronizationError(directoryDescriptor)
         {
-            if let visible = try? readState(from: directoryDescriptor),
-               visible == state
-            {
-                return
-            }
             throw SandboxCapacityError.publicationUncertain(
                 synchronizationError
             )

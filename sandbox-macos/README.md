@@ -109,7 +109,10 @@ component by component without following symlinks; state and lock files must be
 private, single-link regular files and are revalidated through their open
 descriptors. State replacement is synchronized in file-before-directory order,
 and a post-rename directory-sync failure is reported as an uncertain
-publication rather than a clean failure. Lume operation locks, VM ownership
+publication rather than a clean failure. The broker must quarantine the host
+and reconcile durable state before accepting another mutation; a matching
+immediate read proves visibility, not reboot durability. Lume operation locks,
+VM ownership
 markers, workspace configuration, provenance, and guest-command journals apply
 the same owner, mode, ACL, hard-link, and ancestor-path checks. Staged ownership,
 configuration, commitment, and result bytes are unlinked before writing and

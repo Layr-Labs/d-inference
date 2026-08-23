@@ -276,6 +276,53 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testAuthenticatedReadinessUsesProductionGuestCommandWrapper() throws {
+        let idempotencyKey = UUID(
+            uuidString: "B57A4FA2-BCA8-45EF-A7D8-F4A20FE85DBA"
+        )!
+        let expected = try LumeGuestCommandEncoder.encode(
+            SandboxGuestCommandRequest(
+                idempotencyKey: idempotencyKey,
+                executable: "/usr/bin/true",
+                timeoutSeconds:
+                    LumeGuestReadinessProbe.guestCommandTimeoutSeconds
+            )
+        )
+
+        XCTAssertEqual(
+            try LumeGuestReadinessProbe.command(
+                idempotencyKey: idempotencyKey
+            ),
+            expected
+        )
+        XCTAssertEqual(LumeGuestReadinessProbe.lumeTimeoutSeconds, 35)
+        XCTAssertEqual(
+            LumeGuestReadinessPolicy.production.attemptTimeoutSeconds,
+            40
+        )
+    }
+
+    func testStartWarmsProductionGuestCommandPathBeforeReturning() async throws {
+        let fixture = try FakeLumeFixture(
+            behavior: "authenticated-readiness-executor"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 4,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        try await runtime.start(name: fixture.virtualMachineName)
+
+        XCTAssertTrue(fixture.guestExecutorProbeWasObserved)
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
+        XCTAssertFalse(fixture.invalidGuestReadinessProbeWasObserved)
+        try await runtime.stop(name: fixture.virtualMachineName)
+    }
+
     func testAuthenticatedReadinessRetriesTransientFailuresBeforeSuccess()
         async throws
     {
@@ -761,6 +808,7 @@ private struct FakeLumeFixture {
     let guestReadinessProbeStarted: URL
     let guestReadinessProbeProcessIdentifier: URL
     let invalidGuestReadinessProbe: URL
+    let guestExecutorProbeObserved: URL
     let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
 
@@ -814,6 +862,9 @@ private struct FakeLumeFixture {
         )
         invalidGuestReadinessProbe = directory.appendingPathComponent(
             "invalid-guest-readiness-probe"
+        )
+        guestExecutorProbeObserved = directory.appendingPathComponent(
+            "guest-executor-probe-observed"
         )
         restoreImage = directory.appendingPathComponent("restore.ipsw")
         try FileManager.default.createDirectory(
@@ -938,6 +989,12 @@ private struct FakeLumeFixture {
     var invalidGuestReadinessProbeWasObserved: Bool {
         FileManager.default.fileExists(
             atPath: invalidGuestReadinessProbe.path
+        )
+    }
+
+    var guestExecutorProbeWasObserved: Bool {
+        FileManager.default.fileExists(
+            atPath: guestExecutorProbeObserved.path
         )
     }
 
@@ -1144,15 +1201,22 @@ private struct FakeLumeFixture {
         : > "$root/guest-command-started"
         case "$behavior" in
           authenticated-readiness-*)
-            expected_probe="/usr/bin/env -i HOME=/Users/lume LANG=C LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/tmp /usr/bin/true"
+            expected_probe_prefix="/usr/bin/printf '%s' '"
+            expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh"
+            valid_probe_command=false
+            case "$8" in
+              "$expected_probe_prefix"*"$expected_probe_suffix")
+                valid_probe_command=true
+                ;;
+            esac
             if [ "$#" -ne 8 ] \
               || [ "$2" != "sandbox-failure-test" ] \
               || [ "$3" != "--storage" ] \
               || [ "$4" != "$root/vms" ] \
               || [ "$5" != "--timeout" ] \
-              || [ "$6" != "1" ] \
+              || [ "$6" != "35" ] \
               || [ "$7" != "--nio-only" ] \
-              || [ "$8" != "$expected_probe" ] \
+              || [ "$valid_probe_command" != "true" ] \
               || [ "${LUME_HOME:-}" != "$root/vms/.darkbloom-runtime" ] \
               || [ "${LUME_LOG_LEVEL:-}" != "error" ] \
               || [ "${LUME_TELEMETRY_ENABLED:-}" != "false" ] \
@@ -1165,6 +1229,7 @@ private struct FakeLumeFixture {
               printf '%s\\n' "invalid authenticated readiness probe" >&2
               exit 64
             fi
+            : > "$root/guest-executor-probe-observed"
             probe_attempts=0
             if [ -f "$root/guest-readiness-probe-attempts" ]; then
               probe_attempts="$(tr -d '\\n' < "$root/guest-readiness-probe-attempts")"
@@ -1188,9 +1253,6 @@ private struct FakeLumeFixture {
                     /bin/dd if=/dev/zero bs=8192 count=1 2>/dev/null
                     exit 0
                     ;;
-                  *)
-                    exit 0
-                    ;;
                 esac
                 ;;
               authenticated-readiness-blocking)
@@ -1199,6 +1261,7 @@ private struct FakeLumeFixture {
                 while :; do :; done
                 ;;
             esac
+            printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":0,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":false,"stdout_base64":"","stderr_base64":""}'
             ;;
         esac
         printf '%s\\n' "unexpected fake Lume guest command" >&2

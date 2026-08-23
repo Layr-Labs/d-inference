@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/trycua/cua.git",
+  "commit": "737dc2a069528abadee67526d138a907e1c52061",
+  "path": "libs/lume",
+  "version": "0.5.3",
+  "license": "MIT",
+  "telemetry": "disabled"
+}

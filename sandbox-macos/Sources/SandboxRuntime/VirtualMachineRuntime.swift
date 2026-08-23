@@ -37,42 +37,62 @@ public struct SandboxVirtualMachineRecord: Codable, Equatable, Sendable {
 public struct SandboxVirtualMachineSpecification: Equatable, Sendable {
     public let name: String
     public let resources: SandboxResourceSpecification
-    public let imageReference: String
+    public let imageSource: SandboxVirtualMachineImageSource
     public let diskBytes: UInt64
 
     public init(
         name: String,
         resources: SandboxResourceSpecification,
-        imageReference: String,
+        imageSource: SandboxVirtualMachineImageSource,
         diskBytes: UInt64
     ) throws {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.isValidName(normalizedName) else {
+        guard isValidVirtualMachineName(normalizedName) else {
             throw SandboxRuntimeError.invalidName
         }
-        let normalizedImage = imageReference.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedImage.isEmpty else {
-            throw SandboxRuntimeError.invalidImageReference
-        }
+        try imageSource.validate()
         guard diskBytes >= resources.workspaceBytes else {
             throw SandboxRuntimeError.diskSmallerThanWorkspace
         }
         self.name = normalizedName
         self.resources = resources
-        self.imageReference = normalizedImage
+        self.imageSource = imageSource
         self.diskBytes = diskBytes
     }
 
-    private static func isValidName(_ name: String) -> Bool {
-        guard (1...63).contains(name.utf8.count),
-              name.first?.isLetter == true || name.first?.isNumber == true,
-              name.last?.isLetter == true || name.last?.isNumber == true
-        else {
-            return false
+}
+
+public enum SandboxVirtualMachineImageSource: Equatable, Sendable {
+    case restoreImage(url: URL, unattendedPreset: String)
+    case localTemplate(name: String)
+
+    fileprivate func validate() throws {
+        switch self {
+        case .restoreImage(let url, let unattendedPreset):
+            guard url.isFileURL,
+                  !url.path.isEmpty,
+                  unattendedPreset == "tahoe"
+            else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+        case .localTemplate(let name):
+            let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isValidVirtualMachineName(normalized) else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
         }
-        return name.allSatisfy { character in
-            character.isLetter || character.isNumber || character == "-"
-        }
+    }
+}
+
+private func isValidVirtualMachineName(_ name: String) -> Bool {
+    guard (1...63).contains(name.utf8.count),
+          (name.first?.isLetter == true || name.first?.isNumber == true),
+          (name.last?.isLetter == true || name.last?.isNumber == true)
+    else {
+        return false
+    }
+    return name.allSatisfy { character in
+        character.isLetter || character.isNumber || character == "-"
     }
 }
 

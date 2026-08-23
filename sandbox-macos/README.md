@@ -7,15 +7,19 @@ does not link the inference provider or MLX. The current executable slice:
   Secure Enclave, and code-signing prerequisites;
 - resolves the latest host-supported macOS restore image through Apple's
   Virtualization.framework API;
+- invokes an audited, exact-commit Lume build behind a narrow runtime adapter
+  for the macOS 26 unattended-install proof;
 - defines fenced sandbox identities, resource limits, lifecycle transitions,
   and a runtime boundary for VM implementations;
 - provides chunked authenticated encryption for large VM artifacts; and
 - wraps data-encryption keys with a distinct Secure Enclave identity.
 
 The VM installer, guest agent, packet gateway, and coordinator lease protocol
-will sit behind the interfaces in this package. Until those paths exist and
-their live tests pass, this package is a host-substrate proof, not a
-multi-tenant service.
+will sit behind the interfaces in this package. Lume's temporary unattended
+guest uses its known `lume` / `lume` bootstrap credentials, so this slice is
+restricted to the approved no-secrets alpha. Until randomized bootstrap
+credentials, guest control, egress enforcement, and leases pass their live
+tests, this package is a host-substrate proof, not a multi-tenant service.
 
 ## Build and test
 
@@ -62,3 +66,23 @@ Production persistence uses the dedicated
 exercise transient Secure Enclave cryptography but cannot prove production
 keychain persistence; that path must be verified with the provisioned release
 identity.
+
+## Pinned Lume substrate
+
+`ThirdParty/lume.lock.json` pins the exact Cua source commit and expected
+version. Build it without a background service:
+
+```bash
+sandbox-macos/Scripts/build-pinned-lume.sh \
+  "$HOME/.local/libexec/darkbloom-sandbox/lume/bin"
+```
+
+The adapter sets `LUME_TELEMETRY_ENABLED=false` for every invocation and rejects
+any runtime version other than the lock. Moving the pin requires source review
+plus the opt-in real-binary and VM lifecycle tests.
+
+```bash
+DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \
+  swift test --package-path sandbox-macos \
+  --filter LumeRuntimeContractTests
+```

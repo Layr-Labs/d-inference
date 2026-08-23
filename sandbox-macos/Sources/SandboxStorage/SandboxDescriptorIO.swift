@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -33,42 +34,46 @@ enum SandboxDescriptorIO {
 
     static func withExclusiveDestination<Result>(
         at destination: URL,
-        _ operation: (Int32) throws -> Result
+        _ operation: (Int32) throws -> (result: Result, sha256: Data)
     ) throws -> Result {
         let pending = try PendingDestination(destination)
         defer { pending.cleanup() }
 
-        let result = try operation(pending.descriptor)
-        try pending.synchronize()
-        try pending.publish()
-        return result
+        let output = try operation(pending.descriptor)
+        try pending.synchronize(expectedSHA256: output.sha256)
+        try pending.publish(expectedSHA256: output.sha256)
+        return output.result
     }
 
     static func withStableSourceAndExclusiveDestination<Result>(
         source: URL,
         destination: URL,
-        _ operation: (Int32, stat, Int32) throws -> Result
+        _ operation: (
+            Int32,
+            stat,
+            Int32
+        ) throws -> (result: Result, sha256: Data)
     ) throws -> Result {
         let openedSource = try StableSource(source)
         defer { openedSource.close() }
         let pending = try PendingDestination(destination)
         defer { pending.cleanup() }
 
-        let result: Result
+        let output: (result: Result, sha256: Data)
         do {
-            result = try operation(
+            output = try operation(
                 openedSource.descriptor,
                 openedSource.metadata,
                 pending.descriptor
             )
-            try pending.synchronize()
+            try pending.synchronize(expectedSHA256: output.sha256)
         } catch {
             try openedSource.requireUnchanged()
             throw error
         }
         try openedSource.requireUnchanged()
-        try pending.publish()
-        return result
+        try pending.publish(expectedSHA256: output.sha256)
+        return output.result
     }
 
     static func readExactly(
@@ -151,6 +156,8 @@ private final class StableSource {
     let descriptor: Int32
     let metadata: stat
 
+    private let source: URL
+    private let canonicalPath: String
     private var isClosed = false
 
     init(_ source: URL) throws {
@@ -158,13 +165,15 @@ private final class StableSource {
               source.baseURL == nil,
               source.path.hasPrefix("/"),
               !source.path.contains("\0"),
-              SandboxDescriptorPathPolicy.isAccepted(source)
+              let canonicalPath = SandboxDescriptorPathPolicy.canonicalPath(
+                  for: source
+              )
         else {
             throw SandboxDescriptorIOError.sourceNotRegularFile
         }
-        let descriptor = Darwin.open(
-            source.path,
-            O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
+        let descriptor = try SandboxDescriptorPathPolicy.openFile(
+            canonicalPath,
+            flags: O_RDONLY | O_NONBLOCK
         )
         guard descriptor >= 0 else {
             if errno == ELOOP {
@@ -185,6 +194,8 @@ private final class StableSource {
             Darwin.close(descriptor)
             throw SandboxDescriptorIOError.sourceNotRegularFile
         }
+        self.source = source
+        self.canonicalPath = canonicalPath
         self.descriptor = descriptor
         self.metadata = metadata
     }
@@ -192,7 +203,21 @@ private final class StableSource {
     func requireUnchanged() throws {
         var current = stat()
         guard fstat(descriptor, &current) == 0,
-              Self.matches(metadata, current)
+              Self.matches(metadata, current),
+              SandboxDescriptorPathPolicy.canonicalPath(for: source)
+                  == canonicalPath
+        else {
+            throw SandboxDescriptorIOError.sourceChanged
+        }
+        let rebound = try SandboxDescriptorPathPolicy.openFile(
+            canonicalPath,
+            flags: O_RDONLY | O_NONBLOCK
+        )
+        defer { Darwin.close(rebound) }
+        var reboundMetadata = stat()
+        guard fstat(rebound, &reboundMetadata) == 0,
+              reboundMetadata.st_dev == metadata.st_dev,
+              reboundMetadata.st_ino == metadata.st_ino
         else {
             throw SandboxDescriptorIOError.sourceChanged
         }
@@ -228,10 +253,15 @@ private final class PendingDestination {
     let descriptor: Int32
 
     private let parentDescriptor: Int32
+    private let parent: URL
+    private let canonicalParentPath: String
+    private let parentDevice: dev_t
+    private let parentInode: ino_t
     private let temporaryName: String
     private let destinationName: String
     private var destinationDescriptor: Int32
     private var synchronizedMetadata: stat?
+    private var publishedCandidate = false
     private var isPublished = false
 
     init(_ destination: URL) throws {
@@ -253,7 +283,9 @@ private final class PendingDestination {
         }
 
         let parent = destination.deletingLastPathComponent()
-        guard SandboxDescriptorPathPolicy.isAccepted(parent) else {
+        guard let canonicalParentPath =
+            SandboxDescriptorPathPolicy.canonicalPath(for: parent)
+        else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
         var pathMetadata = stat()
@@ -262,14 +294,9 @@ private final class PendingDestination {
         else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
-        let canonicalParent = parent.resolvingSymlinksInPath()
-        let parentDescriptor = Darwin.open(
-            canonicalParent.path,
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        let parentDescriptor = try SandboxDescriptorPathPolicy.openDirectory(
+            canonicalParentPath
         )
-        guard parentDescriptor >= 0 else {
-            throw SandboxDescriptorIOError.io(errno)
-        }
         var descriptorMetadata = stat()
         guard fstat(parentDescriptor, &descriptorMetadata) == 0,
               (descriptorMetadata.st_mode & S_IFMT) == S_IFDIR,
@@ -285,7 +312,7 @@ private final class PendingDestination {
             openat(
                 parentDescriptor,
                 $0,
-                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                 mode_t(0o600)
             )
         }
@@ -310,16 +337,21 @@ private final class PendingDestination {
         }
 
         self.parentDescriptor = parentDescriptor
+        self.parent = parent
+        self.canonicalParentPath = canonicalParentPath
+        self.parentDevice = descriptorMetadata.st_dev
+        self.parentInode = descriptorMetadata.st_ino
         self.temporaryName = temporaryName
         self.destinationName = destinationName
         self.destinationDescriptor = destinationDescriptor
         self.descriptor = destinationDescriptor
     }
 
-    func synchronize() throws {
+    func synchronize(expectedSHA256: Data) throws {
         guard destinationDescriptor >= 0 else {
             throw SandboxDescriptorIOError.io(EBADF)
         }
+        try requireContentSHA256(expectedSHA256)
         guard fsync(destinationDescriptor) == 0 else {
             throw SandboxDescriptorIOError.io(errno)
         }
@@ -332,12 +364,14 @@ private final class PendingDestination {
         synchronizedMetadata = metadata
     }
 
-    func publish() throws {
+    func publish(expectedSHA256: Data) throws {
         guard destinationDescriptor >= 0,
               let synchronizedMetadata
         else {
             throw SandboxDescriptorIOError.io(EBADF)
         }
+        try requireParentBinding()
+        try requireContentSHA256(expectedSHA256)
         var namedMetadata = stat()
         let namedResult = temporaryName.withCString {
             fstatat(
@@ -369,6 +403,7 @@ private final class PendingDestination {
             }
             throw SandboxDescriptorIOError.io(errno)
         }
+        publishedCandidate = true
 
         var descriptorMetadata = stat()
         var publishedMetadata = stat()
@@ -385,17 +420,20 @@ private final class PendingDestination {
               Self.matches(synchronizedMetadata, descriptorMetadata),
               Self.matches(synchronizedMetadata, publishedMetadata)
         else {
-            if publishedResult == 0,
-               publishedMetadata.st_dev == synchronizedMetadata.st_dev,
-               publishedMetadata.st_ino == synchronizedMetadata.st_ino
-            {
-                destinationName.withCString {
-                    _ = unlinkat(parentDescriptor, $0, 0)
-                }
-            }
+            removePublishedCandidate(
+                observed: publishedResult == 0 ? publishedMetadata : nil
+            )
             throw SandboxDescriptorIOError.unsafeDestination
         }
+        do {
+            try requireContentSHA256(expectedSHA256)
+            try requireParentBinding()
+        } catch {
+            removePublishedCandidate(observed: publishedMetadata)
+            throw error
+        }
         isPublished = true
+        publishedCandidate = false
         Darwin.close(destinationDescriptor)
         destinationDescriptor = -1
         guard fsync(parentDescriptor) == 0 else {
@@ -413,7 +451,106 @@ private final class PendingDestination {
                 _ = unlinkat(parentDescriptor, $0, 0)
             }
         }
+        if publishedCandidate {
+            removePublishedCandidate(observed: nil)
+        }
         Darwin.close(parentDescriptor)
+    }
+
+    private func requireParentBinding() throws {
+        guard SandboxDescriptorPathPolicy.canonicalPath(for: parent)
+                == canonicalParentPath
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        let rebound = try SandboxDescriptorPathPolicy.openDirectory(
+            canonicalParentPath
+        )
+        defer { Darwin.close(rebound) }
+        var metadata = stat()
+        guard fstat(rebound, &metadata) == 0,
+              metadata.st_dev == parentDevice,
+              metadata.st_ino == parentInode
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+    }
+
+    private func requireContentSHA256(_ expected: Data) throws {
+        guard expected.count == SHA256.byteCount else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        let actual = try Self.sha256(of: destinationDescriptor)
+        guard actual == expected else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+    }
+
+    private func removePublishedCandidate(observed: stat?) {
+        var current = stat()
+        let result = destinationName.withCString {
+            fstatat(
+                parentDescriptor,
+                $0,
+                &current,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard result == 0 else {
+            publishedCandidate = false
+            return
+        }
+        if let observed,
+           current.st_dev != observed.st_dev || current.st_ino != observed.st_ino
+        {
+            return
+        }
+        destinationName.withCString {
+            _ = unlinkat(parentDescriptor, $0, 0)
+        }
+        publishedCandidate = false
+    }
+
+    private static func sha256(of descriptor: Int32) throws -> Data {
+        var before = stat()
+        guard fstat(descriptor, &before) == 0,
+              before.st_size >= 0
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        var hasher = SHA256()
+        var offset: off_t = 0
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while offset < before.st_size {
+            let requested = min(
+                buffer.count,
+                Int(before.st_size - offset)
+            )
+            let result = buffer.withUnsafeMutableBytes {
+                pread(descriptor, $0.baseAddress, requested, offset)
+            }
+            if result > 0 {
+                hasher.update(data: Data(buffer[0..<result]))
+                offset += off_t(result)
+            } else if result == 0 {
+                throw SandboxDescriptorIOError.unsafeDestination
+            } else if errno != EINTR {
+                throw SandboxDescriptorIOError.io(errno)
+            }
+        }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0,
+              before.st_dev == after.st_dev,
+              before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        return Data(hasher.finalize())
     }
 
     private static func isSafeTemporary(_ metadata: stat) -> Bool {
@@ -438,20 +575,81 @@ private final class PendingDestination {
 }
 
 private enum SandboxDescriptorPathPolicy {
-    static func isAccepted(_ url: URL) -> Bool {
+    static func canonicalPath(for url: URL) -> String? {
         let standardized = url.standardizedFileURL.path
         guard standardized == url.path else {
-            return false
+            return nil
         }
-        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard let resolvedPointer = realpath(standardized, nil) else {
+            return nil
+        }
+        defer { free(resolvedPointer) }
+        let resolved = String(cString: resolvedPointer)
         if resolved == standardized {
-            return true
+            return resolved
         }
         for alias in ["/tmp", "/var"] {
             if standardized == alias || standardized.hasPrefix(alias + "/") {
                 return resolved == "/private" + standardized
+                    ? resolved
+                    : nil
             }
         }
-        return false
+        return nil
+    }
+
+    static func openDirectory(_ canonicalPath: String) throws -> Int32 {
+        try openCanonicalPath(canonicalPath, finalFlags: O_DIRECTORY)
+    }
+
+    static func openFile(
+        _ canonicalPath: String,
+        flags: Int32
+    ) throws -> Int32 {
+        try openCanonicalPath(canonicalPath, finalFlags: flags)
+    }
+
+    private static func openCanonicalPath(
+        _ canonicalPath: String,
+        finalFlags: Int32
+    ) throws -> Int32 {
+        let components = URL(fileURLWithPath: canonicalPath)
+            .standardizedFileURL
+            .pathComponents
+        guard components.first == "/",
+              components.count > 1,
+              !components.dropFirst().contains(where: {
+                  $0.isEmpty || $0 == "." || $0 == ".." || $0.contains("/")
+              })
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        var descriptor = Darwin.open(
+            "/",
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard descriptor >= 0 else {
+            throw SandboxDescriptorIOError.io(errno)
+        }
+        for (index, component) in components.dropFirst().enumerated() {
+            let isFinal = index == components.count - 2
+            let flags = isFinal
+                ? finalFlags | O_NOFOLLOW | O_CLOEXEC
+                : O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            let next = component.withCString {
+                openat(descriptor, $0, flags)
+            }
+            guard next >= 0 else {
+                let code = errno
+                Darwin.close(descriptor)
+                if code == ELOOP {
+                    throw SandboxDescriptorIOError.unsafeDestination
+                }
+                throw SandboxDescriptorIOError.io(code)
+            }
+            Darwin.close(descriptor)
+            descriptor = next
+        }
+        return descriptor
     }
 }

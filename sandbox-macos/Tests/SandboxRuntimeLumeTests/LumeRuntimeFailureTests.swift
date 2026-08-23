@@ -35,6 +35,47 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testProductionRejectsSelfAuthenticatedAdHocRuntime() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let runtime = LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 1,
+                createTimeoutSeconds: 1,
+                trustPolicy: .production
+            )
+        )
+
+        do {
+            _ = try await runtime.capabilities()
+            XCTFail("production must reject an ad-hoc self-authenticated runtime")
+        } catch let error as SandboxRuntimeError {
+            guard case .unsupported(let detail) = error else {
+                XCTFail("expected unsupported signature error, got \(error)")
+                return
+            }
+            XCTAssertTrue(detail.contains("production signature"))
+        }
+    }
+
+    func testRejectsProvenanceWithUnpinnedPatchDigest() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        try fixture.replacePatchDigest(String(repeating: "0", count: 64))
+
+        do {
+            _ = try await fixture.makeRuntime().capabilities()
+            XCTFail("runtime with an unpinned patch digest should be rejected")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported("Lume provenance does not match the audited pin")
+            )
+        }
+    }
+
     func testSuppressesDependencyDiagnosticsForMachineReadableOutput() async throws {
         let fixture = try FakeLumeFixture(behavior: "log-info-on-list")
         defer { try? fixture.remove() }
@@ -431,6 +472,10 @@ private struct FakeLumeFixture {
         )
     }
 
+    var provenanceFile: URL {
+        runtimeDirectory.appendingPathComponent("lume.provenance.json")
+    }
+
     init(
         writeProvenance: Bool = true,
         initialState: String? = "stopped",
@@ -504,7 +549,8 @@ private struct FakeLumeFixture {
             executable: executable,
             storageDirectory: storage,
             commandTimeoutSeconds: commandTimeoutSeconds,
-            createTimeoutSeconds: commandTimeoutSeconds
+            createTimeoutSeconds: commandTimeoutSeconds,
+            trustPolicy: .developmentAdHoc
         ))
     }
 
@@ -547,16 +593,47 @@ private struct FakeLumeFixture {
         try FileManager.default.removeItem(at: directory)
     }
 
+    func replacePatchDigest(_ digest: String) throws {
+        let data = try Data(contentsOf: provenanceFile)
+        guard var object = try JSONSerialization.jsonObject(
+            with: data
+        ) as? [String: Any]
+        else {
+            throw POSIXError(.EINVAL)
+        }
+        object["patches"] = [
+            LumeRuntimeConfiguration.pinnedPatchPath: digest
+        ]
+        let replacement = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        )
+        guard chmod(provenanceFile.path, 0o644) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+        let handle = try FileHandle(forWritingTo: provenanceFile)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: replacement)
+        try handle.close()
+        guard chmod(provenanceFile.path, 0o444) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+    }
+
     private static func writeProvenance(
         beside executable: URL,
         binaryDigest: String
     ) throws {
         let object: [String: Any] = [
-            "schema_version": 2,
+            "schema_version": 3,
             "repository": LumeRuntimeConfiguration.pinnedRepository,
             "commit": LumeRuntimeConfiguration.pinnedCommit,
             "source_path": LumeRuntimeConfiguration.pinnedSourcePath,
             "version": LumeRuntimeConfiguration.pinnedVersion,
+            "patches": [
+                LumeRuntimeConfiguration.pinnedPatchPath:
+                    LumeRuntimeConfiguration.pinnedPatchSHA256
+            ],
             "directories": [],
             "files": ["lume": binaryDigest],
         ]

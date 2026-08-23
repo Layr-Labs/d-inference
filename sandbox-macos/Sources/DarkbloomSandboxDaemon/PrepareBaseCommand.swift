@@ -25,7 +25,10 @@ enum PrepareBaseCommand {
             executable: parsed.lumeExecutable,
             storageDirectory: parsed.storageDirectory,
             commandTimeoutSeconds: 120,
-            createTimeoutSeconds: 7_200
+            createTimeoutSeconds: 7_200,
+            trustPolicy: parsed.developmentAdHocLume
+                ? .developmentAdHoc
+                : .production
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
             specification: specification
@@ -71,10 +74,12 @@ enum PrepareBaseCommand {
         let memoryGiB: UInt64
         let diskGiB: UInt64
         let json: Bool
+        let developmentAdHocLume: Bool
 
         init(_ arguments: [String]) throws {
             var values: [String: String] = [:]
             var json = false
+            var developmentAdHocLume = false
             var index = 0
             while index < arguments.count {
                 let option = arguments[index]
@@ -83,6 +88,14 @@ enum PrepareBaseCommand {
                         throw DaemonCLIError.invalidArguments("prepare-base")
                     }
                     json = true
+                    index += 1
+                    continue
+                }
+                if option == "--development-ad-hoc-lume" {
+                    guard !developmentAdHocLume else {
+                        throw DaemonCLIError.invalidArguments("prepare-base")
+                    }
+                    developmentAdHocLume = true
                     index += 1
                     continue
                 }
@@ -117,6 +130,7 @@ enum PrepareBaseCommand {
             self.memoryGiB = memory
             self.diskGiB = disk
             self.json = json
+            self.developmentAdHocLume = developmentAdHocLume
         }
 
         private static let valueOptions: Set<String> = [

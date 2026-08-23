@@ -87,19 +87,22 @@ public struct SandboxGuestCommandResult: Equatable, Sendable {
     public let standardError: Data
     public let standardOutputTruncated: Bool
     public let standardErrorTruncated: Bool
+    public let timedOut: Bool
 
     public init(
         exitCode: Int32,
         standardOutput: Data,
         standardError: Data,
         standardOutputTruncated: Bool = false,
-        standardErrorTruncated: Bool = false
+        standardErrorTruncated: Bool = false,
+        timedOut: Bool = false
     ) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.standardOutputTruncated = standardOutputTruncated
         self.standardErrorTruncated = standardErrorTruncated
+        self.timedOut = timedOut
     }
 }
 

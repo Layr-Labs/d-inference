@@ -122,6 +122,23 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
 
         let script = try LumeGuestCommandEncoder.script(request)
 
+        let cleanup = try XCTUnwrap(script.range(of: "cleanup() {"))
+        let cleanupBootout = try XCTUnwrap(
+            script.range(
+                of: #"/bin/launchctl bootout "$launch_domain/$job_label""#,
+                range: cleanup.upperBound..<script.endIndex
+            )
+        )
+        let cleanupGuardClosure = try XCTUnwrap(
+            script.range(
+                of: "exec 7>&-",
+                range: cleanup.upperBound..<script.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            cleanupBootout.lowerBound,
+            cleanupGuardClosure.lowerBound
+        )
         XCTAssertTrue(
             script.contains(#"< "$stdout_fifo" 7>&- 8>&- &"#)
         )
@@ -164,6 +181,16 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertLessThan(
             guardsClosedAfterBootout.lowerBound,
             captureWait.lowerBound
+        )
+        XCTAssertTrue(
+            script.contains(
+                #"job_loaded=true
+/usr/bin/lockf -t 30 "$command_lock""#
+            )
+        )
+        XCTAssertTrue(
+            LumeGuestCommandScript.cancellation(request.idempotencyKey)
+                .contains(#"/usr/bin/lockf -t 30 "$command_lock""#)
         )
     }
 
@@ -227,6 +254,51 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
 
         XCTAssertEqual(cancellation.exitCode, 0)
         XCTAssertEqual(execution.exitCode, 125)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testGuestLocalDeadlineStopsJobBeforeDelayedSideEffect() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-command-deadline-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("delayed-marker")
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/zsh",
+            arguments: [
+                "-c",
+                "/bin/sleep 2; /usr/bin/touch -- \"$1\"",
+                "darkbloom-test",
+                marker.path,
+            ],
+            workingDirectory: directory.path,
+            timeoutSeconds: 1
+        )
+
+        let process = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: [
+                "-c",
+                try LumeGuestCommandEncoder.encode(request),
+            ],
+            timeoutSeconds: 5,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
+        )
+        let result = try LumeGuestCommandResultDecoder.decode(
+            process.standardOutput
+        )
+        try await Task.sleep(for: .seconds(2))
+
+        XCTAssertEqual(process.exitCode, 0)
+        XCTAssertEqual(result.exitCode, 124)
+        XCTAssertTrue(result.timedOut)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 

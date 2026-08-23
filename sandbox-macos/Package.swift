@@ -38,7 +38,8 @@ let package = Package(
         .target(
             name: "SandboxRuntimeLume",
             dependencies: ["SandboxCore", "SandboxRuntime"],
-            path: "Sources/SandboxRuntimeLume"
+            path: "Sources/SandboxRuntimeLume",
+            linkerSettings: [.linkedFramework("Security")]
         ),
         .target(
             name: "SandboxRuntimeVZ",

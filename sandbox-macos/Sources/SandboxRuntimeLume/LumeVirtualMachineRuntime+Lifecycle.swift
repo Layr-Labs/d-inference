@@ -263,7 +263,7 @@ extension LumeVirtualMachineRuntime {
         }
     }
 
-    private func beginOperation(
+    func beginOperation(
         _ operation: String,
         name: String
     ) throws -> LumeVirtualMachineOperationLock {
@@ -282,7 +282,7 @@ extension LumeVirtualMachineRuntime {
         return lock
     }
 
-    private func endOperation(name: String) {
+    func endOperation(name: String) {
         activeOperations.removeValue(forKey: name)
     }
 
@@ -338,7 +338,7 @@ extension LumeVirtualMachineRuntime {
         try await cleanup.value
     }
 
-    private func stopWithoutOperationFence(name: String) async throws {
+    func stopWithoutOperationFence(name: String) async throws {
         guard let existing = try await inspect(name: name) else {
             if let process = runningProcesses.removeValue(forKey: name) {
                 _ = await process.stop()

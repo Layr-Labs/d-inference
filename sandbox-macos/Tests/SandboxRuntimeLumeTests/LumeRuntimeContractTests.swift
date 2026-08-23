@@ -20,6 +20,15 @@ final class LumeRuntimeContractTests: XCTestCase {
         XCTAssertEqual(lock.commit, LumeRuntimeConfiguration.pinnedCommit)
         XCTAssertEqual(lock.path, LumeRuntimeConfiguration.pinnedSourcePath)
         XCTAssertEqual(lock.version, LumeRuntimeConfiguration.pinnedVersion)
+        XCTAssertEqual(
+            lock.patches,
+            [
+                LumePatch(
+                    path: LumeRuntimeConfiguration.pinnedPatchPath,
+                    sha256: LumeRuntimeConfiguration.pinnedPatchSHA256
+                )
+            ]
+        )
         XCTAssertEqual(lock.license, "MIT")
         XCTAssertEqual(lock.telemetry, "disabled")
     }
@@ -46,7 +55,8 @@ final class LumeRuntimeContractTests: XCTestCase {
 
         let configuration = try LumeRuntimeConfiguration(
             executable: URL(fileURLWithPath: executablePath),
-            storageDirectory: storage
+            storageDirectory: storage,
+            trustPolicy: .developmentAdHoc
         )
         let runtime = LumeVirtualMachineRuntime(configuration: configuration)
 
@@ -79,7 +89,8 @@ final class LumeRuntimeContractTests: XCTestCase {
             executable: URL(fileURLWithPath: lumePath),
             storageDirectory: URL(fileURLWithPath: storagePath, isDirectory: true),
             commandTimeoutSeconds: 120,
-            createTimeoutSeconds: 7_200
+            createTimeoutSeconds: 7_200,
+            trustPolicy: .developmentAdHoc
         ))
         let resources = try SandboxResourceSpecification.macOSSmall()
         let specification = try SandboxVirtualMachineSpecification(
@@ -121,7 +132,8 @@ final class LumeRuntimeContractTests: XCTestCase {
             executable: URL(fileURLWithPath: lumePath),
             storageDirectory: URL(fileURLWithPath: storagePath, isDirectory: true),
             commandTimeoutSeconds: 120,
-            createTimeoutSeconds: 7_200
+            createTimeoutSeconds: 7_200,
+            trustPolicy: .developmentAdHoc
         ))
         guard try await runtime.inspect(name: baseName)?.state == .stopped else {
             XCTFail("prepare the stopped base image before the two-VM proof")
@@ -171,6 +183,11 @@ final class LumeRuntimeContractTests: XCTestCase {
                 XCTFail("cancelled guest command should throw")
             } catch is CancellationError {
             }
+            let stateAfterCancellation = try await runtime.inspect(
+                name: firstName
+            )?.state
+            XCTAssertEqual(stateAfterCancellation, .stopped)
+            try await runtime.start(name: firstName)
             try await Task.sleep(for: .seconds(3))
             let cancellationHeld = try await runtime.execute(
                 name: firstName,
@@ -259,6 +276,12 @@ private struct LumeLock: Decodable {
     let commit: String
     let path: String
     let version: String
+    let patches: [LumePatch]
     let license: String
     let telemetry: String
+}
+
+private struct LumePatch: Codable, Equatable {
+    let path: String
+    let sha256: String
 }

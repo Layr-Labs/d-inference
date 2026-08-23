@@ -8,6 +8,7 @@ final class PrepareBaseCommandTests: XCTestCase {
             "--storage", "/var/lib/darkbloom/vms",
             "--ipsw", "/var/lib/darkbloom/images/tahoe.ipsw",
             "--name", "phase0-base",
+            "--development-ad-hoc-lume",
             "--json",
         ])
 
@@ -22,6 +23,7 @@ final class PrepareBaseCommandTests: XCTestCase {
         XCTAssertEqual(options.memoryGiB, 8)
         XCTAssertEqual(options.diskGiB, 100)
         XCTAssertTrue(options.json)
+        XCTAssertTrue(options.developmentAdHocLume)
     }
 
     func testRejectsRelativeMissingDuplicateAndUnknownOptions() {

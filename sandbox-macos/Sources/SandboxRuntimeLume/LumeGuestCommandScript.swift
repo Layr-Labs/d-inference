@@ -38,6 +38,7 @@ enum LumeGuestCommandScript {
             == "$(/usr/bin/id -u)" ]] || exit 70
             /bin/chmod 0700 "$control_root" || exit 70
             cancel_file="$control_root/\(identifier).cancelled"
+            command_lock="$control_root/\(identifier).lock"
             [[ ! -e "$cancel_file" ]] || exit 125
             job_label="\(jobLabel)"
             launch_domain="gui/$(/usr/bin/id -u)"
@@ -56,18 +57,19 @@ enum LumeGuestCommandScript {
             stderr_overflow="$capture_root/stderr.overflow"
             envelope_file="$capture_root/envelope"
             status_file="$capture_root/command.status"
+            timed_out_file="$capture_root/command.timed-out"
             job_plist="$capture_root/command.plist"
             stdout_capture_pid=""
             stderr_capture_pid=""
             job_loaded=false
 
             cleanup() {
-              exec 7>&- 2>/dev/null || true
-              exec 8>&- 2>/dev/null || true
               if [[ "$job_loaded" == true ]]; then
                 /bin/launchctl bootout "$launch_domain/$job_label" \
                 >/dev/null 2>&1 || true
               fi
+              exec 7>&- 2>/dev/null || true
+              exec 8>&- 2>/dev/null || true
               [[ -z "$stdout_capture_pid" ]] \
               || /bin/kill -TERM "$stdout_capture_pid" 2>/dev/null || true
               [[ -z "$stderr_capture_pid" ]] \
@@ -116,10 +118,19 @@ enum LumeGuestCommandScript {
             EnvironmentVariables.DARKBLOOM_RESULT_DIR \
             -string "$capture_root" "$job_plist" || exit 70
 
-            /bin/launchctl bootstrap "$launch_domain" "$job_plist"
-            bootstrap_status=$?
-            [[ "$bootstrap_status" -eq 0 ]] || exit 70
             job_loaded=true
+            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -c '
+              cancel_file="$1"
+              launch_domain="$2"
+              job_plist="$3"
+              [[ ! -e "$cancel_file" ]] || exit 125
+              /bin/launchctl bootstrap "$launch_domain" "$job_plist"
+            ' darkbloom-bootstrap "$cancel_file" "$launch_domain" "$job_plist"
+            bootstrap_status=$?
+            if [[ "$bootstrap_status" -eq 125 ]]; then
+              exit 125
+            fi
+            [[ "$bootstrap_status" -eq 0 ]] || exit 70
             [[ ! -e "$cancel_file" ]] || exit 125
 
             while [[ ! -f "$status_file" ]]; do
@@ -137,8 +148,15 @@ enum LumeGuestCommandScript {
               ''|*[!0-9]*) exit 70 ;;
             esac
             [[ "$command_status" -le 255 ]] || exit 70
-            /bin/launchctl bootout "$launch_domain/$job_label" \
-            >/dev/null 2>&1 || exit 70
+            if /bin/launchctl print "$launch_domain/$job_label" \
+            >/dev/null 2>&1; then
+              /bin/launchctl bootout "$launch_domain/$job_label" \
+              >/dev/null 2>&1 || exit 70
+            fi
+            if /bin/launchctl print "$launch_domain/$job_label" \
+            >/dev/null 2>&1; then
+              exit 70
+            fi
             job_loaded=false
             exec 7>&-
             exec 8>&-
@@ -160,14 +178,17 @@ enum LumeGuestCommandScript {
             && stdout_truncated=true || stdout_truncated=false
             [[ -s "$stderr_overflow" ]] \
             && stderr_truncated=true || stderr_truncated=false
+            [[ -s "$timed_out_file" ]] \
+            && timed_out=true || timed_out=false
             builtin printf \
             '{"magic":"\(LumeGuestCommandEnvelope.magic)",'\
             '"schema_version":\(LumeGuestCommandEnvelope.schemaVersion),'\
             '"exit_code":%d,"stdout_length":%d,"stderr_length":%d,'\
             '"stdout_truncated":%s,"stderr_truncated":%s,'\
+            '"timed_out":%s,'\
             '"stdout_base64":"' \
             "$command_status" "$stdout_length" "$stderr_length" \
-            "$stdout_truncated" "$stderr_truncated" \
+            "$stdout_truncated" "$stderr_truncated" "$timed_out" \
             > "$envelope_file" || exit 70
             /usr/bin/base64 < "$stdout_file" \
             | /usr/bin/tr -d '\\n' >> "$envelope_file" || exit 70
@@ -198,18 +219,27 @@ enum LumeGuestCommandScript {
             == "$(/usr/bin/id -u)" ]] || exit 70
             /bin/chmod 0700 "$control_root" || exit 70
             cancellation="$control_root/\(identifier).cancelled"
-            temporary="${cancellation}.partial.$$"
-            /usr/bin/printf '%s\\n' '\(identifier)' > "$temporary" || exit 70
-            /bin/chmod 0600 "$temporary" || exit 70
-            /bin/mv -f "$temporary" "$cancellation" || exit 70
+            command_lock="$control_root/\(identifier).lock"
             launch_domain="gui/$(/usr/bin/id -u)"
             job_label="\(LumeGuestCommandIdentity.jobLabel(for: idempotencyKey))"
-            /bin/launchctl bootout "$launch_domain/$job_label" \
-            >/dev/null 2>&1 || true
-            if /bin/launchctl print "$launch_domain/$job_label" \
-            >/dev/null 2>&1; then
-              exit 70
-            fi
+            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -c '
+              cancellation="$1"
+              identifier="$2"
+              launch_domain="$3"
+              job_label="$4"
+              temporary="${cancellation}.partial.$$"
+              /usr/bin/printf "%s\\n" "$identifier" \
+              > "$temporary" || exit 70
+              /bin/chmod 0600 "$temporary" || exit 70
+              /bin/mv -f "$temporary" "$cancellation" || exit 70
+              /bin/launchctl bootout "$launch_domain/$job_label" \
+              >/dev/null 2>&1 || true
+              if /bin/launchctl print "$launch_domain/$job_label" \
+              >/dev/null 2>&1; then
+                exit 70
+              fi
+            ' darkbloom-cancel "$cancellation" '\(identifier)' \
+            "$launch_domain" "$job_label" || exit 70
             """
     }
 

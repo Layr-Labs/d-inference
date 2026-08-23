@@ -8,7 +8,9 @@ REPOSITORY="$(/usr/bin/plutil -extract repository raw -o - "$PACKAGE_DIR/ThirdPa
 COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-PATCH_FILE="$PACKAGE_DIR/ThirdParty/lume-patches/0001-bound-ssh-command-output.patch"
+PATCH_RELATIVE_PATH="$(/usr/bin/plutil -extract patches.0.path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
+EXPECTED_PATCH_SHA256="$(/usr/bin/plutil -extract patches.0.sha256 raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
+PATCH_FILE="$PACKAGE_DIR/$PATCH_RELATIVE_PATH"
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
@@ -24,12 +26,20 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || [[ "$SOURCE_PATH" != "libs/lume" ]]; then
+if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+    || [[ "$SOURCE_PATH" != "libs/lume" ]] \
+    || [[ "$PATCH_RELATIVE_PATH" != "ThirdParty/lume-patches/0001-bound-ssh-command-output.patch" ]] \
+    || [[ ! "$EXPECTED_PATCH_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "invalid Lume source pin" >&2
     exit 1
 fi
 if [[ ! -f "$PATCH_FILE" ]]; then
     echo "required Lume hardening patch is missing: $PATCH_FILE" >&2
+    exit 1
+fi
+ACTUAL_PATCH_SHA256="$(/usr/bin/shasum -a 256 "$PATCH_FILE" | /usr/bin/awk '{print $1}')"
+if [[ "$ACTUAL_PATCH_SHA256" != "$EXPECTED_PATCH_SHA256" ]]; then
+    echo "Lume hardening patch digest mismatch" >&2
     exit 1
 fi
 
@@ -90,6 +100,7 @@ fi
 /usr/bin/xattr -c "$BUILT_EXECUTABLE" 2>/dev/null || true
 /usr/bin/codesign \
     --force \
+    --identifier io.darkbloom.sandbox.lume \
     --entitlements "$SOURCE_ROOT/resources/lume.local.entitlements" \
     --sign - \
     "$BUILT_EXECUTABLE"
@@ -112,14 +123,25 @@ PYTHON="$(command -v python3)"
     "$REPOSITORY" \
     "$COMMIT" \
     "$SOURCE_PATH" \
-    "$EXPECTED_VERSION" <<'PY'
+    "$EXPECTED_VERSION" \
+    "$PATCH_RELATIVE_PATH" \
+    "$EXPECTED_PATCH_SHA256" <<'PY'
 import hashlib
 import json
 import os
 import stat
 import sys
 
-install_dir, destination, repository, commit, source_path, version = sys.argv[1:]
+(
+    install_dir,
+    destination,
+    repository,
+    commit,
+    source_path,
+    version,
+    patch_path,
+    patch_sha256,
+) = sys.argv[1:]
 directories = []
 files = {}
 for root, names, entries in os.walk(install_dir, followlinks=False):
@@ -152,11 +174,12 @@ if "lume" not in files or "lume_lume.bundle" not in directories:
 with open(destination, "x", encoding="utf-8") as output:
     json.dump(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "repository": repository,
             "commit": commit,
             "source_path": source_path,
             "version": version,
+            "patches": {patch_path: patch_sha256},
             "directories": sorted(directories),
             "files": files,
         },

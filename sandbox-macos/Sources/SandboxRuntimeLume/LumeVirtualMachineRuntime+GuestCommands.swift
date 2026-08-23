@@ -9,6 +9,11 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        let operationLock = try beginOperation("execute", name: name)
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
         try LumeVirtualMachineOwnership.requireOwned(
             name: name,
             in: configuration.storageDirectory
@@ -19,14 +24,16 @@ extension LumeVirtualMachineRuntime {
             )
         }
         let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        var requiresVMStop = false
         do {
+            let sshTimeoutSeconds = request.timeoutSeconds + 5
             let result = try await processRunner.run(
                 executable: configuration.executable,
                 arguments: [
                     "ssh",
                     name,
                     "--storage", configuration.storageDirectory.path,
-                    "--timeout", String(request.timeoutSeconds),
+                    "--timeout", String(sshTimeoutSeconds),
                     "--nio-only",
                     encodedCommand,
                 ],
@@ -53,24 +60,62 @@ extension LumeVirtualMachineRuntime {
                     stderr: standardError
                 )
             }
-            return try LumeGuestCommandResultDecoder.decode(
+            let decoded = try LumeGuestCommandResultDecoder.decode(
                 result.standardOutput
             )
+            if decoded.timedOut {
+                requiresVMStop = true
+                throw SandboxRuntimeError.operationTimedOut(
+                    "\(name) guest command"
+                )
+            }
+            return decoded
         } catch {
+            var cancellationFailure: Error?
             do {
                 try await cancelGuestCommandIgnoringCancellation(
                     name: name,
                     idempotencyKey: request.idempotencyKey
                 )
             } catch let cleanupError {
+                cancellationFailure = cleanupError
+            }
+            let mustStopVM = requiresVMStop
+                || error is CancellationError
+                || cancellationFailure != nil
+            if mustStopVM {
+                do {
+                    try await stopGuestIgnoringCancellation(name: name)
+                } catch let stopError {
+                    throw SandboxRuntimeError.cleanupFailed(
+                        operation: "execute \(name)",
+                        primary: String(describing: error),
+                        cleanup: [
+                            cancellationFailure.map {
+                                "guest cancellation failed: \($0)"
+                            },
+                            "VM stop failed: \(stopError)",
+                        ].compactMap { $0 }.joined(separator: "; ")
+                    )
+                }
+            }
+            if let cancellationFailure {
                 throw SandboxRuntimeError.cleanupFailed(
                     operation: "execute \(name)",
                     primary: String(describing: error),
-                    cleanup: String(describing: cleanupError)
+                    cleanup: "guest cancellation failed and VM was stopped: "
+                        + String(describing: cancellationFailure)
                 )
             }
             throw error
         }
+    }
+
+    private func stopGuestIgnoringCancellation(name: String) async throws {
+        let stop = Task.detached {
+            try await self.stopWithoutOperationFence(name: name)
+        }
+        try await stop.value
     }
 
     private func cancelGuestCommandIgnoringCancellation(

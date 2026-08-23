@@ -3,6 +3,12 @@
   "commit": "737dc2a069528abadee67526d138a907e1c52061",
   "path": "libs/lume",
   "version": "0.5.3",
+  "patches": [
+    {
+      "path": "ThirdParty/lume-patches/0001-bound-ssh-command-output.patch",
+      "sha256": "08b850f841b3301f9d579315c1e5b259d37acf695a9eea1949e52c6c768c83df"
+    }
+  ],
   "license": "MIT",
   "telemetry": "disabled"
 }

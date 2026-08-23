@@ -18,7 +18,7 @@ struct ValidatedLumeRuntimeFile: Equatable, Sendable {
 
 enum LumeRuntimeProvenanceValidator {
     static let fileName = "lume.provenance.json"
-    private static let schemaVersion: UInt16 = 2
+    private static let schemaVersion: UInt16 = 3
     private static let maximumProvenanceBytes: Int64 = 16 * 1_024
 
     static func validate(
@@ -27,6 +27,10 @@ enum LumeRuntimeProvenanceValidator {
         guard configuration.executable.lastPathComponent == "lume" else {
             throw unsupported("Lume executable must use the audited install layout")
         }
+        try LumeRuntimeCodeSignature.validate(
+            executable: configuration.executable,
+            policy: configuration.trustPolicy
+        )
         let installationDirectory = configuration.executable
             .deletingLastPathComponent()
         let runtimeTree = try inspectRuntimeTree(
@@ -61,6 +65,10 @@ enum LumeRuntimeProvenanceValidator {
               provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
               provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
               provenance.version == LumeRuntimeConfiguration.pinnedVersion,
+              provenance.patches == [
+                  LumeRuntimeConfiguration.pinnedPatchPath:
+                      LumeRuntimeConfiguration.pinnedPatchSHA256
+              ],
               Set(provenance.directories).count == provenance.directories.count,
               provenance.directories.allSatisfy(Self.isSafeRelativePath),
               provenance.files.keys.allSatisfy(Self.isSafeRelativePath),
@@ -317,6 +325,7 @@ private struct LumeRuntimeProvenance: Decodable {
     let commit: String
     let sourcePath: String
     let version: String
+    let patches: [String: String]
     let directories: [String]
     let files: [String: String]
 }

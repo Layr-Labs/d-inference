@@ -23,6 +23,11 @@ approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
 host-substrate proof, not a multi-tenant service.
 
+Artifact authentication currently binds sandbox generation and disk role, but
+does not establish which of two otherwise valid ciphertext revisions is newest.
+Cached-image restore therefore remains disabled until the coordinator-backed
+artifact manifest supplies and verifies a monotonic revision.
+
 ## Build and test
 
 The package requires Apple Silicon macOS 14 or newer with a full Xcode
@@ -100,9 +105,10 @@ sandbox-macos/Scripts/build-pinned-lume.sh \
 ```
 
 The build writes `lume.provenance.json` beside the executable with the source
-commit and the post-signing SHA-256. Before executing Lume, the adapter requires
-that provenance to match the audited lock and the installed binary; it rejects
-later binary or provenance replacement. Every invocation sets
+commit and post-signing SHA-256 for every runtime file. Before executing Lume,
+the adapter requires the complete immutable directory tree and provenance to
+match the audited lock; it rejects added, removed, replaced, or modified runtime
+entries. Every invocation sets
 `LUME_TELEMETRY_ENABLED=false`. Moving the pin requires source review plus the
 opt-in real-binary and VM lifecycle tests.
 

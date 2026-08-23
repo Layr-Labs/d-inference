@@ -10,13 +10,29 @@ SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$PACKAGE_DIR/ThirdParty/l
 EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
+BUILD_ROOT=""
+STAGING_DIR=""
+
+cleanup() {
+    if [[ -n "$BUILD_ROOT" ]]; then
+        rm -rf "$BUILD_ROOT"
+    fi
+    if [[ -n "$STAGING_DIR" ]]; then
+        rm -rf "$STAGING_DIR"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
 
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || [[ "$SOURCE_PATH" != "libs/lume" ]]; then
     echo "invalid Lume source pin" >&2
     exit 1
 fi
 
-if [[ ! -d "$CHECKOUT/.git" ]]; then
+if [[ -e "$CHECKOUT" ]] && [[ ! -d "$CHECKOUT/.git" ]]; then
+    echo "refusing non-git Lume checkout path: $CHECKOUT" >&2
+    exit 1
+fi
+if [[ ! -e "$CHECKOUT" ]]; then
     mkdir -p "$(dirname "$CHECKOUT")"
     git clone --filter=blob:none --no-checkout "$REPOSITORY" "$CHECKOUT"
 fi
@@ -28,44 +44,150 @@ if [[ "$ACTUAL_REMOTE" != "$REPOSITORY" ]]; then
 fi
 
 git -C "$CHECKOUT" fetch --depth=1 origin "$COMMIT"
-git -C "$CHECKOUT" sparse-checkout init --cone
-git -C "$CHECKOUT" sparse-checkout set "$SOURCE_PATH"
-git -C "$CHECKOUT" checkout --detach "$COMMIT"
-
-ACTUAL_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
+ACTUAL_COMMIT="$(git -C "$CHECKOUT" rev-parse "$COMMIT^{commit}")"
 if [[ "$ACTUAL_COMMIT" != "$COMMIT" ]]; then
     echo "Lume checkout mismatch: expected $COMMIT, got $ACTUAL_COMMIT" >&2
     exit 1
 fi
 
-LUME_TELEMETRY_ENABLED=false \
-INSTALL_DIR="$INSTALL_DIR" \
-"$CHECKOUT/$SOURCE_PATH/scripts/install-local.sh" \
-    --release \
-    --no-background-service
+if [[ "$INSTALL_DIR" != /* ]]; then
+    echo "Lume install directory must be absolute: $INSTALL_DIR" >&2
+    exit 1
+fi
+if [[ -e "$INSTALL_DIR" ]]; then
+    echo "refusing to overwrite existing Lume install path: $INSTALL_DIR" >&2
+    exit 1
+fi
+INSTALL_PARENT="$(dirname "$INSTALL_DIR")"
+mkdir -p "$INSTALL_PARENT"
+INSTALL_PARENT="$(cd "$INSTALL_PARENT" && pwd -P)"
+INSTALL_DIR="$INSTALL_PARENT/$(basename "$INSTALL_DIR")"
+STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
 
-ACTUAL_VERSION="$("$INSTALL_DIR/lume" --version)"
+BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
+git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \
+    | /usr/bin/tar -x -C "$BUILD_ROOT"
+
+SOURCE_ROOT="$BUILD_ROOT/$SOURCE_PATH"
+(
+    cd "$SOURCE_ROOT"
+    LUME_TELEMETRY_ENABLED=false swift build -c release --product lume
+)
+BUILD_OUTPUT="$SOURCE_ROOT/.build/release"
+BUILT_EXECUTABLE="$BUILD_OUTPUT/lume"
+RESOURCE_BUNDLE="$BUILD_OUTPUT/lume_lume.bundle"
+if [[ ! -x "$BUILT_EXECUTABLE" ]] || [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+    echo "Lume build did not produce its executable and resource bundle" >&2
+    exit 1
+fi
+
+/usr/bin/xattr -c "$BUILT_EXECUTABLE" 2>/dev/null || true
+/usr/bin/codesign \
+    --force \
+    --entitlements "$SOURCE_ROOT/resources/lume.local.entitlements" \
+    --sign - \
+    "$BUILT_EXECUTABLE"
+
+ACTUAL_VERSION="$("$BUILT_EXECUTABLE" --version)"
 if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
     echo "Lume version mismatch: expected $EXPECTED_VERSION, got $ACTUAL_VERSION" >&2
     exit 1
 fi
 
-BINARY_SHA256="$(/usr/bin/shasum -a 256 "$INSTALL_DIR/lume" | /usr/bin/awk '{print $1}')"
+/usr/bin/install -m 0555 "$BUILT_EXECUTABLE" "$STAGING_DIR/lume"
+/bin/cp -R "$RESOURCE_BUNDLE" "$STAGING_DIR/lume_lume.bundle"
+
+BINARY_SHA256="$(/usr/bin/shasum -a 256 "$STAGING_DIR/lume" | /usr/bin/awk '{print $1}')"
+PROVENANCE_FILE="$STAGING_DIR/lume.provenance.json"
+PYTHON="$(command -v python3)"
+"$PYTHON" - \
+    "$STAGING_DIR" \
+    "$PROVENANCE_FILE" \
+    "$REPOSITORY" \
+    "$COMMIT" \
+    "$SOURCE_PATH" \
+    "$EXPECTED_VERSION" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+install_dir, destination, repository, commit, source_path, version = sys.argv[1:]
+directories = []
+files = {}
+for root, names, entries in os.walk(install_dir, followlinks=False):
+    names.sort()
+    entries.sort()
+    for name in names:
+        path = os.path.join(root, name)
+        relative = os.path.relpath(path, install_dir)
+        metadata = os.lstat(path)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise SystemExit(f"unsupported Lume runtime directory: {relative}")
+        directories.append(relative)
+    for name in entries:
+        path = os.path.join(root, name)
+        relative = os.path.relpath(path, install_dir)
+        if relative == "lume.provenance.json":
+            continue
+        metadata = os.lstat(path)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"unsupported Lume runtime entry: {relative}")
+        digest = hashlib.sha256()
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        files[relative] = digest.hexdigest()
+
+if "lume" not in files or "lume_lume.bundle" not in directories:
+    raise SystemExit("Lume runtime tree is incomplete")
+
+with open(destination, "x", encoding="utf-8") as output:
+    json.dump(
+        {
+            "schema_version": 2,
+            "repository": repository,
+            "commit": commit,
+            "source_path": source_path,
+            "version": version,
+            "directories": sorted(directories),
+            "files": files,
+        },
+        output,
+        indent=2,
+        sort_keys=True,
+    )
+    output.write("\n")
+PY
+
+"$PYTHON" - "$STAGING_DIR" <<'PY'
+import os
+import stat
+import sys
+
+install_dir = sys.argv[1]
+for root, directories, files in os.walk(install_dir, topdown=False, followlinks=False):
+    for name in files:
+        path = os.path.join(root, name)
+        mode = 0o555 if os.path.relpath(path, install_dir) == "lume" else 0o444
+        os.chmod(path, mode)
+    for name in directories:
+        path = os.path.join(root, name)
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            raise SystemExit(f"refusing non-directory runtime entry: {path}")
+        os.chmod(path, 0o555)
+os.chmod(install_dir, 0o555)
+PY
+
+if ! "$STAGING_DIR/lume" --version >/dev/null; then
+    echo "hardened Lume runtime failed its launch check" >&2
+    exit 1
+fi
+
+/bin/mv "$STAGING_DIR" "$INSTALL_DIR"
+STAGING_DIR=""
 PROVENANCE_FILE="$INSTALL_DIR/lume.provenance.json"
-PROVENANCE_TEMP="$PROVENANCE_FILE.$$.partial"
-trap 'rm -f "$PROVENANCE_TEMP"' EXIT HUP INT TERM
-printf '%s\n' \
-    '{' \
-    '  "schema_version": 1,' \
-    "  \"repository\": \"$REPOSITORY\"," \
-    "  \"commit\": \"$COMMIT\"," \
-    "  \"source_path\": \"$SOURCE_PATH\"," \
-    "  \"version\": \"$EXPECTED_VERSION\"," \
-    "  \"binary_sha256\": \"$BINARY_SHA256\"" \
-    '}' > "$PROVENANCE_TEMP"
-chmod 0444 "$PROVENANCE_TEMP"
-mv -f "$PROVENANCE_TEMP" "$PROVENANCE_FILE"
-trap - EXIT HUP INT TERM
 
 echo "lume_commit=$ACTUAL_COMMIT"
 echo "lume_version=$ACTUAL_VERSION"

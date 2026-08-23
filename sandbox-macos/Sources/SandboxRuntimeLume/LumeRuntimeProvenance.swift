@@ -5,50 +5,51 @@ import SandboxRuntime
 
 struct ValidatedLumeRuntime: Equatable, Sendable {
     let version: String
-    let executableIdentity: LumeFileIdentity
+    let installationIdentity: LumeFileIdentity
     let provenanceIdentity: LumeFileIdentity
+    let files: [String: ValidatedLumeRuntimeFile]
+    let directories: [String: LumeFileIdentity]
+}
+
+struct ValidatedLumeRuntimeFile: Equatable, Sendable {
+    let identity: LumeFileIdentity
+    let sha256: String
 }
 
 enum LumeRuntimeProvenanceValidator {
     static let fileName = "lume.provenance.json"
-    private static let schemaVersion: UInt16 = 1
+    private static let schemaVersion: UInt16 = 2
     private static let maximumProvenanceBytes: Int64 = 16 * 1_024
 
     static func validate(
         configuration: LumeRuntimeConfiguration
     ) throws -> ValidatedLumeRuntime {
-        let executableIdentity: LumeFileIdentity
-        do {
-            executableIdentity = try identity(
-                of: configuration.executable,
-                maximumBytes: nil
-            )
-        } catch {
-            throw unsupported("Lume executable failed ownership or mode checks")
+        guard configuration.executable.lastPathComponent == "lume" else {
+            throw unsupported("Lume executable must use the audited install layout")
         }
+        let installationDirectory = configuration.executable
+            .deletingLastPathComponent()
+        let runtimeTree = try inspectRuntimeTree(
+            at: installationDirectory,
+            computeDigests: true
+        )
         let provenanceURL = configuration.executable
             .deletingLastPathComponent()
             .appendingPathComponent(fileName)
-        let provenanceIdentity: LumeFileIdentity
-        do {
-            provenanceIdentity = try identity(
-                of: provenanceURL,
-                maximumBytes: maximumProvenanceBytes
-            )
-        } catch {
-            throw unsupported("Lume provenance failed ownership or mode checks")
-        }
+        let provenanceFile = try inspectRegularFile(
+            at: provenanceURL,
+            maximumBytes: maximumProvenanceBytes,
+            requiresExecutableMode: false,
+            captureData: true,
+            computeDigest: true
+        )
         let provenance: LumeRuntimeProvenance
         do {
-            let data = try Data(
-                contentsOf: provenanceURL,
-                options: [.mappedIfSafe]
-            )
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             provenance = try decoder.decode(
                 LumeRuntimeProvenance.self,
-                from: data
+                from: provenanceFile.data ?? Data()
             )
         } catch {
             throw unsupported("Lume provenance is unreadable")
@@ -59,19 +60,29 @@ enum LumeRuntimeProvenanceValidator {
               provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
               provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
               provenance.version == LumeRuntimeConfiguration.pinnedVersion,
-              provenance.binarySha256.count == SHA256.Digest.byteCount * 2,
-              provenance.binarySha256.allSatisfy(Self.isLowercaseHex)
+              Set(provenance.directories).count == provenance.directories.count,
+              provenance.directories.allSatisfy(Self.isSafeRelativePath),
+              provenance.files.keys.allSatisfy(Self.isSafeRelativePath),
+              provenance.files.values.allSatisfy(Self.isSHA256),
+              Set(provenance.directories) == Set(runtimeTree.directories.keys),
+              Set(provenance.files.keys) == Set(runtimeTree.files.keys),
+              provenance.files["lume"] != nil
         else {
             throw unsupported("Lume provenance does not match the audited pin")
         }
-        let digest = try sha256(of: configuration.executable)
-        guard digest == provenance.binarySha256 else {
-            throw unsupported("Lume executable digest does not match its provenance")
+        for (path, expectedDigest) in provenance.files {
+            guard runtimeTree.files[path]?.sha256 == expectedDigest else {
+                throw unsupported(
+                    "Lume runtime tree digest does not match its provenance"
+                )
+            }
         }
         return ValidatedLumeRuntime(
             version: provenance.version,
-            executableIdentity: executableIdentity,
-            provenanceIdentity: provenanceIdentity
+            installationIdentity: runtimeTree.installationIdentity,
+            provenanceIdentity: provenanceFile.identity,
+            files: runtimeTree.files,
+            directories: runtimeTree.directories
         )
     }
 
@@ -79,43 +90,190 @@ enum LumeRuntimeProvenanceValidator {
         _ validated: ValidatedLumeRuntime,
         configuration: LumeRuntimeConfiguration
     ) throws {
-        let executableIdentity = try identity(
-            of: configuration.executable,
-            maximumBytes: nil
-        )
-        let provenanceIdentity = try identity(
-            of: configuration.executable
-                .deletingLastPathComponent()
-                .appendingPathComponent(fileName),
-            maximumBytes: maximumProvenanceBytes
-        )
-        guard executableIdentity == validated.executableIdentity,
-              provenanceIdentity == validated.provenanceIdentity
-        else {
+        do {
+            let currentTree = try inspectRuntimeTree(
+                at: configuration.executable.deletingLastPathComponent(),
+                computeDigests: false
+            )
+            let provenance = try inspectRegularFile(
+                at: configuration.executable
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(fileName),
+                maximumBytes: maximumProvenanceBytes,
+                requiresExecutableMode: false,
+                captureData: false,
+                computeDigest: false
+            )
+            guard currentTree.installationIdentity
+                    == validated.installationIdentity,
+                  provenance.identity == validated.provenanceIdentity,
+                  currentTree.directories == validated.directories,
+                  currentTree.files.mapValues { $0.identity }
+                    == validated.files.mapValues { $0.identity }
+            else {
+                throw unsupported("Lume runtime changed after validation")
+            }
+        } catch {
             throw unsupported("Lume runtime changed after validation")
         }
     }
 
-    private static func identity(
-        of url: URL,
-        maximumBytes: Int64?
+    private static func inspectRuntimeTree(
+        at installationDirectory: URL,
+        computeDigests: Bool
+    ) throws -> InspectedLumeRuntimeTree {
+        let installationIdentity = try inspectDirectory(
+            at: installationDirectory
+        )
+        guard let enumerator = FileManager.default.enumerator(
+            at: installationDirectory,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else {
+            throw unsupported("Lume runtime tree cannot be enumerated")
+        }
+
+        var files: [String: ValidatedLumeRuntimeFile] = [:]
+        var directories: [String: LumeFileIdentity] = [:]
+        while let url = enumerator.nextObject() as? URL {
+            let relativePath = String(
+                url.path.dropFirst(installationDirectory.path.count + 1)
+            )
+            guard isSafeRelativePath(relativePath) else {
+                throw unsupported("Lume runtime tree contains an unsafe path")
+            }
+
+            var metadata = stat()
+            guard lstat(url.path, &metadata) == 0 else {
+                throw unsupported("Lume runtime tree changed during validation")
+            }
+            switch metadata.st_mode & S_IFMT {
+            case S_IFDIR:
+                directories[relativePath] = try inspectDirectory(at: url)
+            case S_IFREG:
+                if relativePath == fileName {
+                    continue
+                }
+                let file = try inspectRegularFile(
+                    at: url,
+                    maximumBytes: nil,
+                    requiresExecutableMode: relativePath == "lume",
+                    captureData: false,
+                    computeDigest: computeDigests
+                )
+                files[relativePath] = ValidatedLumeRuntimeFile(
+                    identity: file.identity,
+                    sha256: file.sha256
+                )
+            default:
+                enumerator.skipDescendants()
+                throw unsupported(
+                    "Lume runtime tree contains a non-regular entry"
+                )
+            }
+        }
+        guard try inspectDirectory(at: installationDirectory)
+                == installationIdentity
+        else {
+            throw unsupported("Lume runtime tree changed during validation")
+        }
+        return InspectedLumeRuntimeTree(
+            installationIdentity: installationIdentity,
+            files: files,
+            directories: directories
+        )
+    }
+
+    private static func inspectDirectory(
+        at url: URL
     ) throws -> LumeFileIdentity {
         var metadata = stat()
         guard lstat(url.path, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFREG,
+              (metadata.st_mode & S_IFMT) == S_IFDIR,
               metadata.st_uid == geteuid() || metadata.st_uid == 0,
-              metadata.st_mode & 0o022 == 0,
-              metadata.st_size >= 0
+              metadata.st_mode & 0o222 == 0
         else {
-            throw unsupported("Lume runtime files failed ownership or mode checks")
+            throw unsupported(
+                "Lume runtime directory failed ownership or mode checks"
+            )
         }
-        if let maximumBytes, metadata.st_size > maximumBytes {
-            throw unsupported("Lume provenance exceeds the size limit")
+        return identity(from: metadata)
+    }
+
+    private static func inspectRegularFile(
+        at url: URL,
+        maximumBytes: Int64?,
+        requiresExecutableMode: Bool,
+        captureData: Bool,
+        computeDigest: Bool
+    ) throws -> InspectedRegularFile {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw unsupported("Lume runtime file cannot be opened")
         }
-        return LumeFileIdentity(
+        defer { close(descriptor) }
+
+        var before = stat()
+        guard fstat(descriptor, &before) == 0,
+              (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_uid == geteuid() || before.st_uid == 0,
+              before.st_mode & 0o222 == 0,
+              before.st_size >= 0,
+              maximumBytes.map({ before.st_size <= $0 }) ?? true,
+              !requiresExecutableMode || before.st_mode & 0o111 != 0
+        else {
+            throw unsupported("Lume runtime file failed ownership or mode checks")
+        }
+
+        var hasher = SHA256()
+        var captured = captureData ? Data() : nil
+        if captureData || computeDigest {
+            var buffer = [UInt8](repeating: 0, count: 1_048_576)
+            while true {
+                let count = buffer.withUnsafeMutableBytes {
+                    Darwin.read(descriptor, $0.baseAddress, $0.count)
+                }
+                if count == 0 {
+                    break
+                }
+                if count < 0 {
+                    if errno == EINTR {
+                        continue
+                    }
+                    throw unsupported("Lume runtime file cannot be read")
+                }
+                let chunk = Data(buffer.prefix(count))
+                if computeDigest {
+                    hasher.update(data: chunk)
+                }
+                captured?.append(chunk)
+            }
+        }
+
+        var after = stat()
+        guard fstat(descriptor, &after) == 0,
+              identity(from: before) == identity(from: after)
+        else {
+            throw unsupported("Lume runtime file changed during validation")
+        }
+        return InspectedRegularFile(
+            identity: identity(from: after),
+            sha256: computeDigest
+                ? hasher.finalize().map {
+                    String(format: "%02x", $0)
+                }.joined()
+                : "",
+            data: captured
+        )
+    }
+
+    private static func identity(from metadata: stat) -> LumeFileIdentity {
+        LumeFileIdentity(
             device: UInt64(metadata.st_dev),
             inode: UInt64(metadata.st_ino),
             size: metadata.st_size,
+            owner: metadata.st_uid,
+            mode: metadata.st_mode,
             modificationSeconds: metadata.st_mtimespec.tv_sec,
             modificationNanoseconds: metadata.st_mtimespec.tv_nsec,
             statusChangeSeconds: metadata.st_ctimespec.tv_sec,
@@ -123,33 +281,22 @@ enum LumeRuntimeProvenanceValidator {
         )
     }
 
-    private static func sha256(of url: URL) throws -> String {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            throw unsupported("Lume executable cannot be opened for hashing")
+    private static func isSafeRelativePath(_ path: String) -> Bool {
+        guard !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.contains("\0")
+        else {
+            return false
         }
-        defer { try? handle.close() }
-
-        var hasher = SHA256()
-        do {
-            while let chunk = try handle.read(upToCount: 1_048_576),
-                  !chunk.isEmpty
-            {
-                hasher.update(data: chunk)
-            }
-        } catch {
-            throw unsupported("Lume executable cannot be hashed")
-        }
-        return hasher.finalize().map {
-            String(format: "%02x", $0)
-        }.joined()
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { $0 != "." && $0 != ".." && !$0.isEmpty }
     }
 
-    private static func isLowercaseHex(_ character: Character) -> Bool {
-        character.isASCII
-            && (character.isNumber || ("a"..."f").contains(character))
+    private static func isSHA256(_ value: String) -> Bool {
+        value.count == SHA256.Digest.byteCount * 2
+            && value.allSatisfy {
+                $0.isASCII && ($0.isNumber || ("a"..."f").contains($0))
+            }
     }
 
     private static func unsupported(_ message: String) -> SandboxRuntimeError {
@@ -163,13 +310,28 @@ private struct LumeRuntimeProvenance: Decodable {
     let commit: String
     let sourcePath: String
     let version: String
-    let binarySha256: String
+    let directories: [String]
+    let files: [String: String]
+}
+
+private struct InspectedLumeRuntimeTree {
+    let installationIdentity: LumeFileIdentity
+    let files: [String: ValidatedLumeRuntimeFile]
+    let directories: [String: LumeFileIdentity]
+}
+
+private struct InspectedRegularFile {
+    let identity: LumeFileIdentity
+    let sha256: String
+    let data: Data?
 }
 
 struct LumeFileIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let size: Int64
+    let owner: uid_t
+    let mode: mode_t
     let modificationSeconds: Int
     let modificationNanoseconds: Int
     let statusChangeSeconds: Int

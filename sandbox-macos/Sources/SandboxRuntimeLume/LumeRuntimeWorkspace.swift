@@ -10,6 +10,7 @@ struct LumeRuntimeWorkspace: Sendable {
     let supportDirectory: URL
     let configurationHome: URL
     let cacheDirectory: URL
+    let locksDirectory: URL
     let operationsDirectory: URL
 
     init(storageDirectory: URL) {
@@ -26,6 +27,10 @@ struct LumeRuntimeWorkspace: Sendable {
             "cache",
             isDirectory: true
         )
+        locksDirectory = supportDirectory.appendingPathComponent(
+            "locks",
+            isDirectory: true
+        )
         operationsDirectory = supportDirectory.appendingPathComponent(
             Self.operationsDirectoryName,
             isDirectory: true
@@ -37,6 +42,7 @@ struct LumeRuntimeWorkspace: Sendable {
         try Self.ensurePrivateDirectory(supportDirectory)
         try Self.ensurePrivateDirectory(configurationHome)
         try Self.ensurePrivateDirectory(cacheDirectory)
+        try Self.ensurePrivateDirectory(locksDirectory)
         try Self.ensurePrivateDirectory(operationsDirectory)
         try Self.writeConfiguration(
             configurationHome: configurationHome,
@@ -142,8 +148,8 @@ struct LumeRuntimeWorkspace: Sendable {
         var metadata = stat()
         guard lstat(url.path, &metadata) == 0,
               (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid() || metadata.st_uid == 0,
-              metadata.st_mode & 0o022 == 0,
+              metadata.st_uid == geteuid(),
+              metadata.st_mode & 0o077 == 0,
               FileManager.default.isWritableFile(atPath: url.path)
         else {
             throw SandboxRuntimeError.unsupported(

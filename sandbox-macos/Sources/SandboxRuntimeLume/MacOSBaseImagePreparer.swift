@@ -103,7 +103,17 @@ public struct MacOSBaseImagePreparer: Sendable {
             )
         } catch {
             do {
-                try await runtime.stop(name: specification.name)
+                let cleanup = Task.detached {
+                    try await runtime.stop(name: specification.name)
+                    guard try await runtime.inspect(
+                        name: specification.name
+                    )?.state == .stopped else {
+                        throw SandboxRuntimeError.malformedOutput(
+                            "base VM cleanup did not reach stopped state"
+                        )
+                    }
+                }
+                try await cleanup.value
             } catch let cleanupError {
                 throw MacOSBaseImagePreparationError.cleanup(
                     primary: String(describing: error),

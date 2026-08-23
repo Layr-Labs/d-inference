@@ -39,7 +39,8 @@ final class LumeRuntimeContractTests: XCTestCase {
         )
         try FileManager.default.createDirectory(
             at: storage,
-            withIntermediateDirectories: false
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
         )
         defer { try? FileManager.default.removeItem(at: storage) }
 

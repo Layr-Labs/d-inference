@@ -11,6 +11,7 @@ public actor LumeVirtualMachineRuntime:
     let processRunner: SandboxProcessRunner
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
+    var runningProcesses: [String: SandboxManagedProcess] = [:]
 
     public init(
         configuration: LumeRuntimeConfiguration,
@@ -58,6 +59,10 @@ public actor LumeVirtualMachineRuntime:
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try LumeVirtualMachineOwnership.requireOwned(
+            name: name,
+            in: configuration.storageDirectory
+        )
         guard try await inspect(name: name)?.state == .running else {
             throw SandboxRuntimeError.unsupported(
                 "guest commands require a running VM"

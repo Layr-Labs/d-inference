@@ -33,14 +33,50 @@ final class LumeRuntimeFailureTests: XCTestCase {
             capabilities.version,
             LumeRuntimeConfiguration.pinnedVersion
         )
+        guard chmod(fixture.executable.path, 0o755) == 0 else {
+            throw POSIXError(.EACCES)
+        }
         let handle = try FileHandle(forWritingTo: fixture.executable)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("\n".utf8))
         try handle.close()
+        guard chmod(fixture.executable.path, 0o555) == 0 else {
+            throw POSIXError(.EACCES)
+        }
 
         do {
             _ = try await runtime.capabilities()
             XCTFail("changed runtime should be rejected")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported("Lume runtime changed after validation")
+            )
+        }
+    }
+
+    func testRejectsRuntimeTreeEntryAddedAfterValidation() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+        _ = try await runtime.capabilities()
+
+        guard chmod(fixture.runtimeDirectory.path, 0o755) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+        let injected = fixture.runtimeDirectory.appendingPathComponent(
+            "injected-resource"
+        )
+        try Data("untrusted".utf8).write(to: injected)
+        guard chmod(injected.path, 0o444) == 0,
+              chmod(fixture.runtimeDirectory.path, 0o555) == 0
+        else {
+            throw POSIXError(.EACCES)
+        }
+
+        do {
+            _ = try await runtime.capabilities()
+            XCTFail("an added runtime tree entry should be rejected")
         } catch let error as SandboxRuntimeError {
             XCTAssertEqual(
                 error,
@@ -151,10 +187,94 @@ final class LumeRuntimeFailureTests: XCTestCase {
             []
         )
     }
+
+    func testSeparateRuntimesCannotCreateSameVirtualMachine() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: nil,
+            behavior: "block-create"
+        )
+        defer { fixture.remove() }
+        let firstRuntime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let secondRuntime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let specification = try SandboxVirtualMachineSpecification(
+            name: fixture.virtualMachineName,
+            resources: SandboxResourceSpecification.macOSSmall(),
+            imageSource: .restoreImage(
+                url: fixture.restoreImage,
+                unattendedPreset: "tahoe"
+            ),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        let firstCreate = Task {
+            try await firstRuntime.create(specification)
+        }
+        try await fixture.waitForCreateToStart()
+
+        do {
+            try await secondRuntime.create(specification)
+            XCTFail("a second runtime must not enter the same VM operation")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationInProgress(
+                    name: fixture.virtualMachineName,
+                    operation: "create"
+                )
+            )
+        }
+
+        firstCreate.cancel()
+        do {
+            try await firstCreate.value
+            XCTFail("cancelled create should throw")
+        } catch is CancellationError {
+        }
+    }
+
+    func testOwnershipWriteReplacesMarkerInheritedFromClone() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-ownership-replacement-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let name = "sandbox-clone"
+        let virtualMachineDirectory = root.appendingPathComponent(
+            name,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: virtualMachineDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = virtualMachineDirectory.appendingPathComponent(
+            LumeVirtualMachineOwnership.fileName
+        )
+        try Data("inherited-template-marker".utf8).write(to: marker)
+        let specification = try SandboxVirtualMachineSpecification(
+            name: name,
+            resources: SandboxResourceSpecification.macOSSmall(),
+            imageSource: .localTemplate(name: "sandbox-base"),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+
+        try LumeVirtualMachineOwnership.write(
+            specification: specification,
+            to: virtualMachineDirectory
+        )
+
+        XCTAssertTrue(
+            LumeVirtualMachineOwnership.matches(
+                specification: specification,
+                in: root
+            )
+        )
+    }
 }
 
 private struct FakeLumeFixture {
     let directory: URL
+    let runtimeDirectory: URL
     let executable: URL
     let storage: URL
     let state: URL
@@ -172,7 +292,11 @@ private struct FakeLumeFixture {
             "darkbloom-fake-lume-\(UUID().uuidString)",
             isDirectory: true
         )
-        executable = directory.appendingPathComponent("lume")
+        runtimeDirectory = directory.appendingPathComponent(
+            "runtime",
+            isDirectory: true
+        )
+        executable = runtimeDirectory.appendingPathComponent("lume")
         storage = directory.appendingPathComponent("vms", isDirectory: true)
         state = directory.appendingPathComponent("state")
         self.behavior = directory.appendingPathComponent("behavior")
@@ -188,20 +312,30 @@ private struct FakeLumeFixture {
             withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
+        try FileManager.default.createDirectory(
+            at: runtimeDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
         if let initialState {
             try Data("\(initialState)\n".utf8).write(to: state)
+            let virtualMachineDirectory = storage.appendingPathComponent(
+                virtualMachineName,
+                isDirectory: true
+            )
             try FileManager.default.createDirectory(
-                at: storage.appendingPathComponent(
-                    virtualMachineName,
-                    isDirectory: true
-                ),
+                at: virtualMachineDirectory,
                 withIntermediateDirectories: false
+            )
+            try Self.writeOwnershipMarker(
+                to: virtualMachineDirectory,
+                name: virtualMachineName
             )
         }
         try Data("\(behavior)\n".utf8).write(to: self.behavior)
         try Data().write(to: restoreImage)
         try Data(Self.script.utf8).write(to: executable)
-        guard chmod(executable.path, 0o755) == 0 else {
+        guard chmod(executable.path, 0o555) == 0 else {
             throw POSIXError(.EACCES)
         }
         if writeProvenance {
@@ -209,6 +343,9 @@ private struct FakeLumeFixture {
                 beside: executable,
                 binaryDigest: Self.sha256(of: executable)
             )
+        }
+        guard chmod(runtimeDirectory.path, 0o555) == 0 else {
+            throw POSIXError(.EACCES)
         }
     }
 
@@ -260,21 +397,53 @@ private struct FakeLumeFixture {
         binaryDigest: String
     ) throws {
         let object: [String: Any] = [
-            "schema_version": 1,
+            "schema_version": 2,
             "repository": LumeRuntimeConfiguration.pinnedRepository,
             "commit": LumeRuntimeConfiguration.pinnedCommit,
             "source_path": LumeRuntimeConfiguration.pinnedSourcePath,
             "version": LumeRuntimeConfiguration.pinnedVersion,
-            "binary_sha256": binaryDigest,
+            "directories": [],
+            "files": ["lume": binaryDigest],
         ]
         let data = try JSONSerialization.data(
             withJSONObject: object,
             options: [.sortedKeys]
         )
+        let destination = executable
+            .deletingLastPathComponent()
+            .appendingPathComponent("lume.provenance.json")
         try data.write(
-            to: executable
-                .deletingLastPathComponent()
-                .appendingPathComponent("lume.provenance.json")
+            to: destination
+        )
+        guard chmod(destination.path, 0o444) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+    }
+
+    private static func writeOwnershipMarker(
+        to virtualMachineDirectory: URL,
+        name: String
+    ) throws {
+        let object: [String: Any] = [
+            "schemaVersion": 1,
+            "installationID": UUID().uuidString,
+            "name": name,
+            "cpuCount": 4,
+            "memoryBytes": 8 * 1_024 * 1_024 * 1_024,
+            "diskBytes": 100 * 1_024 * 1_024 * 1_024,
+            "sourceKind": "local_template",
+            "sourceReference": "base",
+        ]
+        let destination = virtualMachineDirectory.appendingPathComponent(
+            LumeVirtualMachineOwnership.fileName
+        )
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: destination)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: destination.path
         )
     }
 
@@ -286,7 +455,7 @@ private struct FakeLumeFixture {
     private static let script = """
     #!/bin/sh
     set -eu
-    root="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+    root="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
     state_file="$root/state"
     behavior="$(tr -d '\\n' < "$root/behavior")"
     command="${1:-}"
@@ -323,7 +492,13 @@ private struct FakeLumeFixture {
         printf '"status":"%s","sshAvailable":%s}]\\n' "$state" "$ready"
         ;;
       run)
+        trap 'printf "%s\\n" "stopped" > "$state_file"; exit 0' EXIT HUP INT TERM
         printf '%s\\n' "running" > "$state_file"
+        while IFS= read -r current_state < "$state_file"; do
+          if [ "$current_state" = "stopped" ]; then
+            exit 0
+          fi
+        done
         ;;
       stop)
         printf '%s\\n' "stopped" > "$state_file"

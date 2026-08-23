@@ -490,7 +490,7 @@ private func agentDebugLog(
     ) else {
         return
     }
-    let logURL = URL(fileURLWithPath: "/opt/cursor/logs/debug.log")
+    let logURL = URL(fileURLWithPath: "/tmp/darkbloom-sandbox-debug.log")
     if !FileManager.default.fileExists(atPath: logURL.path) {
         _ = FileManager.default.createFile(
             atPath: logURL.path,

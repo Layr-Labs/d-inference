@@ -184,8 +184,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(
-                #"job_loaded=true
-/usr/bin/lockf -t 30 "$command_lock""#
+                "job_loaded=true\n/usr/bin/lockf -t 30 \"$command_lock\""
             )
         )
         XCTAssertTrue(

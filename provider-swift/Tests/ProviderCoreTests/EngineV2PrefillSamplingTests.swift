@@ -209,3 +209,113 @@ struct EngineV2PrefillSamplingTests {
         #expect(await bridge.backendSlotCapacity().observedPrefillTps == 0)
     }
 }
+
+// MARK: - Queue-excluded companion EWMA
+
+/// `observedPrefillTpsEwma` above is load-INCLUSIVE by contract (window starts
+/// at admission; `protocol/messages.go:277`). The prefill-deadline gate adds an
+/// explicit queued-tokens term, so dividing by that rate counts contention
+/// twice. `isolatedPrefillTpsEwma` is the queue-excluded companion the gate
+/// divides by: same samples, but only from rows that were admitted with no
+/// other prefill in flight.
+@Suite("EngineV2 isolated prefill EWMA (queue-excluded)")
+struct EngineV2IsolatedPrefillSamplingTests {
+
+    private func makeBridge(_ engine: PrefillScriptEngine) -> EngineV2Bridge {
+        EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+    }
+
+    private func submit(
+        _ bridge: EngineV2Bridge, _ id: String
+    ) async -> Task<Void, Never> {
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: 200),
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: id)
+        return Task { for await _ in stream {} }
+    }
+
+    private func finish(_ continuation: AsyncStream<CBv2Event>.Continuation) {
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(
+            reason: .stop, usage: CBv2Usage(promptTokens: 200, completionTokens: 1)))
+        continuation.finish()
+    }
+
+    @Test("a row admitted onto an idle engine feeds both EWMAs")
+    func uncontendedRowFeedsIsolatedEwma() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+        #expect(await bridge.isolatedPrefillTpsEwma == 0)
+
+        let consumer = await submit(bridge, "solo")
+        await bridge.backdateSubmissionForTesting(
+            requestId: "solo", byMilliseconds: 50)
+        finish(try #require(engine.continuations.first))
+        _ = await consumer.value
+
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(await bridge.isolatedPrefillTpsEwma > 0)
+    }
+
+    /// The discriminating case. `second` is admitted while `first` is still
+    /// prefilling, so its submit→first-token window is mostly queue wait. That
+    /// sample is fine for the load-inclusive signal and must NOT calibrate the
+    /// rate the deadline projection divides by — feeding it there is exactly
+    /// the double-count this companion exists to remove.
+    @Test("a row admitted behind an in-flight prefill feeds only the load-inclusive EWMA")
+    func contendedRowIsExcluded() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+
+        let firstConsumer = await submit(bridge, "first")
+        // `first` has not reached its first token, so `second` is contended.
+        let secondConsumer = await submit(bridge, "second")
+        #expect(engine.continuations.count == 2)
+
+        await bridge.backdateSubmissionForTesting(
+            requestId: "second", byMilliseconds: 50)
+        finish(engine.continuations[1])
+        _ = await secondConsumer.value
+
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(
+            await bridge.isolatedPrefillTpsEwma == 0,
+            "a queued row must not calibrate the queue-excluded rate")
+
+        // ...and the predicate discriminates rather than being off entirely:
+        // `first` WAS admitted onto an idle engine, so it still qualifies.
+        await bridge.backdateSubmissionForTesting(
+            requestId: "first", byMilliseconds: 50)
+        finish(engine.continuations[0])
+        _ = await firstConsumer.value
+        #expect(await bridge.isolatedPrefillTpsEwma > 0)
+    }
+
+    /// Fail-open: a box that has never seen an idle prefill has no
+    /// queue-excluded rate, so the gate must admit rather than guess.
+    @Test("the gate fails open while the isolated EWMA is unmeasured")
+    func gateFailsOpenWhileUnmeasured() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+        let firstConsumer = await submit(bridge, "first")
+        let secondConsumer = await submit(bridge, "second")
+        await bridge.backdateSubmissionForTesting(
+            requestId: "second", byMilliseconds: 50)
+        finish(engine.continuations[1])
+        _ = await secondConsumer.value
+
+        // Load-inclusive rate is measured, queue-excluded is not.
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(await bridge.prefillDeadlineRefusal(promptTokens: 8192) == nil)
+
+        finish(engine.continuations[0])
+        _ = await firstConsumer.value
+    }
+}

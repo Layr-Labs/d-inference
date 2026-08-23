@@ -59,13 +59,13 @@ enum LumeRuntimeProvenanceValidator {
               provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
               provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
               provenance.version == LumeRuntimeConfiguration.pinnedVersion,
-              provenance.binarySHA256.count == SHA256.Digest.byteCount * 2,
-              provenance.binarySHA256.allSatisfy(Self.isLowercaseHex)
+              provenance.binarySha256.count == SHA256.Digest.byteCount * 2,
+              provenance.binarySha256.allSatisfy(Self.isLowercaseHex)
         else {
             throw unsupported("Lume provenance does not match the audited pin")
         }
         let digest = try sha256(of: configuration.executable)
-        guard digest == provenance.binarySHA256 else {
+        guard digest == provenance.binarySha256 else {
             throw unsupported("Lume executable digest does not match its provenance")
         }
         return ValidatedLumeRuntime(
@@ -163,7 +163,7 @@ private struct LumeRuntimeProvenance: Decodable {
     let commit: String
     let sourcePath: String
     let version: String
-    let binarySHA256: String
+    let binarySha256: String
 }
 
 struct LumeFileIdentity: Equatable, Sendable {

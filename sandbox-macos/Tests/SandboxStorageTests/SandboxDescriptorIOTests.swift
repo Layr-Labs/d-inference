@@ -86,7 +86,10 @@ final class SandboxDescriptorIOTests: XCTestCase {
             "linked-parent",
             isDirectory: true
         )
-        try FileManager.default.createDirectory(at: target)
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: false
+        )
         try FileManager.default.createSymbolicLink(
             at: link,
             withDestinationURL: target

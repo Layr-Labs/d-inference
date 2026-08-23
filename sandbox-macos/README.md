@@ -53,11 +53,16 @@ strict host check:
 ```bash
 bin_path="$(swift build --package-path sandbox-macos --show-bin-path)"
 codesign --force --sign - \
-  --entitlements sandbox-macos/Resources/DarkbloomSandbox.entitlements \
+  --entitlements sandbox-macos/Resources/DarkbloomSandboxDevelopment.entitlements \
   "$bin_path/darkbloom-sandboxd"
 "$bin_path/darkbloom-sandboxd" doctor --json
 "$bin_path/darkbloom-sandboxd" restore-image latest --json
 ```
+
+The development entitlement grants Virtualization.framework access only.
+`DarkbloomSandbox.entitlements` is the production profile input and additionally
+names the provisioned keychain access group; macOS kills an ad-hoc binary that
+claims that provisioned group.
 
 `--development-unsigned` downgrades only the missing virtualization entitlement
 to a warning. It does not bypass architecture, hypervisor, capacity, Aqua, or
@@ -94,9 +99,12 @@ sandbox-macos/Scripts/build-pinned-lume.sh \
   "$HOME/.local/libexec/darkbloom-sandbox/lume/bin"
 ```
 
-The adapter sets `LUME_TELEMETRY_ENABLED=false` for every invocation and rejects
-any runtime version other than the lock. Moving the pin requires source review
-plus the opt-in real-binary and VM lifecycle tests.
+The build writes `lume.provenance.json` beside the executable with the source
+commit and the post-signing SHA-256. Before executing Lume, the adapter requires
+that provenance to match the audited lock and the installed binary; it rejects
+later binary or provenance replacement. Every invocation sets
+`LUME_TELEMETRY_ENABLED=false`. Moving the pin requires source review plus the
+opt-in real-binary and VM lifecycle tests.
 
 ```bash
 DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \

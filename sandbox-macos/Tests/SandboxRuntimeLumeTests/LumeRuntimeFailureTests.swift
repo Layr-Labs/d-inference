@@ -1290,6 +1290,7 @@ private struct FakeLumeFixture {
                 ;;
             esac
             printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":0,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":false,"stdout_base64":"","stderr_base64":""}'
+            exit 0
             ;;
         esac
         printf '%s\\n' "unexpected fake Lume guest command" >&2

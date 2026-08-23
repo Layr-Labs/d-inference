@@ -204,12 +204,14 @@ final class SandboxEncryptedFileTests: XCTestCase {
             context: fixture.context
         )
 
-        let headerAndAuthenticationBytes = 96 + 28
         let sealedChunkBytes = 65_536 + 28
+        let firstCiphertext = try Data(contentsOf: fixture.encrypted)
+        let secondCiphertext = try Data(contentsOf: secondEncrypted)
+        let headerAndAuthenticationBytes =
+            firstCiphertext.count - (3 * sealedChunkBytes)
         let secondChunk = headerAndAuthenticationBytes + sealedChunkBytes
         let range = secondChunk..<(secondChunk + sealedChunkBytes)
-        let firstCiphertext = try Data(contentsOf: fixture.encrypted)
-        var hybridCiphertext = try Data(contentsOf: secondEncrypted)
+        var hybridCiphertext = secondCiphertext
         hybridCiphertext.replaceSubrange(range, with: firstCiphertext[range])
         try hybridCiphertext.write(to: hybrid)
 
@@ -246,6 +248,8 @@ final class SandboxEncryptedFileTests: XCTestCase {
 
         let first = try Data(contentsOf: fixture.encrypted)
         let second = try Data(contentsOf: secondEncrypted)
+        XCTAssertEqual(Array(first[8..<10]), [0, 2])
+        XCTAssertEqual(Array(second[8..<10]), [0, 2])
         XCTAssertNotEqual(first[64..<96], second[64..<96])
 
         var tampered = first

@@ -75,6 +75,41 @@ final class SandboxDescriptorIOTests: XCTestCase {
         XCTAssertFalse(try fixture.hasPartialFiles())
     }
 
+    func testReplacedTemporaryNameIsNeverPublished() throws {
+        let fixture = try DescriptorFixture()
+        defer { fixture.remove() }
+
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: fixture.destination
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(
+                    Data("validated".utf8),
+                    to: descriptor
+                )
+                let partial = try XCTUnwrap(
+                    FileManager.default.contentsOfDirectory(
+                        at: fixture.directory,
+                        includingPropertiesForKeys: nil
+                    ).first { $0.lastPathComponent.hasSuffix(".partial") }
+                )
+                try FileManager.default.moveItem(
+                    at: partial,
+                    to: fixture.directory.appendingPathComponent("moved-original")
+                )
+                try Data("replacement".utf8).write(to: partial)
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .unsafeDestination
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.destination.path)
+        )
+    }
+
     func testDestinationParentSymlinkIsRejected() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }
@@ -116,6 +151,55 @@ final class SandboxDescriptorIOTests: XCTestCase {
                 atPath: target.appendingPathComponent("artifact").path
             )
         )
+    }
+
+    func testAncestorSymlinkIsRejectedForSourceAndDestination() throws {
+        let fixture = try DescriptorFixture()
+        defer { fixture.remove() }
+        let realParent = fixture.directory.appendingPathComponent(
+            "real-parent",
+            isDirectory: true
+        )
+        let linkedParent = fixture.directory.appendingPathComponent(
+            "linked-ancestor",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: realParent,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedParent,
+            withDestinationURL: realParent
+        )
+        let source = linkedParent.appendingPathComponent("source")
+        try Data("source".utf8).write(
+            to: realParent.appendingPathComponent("source")
+        )
+
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withStableSource(at: source) { _, _ in }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .sourceNotRegularFile
+            )
+        }
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: linkedParent.appendingPathComponent("destination")
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(
+                    Data("blocked".utf8),
+                    to: descriptor
+                )
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .unsafeDestination
+            )
+        }
     }
 }
 

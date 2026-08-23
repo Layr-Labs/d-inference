@@ -157,7 +157,8 @@ private final class StableSource {
         guard source.isFileURL,
               source.baseURL == nil,
               source.path.hasPrefix("/"),
-              !source.path.contains("\0")
+              !source.path.contains("\0"),
+              SandboxDescriptorPathPolicy.isAccepted(source)
         else {
             throw SandboxDescriptorIOError.sourceNotRegularFile
         }
@@ -230,6 +231,7 @@ private final class PendingDestination {
     private let temporaryName: String
     private let destinationName: String
     private var destinationDescriptor: Int32
+    private var synchronizedMetadata: stat?
     private var isPublished = false
 
     init(_ destination: URL) throws {
@@ -251,6 +253,9 @@ private final class PendingDestination {
         }
 
         let parent = destination.deletingLastPathComponent()
+        guard SandboxDescriptorPathPolicy.isAccepted(parent) else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
         var pathMetadata = stat()
         guard lstat(parent.path, &pathMetadata) == 0,
               (pathMetadata.st_mode & S_IFMT) == S_IFDIR
@@ -318,13 +323,34 @@ private final class PendingDestination {
         guard fsync(destinationDescriptor) == 0 else {
             throw SandboxDescriptorIOError.io(errno)
         }
-        Darwin.close(destinationDescriptor)
-        destinationDescriptor = -1
+        var metadata = stat()
+        guard fstat(destinationDescriptor, &metadata) == 0,
+              Self.isSafeTemporary(metadata)
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        synchronizedMetadata = metadata
     }
 
     func publish() throws {
-        guard destinationDescriptor < 0 else {
-            throw SandboxDescriptorIOError.io(EBUSY)
+        guard destinationDescriptor >= 0,
+              let synchronizedMetadata
+        else {
+            throw SandboxDescriptorIOError.io(EBADF)
+        }
+        var namedMetadata = stat()
+        let namedResult = temporaryName.withCString {
+            fstatat(
+                parentDescriptor,
+                $0,
+                &namedMetadata,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard namedResult == 0,
+              Self.matches(synchronizedMetadata, namedMetadata)
+        else {
+            throw SandboxDescriptorIOError.unsafeDestination
         }
         let result = temporaryName.withCString { temporary in
             destinationName.withCString { destination in
@@ -343,7 +369,35 @@ private final class PendingDestination {
             }
             throw SandboxDescriptorIOError.io(errno)
         }
+
+        var descriptorMetadata = stat()
+        var publishedMetadata = stat()
+        let publishedResult = destinationName.withCString {
+            fstatat(
+                parentDescriptor,
+                $0,
+                &publishedMetadata,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard fstat(destinationDescriptor, &descriptorMetadata) == 0,
+              publishedResult == 0,
+              Self.matches(synchronizedMetadata, descriptorMetadata),
+              Self.matches(synchronizedMetadata, publishedMetadata)
+        else {
+            if publishedResult == 0,
+               publishedMetadata.st_dev == synchronizedMetadata.st_dev,
+               publishedMetadata.st_ino == synchronizedMetadata.st_ino
+            {
+                destinationName.withCString {
+                    _ = unlinkat(parentDescriptor, $0, 0)
+                }
+            }
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
         isPublished = true
+        Darwin.close(destinationDescriptor)
+        destinationDescriptor = -1
         guard fsync(parentDescriptor) == 0 else {
             throw SandboxDescriptorIOError.io(errno)
         }
@@ -360,5 +414,48 @@ private final class PendingDestination {
             }
         }
         Darwin.close(parentDescriptor)
+    }
+
+    private static func isSafeTemporary(_ metadata: stat) -> Bool {
+        (metadata.st_mode & S_IFMT) == S_IFREG
+            && metadata.st_uid == geteuid()
+            && metadata.st_nlink == 1
+            && metadata.st_mode & 0o077 == 0
+    }
+
+    private static func matches(_ expected: stat, _ actual: stat) -> Bool {
+        isSafeTemporary(actual)
+            && expected.st_dev == actual.st_dev
+            && expected.st_ino == actual.st_ino
+            && expected.st_mode == actual.st_mode
+            && expected.st_uid == actual.st_uid
+            && expected.st_gid == actual.st_gid
+            && expected.st_nlink == actual.st_nlink
+            && expected.st_size == actual.st_size
+            && expected.st_flags == actual.st_flags
+            && expected.st_gen == actual.st_gen
+            && expected.st_mtimespec.tv_sec == actual.st_mtimespec.tv_sec
+            && expected.st_mtimespec.tv_nsec == actual.st_mtimespec.tv_nsec
+            && expected.st_ctimespec.tv_sec == actual.st_ctimespec.tv_sec
+            && expected.st_ctimespec.tv_nsec == actual.st_ctimespec.tv_nsec
+    }
+}
+
+private enum SandboxDescriptorPathPolicy {
+    static func isAccepted(_ url: URL) -> Bool {
+        let standardized = url.standardizedFileURL.path
+        guard standardized == url.path else {
+            return false
+        }
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        if resolved == standardized {
+            return true
+        }
+        for alias in ["/tmp", "/var"] {
+            if standardized == alias || standardized.hasPrefix(alias + "/") {
+                return resolved == "/private" + standardized
+            }
+        }
+        return false
     }
 }

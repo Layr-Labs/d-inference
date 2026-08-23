@@ -24,21 +24,6 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
-        let startedAt = Date()
-        // #region agent log
-        LumeRuntimeDebugLog.write(
-            hypothesisId: "A,B,C",
-            location:
-                "LumeVirtualMachineRuntime+GuestCommands.swift:execute-entry",
-            message: "guest execution started",
-            data: [
-                "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                "executableRole":
-                    LumeRuntimeDebugLog.executableRole(request.executable),
-                "requestTimeoutSeconds": String(request.timeoutSeconds),
-            ]
-        )
-        // #endregion
         let operationLock = try beginOperation("execute", name: name)
         defer {
             endOperation(name: name)
@@ -67,26 +52,6 @@ extension LumeVirtualMachineRuntime {
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             let sshTimeoutSeconds = request.timeoutSeconds + 5
             guestCommandMayBeRunning = true
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "A,B,C",
-                location:
-                    "LumeVirtualMachineRuntime+GuestCommands.swift:ssh-start",
-                message: "Lume SSH guest wrapper started",
-                data: [
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "executableRole":
-                        LumeRuntimeDebugLog.executableRole(request.executable),
-                    "preflightState":
-                        preflight?.state.rawValue ?? "missing",
-                    "preflightGuestReady":
-                        String(preflight?.guestReady == true),
-                    "lumeTimeoutSeconds": String(sshTimeoutSeconds),
-                    "hostTimeoutSeconds":
-                        String(request.timeoutSeconds + 10),
-                ]
-            )
-            // #endregion
             let result = try await Self.runGuestSSH(
                 runner: processRunner,
                 executable: configuration.executable,
@@ -98,25 +63,6 @@ extension LumeVirtualMachineRuntime {
                 hostTimeoutSeconds: request.timeoutSeconds + 10,
                 maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
             )
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "A,B",
-                location:
-                    "LumeVirtualMachineRuntime+GuestCommands.swift:ssh-result",
-                message: "Lume SSH guest wrapper completed",
-                data: [
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "executableRole":
-                        LumeRuntimeDebugLog.executableRole(request.executable),
-                    "elapsedMilliseconds": String(
-                        Int(Date().timeIntervalSince(startedAt) * 1_000)
-                    ),
-                    "exitCode": String(result.exitCode),
-                    "stdoutBytes": String(result.standardOutput.count),
-                    "stderrBytes": String(result.standardError.count),
-                ]
-            )
-            // #endregion
             guard !result.standardOutputTruncated,
                   !result.standardErrorTruncated
             else {
@@ -146,24 +92,6 @@ extension LumeVirtualMachineRuntime {
             }
             return decoded
         } catch {
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "A,B,C",
-                location:
-                    "LumeVirtualMachineRuntime+GuestCommands.swift:execute-error",
-                message: "guest execution entered cleanup",
-                data: LumeRuntimeDebugLog.errorData(error).merging([
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "executableRole":
-                        LumeRuntimeDebugLog.executableRole(request.executable),
-                    "elapsedMilliseconds": String(
-                        Int(Date().timeIntervalSince(startedAt) * 1_000)
-                    ),
-                    "guestCommandMayBeRunning":
-                        String(guestCommandMayBeRunning),
-                ]) { _, observation in observation }
-            )
-            // #endregion
             let executionWasCancelled =
                 Task.isCancelled || error is CancellationError
             var cancellationFailure: Error?
@@ -180,25 +108,6 @@ extension LumeVirtualMachineRuntime {
             let mustStopVM = requiresVMStop
                 || executionWasCancelled
                 || cancellationFailure != nil
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "B,C",
-                location:
-                    "LumeVirtualMachineRuntime+GuestCommands.swift:cleanup-decision",
-                message: "guest execution cleanup decision made",
-                data: [
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "executableRole":
-                        LumeRuntimeDebugLog.executableRole(request.executable),
-                    "executionWasCancelled":
-                        String(executionWasCancelled),
-                    "guestCancellationFailed":
-                        String(cancellationFailure != nil),
-                    "requiresVMStop": String(requiresVMStop),
-                    "mustStopVM": String(mustStopVM),
-                ]
-            )
-            // #endregion
             if mustStopVM {
                 do {
                     try await stopGuestIgnoringCancellation(name: name)

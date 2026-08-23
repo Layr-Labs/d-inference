@@ -87,6 +87,8 @@ public struct SandboxProcessRunner: Sendable {
             throw SandboxRuntimeError.operationTimedOut(
                 executable.lastPathComponent
             )
+        case .cancelled:
+            throw CancellationError()
         }
     }
 
@@ -94,7 +96,7 @@ public struct SandboxProcessRunner: Sendable {
         for execution: ProcessExecution,
         timeoutSeconds: UInt32
     ) async throws -> WaitOutcome {
-        try await withTaskGroup(of: WaitOutcome.self) { group in
+        let outcome = await withTaskGroup(of: WaitOutcome.self) { group in
             group.addTask {
                 execution.waitUntilExit()
                 return .exited
@@ -108,21 +110,20 @@ public struct SandboxProcessRunner: Sendable {
                 }
             }
 
-            guard let first = await group.next() else {
-                throw SandboxRuntimeError.unsupported("process waiter terminated")
-            }
+            let first = await group.next() ?? .cancelled
             if first == .timedOut {
                 execution.requestStop()
-                try await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(2))
                 execution.forceStop()
             }
             group.cancelAll()
             while await group.next() != nil {}
-            if first == .cancelled {
-                throw CancellationError()
-            }
             return first
         }
+        if outcome == .cancelled {
+            throw CancellationError()
+        }
+        return outcome
     }
 
     private enum WaitOutcome: Equatable, Sendable {

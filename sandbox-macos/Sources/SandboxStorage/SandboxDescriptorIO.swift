@@ -32,48 +32,46 @@ enum SandboxDescriptorIO {
         return result
     }
 
-    static func withExclusiveDestination<Result>(
+    static func withExclusiveDestination(
         at destination: URL,
-        _ operation: (Int32) throws -> (result: Result, sha256: Data)
-    ) throws -> Result {
+        _ operation: (Int32) throws -> Data
+    ) throws {
         let pending = try PendingDestination(destination)
         defer { pending.cleanup() }
 
-        let output = try operation(pending.descriptor)
-        try pending.synchronize(expectedSHA256: output.sha256)
-        try pending.publish(expectedSHA256: output.sha256)
-        return output.result
+        let expectedSHA256 = try operation(pending.descriptor)
+        try pending.synchronize(expectedSHA256: expectedSHA256)
+        try pending.publish(expectedSHA256: expectedSHA256)
     }
 
-    static func withStableSourceAndExclusiveDestination<Result>(
+    static func withStableSourceAndExclusiveDestination(
         source: URL,
         destination: URL,
         _ operation: (
             Int32,
             stat,
             Int32
-        ) throws -> (result: Result, sha256: Data)
-    ) throws -> Result {
+        ) throws -> Data
+    ) throws {
         let openedSource = try StableSource(source)
         defer { openedSource.close() }
         let pending = try PendingDestination(destination)
         defer { pending.cleanup() }
 
-        let output: (result: Result, sha256: Data)
+        let expectedSHA256: Data
         do {
-            output = try operation(
+            expectedSHA256 = try operation(
                 openedSource.descriptor,
                 openedSource.metadata,
                 pending.descriptor
             )
-            try pending.synchronize(expectedSHA256: output.sha256)
+            try pending.synchronize(expectedSHA256: expectedSHA256)
         } catch {
             try openedSource.requireUnchanged()
             throw error
         }
         try openedSource.requireUnchanged()
-        try pending.publish(expectedSHA256: output.sha256)
-        return output.result
+        try pending.publish(expectedSHA256: expectedSHA256)
     }
 
     static func readExactly(

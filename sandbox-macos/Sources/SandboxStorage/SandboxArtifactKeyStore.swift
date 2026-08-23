@@ -206,6 +206,7 @@ public struct SandboxArtifactKeyStore: Sendable {
                 at: destination
             ) { descriptor in
                 try SandboxDescriptorIO.writeAll(data, to: descriptor)
+                return Data(SHA256.hash(data: data))
             }
         } catch {
             throw mapDescriptorError(error)

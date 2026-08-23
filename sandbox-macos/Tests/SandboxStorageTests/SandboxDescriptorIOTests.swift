@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 @testable import SandboxStorage
@@ -34,6 +35,7 @@ final class SandboxDescriptorIOTests: XCTestCase {
                 guard pwrite(mutation, &replacement, 1, 0) == 1 else {
                     throw POSIXError(.EIO)
                 }
+                return sha256(data)
             }
         ) { error in
             XCTAssertEqual(
@@ -51,16 +53,18 @@ final class SandboxDescriptorIOTests: XCTestCase {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }
         let competing = Data("competing".utf8)
+        let pending = Data("pending".utf8)
 
         XCTAssertThrowsError(
             try SandboxDescriptorIO.withExclusiveDestination(
                 at: fixture.destination
             ) { descriptor in
                 try SandboxDescriptorIO.writeAll(
-                    Data("pending".utf8),
+                    pending,
                     to: descriptor
                 )
                 try competing.write(to: fixture.destination)
+                return sha256(pending)
             }
         ) { error in
             XCTAssertEqual(
@@ -78,13 +82,14 @@ final class SandboxDescriptorIOTests: XCTestCase {
     func testReplacedTemporaryNameIsNeverPublished() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }
+        let validated = Data("validated".utf8)
 
         XCTAssertThrowsError(
             try SandboxDescriptorIO.withExclusiveDestination(
                 at: fixture.destination
             ) { descriptor in
                 try SandboxDescriptorIO.writeAll(
-                    Data("validated".utf8),
+                    validated,
                     to: descriptor
                 )
                 let partial = try XCTUnwrap(
@@ -98,6 +103,7 @@ final class SandboxDescriptorIOTests: XCTestCase {
                     to: fixture.directory.appendingPathComponent("moved-original")
                 )
                 try Data("replacement".utf8).write(to: partial)
+                return sha256(validated)
             }
         ) { error in
             XCTAssertEqual(
@@ -108,6 +114,34 @@ final class SandboxDescriptorIOTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: fixture.destination.path)
         )
+    }
+
+    func testSameInodeMutationIsNeverPublished() throws {
+        let fixture = try DescriptorFixture()
+        defer { fixture.remove() }
+        let validated = Data("validated".utf8)
+
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: fixture.destination
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(validated, to: descriptor)
+                var replacement: UInt8 = 0x58
+                guard pwrite(descriptor, &replacement, 1, 0) == 1 else {
+                    throw POSIXError(.EIO)
+                }
+                return sha256(validated)
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .unsafeDestination
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.destination.path)
+        )
+        XCTAssertFalse(try fixture.hasPartialFiles())
     }
 
     func testDestinationParentSymlinkIsRejected() throws {
@@ -130,15 +164,17 @@ final class SandboxDescriptorIOTests: XCTestCase {
             withDestinationURL: target
         )
         let destination = link.appendingPathComponent("artifact")
+        let blocked = Data("blocked".utf8)
 
         XCTAssertThrowsError(
             try SandboxDescriptorIO.withExclusiveDestination(
                 at: destination
             ) { descriptor in
                 try SandboxDescriptorIO.writeAll(
-                    Data("blocked".utf8),
+                    blocked,
                     to: descriptor
                 )
+                return sha256(blocked)
             }
         ) { error in
             XCTAssertEqual(
@@ -176,6 +212,7 @@ final class SandboxDescriptorIOTests: XCTestCase {
         try Data("source".utf8).write(
             to: realParent.appendingPathComponent("source")
         )
+        let blocked = Data("blocked".utf8)
 
         XCTAssertThrowsError(
             try SandboxDescriptorIO.withStableSource(at: source) { _, _ in }
@@ -190,9 +227,10 @@ final class SandboxDescriptorIOTests: XCTestCase {
                 at: linkedParent.appendingPathComponent("destination")
             ) { descriptor in
                 try SandboxDescriptorIO.writeAll(
-                    Data("blocked".utf8),
+                    blocked,
                     to: descriptor
                 )
+                return sha256(blocked)
             }
         ) { error in
             XCTAssertEqual(
@@ -201,6 +239,10 @@ final class SandboxDescriptorIOTests: XCTestCase {
             )
         }
     }
+}
+
+private func sha256(_ data: Data) -> Data {
+    Data(SHA256.hash(data: data))
 }
 
 private struct DescriptorFixture {

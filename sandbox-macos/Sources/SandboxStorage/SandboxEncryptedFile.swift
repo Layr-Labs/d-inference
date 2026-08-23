@@ -164,11 +164,14 @@ public struct SandboxEncryptedFileCodec: Sendable {
                     throw SandboxEncryptedFileError.malformedHeader
                 }
 
+                var outputHasher = SHA256()
                 try SandboxDescriptorIO.writeAll(header, to: destinationDescriptor)
+                outputHasher.update(data: header)
                 try SandboxDescriptorIO.writeAll(
                     headerAuthentication,
                     to: destinationDescriptor
                 )
+                outputHasher.update(data: headerAuthentication)
 
                 var totalRead: UInt64 = 0
                 for index in 0..<chunkCount {
@@ -201,6 +204,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
                         sealed,
                         to: destinationDescriptor
                     )
+                    outputHasher.update(data: sealed)
                     totalRead += UInt64(expectedCount)
                 }
 
@@ -212,6 +216,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
                 else {
                     throw SandboxEncryptedFileError.sourceChanged
                 }
+                return Data(outputHasher.finalize())
             }
         } catch {
             throw Self.mapDescriptorError(error)
@@ -254,6 +259,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
                     throw SandboxEncryptedFileError.contextMismatch
                 }
 
+                var outputHasher = SHA256()
                 var totalWritten: UInt64 = 0
                 for index in 0..<parsed.chunkCount {
                     let remaining = parsed.plaintextLength - totalWritten
@@ -289,6 +295,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
                         plaintext,
                         to: destinationDescriptor
                     )
+                    outputHasher.update(data: plaintext)
                     totalWritten += UInt64(plaintext.count)
                 }
 
@@ -301,6 +308,7 @@ public struct SandboxEncryptedFileCodec: Sendable {
                 ).isEmpty else {
                     throw SandboxEncryptedFileError.trailingData
                 }
+                return Data(outputHasher.finalize())
             }
         } catch {
             throw Self.mapDescriptorError(error)

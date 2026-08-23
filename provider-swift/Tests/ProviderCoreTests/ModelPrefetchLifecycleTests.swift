@@ -133,4 +133,3 @@ struct ModelPrefetchCoordinatorTests {
         await verifyExited.wait()
     }
 }
-

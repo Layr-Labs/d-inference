@@ -308,26 +308,31 @@ coordinator routing on a metric the coordinator believes is homogeneous.
 | `mtp_proposed_tokens` | int | Cumulative `proposedTokens` — the acceptance ratio's denominator, and the **weight** a fleet roll-up must apply per sample. Token count, never token contents. Omitted with the ratio when zero. |
 | `mtp_accepted_tokens` | int | Cumulative `acceptedDraftTokens` — the ratio's numerator. Same omission rule. |
 
-A roll-up must never average the bare per-slot ratios: the events recur per slot
-per minute with cumulative history, so an unweighted mean both over-counts old
-history and weighs a 1/1 slot equally with a 10,000/10,000 slot. Sum
-`mtp_accepted_tokens` / sum `mtp_proposed_tokens` (latest sample per slot, or
-differenced between two samples of the same slot) instead. The counters are
-cumulative rather than per-interval deltas because the telemetry sink drops on
-full — a lost delta is gone forever, while cumulative counters stay differenceable
-across any two samples that did land.
+A roll-up over samples captured by an injected sink must never average the bare
+per-slot ratios: the producer constructs one sample per slot per minute with
+cumulative history, so an unweighted mean both over-counts old history and weighs
+a 1/1 slot equally with a 10,000/10,000 slot. Sum `mtp_accepted_tokens` / sum
+`mtp_proposed_tokens` (latest sample per slot, or differenced between two samples
+of the same slot) instead. The counters remain cumulative rather than per-interval
+deltas, preserving a differenceable wire shape across any two samples captured by
+an injected test sink. `TelemetryClient.shared`, used in production, drops every
+event before buffering, disk, or network I/O; the producer cadence therefore does
+not imply production delivery.
 
-All of these are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
-emitted by a per-bridge sampler on the same 60 s cadence as the MTP metrics log
-(`EngineV2Bridge+MTP.swift`). The sampler runs for **every** slot, MTP or not:
-`mtp_enabled: false` is itself the observation that resolves a partially-MTP fleet,
-and the paged-pool fields do not depend on MTP. The emission point is deliberate —
-a once-per-engine-construction event (like `engine_v2_kv_backend`) rides a sink that
-drops on full behind a 100/min limit and is a notification, not an inventory; a
-per-request event makes idle slots vanish; an edge-triggered event (like
-`step_wedge`) never reports a healthy slot. The per-slot every-heartbeat channel is
-`BackendSlotCapacity`, which already carries `kv_backend`; this is its
-telemetry-side counterpart.
+All of these fields are assembled into `engine_v2_slot_posture`, an INFO
+`engine_health` event, by a per-bridge sampler on the same 60 s cadence as the MTP
+metrics log (`EngineV2Bridge+MTP.swift`). An injected test sink observes one event
+per slot on that cadence; without one, the production path reaches
+`TelemetryClient.shared` and is discarded before buffering or I/O. The sampler
+runs for **every** slot, MTP or not: `mtp_enabled: false` is itself the observation
+that resolves a partially-MTP fleet, and the paged-pool fields do not depend on
+MTP. The periodic producer is deliberate in the retained event model: a
+once-per-engine-construction event (like `engine_v2_kv_backend`) is a notification,
+not an inventory; a per-request event makes idle slots vanish; and an edge-triggered
+event (like `step_wedge`) never reports a healthy slot. The live per-slot
+every-heartbeat channel is `BackendSlotCapacity`, which already carries
+`kv_backend`; `engine_v2_slot_posture` is its retained telemetry-schema counterpart
+for injected sinks.
 
 `mtp_inactive_reason` values are
 [`MTPFallbackReason`](../../provider-swift/Sources/ProviderCore/SpecDec/SpecDecTypes.swift)

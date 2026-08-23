@@ -221,4 +221,3 @@ struct WatchdogProviderIdentityTests {
         #expect(ProcessIdentity.read(pid: process.processIdentifier) == nil)
     }
 }
-

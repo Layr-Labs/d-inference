@@ -62,4 +62,3 @@ struct ScheduleTests {
         #expect(matchesCalendarDuration(duration, expected: 60 * 60))
     }
 }
-

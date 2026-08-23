@@ -343,4 +343,3 @@ struct CrashLoopGuardPredicateTests {
 }
 
 // MARK: - Trip action
-

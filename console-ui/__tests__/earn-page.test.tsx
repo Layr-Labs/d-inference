@@ -8,6 +8,7 @@ import {
   baseRewardMaximumUSD,
   calculateModelEstimate,
   conservedCandidatePayout,
+  resolveHardwareRAM,
 } from "@/app/earn/calc";
 
 const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
@@ -16,6 +17,7 @@ const MAC_STUDIO = "Mac Studio";
 const requireFromTest = createRequire(import.meta.url);
 const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as {
   HARDWARE_OPTIONS: typeof HARDWARE_OPTIONS;
+  resolveHardwareRAM: typeof resolveHardwareRAM;
 };
 
 const apiMocks = vi.hoisted(() => ({
@@ -278,6 +280,14 @@ describe("market-conserving earnings math", () => {
 
   it("keeps console and landing hardware profiles identical", () => {
     expect(landingCore.HARDWARE_OPTIONS).toEqual(HARDWARE_OPTIONS);
+  });
+
+  it("preserves a prior valid RAM choice across temporary hardware changes", () => {
+    const selectedRAM = 48;
+    expect(resolveHardwareRAM([8, 16], selectedRAM)).toBe(16);
+    expect(resolveHardwareRAM([36, 48, 64, 128], selectedRAM)).toBe(48);
+    expect(landingCore.resolveHardwareRAM([8, 16], selectedRAM)).toBe(16);
+    expect(landingCore.resolveHardwareRAM([36, 48, 64, 128], selectedRAM)).toBe(48);
   });
 });
 

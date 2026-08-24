@@ -85,6 +85,12 @@
     return MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
   });
 
+  function resolveHardwareRAM(ramOptions, selectedRAM) {
+    return ramOptions.includes(selectedRAM)
+      ? selectedRAM
+      : (ramOptions[ramOptions.length - 1] || 8);
+  }
+
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
@@ -421,6 +427,7 @@
   return {
     MONTH_HOURS: MONTH_HOURS,
     HARDWARE_OPTIONS: HARDWARE_OPTIONS,
+    resolveHardwareRAM: resolveHardwareRAM,
     parseMarket: parseMarket,
     candidateCapacityTPS: candidateCapacityTPS,
     conservedCandidatePayout: conservedCandidatePayout,

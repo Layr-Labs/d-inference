@@ -111,6 +111,12 @@ export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:${M4_MAX_16_CORE}`;
 export const DEFAULT_ELEC_COST_PER_KWH = 0.15;
 export const MONTH_HOURS = 30 * 24;
 
+export function resolveHardwareRAM(ramOptions: number[], selectedRAM: number): number {
+  return ramOptions.includes(selectedRAM)
+    ? selectedRAM
+    : ramOptions[ramOptions.length - 1] ?? 8;
+}
+
 export interface ModelEarningsEstimate {
   model: EarningsMarketModel;
   candidateTPS: number;

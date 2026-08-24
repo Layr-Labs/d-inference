@@ -117,7 +117,7 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           />
           <CalcStep
             label="Competing live capacity"
-            detail={`${model.provider_supply} eligible build-provider pairs across the desired and fallback builds; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
+            detail={`${model.provider_supply} eligible providers on the currently routed build; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s measured benchmark bandwidth`}
             value={`${model.aggregate_tps.toFixed(1)} tok/s`}
           />
           <CalcStep

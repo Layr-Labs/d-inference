@@ -11,6 +11,7 @@ import {
   DEFAULT_ELEC_COST_PER_KWH,
   HARDWARE_OPTIONS,
   calculateModelEstimate,
+  resolveHardwareRAM,
   type ModelEarningsEstimate,
 } from "./calc";
 
@@ -55,9 +56,7 @@ export function useEarningsCalculator() {
     [selectedHardwareID],
   );
   const availableRAM = hardware.ramOptions;
-  const effectiveRAM = availableRAM.includes(selectedRAM)
-    ? selectedRAM
-    : availableRAM[availableRAM.length - 1] ?? 8;
+  const effectiveRAM = resolveHardwareRAM(availableRAM, selectedRAM);
 
   const modelRows = useMemo<ModelRow[]>(() => {
     if (marketState !== "ready" || !market) return [];

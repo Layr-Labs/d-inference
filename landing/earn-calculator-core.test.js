@@ -249,6 +249,12 @@ test("hardware options use shipped Max variants and omit nonexistent Macs", func
   assert.equal(profile("Mac Pro", "M3 Ultra"), undefined);
 });
 
+test("temporary hardware changes do not overwrite the selected RAM preference", function () {
+  const selectedRAM = 48;
+  assert.equal(Core.resolveHardwareRAM([8, 16], selectedRAM), 16);
+  assert.equal(Core.resolveHardwareRAM([36, 48, 64, 128], selectedRAM), 48);
+});
+
 test("model rows rank the highest estimated net rather than highest gross work", function () {
   const market = marketFixture();
   Object.assign(market.models[0], {

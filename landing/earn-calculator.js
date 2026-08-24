@@ -180,8 +180,8 @@
     appendStep(
       steps,
       "Competing live capacity",
-      model.provider_supply + " eligible build-provider pairs across desired and fallback builds; " +
-        model.aggregate_memory_bandwidth_gbps.toFixed(0) + " GB/s aggregate reported bandwidth",
+      model.provider_supply + " eligible providers on the currently routed build; " +
+        model.aggregate_memory_bandwidth_gbps.toFixed(0) + " GB/s measured benchmark bandwidth",
       model.aggregate_tps.toFixed(1) + " tok/s",
     );
     appendStep(
@@ -317,10 +317,7 @@
     const config = hardwareOption(state.hardwareID);
     state.hardwareID = config.id;
     const ramOptions = config.ramOptions;
-    const effectiveRAM = ramOptions.includes(state.ram)
-      ? state.ram
-      : ramOptions[ramOptions.length - 1];
-    state.ram = effectiveRAM;
+    const effectiveRAM = Core.resolveHardwareRAM(ramOptions, state.ram);
     renderSelectors(config, effectiveRAM);
     renderBaseRewardPolicy(state.marketState, state.market);
 
@@ -427,13 +424,14 @@
     if (notifyButton) {
       notifyButton.addEventListener("click", function () {
         if (window.va) {
+          const selectedHardware = hardwareOption(state.hardwareID);
           window.va("event", {
             name: "small_models_interest_click",
             data: {
               source: "landing_earn_calc",
-              mac_type: hardwareOption(state.hardwareID).macType,
-              chip: hardwareOption(state.hardwareID).chip,
-              ram_gb: state.ram,
+              mac_type: selectedHardware.macType,
+              chip: selectedHardware.chip,
+              ram_gb: Core.resolveHardwareRAM(selectedHardware.ramOptions, state.ram),
             },
           });
         }

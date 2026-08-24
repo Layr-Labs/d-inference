@@ -89,7 +89,7 @@ struct PrivateChatView: View {
             if let failure = store.failure {
                 ChatFailureNotice(
                     failure: failure,
-                    onRetry: lastUserPrompt.map { prompt in { submit(prompt) } },
+                    onRetry: retryFailedResponse,
                     onDismiss: store.clearFailure
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -122,10 +122,6 @@ struct PrivateChatView: View {
             return "On this Mac · \(model) via the local endpoint"
         }
         return "On this Mac · the local endpoint picks the model"
-    }
-
-    private var lastUserPrompt: String? {
-        store.messages.last(where: { $0.role == .user })?.text
     }
 
     private var conversation: some View {
@@ -166,6 +162,18 @@ struct PrivateChatView: View {
         }
 
         draft = ""
+        startResponse(prompt)
+    }
+
+    private func retryFailedResponse() {
+        guard let prompt = store.retryLastFailedResponse() else {
+            composerIsFocused = true
+            return
+        }
+        startResponse(prompt)
+    }
+
+    private func startResponse(_ prompt: String) {
         responseTask?.cancel()
         responseTask = Task { @MainActor in
             if store.isLive {

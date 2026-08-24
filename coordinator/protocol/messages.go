@@ -197,7 +197,7 @@ type RegisterMessage struct {
 	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
-	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
+	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time forced-tool enforcement protocol version
 	ToolConstraintModels        []string                           `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator

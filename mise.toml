@@ -10,12 +10,13 @@ rust = "1.88.0"
 # .github/workflows/ci.yml.
 node = "22"
 
-# Provider (Swift 6.1, Apple Silicon). Source of truth:
-# provider-swift/Package.swift `// swift-tools-version: 6.1`.
+# Provider (Swift 6.3, Apple Silicon). The local `libs/mlx-swift` dependency
+# declares `// swift-tools-version: 6.3`, which sets the effective minimum even
+# though provider-swift's own manifest remains source-compatible with 6.1.
 # mise installs swiftly toolchains; on macOS the system Xcode swift is also
 # acceptable — this pin ensures a consistent CLI for non-Xcode shells / Linux
 # cross builds of ProviderCoreFoundation.
-swift = "6.1"
+swift = "6.3"
 
 # Python is used by helper scripts (scripts/benchmark-models.py) and to
 # fetch the MLX metallib in CI (.github/workflows/integration.yml).

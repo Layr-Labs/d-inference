@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -197,6 +198,84 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
+}
+
+func TestIntegration_Qwen38RequiredToolChoice(t *testing.T) {
+	model := testbed.DefaultTestModelID()
+	if !strings.Contains(strings.ToLower(model), "qwen3.8") {
+		t.Skip("set DARKBLOOM_TESTBED_MODEL to a Qwen3.8 checkpoint")
+	}
+
+	ctx := context.Background()
+	s := testbed.NewSuite(testbed.SuiteConfig{UseMemoryStore: true})
+	require.NoError(t, s.Start(ctx), "suite startup failed")
+	t.Cleanup(s.Stop)
+	body := map[string]any{
+		"model": model,
+		"messages": []map[string]string{{
+			"role": "user", "content": "What is the weather in Boston?",
+		}},
+		"tools": []map[string]any{{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "get_weather",
+				"description": "Get weather for a city",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]string{"type": "string"},
+					},
+					"required":             []string{"city"},
+					"additionalProperties": false,
+				},
+			},
+		}},
+		"tool_choice":      "required",
+		"tool_call_parser": "qwen3_coder",
+		"enable_thinking":  false,
+		"reasoning_effort": "low",
+		"temperature":      0.0,
+		"max_tokens":       96,
+	}
+	bodyJSON, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(
+		s.Ctx, http.MethodPost, s.Coordinator.BaseURL()+"/v1/chat/completions",
+		bytes.NewReader(bodyJSON))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer testbed-admin-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", respBody)
+
+	var completion struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &completion))
+	require.NotEmpty(t, completion.Choices)
+	require.Len(t, completion.Choices[0].Message.ToolCalls, 1)
+	call := completion.Choices[0].Message.ToolCalls[0].Function
+	require.Equal(t, "get_weather", call.Name)
+	var arguments map[string]any
+	require.NoError(t, json.Unmarshal([]byte(call.Arguments), &arguments))
+	require.Equal(t, "Boston", arguments["city"])
+
+	report := tbassert.NewAccountingAsserter(s.PgStore).EvaluateAll(s.Ctx)
+	require.True(t, report.Passed, "accounting integrity check failed\n%s", report.SummaryTable())
 }
 
 func TestIntegration_StreamingInference(t *testing.T) {

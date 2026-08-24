@@ -239,11 +239,8 @@ public enum CoordinatorClientCodec {
     private static func toolConstraintModelIDs(
         _ models: [ModelInfo]
     ) -> [String] {
-        models.filter {
-            Gemma4ToolConstraintContract.supports(modelType: $0.modelType)
-                && $0.toolConstraintTemplateHash
-                    == Gemma4ToolConstraintContract.pinnedTemplateSHA256
-        }.map(\.id).sorted()
+        models.filter(ToolChoiceEnforcementPolicy.advertisesCapability)
+            .map(\.id).sorted()
     }
 
     public static func encodeOutboundMessage(_ outbound: OutboundMessage) throws -> Data {

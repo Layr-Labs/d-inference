@@ -152,7 +152,7 @@ func TestCleanupRefusesPreExistingConfig(t *testing.T) {
 	}
 }
 
-// A default-posture launch writes no config and so owns nothing to clean up.
+// The cleanup helper remains a no-op when a caller has no generated config.
 func TestCleanupRefusesWhenNoConfigWasGenerated(t *testing.T) {
 	path := canonicalConfigForTest(t, "config_version = 1\n\n[provider]\nname = \"op\"\n")
 

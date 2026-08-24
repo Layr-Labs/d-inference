@@ -102,8 +102,8 @@ type Provider struct {
 	done   chan struct{}
 
 	// generatedConfig holds the provider TOML this instance wrote into
-	// StateDir. Empty when no KV-backend / concurrency knob was set, which is
-	// the default and launches with no --config at all.
+	// StateDir. Every provider gets one so auto-update and auto-restart stay off;
+	// KV-backend / concurrency keys remain optional within it.
 	generatedConfig string
 	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
 	// was present at launch. The provider copies a --config file there when it
@@ -538,8 +538,8 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	// The KV backend and the per-slot concurrency cap have no env-var or CLI
 	// equivalent (DARKBLOOM_CBV2_PAGED_KV can only force paged OFF), so
-	// selecting them means handing the provider a TOML. Unset knobs render no
-	// file and add no argument: the default launch stays byte-identical.
+	// selecting them adds keys to the testbed TOML. The file is always present
+	// because it also disables auto-update and the launchd watchdog.
 	generated, err := BuildProviderTOML(cfg, p.ProviderIndex)
 	if err != nil {
 		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)

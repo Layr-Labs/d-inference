@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type toolChoiceMode string
@@ -68,11 +69,12 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 	}
 
 	enforceSchema := mode == toolChoiceRequired || mode == toolChoiceNamed
-	if mode.requiresGrammar() {
+	if mode.requiresInferenceConstraint() {
 		if parser, exists := root["tool_call_parser"]; exists && parser != nil {
-			if parser != "gemma" {
+			name, ok := parser.(string)
+			if !ok || !supportsInferenceEnforcedToolChoice(name) {
 				return policy, invalidToolConstraint(
-					"inference-enforced Gemma tool_choice requires tool_call_parser 'gemma'",
+					"inference-enforced tool_choice requires a supported Gemma or Qwen tool_call_parser",
 					"tool_call_parser")
 			}
 		}
@@ -105,6 +107,17 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 		return policy, err
 	}
 	return policy, nil
+}
+
+func supportsInferenceEnforcedToolChoice(parser string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(parser)), "-", "_")
+	switch normalized {
+	case "gemma", "gemma4", "gemma_4",
+		"qwen3_coder", "qwen3", "qwen3_5", "qwen_xml", "xml", "xml_function":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateConstrainedStops(raw any) error {
@@ -151,13 +164,13 @@ func validateConstrainedStops(raw any) error {
 	return nil
 }
 
-// requiresGrammar reports whether the mode needs a sampler-level grammar, and
-// therefore a provider advertising inference-time tool_choice enforcement.
+// requiresInferenceConstraint reports whether the mode needs provider-side
+// inference-time tool_choice enforcement (a sampler grammar for Gemma or
+// withheld parse/schema validation for Qwen).
 // `none` is deliberately excluded: it is honored by hiding tools from the
 // rendered prompt and rejecting any call the model emits anyway after
-// generation, so it needs no grammar and must not be fenced to the
-// Gemma-class constrained provider pool.
-func (m toolChoiceMode) requiresGrammar() bool {
+// generation, so it must not be fenced to the constrained provider pool.
+func (m toolChoiceMode) requiresInferenceConstraint() bool {
 	return m == toolChoiceRequired || m == toolChoiceNamed
 }
 

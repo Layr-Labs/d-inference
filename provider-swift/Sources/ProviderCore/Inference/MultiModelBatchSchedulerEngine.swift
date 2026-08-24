@@ -161,7 +161,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerResolution,
         availableModels: @escaping @Sendable () async -> [String],
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        templateControls: ChatTemplateControls = .init()
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -171,7 +172,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = { _ in }
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
-        self.templateControls = ChatTemplateControls()
+        self.templateControls = templateControls
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -551,10 +552,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     requested: request.toolCallParser,
                     modelType: modelType
                 )
-                if prepared.mode.requiresInferenceGrammar, format != .gemma {
-                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "inference-enforced Gemma tool_choice requires the gemma tool parser")
-                }
+                let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
+                    mode: prepared.mode,
+                    modelContext: ChatTemplateFixContext(
+                        modelId: request.model, modelType: modelType))
+                try ToolChoiceEnforcementPolicy.validateParser(
+                    format, strategy: strategy)
             } catch {
                 await releaseBox.fire()
                 throw error
@@ -787,9 +790,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
 
-                // Flush and validate parsed calls. Required/named/none are
-                // enforced in the sampler; this remains the parser/schema
-                // boundary for auto plus defense in depth for every mode.
+                // Flush and validate parsed calls. Gemma required/named are
+                // sampler-constrained; Qwen required/named are prompt-forced
+                // and fail closed here before a call is exposed. This remains
+                // defense in depth for every mode.
                 let toolCalls = toolHandler?.finish() ?? []
                 if prepared.mode == .auto,
                     let residual = toolHandler?.takeResidualText(),
@@ -811,7 +815,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode.requiresInferenceGrammar {
+                if prepared.mode.requiresInferenceConstraint {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)

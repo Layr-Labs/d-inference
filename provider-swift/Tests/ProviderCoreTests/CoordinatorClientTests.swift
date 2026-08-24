@@ -80,7 +80,7 @@ import Testing
     #expect(withTok["apns_environment"] as? String == "production")
 }
 
-@Test func registrationAdvertisesExplicitGemmaToolConstraintModels() throws {
+@Test func registrationAdvertisesExplicitGemmaAndQwenToolConstraintModels() throws {
     let gemma = ModelInfo(
         id: "gemma-4-26b-qat-4bit",
         modelType: "gemma4_text",
@@ -114,12 +114,19 @@ import Testing
         sizeBytes: 1,
         estimatedMemoryGb: 1,
         toolConstraintTemplateHash: "wrong")
+    let qwen38 = ModelInfo(
+        id: "mlx-community/Qwen3.8-27B-4bit",
+        modelType: "qwen3_5",
+        parameters: 27_000_000_000,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
     let config = CoordinatorClientConfig(
         url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [
             clientSampleModel(), gemma, typeOnlyGemma, misleadingID,
-            driftedTemplate,
+            driftedTemplate, qwen38,
         ],
         backendName: "mlx_swift_lm",
         publicKey: "cHVibGlj",
@@ -130,14 +137,16 @@ import Testing
     #expect(object["tool_constraint_protocol"] as? Int == 1)
     #expect(
         object["tool_constraint_models"] as? [String]
-            == [typeOnlyGemma.id, gemma.id].sorted())
+            == [typeOnlyGemma.id, gemma.id, qwen38.id].sorted())
 
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
     guard case .register(let registration) = decoded else {
         throw ClientTestFailure.unexpectedMessage
     }
     #expect(registration.toolConstraintProtocol == 1)
-    #expect(registration.toolConstraintModels == [typeOnlyGemma.id, gemma.id].sorted())
+    #expect(
+        registration.toolConstraintModels
+            == [typeOnlyGemma.id, gemma.id, qwen38.id].sorted())
 
     let ordinary = CoordinatorClientConfig(
         url: config.url,

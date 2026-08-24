@@ -208,6 +208,21 @@ func TestValidateToolConstraintRequestAcceptsNormalizedSubset(t *testing.T) {
 	}
 }
 
+func TestValidateToolConstraintRequestAcceptsForcedQwenParserAliases(t *testing.T) {
+	const prefix = `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"weather"}}],"tool_choice":"required","tool_call_parser":`
+	for _, parser := range []string{
+		"qwen3_coder", "qwen3", "qwen3_5", "qwen-xml", "xml_function",
+	} {
+		t.Run(parser, func(t *testing.T) {
+			body := []byte(prefix + fmt.Sprintf("%q}", parser))
+			mode, err := validateToolConstraintRequest(body)
+			if err != nil || mode != toolChoiceRequired {
+				t.Fatalf("Qwen parser alias rejected: mode=%q err=%v", mode, err)
+			}
+		})
+	}
+}
+
 func TestValidateToolHistoryAllowsTrailingAssistantContinuation(t *testing.T) {
 	body := []byte(`{
 		"model":"m",

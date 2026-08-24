@@ -1513,7 +1513,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	if requiresToolConstraint && requiresVision {
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error",
@@ -3905,7 +3905,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
 	aliasTraits := registry.RequestTraits{

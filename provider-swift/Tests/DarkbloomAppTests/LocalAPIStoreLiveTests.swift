@@ -88,7 +88,7 @@ struct LocalAPIStoreLiveTests {
             guard alive, discovery.info?.pid == pid else { return nil }
             return discovery.info?.processIdentity
         }
-        LocalAPIStore.live(
+        return LocalAPIStore.live(
             discoveryReader: { discovery.info },
             processIdentityReader: identityReader,
             pollInterval: .seconds(3),
@@ -336,7 +336,15 @@ struct LocalAPIStoreLiveTests {
                         )
                     },
                     lineTransport: { _ in
-                        (AsyncThrowingStream { $0.finish() }, HTTPURLResponse())
+                        (
+                            AsyncThrowingStream { $0.finish() },
+                            HTTPURLResponse(
+                                url: URL(string: "http://127.0.0.1:8000/v1")!,
+                                statusCode: 200,
+                                httpVersion: nil,
+                                headerFields: nil
+                            )!
+                        )
                     }
                 )
             }

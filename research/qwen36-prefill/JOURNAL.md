@@ -5,7 +5,7 @@ heading. Never delete a miss.
 
 ## 2026-08-24T05:16Z — engagement
 
-User granted Tailscale access to `m3-max-128gb-2` (`100.75.135.42`),
+User granted remote access to `m3-max-128gb-2`,
 user `gaj`. Job: 2.5x Qwen 3.6 35B A3B aggregate CBv2 prefill, B=1/2/4.
 
 ## 2026-08-24T05:17Z — machine recon

@@ -2,7 +2,7 @@
 
 Status: kept (facts)
 
-- Tailscale: `100.75.135.42` / `m3-max-128gb-2`
+- Remote benchmark host: `m3-max-128gb-2`
 - `Mac15,9`, Apple M3 Max, 40 GPU cores, 16 CPU (12P+4E), 128 GB
 - Unified-memory bandwidth class: ~400 GB/s (M3 Max 128 GB)
 - Metal `maxBufferLength` previously observed 86,586,540,032 (~80.6 GiB)

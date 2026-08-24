@@ -6,7 +6,7 @@ goal, do not run it.
 ## One-sentence objective
 
 Make Darkbloom's Qwen 3.6 35B A3B **aggregate continuous-batching prefill** at
-least **2.5x faster** on the M3 Max (`100.75.135.42` / `m3-max-128gb-2`),
+least **2.5x faster** on the M3 Max (`m3-max-128gb-2`),
 measured at **B=1, B=2, B=4**, with **correctness** and a change that can
 actually ship in Darkbloom.
 
@@ -48,7 +48,7 @@ wins; log every miss; never rerun a dead experiment without a new reason.
 | Item | Fact |
 |---|---|
 | Host | Apple M3 Max, 40-core GPU, 16-core CPU (12P+4E), 128 GB unified, Mac15,9 |
-| Tailscale | `100.75.135.42` (`m3-max-128gb-2`) |
+| Remote benchmark host | `m3-max-128gb-2` |
 | OS | macOS 26.4, Swift 6.3.2, Xcode present |
 | Power | Must bench on AC + High Power (`powermode 2`). LPM halves GPU. Record `pmset -g batt` and `powermode` in every result row. |
 | Installed provider | Darkbloom `0.8.10` at `~/.darkbloom` (not currently serving) |

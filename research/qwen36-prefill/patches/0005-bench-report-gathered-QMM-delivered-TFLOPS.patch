@@ -1,0 +1,53 @@
+From 1d6f4bcb60d8f119bc3c9bf6dd30b29e015fac54 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 06:19:42 +0000
+Subject: [PATCH] bench: report gathered QMM delivered TFLOPS
+
+---
+ Tests/MLXTests/QwenExpertTilePerfTests.swift | 24 ++++++++++++++------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/Tests/MLXTests/QwenExpertTilePerfTests.swift b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+index 7224c81..b9e8398 100644
+--- a/Tests/MLXTests/QwenExpertTilePerfTests.swift
++++ b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+@@ -110,19 +110,29 @@ final class QwenExpertTilePerfTests: XCTestCase {
+             let median = samples[samples.count / 2]
+             let p10 = samples[samples.count / 10]
+             let p90 = samples[(samples.count * 9) / 10]
+-            // Weight bytes actually streamed per call: M/E-weighted expert
+-            // rows are all touched (uniform histogram touches all E experts).
+-            // Per output row: k/2 packed W4 bytes plus one BF16 scale and one
+-            // BF16 bias per group of 64, i.e. (k / groupSize) * 4 bytes.
+-            let weightBytes =
++            let operations =
++                2.0 * Double(benchCase.m)
++                * Double(benchCase.n) * Double(benchCase.k)
++            let tflops = operations / (median / 1e3) / 1e12
++            // Unique packed-weight footprint touched by the uniform histogram.
++            // This is not DRAM traffic: row tiles can request the same weight
++            // block repeatedly, with cache residency deciding physical reads.
++            // Each output row has k/2 packed W4 bytes and one BF16 scale plus
++            // one BF16 bias per group of 64.
++            let uniqueWeightBytes =
+                 expertCount * benchCase.n
+                 * (benchCase.k / 2 + benchCase.k / groupSize * 4)
+-            let gbps = Double(weightBytes) / (median / 1e3) / 1e9
++            let uniqueWeightGBps =
++                Double(uniqueWeightBytes) / (median / 1e3) / 1e9
+             var line = "[qwen-expert-tile-perf] \(benchCase.name): "
+             line += "median " + String(format: "%.4f", median) + " ms "
+             line += "p10 " + String(format: "%.4f", p10) + " "
+             line += "p90 " + String(format: "%.4f", p90) + " "
+-            line += "(~" + String(format: "%.0f", gbps) + " GB/s wt) "
++            line += String(format: "%.2f TFLOP/s ", tflops)
++            line += "(" + String(format: "%.0f", tflops / 23.0 * 100.0)
++            line += "% of 23 target) "
++            line += "(~" + String(format: "%.0f", uniqueWeightGBps)
++            line += " unique-W GB/s) "
+             line += "hits=\(routeCounters.hits) fallbacks=\(routeCounters.fallbacks) "
+             line += "n=\(iterations)\n"
+             FileHandle.standardError.write(Data(line.utf8))
+-- 
+2.43.0
+

@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${DARKBLOOM_LUME_PYTHON:-$(command -v python3)}"
+PUBLICATION_HELPER="$SCRIPT_DIR/lume-runtime-publication.py"
 TEST_LOG="$(mktemp "${TMPDIR:-/tmp}/darkbloom-lume-publication-tests.XXXXXX")"
 
 cleanup() {
@@ -16,6 +17,44 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+"$PYTHON" - "$PUBLICATION_HELPER" <<'PY'
+import ast
+import sys
+
+helper_path = sys.argv[1]
+with open(helper_path, encoding="utf-8") as source:
+    tree = ast.parse(source.read(), filename=helper_path)
+
+destructive_names = {
+    "remove",
+    "removedirs",
+    "rmdir",
+    "rmtree",
+    "unlink",
+    "unlinkat",
+}
+violations = []
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Call):
+        continue
+    function = node.func
+    if isinstance(function, ast.Name):
+        name = function.id
+    elif isinstance(function, ast.Attribute):
+        name = function.attr
+    else:
+        continue
+    if name in destructive_names:
+        violations.append(f"{name}@{node.lineno}")
+
+if violations:
+    raise SystemExit(
+        "automatic staging deletion is forbidden; quarantine instead: "
+        + ", ".join(sorted(violations))
+    )
+PY
+echo "lume_publication_destructive_cleanup_tripwire=absent"
 
 /bin/bash "$SCRIPT_DIR/test-lume-runtime-publication.sh" 2>&1 \
     | tee "$TEST_LOG"

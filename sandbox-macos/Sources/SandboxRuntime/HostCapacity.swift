@@ -208,13 +208,15 @@ public enum SandboxLeaseOperation: String, Codable, CaseIterable, Sendable {
 package struct SandboxLeaseMutationAuthorization: @unchecked Sendable {
     private let operationLock: SandboxLeaseOperationLock
     private let scope: SandboxOperationScope
+    package let lease: SandboxCapacityLease
 
     init(
         operationLock: SandboxLeaseOperationLock,
-        scope: SandboxOperationScope
+        lease: SandboxCapacityLease
     ) {
         self.operationLock = operationLock
-        self.scope = scope
+        self.scope = lease.scope
+        self.lease = lease
     }
 
     func authorizes(_ scope: SandboxOperationScope) -> Bool {

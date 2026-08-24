@@ -49,6 +49,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
             storageIdentity: identity
         )
         try store.validateExistingStateIfPresent()
+        try SandboxCapacityPolicyReconciler.fenceLeasesOutsidePolicy(
+            store: store,
+            policy: policy
+        )
         self.store = store
         self.policy = policy
         self.currentDate = currentDate
@@ -78,6 +82,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
             directorySynchronizationError: directorySynchronizationError
         )
         try store.validateExistingStateIfPresent()
+        try SandboxCapacityPolicyReconciler.fenceLeasesOutsidePolicy(
+            store: store,
+            policy: policy
+        )
         self.store = store
         self.policy = policy
         self.currentDate = currentDate
@@ -166,7 +174,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
             sandboxID: scope.sandboxID,
             wait: false
         )
-        _ = try authorize(
+        let lease = try authorize(
             scope: scope,
             virtualMachineName: virtualMachineName,
             operation: operation,
@@ -175,7 +183,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
         return SandboxLeaseMutationAuthorization(
             operationLock: operationLock,
-            scope: scope
+            lease: lease
         )
     }
 

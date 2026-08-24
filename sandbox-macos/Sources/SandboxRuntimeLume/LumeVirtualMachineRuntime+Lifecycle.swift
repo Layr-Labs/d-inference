@@ -36,19 +36,35 @@ extension LumeVirtualMachineRuntime {
             owner: .init(operationScope: scope),
             in: configuration.storageDirectory
         )
+        var resourceCommitment:
+            LumeVirtualMachineOwnership.ResourceCommitment?
         switch (record, ownership) {
-        case (.some, .owned), (.none, .absent):
+        case (.some, .owned):
+            resourceCommitment =
+                try LumeVirtualMachineOwnership.requireResourceCommitment(
+                    name: name,
+                    owner: .init(operationScope: scope),
+                    in: configuration.storageDirectory
+                )
+        case (.none, .absent):
             break
         case (.some, .absent), (.none, .owned):
             throw SandboxRuntimeError.unsupported(
                 "VM \(name) runtime and ownership presence disagree"
             )
         }
-        _ = try capacityArbiter.authorize(
+        let lease = try capacityArbiter.authorize(
             scope: scope,
             virtualMachineName: name,
             operation: .inspect
         )
+        if let record, let resourceCommitment {
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: record,
+                ownership: resourceCommitment,
+                lease: lease
+            )
+        }
         return record
     }
 
@@ -300,11 +316,18 @@ extension LumeVirtualMachineRuntime {
                 "cannot start missing VM \(name)"
             )
         }
-        let ownership = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
+        let ownershipCommitment =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: existing,
+            ownership: ownershipCommitment,
+            lease: leaseAuthorization?.lease
         )
+        let ownership = ownershipCommitment.identity
         let startIntent = try LumeVirtualMachineStartIntent.presence(
             name: name,
             ownership: ownership,
@@ -331,6 +354,16 @@ extension LumeVirtualMachineRuntime {
                 name: name,
                 expected: .running,
                 timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            guard let running = try await inspect(name: name) else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "Lume start completed without a running VM record"
+                )
+            }
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: running,
+                ownership: ownershipCommitment,
+                lease: leaseAuthorization?.lease
             )
             try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
                 startIntent,
@@ -404,6 +437,16 @@ extension LumeVirtualMachineRuntime {
                 timeoutSeconds: configuration.commandTimeoutSeconds,
                 process: process
             )
+            guard let running = try await inspect(name: name) else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "Lume start completed without a running VM record"
+                )
+            }
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: running,
+                ownership: ownershipCommitment,
+                lease: leaseAuthorization?.lease
+            )
             try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
                 .unresolved(intent),
                 name: name,
@@ -422,9 +465,10 @@ extension LumeVirtualMachineRuntime {
                 try await cleanupFailedStartIgnoringCancellation(
                     name: name,
                     owner: owner,
-                    ownership: ownership,
+                    ownership: ownershipCommitment,
                     process: process,
-                    unresolvedIntent: unresolvedIntent
+                    unresolvedIntent: unresolvedIntent,
+                    expectedLease: leaseAuthorization?.lease
                 )
             } catch let cleanupError {
                 throw SandboxRuntimeError.cleanupFailed(
@@ -493,7 +537,11 @@ extension LumeVirtualMachineRuntime {
         let owner = LumeVirtualMachineOwnership.Owner(
             operationScope: scope
         )
-        try await stopWithoutOperationFence(name: name, owner: owner)
+        try await stopWithoutOperationFence(
+            name: name,
+            owner: owner,
+            expectedLease: leaseAuthorization?.lease
+        )
         if releaseCapacity {
             guard let capacityArbiter,
                   let scope,
@@ -548,11 +596,18 @@ extension LumeVirtualMachineRuntime {
             )
             return
         }
-        let ownership = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
+        let ownershipCommitment =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: existing,
+            ownership: ownershipCommitment,
+            lease: leaseAuthorization?.lease
         )
+        let ownership = ownershipCommitment.identity
         try LumeVirtualMachineStartIntent.requireAbsent(
             name: name,
             ownership: ownership,

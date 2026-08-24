@@ -30,9 +30,10 @@ extension LumeVirtualMachineRuntime {
     func cleanupFailedStartIgnoringCancellation(
         name: String,
         owner: LumeVirtualMachineOwnership.Owner,
-        ownership: LumeVirtualMachineOwnership.Identity,
+        ownership: LumeVirtualMachineOwnership.ResourceCommitment,
         process: SandboxManagedProcess,
-        unresolvedIntent: LumeVirtualMachineStartIntent.Intent?
+        unresolvedIntent: LumeVirtualMachineStartIntent.Intent?,
+        expectedLease: SandboxCapacityLease?
     ) async throws {
         runningProcesses.removeValue(forKey: name)
         let cleanup = Task.detached {
@@ -41,7 +42,8 @@ extension LumeVirtualMachineRuntime {
                 owner: owner,
                 ownership: ownership,
                 process: process,
-                unresolvedIntent: unresolvedIntent
+                unresolvedIntent: unresolvedIntent,
+                expectedLease: expectedLease
             )
         }
         try await cleanup.value
@@ -50,23 +52,33 @@ extension LumeVirtualMachineRuntime {
     private func cleanupFailedStart(
         name: String,
         owner: LumeVirtualMachineOwnership.Owner,
-        ownership: LumeVirtualMachineOwnership.Identity,
+        ownership: LumeVirtualMachineOwnership.ResourceCommitment,
         process: SandboxManagedProcess,
-        unresolvedIntent: LumeVirtualMachineStartIntent.Intent?
+        unresolvedIntent: LumeVirtualMachineStartIntent.Intent?,
+        expectedLease: SandboxCapacityLease?
     ) async throws {
         _ = await process.stop()
-        let state = try await inspect(name: name)?.state
+        let observed = try await inspect(name: name)
+        if let observed {
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: observed,
+                ownership: ownership,
+                lease: expectedLease
+            )
+        }
+        let state = observed?.state
         if state != nil && state != .stopped {
             try await stopWithoutOperationFence(
                 name: name,
                 owner: owner,
-                locallyTerminatedIntent: unresolvedIntent
+                locallyTerminatedIntent: unresolvedIntent,
+                expectedLease: expectedLease
             )
         } else if let unresolvedIntent {
             try LumeVirtualMachineStartIntent.clearAfterFailedStart(
                 unresolvedIntent,
                 name: name,
-                ownership: ownership,
+                ownership: ownership.identity,
                 owner: owner,
                 terminalState: state,
                 in: configuration.storageDirectory
@@ -81,7 +93,8 @@ extension LumeVirtualMachineRuntime {
     func stopWithoutOperationFence(
         name: String,
         owner: LumeVirtualMachineOwnership.Owner,
-        locallyTerminatedIntent: LumeVirtualMachineStartIntent.Intent? = nil
+        locallyTerminatedIntent: LumeVirtualMachineStartIntent.Intent? = nil,
+        expectedLease: SandboxCapacityLease? = nil
     ) async throws {
         guard let existing = try await inspect(name: name) else {
             try await stopMissingVirtualMachine(
@@ -91,11 +104,18 @@ extension LumeVirtualMachineRuntime {
             )
             return
         }
-        let ownership = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
+        let ownershipCommitment =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: existing,
+            ownership: ownershipCommitment,
+            lease: expectedLease
         )
+        let ownership = ownershipCommitment.identity
         let startIntentPlan = try LumeVirtualMachineStartIntent.prepareForStop(
             name: name,
             ownership: ownership,
@@ -111,8 +131,10 @@ extension LumeVirtualMachineRuntime {
             try finishProvenStop(
                 name: name,
                 owner: owner,
-                ownership: ownership,
-                startIntentPlan: startIntentPlan
+                ownership: ownershipCommitment,
+                startIntentPlan: startIntentPlan,
+                observed: existing,
+                expectedLease: expectedLease
             )
             return
         }
@@ -130,7 +152,9 @@ extension LumeVirtualMachineRuntime {
         if let process = runningProcesses.removeValue(forKey: name) {
             _ = await process.stop()
         }
-        guard try await inspect(name: name)?.state == .stopped else {
+        guard let stopped = try await inspect(name: name),
+              stopped.state == .stopped
+        else {
             throw SandboxRuntimeError.malformedOutput(
                 "Lume stop completed without a stopped VM record"
             )
@@ -138,8 +162,10 @@ extension LumeVirtualMachineRuntime {
         try finishProvenStop(
             name: name,
             owner: owner,
-            ownership: ownership,
-            startIntentPlan: startIntentPlan
+            ownership: ownershipCommitment,
+            startIntentPlan: startIntentPlan,
+            observed: stopped,
+            expectedLease: expectedLease
         )
     }
 
@@ -204,23 +230,31 @@ extension LumeVirtualMachineRuntime {
     private func finishProvenStop(
         name: String,
         owner: LumeVirtualMachineOwnership.Owner,
-        ownership: LumeVirtualMachineOwnership.Identity,
-        startIntentPlan: LumeVirtualMachineStartIntent.StopPlan
+        ownership: LumeVirtualMachineOwnership.ResourceCommitment,
+        startIntentPlan: LumeVirtualMachineStartIntent.StopPlan,
+        observed: SandboxVirtualMachineRecord,
+        expectedLease: SandboxCapacityLease?
     ) throws {
-        let finalOwnership = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
-        )
+        let finalOwnership =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
         guard finalOwnership == ownership else {
             throw SandboxRuntimeError.unsupported(
                 "VM \(name) installation changed during stop"
             )
         }
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: observed,
+            ownership: finalOwnership,
+            lease: expectedLease
+        )
         try LumeVirtualMachineStartIntent.completeStop(
             startIntentPlan,
             name: name,
-            ownership: ownership,
+            ownership: ownership.identity,
             owner: owner,
             observedState: .stopped,
             in: configuration.storageDirectory

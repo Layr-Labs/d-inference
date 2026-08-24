@@ -238,6 +238,176 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testReducedPolicyDurablyDrainsExistingLeases() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let original = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(original)
+        let first = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-policy-a",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let second = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-policy-b",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+
+        XCTAssertEqual(try reduced.snapshot().mode, .draining)
+        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+            _ = try reduced.authorize(
+                scope: first.scope,
+                virtualMachineName: first.virtualMachineName,
+                operation: .start
+            )
+        }
+        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+            _ = try reduced.renew(
+                scope: first.scope,
+                expiresAt: now.addingTimeInterval(180)
+            )
+        }
+        XCTAssertEqual(
+            try reduced.authorize(
+                scope: first.scope,
+                virtualMachineName: first.virtualMachineName,
+                operation: .stop
+            ),
+            first,
+            "policy fencing must retain cleanup authority"
+        )
+        let restoredPolicy = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
+        )
+        XCTAssertEqual(
+            try restoredPolicy.snapshot().mode,
+            .draining,
+            "raising policy again must not resurrect previously fenced authority"
+        )
+        try releaseLease(first, using: reduced)
+        try releaseLease(second, using: reduced)
+        XCTAssertEqual(
+            try reduced.setMode(.sandboxDedicated).mode,
+            .sandboxDedicated,
+            "a human may re-enable admission only after fenced leases are gone"
+        )
+
+        let reopened = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
+        )
+        XCTAssertEqual(
+            try reopened.snapshot().mode,
+            .sandboxDedicated,
+            "the durable drain must survive until explicit empty-host recovery"
+        )
+    }
+
+    func testReducedPolicyFenceWaitsForActiveLeaseMutation() async throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let original = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
+        try initializeDedicated(original)
+        let lease = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-policy-linearized",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        var authorization: SandboxLeaseMutationAuthorization? =
+            try original.authorizeMutation(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .start
+            )
+        let status = RenewalStatus()
+        let reduction = Task.detached {
+            await status.markStarted()
+            let arbiter = try SandboxHostCapacityArbiter(
+                stateDirectory: stateDirectory,
+                policy: SandboxCapacityPolicy(
+                    maximumReservedCPUCount: 2,
+                    maximumReservedMemoryBytes:
+                        16 * SandboxResourcePolicy.gibibyte,
+                    maximumReservedGrowthBytes:
+                        300 * SandboxResourcePolicy.gibibyte,
+                    storageHeadroomBytes:
+                        20 * SandboxResourcePolicy.gibibyte
+                ),
+                currentDate: { clock.now() },
+                availableStorageBytes: { UInt64.max }
+            )
+            await status.markCompleted()
+            return arbiter
+        }
+
+        while !(await status.started) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let completedWhileAuthorized = await status.completed
+        XCTAssertFalse(
+            completedWhileAuthorized,
+            "policy fencing must wait until the active mutation releases its lease lock"
+        )
+        XCTAssertEqual(try original.snapshot().mode, .sandboxDedicated)
+        XCTAssertNotNil(authorization)
+        authorization = nil
+
+        let reduced = try await reduction.value
+        XCTAssertEqual(try reduced.snapshot().mode, .draining)
+    }
+
+    func testReducedMemoryAndGrowthPoliciesAlsoDrain() throws {
+        let cases: [(name: String, memoryGiB: UInt64, growthGiB: UInt64)] = [
+            ("memory", 4, 300),
+            ("growth", 16, 125),
+        ]
+        for testCase in cases {
+            let stateDirectory = temporaryStateDirectory()
+            defer { try? FileManager.default.removeItem(at: stateDirectory) }
+            let original = try makeArbiter(stateDirectory: stateDirectory)
+            try initializeDedicated(original)
+            _ = try original.reserve(
+                sandboxID: SandboxID(),
+                generation: try generation(1),
+                virtualMachineName: "sandbox-policy-\(testCase.name)",
+                resources: try makeResources(),
+                expiresAt: Date(timeIntervalSince1970: 2_000_000_120)
+            )
+
+            let reduced = try makeArbiter(
+                stateDirectory: stateDirectory,
+                maximumMemoryGiB: testCase.memoryGiB,
+                maximumGrowthGiB: testCase.growthGiB
+            )
+
+            XCTAssertEqual(
+                try reduced.snapshot().mode,
+                .draining,
+                "\(testCase.name) reduction must durably fence existing work"
+            )
+        }
+    }
+
     func testRejectedIdentifiersDoNotCreateDurableLeaseLocks() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }

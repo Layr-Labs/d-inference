@@ -161,9 +161,34 @@ struct SandboxCapacityStateStore: Sendable {
         sandboxID: SandboxID,
         wait: Bool = true
     ) throws -> SandboxLeaseOperationLock {
+        try acquireLeaseOperationLock(
+            named: Self.leaseOperationLockName(for: sandboxID),
+            wait: wait
+        )
+    }
+
+    func acquireAllLeaseOperationLocks() throws
+        -> [SandboxLeaseOperationLock]
+    {
+        var locks: [SandboxLeaseOperationLock] = []
+        locks.reserveCapacity(Int(Self.leaseOperationLockSlotCount))
+        for slot in 0..<Self.leaseOperationLockSlotCount {
+            locks.append(
+                try acquireLeaseOperationLock(
+                    named: "lease-slot-\(slot).lock",
+                    wait: true
+                )
+            )
+        }
+        return locks
+    }
+
+    private func acquireLeaseOperationLock(
+        named lockName: String,
+        wait: Bool
+    ) throws -> SandboxLeaseOperationLock {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
-        let lockName = Self.leaseOperationLockName(for: sandboxID)
         let openedLock = try Self.openLockFile(
             named: lockName,
             in: directoryDescriptor

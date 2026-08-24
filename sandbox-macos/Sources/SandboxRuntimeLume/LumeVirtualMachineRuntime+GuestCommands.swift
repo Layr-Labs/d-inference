@@ -48,11 +48,23 @@ extension LumeVirtualMachineRuntime {
         let owner = LumeVirtualMachineOwnership.Owner(
             operationScope: scope
         )
-        let identity = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
+        guard let observed = try await inspect(name: name) else {
+            throw SandboxRuntimeError.unsupported(
+                "guest commands require an existing VM"
+            )
+        }
+        let ownership =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: observed,
+            ownership: ownership,
+            lease: leaseAuthorization?.lease
         )
+        let identity = ownership.identity
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
         switch commandJournal.replay(
             installationID: identity.installationID,
@@ -65,6 +77,7 @@ extension LumeVirtualMachineRuntime {
             try await stopGuestForReplayFailure(
                 name: name,
                 owner: owner,
+                expectedLease: leaseAuthorization?.lease,
                 primary: unavailable
             )
             throw unavailable
@@ -76,6 +89,7 @@ extension LumeVirtualMachineRuntime {
                 try await stopGuestForReplayFailure(
                     name: name,
                     owner: owner,
+                    expectedLease: leaseAuthorization?.lease,
                     primary: timeout
                 )
                 throw timeout
@@ -87,6 +101,7 @@ extension LumeVirtualMachineRuntime {
                 try await stopGuestForReplayFailure(
                     name: name,
                     owner: owner,
+                    expectedLease: leaseAuthorization?.lease,
                     primary: conflict
                 )
             }
@@ -96,11 +111,16 @@ extension LumeVirtualMachineRuntime {
         var requiresVMStop = false
         do {
             let preflight = try await inspect(name: name)
-            guard preflight?.state == .running else {
+            guard let preflight, preflight.state == .running else {
                 throw SandboxRuntimeError.unsupported(
                     "guest commands require a running VM"
                 )
             }
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: preflight,
+                ownership: ownership,
+                lease: leaseAuthorization?.lease
+            )
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(
@@ -170,7 +190,8 @@ extension LumeVirtualMachineRuntime {
                 do {
                     try await stopGuestIgnoringCancellation(
                         name: name,
-                        owner: owner
+                        owner: owner,
+                        expectedLease: leaseAuthorization?.lease
                     )
                 } catch let stopError {
                     throw SandboxRuntimeError.cleanupFailed(
@@ -200,12 +221,14 @@ extension LumeVirtualMachineRuntime {
     private func stopGuestForReplayFailure(
         name: String,
         owner: LumeVirtualMachineOwnership.Owner,
+        expectedLease: SandboxCapacityLease?,
         primary: SandboxRuntimeError
     ) async throws {
         do {
             try await stopGuestIgnoringCancellation(
                 name: name,
-                owner: owner
+                owner: owner,
+                expectedLease: expectedLease
             )
         } catch {
             throw SandboxRuntimeError.cleanupFailed(
@@ -218,12 +241,14 @@ extension LumeVirtualMachineRuntime {
 
     private func stopGuestIgnoringCancellation(
         name: String,
-        owner: LumeVirtualMachineOwnership.Owner
+        owner: LumeVirtualMachineOwnership.Owner,
+        expectedLease: SandboxCapacityLease?
     ) async throws {
         let stop = Task.detached {
             try await self.stopWithoutOperationFence(
                 name: name,
-                owner: owner
+                owner: owner,
+                expectedLease: expectedLease
             )
         }
         try await stop.value

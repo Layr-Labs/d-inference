@@ -28,6 +28,14 @@ enum LumeVirtualMachineOwnership {
         let installationID: UUID
     }
 
+    struct ResourceCommitment: Equatable, Sendable {
+        let identity: Identity
+        let name: String
+        let cpuCount: UInt16
+        let memoryBytes: UInt64
+        let diskBytes: UInt64
+    }
+
     enum Presence: Equatable, Sendable {
         case absent
         case owned(Identity)
@@ -141,6 +149,18 @@ enum LumeVirtualMachineOwnership {
         owner: Owner,
         in storageDirectory: URL
     ) throws -> Identity {
+        try requireResourceCommitment(
+            name: name,
+            owner: owner,
+            in: storageDirectory
+        ).identity
+    }
+
+    static func requireResourceCommitment(
+        name: String,
+        owner: Owner,
+        in storageDirectory: URL
+    ) throws -> ResourceCommitment {
         let record = try load(name: name, from: storageDirectory)
         guard record.name == name,
               record.matches(owner: owner)
@@ -149,7 +169,13 @@ enum LumeVirtualMachineOwnership {
                 "VM \(name) belongs to a different Darkbloom sandbox scope"
             )
         }
-        return Identity(installationID: record.installationID)
+        return ResourceCommitment(
+            identity: Identity(installationID: record.installationID),
+            name: record.name,
+            cpuCount: record.cpuCount,
+            memoryBytes: record.memoryBytes,
+            diskBytes: record.diskBytes
+        )
     }
 
     static func presence(

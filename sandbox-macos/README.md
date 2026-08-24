@@ -137,18 +137,23 @@ directory has been destroyed; deleting capacity state alone is unsafe.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
-create, start, inspect, stop, and release carry the complete operation scope.
+create, start, inspect, execute, stop, and release carry the complete operation
+scope. Execute remains disabled by default and is only available under the
+explicit base-image/development bootstrap policy.
 Release stops and verifies the owned VM before its package-internal capacity
 release. The VM-operation and lease-operation locks remain held through the
 capacity-state commit, so a concurrent start cannot run between stop and
 release; callers cannot remove capacity directly. Physical deletion remains
 package-internal until deletion intent has its own durable crash-recovery state,
-so a crash cannot strand a running or missing VM behind released capacity.
-Guest execution is absent until the signed guest-control agent replaces Lume's
-shared bootstrap identity. The underlying Lume actor is package-only, validates
-the scope before creating a per-VM operation lock and again while holding it,
-and binds create authorization to the reserved CPU, memory, workspace, and
-boot-disk bytes. Mutations use a deterministic fixed set of 64 inter-process
+so a crash cannot strand a running or missing VM behind released capacity. The
+underlying Lume actor is package-only, validates the scope before creating a
+per-VM operation lock and again while holding it, and binds create
+authorization to the reserved CPU, memory, workspace, and boot-disk bytes.
+Every listed workload is also checked against one three-way resource
+commitment: capacity lease, ownership marker, and observed Lume CPU, memory,
+and disk must agree before inspect, start, execute, stop, release, delete, or
+expiry cleanup can succeed. Missing or drifting values fail closed and retain
+capacity. Mutations use a deterministic fixed set of 64 inter-process
 lease-lock slots, so attacker-selected identifiers cannot grow authority
 storage without bound. Inspection authorizes immediately before and after its
 VM-locked Lume observation, so renewal and release do not wait on external I/O
@@ -167,7 +172,13 @@ The alpha policy admits exactly two running sandboxes, fixes the sparse macOS
 boot disk at 100 GiB, and reserves each clone's worst-case boot-disk CoW growth,
 25/50 GiB workspace, and 1 GiB host overhead. Aggregate CPU, memory, and growth
 admission runs under an inter-process `flock` on the already-bound state
-directory inode. Reservation and VM creation both require the configured
+directory inode. If a restarted broker's reduced CPU, memory, or growth policy
+no longer covers durable leases, it acquires the complete bounded lease
+lock set and durably moves the host to `draining`. This waits for in-flight
+mutations, rejects new work and renewals, preserves stop/delete authority, and
+cannot be undone by raising policy again; admission can resume only after all
+leases are cleaned up and an operator explicitly returns the empty host to
+`sandbox_dedicated`. Reservation and VM creation both require the configured
 storage directory's live descriptor-bound filesystem capacity to cover all
 reserved growth plus operator-configured headroom. Every fenced operation
 revalidates that the configured path still resolves to the persisted directory

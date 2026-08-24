@@ -717,3 +717,16 @@ discard/error paths release the claim. Six cache tests, eight engine tests,
 ten provider benchmark tests, and the release build pass. Ordered patch 075
 advances the gitlink-base replay tree to
 `c267de0434835bda4a40c1b8c4ddedffbebf1664`.
+
+## 2026-08-24T19:34Z — frontier state river handed off
+
+The default-off Qwen artifact path now distinguishes intermediate prompt chunks
+from the terminal frontier chunk. After the first four or eight complete
+layers, historical rows construct only exact-shaped K/V or GDN state artifacts
+and pass through; the final row executes every remaining layer once against
+that history. Decode, MTP, vision, and unset configurations retain full paths.
+
+Ordered patch 076 applies after 052–055 and pins B1/B2/B4 cache offsets,
+recurrent commit/rollback, cancellation isolation, and direct no-duplicate
+K/V/GDN comparisons. M3 performance and frozen semantic quality remain for the
+parent run. See `notes/076-frontier-state-river-handoff.md`.

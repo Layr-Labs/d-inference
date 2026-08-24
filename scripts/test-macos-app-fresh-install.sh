@@ -19,14 +19,11 @@ APP="$WORK_DIR/Darkbloom.app"
 APP_LOG="$WORK_DIR/app.log"
 CLI_LOG="$WORK_DIR/fake-cli.argv"
 APP_PID=""
-LAUNCHED_APP_EXECUTABLE=""
 
 cleanup() {
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
-  elif [[ -n "$LAUNCHED_APP_EXECUTABLE" ]]; then
-    /usr/bin/pkill -f -x "$LAUNCHED_APP_EXECUTABLE" 2>/dev/null || true
   fi
   rm -rf "$WORK_DIR"
 }
@@ -397,8 +394,8 @@ WINDOW_PROBE_EOF
 # AppKit still builds the same NSApplication/NSWindow from Bundle.main, while
 # direct exec avoids Launch Services dropping DEBUG-only test variables (most
 # importantly DARKBLOOM_SKIP_APP_RELOCATION) before the child starts.
-LAUNCHED_APP_EXECUTABLE="$APP_MACOS/DarkbloomApp"
-/usr/bin/env -i "${APP_ENV[@]}" "$LAUNCHED_APP_EXECUTABLE" \
+APP_EXECUTABLE="$APP_MACOS/DarkbloomApp"
+/usr/bin/env -i "${APP_ENV[@]}" "$APP_EXECUTABLE" \
   >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
@@ -464,7 +461,6 @@ kill -0 "$APP_PID" 2>/dev/null || {
 kill "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true
 APP_PID=""
-LAUNCHED_APP_EXECUTABLE=""
 
 [[ ! -e "$CLI_LOG" ]] || {
   echo "App startup unexpectedly invoked the CLI:" >&2

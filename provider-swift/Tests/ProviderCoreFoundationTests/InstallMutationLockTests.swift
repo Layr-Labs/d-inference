@@ -55,23 +55,60 @@ struct InstallMutationLockTests {
         #expect(errno == EWOULDBLOCK || errno == EAGAIN)
     }
 
+    @Test("recovery scan recognizes journals and pre-journal staging")
+    func recoveryArtifactScan() throws {
+        for name in [
+            ".install-transaction-legacy",
+            ".install-backup-123-456-789",
+            ".install-staging-123-456-789",
+        ] {
+            let root = try makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let pending = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(
+                at: pending,
+                withIntermediateDirectories: false
+            )
+
+            #expect(
+                try InstallMutationLock.pendingOneShotTransaction(in: root)
+                    == pending
+            )
+        }
+    }
+
+    @Test("recovery scan fails closed when the install root is unavailable")
+    func recoveryArtifactScanFailure() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-install-root-\(UUID().uuidString)")
+
+        #expect(throws: InstallMutationLock.LockError.self) {
+            try InstallMutationLock.pendingOneShotTransaction(in: missing)
+        }
+    }
+
     #if canImport(Darwin)
-    @Test("macOS lockf interoperates and a killed owner needs no stale takeover")
-    func lockfInteropAndCrashRecovery() throws {
+    @Test("macOS shell flock interoperates and a killed owner needs no takeover")
+    func shellFlockInteropAndCrashRecovery() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let lockPath = InstallMutationLock.primaryLockURL(in: root)
         let readyPath = root.appendingPathComponent("ready")
 
         let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         child.arguments = [
-            "-k",
+            "-MFcntl=:flock",
+            "-e",
+            """
+            open(my $lock, ">>", $ARGV[0]) or die $!;
+            flock($lock, LOCK_EX) or die $!;
+            open(my $ready, ">", $ARGV[1]) or die $!;
+            print {$ready} "ready";
+            close($ready) or die $!;
+            sleep 30;
+            """,
             lockPath.path,
-            "/bin/sh",
-            "-c",
-            "printf ready > \"$1\"; exec /bin/sleep 30",
-            "lock-holder",
             readyPath.path,
         ]
         child.standardOutput = FileHandle.nullDevice

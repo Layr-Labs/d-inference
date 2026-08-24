@@ -1,18 +1,19 @@
-/// Strict SemVer 2 ordering for release-version fields in app Info.plists.
-/// Build metadata is intentionally excluded from precedence, as required by
-/// SemVer; prerelease identifiers retain their numeric/text ordering.
-struct BundleSemanticVersion: Comparable {
-    private enum Identifier: Equatable {
-        case numeric(UInt64)
+/// Strict SemVer 2 parser and precedence implementation.
+///
+/// Numeric identifiers stay as canonical decimal strings so valid versions
+/// are not constrained by machine integer width.
+public struct SemanticVersion: Comparable, Sendable, Equatable {
+    private enum Identifier: Sendable, Equatable {
+        case numeric(String)
         case text(String)
     }
 
-    private let major: UInt64
-    private let minor: UInt64
-    private let patch: UInt64
+    private let major: String
+    private let minor: String
+    private let patch: String
     private let prerelease: [Identifier]
 
-    init?(_ raw: String) {
+    public init?(_ raw: String) {
         let buildParts = raw.split(
             separator: "+",
             maxSplits: 1,
@@ -24,7 +25,10 @@ struct BundleSemanticVersion: Comparable {
             return nil
         }
         if buildParts.count == 2,
-           !Self.validIdentifiers(buildParts[1], allowNumericLeadingZero: true)
+           !Self.validIdentifiers(
+            buildParts[1],
+            numericLeadingZeroAllowed: true
+           )
         {
             return nil
         }
@@ -34,15 +38,14 @@ struct BundleSemanticVersion: Comparable {
             maxSplits: 1,
             omittingEmptySubsequences: false
         )
-        guard !versionParts[0].isEmpty else { return nil }
         let core = versionParts[0].split(
             separator: ".",
             omittingEmptySubsequences: false
         )
         guard core.count == 3,
-              let major = Self.parseCore(core[0]),
-              let minor = Self.parseCore(core[1]),
-              let patch = Self.parseCore(core[2])
+              Self.validCoreIdentifier(core[0]),
+              Self.validCoreIdentifier(core[1]),
+              Self.validCoreIdentifier(core[2])
         else {
             return nil
         }
@@ -52,63 +55,69 @@ struct BundleSemanticVersion: Comparable {
             let rawPrerelease = versionParts[1]
             guard Self.validIdentifiers(
                 rawPrerelease,
-                allowNumericLeadingZero: false
+                numericLeadingZeroAllowed: false
             ) else {
                 return nil
             }
-            for identifier in rawPrerelease.split(separator: ".") {
-                if identifier.allSatisfy(\.isNumber) {
-                    guard let number = UInt64(identifier) else { return nil }
-                    prerelease.append(.numeric(number))
-                } else {
-                    prerelease.append(.text(String(identifier)))
-                }
+            prerelease = rawPrerelease.split(separator: ".").map { identifier in
+                identifier.allSatisfy(\.isNumber)
+                    ? .numeric(String(identifier))
+                    : .text(String(identifier))
             }
         }
 
-        self.major = major
-        self.minor = minor
-        self.patch = patch
+        major = String(core[0])
+        minor = String(core[1])
+        patch = String(core[2])
         self.prerelease = prerelease
     }
 
-    static func < (lhs: Self, rhs: Self) -> Bool {
-        let lhsCore = [lhs.major, lhs.minor, lhs.patch]
-        let rhsCore = [rhs.major, rhs.minor, rhs.patch]
-        if lhsCore != rhsCore {
-            return lhsCore.lexicographicallyPrecedes(rhsCore)
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        for (left, right) in zip(
+            [lhs.major, lhs.minor, lhs.patch],
+            [rhs.major, rhs.minor, rhs.patch]
+        ) {
+            if left == right { continue }
+            return numericIdentifierIsLess(left, right)
         }
+
         if lhs.prerelease.isEmpty { return false }
         if rhs.prerelease.isEmpty { return true }
         for (left, right) in zip(lhs.prerelease, rhs.prerelease) {
             if left == right { continue }
             switch (left, right) {
             case (.numeric(let left), .numeric(let right)):
-                return left < right
+                return numericIdentifierIsLess(left, right)
             case (.numeric, .text):
                 return true
             case (.text, .numeric):
                 return false
             case (.text(let left), .text(let right)):
-                return left < right
+                return left.utf8.lexicographicallyPrecedes(right.utf8)
             }
         }
         return lhs.prerelease.count < rhs.prerelease.count
     }
 
-    private static func parseCore(_ raw: Substring) -> UInt64? {
-        guard !raw.isEmpty,
-              raw.allSatisfy({ $0.isASCII && $0.isNumber }),
-              raw == "0" || raw.first != "0"
-        else {
-            return nil
+    private static func numericIdentifierIsLess(
+        _ left: String,
+        _ right: String
+    ) -> Bool {
+        if left.count != right.count {
+            return left.count < right.count
         }
-        return UInt64(raw)
+        return left.utf8.lexicographicallyPrecedes(right.utf8)
+    }
+
+    private static func validCoreIdentifier(_ raw: Substring) -> Bool {
+        !raw.isEmpty
+            && raw.allSatisfy({ $0.isASCII && $0.isNumber })
+            && (raw == "0" || raw.first != "0")
     }
 
     private static func validIdentifiers(
         _ raw: Substring,
-        allowNumericLeadingZero: Bool
+        numericLeadingZeroAllowed: Bool
     ) -> Bool {
         let identifiers = raw.split(
             separator: ".",
@@ -122,7 +131,7 @@ struct BundleSemanticVersion: Comparable {
             else {
                 return false
             }
-            return allowNumericLeadingZero
+            return numericLeadingZeroAllowed
                 || !identifier.allSatisfy(\.isNumber)
                 || identifier == "0"
                 || identifier.first != "0"

@@ -15,6 +15,8 @@ import Glibc
 public final class InstallMutationLock: @unchecked Sendable {
     public static let fileName = ".app-install.lock"
     public static let legacyUpdateLockRelativePath = "recovery/update.lock"
+    public static let selfUpdateTransactionRelativePath =
+        "recovery/transaction.json"
 
     public enum LockError: Error, LocalizedError, Sendable {
         case unavailable(path: String, reason: String)
@@ -117,6 +119,35 @@ public final class InstallMutationLock: @unchecked Sendable {
 
     public static func legacyUpdateLockURL(in installRoot: URL) -> URL {
         installRoot.appendingPathComponent(legacyUpdateLockRelativePath)
+    }
+
+    public static func selfUpdateTransactionURL(in installRoot: URL) -> URL {
+        installRoot.appendingPathComponent(selfUpdateTransactionRelativePath)
+    }
+
+    public static func pendingOneShotTransaction(
+        in installRoot: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL? {
+        let entries: [URL]
+        do {
+            entries = try fileManager.contentsOfDirectory(
+                at: installRoot,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            throw LockError.unavailable(
+                path: installRoot.path,
+                reason: "could not inspect installer recovery state: "
+                    + error.localizedDescription
+            )
+        }
+        return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .first { entry in
+                entry.lastPathComponent.hasPrefix(".install-transaction-")
+                    || entry.lastPathComponent.hasPrefix(".install-backup-")
+                    || entry.lastPathComponent.hasPrefix(".install-staging-")
+            }
     }
 
     public func release() {

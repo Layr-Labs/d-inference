@@ -376,6 +376,51 @@ struct AppInstallCoordinatorTests {
         #expect(!executor.invocations.contains { $0.executable.path == "/usr/bin/ditto" })
     }
 
+    @Test("relocation refuses a pending SelfUpdater transaction")
+    func pendingSelfUpdateMustRecoverFirst() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = try fixture.makeDownloadedApp(payload: "candidate")
+        let transaction = fixture.destination.deletingLastPathComponent()
+            .appendingPathComponent("recovery/transaction.json")
+        try FileManager.default.createDirectory(
+            at: transaction.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(to: transaction)
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor()
+            ).coordinate()
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+        #expect(try String(contentsOf: transaction, encoding: .utf8) == "{}")
+    }
+
+    @Test("relocation refuses a pending shell installer transaction")
+    func pendingShellInstallMustRecoverFirst() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = try fixture.makeDownloadedApp(payload: "candidate")
+        let transaction = fixture.destination.deletingLastPathComponent()
+            .appendingPathComponent(".install-transaction-interrupted")
+        try FileManager.default.createDirectory(
+            at: transaction,
+            withIntermediateDirectories: true
+        )
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor()
+            ).coordinate()
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+        #expect(FileManager.default.fileExists(atPath: transaction.path))
+    }
+
     @Test("foreign user shortcut file is preserved exactly")
     func foreignShortcutFileIsPreserved() throws {
         let fixture = try Fixture()

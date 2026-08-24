@@ -470,6 +470,7 @@ run_b1() {
     --kv-backend contiguous \
     >"$OUT/b1-${arm}-${repetition}.json" \
     2>"$OUT/b1-${arm}-${repetition}.stderr"
+  power_gate >"$OUT/power-b1-${arm}-${repetition}-after.log"
 }
 
 run_b1 base "$BASE_BIN" 1
@@ -514,6 +515,8 @@ run_arrival_matrix() {
         --kv-backend contiguous \
         >"$OUT/arrival-${arm}-${repetition}-b${batch}-l${length}.json" \
         2>"$OUT/arrival-${arm}-${repetition}-b${batch}-l${length}.stderr"
+      power_gate \
+        >"$OUT/power-arrival-${arm}-${repetition}-b${batch}-l${length}-after.log"
     done
   done
 }
@@ -570,6 +573,7 @@ run_decode() {
       --kv-backend contiguous \
       >"$OUT/decode-${arm}-${repetition}-l${length}.json" \
       2>"$OUT/decode-${arm}-${repetition}-l${length}.stderr"
+    power_gate >"$OUT/power-decode-${arm}-${repetition}-l${length}-after.log"
   done
 }
 

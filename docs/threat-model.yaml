@@ -155,8 +155,9 @@ assets:
     sensitivity: critical
     notes: >
       Compromise lets an attacker sign profiles (and binaries) macOS treats as coming
-      from the registered developer. Optional — when unset the coordinator serves
-      profiles unsigned.
+      from the registered developer. Hardware-trust deployments require a valid identity
+      at startup; only the explicit EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES development/test
+      escape hatch permits unsigned enrollment profiles.
 
   - id: A-014
     name: provider_fan_control_authority
@@ -192,11 +193,11 @@ trust_boundaries:
       to balance-mutating endpoints. Both limiters default to nil (unlimited) unless
       SetRateLimiter / SetFinancialRateLimiter are called at startup.
 
-      Sender-to-coordinator encryption is opt-in. When enabled (sealedTransport
-      middleware, sender_encryption.go), request bodies are decrypted with the
-      coordinator's long-lived X25519 key and a body cap of 16 MB is enforced. Plaintext
-      inference endpoints (chat/completions, completions, messages) call io.ReadAll on
-      r.Body with no MaxBytesReader wrapper.
+      Sender-to-coordinator encryption is opt-in. Both the sealed path
+      (sender_encryption.go:143) and the plaintext inference prelude
+      (inference_preprocess.go:89–105) cap request bodies at 16 MiB before buffering.
+      bodyLimitMiddleware (server.go:2158–2164) also applies a 64 MiB outer ceiling to
+      every non-WebSocket HTTP request, with tighter per-handler limits where appropriate.
 
       HTTP server config (cmd/coordinator/main.go): ReadHeaderTimeout=5s,
       ReadTimeout=10s, WriteTimeout=0 (streaming), IdleTimeout=120s,
@@ -204,11 +205,6 @@ trust_boundaries:
     current_limitations:
       - "API key validation uses a simple store lookup — not constant-time comparison.
         Allows timing attacks to enumerate valid key prefixes (server.go:1216)."
-      - "No body size limit on plaintext inference endpoints (consumer.go:526, 2359).
-        An authenticated consumer can send arbitrarily large bodies to exhaust coordinator
-        memory."
-      - "WriteTimeout=0 combined with unbounded body reads enables slow-read DoS on
-        inference endpoints."
       - "Consumer rate limiter defaults to nil (unlimited) unless explicitly configured
         at deploy time. No IP-level rate limiting exists."
       - "POST /v1/device/code and POST /v1/device/token have no rate limits, enabling
@@ -441,12 +437,17 @@ trust_boundaries:
       public key hash as a nonce to Apple and receives back a DER-encoded certificate
       chain signed by Apple's Enterprise Attestation Root CA.
     how_it_works: >
-      MDM webhook (server.go:876–887, POST /v1/mdm/webhook): the handler calls
-      io.ReadAll(r.Body) with no size limit and passes the raw bytes to
-      mdmClient.HandleWebhook(). There is no signature verification, no shared secret,
-      no IP allowlist, and no command UUID correlation. The webhook is completely
-      unauthenticated. MicroMDM credentials are used only for outbound API calls to
-      MicroMDM, not to authenticate inbound callbacks.
+      MDM webhook (server.go:1641–1693, POST /v1/mdm/webhook): the handler caps the body
+      at 1 MiB before buffering. When EIGENINFERENCE_MDM_WEBHOOK_SECRET is configured,
+      it verifies the X-Webhook-Token header or token query parameter with
+      subtle.ConstantTimeCompare before reading the body. The shared secret is optional,
+      and the endpoint has no mTLS or IP allowlist.
+
+      mdm.Client independently capability-gates every acknowledged payload that can
+      affect trust (mdm.go:169–202, 511–535): the plist CommandUUID must match a random
+      command UUID issued by this coordinator within 30 minutes, is consumed exactly
+      once, and must correspond to the callback UDID. Unknown, stale, replayed, or
+      cross-device responses are dropped before any waiter or trust-upgrade callback runs.
 
       When a provider registers, the coordinator asynchronously sends a SecurityInfo MDM
       command to the enrolled device (mdm.go:155–183), then waits up to 30 seconds for
@@ -477,15 +478,10 @@ trust_boundaries:
       available, SIP must be enabled, SecureBoot must be enabled. ARV status is parsed
       but not enforced (informational). RDMA status is informational only.
     current_limitations:
-      - "The MDM webhook is completely unauthenticated. Any party that can reach
-        POST /v1/mdm/webhook can inject arbitrary SecurityInfo or
-        DevicePropertiesAttestation payloads and trigger trust upgrades without genuine
-        MDM enrollment (server.go:876–887, SEC-004)."
-      - "No body size limit on the MDM webhook endpoint. io.ReadAll(r.Body) with no
-        MaxBytesReader allows a DoS via oversized plist payloads (SEC-004)."
-      - "No MDM command UUID correlation: the webhook response is not bound to a specific
-        outbound command. A replay of any old SecurityInfo webhook response for the same
-        UDID would be accepted."
+      - "The MDM webhook shared secret is optional. Without it, reachability is public
+        and trust authenticity relies on the random, one-shot, 30-minute CommandUUID
+        capability plus the bound UDID. The endpoint still has no mTLS or IP allowlist;
+        disclosure of a live command UUID could permit a response race."
       - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key is
         publicly visible in the provider's attestation blob. An attacker who captures the
         attestation can pre-compute the expected freshness code, potentially forging a
@@ -517,8 +513,8 @@ trust_boundaries:
       which hits no rate limit bucket). No per-admin audit log is emitted; all admin
       actions share the same "admin" identity in logs.
 
-      The release key (release_handlers.go:16–22) is a separate secret checked with
-      plain string equality (== operator), NOT subtle.ConstantTimeCompare(). It controls
+      The release key is a separate secret checked by releaseKeyAuthorized() with
+      subtle.ConstantTimeCompare (release_handlers.go:150–155). It controls
       POST /v1/releases, which registers a new release, syncs binary hashes into the
       provider registry gate, and invalidates caches. After registration the cache key
       invalidated is latest_release:v1, but the actual per-platform cache key used for
@@ -536,9 +532,6 @@ trust_boundaries:
       unauthenticated and not rate-limited, creating a spam and brute-force surface
       (release_handlers.go:205–221).
     current_limitations:
-      - "The release key is compared with plain string equality, not constant-time
-        comparison. A timing attack can enumerate key bytes (release_handlers.go:19,
-        SEC-009)."
       - "Cache invalidation on release registration and deletion targets the wrong key
         (latest_release:v1 instead of latest_release:v1:<platform>). Installers and
         providers on a specific platform may see stale release metadata for up to 1 minute
@@ -793,25 +786,34 @@ threats:
   - id: T-002
     trust_boundary: TB-001
     stride: Denial_of_Service
-    title: Unbounded request body causes coordinator OOM
+    title: Oversized request body causes coordinator OOM (mitigated)
     description: >
-      The OpenAI-compatible inference endpoints read the full request body via
-      io.ReadAll without a size cap. An authenticated consumer can send a multi-GB
-      body to exhaust coordinator memory.
+      The historical plaintext inference path read the full request body without a cap.
+      It now applies a 16 MiB MaxBytesReader before io.ReadAll, matching the sealed path
+      and the provider frame budget. A 64 MiB global middleware ceiling also protects
+      other HTTP handlers.
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
+      - coordinator/api/inference_preprocess.go
+      - coordinator/api/server.go
     mitigations:
-      - description: No MaxBytesReader applied to inference endpoints.
-        status: open
-      - description: "Sealed/encrypted endpoint applies a cap (contrast at sender_encryption.go:132)."
+      - description: Plaintext inference bodies are capped at 16 MiB before buffering.
         status: implemented
-    open_findings: [SEC-006]
+      - description: Sealed/encrypted inference bodies are capped at 16 MiB.
+        status: implemented
+      - description: Global HTTP middleware caps non-WebSocket request bodies at 64 MiB.
+        status: implemented
+    open_findings: []
+    resolved_findings:
+      - id: SEC-006
+        resolution: >
+          Closed: parseInferencePrelude applies a 16 MiB MaxBytesReader before io.ReadAll,
+          and bodyLimitMiddleware provides a 64 MiB outer ceiling for other HTTP routes.
     severity: high
     detection_hint: >
-      Any change to request body reading in consumer.go (io.ReadAll, json.Decode,
-      r.Body) should verify a MaxBytesReader or equivalent cap is applied.
+      Any change to request body reading in inference_preprocess.go (io.ReadAll,
+      json.Decode, r.Body) should verify a MaxBytesReader or equivalent cap is applied.
 
   - id: T-003
     trust_boundary: TB-001
@@ -855,9 +857,9 @@ threats:
     mitigations:
       - description: Admin endpoints gated by separate admin key middleware.
         status: implemented
-      - description: Release key uses plain string equality rather than constant-time compare.
-        status: open
-    open_findings: [SEC-009]
+      - description: Release key is checked separately from consumer keys and verified with subtle.ConstantTimeCompare.
+        status: implemented
+    open_findings: []
     severity: high
     detection_hint: >
       Changes to middleware ordering, key validation logic, or new route registration
@@ -1286,12 +1288,12 @@ threats:
   - id: T-021
     trust_boundary: TB-005
     stride: Spoofing
-    title: Unauthenticated MDM webhook injection manipulates provider trust state
+    title: MDM webhook injection races a solicited trust response (mitigated)
     description: >
-      The MDM webhook endpoint is unauthenticated and reads an unbounded body.
-      An attacker who can reach it can inject fake SecurityInfo or
-      DevicePropertiesAttestation callbacks to elevate a provider's trust level
-      to hardware without genuine MDM enrollment.
+      The public webhook accepts a bounded callback without mandatory shared-secret
+      authentication. A callback cannot alter trust unless it presents a live random
+      CommandUUID issued by this coordinator for the same UDID; the UUID is consumed
+      exactly once. Configured deployments can additionally require a shared secret.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
@@ -1301,15 +1303,24 @@ threats:
     mitigations:
       - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
         status: implemented
-      - description: Webhook itself has no shared secret, mTLS, or command-UUID binding.
-        status: open
-      - description: No body-size cap on MDM webhook endpoint.
-        status: open
-    open_findings: [SEC-004]
+      - description: Optional webhook secret is verified in constant time before reading the body.
+        status: implemented
+      - description: One-shot CommandUUID and UDID correlation drops unsolicited, stale, replayed, and cross-device callbacks.
+        status: implemented
+      - description: Webhook request bodies are capped at 1 MiB before buffering.
+        status: implemented
+    open_findings: []
+    resolved_findings:
+      - id: SEC-004
+        resolution: >
+          Closed: the endpoint has a 1 MiB body cap, supports constant-time shared-secret
+          verification, and cannot drive trust without consuming a live coordinator-issued
+          CommandUUID bound to the callback UDID.
     severity: high
     detection_hint: >
       Changes to MDM webhook handling (mdm.go, server.go route registration) must
-      verify authentication is present before any trust state is modified.
+      preserve the body cap, optional secret check, and one-shot CommandUUID/UDID
+      binding before any trust state is modified.
 
   - id: T-022
     trust_boundary: TB-005
@@ -1378,25 +1389,29 @@ threats:
   - id: T-024
     trust_boundary: TB-006
     stride: Spoofing
-    title: Admin API key compromise allows release and trust manipulation
+    title: Privileged key compromise allows release or trust manipulation
     description: >
-      The admin key controls release registration (binary hash registry), provider
-      trust overrides, and platform configuration. Compromise via key leak, brute
-      force, or non-constant-time comparison allows an attacker to register malicious
-      binary hashes or deactivate legitimate releases.
+      The admin key controls provider trust overrides and platform configuration; the
+      scope-separated release key controls release registration and binary hash state.
+      Compromise of either credential allows the corresponding privileged mutations.
     adversaries: [ADV-003]
     affected_assets: [A-005, A-011]
     affected_files:
       - coordinator/api/release_handlers.go
       - coordinator/api/server.go
     mitigations:
-      - description: Release key gated by separate middleware from consumer keys.
+      - description: Release key is checked separately from consumer keys.
         status: implemented
-      - description: Release key uses plain string equality, not constant-time compare (SEC-009).
-        status: open
+      - description: Release and admin keys are verified with subtle.ConstantTimeCompare.
+        status: implemented
       - description: No alerting or audit log on release registration events.
         status: open
-    open_findings: [SEC-009]
+    open_findings: []
+    resolved_findings:
+      - id: SEC-009
+        resolution: >
+          Closed: releaseKeyAuthorized rejects empty credentials and compares the
+          supplied release key with subtle.ConstantTimeCompare.
     severity: critical
     detection_hint: >
       Any change to release key validation, admin middleware, or the /v1/releases
@@ -1932,8 +1947,8 @@ threats:
     description: >
       If any step in the attestation chain (MDM SecurityInfo callback, MDA cert
       chain verification, SE signature check) is bypassed or short-circuited —
-      whether by a code bug, a test flag left in production, or the unauthenticated
-      MDM webhook (SEC-004) — a provider can reach hardware trust level without
+      for example by a code bug, a test flag left in a live deployment, or weakening
+      the solicited-command gate — a provider can reach hardware trust level without
       Apple's genuine verification.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
@@ -1945,8 +1960,8 @@ threats:
     mitigations:
       - description: "Full chain required: SE signature → MDM SecurityInfo → MDA cert from Apple root CA."
         status: implemented
-      - description: MDM webhook is unauthenticated; an injected callback can manipulate SecurityInfo state (SEC-004).
-        status: open
+      - description: MDM callbacks must consume a live CommandUUID bound to the addressed UDID before they can change trust state.
+        status: implemented
       - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
         status: implemented
       - description: >
@@ -1964,7 +1979,7 @@ threats:
           re-verification still runs for every first-ever connection and for any reconnect outside
           the window or failing a gate.
         status: accepted
-    open_findings: [SEC-004]
+    open_findings: []
     severity: critical
     detection_hint: >
       Any change to the attestation verification sequence, trust-level assignment
@@ -2111,8 +2126,9 @@ threats:
         status: implemented
       - description: >
           LoadFromEnv never logs the p12 or password (only signer CN/org/expiry), and
-          fails closed to unsigned on a missing/invalid/expired identity rather than
-          stamping an untrusted signature.
+          hardware-trust startup fails closed on a missing, invalid, or expired identity.
+          Sign rechecks certificate validity at enrollment time; only the explicit
+          development/test escape hatch permits an unsigned fallback.
         status: implemented
       - description: Zero the decoded p12/password from memory after key extraction.
         status: open

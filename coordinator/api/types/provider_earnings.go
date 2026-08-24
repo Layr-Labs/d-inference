@@ -3,11 +3,12 @@ package types
 import "github.com/eigeninference/d-inference/coordinator/store"
 
 // AccountEarningsProvider maps an ephemeral provider encryption key/session
-// back to the physical Mac that produced it. The response is account-authenticated.
+// back to the physical Mac that produced it. MachineID is a namespaced digest,
+// not the Mac's hardware serial.
 type AccountEarningsProvider struct {
-	ProviderID   string `json:"provider_id"`
-	ProviderKey  string `json:"provider_key"`
-	SerialNumber string `json:"serial_number"`
+	ProviderID  string `json:"provider_id"`
+	ProviderKey string `json:"provider_key"`
+	MachineID   string `json:"machine_id"`
 }
 
 // AccountEarningsResponse is the authenticated linked-provider earnings

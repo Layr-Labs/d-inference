@@ -799,8 +799,9 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 
 // handleAccountEarnings handles GET /v1/provider/account-earnings?limit=50.
 // Returns recent earnings history, lifetime aggregates, and current account balance
-// for the authenticated provider account.
-// Cached for 20s per account — dashboard polls this frequently.
+// for the authenticated provider account. This endpoint deliberately bypasses
+// the read cache: credits, withdrawals, and provider reconnects must be visible
+// on the next refresh.
 func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
 
@@ -812,12 +813,6 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	}
 	if limit > 1000 {
 		limit = 1000
-	}
-
-	cacheKey := "account-earnings:" + accountID + ":" + strconv.Itoa(limit)
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
-		return
 	}
 
 	earnings, err := s.store.GetAccountEarnings(accountID, limit)
@@ -834,18 +829,35 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := s.store.ListProvidersByAccount(r.Context(), accountID)
+	providerKeys := make([]string, 0, len(earnings))
+	seenProviderKeys := make(map[string]struct{}, len(earnings))
+	for i := range earnings {
+		key := earnings[i].ProviderKey
+		if key == "" {
+			continue
+		}
+		if _, seen := seenProviderKeys[key]; seen {
+			continue
+		}
+		seenProviderKeys[key] = struct{}{}
+		providerKeys = append(providerKeys, key)
+	}
+	identities, err := s.store.ListProviderSessionIdentities(
+		r.Context(),
+		accountID,
+		providerKeys,
+	)
 	if err != nil {
-		s.logger.Error("get account providers for earnings failed", "error", err)
+		s.logger.Error("get provider identities for earnings failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch provider identities"))
 		return
 	}
-	providers := make([]apitypes.AccountEarningsProvider, 0, len(records))
-	for _, record := range records {
+	providers := make([]apitypes.AccountEarningsProvider, 0, len(identities))
+	for _, identity := range identities {
 		providers = append(providers, apitypes.AccountEarningsProvider{
-			ProviderID:   record.ID,
-			ProviderKey:  record.PublicKey,
-			SerialNumber: record.SerialNumber,
+			ProviderID:  identity.SessionID,
+			ProviderKey: identity.ProviderKey,
+			MachineID:   providerMachineID(identity.SerialNumber),
 		})
 	}
 
@@ -869,6 +881,5 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal earnings"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, 20*time.Second)
 	writeCachedJSON(w, body)
 }

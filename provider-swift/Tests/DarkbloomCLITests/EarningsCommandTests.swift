@@ -21,7 +21,7 @@ struct EarningsCommandTests {
         {
           "provider_id": "session-1",
           "provider_key": "key-1",
-          "serial_number": "SERIAL-1"
+          "machine_id": "machine-1"
         }
       ],
       "earnings": [
@@ -129,7 +129,7 @@ struct EarningsCommandTests {
             .init(
                 providerID: "session-1",
                 providerKey: "key-1",
-                serialNumber: "SERIAL-1"
+                machineID: "machine-1"
             ),
         ])
 

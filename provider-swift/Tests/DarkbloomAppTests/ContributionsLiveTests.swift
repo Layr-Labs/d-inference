@@ -21,7 +21,7 @@ struct ContributionsLiveTests {
         }
     }
 
-    private let currentSerial = "CURRENT-SERIAL"
+    private let currentMachineID = "machine-current"
     private let currentKey = "key-current"
     private let priorCurrentKey = "key-current-prior"
     private let otherKey = "key-other"
@@ -31,17 +31,17 @@ struct ContributionsLiveTests {
             .init(
                 providerID: "session-current",
                 providerKey: currentKey,
-                serialNumber: currentSerial
+                machineID: currentMachineID
             ),
             .init(
                 providerID: "session-current-prior",
                 providerKey: priorCurrentKey,
-                serialNumber: currentSerial
+                machineID: currentMachineID
             ),
             .init(
                 providerID: "session-other",
                 providerKey: otherKey,
-                serialNumber: "OTHER-SERIAL-9876"
+                machineID: "machine-other-9876"
             ),
         ]
     }
@@ -89,7 +89,7 @@ struct ContributionsLiveTests {
 
     private func payload(
         currentProviderKey: String? = nil,
-        currentSerialNumber: String? = "CURRENT-SERIAL",
+        currentMachineID: String? = "machine-current",
         available: Int64 = 1_350_000,
         withdrawable: Int64 = 1_100_000,
         earned: Int64 = 2_250_000,
@@ -100,7 +100,7 @@ struct ContributionsLiveTests {
         ContributionsEarningsPayload(
             accountID: "acct-live-1",
             currentProviderKey: currentProviderKey,
-            currentSerialNumber: currentSerialNumber,
+            currentMachineID: currentMachineID,
             earnings: earnings ?? sampleEarnings,
             providers: providers ?? self.providers,
             totalMicroUSD: earned,
@@ -223,7 +223,7 @@ struct ContributionsLiveTests {
     func missingCurrentIdentity() async {
         let cli = StubCLI()
         cli.payload = payload(
-            currentSerialNumber: nil,
+            currentMachineID: nil,
             providers: providers
         )
         let store = ContributionsStore(cli: cli)
@@ -311,7 +311,7 @@ struct ContributionsCLIParsingTests {
         {
           "account_id": "acct-9",
           "current_provider_key": "key-9",
-          "current_serial_number": "SERIAL-9",
+          "current_machine_id": "machine-9",
           "available_balance_micro_usd": 1000000,
           "available_balance_usd": "1.000000",
           "withdrawable_balance_micro_usd": 750000,
@@ -322,7 +322,7 @@ struct ContributionsCLIParsingTests {
           "recent_count": 1,
           "history_limit": 1000,
           "providers": [
-            {"provider_id":"session-9","provider_key":"key-9","serial_number":"SERIAL-9"}
+            {"provider_id":"session-9","provider_key":"key-9","machine_id":"machine-9"}
           ],
           "earnings": [
             {
@@ -350,6 +350,6 @@ struct ContributionsCLIParsingTests {
         #expect(payload.withdrawableBalanceMicroUSD == 750_000)
         #expect(payload.earnings[0].promptTokens == 123)
         #expect(payload.earnings[0].createdAt != nil)
-        #expect(payload.providers[0].serialNumber == "SERIAL-9")
+        #expect(payload.providers[0].machineID == "machine-9")
     }
 }

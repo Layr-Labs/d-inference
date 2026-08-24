@@ -188,7 +188,6 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
     private let stateFileURL: URL
     private let physicalMemoryBytes: UInt64
     private let now: @Sendable () -> Date
-    private let processAlive: @Sendable (Int32) -> Bool
     private let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
 
     init(
@@ -196,7 +195,6 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         stateFileURL: URL = DaemonStateFile.path(),
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         now: @escaping @Sendable () -> Date = Date.init,
-        processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? =
             ProcessIdentity.read
     ) {
@@ -204,7 +202,6 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         self.stateFileURL = stateFileURL
         self.physicalMemoryBytes = physicalMemoryBytes
         self.now = now
-        self.processAlive = processAlive
         self.processIdentityReader = processIdentityReader
     }
 
@@ -246,7 +243,6 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             DaemonStateRuntimeTruth.isFreshAndLive(
                 $0,
                 now: now().timeIntervalSince1970,
-                processAlive: processAlive,
                 readIdentity: processIdentityReader
             )
         } ?? false

@@ -24,7 +24,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// time against this before treating it as the provider — a PID the kernel
     /// has since reused (e.g. by a manual `darkbloom update`) must NOT be
     /// force-killed as a stale lock owner. Optional for backward compatibility
-    /// with state files written before this field existed.
+    /// with state files written before this field existed; identity-less records
+    /// decode but are never treated as proof of a live provider.
     public var processIdentity: ProcessIdentity?
     public var version: String
     public var writtenAt: Double // epoch seconds; staleness check

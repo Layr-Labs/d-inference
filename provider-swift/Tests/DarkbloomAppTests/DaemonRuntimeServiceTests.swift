@@ -7,7 +7,9 @@ import ProviderCoreFoundation
 private func testRunningState(pid: Int32 = 4001) -> DaemonState {
     let now = Date().timeIntervalSince1970
     return DaemonState(
-        pid: pid, version: "0.8.5", writtenAt: now, startedAt: now - 60,
+        pid: pid,
+        processIdentity: ProcessIdentity(pid: pid, startTimeMicros: 11),
+        version: "0.8.5", writtenAt: now, startedAt: now - 60,
         currentModel: "gpt-oss-20b", warmModels: ["gpt-oss-20b"])
 }
 
@@ -45,8 +47,9 @@ struct DaemonRuntimeServiceTests {
         cli: StubCLI,
         selectionInstalled: Bool = true,
         serviceLoaded: Bool = true,
-        processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
-        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = { _ in nil }
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            ProcessIdentity(pid: $0, startTimeMicros: 11)
+        }
     ) -> DaemonRuntimeService {
         DaemonRuntimeService(
             stateFileURL: stateFileURL,
@@ -56,7 +59,6 @@ struct DaemonRuntimeServiceTests {
             settleTimeout: .seconds(5),
             providerName: "Test Mac",
             localEndpointReader: { nil },
-            processAlive: processAlive,
             processIdentityReader: processIdentityReader,
             selectionInstalled: { selectionInstalled },
             serviceLoaded: { serviceLoaded }
@@ -135,9 +137,29 @@ struct DaemonRuntimeServiceTests {
             stateFileURL: url,
             cli: StubCLI(),
             serviceLoaded: false,
-            processAlive: { _ in true },
             processIdentityReader: {
                 ProcessIdentity(pid: $0, startTimeMicros: 22)
+            }
+        )
+
+        #expect(service.initialSnapshot.runState == .paused)
+        #expect(service.initialSnapshot.pid == nil)
+    }
+
+    @Test("A legacy PID-only record cannot make an unrelated process look live")
+    func legacyPIDOnlyStateMapsPaused() {
+        let url = stateFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var state = testRunningState()
+        state.processIdentity = nil
+        writeState(state, to: url)
+
+        let service = makeService(
+            stateFileURL: url,
+            cli: StubCLI(),
+            serviceLoaded: false,
+            processIdentityReader: {
+                ProcessIdentity(pid: $0, startTimeMicros: 11)
             }
         )
 
@@ -162,7 +184,6 @@ struct DaemonRuntimeServiceTests {
             stateFileURL: url,
             cli: StubCLI(),
             serviceLoaded: true,
-            processAlive: { _ in true },
             processIdentityReader: {
                 ProcessIdentity(pid: $0, startTimeMicros: 22)
             }
@@ -184,7 +205,6 @@ struct DaemonRuntimeServiceTests {
         let service = makeService(
             stateFileURL: url,
             cli: StubCLI(),
-            processAlive: { _ in false },
             processIdentityReader: { _ in identity }
         )
 

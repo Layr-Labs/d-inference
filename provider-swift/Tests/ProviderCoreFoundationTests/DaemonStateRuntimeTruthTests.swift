@@ -19,44 +19,43 @@ struct DaemonStateRuntimeTruthTests {
         )
     }
 
-    @Test("legacy records use PID liveness and freshness")
+    @Test("legacy records without kernel identity fail closed")
     func legacyPID() {
-        #expect(DaemonStateRuntimeTruth.isFreshAndLive(
+        let liveIdentity = ProcessIdentity(pid: 42, startTimeMicros: 100)
+        #expect(!DaemonStateRuntimeTruth.belongsToLiveProcess(
             state(),
-            now: now,
-            processAlive: { $0 == 42 },
-            readIdentity: { _ in nil }
-        ))
-        #expect(!DaemonStateRuntimeTruth.isFreshAndLive(
-            state(writtenAt: now - 91),
-            now: now,
-            processAlive: { _ in true },
-            readIdentity: { _ in nil }
+            readIdentity: { _ in liveIdentity }
         ))
         #expect(!DaemonStateRuntimeTruth.isFreshAndLive(
             state(),
             now: now,
-            processAlive: { _ in false },
-            readIdentity: { _ in nil }
+            readIdentity: { _ in liveIdentity }
         ))
     }
 
-    @Test("kernel start identity prevents PID reuse and malformed records")
+    @Test("kernel start identity prevents PID reuse, staleness, and malformed records")
     func processIdentity() {
         let recorded = ProcessIdentity(pid: 42, startTimeMicros: 100)
         #expect(DaemonStateRuntimeTruth.belongsToLiveProcess(
             state(identity: recorded),
-            processAlive: { _ in false },
+            readIdentity: { _ in recorded }
+        ))
+        #expect(DaemonStateRuntimeTruth.isFreshAndLive(
+            state(identity: recorded),
+            now: now,
+            readIdentity: { _ in recorded }
+        ))
+        #expect(!DaemonStateRuntimeTruth.isFreshAndLive(
+            state(writtenAt: now - 91, identity: recorded),
+            now: now,
             readIdentity: { _ in recorded }
         ))
         #expect(!DaemonStateRuntimeTruth.belongsToLiveProcess(
             state(identity: recorded),
-            processAlive: { _ in true },
             readIdentity: { _ in ProcessIdentity(pid: 42, startTimeMicros: 200) }
         ))
         #expect(!DaemonStateRuntimeTruth.belongsToLiveProcess(
             state(identity: ProcessIdentity(pid: 99, startTimeMicros: 100)),
-            processAlive: { _ in true },
             readIdentity: { _ in ProcessIdentity(pid: 99, startTimeMicros: 100) }
         ))
     }

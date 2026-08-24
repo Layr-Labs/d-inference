@@ -46,14 +46,12 @@ public enum WatchdogProbe {
         processRunning: Bool,
         daemonState: DaemonState?,
         now: Double,
-        processAlive: (Int32) -> Bool = daemonProcessAlive,
         readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
     ) -> Bool {
         guard processRunning else { return false }
         guard let daemonState,
               DaemonStateRuntimeTruth.belongsToLiveProcess(
                 daemonState,
-                processAlive: processAlive,
                 readIdentity: readIdentity
               )
         else {

@@ -63,8 +63,12 @@ final class LocalAPIStore {
     /// (DaemonRuntimeService idiom — real state before any async hop), then
     /// re-reads discovery and probes the endpoint while monitoring.
     static func live(
-        discoveryReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
-        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
+        discoveryReader: @escaping @Sendable () -> LocalEndpointInfo? = {
+            LocalEndpointDiscovery.readInfo()
+        },
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            ProcessIdentity.read(pid: $0)
+        },
         probeTimeout: TimeInterval = 2.5,
         pollInterval: Duration = .seconds(3),
         staleAfter: TimeInterval = 15,

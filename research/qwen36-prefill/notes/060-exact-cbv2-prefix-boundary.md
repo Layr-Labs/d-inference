@@ -190,7 +190,7 @@ The test matrix is:
 | ownership | independently advance/release restored attention and recurrent rows |
 | LRU | pinned entries survive; unpinned oldest evicts; hard budget never exceeded |
 | identity | changed token, scope, model, policy, layout, or recurrent spec misses/fails cold |
-| quantized embedding | packed `uint32` weights still declare the dequantized activation dtype |
+| quantized embedding | affine and MX packed weights declare their dequantized activation dtype |
 
 These are repeated-prefix results. They do not alter or satisfy the locked cold,
 prefix-cache-off throughput denominator in note 050.
@@ -206,11 +206,12 @@ then correctly rejected layer 0 because the declared conv dtype was `uint32`.
 
 The declaration had read `embedTokens.weight.dtype`. That is the activation
 dtype for an ordinary embedding, but a `QuantizedEmbedding` stores packed codes
-as `uint32`; its dequantized output follows `scales.dtype`. Qwen creates every
+as `uint32`. Affine output follows its floating scales/biases; MXFP4/MXFP8
+scales are `uint8`, while MLX dequantizes them to bfloat16. Qwen creates every
 conv tail from the embedding-derived `inputs.dtype`, so the recurrent spec now
-uses the quantized embedding's scales dtype and retains the ordinary weight
-dtype fallback. Shape, layer-index, SSM-FP32, identity, ownership, cancellation,
-and byte-accounting checks are unchanged.
+mirrors those mode-specific output rules and retains the ordinary weight dtype
+fallback. Shape, layer-index, SSM-FP32, identity, ownership, cancellation, and
+byte-accounting checks are unchanged.
 
 The post-fix snapshot reports 75,371,520 bytes and matches its independently
 summed arrays. The 1,474,560-byte reduction from the pre-fix estimate is exactly

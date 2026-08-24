@@ -513,8 +513,9 @@ embedding weights are packed `uint32`, but their output and all 30 conv tails
 are bfloat16. The recurrent spec had mistaken storage dtype for activation
 dtype.
 
-The spec now reads `QuantizedEmbedding.scales.dtype` with the ordinary weight
-dtype fallback. A quantized-embedding regression passes, as do all six exact
+The spec now mirrors MLX dequantization: affine uses its floating scales dtype,
+MXFP4/MXFP8 use bfloat16 despite `uint8` scales, and ordinary embeddings retain
+the weight dtype. A quantized-mode regression passes, as do all six exact
 cache/engine tests and eight provider benchmark tests. The prompt-512 M3 run
 now observes 75,371,520-byte donations and exact B1/B2/B4 hits with full output
 equality; distinct-suffix partial-prefix arms remain misses. See `notes/060`

@@ -22,13 +22,14 @@ export default function EarnPage() {
         {/* pb-24 keeps the floating avatar from covering content on mobile */}
         <div className="max-w-3xl mx-auto px-3 sm:px-6 py-6 sm:py-8 pb-24">
           <p className="text-sm text-text-secondary mb-6">
-            What your Apple Silicon Mac could earn serving inference on the Darkbloom network.
+            Estimate a capacity share of the network&apos;s trailing settled work, with power
+            and capped base-reward policy shown separately.
           </p>
 
           <EarningsHero calc={calc} authenticated={authenticated} ready={ready} login={login} />
           <HardwareSelector calc={calc} />
           <ModelSupportList calc={calc} />
-          <BaseRewardsPanel />
+          <BaseRewardsPanel policy={calc.market?.base_rewards ?? null} state={calc.marketState} />
           <AssumptionsPanel calc={calc} />
           <SetupProviderCTA authenticated={authenticated} ready={ready} login={login} />
         </div>

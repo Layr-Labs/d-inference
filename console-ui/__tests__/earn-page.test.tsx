@@ -1,10 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { dedupeModelVariants, baseModelKey, buildCatalogModels } from "@/app/earn/calc";
+import type { EarningsMarketResponse } from "@/lib/api/types";
+import {
+  CHIP_OPTIONS,
+  DEFAULT_ELEC_COST_PER_KWH,
+  calculateModelEstimate,
+  conservedCandidatePayout,
+} from "@/app/earn/calc";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchModels: vi.fn(),
-  fetchPricing: vi.fn(),
+  fetchEarningsMarket: vi.fn(),
 }));
 
 vi.mock("@/components/TopBar", () => ({
@@ -26,83 +31,147 @@ vi.mock("@/lib/google-analytics", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  fetchModels: apiMocks.fetchModels,
-  fetchPricing: apiMocks.fetchPricing,
+  fetchEarningsMarket: apiMocks.fetchEarningsMarket,
 }));
 
-beforeEach(() => {
-  apiMocks.fetchModels.mockReset();
-  apiMocks.fetchPricing.mockReset();
-  apiMocks.fetchModels.mockResolvedValue([
+const marketFixture: EarningsMarketResponse = {
+  window_start: "2026-07-25T12:00:00Z",
+  window_end: "2026-08-24T12:00:00Z",
+  window_days: 30,
+  models: [
     {
-      id: "gpt-oss-20b",
-      object: "model",
-      display_name: "GPT-OSS 20B",
-      size_gb: 12.1,
+      id: "alpha",
+      display_name: "Alpha",
       min_ram_gb: 24,
-      architecture: "MoE",
+      size_bytes: 12_000_000_000,
+      size_gb: 12,
+      work_payout_micro_usd: 100_000_000,
+      paid_tokens: 1_000_000,
+      paid_jobs: 10,
+      aggregate_tps: 200,
+      aggregate_memory_bandwidth_gbps: 800,
+      benchmark_tps: 100,
+      benchmark_memory_bandwidth_gbps: 400,
+      provider_supply: 2,
+      estimate_available: true,
     },
     {
-      id: "gemma-4-26b",
-      object: "model",
-      display_name: "Gemma 4 26B",
-      size_gb: 28,
+      id: "beta",
+      display_name: "Beta",
       min_ram_gb: 36,
-      architecture: "MoE",
+      size_bytes: 28_000_000_000,
+      size_gb: 28,
+      work_payout_micro_usd: 40_000_000,
+      paid_tokens: 400_000,
+      paid_jobs: 4,
+      aggregate_tps: 50,
+      aggregate_memory_bandwidth_gbps: 200,
+      benchmark_tps: 50,
+      benchmark_memory_bandwidth_gbps: 200,
+      provider_supply: 1,
+      estimate_available: true,
     },
-  ]);
-  apiMocks.fetchPricing.mockResolvedValue({
-    prices: [
-      { model: "gemma-4-26b", input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
+    {
+      id: "gamma",
+      display_name: "Gamma",
+      min_ram_gb: 32,
+      size_bytes: 20_000_000_000,
+      size_gb: 20,
+      work_payout_micro_usd: 20_000_000,
+      paid_tokens: 200_000,
+      paid_jobs: 2,
+      aggregate_tps: 40,
+      aggregate_memory_bandwidth_gbps: 160,
+      benchmark_tps: 0,
+      benchmark_memory_bandwidth_gbps: 0,
+      provider_supply: 1,
+      estimate_available: false,
+      unavailable_reason: "throughput_benchmark_unavailable",
+    },
+  ],
+  audit: {
+    total_settled_work_micro_usd: 160_000_000,
+    modeled_work_micro_usd: 160_000_000,
+    unattributed_work_micro_usd: 0,
+    total_paid_tokens: 1_600_000,
+    modeled_paid_tokens: 1_600_000,
+    unattributed_paid_tokens: 0,
+    total_paid_jobs: 16,
+    modeled_paid_jobs: 16,
+    unattributed_paid_jobs: 0,
+  },
+  base_rewards: {
+    enabled: true,
+    monthly_pool_micro_usd: 9_000_000_000,
+    min_uptime_fraction: 0.9,
+    tiers: [
+      { min_ram_gb: 64, monthly_micro_usd: 18_000_000 },
+      { min_ram_gb: 48, monthly_micro_usd: 16_000_000 },
+      { min_ram_gb: 32, monthly_micro_usd: 12_000_000 },
+      { min_ram_gb: 24, monthly_micro_usd: 10_000_000 },
     ],
-  });
+  },
+};
+
+beforeEach(() => {
+  apiMocks.fetchEarningsMarket.mockReset();
+  apiMocks.fetchEarningsMarket.mockResolvedValue(structuredClone(marketFixture));
 });
 
-describe("model variant dedupe", () => {
-  const variants = [
-    { id: "gpt-oss-20b", object: "model", display_name: "GPT-OSS 20B", family: "gpt-oss" },
-    { id: "gemma-4-26b-qat-4bit", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
-    { id: "gemma-4-26b", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
-    { id: "gemma-4-26b-8bit", object: "model", display_name: "Gemma 4 26B 8-bit (rollback)", family: "gemma" },
-  ];
-
-  it("strips quant / build suffixes to a base key", () => {
-    expect(baseModelKey("gemma-4-26b-qat-4bit")).toBe("gemma-4-26b");
-    expect(baseModelKey("gemma-4-26b-8bit")).toBe("gemma-4-26b");
-    expect(baseModelKey("gemma-4-26b")).toBe("gemma-4-26b");
-    expect(baseModelKey("gpt-oss-20b")).toBe("gpt-oss-20b");
+describe("market-conserving earnings math", () => {
+  it("never allocates more than the fixed settled payout pool", () => {
+    const payout = conservedCandidatePayout(100, 300, 100);
+    expect(payout).not.toBeNull();
+    expect(payout!.candidate).toBe(25);
+    expect(payout!.existing).toBe(75);
+    expect(payout!.candidate + payout!.existing).toBeCloseTo(100, 12);
+    expect(payout!.candidate).toBeLessThanOrEqual(100);
   });
 
-  it("collapses the catalog to one canonical entry per base model", () => {
-    const out = dedupeModelVariants(variants);
-    expect(out.map((m) => m.id).sort()).toEqual(["gemma-4-26b", "gpt-oss-20b"]);
-  });
-
-  it("buildCatalogModels yields exactly two clean models", () => {
-    const built = buildCatalogModels(variants, null);
-    expect(built.map((m) => m.name).sort()).toEqual(["GPT-OSS 20B", "Gemma 4 26B"]);
+  it("charges full-month idle power plus realized allocated workload", () => {
+    const chip = CHIP_OPTIONS.find((option) => option.chip === "M4 Max")!;
+    const estimate = calculateModelEstimate(
+      marketFixture.models[0],
+      chip,
+      48,
+      marketFixture.base_rewards,
+      DEFAULT_ELEC_COST_PER_KWH,
+    );
+    expect(estimate).not.toBeNull();
+    expect(estimate!.idleElectricityUSD).toBeCloseTo(2.16);
+    expect(estimate!.workloadElectricityUSD).toBeGreaterThan(0);
+    expect(estimate!.workPayoutUSD + estimate!.existingCapacityPayoutUSD).toBeCloseTo(
+      estimate!.workPoolUSD,
+      12,
+    );
   });
 });
 
 describe("EarnPage", () => {
-  it("shows the floor-only hero when no catalog model fits the selected hardware", async () => {
+  it("ranks fitting models by conserved candidate work payout", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-    await screen.findAllByText(/Runs in your 48 GB/);
 
-    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
-    fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
-
-    // Nothing fits in 16 GB (min RAM is 24/36 in the fixture) and the 16 GB
-    // floor tier is $0 — the hero degrades honestly instead of disappearing.
-    expect(
-      await screen.findByText(/No catalog model fits in 16 GB/)
-    ).toBeInTheDocument();
-    expect(screen.getByText("Needs 24 GB+ of unified memory")).toBeInTheDocument();
-    expect(screen.getByText("Needs 36 GB+ of unified memory")).toBeInTheDocument();
+    expect(await screen.findByText("Best estimate")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText(/candidate share for Alpha/)).toBeInTheDocument();
+    expect(screen.getByText("Supply benchmark unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Trailing settled payout pool")).toBeInTheDocument();
+    expect(screen.getByText("Competing live capacity")).toBeInTheDocument();
   });
 
-  it("lets under-provisioned machines register interest in smaller models", async () => {
+  it("renders a rejected market fetch as terminally unavailable", async () => {
+    apiMocks.fetchEarningsMarket.mockRejectedValueOnce(new Error("market unavailable"));
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+
+    expect((await screen.findAllByText("Estimate unavailable")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Trailing settled-payout market data could not be loaded.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading trailing market data…")).not.toBeInTheDocument();
+    expect(screen.getByText("Reward policy unavailable.")).toBeInTheDocument();
+  });
+
+  it("does not fabricate a base-only estimate when no model fits", async () => {
     window.localStorage.clear();
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
@@ -111,53 +180,20 @@ describe("EarnPage", () => {
     fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
     fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
 
-    const notifyButton = await screen.findByRole("button", {
-      name: /Notify me when smaller models launch/,
-    });
-    fireEvent.click(notifyButton);
-
+    expect(await screen.findByText("No active public model fits in 16 GB.")).toBeInTheDocument();
     expect(
-      await screen.findByText(/You're on the list — we'll notify you when smaller models go live/)
+      screen.getByRole("button", { name: /Notify me when smaller models launch/ }),
     ).toBeInTheDocument();
-    expect(window.localStorage.getItem("darkbloom.smallModelsInterest")).toContain('"chip":"M1"');
+    expect(screen.queryByText(/per month after electricity/)).not.toBeInTheDocument();
   });
 
-  it("always prices the best-earning model automatically (read-only list, no selection)", async () => {
+  it("keeps electricity and full-month availability as stated fixed assumptions", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
+    await screen.findByText("Best estimate");
 
-    // GPT-OSS 20B out-earns Gemma on the default M4 Max (fewer active params →
-    // higher decode throughput) so it gets the badge; both fit in 48 GB.
-    expect(await screen.findByText("Best earner")).toBeInTheDocument();
-    expect(screen.getByText(/Runs in your 48 GB \(12 GB weights\)/)).toBeInTheDocument();
-    expect(screen.getByText(/Runs in your 48 GB \(28 GB weights\)/)).toBeInTheDocument();
-
-    // The list is read-only — no model checkboxes/buttons to mis-toggle.
-    expect(screen.queryByRole("button", { name: /GPT-OSS 20B/ })).not.toBeInTheDocument();
-  });
-
-  it("presents earnings as a floor→estimate range with the base reward additive", async () => {
-    const EarnPage = (await import("@/app/earn/page")).default;
-    render(<EarnPage />);
-
-    // Default hardware is M4 Max / 48GB → 48GB base-reward tier = $16/mo floor
-    // (appears in both the hero chip and the formula breakdown).
-    expect((await screen.findAllByText(/\$16\/mo/)).length).toBeGreaterThan(0);
-    expect(screen.getByText("Base rewards (earnings floor)")).toBeInTheDocument();
-    // Assumptions decomposition shows the floor added on top of usage.
-    expect(screen.getByText("+ $16")).toBeInTheDocument();
-  });
-
-  it("bakes electricity in as a fixed assumption with no user input", async () => {
-    const { DEFAULT_ELEC_COST_PER_KWH } = await import("@/app/earn/calc");
-    const { useEarningsCalculator } = await import("@/app/earn/useEarningsCalculator");
-    const { renderHook } = await import("@testing-library/react");
-    const { result } = renderHook(() => useEarningsCalculator());
-
-    expect(result.current.elecCostNum).toBe(DEFAULT_ELEC_COST_PER_KWH);
-
-    const EarnPage = (await import("@/app/earn/page")).default;
-    render(<EarnPage />);
     expect(screen.queryByLabelText(/Electricity cost/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Full-month availability is fixed/)).toBeInTheDocument();
+    expect(screen.getAllByText(/eligibility- and pool-capped/i).length).toBeGreaterThan(0);
   });
 });

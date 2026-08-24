@@ -10,7 +10,8 @@ const selectClasses =
 
 /**
  * The calculator's only two inputs: chip + unified memory. Everything else
- * (enclosure, utilization, hours) is fixed or folded into the assumptions.
+ * (full-month availability, power, and electricity rate) is fixed and stated
+ * in the assumptions.
  */
 export function HardwareSelector({ calc }: { calc: EarningsCalculator }) {
   return (

@@ -38,6 +38,20 @@ func TestTierFloor(t *testing.T) {
 	}
 }
 
+func TestTiersReturnsPolicyCopy(t *testing.T) {
+	tiers := Tiers()
+	if len(tiers) != len(floorTiers) {
+		t.Fatalf("len(Tiers()) = %d, want %d", len(tiers), len(floorTiers))
+	}
+	if tiers[0] != (Tier{MinRAMGB: 512, MonthlyMicroUSD: 40_000_000}) {
+		t.Fatalf("first tier = %+v", tiers[0])
+	}
+	tiers[0].MonthlyMicroUSD = 0
+	if got := TierFloor(512); got != 40_000_000 {
+		t.Fatalf("mutating returned tiers changed policy: TierFloor(512) = %d", got)
+	}
+}
+
 func TestAvail(t *testing.T) {
 	cases := []struct {
 		uptime float64

@@ -44,6 +44,40 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
 }
 
 extension ModelDownloader {
+    struct ManifestDownloadDiskState {
+        let alreadyValid: [Bool]
+        let partBytes: [Int64]
+        let remainingBytes: Int64
+    }
+
+    /// One read-only classification shared by foreground download, background
+    /// prefetch, and app planning. Keeping this in one place prevents any of
+    /// those callers from drifting on staged-file or `.part` accounting.
+    func inspectManifestDownloadState(
+        files: [ManifestFile],
+        destinations: [URL]
+    ) -> ManifestDownloadDiskState {
+        let valid = zip(files, destinations).map { pair in
+            Self.fileMatches(
+                pair.1,
+                size: pair.0.sizeBytes,
+                sha256: pair.0.sha256
+            )
+        }
+        let partBytes = destinations.map {
+            fileSize($0.appendingPathExtension("part"))
+        }
+        return ManifestDownloadDiskState(
+            alreadyValid: valid,
+            partBytes: partBytes,
+            remainingBytes: Self.remainingBytesToFetch(
+                sizes: files.map(\.sizeBytes),
+                alreadyValid: valid,
+                partBytes: partBytes
+            )
+        )
+    }
+
     /// Plan a foreground manifest download without creating, deleting, moving,
     /// or modifying any cache content.
     ///
@@ -90,17 +124,10 @@ extension ModelDownloader {
                 isDirectory: false
             )
         }
-        let valid = zip(manifest.files, destinations).map { file, destination in
-            Self.fileMatches(destination, size: file.sizeBytes, sha256: file.sha256)
-        }
-        let partBytes = destinations.map {
-            fileSize($0.appendingPathExtension("part"))
-        }
-        return Self.remainingBytesToFetch(
-            sizes: manifest.files.map(\.sizeBytes),
-            alreadyValid: valid,
-            partBytes: partBytes
-        )
+        return inspectManifestDownloadState(
+            files: manifest.files,
+            destinations: destinations
+        ).remainingBytes
     }
 
     private static func validatePlanningManifest(

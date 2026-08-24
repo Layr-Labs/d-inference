@@ -793,6 +793,62 @@ struct ModelPrefetchDownloaderTests {
         #expect(!incorrectlyChargedAsFresh.hasSufficientCapacity)
     }
 
+    @Test("download and app planning share valid-file and part-byte classification")
+    func sharedManifestDiskInspection() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-plan-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let complete = Data("already complete".utf8)
+        let partialWhole = Data("partially downloaded shard".utf8)
+        let partialPrefix = partialWhole.prefix(9)
+        let missing = Data("missing".utf8)
+        let destinations = [
+            directory.appendingPathComponent("complete.bin"),
+            directory.appendingPathComponent("partial.bin"),
+            directory.appendingPathComponent("missing.bin"),
+        ]
+        try complete.write(to: destinations[0])
+        try Data(partialPrefix).write(
+            to: destinations[1].appendingPathExtension("part")
+        )
+
+        let files = [
+            ManifestFile(
+                path: "complete.bin",
+                sizeBytes: Int64(complete.count),
+                sha256: sha256Hex(complete),
+                role: "weight"
+            ),
+            ManifestFile(
+                path: "partial.bin",
+                sizeBytes: Int64(partialWhole.count),
+                sha256: sha256Hex(partialWhole),
+                role: "weight"
+            ),
+            ManifestFile(
+                path: "missing.bin",
+                sizeBytes: Int64(missing.count),
+                sha256: sha256Hex(missing),
+                role: "config"
+            ),
+        ]
+
+        let state = ModelDownloader().inspectManifestDownloadState(
+            files: files,
+            destinations: destinations
+        )
+
+        #expect(state.alreadyValid == [true, false, false])
+        #expect(state.partBytes == [0, Int64(partialPrefix.count), 0])
+        #expect(state.remainingBytes ==
+            Int64(partialWhole.count - partialPrefix.count + missing.count))
+    }
+
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
     func foregroundDownloadResumesFromStaging() async throws {
         // The foreground (serve-time) download path must also resume an interrupted

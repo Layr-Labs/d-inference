@@ -3,7 +3,8 @@ import ProviderCoreFoundation
 
 /// App-side adapter for model catalog + downloads. The app never links
 /// ProviderCore and never reimplements downloader logic: it shells out to
-/// the `darkbloom` CLI — `models catalog --json` (coordinator catalog),
+/// the `darkbloom` CLI — `models catalog --json --include-download-plans`
+/// (coordinator catalog plus read-only disk admission),
 /// `models list --json` (local cache scan), `models download --json`
 /// (NDJSON progress stream), `models remove --force` — and merges the
 /// results with the daemon's `daemon-state.json` (warm/serving models).
@@ -258,7 +259,11 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         let catalogOutput = try await runShortCommand(
             executable: executable,
             arguments: ["models", "catalog", "--json", "--include-download-plans"],
-            timeout: .seconds(45)
+            // A partial model can contain many already-complete shards. The
+            // side-effect-free plan hashes those staged files before crediting
+            // them, using the same validity rule as resume; allow large model
+            // trees to finish that read-only verification.
+            timeout: .seconds(600)
         )
         guard catalogOutput.status == 0 else {
             throw ModelCatalogCLIError.exited(catalogOutput.status, message: catalogOutput.stderrTail)

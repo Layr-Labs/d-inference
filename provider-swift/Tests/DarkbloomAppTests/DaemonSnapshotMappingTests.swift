@@ -33,13 +33,13 @@ struct DaemonSnapshotMappingTests {
     private func inputs(
         state: DaemonState?,
         alive: Bool,
-        installed: Bool = true,
+        loaded: Bool = true,
         endpoint: LocalEndpointInfo? = nil
     ) -> DaemonSnapshotMapping.Inputs {
         DaemonSnapshotMapping.Inputs(
             state: state,
             processIsAlive: alive,
-            serviceIsInstalled: installed,
+            serviceIsLoaded: loaded,
             localEndpoint: endpoint,
             now: referenceNow,
             providerName: "Gaj’s Mac"
@@ -133,7 +133,7 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.availability.nextChangeAt == Date(timeIntervalSince1970: nextChange))
     }
 
-    @Test("An uninstalled service cannot inherit retained scheduled-off posture")
+    @Test("An unloaded service cannot inherit retained scheduled-off posture")
     func stoppedServiceMapsPaused() {
         let state = freshState(schedule: .init(
             mode: "scheduled-off",
@@ -141,7 +141,7 @@ struct DaemonSnapshotMappingTests {
             nextChangeAtEpoch: referenceNow.timeIntervalSince1970 + 3_600
         ))
         let snapshot = DaemonSnapshotMapping.map(
-            inputs(state: state, alive: false, installed: false)
+            inputs(state: state, alive: false, loaded: false)
         )
 
         #expect(snapshot.runState == .paused)

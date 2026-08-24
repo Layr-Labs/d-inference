@@ -19,6 +19,12 @@ struct ProductSurfaceHonestyTests {
         ))
     }
 
+    @Test("Every preview flow keeps chat on fixture data")
+    func previewChatNeverUsesLiveEndpoint() {
+        #expect(ChatSessionMode.resolve(isPreview: true) == .fixture)
+        #expect(ChatSessionMode.resolve(isPreview: false) == .live)
+    }
+
     @Test("Local API copy distinguishes live credentials and endpoints")
     func localAPICopyDistinguishesLiveState() {
         #expect(

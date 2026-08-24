@@ -29,10 +29,14 @@ final class ProviderStore {
 
     init(
         service: any ProviderRuntimeServicing,
-        initialSnapshot: ProviderSnapshot
+        initialSnapshot: ProviderSnapshot,
+        startsMonitoring: Bool = false
     ) {
         self.service = service
         snapshot = initialSnapshot
+        if startsMonitoring {
+            startMonitoring()
+        }
     }
 
     convenience init(previewScenario: ProviderPreviewScenario = .online) {
@@ -43,7 +47,11 @@ final class ProviderStore {
     /// Live store: tracks the real provider daemon via its state file and
     /// drives lifecycle through the `darkbloom` CLI.
     convenience init(daemon service: DaemonRuntimeService) {
-        self.init(service: service, initialSnapshot: service.initialSnapshot)
+        self.init(
+            service: service,
+            initialSnapshot: service.initialSnapshot,
+            startsMonitoring: true
+        )
     }
 
     deinit {

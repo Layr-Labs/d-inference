@@ -158,7 +158,8 @@ struct ProductShellView: View {
         case .chat:
             PrivateChatView(
                 identity: identity,
-                fixture: chatFixture
+                fixture: chatFixture,
+                isPreview: isPreview
             )
         case .localAPI:
             LocalAPIView(

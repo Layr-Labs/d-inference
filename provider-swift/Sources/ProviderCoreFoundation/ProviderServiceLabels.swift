@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Launchd service labels for the provider's background agents.
 ///
@@ -33,5 +36,34 @@ public enum DarkbloomServiceLabels {
         providerLaunchAgentSupported.contains {
             FileManager.default.fileExists(atPath: launchAgentPlistPath(label: $0).path)
         }
+    }
+
+    /// Whether launchd currently owns any supported provider job.
+    ///
+    /// A plist can remain after `darkbloom stop`; loaded state is the lifecycle
+    /// boundary that distinguishes an intentionally stopped provider from a
+    /// launchd-managed job whose last daemon snapshot reported scheduled-off.
+    public static func providerLaunchAgentLoaded() -> Bool {
+        #if canImport(Darwin)
+        let uid = getuid()
+        return providerLaunchAgentSupported.contains { label in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["print", "gui/\(uid)/\(label)"]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus == 0
+            } catch {
+                return false
+            }
+        }
+        #else
+        return false
+        #endif
     }
 }

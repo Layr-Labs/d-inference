@@ -35,8 +35,9 @@ def fmt(value: float, digits: int = 3) -> str:
 class TraceTable:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.exists = path.exists()
         self.rows: list[dict[str, tuple[str, str]]] = []
-        if not path.exists():
+        if not self.exists:
             return
         root = ET.parse(path).getroot()
         node = root.find("node")
@@ -128,12 +129,13 @@ def summarize_agx(path: Path) -> Iterable[str]:
         )
 
 
-def summarize_pstates(
-    table: TraceTable,
-    frequencies: dict[int, int],
-) -> Iterable[str]:
+def field_safe(value: str) -> str:
+    return "_".join(value.split())
+
+
+def summarize_device_states(table: TraceTable) -> Iterable[str]:
     if not table.rows:
-        yield "TRACE_PSTATE status=unavailable rows=0"
+        yield "TRACE_DEVICE_STATE status=unavailable rows=0"
         return
     durations: collections.Counter[tuple[int, int]] = collections.Counter()
     for row in table.rows:
@@ -143,30 +145,96 @@ def summarize_pstates(
             continue
         durations[(int(state_value), int(desired_value))] += duration_seconds(row)
     total = sum(durations.values())
-    mismatch = sum(
-        seconds
-        for (state, desired), seconds in durations.items()
-        if state < desired
-    )
     for (state, desired), seconds in sorted(durations.items()):
-        frequency = frequencies.get(state)
-        desired_frequency = frequencies.get(desired)
         yield (
-            f"TRACE_PSTATE state={state}"
-            f" desired_state={desired}"
-            f" frequency_hz={frequency if frequency is not None else 'unknown'}"
-            " desired_frequency_hz="
-            f"{desired_frequency if desired_frequency is not None else 'unknown'}"
+            f"TRACE_DEVICE_STATE raw_state={state}"
+            f" raw_desired_state={desired}"
+            f" duration_s={fmt(seconds, 6)}"
+            f" fraction={fmt(seconds / total if total else math.nan, 6)}"
+            " semantics=opaque_performance_level"
+        )
+    yield (
+        f"TRACE_DEVICE_STATE_SUMMARY rows={len(table.rows)}"
+        f" duration_s={fmt(total, 6)}"
+        " frequency_mapping=not_valid"
+    )
+
+
+def summarize_performance_levels(table: TraceTable) -> Iterable[str]:
+    if not table.rows:
+        yield "TRACE_PERFORMANCE_LEVEL status=unavailable rows=0"
+        return
+    durations: collections.Counter[str] = collections.Counter()
+    reasons: collections.Counter[str] = collections.Counter()
+    induced_seconds = 0.0
+    for row in table.rows:
+        seconds = duration_seconds(row)
+        state = row.get(
+            "gpu-performance-state", ("unknown", "unknown")
+        )[1]
+        durations[state] += seconds
+        if number(row.get("is-induced", ("0", ""))[0]):
+            induced_seconds += seconds
+        reason = row.get("narrative", ("unknown", "unknown"))[1]
+        reasons[reason] += seconds
+    total = sum(durations.values())
+    for state, seconds in sorted(durations.items()):
+        yield (
+            f"TRACE_PERFORMANCE_LEVEL state={field_safe(state)}"
+            f" duration_s={fmt(seconds, 6)}"
+            f" fraction={fmt(seconds / total if total else math.nan, 6)}"
+        )
+    for reason, seconds in sorted(reasons.items()):
+        yield (
+            f"TRACE_PERFORMANCE_REASON reason={field_safe(reason)}"
             f" duration_s={fmt(seconds, 6)}"
             f" fraction={fmt(seconds / total if total else math.nan, 6)}"
         )
     yield (
-        f"TRACE_PSTATE_SUMMARY rows={len(table.rows)}"
+        f"TRACE_PERFORMANCE_LEVEL_SUMMARY rows={len(table.rows)}"
         f" duration_s={fmt(total, 6)}"
-        f" actual_below_desired_s={fmt(mismatch, 6)}"
-        " actual_below_desired_fraction="
-        f"{fmt(mismatch / total if total else math.nan, 6)}"
+        f" induced_s={fmt(induced_seconds, 6)}"
     )
+
+
+def summarize_counter_info(table: TraceTable) -> Iterable[str]:
+    if not table.rows:
+        yield "TRACE_COUNTER_INFO status=unavailable rows=0"
+        return
+    yield f"TRACE_COUNTER_INFO status=available rows={len(table.rows)}"
+    for row in table.rows:
+        name = row.get("name", ("unknown", "unknown"))[1]
+        counter_type = row.get("type", ("unknown", "unknown"))[1]
+        maximum = row.get("max-value", ("unknown", "unknown"))[0]
+        description = row.get("description", ("unknown", "unknown"))[1]
+        yield (
+            f"TRACE_COUNTER name={field_safe(name)}"
+            f" type={field_safe(counter_type)}"
+            f" max_value={maximum}"
+            f" description={field_safe(description)}"
+        )
+
+
+def summarize_consistent_state(table: TraceTable) -> Iterable[str]:
+    if not table.rows:
+        yield "TRACE_CONSISTENT_STATE status=unavailable rows=0"
+        return
+    for row in table.rows:
+        available = bool(
+            number(row.get("consistent-state-available", ("0", ""))[0])
+        )
+        enabled = bool(
+            number(row.get("consistent-state-enabled", ("0", ""))[0])
+        )
+        sustained = bool(
+            number(row.get("consistent-state-sustained", ("0", ""))[0])
+        )
+        yield (
+            "TRACE_CONSISTENT_STATE"
+            f" available={'yes' if available else 'no'}"
+            f" enabled={'yes' if enabled else 'no'}"
+            f" sustained={'yes' if sustained else 'no'}"
+        )
 
 
 def summarize_thermal(table: TraceTable) -> Iterable[str]:
@@ -205,9 +273,6 @@ def summarize_gpu_state(table: TraceTable) -> Iterable[str]:
 
 def summarize_counts(directory: Path) -> Iterable[str]:
     schemas = [
-        "gpu-counter-info",
-        "gpu-counter-value",
-        "metal-gpu-counter-intervals",
         "graphics-compiler-spill-events",
         "metal-kernel-resource-allocations",
         "metal-gpu-intervals",
@@ -215,7 +280,12 @@ def summarize_counts(directory: Path) -> Iterable[str]:
     ]
     for schema in schemas:
         table = TraceTable(directory / f"{schema}.xml")
-        yield f"TRACE_TABLE schema={schema} rows={len(table.rows)}"
+        status = "exported" if table.exists else "not_exported"
+        yield (
+            f"TRACE_TABLE schema={schema}"
+            f" status={status}"
+            f" rows={len(table.rows)}"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -231,10 +301,23 @@ def main() -> None:
     frequencies = read_frequencies(arguments.perf_inventory)
     for line in summarize_agx(arguments.agx_jsonl):
         print(line)
-    pstate_table = TraceTable(
+    maximum_frequency = max(frequencies.values(), default=0)
+    print(
+        "GPU_CLOCK_OBSERVABILITY"
+        " live_frequency_hz=unavailable"
+        f" static_table_max_frequency_hz={maximum_frequency or 'unavailable'}"
+        " qualitative_performance_level=available_via_xctrace"
+        " note=trace_level_enums_are_not_perf_state_table_indices"
+    )
+    device_state_table = TraceTable(
         arguments.trace_directory / "gpu-performance-device-state-intervals.xml"
     )
-    for line in summarize_pstates(pstate_table, frequencies):
+    for line in summarize_device_states(device_state_table):
+        print(line)
+    performance_level_table = TraceTable(
+        arguments.trace_directory / "gpu-performance-state-intervals.xml"
+    )
+    for line in summarize_performance_levels(performance_level_table):
         print(line)
     thermal_table = TraceTable(
         arguments.trace_directory / "device-thermal-state-intervals.xml"
@@ -245,6 +328,16 @@ def main() -> None:
         arguments.trace_directory / "metal-gpu-state-intervals.xml"
     )
     for line in summarize_gpu_state(gpu_state_table):
+        print(line)
+    counter_info_table = TraceTable(
+        arguments.trace_directory / "gpu-counter-info.xml"
+    )
+    for line in summarize_counter_info(counter_info_table):
+        print(line)
+    consistent_state_table = TraceTable(
+        arguments.trace_directory / "gpu-performance-state-info.xml"
+    )
+    for line in summarize_consistent_state(consistent_state_table):
         print(line)
     for line in summarize_counts(arguments.trace_directory):
         print(line)

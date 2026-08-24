@@ -60,6 +60,8 @@ POWER_AFTER="$OUT_DIR/power-after.txt"
 PROCESSES_BEFORE="$OUT_DIR/processes-before.txt"
 PROCESSES_AFTER="$OUT_DIR/processes-after.txt"
 POWERMETRICS_ACCESS="$OUT_DIR/powermetrics-access.txt"
+POWER_PROFILER_ACCESS="$OUT_DIR/power-profiler-access.txt"
+POWER_PROFILER_TRACE="$BUILD_DIR/power-profiler-access.trace"
 XCTRACE_TEMPLATES="$OUT_DIR/xctrace-templates.txt"
 GPU_METADATA="$OUT_DIR/gpu-metadata.txt"
 METAL_COMPILE_LOG="$OUT_DIR/metal-compiler.txt"
@@ -245,6 +247,13 @@ BINARY_PERF_STATUS=$?
 /usr/bin/powermetrics --samplers gpu_power -i 100 -n 1 \
     >"$POWERMETRICS_ACCESS" 2>&1
 POWERMETRICS_STATUS=$?
+xcrun xctrace record \
+    --template "Power Profiler" \
+    --no-prompt \
+    --output "$POWER_PROFILER_TRACE" \
+    --launch -- /bin/sleep 0.1 \
+    >"$POWER_PROFILER_ACCESS" 2>&1
+POWER_PROFILER_STATUS=$?
 xcrun xctrace list templates >"$XCTRACE_TEMPLATES" 2>&1
 XCTRACE_LIST_STATUS=$?
 set -e
@@ -321,6 +330,7 @@ if [[ -d "$TRACE_PACKAGE" ]]; then
     TRACE_SCHEMAS=(
         device-thermal-state-intervals
         gpu-performance-device-state-intervals
+        gpu-performance-state-info
         gpu-performance-state-intervals
         metal-gpu-state-intervals
         metal-gpu-intervals
@@ -328,8 +338,6 @@ if [[ -d "$TRACE_PACKAGE" ]]; then
         metal-kernel-resource-allocations
         graphics-compiler-spill-events
         gpu-counter-info
-        gpu-counter-value
-        metal-gpu-counter-intervals
     )
     for schema_name in "${TRACE_SCHEMAS[@]}"; do
         set +e
@@ -403,6 +411,7 @@ fi
     echo "SWIFT_COMPILE=pass"
     echo "METAL_BINARY_PERF_EXIT=$BINARY_PERF_STATUS"
     echo "POWERMETRICS_UNPRIVILEGED_EXIT=$POWERMETRICS_STATUS"
+    echo "POWER_PROFILER_MACOS_EXIT=$POWER_PROFILER_STATUS"
     echo "XCTRACE_LIST_EXIT=$XCTRACE_LIST_STATUS"
     echo "XCTRACE_RECORD_EXIT=$XCTRACE_RECORD_STATUS"
     echo "XCTRACE_TOC_EXIT=$TOC_STATUS"
@@ -411,9 +420,16 @@ fi
     echo "TRACE_SIZE_KIB=$TRACE_SIZE_KIB"
     echo "PROBE_COMPLETE=$PROBE_COMPLETE"
     echo "POWER_POST_GATE=$POST_POWER_GATE"
+    echo "GPU_POWER_OBSERVABILITY=unavailable"
+    echo "GPU_CLOCK_OBSERVABILITY=static-table-and-qualitative-level-only"
+    echo "GPU_UTILIZATION_OBSERVABILITY=ioreg-PerformanceStatistics"
+    echo "GPU_PERFORMANCE_REASON_OBSERVABILITY=xctrace-qualitative-narrative"
     echo "POWERMETRICS_ACCESS_BEGIN"
     sed -n '1,240p' "$POWERMETRICS_ACCESS"
     echo "POWERMETRICS_ACCESS_END"
+    echo "POWER_PROFILER_ACCESS_BEGIN"
+    sed -n '1,240p' "$POWER_PROFILER_ACCESS"
+    echo "POWER_PROFILER_ACCESS_END"
     echo "AGX_INVENTORY_BEGIN"
     sed -n '1,400p' "$AGX_INVENTORY"
     echo "AGX_INVENTORY_END"

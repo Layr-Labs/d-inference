@@ -1917,6 +1917,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             )
         )
         try await runtime.start(name: fixture.virtualMachineName)
+        try fixture.resetGuestCommandObservation()
         try fixture.setBehavior(
             "block-first-list-stop-liveness-inconclusive"
         )
@@ -3313,6 +3314,10 @@ private struct FakeLumeFixture {
 
     func setBehavior(_ value: String) throws {
         try Data("\(value)\n".utf8).write(to: behavior)
+    }
+
+    func resetGuestCommandObservation() throws {
+        try FileManager.default.removeItem(at: guestCommandStarted)
     }
 
     func launchStartHolderSubprocess(now: Date) throws -> Process {

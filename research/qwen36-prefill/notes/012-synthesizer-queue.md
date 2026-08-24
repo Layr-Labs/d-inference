@@ -7,19 +7,20 @@ Status: ranked queue (2026-08-24, after first M3 Max baseline)
 The first M3 Max rows change the ranking:
 
 - B=1 median is 1,435 / 1,669 / 1,555 tok/s at 512 / 2,048 / 8,192.
-- Four 2,048-token prompts finish in 4.926 s, or **1,663 aggregate tok/s**:
+- Four 2,048-token prompts have a 4.955 s median makespan, or
+  **1,661 aggregate tok/s**:
   effectively the same as B=1 at 2,048.
 - Source and timing agree on the mechanism: Qwen forms packed `[4,512]`
   forwards, but `maxBatchedTokensPerStep=2048` forces four model passes to
   finish each row's 2,048 tokens. Packing shares each pass's weights; the
   scheduler still permits only 2,048 cohort tokens per weight stream.
 
-Therefore the first bet is not "turn packing on." It is to widen the
-memory-safe packed cohort to `[B,C]`, starting with C=1,024 and 2,048. For
-B=4, `[4,2048]` reduces four model passes to one per 2,048 row tokens. It also
-raises routed assignments from 16,384 to 65,536, beyond today's qualified
-expert-tile shapes, so scheduler geometry and expert-tile capacity are separate
-experiments.
+Therefore the first bet is not "turn packing on" or "raise the chunk." It is to
+qualify the existing expert-tile route at M=32,768 and 65,536; only then widen
+the memory-safe packed cohort to `[B,C]`. For B=4, `[4,2048]` reduces four
+model passes to one per 2,048 row tokens, but it raises routed assignments from
+16,384 to 65,536. Raising the scheduler budget first would deliberately fall
+back to the known slower expert route.
 
 B=1 remains a no-regression metric, not the credible location of the 2.5x
 claim. A guarded one-shot B=1 experiment could disprove that roof later, but
@@ -29,25 +30,57 @@ together in advance.
 
 ## Ranked experiment queue
 
-### 1. Wide packed-cohort geometry: `[B,512]` → `[B,1024]` → `[B,2048]`
+### 1. Qualify expert-tile M=32,768 and M=65,536 before widening cohorts
 
-- **Hypothesis:** The 2,048-token *total* step budget, not failure to pack, is
-  the measured aggregate bottleneck. During pure text prefill, increasing both
-  `prefillChunkSize` and `maxBatchedTokensPerStep` so all B rows receive C
-  tokens deletes model passes and amortizes each layer's weight stream over
-  `B*C` tokens. Keep current geometry whenever decode work is present.
-- **Expected B=1 vs B=4:** A burst-only gate leaves B=1 unchanged. At B=2,
-  C=2,048 is expected to give `1.4–2.0x` aggregate; at B=4, C=1,024
-  `1.4–2.0x` and C=2,048 `1.8–3.5x`. The B=4 target is at least
-  `4,158 tok/s` against the measured 1,663 baseline.
-- **Kill criterion:** Dead if the best memory-safe geometry is `<1.5x` at
-  B=4 8K, if `[4,2048]` cannot stay below both the activation reserve and
+- **Hypothesis:** The aggregate roof is the CPU-side closed assignment set
+  `{4096,8192,16384}`, not an obvious Metal limit. The existing
+  `build_sorted_expert_tiles_bm32` kernel accepts runtime M, and its descriptor
+  bound `M/32 + E - 1` is only 1,279 entries at M=32,768 and 2,303 at
+  M=65,536. Extending the existing independently tiled gather-QMM route should
+  preserve its advantage without a fused MoE mega-kernel.
+- **Expected B=1 vs B=4:** No end-to-end effect at current scheduler geometry:
+  both B=1 stripe and packed B=4 steps remain M=16,384. This unlocks 4,096 and
+  8,192 cohort tokens per weight stream for rank 2, corresponding to potential
+  `2.0x` and `4.0x` aggregate traffic multipliers.
+- **Kill criterion:** Kill M=32K or M=64K independently if tiled QMM is
+  `<1.3x` faster than legacy at the exact Qwen gate-up and down geometries,
+  any adversarial expert histogram differs numerically, descriptor build
+  erases the QMM gain, or the existing metallib has a hidden unsafe cap.
+  Do not raise scheduler budget first; that knowingly benchmarks fallback.
+- **Files that would change:** CPU gate/descriptor allocation in
+  `libs/mlx-swift/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h`
+  and canonical quantized gather-QMM source under
+  `libs/mlx-swift/Source/Cmlx/` (then regenerate, never hand-edit only the
+  `mlx-generated` copies), plus
+  `libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift` and
+  `QwenExpertTilePerfTests.swift`.
+- **Reviewer risk:** Decode: none because M=1 remains ineligible. Numerics:
+  medium; sorted/duplicate assignments, empty experts, and BM32 tails need
+  parity. `maxBufferLength`: low for descriptors. Coordinator admission:
+  none until rank 2 changes serving geometry.
+- **Depends on:** Existing M=16,384 control and one-file additive M=32K/64K
+  cases in `QwenExpertTilePerfTests.swift`.
+
+### 2. Wide cohort geometry with the newly qualified tile shapes
+
+- **Hypothesis:** The 2,048-token *total* step budget is the measured
+  aggregate bottleneck. After rank 1, pure text prefill can use `[4,1024]`
+  (M=32,768) and `[4,2048]` (M=65,536), deleting half or three quarters of
+  model passes while retaining the fast packed-4-bit expert route. M=65,536
+  also permits a guarded one-shot B=1 8K arm, testing rather than assuming the
+  B=1 roof. Keep current geometry whenever decode is present.
+- **Expected B=1 vs B=4:** B=1 one-shot 8K may reach `1.5–3.0x`, but is not
+  required for success. At B=2, `[2,2048]` should give `1.4–2.0x`; at B=4,
+  `[4,1024]` `1.5–2.2x` and `[4,2048]` `2.0–3.5x`. The B=4 target is at least
+  `4,153 tok/s` for the measured 2K anchor; the 8K target must use its own
+  completed baseline rather than extrapolate.
+- **Kill criterion:** Dead if `[4,1024]` is `<1.5x` and `[4,2048]` is `<2.0x`
+  at B=4 8K, if any geometry exceeds the activation reserve or
   `maxBufferLength`, or if outputs/KV/GDN state differ from `[4,512]`.
-  Kill any serving keep that delays an arriving decode row; this queue is not
-  trading ITL for a benchmark.
+  Kill any serving keep that delays an arriving decode row.
 - **Files that would change:** Measurement posture in
   `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Serving.swift`;
-  formal aggregate/activity/shape evidence in
+  B=2/B=4, aggregate-prefill, activity, and shape evidence in
   `provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmark.swift`.
   A kept pure-prefill policy would then update
   `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`,
@@ -57,35 +90,8 @@ together in advance.
   recurrent/KV parity. `maxBufferLength`: high; dry-budget every shape.
   Coordinator admission: high; provider `freeForLoadGB`, the flat 5.5 GiB
   reserve, and coordinator token-budget estimates must remain conservative.
-- **Depends on:** Measured baseline in `notes/009-baseline-b1-curve.md`.
-
-### 2. Extend the existing expert-tile route to 32K/64K assignments
-
-- **Hypothesis:** Rank 1 raises sorted assignments from the currently
-  qualified set `{4096,8192,16384}` to 32,768 (`[4,1024]×top-8`) and 65,536
-  (`[4,2048]×top-8`). The existing descriptor bound
-  `M/32 + E - 1` remains small (2,303 entries at M=65,536). Extending the same
-  independently tiled gather-QMM route avoids falling back to the slower
-  expert path without introducing a fused MoE mega-kernel.
-- **Expected B=1 vs B=4:** B=1 stays on its qualified 2,048-token/16,384-
-  assignment stripe and should be unchanged. Incremental B=4 effect after
-  rank 1 is `1.1–1.8x` if fallback is the reason a wider cohort underperforms;
-  zero if the wider shape already takes the fast route or is compute-bound.
-- **Kill criterion:** Dead if diagnostics show no tile fallback at 32K/64K,
-  if the extended route is `<10%` faster than fallback end-to-end at B=4,
-  if descriptor build becomes material enough to erase QMM gain, or if any
-  adversarial expert histogram differs numerically.
-- **Files that would change:** Canonical quantized gather-QMM dispatch/kernel
-  source under `libs/mlx-swift/Source/Cmlx/` (then regenerate, never hand-edit
-  only the `mlx-generated` copies), plus
-  `libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift` and
-  `QwenExpertTilePerfTests.swift`.
-- **Reviewer risk:** Decode: none because M=1 is ineligible. Numerics: medium;
-  sorted/duplicate assignments and tails need parity. `maxBufferLength`: low
-  for descriptors, high for the enclosing `[4,2048]` graph. Coordinator
-  admission: inherited from rank 1, not changed by the kernel itself.
-- **Depends on:** 1 proving a wider cohort is safe and showing fast-route
-  fallback or a route-counter opportunity.
+- **Depends on:** 1, plus the reviewer-required B=2/B=4 harness fields from
+  `notes/016-reviewer-merge-gate.md`.
 
 ### 3. Query-block width A/B on Qwen D=256 full attention
 
@@ -106,7 +112,7 @@ together in advance.
 - **Reviewer risk:** Decode: none (`L=1` bypasses blocking). Numerics: medium
   because reduction tiling may change last ulps. `maxBufferLength`: medium.
   Coordinator admission: medium if the winning width raises measured peak.
-- **Depends on:** 1; sweep at the retained cohort geometry.
+- **Depends on:** 2; sweep at the retained cohort geometry.
 
 ### 4. Delete final-layer full-sequence work with Qwen tail narrowing
 
@@ -128,7 +134,7 @@ together in advance.
   medium/high; logits need tolerance and greedy identity while KV stays
   bit-identical. `maxBufferLength`: lower than control. Coordinator admission:
   none.
-- **Depends on:** 1 and the retained query-block posture from 3.
+- **Depends on:** 2 and the retained query-block posture from 3.
 
 ### 5. Collapse packed row-local attention calls into one batched SDPA
 
@@ -148,7 +154,7 @@ together in advance.
 - **Reviewer risk:** Decode: none if restricted to `B>1 && L>1`. Numerics:
   medium due batched kernel selection. `maxBufferLength`: high unless query
   blocking remains active. Coordinator admission: medium if peak rises.
-- **Depends on:** 1 and 3.
+- **Depends on:** 2 and 3.
 
 ### 6. Reuse one expert-major route plan across routed projections
 
@@ -195,7 +201,7 @@ together in advance.
   Numerics: high because recurrence order changes. `maxBufferLength`:
   medium/high for scratch. Coordinator admission: medium if scratch exceeds
   the 5.5 GiB reserve.
-- **Depends on:** 1; run after scheduler/traffic deletion.
+- **Depends on:** 2; run after scheduler/traffic deletion.
 
 ### 8. Adjacent A/B of the existing numerically-correct D=256 Steel path
 

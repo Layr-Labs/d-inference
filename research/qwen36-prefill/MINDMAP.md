@@ -81,13 +81,17 @@ hits the tile allowlist max (M=16384). See `notes/009` and `notes/018`.
 
 | Rank | Node | Expected | Risk | Why now |
 |---:|---|---|---|---|
-| 1 | Extend tile allowlist M=32768 / 65536 | 2.0× / up to 4.0× tokens per weight stream | Descriptor alloc, metallib, decode | **The roof.** Do this before any scheduler budget raise. |
-| 2 | S3 one-shot 8K after M=65536 | B=1 8K toward ~4× if weight-bound | Memory, L² | Same kernel as (1) |
-| 3 | H1 wavefront | residual after (1) | High / MLX | Still the 24% peak claim |
-| 4 | A1 query-block / SDPA | 0–15% | Numerics | After the roof moves |
-| 5 | A2 GDN parallel scan | 5–10% | Numeric tolerance | After bigger fish |
+| 1 | Extend tile allowlist M=32768 / 65536 | Unlocks 2.0× / 4.0× tokens per weight stream | Descriptor alloc, metallib | **The roof.** Do this before any scheduler budget raise. |
+| 2 | S3 wide packed cohort `[B,C]` | B2 1.4–2.0×; B4 2.0–3.5× | Decode delay, memory, admission | Spend the new tile shapes on the aggregate target |
+| 3 | A1 query-block width sweep | 0–8% B1; 0–12% B4 | Numerics, score bytes | Retune D=256 for wider cohorts |
+| 4 | B2 final-layer tail narrowing | 2–8% B1/B4 | Frontier logits | Delete discarded final-layer rows |
+| 5 | A1 packed row-local SDPA batching | 5–15% B4; B1 unchanged | Isolation, maxBufferLength | Delete B−1 attention dispatch chains |
+| 6 | M2 reuse expert route plan | 1–5% B1; 2–10% B4 | Routing order | Delete duplicate metadata, keep GEMMs separate |
+| 7 | A2 GDN chunkwise WY | 5–10% B1/B4 | Numeric tolerance, scratch | Thirty recurrent layers |
+| 8 | A3 D=256 Steel adjacent A/B | 3–12% B1; 5–15% B4 | Kernel/numerics | Correct candidate lacks stable-power speed result |
 | 99 | Raise chunk without new M | **negative** (legacy fallback) | Proven by contracts | Dead as a solo move |
 | 99 | M4 mega-kernel | negative | Proven | Dead |
 
-B=1 2.5× at 8K is the same physics as (1)+(2). B=4 2.5× is (1) at
-M=32768 plus a second lever, or M=65536 alone if it holds.
+B=1 one-shot 8K becomes a guarded cell inside rank 2 after M=65536; it is not
+ranked above the aggregate objective. B=4 2.5× is M=32768 plus a second lever,
+or M=65536 alone if the wider cohort holds.

@@ -1,7 +1,7 @@
 # 079 — Suffix-frontier E4 blind 128-token semantic quality gate
 
 Status: **suffix64/128 semantic FAIL; suffix192 + top-k4 semantic PASS;
-all supplied performance cells PASS**
+E54 full2 semantic and short-prompt performance FAIL**
 
 This review compares:
 
@@ -266,3 +266,72 @@ inherited JSON-only failure, the small synthetic corpus, and the fixed
 128-token analysis-heavy cutoff remain limitations. Notes 051–053 still require
 larger task, long-state, distributional, open-generation, and confidence-bound
 evaluations before deployment acceptance.
+
+## E54 full2 + suffix192 + top-k4 follow-up
+
+The candidate in
+`artifacts/e54-quality-full2-suffix192-topk4-128.json` uses the same 12 prompts,
+corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
+native. Semantic scoring again used only prompt and generated text. The
+full-layer/profile metadata, token identity, checksums, agreement, prefixes,
+and supplied speed did not enter any score.
+
+### E54 per-case scores
+
+| Case | Native T/F/K/I/C/X | E54 full2 T/F/K/I/C/X | Relative quality | Semantic judgment |
+|---|---:|---:|---|---|
+| `reasoning-rate-plan` | 3/5/—/3/4/0 | 4/5/—/3/4/0 | candidate slight win | E54 correctly reaches both 4- and 6-minute service times; native stops at the cutter-time line. Neither reaches the 52-minute schedule or polisher bottleneck. |
+| `reasoning-constraint-order` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both correctly preserve the entities, slots, constraints, and exhaustive-ordering task, then stop before listing either valid ordering. |
+| `reasoning-estimation` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both retain the group, duration, conditions, assumptions, safety margin, arithmetic, and water-separation requirements, then stop before selecting a rate. |
+| `code-python-bug` | 3/—/3/3/4/0 | 3/—/3/3/4/0 | tie | Both identify the empty-input and terminal-run faults and requested implementation/tests, then stop while quoting the original function. |
+| `code-swift-actor` | 2/—/3/2/4/0 | 2/—/3/2/4/0 | tie | Both accurately preserve the actor, deadline, API, stale-delete, Sendable, and dependency requirements but emit no implementation or usage. |
+| `factual-heat-pump` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both preserve the correct COP, external-heat, conservation, and real-world-condition direction but stop before the substantive explanation. |
+| `factual-database-index` | 4/5/—/3/4/0 | 3/4/—/3/4/0 | native win | E54 accurately lists the comparison dimensions but reaches no index behavior. Native begins the actual comparison with the correct general B-tree equality path. |
+| `factual-probability` | 4/5/—/3/4/0 | 3/3/—/3/4/0 | native win | E54 correctly frames PPV, prevalence, and the cohort method but ends on the visibly false/incomplete `96% = 0.9`. |
+| `long-context-expedition-log` | 4/5/—/3/4/0 | 2/1/—/1/3/1 | native win; candidate fatal | E54 correctly retains A-06R, Nia, and marker A-06 but rewrites the Day-7 pack-out/chain-of-custody entry as “Day 3: The team packed out,” conflating collection date with event date. It also truncates E-14 to `E-1` and reaches none of the requested answers. |
+| `long-context-incident-summary` | 3/5/—/3/4/0 | 3/3/—/2/4/0 | native win | E54 remains on the incident and preserves R41/R40, flags, object-store calls, latency, queues, manifests, and code review, but introduces a nonexistent `09:09` timestamp and reaches no summary or actions. |
+| `instruction-json-only` | 0/3/—/0/4/0 | 0/3/—/0/4/0 | inherited fatal tie | Both start with prose, irreversibly violating the JSON-only envelope, while accurately preserving the requested fields and normalization rules. |
+| `instruction-rewrite` | 3/5/—/2/4/0 | 3/5/—/2/4/0 | tie | E54 preserves the full source note and rewrite constraints but, like native, does not produce the requested final update. |
+
+### E54 relative aggregate
+
+| Metric | Native | E54 full2 | Candidate delta |
+|---|---:|---:|---:|
+| Mean final-answer trajectory | 2.92 | 2.67 | -0.25 |
+| Mean applicable correctness (`F/K`) | 4.25 | 3.50 | -0.75 |
+| Mean instruction adherence | 2.58 | 2.33 | -0.25 |
+| Mean coherence | 4.00 | 3.92 | -0.08 |
+| Mean corruption severity | 0.00 | 0.08 | +0.08 |
+| Adjusted quality total | 225/300 (75.00%) | 208/300 (69.33%) | **-5.67 percentage points** |
+
+Pairwise result: **7 ties, 1 E54 win, and 4 native wins**. E54 retains
+**92.44%** of the native adjusted score.
+
+### E54 fatal failures and policy decision
+
+- **Candidate-only fatal failures: 1.**
+  `long-context-expedition-log` corrupts the chronology in an exact-source
+  retrieval task.
+- **Inherited fatal failures: 1.** `instruction-json-only` violates the
+  envelope in both reports.
+- The probability truncation and incident timestamp are material but nonfatal
+  correctness regressions.
+- E54 has **zero `X >= 3` cases**, and every mean quality dimension remains
+  within the policy's 1.0-point loss limit.
+
+**Semantic verdict: FAIL.** E54 satisfies the corruption and mean-dimension
+criteria but fails the other two:
+
+1. 92.44% adjusted-score retention is below the 95% floor;
+2. it introduces one candidate-only fatal source-grounding failure.
+
+The supplied short-prompt performance also **FAILS** the 2.5x threshold:
+
+- B1x2K is **2.494x**, short by 0.006x;
+- B1x512 is **1.578x**, short by 0.922x.
+
+Those speed values are supplied context, not independently revalidated from
+the semantic artifact. The 2K result must not be rounded into a pass, and the
+512-token result is not close. E54 therefore fails both the explicit semantic
+screen and the supplied short-prompt performance gate; do not retain it as the
+frontier over suffix192 + top-k4 E4.

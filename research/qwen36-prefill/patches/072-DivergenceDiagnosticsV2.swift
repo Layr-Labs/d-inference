@@ -36,6 +36,7 @@ public enum CBv2DivergenceDiagnostics {
         let generatedTokens: Int
         let promptTokens: Int
         let pendingSamples: Int
+        let exactSnapshotBlockSize: Int?
     }
 
     struct ArrayProbe {
@@ -259,17 +260,22 @@ public enum CBv2DivergenceDiagnostics {
     private static let maxDecodeStep =
         ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_DIVERGENCE_MAX_DECODE_STEP"]
         .flatMap(Int.init) ?? 6
+    private static let forcedPrefillChunkTokensEnvironmentValue =
+        ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_CHUNK_TOKENS"
+        ]
+    private static let forceUnpackedPrefillEnvironmentValue =
+        ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_UNPACKED_PREFILL"
+        ]
     static let forcedPrefillChunkTokens: Int? =
         enabled
-        ? ProcessInfo.processInfo.environment[
-            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_CHUNK_TOKENS"
-        ].flatMap(Int.init).flatMap { $0 > 0 ? $0 : nil }
+        ? forcedPrefillChunkTokensEnvironmentValue.flatMap(Int.init)
+            .flatMap { $0 > 0 ? $0 : nil }
         : nil
     static let forcesUnpackedPrefill =
         enabled
-        && ProcessInfo.processInfo.environment[
-            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_UNPACKED_PREFILL"
-        ] == "1"
+        && forceUnpackedPrefillEnvironmentValue == "1"
     private static let logPath = "/opt/cursor/logs/debug.log"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var registrations: [CBv2RequestID: Registration] = [:]
@@ -300,16 +306,20 @@ public enum CBv2DivergenceDiagnostics {
                 "cohortSize": batch.count,
             ])
         // #endregion
-        guard forcedPrefillChunkTokens != nil || forcesUnpackedPrefill else { return }
         // #region agent log
         append(
-            hypothesisID: "F,G",
+            hypothesisID: "H1,H2",
             location: "DivergenceDiagnosticsV2.swift:registerBatch",
-            message: "diagnostic prefill posture override",
+            message: "diagnostic prefill posture control configuration",
             data: [
+                "instrumentationRevision": "e45-prefill-control-proof-v1",
                 "phase": batch.phase,
                 "scenario": batch.scenario,
                 "iteration": batch.iteration,
+                "forcedPrefillChunkTokensEnvironmentValue":
+                    forcedPrefillChunkTokensEnvironmentValue ?? NSNull(),
+                "forceUnpackedPrefillEnvironmentValue":
+                    forceUnpackedPrefillEnvironmentValue ?? NSNull(),
                 "forcedPrefillChunkTokens":
                     forcedPrefillChunkTokens.map { $0 as Any } ?? NSNull(),
                 "forcesUnpackedPrefill": forcesUnpackedPrefill,
@@ -317,7 +327,11 @@ public enum CBv2DivergenceDiagnostics {
         // #endregion
     }
 
-    static func recordSchedule(engineStep: Int, assignments: [Assignment]) {
+    static func recordSchedule(
+        engineStep: Int,
+        assignments: [Assignment],
+        packedPrefillSupported: Bool
+    ) {
         guard enabled else { return }
         let rows = assignments.compactMap { assignment -> [String: Any]? in
             guard let registration = registration(for: assignment.id) else { return nil }
@@ -332,6 +346,8 @@ public enum CBv2DivergenceDiagnostics {
                 "generatedTokens": assignment.generatedTokens,
                 "promptTokens": assignment.promptTokens,
                 "pendingSamples": assignment.pendingSamples,
+                "exactSnapshotBlockSize":
+                    assignment.exactSnapshotBlockSize.map { $0 as Any } ?? NSNull(),
             ]
         }
         guard !rows.isEmpty else { return }
@@ -344,6 +360,7 @@ public enum CBv2DivergenceDiagnostics {
                 "engineStep": engineStep,
                 "assignmentCount": assignments.count,
                 "stepBatchSize": rows.count,
+                "packedPrefillSupported": packedPrefillSupported,
                 "rows": rows,
             ])
         // #endregion

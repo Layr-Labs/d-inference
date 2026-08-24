@@ -649,3 +649,16 @@ Next, force a diagnostic-only 256-token, unpacked prefill posture in every arm.
 If complete equality returns, treat donor fidelity as the cache correctness
 contract and scheduler-posture variation as an explicit quality-gated numerical
 policy; do not ship the slow canonical posture. See `notes/072`.
+
+## 2026-08-24T17:02Z — E44 control run invalidated
+
+E44 reproduced the old 0% full-hit and 50/75/75/75% partial equality rates, but
+its trace proves neither control executed. The Mac binary was built at 16:28 UTC,
+17 minutes before the control commit; its source contains neither force hook.
+Cold B1 remained 2,048-token solo, cold B2/B4 remained 512-token packed, and no
+control-activation event appeared.
+
+The result therefore does not test posture sufficiency. The E45 probe now logs
+an unconditional revision/raw-environment record plus each scheduled row's
+effective snapshot boundary and packed-prefill gate. Rebuild from the new
+source before rerunning. See `notes/072`.

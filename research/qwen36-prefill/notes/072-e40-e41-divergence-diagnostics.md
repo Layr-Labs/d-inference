@@ -1,6 +1,6 @@
 # 072 — E40/E41 exact-adoption divergence diagnostics
 
-Status: **E43 reproduced; causal prefill-posture verification pending**
+Status: **E44 invalidated by stale binary; E45 causal control rerun pending**
 
 ## Hypotheses
 
@@ -91,6 +91,41 @@ The current `cold == warm` report compares two legal but numerically different
 prefill execution postures. It does not demonstrate cache corruption: every
 warm full hit reproduces its donor exactly.
 
+## E44 findings
+
+E44 did not execute either causal control, so its unchanged equality rates do
+not test whether chunk/packed posture is sufficient:
+
+- The branch commit that introduced the controls was created at 16:45 UTC, but
+  the Mac binary was built at 16:28 UTC. The report was produced at 16:53 UTC.
+- The exact Mac sources used by that binary contain the E43 probes but contain
+  neither `forcedPrefillChunkTokens` nor `forcesUnpackedPrefill`.
+- No `diagnostic prefill posture override` event exists in the 2,148-line log.
+- Cold B1 still ran four 2,048-token forwards while its construction donor ran
+  thirty-two 256-token forwards (lines 2-5 versus 78 onward).
+- Cold B2 and B4 still ran packed 512-token forwards (lines 256 and 537);
+  B4's frontier explicitly reports `packed-prefill-frontier` (line 554).
+
+Hypothesis verdicts for the E44 fork:
+
+1. **H1 — stale binary/source: confirmed.** The executable predates the
+   control commit and its source lacks both hooks.
+2. **H2 — environment values absent or malformed: inconclusive.** The stale
+   executable could not read or report those controls regardless of the
+   launching environment.
+3. **H3 — parsed controls failed only for cache-disabled records: not
+   exercised.** Their scheduler records never received the new override code.
+4. **H4 — 256-token unpacked posture is insufficient: inconclusive.** No E44
+   cold arm used that posture.
+
+The revised probe logs
+`instrumentationRevision=e45-prefill-control-proof-v1` and the raw and parsed
+environment values unconditionally for every registered phase. Every scheduler
+event now also records the row's effective `exactSnapshotBlockSize` and the
+engine's effective `packedPrefillSupported` value. This makes a stale binary,
+missing environment, cache-disabled override failure, and a genuinely
+insufficient posture distinguishable in the first few NDJSON lines.
+
 ## Causal verification control
 
 Two temporary, diagnostics-gated controls can canonicalize the native arm to
@@ -133,7 +168,9 @@ cd "$root/provider-swift"
 swift build -c release --product darkbloom
 ```
 
-Delete `/opt/cursor/logs/debug.log`, then run one 8K/64-token iteration:
+After copying and applying the patches, rebuild the binary; do not reuse the
+E44 executable. Manually delete `/opt/cursor/logs/debug.log`, then run one
+8K/64-token iteration:
 
 ```bash
 DARKBLOOM_PREFIX_DIVERGENCE_DEBUG=1 \
@@ -149,7 +186,18 @@ DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648 \
   --qwen-prefix-decode-tokens 64 \
   --qwen-prefix-iterations 1 \
   --kv-backend contiguous \
-  --qwen-prefix-output /tmp/e43-divergence.json
+  --qwen-prefix-output /tmp/e45-canonical.json
+```
+
+Before waiting for the full run, verify the first cold schedule event contains
+all four control proofs:
+
+```text
+instrumentationRevision = e45-prefill-control-proof-v1
+forcedPrefillChunkTokens = 256
+forcesUnpackedPrefill = true
+exactSnapshotBlockSize = 256
+packedPrefillSupported = false
 ```
 
 The debug run deliberately leaves instrumentation in place until its pre-fix

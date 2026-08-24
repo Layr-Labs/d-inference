@@ -70,7 +70,7 @@ index 04bf10c..2438126 100644
          handlePreemptions(plan.preemptions)
          guard !plan.assignments.isEmpty else {
              publishGauges()
-@@ -1345,6 +1359,26 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1345,6 +1359,28 @@ public final class EngineLoopV2: @unchecked Sendable {
  
      // MARK: Step execution
  
@@ -85,19 +85,21 @@ index 04bf10c..2438126 100644
 +                count: count,
 +                generatedTokens: rec.generatedTokenCount,
 +                promptTokens: rec.request.promptTokens.count,
-+                pendingSamples: rec.pendingSamples)
++                pendingSamples: rec.pendingSamples,
++                exactSnapshotBlockSize: rec.exactSnapshotBlockSize)
 +        }
 +        // #region agent log
 +        CBv2DivergenceDiagnostics.recordSchedule(
 +            engineStep: stepCount,
-+            assignments: assignments)
++            assignments: assignments,
++            packedPrefillSupported: packedPrefillSupported)
 +        // #endregion
 +    }
 +
      private func isPureDecodePlan(_ plan: CBv2StepPlan, matching ids: [CBv2RequestID]) -> Bool {
          guard plan.preemptions.isEmpty, plan.assignments.count == ids.count else { return false }
          for (i, assignment) in plan.assignments.enumerated() {
-@@ -1670,6 +1704,20 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1670,6 +1706,20 @@ public final class EngineLoopV2: @unchecked Sendable {
          for id in ids { params.append(scheduler.record(for: id)!.request.sampling) }
  
          let inputs = lazyTokens.reshaped([ids.count, 1])
@@ -118,7 +120,7 @@ index 04bf10c..2438126 100644
          let forwardStart = CBv2StepProfiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
          let (last, cacheInnerState, recurrent) = decodeLogits(
              rowStates: rowStates, tokens: inputs, ids: ids)  // [B, vocab]
-@@ -1693,6 +1741,35 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1693,6 +1743,35 @@ public final class EngineLoopV2: @unchecked Sendable {
          }
          scheduler.markPendingSamples(ids: ids)
          var toEval = [sampled]
@@ -154,7 +156,7 @@ index 04bf10c..2438126 100644
          if let stepLogprobs { toEval.append(contentsOf: stepLogprobs.evalTargets) }
          // Collapse the eager caches' lazy offset/KV chains this step (DAR-325).
          if !cacheInnerState.isEmpty {
-@@ -1711,6 +1788,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1711,6 +1790,7 @@ public final class EngineLoopV2: @unchecked Sendable {
              wallStartedNanos: wallStartedNanos)
          if let stepLogprobs { step.logprobSegments = [stepLogprobs] }
          step.recurrentEvaluations = recurrent
@@ -162,7 +164,7 @@ index 04bf10c..2438126 100644
          return step
      }
  
-@@ -1771,6 +1849,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1771,6 +1851,7 @@ public final class EngineLoopV2: @unchecked Sendable {
          var recurrentEvaluations: [CBv2RequestID: CBv2RecurrentStateEvaluation] = [:]
          var evalTargets: [MLXArray] = []
          var exactDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
@@ -170,7 +172,7 @@ index 04bf10c..2438126 100644
  
          // Exact full-prompt hits sample their cached prompt-frontier logits.
          // Their KV/recurrent state is already at `prompt.count`; no model
-@@ -1792,6 +1871,36 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1792,6 +1873,36 @@ public final class EngineLoopV2: @unchecked Sendable {
                  rowContext: { exactFrontierRows.map { Self.samplerRow($0.rec) } })
              for (index, row) in exactFrontierRows.enumerated() {
                  exactFrontierSampled[row.rec.id] = sampled[index ..< index + 1]
@@ -207,7 +209,7 @@ index 04bf10c..2438126 100644
              }
              if let stepLogprobs = sampler.takeStepLogprobs() {
                  logprobSegments.append(stepLogprobs)
-@@ -1802,11 +1911,24 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1802,11 +1913,24 @@ public final class EngineLoopV2: @unchecked Sendable {
          let decodeRows = work.filter(\.isDecode)
          var decodeSampled: MLXArray?
          if !decodeRows.isEmpty {
@@ -233,7 +235,7 @@ index 04bf10c..2438126 100644
                  ids: decodeIDs)
              cacheInnerState.append(contentsOf: decodeInnerState)
              recurrentEvaluations.merge(recurrent) { _, _ in
-@@ -1822,6 +1944,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1822,6 +1946,30 @@ public final class EngineLoopV2: @unchecked Sendable {
                      exactDonations[row.rec.id] = donation
                      evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
                  }
@@ -264,7 +266,7 @@ index 04bf10c..2438126 100644
              }
              decodeSampled = sampler.sample(
                  logits: last,
-@@ -1889,7 +2035,21 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1889,7 +2037,21 @@ public final class EngineLoopV2: @unchecked Sendable {
                              .map(Int32.init))
                  }
                  let inputs = MLXArray(flatTokens).reshaped([group.rows.count, group.count])
@@ -287,7 +289,7 @@ index 04bf10c..2438126 100644
                  let requirement: CBv2PrefillRequirement =
                      group.samples ? .lastPositionLogits : .evaluationOnly
                  let spanContexts = group.rows.map {
-@@ -1938,6 +2098,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1938,6 +2100,30 @@ public final class EngineLoopV2: @unchecked Sendable {
                      }
                  }
                  if group.samples {
@@ -318,7 +320,7 @@ index 04bf10c..2438126 100644
                      // Parity seam: the frontier logits, as this backend
                      // computed them, BEFORE the sampler touches them.
                      if let capture = prefillFrontierCapture() {
-@@ -1976,7 +2160,20 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -1976,7 +2162,20 @@ public final class EngineLoopV2: @unchecked Sendable {
              if packedIDs.contains(rec.id) { continue }
              let slice = rec.tokens[row.start ..< row.start + row.count]
              let inputs = MLXArray(slice.map(Int32.init)).reshaped([1, row.count])
@@ -340,7 +342,7 @@ index 04bf10c..2438126 100644
              let requirement: CBv2PrefillRequirement =
                  row.samples ? .lastPositionLogits : .evaluationOnly
              let output: MLXArray
-@@ -2025,6 +2222,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -2025,6 +2224,30 @@ public final class EngineLoopV2: @unchecked Sendable {
                  evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
              }
              if row.samples {
@@ -371,7 +373,7 @@ index 04bf10c..2438126 100644
                  if let capture = prefillFrontierCapture() {
                      capture(rec.id, output[0])
                  }
-@@ -2085,6 +2306,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -2085,6 +2308,7 @@ public final class EngineLoopV2: @unchecked Sendable {
          step.logprobSegments = logprobSegments
          step.recurrentEvaluations = recurrentEvaluations
          step.exactPrefixDonations = exactDonations
@@ -379,7 +381,7 @@ index 04bf10c..2438126 100644
          for row in exactFrontierRows {
              exactFrontierLogits.removeValue(forKey: row.rec.id)
          }
-@@ -2335,6 +2557,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+@@ -2335,6 +2559,11 @@ public final class EngineLoopV2: @unchecked Sendable {
              sampler.confirmSampledTokens(
                  host.map(Int.init), requestIDs: step.sampledRows)
          }

@@ -10,12 +10,13 @@ rust = "1.88.0"
 # .github/workflows/ci.yml.
 node = "22"
 
-# Provider (Swift 6.1, Apple Silicon). Source of truth:
-# provider-swift/Package.swift `// swift-tools-version: 6.1`.
+# Provider (Swift 6.3.2, Apple Silicon). `provider-swift/Package.swift`
+# accepts 6.1, but its pinned `mlx-swift` dependency requires Swift 6.3.
+# Match the M3 Max benchmark/release toolchain exactly.
 # mise installs swiftly toolchains; on macOS the system Xcode swift is also
 # acceptable — this pin ensures a consistent CLI for non-Xcode shells / Linux
 # cross builds of ProviderCoreFoundation.
-swift = "6.1"
+swift = "6.3.2"
 
 # Python is used by helper scripts (scripts/benchmark-models.py) and to
 # fetch the MLX metallib in CI (.github/workflows/integration.yml).

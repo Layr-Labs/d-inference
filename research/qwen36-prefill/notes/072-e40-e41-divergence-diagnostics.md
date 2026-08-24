@@ -191,13 +191,28 @@ done
 
 git -C "$root/libs/mlx-swift-lm" diff --check
 cd "$root/libs/mlx-swift-lm"
-swift test --filter CBv2ExactPrefixCacheTests
-swift test --filter CBv2ExactPrefixEngineTests
+swift build --build-tests
+cd "$root"
+./scripts/fetch-metallib.sh "$root/libs/mlx-swift-lm/.build/debug"
+cp "$root/libs/mlx-swift-lm/.build/debug/mlx.metallib" \
+  "$root/libs/mlx-swift-lm/.build/debug/mlx-swift-lmPackageTests.xctest/Contents/MacOS/"
+cd "$root/libs/mlx-swift-lm"
+swift test --skip-build --filter CBv2ExactPrefixCacheTests
+swift test --skip-build --filter CBv2ExactPrefixEngineTests
 
 cd "$root/provider-swift"
-swift test --filter EngineV2ExactPrefixCacheTests
-swift test --filter QwenPrefixReuseTests
+swift build --build-tests
+cd "$root"
+./scripts/fetch-metallib.sh debug
+cp "$root/provider-swift/.build/debug/mlx.metallib" \
+  "$root/provider-swift/.build/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/"
+cd "$root/provider-swift"
+swift test --skip-build --filter EngineV2ExactPrefixCacheTests
+swift test --skip-build --filter QwenPrefixReuseTests
+swift test --skip-build --filter EngineV2PrefixCacheUsageTests
 swift build -c release --product darkbloom
+cd "$root"
+./scripts/fetch-metallib.sh release
 ```
 
 Run the shipping profile without any divergence environment overrides:

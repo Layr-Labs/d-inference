@@ -202,15 +202,32 @@ git apply --unidiff-zero \
 From the repository root after applying the ordered patches:
 
 ```bash
-cd libs/mlx-swift-lm
-swift test --filter CBv2ExactPrefixCacheTests
-swift test --filter CBv2ExactPrefixEngineTests
+root=$PWD
 
-cd ../../provider-swift
-swift test --filter EngineV2ExactPrefixCacheTests
-swift test --filter QwenPrefixReuseTests
-swift test --filter EngineV2PrefixCacheUsageTests
+cd "$root/libs/mlx-swift-lm"
+swift build --build-tests
+cd "$root"
+./scripts/fetch-metallib.sh "$root/libs/mlx-swift-lm/.build/debug"
+cp "$root/libs/mlx-swift-lm/.build/debug/mlx.metallib" \
+  "$root/libs/mlx-swift-lm/.build/debug/mlx-swift-lmPackageTests.xctest/Contents/MacOS/"
+cd "$root/libs/mlx-swift-lm"
+swift test --skip-build --filter CBv2ExactPrefixCacheTests
+swift test --skip-build --filter CBv2ExactPrefixEngineTests
+
+cd "$root/provider-swift"
+swift build --build-tests
+cd "$root"
+./scripts/fetch-metallib.sh debug
+cp "$root/provider-swift/.build/debug/mlx.metallib" \
+  "$root/provider-swift/.build/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/"
+cd "$root/provider-swift"
+swift test --skip-build --filter EngineV2ExactPrefixCacheTests
+swift test --skip-build --filter QwenPrefixReuseTests
+swift test --skip-build --filter EngineV2PrefixCacheUsageTests
 swift build -c release --product darkbloom
+cd "$root"
+./scripts/fetch-metallib.sh release
+cd "$root/provider-swift"
 
 DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648 \
 .build/release/darkbloom benchmark \

@@ -341,12 +341,6 @@ public enum QwenPrefixReuseBenchmark {
                 let salt = "qwen-prefix/\(iteration)/\(scenario.id)"
                 log("iteration \(iteration)/\(iterations): \(scenario.id) cold")
                 let coldBase = try ids.allocate(scenario.batchSize)
-                registerDiagnosticBatch(
-                    requestIDBase: coldBase,
-                    count: scenario.batchSize,
-                    phase: "cold",
-                    scenario: scenario.id,
-                    iteration: iteration)
                 let cold = try await QwenPrefixEngineRunner.run(
                     engine: engine,
                     cache: cache,
@@ -358,12 +352,6 @@ public enum QwenPrefixReuseBenchmark {
 
                 log("iteration \(iteration)/\(iterations): \(scenario.id) construct")
                 let constructionBase = try ids.allocate(1)
-                registerDiagnosticBatch(
-                    requestIDBase: constructionBase,
-                    count: 1,
-                    phase: "construction",
-                    scenario: scenario.id,
-                    iteration: iteration)
                 let construction = try await QwenPrefixEngineRunner.run(
                     engine: engine,
                     cache: cache,
@@ -389,12 +377,6 @@ public enum QwenPrefixReuseBenchmark {
                     ? salt + "/fork"
                     : salt
                 let warmBase = try ids.allocate(scenario.batchSize)
-                registerDiagnosticBatch(
-                    requestIDBase: warmBase,
-                    count: scenario.batchSize,
-                    phase: "warm",
-                    scenario: scenario.id,
-                    iteration: iteration)
                 let warm = try await QwenPrefixEngineRunner.run(
                     engine: engine,
                     cache: cache,
@@ -427,23 +409,6 @@ public enum QwenPrefixReuseBenchmark {
             }
         }
         return samples
-    }
-
-    private static func registerDiagnosticBatch(
-        requestIDBase: UInt64,
-        count: Int,
-        phase: String,
-        scenario: String,
-        iteration: Int
-    ) {
-        // #region agent log
-        CBv2DivergenceDiagnostics.registerBatch(.init(
-            requestIDBase: requestIDBase,
-            count: count,
-            phase: phase,
-            scenario: scenario,
-            iteration: iteration))
-        // #endregion
     }
 
     private static func sampleReport(

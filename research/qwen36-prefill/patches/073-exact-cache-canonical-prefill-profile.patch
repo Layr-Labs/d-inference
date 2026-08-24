@@ -1,0 +1,435 @@
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+index 04bf10c..ba9fa9b 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+@@ -514,6 +514,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+     /// Non-nil only when prefix caching is active (instance supplied AND
+     /// `CBv2SchedulerConfig.enablePrefixCache`).
+     let prefixCache: CBv2PrefixCache?
++    /// Exact-state cache execution profile. Every text prompt uses this
++    /// boundary regardless of its per-request cache policy or lookup outcome,
++    /// so enabling, missing, or hitting the cache cannot select a different
++    /// finite-precision prefill posture.
++    let exactCachePrefillBlockSize: Int?
+     /// Default-off simultaneous common-prefix coalescing. The coordinator
+     /// owns only cohort metadata/counters; KV and recurrent rows remain
+     /// request-owned by this loop.
+@@ -627,13 +632,15 @@ public final class EngineLoopV2: @unchecked Sendable {
+     /// step path. Engine-thread owned, monotonic; read at quiescent points.
+     public private(set) var packedPrefillRowsExecuted = 0
+     public private(set) var packedPrefillGroupsExecuted = 0
+-    /// The two capability gates `executeMixed` consults before it packs —
+-    /// the caches vouch for per-row independence AND the model's prompt
+-    /// forward is batch-generic. Sole reader of the gates, so the flag the
+-    /// engine reports and the flag it acts on cannot drift. Configuration
+-    /// only: see the counters above for whether anything packed.
++    /// The capability gates `executeMixed` consults before it packs. An exact
++    /// cache is an explicit veto: its donor, cache-disabled controls, misses,
++    /// and hit suffixes must all use singleton prompt forwards. Sole reader of
++    /// the gates, so the flag the engine reports and the flag it acts on
++    /// cannot drift. Configuration only: see the counters above for whether
++    /// anything packed.
+     var packedPrefillSupported: Bool {
+-        cacheProvider.supportsPackedPrefill
++        exactCachePrefillBlockSize == nil
++            && cacheProvider.supportsPackedPrefill
+             && (model as? CBv2PackedPrefillSteppableModel)?.supportsPackedPrefill == true
+     }
+ 
+@@ -726,6 +733,8 @@ public final class EngineLoopV2: @unchecked Sendable {
+         self.scheduler = scheduler
+         self.capacity = capacity
+         self.prefixCache = prefixCache
++        self.exactCachePrefillBlockSize =
++            (prefixCache as? any CBv2ExactStatePrefixCache)?.exactSnapshotBlockSize
+         self.promptFork =
+             promptFork
+             ?? CBv2PromptForkCoordinator(
+@@ -937,11 +946,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+             }
+             do {
+                 try scheduler.enqueue(request)
+-                if prefixLookup.outcome == .miss,
+-                    let exactCache = prefixCache as? any CBv2ExactStatePrefixCache,
++                if request.multimodal == nil,
++                    let blockSize = exactCachePrefillBlockSize,
+                     let rec = scheduler.record(for: request.id)
+                 {
+-                    rec.exactSnapshotBlockSize = exactCache.exactSnapshotBlockSize
++                    rec.exactSnapshotBlockSize = blockSize
+                 }
+                 armLease(for: request)
+                 detokenizers[request.id] =
+@@ -1548,10 +1557,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+     /// The scoring row travels the ENGINE's own path, not a shortcut: the
+     /// prompt goes through `prefillOutput` in the same chunks
+     /// `SchedulerV2.plan()` would cut (`min(prefillChunkSize,
+-    /// maxBatchedTokensPerStep)`), and each forced token enters as its own
+-    /// `[1, 1]` forward through `eagerCaches` — byte-for-byte the decode
+-    /// seam. Scoring positions outside the engine would measure the MODEL,
+-    /// and the model is the one thing the two backends share.
++    /// maxBatchedTokensPerStep, exactCacheBlockSize?)`), and each forced token
++    /// enters as its own `[1, 1]` forward through `eagerCaches` —
++    /// byte-for-byte the decode seam. Scoring positions outside the engine
++    /// would measure the MODEL, and the model is the one thing the two
++    /// backends share.
+     ///
+     /// Deterministic by construction: `argMax` over the last-position
+     /// logits. No sampler, no temperature, no top-k, no RNG.
+@@ -1610,9 +1620,13 @@ public final class EngineLoopV2: @unchecked Sendable {
+         top1.reserveCapacity(continuation.count)
+ 
+         // Prompt: chunked prefill, cut exactly as the scheduler would for a
+-        // solo row (`min(remaining, prefillChunkSize, budget)`).
++        // solo row, including the exact-cache execution-profile ceiling.
+         let chunkSize = max(
+-            1, min(scheduler.config.prefillChunkSize, scheduler.config.maxBatchedTokensPerStep))
++            1,
++            min(
++                scheduler.config.prefillChunkSize,
++                scheduler.config.maxBatchedTokensPerStep,
++                exactCachePrefillBlockSize ?? .max))
+         var index = 0
+         while index < promptTokens.count {
+             let count = min(chunkSize, promptTokens.count - index)
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
+index 9c5c67d..fb138ab 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
+@@ -41,7 +41,7 @@ public struct CBv2ExactPrefixCacheConfig: Sendable, Equatable {
+ 
+     public init(
+         modelIdentity: String,
+-        policyIdentity: String = "cbv2-exact-prefix-boundary-v2",
++        policyIdentity: String = "cbv2-exact-prefix-boundary-v3",
+         scopeID: String = "",
+         blockSize: Int = CBv2BlockHasher.defaultBlockSize,
+         maxBytes: Int
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+index 60e37e2..d62c9e6 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+@@ -73,9 +73,10 @@ public final class CBv2ScheduledRequest {
+     /// cleared on preemption because the adopted state is discarded.
+     internal var prefixReusePlan: CBv2PrefixReusePlan?
+     internal var prefixReplayBoundarySplits = 0
+-    /// Cold exact-state donors stop at each whole block so the engine can
+-    /// snapshot one finalized K/V + recurrent boundary. Nil for cache hits,
+-    /// disabled requests, and every non-exact cache.
++    /// Active exact-cache execution profile. Every text prefill stops at each
++    /// whole cache block, including cache-disabled requests, misses, and hit
++    /// suffixes. Nil when no exact-state cache is active and for multimodal
++    /// requests.
+     internal var exactSnapshotBlockSize: Int?
+     /// A simultaneous-prefix leader may not plan past this exact boundary
+     /// until the engine has forked its finalized KV/recurrent state.
+@@ -111,7 +112,8 @@ public final class CBv2ScheduledRequest {
+             : []
+     }
+ 
+-    /// Snap a proposed prefill chunk `[start, start + proposed)` so no
++    /// Clamp a proposed prefill chunk `[start, start + proposed)` at active
++    /// prefix-replay, prompt-fork, and exact-cache boundaries, then ensure no
+     /// multimodal block is split across chunk boundaries:
+     ///  - a proposed end STRICTLY inside a block SHRINKS to the block's
+     ///    start (the block rides a later chunk whole), unless the chunk
+@@ -121,7 +123,8 @@ public final class CBv2ScheduledRequest {
+     ///  - returns 0 when the block cannot fit this step's remaining budget
+     ///    (the row simply waits for a step with more headroom — submit-time
+     ///    validation guarantees every block fits a FULL step budget).
+-    /// Text requests (no blocks) return `proposed` unchanged.
++    /// Text requests skip only the final multimodal adjustment; the earlier
++    /// execution-profile clamps still apply.
+     func snappedChunkTokens(start: Int, proposed: Int, budget: Int) -> Int {
+         let unclamped = proposed
+         var proposed = prefixReusePlan?.clampedChunk(start: start, proposed: proposed) ?? proposed
+diff --git a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
+index 47353c2..8c52a9b 100644
+--- a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
++++ b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
+@@ -7,7 +7,9 @@ import XCTest
+ /// Tiny fixed-function hybrid model: one full-attention row plus one
+ /// request-owned recurrent layer. Its greedy continuation depends on both
+ /// states, so restoring only K/V or only recurrence does not pass parity.
+-private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
++private final class CBv2ExactHybridFixtureModel:
++    CBv2RecurrentSteppableModel, CBv2PackedPrefillSteppableModel
++{
+     let recurrentStateSpec: CBv2RecurrentStateSpec? = CBv2RecurrentStateSpec(layers: [
+         CBv2RecurrentLayerStateSpec(
+             modelLayerIndex: 0,
+@@ -17,12 +19,14 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+     let cbv2Capabilities: CBv2ModelCapabilities = {
+         var capabilities = CBv2ModelCapabilities.initialRecurrentTarget
+         capabilities.supportsExactStatePrefixReuse = true
++        capabilities.supportsPackedPrefill = true
+         return capabilities
+     }()
+ 
+     private let counterLock = NSLock()
+     private var _prefillRows = 0
+     private var _forwardRows = 0
++    private var _prefillShapes: [[Int]] = []
+ 
+     var prefillRows: Int {
+         counterLock.lock()
+@@ -36,6 +40,29 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+         return _forwardRows
+     }
+ 
++    var prefillShapes: [[Int]] {
++        counterLock.lock()
++        defer { counterLock.unlock() }
++        return _prefillShapes
++    }
++
++    func resetPrefillShapes() {
++        counterLock.lock()
++        _prefillShapes = []
++        counterLock.unlock()
++    }
++
++    var supportsPackedPrefill: Bool { true }
++
++    func prefill(
++        tokens: MLXArray,
++        inputEmbeddings: MLXArray?,
++        caches: [CBv2AttendingLayerCache],
++        requirement: CBv2PrefillRequirement
++    ) -> MLXArray {
++        preconditionFailure("fixture requires request-owned recurrent prefill")
++    }
++
+     func forward(tokens: MLXArray, caches: [CBv2AttendingLayerCache]) -> MLXArray {
+         preconditionFailure("fixture requires request-owned recurrent state")
+     }
+@@ -51,12 +78,11 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+         precondition(recurrentState.count == batch)
+         counterLock.lock()
+         _forwardRows += batch
+-        counterLock.unlock()
+         if length > 1 {
+-            counterLock.lock()
+             _prefillRows += batch
+-            counterLock.unlock()
++            _prefillShapes.append(tokens.shape)
+         }
++        counterLock.unlock()
+ 
+         let tokenValues = tokens.asType(.float32)
+         let queries = (tokenValues + 1).reshaped([batch, 1, length, 1])
+@@ -108,17 +134,25 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+         let cache: ExactPrefixCacheV2
+     }
+ 
++    private struct UncachedStack {
++        let engine: EngineV2
++        let model: CBv2ExactHybridFixtureModel
++    }
++
+     private let kind = CBv2LayerKind(
+         attention: .full, headDim: 1, kvHeads: 1, queryHeads: 1)
+     private let prompt = [7, 2, 5, 1, 6, 3, 4, 0, 7]
+     private let completionTokens = 8
+ 
+-    private func makeStack(blockSize: Int = 64) -> Stack {
++    private func makeStack(
++        blockSize: Int = 64,
++        soloPrefillStripeTokens: Int? = nil
++    ) -> Stack {
+         let model = CBv2ExactHybridFixtureModel()
+         let cache = ExactPrefixCacheV2(
+             config: .init(
+                 modelIdentity: "tiny-hybrid|fixed-weights|tokenizer-v1",
+-                policyIdentity: "contiguous-fp32|exact-prefix-boundary-v2",
++                policyIdentity: "contiguous-fp32|exact-prefix-boundary-v3",
+                 blockSize: blockSize,
+                 maxBytes: 1 << 20))
+         let backend = CBv2ContiguousKVBackend(
+@@ -133,6 +167,7 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+                 maxConcurrentRequests: 8,
+                 maxBatchedTokensPerStep: 256,
+                 prefillChunkSize: 64,
++                soloPrefillStripeTokens: soloPrefillStripeTokens,
+                 maxWaiting: 16,
+                 enablePrefixCache: true),
+             admissionConfig: .init(watermarkFraction: 0, elementBytes: 4),
+@@ -140,6 +175,25 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+         return Stack(engine: engine, model: model, cache: cache)
+     }
+ 
++    private func makeUncachedStack() -> UncachedStack {
++        let model = CBv2ExactHybridFixtureModel()
++        let backend = CBv2ContiguousKVBackend(
++            config: .init(bytesCapacity: 1 << 24, kvDType: .float32))
++        let engine = EngineV2(
++            model: model,
++            layerKinds: [kind],
++            backend: backend,
++            cacheProvider: CBv2LayerCacheBank(layerKinds: [kind]),
++            sampler: CBv2GreedySampler(),
++            schedulerConfig: CBv2SchedulerConfig(
++                maxConcurrentRequests: 8,
++                maxBatchedTokensPerStep: 256,
++                prefillChunkSize: 64,
++                maxWaiting: 16),
++            admissionConfig: .init(watermarkFraction: 0, elementBytes: 4))
++        return UncachedStack(engine: engine, model: model)
++    }
++
+     private func request(
+         id: UInt64,
+         promptTokens: [Int]? = nil,
+@@ -155,6 +209,29 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+             prefixCacheEnabled: prefixCacheEnabled)
+     }
+ 
++    private func collectBatch(
++        engine: EngineV2,
++        width: Int,
++        idBase: UInt64,
++        promptTokens: [Int]? = nil,
++        maxTokens: Int,
++        prefixCacheEnabled: Bool
++    ) async throws -> [CBv2SchedCollected] {
++        let streams = try (0 ..< width).map { row in
++            try engine.submit(request(
++                id: idBase + UInt64(row),
++                promptTokens: promptTokens,
++                maxTokens: maxTokens,
++                prefixCacheEnabled: prefixCacheEnabled))
++        }
++        var results: [CBv2SchedCollected] = []
++        results.reserveCapacity(width)
++        for stream in streams {
++            results.append(await cbv2SchedCollect(stream))
++        }
++        return results
++    }
++
+     func testB1RepeatUsesCachedFrontierAndExactHybridState() async throws {
+         let stack = makeStack()
+         let cold = await cbv2SchedCollect(
+@@ -216,6 +293,122 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+         }
+     }
+ 
++    func testCacheDisabledControlsAndExactHitsHave64TokenParityAtB1B2B4() async throws {
++        for width in [1, 2, 4] {
++            let stack = makeStack(blockSize: 4)
++            let idBase = UInt64(width * 10_000)
++            let donor = await cbv2SchedCollect(
++                try stack.engine.submit(request(
++                    id: idBase,
++                    maxTokens: 64)))
++            let controls = try await collectBatch(
++                engine: stack.engine,
++                width: width,
++                idBase: idBase + 100,
++                maxTokens: 64,
++                prefixCacheEnabled: false)
++            let hits = try await collectBatch(
++                engine: stack.engine,
++                width: width,
++                idBase: idBase + 200,
++                maxTokens: 64,
++                prefixCacheEnabled: true)
++            await stack.engine.shutdown()
++
++            XCTAssertEqual(donor.finishReason, .length, "B\(width) donor")
++            XCTAssertEqual(donor.tokens.count, 64, "B\(width) donor")
++            for row in 0 ..< width {
++                XCTAssertEqual(controls[row].finishReason, .length, "B\(width) control \(row)")
++                XCTAssertEqual(hits[row].finishReason, .length, "B\(width) hit \(row)")
++                XCTAssertEqual(controls[row].tokens.count, 64, "B\(width) control \(row)")
++                XCTAssertEqual(hits[row].tokens.count, 64, "B\(width) hit \(row)")
++                XCTAssertEqual(
++                    hits[row].tokens,
++                    controls[row].tokens,
++                    "B\(width) row \(row) changed its 64-token continuation")
++                XCTAssertEqual(controls[row].usage?.prefixCacheOutcome, .disabled)
++                XCTAssertEqual(hits[row].usage?.prefixCacheOutcome, .hit)
++                XCTAssertEqual(
++                    hits[row].usage?.prefixCachePrefillTokensSaved,
++                    prompt.count)
++            }
++        }
++    }
++
++    func testExactCacheProfileClampsDisabledMissAndHitSuffixPrefill() async throws {
++        let stack = makeStack(blockSize: 4, soloPrefillStripeTokens: 128)
++        let donorPrompt = [7, 2, 5, 1, 6, 3, 4, 0, 9, 8]
++
++        stack.model.resetPrefillShapes()
++        let disabled = await cbv2SchedCollect(
++            try stack.engine.submit(request(
++                id: 1,
++                promptTokens: donorPrompt,
++                maxTokens: 1,
++                prefixCacheEnabled: false)))
++        XCTAssertEqual(disabled.finishReason, .length)
++        XCTAssertEqual(disabled.usage?.prefixCacheOutcome, .disabled)
++        XCTAssertEqual(stack.model.prefillShapes, [[1, 4], [1, 4], [1, 2]])
++
++        stack.model.resetPrefillShapes()
++        let miss = await cbv2SchedCollect(
++            try stack.engine.submit(request(
++                id: 2,
++                promptTokens: donorPrompt,
++                maxTokens: 1)))
++        XCTAssertEqual(miss.finishReason, .length)
++        XCTAssertEqual(miss.usage?.prefixCacheOutcome, .miss)
++        XCTAssertEqual(stack.model.prefillShapes, [[1, 4], [1, 4], [1, 2]])
++
++        stack.model.resetPrefillShapes()
++        let suffixPrompt = Array(donorPrompt.prefix(8)) + [12, 13, 14, 15, 16, 17]
++        let hit = await cbv2SchedCollect(
++            try stack.engine.submit(request(
++                id: 3,
++                promptTokens: suffixPrompt,
++                maxTokens: 1)))
++        await stack.engine.shutdown()
++
++        XCTAssertEqual(hit.finishReason, .length)
++        XCTAssertEqual(hit.usage?.prefixCacheOutcome, .hit)
++        XCTAssertEqual(hit.usage?.prefixCacheMatchedTokens, 8)
++        XCTAssertEqual(stack.model.prefillShapes, [[1, 4], [1, 2]])
++    }
++
++    func testExactCacheProfileVetoesPackedPrefillWithoutChangingDefaultGate() async throws {
++        let exact = makeStack(blockSize: 4)
++        XCTAssertFalse(exact.engine.packedPrefillActivity().isSupported)
++        let exactRuns = try await collectBatch(
++            engine: exact.engine,
++            width: 4,
++            idBase: 100,
++            maxTokens: 1,
++            prefixCacheEnabled: false)
++        let exactActivity = exact.engine.packedPrefillActivity()
++        await exact.engine.shutdown()
++
++        XCTAssertTrue(exactRuns.allSatisfy { $0.finishReason == .length })
++        XCTAssertFalse(exactActivity.isSupported)
++        XCTAssertFalse(exactActivity.didExecute)
++        XCTAssertTrue(exact.model.prefillShapes.allSatisfy { $0[0] == 1 })
++
++        let uncached = makeUncachedStack()
++        XCTAssertTrue(uncached.engine.packedPrefillActivity().isSupported)
++        let uncachedRuns = try await collectBatch(
++            engine: uncached.engine,
++            width: 4,
++            idBase: 200,
++            maxTokens: 1,
++            prefixCacheEnabled: false)
++        let uncachedActivity = uncached.engine.packedPrefillActivity()
++        await uncached.engine.shutdown()
++
++        XCTAssertTrue(uncachedRuns.allSatisfy { $0.finishReason == .length })
++        XCTAssertTrue(uncachedActivity.isSupported)
++        XCTAssertTrue(uncachedActivity.didExecute)
++        XCTAssertTrue(uncached.model.prefillShapes.contains([4, prompt.count]))
++    }
++
+     func testCancellingOneAdopterCannotPoisonTheCachedBoundary() async throws {
+         let stack = makeStack()
+         let donor = await cbv2SchedCollect(

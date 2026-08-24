@@ -1,6 +1,6 @@
 # 072 — E40/E41 exact-adoption divergence diagnostics
 
-Status: **E44 invalidated by stale binary; E45 causal control rerun pending**
+Status: **E45 confirmed prefill posture as causal; shipping profile implemented**
 
 ## Hypotheses
 
@@ -24,12 +24,16 @@ first differing boundary is measured rather than inferred.
 
 ## Instrumentation
 
-The temporary source and integration patch are:
+The temporary source and integration patch were:
 
 ```text
 patches/072-DivergenceDiagnosticsV2.swift
 patches/072-e40-e41-divergence-instrumentation.patch
 ```
+
+They were deleted after E45 established causality. No NDJSON logging, diagnostic
+environment override, tensor readback, or benchmark registration remains in the
+shipping handoff.
 
 The benchmark registers cold, construction, and warm request IDs. Five
 environment-gated NDJSON log points capture:
@@ -126,26 +130,50 @@ engine's effective `packedPrefillSupported` value. This makes a stale binary,
 missing environment, cache-disabled override failure, and a genuinely
 insufficient posture distinguishable in the first few NDJSON lines.
 
-## Causal verification control
+## E45 findings
 
-Two temporary, diagnostics-gated controls can canonicalize the native arm to
-the donor posture:
+The rebuilt control executed with a 256-token boundary and packed prefill
+disabled in every cold, construction, and warm arm. It restored 100% first-token
+and complete 64-token equality for every B1/B2/B4 full-hit and partial-prefix
+scenario. The intervention is therefore causal, not merely correlated.
+
+The combined verdict is:
+
+1. **Adopted state/layout — rejected.** Warm rows reproduce their donor.
+2. **Decode scheduling — rejected.** Donor and warm trajectories stay equal
+   across B1/B2/B4.
+3. **Chunk geometry — confirmed.** Native large-stripe and block-sized donor
+   prefills differ before adoption; equalizing them restores full parity.
+4. **Packed prefill geometry — confirmed.** Singleton and rectangular prompt
+   cohorts differ; disabling packing under the exact-cache profile restores
+   full parity.
+
+The canonical E45 cold controls are slower than the former native cold arms.
+The 75%, 87.5%, and full-hit cache paths still retain their measured timing
+advantage, but that comparison must use the canonical cold baseline selected by
+the same exact-cache instance.
+
+## Shipping profile
+
+E45's two temporary controls are now represented by one default-off execution
+policy selected by an active exact-state cache:
 
 ```text
-DARKBLOOM_PREFIX_DIVERGENCE_FORCE_CHUNK_TOKENS=256
-DARKBLOOM_PREFIX_DIVERGENCE_FORCE_UNPACKED_PREFILL=1
+text prefill boundary = ExactPrefixCacheV2.exactSnapshotBlockSize
+packed prefill = disabled
 ```
 
-They are not a shipping fix: forcing all prefill through solo 256-token
-forwards would discard the measured packed/large-stripe throughput. The next
-run should verify that this intervention restores complete token equality; the
-shipping decision can then separate donor-fidelity correctness from
-scheduler-posture numerical invariance and apply the fixed quality gate.
+The profile is engine-instance scoped, not lookup-result scoped. It applies to
+cache-disabled controls, misses, and partial-hit suffixes, so changing
+`prefixCacheEnabled` or moving from miss to hit cannot change prompt execution.
+No exact cache means the old chunking and packed-prefill gates execute
+unchanged. The provider policy identity is bumped to
+`darkbloom.cbv2-exact-prompt-state-v3`.
 
-## Minimal Apple Silicon rerun
+## Apple Silicon shipping verification
 
-Start from this diagnostic branch head with the nested library reset to
-`ab73a827c9dde6f8802507003aa0be71605aab8e`:
+Start from the fetchable nested base, apply all four ordered patches, then
+compile the focused regressions and release binary:
 
 ```bash
 root=$PWD
@@ -154,29 +182,27 @@ git -C "$root/libs/mlx-swift-lm" checkout \
 for patch in \
   060-exact-cbv2-prefix-boundary.patch \
   061-cbv2-simultaneous-prompt-fork.patch \
-  065-exact-sequential-prefix-boundaries.patch
+  065-exact-sequential-prefix-boundaries.patch \
+  073-exact-cache-canonical-prefill-profile.patch
 do
   git -C "$root/libs/mlx-swift-lm" apply \
     "$root/research/qwen36-prefill/patches/$patch"
 done
-cp "$root/research/qwen36-prefill/patches/072-DivergenceDiagnosticsV2.swift" \
-  "$root/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DivergenceDiagnosticsV2.swift"
-git -C "$root/libs/mlx-swift-lm" apply \
-  "$root/research/qwen36-prefill/patches/072-e40-e41-divergence-instrumentation.patch"
+
+git -C "$root/libs/mlx-swift-lm" diff --check
+cd "$root/libs/mlx-swift-lm"
+swift test --filter CBv2ExactPrefixCacheTests
+swift test --filter CBv2ExactPrefixEngineTests
 
 cd "$root/provider-swift"
+swift test --filter EngineV2ExactPrefixCacheTests
+swift test --filter QwenPrefixReuseTests
 swift build -c release --product darkbloom
 ```
 
-After copying and applying the patches, rebuild the binary; do not reuse the
-E44 executable. Manually delete `/opt/cursor/logs/debug.log`, then run one
-8K/64-token iteration:
+Run the shipping profile without any divergence environment overrides:
 
 ```bash
-DARKBLOOM_PREFIX_DIVERGENCE_DEBUG=1 \
-DARKBLOOM_PREFIX_DIVERGENCE_MAX_DECODE_STEP=6 \
-DARKBLOOM_PREFIX_DIVERGENCE_FORCE_CHUNK_TOKENS=256 \
-DARKBLOOM_PREFIX_DIVERGENCE_FORCE_UNPACKED_PREFILL=1 \
 DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648 \
 .build/release/darkbloom benchmark \
   --model qwen3.6-35b-a3b-vl-mtp-mxfp8 \
@@ -184,21 +210,15 @@ DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648 \
   --qwen-prefix-corpus Benchmarks/QwenPrefixReuse/qwen-prefix-natural-v1.json \
   --qwen-prefix-prompt-tokens 8192 \
   --qwen-prefix-decode-tokens 64 \
-  --qwen-prefix-iterations 1 \
+  --qwen-prefix-iterations 3 \
   --kv-backend contiguous \
-  --qwen-prefix-output /tmp/e45-canonical.json
+  --qwen-prefix-output /tmp/e46-exact-cache-profile.json
+
+jq -e '
+  ([.scenarios[].summary.firstTokenEqualityRate] | min) == 1
+  and ([.scenarios[].summary.fullTokenEqualityRate] | min) == 1
+  and ([.scenarios[].samples[].warm.rows[]
+        | select(.cacheOutcome == "hit")
+        | .replayTokens] | max) == 0
+' /tmp/e46-exact-cache-profile.json
 ```
-
-Before waiting for the full run, verify the first cold schedule event contains
-all four control proofs:
-
-```text
-instrumentationRevision = e45-prefill-control-proof-v1
-forcedPrefillChunkTokens = 256
-forcesUnpackedPrefill = true
-exactSnapshotBlockSize = 256
-packedPrefillSupported = false
-```
-
-The debug run deliberately leaves instrumentation in place until its pre-fix
-and post-fix logs are compared. It must be removed before the final fix ships.

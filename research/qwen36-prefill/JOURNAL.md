@@ -662,3 +662,19 @@ The result therefore does not test posture sufficiency. The E45 probe now logs
 an unconditional revision/raw-environment record plus each scheduled row's
 effective snapshot boundary and packed-prefill gate. Rebuild from the new
 source before rerunning. See `notes/072`.
+
+## 2026-08-24T17:11Z — E45 proves canonical prefill is causal
+
+The rebuilt 256-token, unpacked control restored 100% first-token and full
+64-token equality in every B1/B2/B4 full-hit and partial-prefix scenario.
+Combined with E43's state trace, this confirms prompt chunk/cohort geometry and
+rejects cache adoption, recurrent restore, cursor state, and decode scheduling
+as causes.
+
+The shipping handoff now selects one engine-instance profile whenever the
+default-off exact-state cache is active: every text request (cache-disabled,
+miss, or hit suffix) clamps at the cache block size, and packed prefill is
+disabled. No exact cache leaves the existing path unchanged. The serving policy
+identity advances to `darkbloom.cbv2-exact-prompt-state-v3`; ordered patch 073
+pins B1/B2/B4 64-token parity, chunk geometry, and the packed gate. Temporary
+NDJSON instrumentation and control overrides were removed. See `notes/072`.

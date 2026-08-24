@@ -310,6 +310,9 @@ struct EngineV2ExactPrefixCacheTests {
 
     @Test("artifact, policy, backend, and dtype changes invalidate identities")
     func identityChanges() throws {
+        #expect(
+            EngineV2SlotFactory.exactPrefixCachePolicyDomain
+                == "darkbloom.cbv2-exact-prompt-state-v3")
         func identity(
             weight: String = exactWeightA,
             prompt: String = exactPromptA,
@@ -333,7 +336,7 @@ struct EngineV2ExactPrefixCacheTests {
         #expect(try identity(backend: .paged).policyIdentity != base.policyIdentity)
         #expect(try identity(dtype: "float16").policyIdentity != base.policyIdentity)
         #expect(
-            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v3")
+            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v4")
                 .policyIdentity != base.policyIdentity)
     }
 

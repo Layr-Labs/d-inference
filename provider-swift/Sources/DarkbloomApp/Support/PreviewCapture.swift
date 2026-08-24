@@ -98,7 +98,7 @@ enum PreviewCapture {
         }
     }
 
-    private static func renderCachedDisplay(_ view: NSView) -> NSBitmapImageRep? {
+    static func renderCachedDisplay(_ view: NSView) -> NSBitmapImageRep? {
         guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return nil
         }
@@ -118,7 +118,7 @@ enum PreviewCapture {
             }
     }
 
-    private static func composite(
+    static func composite(
         _ overlay: NSView,
         onto base: NSBitmapImageRep,
         in root: NSView
@@ -177,7 +177,7 @@ enum PreviewCapture {
         return true
     }
 
-    private static func hasNontrivialPixels(_ representation: NSBitmapImageRep) -> Bool {
+    static func hasNontrivialPixels(_ representation: NSBitmapImageRep) -> Bool {
         guard representation.pixelsWide > 0,
               representation.pixelsHigh > 0
         else {

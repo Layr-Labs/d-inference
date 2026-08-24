@@ -23,7 +23,7 @@ public enum QwenQualityCorpusBenchmark {
 
     private struct EngineComponents: Sendable {
         let engine: any CBv2Engine
-        let tokenizer: any Tokenizer
+        let preparedCases: [QwenQualityPreparedCase]
         let resolvedKVBackend: String
     }
 
@@ -108,6 +108,12 @@ public enum QwenQualityCorpusBenchmark {
             UInt64(Int.max)))
         let processEnvironment = ProcessInfo.processInfo.environment
         let components = try await container.perform { context -> EngineComponents in
+            let preparedCases = try QwenQualityCorpusExecutor.prepare(
+                corpus: loadedCorpus.corpus,
+                maximumTokens: maximumTokens,
+                maximumContextTokens: sizing.maxContextLength > 0
+                    ? sizing.maxContextLength : nil,
+                tokenizer: context.tokenizer)
             let servingModel = try EngineV2Factory.benchmarkServingModel(
                 model: context.model,
                 isVLM: descriptor.isVLM,
@@ -125,17 +131,10 @@ public enum QwenQualityCorpusBenchmark {
                 environment: processEnvironment)
             return EngineComponents(
                 engine: build.engine,
-                tokenizer: context.tokenizer,
+                preparedCases: preparedCases,
                 resolvedKVBackend: build.resolvedKVBackendDescriptor)
         }
         log("engine resolved KV backend \(components.resolvedKVBackend)")
-
-        let preparedCases = try QwenQualityCorpusExecutor.prepare(
-            corpus: loadedCorpus.corpus,
-            maximumTokens: maximumTokens,
-            maximumContextTokens: sizing.maxContextLength > 0
-                ? sizing.maxContextLength : nil,
-            tokenizer: components.tokenizer)
 
         let caseResults: [QwenQualityCorpusReport.CaseResult]
         do {
@@ -145,14 +144,15 @@ public enum QwenQualityCorpusBenchmark {
             log("warming one-token decode on the serving engine")
             _ = try await QwenQualityCorpusEngineRunner.run(
                 engine: components.engine,
-                prepared: preparedCases[0],
+                prepared: components.preparedCases[0],
                 maximumTokens: 1,
                 requestID: CBv2RequestID(warmupRequestID))
 
             var measured: [QwenQualityCorpusReport.CaseResult] = []
-            measured.reserveCapacity(preparedCases.count)
-            for (index, prepared) in preparedCases.enumerated() {
-                log("case \(index + 1)/\(preparedCases.count): \(prepared.corpusCase.id)")
+            measured.reserveCapacity(components.preparedCases.count)
+            for (index, prepared) in components.preparedCases.enumerated() {
+                log("case \(index + 1)/\(components.preparedCases.count): "
+                    + prepared.corpusCase.id)
                 let (requestID, overflow) = measuredRequestIDBase.addingReportingOverflow(
                     UInt64(index))
                 guard !overflow else {
@@ -166,11 +166,10 @@ public enum QwenQualityCorpusBenchmark {
             }
             caseResults = measured
         } catch {
-            await components.engine.shutdown()
+            await stopAndSynchronize(components.engine)
             throw error
         }
-        await components.engine.shutdown()
-        Stream().synchronize()
+        await stopAndSynchronize(components.engine)
 
         guard WeightHasher.snapshotFingerprint(snapshotDir: modelDirectory)
             == fingerprintBefore
@@ -281,6 +280,11 @@ public enum QwenQualityCorpusBenchmark {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: Date())
+    }
+
+    private static func stopAndSynchronize(_ engine: any CBv2Engine) async {
+        await engine.shutdown()
+        Stream().synchronize()
     }
 
     private static func log(_ message: String) {

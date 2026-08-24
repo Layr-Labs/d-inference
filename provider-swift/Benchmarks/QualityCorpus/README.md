@@ -22,7 +22,9 @@ Example on an Apple Silicon Mac, from `provider-swift`:
 ```bash
 swift build -c release
 
-env -u DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K \
+env -u DARKBLOOM_QWEN35_PREFILL_ARTIFACT_ONLY \
+    -u DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS \
+    -u DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K \
     -u DARKBLOOM_QWEN35_PREFILL_MOE_FULL_LAYERS \
     .build/release/darkbloom benchmark \
       --model ORG/QWEN_MODEL \
@@ -32,6 +34,8 @@ env -u DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K \
       --kv-backend contiguous \
       --quality-output /tmp/qwen-quality-baseline.json
 
+DARKBLOOM_QWEN35_PREFILL_ARTIFACT_ONLY=1 \
+DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS=0-3,36-39 \
 DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K=4 \
 DARKBLOOM_QWEN35_PREFILL_MOE_FULL_LAYERS=39 \
     .build/release/darkbloom benchmark \

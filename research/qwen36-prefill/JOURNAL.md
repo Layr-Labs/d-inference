@@ -708,6 +708,21 @@ The sole divergent expedition continuation is accurate, coherent, and
 less progressed at the forced cutoff. The canonical exact-cache policy
 passes the semantic quality gate as an explicit opt-in. See `notes/074`.
 
+## 2026-08-24T20:03Z — E49 frontier state river rejected
+
+The full-frontier artifact river closes the raw cold speed gap at E=4:
+B4×2K reaches 4,741 tok/s (**2.80×** adjacent control). E=8 reaches
+4,090 tok/s (**2.41×**).
+
+Both fail the fixed blind 128-token quality gate:
+
+- E4: 90/300 versus native 225/300, six candidate-only fatal failures;
+- E8: 149/300, three candidate-only fatal failures.
+
+Running the final row through all 40 layers cannot repair information lost
+from historical hidden rows/state construction. Reject both profiles; the
+new frontier seam remains research-only and default-off. See `notes/077`.
+
 ## 2026-08-24T18:55Z — E48 transient donation bytes bounded
 
 Exact-cache snapshot copies are now reserved before MLX materializes them.

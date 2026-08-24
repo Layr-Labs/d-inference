@@ -147,8 +147,6 @@ struct DarkbloomApp: App {
                     )
                 case .failed(let failure):
                     AppInstallationFailureView(failure: failure)
-                case .checking:
-                    AppInstallationProgressView(message: "Preparing Darkbloom...")
                 case .handingOff:
                     AppInstallationProgressView(message: "Opening the installed app...")
                 }

@@ -196,6 +196,10 @@ type releaseTrustPolicySnapshot struct {
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
+type enrollmentProfileSigner interface {
+	Sign(profile []byte) ([]byte, error)
+}
+
 type Server struct {
 	registry                      *registry.Registry
 	store                         store.Store
@@ -214,8 +218,9 @@ type Server struct {
 	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
 	mdmScheduler                  *mdmVerificationScheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
-	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
-	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	mdmWebhookSecret              string                  // optional shared secret MicroMDM must present on the webhook
+	profileSigner                 enrollmentProfileSigner // CMS signer for the /v1/enroll .mobileconfig
+	profileSigningRequired        bool                    // fail enrollment unless a valid CMS signature is produced
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
 	promptSupervisor              *promptcontract.Supervisor
@@ -1104,10 +1109,16 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 }
 
 // SetProfileSigner configures the CMS signing identity used to sign the
-// enrollment .mobileconfig served by /v1/enroll. When unset (nil), profiles are
-// served unsigned (the historical behaviour).
+// enrollment .mobileconfig served by /v1/enroll.
 func (s *Server) SetProfileSigner(signer *profilesign.Signer) {
 	s.profileSigner = signer
+}
+
+// SetProfileSigningRequired controls whether /v1/enroll may use the historical
+// unsigned fallback. Hardware-trust deployments set this true; local tests and
+// development may explicitly leave it false.
+func (s *Server) SetProfileSigningRequired(required bool) {
+	s.profileSigningRequired = required
 }
 
 // SetBilling configures the billing service for multi-chain payments and referrals.

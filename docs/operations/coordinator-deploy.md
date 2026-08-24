@@ -371,3 +371,10 @@ reference copy; editing it changes nothing on the host.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.
 - [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) — why prod is on GCE (historical).
+
+### Enrollment profile signing
+
+Hardware-trust coordinators require a valid `PROFILE_SIGNING_P12_B64` /
+`PROFILE_SIGNING_P12_PASSWORD` identity and reject unsigned enrollment profiles.
+`EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES=true` is a development/test exception;
+production must leave it unset or `false`.

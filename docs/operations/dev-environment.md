@@ -218,3 +218,10 @@ gcloud sql instances delete d-inference-dev-db --project=sepolia-ai --quiet
 - [`provider-release.md`](provider-release.md) — release workflow, `DEV_*` secrets.
 - [`../developer/build.md`](../developer/build.md) — the Dockerfile Cloud Build builds.
 - [`../provider/installation.md`](../provider/installation.md) — what `install.sh` does on a Mac.
+
+### Enrollment profile signing
+
+Hardware-trust coordinators require a valid `PROFILE_SIGNING_P12_B64` /
+`PROFILE_SIGNING_P12_PASSWORD` identity and reject unsigned enrollment profiles.
+`EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES=true` is a development/test exception;
+production must leave it unset or `false`.

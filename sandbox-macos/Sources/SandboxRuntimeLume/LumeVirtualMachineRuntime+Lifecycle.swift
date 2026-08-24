@@ -350,16 +350,11 @@ extension LumeVirtualMachineRuntime {
             return
         }
         if existing.state == .starting {
-            try await waitForState(
+            let running = try await waitForState(
                 name: name,
                 expected: .running,
                 timeoutSeconds: configuration.commandTimeoutSeconds
             )
-            guard let running = try await inspect(name: name) else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume start completed without a running VM record"
-                )
-            }
             try LumeVirtualMachineResourceCommitment.requireMatch(
                 observed: running,
                 ownership: ownershipCommitment,
@@ -431,17 +426,12 @@ extension LumeVirtualMachineRuntime {
         runningProcesses[name] = process
         var unresolvedIntent: LumeVirtualMachineStartIntent.Intent? = intent
         do {
-            try await waitForState(
+            let running = try await waitForState(
                 name: name,
                 expected: .running,
                 timeoutSeconds: configuration.commandTimeoutSeconds,
                 process: process
             )
-            guard let running = try await inspect(name: name) else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume start completed without a running VM record"
-                )
-            }
             try LumeVirtualMachineResourceCommitment.requireMatch(
                 observed: running,
                 ownership: ownershipCommitment,
@@ -677,12 +667,13 @@ extension LumeVirtualMachineRuntime {
         expected: SandboxVirtualMachineState,
         timeoutSeconds: UInt32,
         process: SandboxManagedProcess? = nil
-    ) async throws {
+    ) async throws -> SandboxVirtualMachineRecord {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
         repeat {
-            if try await inspect(name: name)?.state == expected {
-                return
+            let observed = try await inspect(name: name)
+            if let observed, observed.state == expected {
+                return observed
             }
             if let process, !process.isRunning {
                 let result = await process.wait()

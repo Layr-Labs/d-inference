@@ -332,7 +332,7 @@ struct EngineV2ExactPrefixCacheTests {
         #expect(try identity(backend: .paged).policyIdentity != base.policyIdentity)
         #expect(try identity(dtype: "float16").policyIdentity != base.policyIdentity)
         #expect(
-            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v2")
+            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v3")
                 .policyIdentity != base.policyIdentity)
     }
 

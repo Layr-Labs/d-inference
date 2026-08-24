@@ -72,6 +72,12 @@ struct LaunchAgentEnvironmentTests {
         ])
     }
 
+    @Test func forwardsPromptForkOptInToDaemon() {
+        let out = LaunchAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_CBV2_PROMPT_FORK": "1", "PATH": "/usr/bin"])
+        #expect(out == ["DARKBLOOM_CBV2_PROMPT_FORK": "1"])
+    }
+
     @Test func forwardsResourceDebugOptOutToDaemon() {
         // The MLX resource telemetry is default-on; its documented opt-out
         // (DARKBLOOM_MLX_RESOURCE_DEBUG=0) only works on the launchd service if it

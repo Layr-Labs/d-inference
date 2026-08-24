@@ -69,8 +69,10 @@ extension EngineV2SlotFactory {
     static let exactPrefixCacheMaxFractionEnvironmentKey =
         "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION"
 
-    /// One GiB retains several measured Qwen boundaries, while the fractional
-    /// ceiling prevents the cache from dominating a small slot.
+    /// One GiB is a conservative opt-in starting point, while the fractional
+    /// ceiling prevents the cache from dominating a small slot. It does not
+    /// retain the benchmark's complete 8K/32-boundary set (~4.83 GB); an
+    /// operator must explicitly raise the byte ceiling for that hit profile.
     static let defaultExactPrefixCacheMaxBytes = 1_073_741_824
     static let defaultExactPrefixCacheMaxFraction = 0.125
 

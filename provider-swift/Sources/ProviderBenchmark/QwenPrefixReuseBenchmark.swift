@@ -18,6 +18,10 @@ public enum QwenPrefixReuseBenchmark {
     private static let warmupRequestID: UInt64 = 0x5158_0000
     private static let measuredRequestIDBase: UInt64 = 0x5158_1000
     private static let exactCacheBudgetDivisor = 5
+    private static let prefixExperimentEnvironmentKeys = [
+        "DARKBLOOM_CBV2_PROMPT_FORK",
+        "DARKBLOOM_PREFIX_BENCH_FORCE_FORK",
+    ]
 
     private struct ModelDescriptor: Sendable {
         let modelType: String
@@ -74,8 +78,8 @@ public enum QwenPrefixReuseBenchmark {
 
         let modelDirectory = modelDirectory.resolvingSymlinksInPath().standardizedFileURL
         let corpus = try QwenPrefixCorpusLoader.load(from: corpusURL)
-        let policyEnvironment = QwenQualityCorpusBenchmark.capturedPolicyEnvironment()
         let processEnvironment = ProcessInfo.processInfo.environment
+        let policyEnvironment = capturedPolicyEnvironment(processEnvironment)
 
         log("hashing fixed model artifact \(modelID)")
         guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
@@ -288,6 +292,22 @@ public enum QwenPrefixReuseBenchmark {
             scenarios: reportScenarios)
         try report.validate()
         return report
+    }
+
+    /// Prefix reports extend the quality harness's safe policy allowlist with
+    /// the two controls that distinguish a durable-cache run from a forced
+    /// no-hit live-fork run. Never serialize unrelated process environment.
+    static func capturedPolicyEnvironment(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var captured = QwenQualityCorpusBenchmark.capturedPolicyEnvironment(
+            environment)
+        for key in prefixExperimentEnvironmentKeys {
+            if let value = environment[key], !value.isEmpty {
+                captured[key] = value
+            }
+        }
+        return captured
     }
 
     private static func measureAll(

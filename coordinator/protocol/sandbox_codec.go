@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -122,7 +124,18 @@ func decodeSandboxEnvelope(
 			"sandbox frame size is invalid",
 		)
 	}
+	if !utf8.Valid(data) {
+		return rawSandboxEnvelope{}, SandboxMessageHeader{}, errors.New(
+			"sandbox frame is not valid UTF-8",
+		)
+	}
 	if err := rejectDuplicateSandboxJSONKeys(data); err != nil {
+		return rawSandboxEnvelope{}, SandboxMessageHeader{}, err
+	}
+	if err := requireExactSandboxJSONFields(
+		data,
+		reflect.TypeOf(rawSandboxEnvelope{}),
+	); err != nil {
 		return rawSandboxEnvelope{}, SandboxMessageHeader{}, err
 	}
 	var raw rawSandboxEnvelope
@@ -141,8 +154,8 @@ func decodeSandboxEnvelope(
 	}
 	if header.Type == "" ||
 		header.ProtocolVersion != SandboxProtocolVersion ||
-		uuid.Validate(header.HostID) != nil ||
-		uuid.Validate(header.ConnectionEpoch) != nil ||
+		!validCanonicalSandboxUUID(header.HostID) ||
+		!validCanonicalSandboxUUID(header.ConnectionEpoch) ||
 		header.Sequence == 0 ||
 		len(raw.Payload) == 0 ||
 		bytes.Equal(raw.Payload, []byte("null")) {
@@ -154,6 +167,13 @@ func decodeSandboxEnvelope(
 }
 
 func strictSandboxJSON(data []byte, target any) error {
+	targetType := reflect.TypeOf(target)
+	if targetType == nil {
+		return errors.New("sandbox JSON target is nil")
+	}
+	if err := requireExactSandboxJSONFields(data, targetType); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -164,6 +184,104 @@ func strictSandboxJSON(data []byte, target any) error {
 			return errors.New("multiple JSON values")
 		}
 		return err
+	}
+	return nil
+}
+
+func requireExactSandboxJSONFields(data []byte, targetType reflect.Type) error {
+	for targetType.Kind() == reflect.Pointer {
+		targetType = targetType.Elem()
+	}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return errors.New("sandbox JSON value must not be null")
+	}
+	switch targetType.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.StructField)
+		required := make(map[string]struct{})
+		for index := 0; index < targetType.NumField(); index++ {
+			field := targetType.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			tagParts := strings.Split(field.Tag.Get("json"), ",")
+			name := tagParts[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field
+			optional := false
+			for _, option := range tagParts[1:] {
+				optional = optional || option == "omitempty"
+			}
+			if !optional {
+				required[name] = struct{}{}
+			}
+		}
+		for name := range required {
+			if _, present := object[name]; !present {
+				return fmt.Errorf("required sandbox JSON field %q is missing", name)
+			}
+		}
+		for name, raw := range object {
+			field, known := fields[name]
+			if !known {
+				return fmt.Errorf("unknown sandbox JSON field %q", name)
+			}
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return fmt.Errorf("sandbox JSON field %q must not be null", name)
+			}
+			if err := requireExactSandboxJSONFields(raw, field.Type); err != nil {
+				return fmt.Errorf("sandbox JSON field %q: %w", name, err)
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if targetType == reflect.TypeOf(json.RawMessage{}) {
+			return nil
+		}
+		var elements []json.RawMessage
+		if err := json.Unmarshal(data, &elements); err != nil {
+			return err
+		}
+		for index, element := range elements {
+			if err := requireExactSandboxJSONFields(
+				element,
+				targetType.Elem(),
+			); err != nil {
+				return fmt.Errorf("sandbox JSON element %d: %w", index, err)
+			}
+		}
+	case reflect.Map:
+		if targetType.Key().Kind() != reflect.String {
+			return errors.New("sandbox JSON map key must be a string")
+		}
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return err
+		}
+		for name, raw := range entries {
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return fmt.Errorf("sandbox JSON map value %q must not be null", name)
+			}
+			if err := requireExactSandboxJSONFields(
+				raw,
+				targetType.Elem(),
+			); err != nil {
+				return fmt.Errorf("sandbox JSON map value %q: %w", name, err)
+			}
+		}
+	default:
+		var value any
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -192,10 +310,11 @@ func rejectDuplicateSandboxJSONKeys(data []byte) error {
 				if !ok {
 					return errors.New("JSON object key is not a string")
 				}
-				if _, exists := seen[key]; exists {
+				normalizedKey := strings.ToLower(key)
+				if _, exists := seen[normalizedKey]; exists {
 					return fmt.Errorf("duplicate JSON key %q", key)
 				}
-				seen[key] = struct{}{}
+				seen[normalizedKey] = struct{}{}
 				if err := walk(); err != nil {
 					return err
 				}
@@ -260,7 +379,7 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 			}
 		}
 	case *SandboxOperationStatePayload:
-		if uuid.Validate(value.OperationID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
 			!knownSandboxOperation(value.Operation) ||
 			!knownSandboxOperationState(value.State) ||
@@ -268,12 +387,12 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 			return errors.New("sandbox operation state is invalid")
 		}
 	case *SandboxCommandStatePayload:
-		if uuid.Validate(value.CommandID) != nil ||
+		if !validCanonicalSandboxUUID(value.CommandID) ||
 			validateSandboxScope(value.Scope) != nil ||
 			!knownSandboxCommandState(value.State) ||
 			!validOptionalSandboxErrorCode(value.ErrorCode) ||
-			len(value.StandardOutput) > maxSandboxOutputBytes ||
-			len(value.StandardError) > maxSandboxOutputBytes {
+			optionalSandboxStringBytes(value.StandardOutput) > maxSandboxOutputBytes ||
+			optionalSandboxStringBytes(value.StandardError) > maxSandboxOutputBytes {
 			return errors.New("sandbox command state is invalid")
 		}
 		if (value.State == SandboxCommandSucceeded ||
@@ -282,8 +401,8 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 		}
 	case *SandboxHostFailurePayload:
 		if (value.OperationID == "" && value.CommandID == "") ||
-			(value.OperationID != "" && uuid.Validate(value.OperationID) != nil) ||
-			(value.CommandID != "" && uuid.Validate(value.CommandID) != nil) ||
+			(value.OperationID != "" && !validCanonicalSandboxUUID(value.OperationID)) ||
+			(value.CommandID != "" && !validCanonicalSandboxUUID(value.CommandID)) ||
 			(value.Scope != nil && validateSandboxScope(*value.Scope) != nil) ||
 			!sandboxErrorCodePattern.MatchString(value.ErrorCode) {
 			return errors.New("sandbox host failure is invalid")
@@ -297,7 +416,7 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 	switch value := payload.(type) {
 	case *SandboxPreparePayload:
-		if uuid.Validate(value.OperationID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
 			validateSandboxResources(value.Resources) != nil ||
 			!sandboxIdentifierPattern.MatchString(value.BaseImageID) ||
@@ -305,7 +424,7 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 			return errors.New("sandbox prepare payload is invalid")
 		}
 	case *SandboxLeaseRenewPayload:
-		if uuid.Validate(value.OperationID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
 			validateSandboxTimestamp(value.LeaseExpiresAt) != nil {
 			return errors.New("sandbox lease renewal is invalid")
@@ -315,18 +434,18 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 			return err
 		}
 	case *SandboxCommandControlPayload:
-		if uuid.Validate(value.OperationID) != nil ||
-			uuid.Validate(value.CommandID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
+			!validCanonicalSandboxUUID(value.CommandID) ||
 			validateSandboxScope(value.Scope) != nil {
 			return errors.New("sandbox command control payload is invalid")
 		}
 	case *SandboxOperationPayload:
-		if uuid.Validate(value.OperationID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil {
 			return errors.New("sandbox operation payload is invalid")
 		}
 	case *SandboxDrainPayload:
-		if uuid.Validate(value.OperationID) != nil ||
+		if !validCanonicalSandboxUUID(value.OperationID) ||
 			strings.TrimSpace(value.Reason) == "" ||
 			len(value.Reason) > 256 {
 			return errors.New("sandbox drain payload is invalid")
@@ -338,12 +457,24 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 }
 
 func validateSandboxScope(scope SandboxScope) error {
-	if uuid.Validate(scope.SandboxID) != nil ||
+	if !validCanonicalSandboxUUID(scope.SandboxID) ||
 		scope.Generation == 0 ||
 		scope.FencingToken == 0 {
 		return errors.New("sandbox operation scope is invalid")
 	}
 	return nil
+}
+
+func validCanonicalSandboxUUID(value string) bool {
+	if len(value) != 36 ||
+		value[8] != '-' ||
+		value[13] != '-' ||
+		value[18] != '-' ||
+		value[23] != '-' {
+		return false
+	}
+	_, err := uuid.Parse(value)
+	return err == nil
 }
 
 func validateSandboxResources(resources SandboxResources) error {
@@ -361,7 +492,7 @@ func validateSandboxResources(resources SandboxResources) error {
 }
 
 func validateSandboxCommand(command *SandboxCommandPayload) error {
-	if uuid.Validate(command.CommandID) != nil ||
+	if !validCanonicalSandboxUUID(command.CommandID) ||
 		!sandboxIdentifierPattern.MatchString(command.IdempotencyKey) ||
 		validateSandboxScope(command.Scope) != nil ||
 		len(command.Arguments) == 0 ||
@@ -424,8 +555,15 @@ func validateSandboxTimestamp(value string) error {
 	return err
 }
 
-func validOptionalSandboxErrorCode(value string) bool {
-	return value == "" || sandboxErrorCodePattern.MatchString(value)
+func validOptionalSandboxErrorCode(value *string) bool {
+	return value == nil || sandboxErrorCodePattern.MatchString(*value)
+}
+
+func optionalSandboxStringBytes(value *string) int {
+	if value == nil {
+		return 0
+	}
+	return len(*value)
 }
 
 func knownSandboxOperation(value string) bool {

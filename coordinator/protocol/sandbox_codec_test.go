@@ -102,6 +102,18 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 			`"sequence":9,"sequence":10`,
 			1,
 		),
+		"case folded envelope key": strings.Replace(
+			valid,
+			`"sequence":9`,
+			`"Sequence":9`,
+			1,
+		),
+		"case folded duplicate envelope key": strings.Replace(
+			valid,
+			`"sequence":9`,
+			`"sequence":9,"\u0053equence":10`,
+			1,
+		),
 		"duplicate payload key": strings.Replace(
 			valid,
 			`"timeout_seconds":900`,
@@ -140,6 +152,12 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 			1,
 		),
 		"trailing JSON": valid + `{}`,
+		"noncanonical host UUID": strings.Replace(
+			valid,
+			testSandboxHostID,
+			"00000000000000000000000000000001",
+			1,
+		),
 	}
 	for name, frame := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -150,8 +168,94 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 	}
 }
 
+func TestSandboxCodecRequiresZeroValuedAndCollectionFields(t *testing.T) {
+	prepare := SandboxEnvelope[SandboxPreparePayload]{
+		Type:            SandboxTypePrepare,
+		ProtocolVersion: SandboxProtocolVersion,
+		HostID:          testSandboxHostID,
+		ConnectionEpoch: testSandboxEpoch,
+		Sequence:        11,
+		Payload: SandboxPreparePayload{
+			OperationID: testSandboxOperation,
+			Scope: SandboxScope{
+				SandboxID:    testSandboxID,
+				Generation:   3,
+				FencingToken: 7,
+			},
+			Resources: SandboxResources{
+				CPUCount:              4,
+				MemoryBytes:           8 * sandboxGibibyte,
+				WorkspaceBytes:        sandboxWorkspace25GiB,
+				CommandTimeoutSeconds: 900,
+				GPU:                   false,
+			},
+			BaseImageID:    "macos-tahoe-v1",
+			LeaseExpiresAt: testSandboxExpiry,
+		},
+	}
+	validPrepare := string(marshalSandboxFrame(t, prepare))
+	for name, frame := range map[string]string{
+		"missing gpu": strings.Replace(validPrepare, `,"gpu":false`, "", 1),
+		"null gpu": strings.Replace(
+			validPrepare,
+			`"gpu":false`,
+			`"gpu":null`,
+			1,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeSandboxCoordinatorMessage([]byte(frame)); err == nil {
+				t.Fatal("prepare with absent required field was accepted")
+			}
+		})
+	}
+
+	heartbeat := SandboxEnvelope[SandboxHostHeartbeatPayload]{
+		Type:            SandboxTypeHostHeartbeat,
+		ProtocolVersion: SandboxProtocolVersion,
+		HostID:          testSandboxHostID,
+		ConnectionEpoch: testSandboxEpoch,
+		Sequence:        12,
+		Payload: SandboxHostHeartbeatPayload{
+			Mode:            "sandbox_dedicated",
+			AvailableCPU:    12,
+			AvailableMemory: 48 * sandboxGibibyte,
+			Leases:          []SandboxHostLeaseObservation{},
+		},
+	}
+	validHeartbeat := string(marshalSandboxFrame(t, heartbeat))
+	for name, frame := range map[string]string{
+		"missing leases": strings.Replace(validHeartbeat, `,"leases":[]`, "", 1),
+		"null leases": strings.Replace(
+			validHeartbeat,
+			`"leases":[]`,
+			`"leases":null`,
+			1,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeSandboxHostMessage([]byte(frame)); err == nil {
+				t.Fatal("heartbeat with absent leases was accepted")
+			}
+		})
+	}
+}
+
+func TestSandboxCodecRejectsInvalidUTF8(t *testing.T) {
+	frame := marshalSandboxFrame(t, validSandboxCommandEnvelope())
+	index := strings.Index(string(frame), "hello")
+	if index < 0 {
+		t.Fatal("fixture does not contain command argument")
+	}
+	frame[index] = 0xff
+	if _, err := DecodeSandboxCoordinatorMessage(frame); err == nil {
+		t.Fatal("frame with invalid UTF-8 was accepted")
+	}
+}
+
 func TestSandboxCodecRejectsInvalidHostState(t *testing.T) {
 	exitCode := int32(0)
+	standardOutput := "hello"
 	valid := SandboxEnvelope[SandboxCommandStatePayload]{
 		Type:            SandboxTypeCommandState,
 		ProtocolVersion: SandboxProtocolVersion,
@@ -167,11 +271,24 @@ func TestSandboxCodecRejectsInvalidHostState(t *testing.T) {
 			},
 			State:          SandboxCommandSucceeded,
 			ExitCode:       &exitCode,
-			StandardOutput: "hello",
+			StandardOutput: &standardOutput,
 		},
 	}
 	if _, err := DecodeSandboxHostMessage(marshalSandboxFrame(t, valid)); err != nil {
 		t.Fatalf("valid terminal command state rejected: %v", err)
+	}
+	encoded := string(marshalSandboxFrame(t, valid))
+	if !strings.Contains(encoded, `"output_truncated":false`) {
+		t.Fatalf("required output_truncated field was omitted: %s", encoded)
+	}
+	withoutTruncation := strings.Replace(
+		encoded,
+		`,"output_truncated":false`,
+		"",
+		1,
+	)
+	if _, err := DecodeSandboxHostMessage([]byte(withoutTruncation)); err == nil {
+		t.Fatal("command state without output_truncated was accepted")
 	}
 
 	valid.Payload.ExitCode = nil

@@ -116,7 +116,7 @@ type SandboxOperationStatePayload struct {
 	Scope       SandboxScope `json:"scope"`
 	Operation   string       `json:"operation"`
 	State       string       `json:"state"`
-	ErrorCode   string       `json:"error_code,omitempty"`
+	ErrorCode   *string      `json:"error_code,omitempty"`
 }
 
 type SandboxCommandStatePayload struct {
@@ -124,10 +124,10 @@ type SandboxCommandStatePayload struct {
 	Scope           SandboxScope `json:"scope"`
 	State           string       `json:"state"`
 	ExitCode        *int32       `json:"exit_code,omitempty"`
-	StandardOutput  string       `json:"stdout,omitempty"`
-	StandardError   string       `json:"stderr,omitempty"`
-	OutputTruncated bool         `json:"output_truncated,omitempty"`
-	ErrorCode       string       `json:"error_code,omitempty"`
+	StandardOutput  *string      `json:"stdout,omitempty"`
+	StandardError   *string      `json:"stderr,omitempty"`
+	OutputTruncated bool         `json:"output_truncated"`
+	ErrorCode       *string      `json:"error_code,omitempty"`
 }
 
 type SandboxHostFailurePayload struct {

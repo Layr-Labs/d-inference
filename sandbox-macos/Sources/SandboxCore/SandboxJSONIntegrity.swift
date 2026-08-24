@@ -6,6 +6,8 @@ enum SandboxJSONIntegrityError: Error, Equatable {
 }
 
 enum SandboxJSONIntegrity {
+    private static let maximumNestingDepth = 64
+
     static func requireNoDuplicateKeys(_ data: Data) throws {
         var parser = Parser(bytes: Array(data))
         try parser.parseDocument()
@@ -17,22 +19,24 @@ enum SandboxJSONIntegrity {
 
         mutating func parseDocument() throws {
             skipWhitespace()
-            try parseValue()
+            try parseValue(depth: 0)
             skipWhitespace()
             guard index == bytes.count else {
                 throw SandboxJSONIntegrityError.malformed
             }
         }
 
-        private mutating func parseValue() throws {
-            guard index < bytes.count else {
+        private mutating func parseValue(depth: Int) throws {
+            guard depth <= SandboxJSONIntegrity.maximumNestingDepth,
+                  index < bytes.count
+            else {
                 throw SandboxJSONIntegrityError.malformed
             }
             switch bytes[index] {
             case CharacterByte.leftBrace:
-                try parseObject()
+                try parseObject(depth: depth)
             case CharacterByte.leftBracket:
-                try parseArray()
+                try parseArray(depth: depth)
             case CharacterByte.quote:
                 _ = try parseString()
             default:
@@ -40,7 +44,7 @@ enum SandboxJSONIntegrity {
             }
         }
 
-        private mutating func parseObject() throws {
+        private mutating func parseObject(depth: Int) throws {
             try consume(CharacterByte.leftBrace)
             skipWhitespace()
             if consumeIfPresent(CharacterByte.rightBrace) {
@@ -56,7 +60,7 @@ enum SandboxJSONIntegrity {
                 skipWhitespace()
                 try consume(CharacterByte.colon)
                 skipWhitespace()
-                try parseValue()
+                try parseValue(depth: depth + 1)
                 skipWhitespace()
                 if consumeIfPresent(CharacterByte.rightBrace) {
                     return
@@ -65,14 +69,14 @@ enum SandboxJSONIntegrity {
             }
         }
 
-        private mutating func parseArray() throws {
+        private mutating func parseArray(depth: Int) throws {
             try consume(CharacterByte.leftBracket)
             skipWhitespace()
             if consumeIfPresent(CharacterByte.rightBracket) {
                 return
             }
             while true {
-                try parseValue()
+                try parseValue(depth: depth + 1)
                 skipWhitespace()
                 if consumeIfPresent(CharacterByte.rightBracket) {
                     return

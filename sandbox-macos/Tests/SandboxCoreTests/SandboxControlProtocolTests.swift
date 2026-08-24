@@ -229,6 +229,40 @@ final class SandboxControlProtocolTests: XCTestCase {
         )
     }
 
+    func testStrictCodecBoundsJSONNestingAndRejectsInvalidUTF8() {
+        let deeplyNested = Data(
+            (
+                String(repeating: "[", count: 66)
+                    + "0"
+                    + String(repeating: "]", count: 66)
+            ).utf8
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(deeplyNested)
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(Data([0xff]))
+        )
+    }
+
+    func testCommandStatusAlwaysEncodesOutputTruncation() throws {
+        let status = SandboxWireCommandStatus(
+            commandID: try identifier(
+                "00000000-0000-0000-0000-000000000005"
+            ),
+            scope: try commandEnvelope().payload.scope,
+            state: .running
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(status)
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(object["output_truncated"] as? Bool, false)
+        XCTAssertNil(object["stdout"])
+        XCTAssertNil(object["stderr"])
+    }
+
     private func commandEnvelope() throws
         -> SandboxControlEnvelope<SandboxWireCommand>
     {

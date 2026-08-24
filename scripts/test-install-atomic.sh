@@ -336,6 +336,76 @@ test "$(cat "$SYMLINK_TARGET/sentinel")" = "outside content"
 test -d "$SYMLINK_INSTALL/Darkbloom.app"
 test ! -L "$SYMLINK_INSTALL/Darkbloom.app"
 
+assert_foreign_restored_after_failure() {
+    local installer=$1
+    local label=$2
+    local fault_point=$3
+    local install_dir="$ROOT/foreign-rollback-$label-$fault_point"
+    local destination="$install_dir/Darkbloom.app"
+    local bin_dir="$install_dir/bin"
+
+    write_existing_bundle "$destination" com.example.foreign
+    printf 'foreign payload\n' > "$destination/foreign-payload"
+    mkdir -p "$bin_dir"
+    printf 'previous darkbloom\n' > "$bin_dir/darkbloom"
+    printf 'previous metallib\n' > "$bin_dir/mlx.metallib"
+    ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
+    ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_FAIL_POINT="$fault_point" \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer ignored injected install fault $fault_point" >&2
+        exit 1
+    fi
+
+    test -d "$destination"
+    test ! -L "$destination"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "com.example.foreign"
+    test "$(cat "$destination/sentinel")" = "existing"
+    test "$(cat "$destination/foreign-payload")" = "foreign payload"
+    test -f "$bin_dir/darkbloom"
+    test ! -L "$bin_dir/darkbloom"
+    test "$(cat "$bin_dir/darkbloom")" = "previous darkbloom"
+    test -f "$bin_dir/mlx.metallib"
+    test ! -L "$bin_dir/mlx.metallib"
+    test "$(cat "$bin_dir/mlx.metallib")" = "previous metallib"
+    test -L "$bin_dir/darkbloom-enclave"
+    test "$(readlink "$bin_dir/darkbloom-enclave")" = "../previous-enclave"
+    test -L "$bin_dir/eigeninference-enclave"
+    test "$(readlink "$bin_dir/eigeninference-enclave")" = "previous-legacy-enclave"
+
+    shopt -s nullglob
+    local preserved=("$install_dir"/Darkbloom.app.foreign-*)
+    local backups=("$install_dir"/.install-backup-*)
+    local staging=("$install_dir"/.install-staging-*)
+    test "${#preserved[@]}" -eq 0
+    test "${#backups[@]}" -eq 0
+    test "${#staging[@]}" -eq 0
+}
+
+# The first fault lands before the staged app move. The second lands after the
+# first managed symlink has already changed, proving rollback restores both the
+# exact foreign bundle and partially-mutated managed links. Exercise canonical
+# and coordinator-embedded installers; sync parity alone must not hide runtime
+# transaction drift.
+for installer_label in source embedded; do
+    if [ "$installer_label" = "source" ]; then
+        fault_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        fault_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    assert_foreign_restored_after_failure \
+        "$fault_installer" "$installer_label" staged-app-move
+    assert_foreign_restored_after_failure \
+        "$fault_installer" "$installer_label" link-darkbloom-enclave
+done
+
 # Release and unsigned-dev identifiers are the only replaceable owners. They
 # are swapped in place without producing a misleading foreign backup.
 for owned_id in io.darkbloom.provider dev.darkbloom.app; do

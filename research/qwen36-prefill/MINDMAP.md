@@ -153,5 +153,10 @@ TFLOPS versus Steel 13.68; dynamic K8 = 3.35. If that ceiling applies,
 B=4×8K linears alone take 11.64 s > 8.415 s (`notes/043`). Broad M3
 closure remains pending a bounded MPP tile/scope sweep and counter proof.
 
+E14 covers 99.9966% of real linear shapes at M=2,048: static MPP 12.65
+weighted TFLOPS, 37.3m outputs bit-identical (`notes/044`). E15 covers
+threshold M=8,192/65,536: static 12.02, dynamic K8 3.16 plus long-K
+tolerance failure (`notes/045`). Both miss ≥22 decisively.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

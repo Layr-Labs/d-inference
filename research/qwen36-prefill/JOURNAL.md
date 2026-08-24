@@ -353,3 +353,19 @@ share this schedule's 13.72 ceiling, B=4×8K linear work alone needs
 This closes the tested M16×N32 schedule, not every MPP tile/scope. Final
 physical sign-off requires the bounded sweep and counter/structure
 evidence requested by the hostile reviewer. See `notes/043`.
+
+## 2026-08-24T07:19Z — E14/E15 full-shape MPP gates
+
+Two independent probes expanded E13:
+
+- E14, M=2,048 over 99.9966% of the real linear-shape ledger:
+  supported static K16 MPP **12.6478 TFLOPS weighted**, Steel 11.0401;
+  all 37,289,984 outputs FP32 bit-identical.
+- E15, threshold `[4,2048]` row geometry including routed M=65,536:
+  static K16 12.0193, Steel 11.9916, dynamic K8 **3.1579 TFLOPS**.
+  Dynamic/static explicit accumulation also fails the long-K
+  mixed-exponent 1e-3 gate.
+
+Both are far below ≥22 TFLOPS. Full raw samples, GPU timestamps,
+thermal/power/process evidence, and source hashes are retained in notes
+044/045. Remaining reviewer request: bounded MPP tile/scope sweep.

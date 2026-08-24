@@ -1,0 +1,480 @@
+PROBE=mpp-supported-static-k16-throughput
+DATE_UTC=2026-08-24T07:19:18Z
+HOST=gaj’s MacBook Pro
+HW_MODEL=Mac15,9
+OS=26.4
+OS_BUILD=25E246
+XCODE=Xcode 26.5;Build version 17F42;
+METAL=Apple metal version 32023.883 (metalfe-32023.883);Target: air64-apple-darwin25.4.0;Thread model: posix;InstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin;
+POWER_SOURCE=Now drawing from 'AC Power'
+POWER_MODE_AC=2
+GPU_NAME=Apple M3 Max
+SOURCE_SHA256=6abeb91ef028e078f28a41693bb53eef115127f7dd098193688cdfc4e86c68dc  /Users/gaj/work/mpp-throughput-probe-055f/kernel.metal;636a598b5ba06ff8019885e5bd0ac0193efa5468d32f778d36e183f139052253  /Users/gaj/work/mpp-throughput-probe-055f/ProbeTypes.swift;6135bafe0badbb3d8eed7b227e144caee15eb14021e208dab823646f5bd1e9a7  /Users/gaj/work/mpp-throughput-probe-055f/MetalRunner.swift;88fa2db7b0c6091ad1589eeccd4c3bdd45c79c2e4a927c20a5d30ea96bb1f128  /Users/gaj/work/mpp-throughput-probe-055f/main.swift;ce1119dc38f897b0ac128a59919a5842416b5fc4108b4311c62ac3eb49f44c0f  /Users/gaj/work/mpp-throughput-probe-055f/run.sh;
+RUN_VALID=yes
+METAL_COMPILE=pass
+METALLIB_LINK=pass
+SWIFT_COMPILE=pass
+PROBE_EXIT=0
+POWER_POST_GATE=pass
+POWER_BEFORE_BEGIN
+POWER_SOURCE=Now drawing from 'AC Power'
+POWER_MODE_AC=2
+PMSET_THERM_BEGIN
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+PMSET_THERM_END
+PMSET_BATT_BEGIN
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; finishing charge; 0:05 remaining present: true
+PMSET_BATT_END
+PMSET_CUSTOM_BEGIN
+Battery Power:
+ Sleep On Power Button 1
+ powermode            0
+ standby              0
+ ttyskeepawake        1
+ hibernatemode        0
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         5
+ womp                 0
+ networkoversleep     0
+ sleep                0
+ lessbright           1
+ tcpkeepalive         1
+ disksleep            0
+ SleepServices        1
+AC Power:
+ Sleep On Power Button 1
+ powermode            2
+ standby              0
+ ttyskeepawake        1
+ hibernatemode        0
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         5
+ womp                 1
+ networkoversleep     0
+ sleep                0
+ tcpkeepalive         1
+ disksleep            0
+ SleepServices        1
+PMSET_CUSTOM_END
+POWER_BEFORE_END
+PROCESSES_BEFORE_BEGIN
+ 7449  13.8  0.1 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService
+  162   6.8  0.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
+  169   2.7  0.0 /usr/libexec/trustd
+  163   1.6  0.0 /System/Library/PrivateFrameworks/TCC.framework/Support/tccd system
+  131   1.5  0.0 /usr/libexec/opendirectoryd
+  244   1.4  0.1 /usr/libexec/syspolicyd
+58525   1.3  0.0 /bin/bash ./run.sh /Users/gaj/work/mpp-throughput-probe-055f/result
+  595   0.7  0.1 /Library/SystemExtensions/EA0B6F91-D4C3-443C-80D0-80CA8EABEAE1/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension
+  433   0.6  0.0 /usr/libexec/secd
+  477   0.4  0.1 /System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+  466   0.4  0.0 /System/Library/CoreServices/WiFiAgent.app/Contents/MacOS/WiFiAgent
+  158   0.4  0.0 /usr/libexec/corebrightnessd --launchd
+   89   0.4  0.1 /usr/libexec/logd
+    1   0.4  0.0 /sbin/launchd
+  302   0.3  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x100000eb4 com.apple.DriverKit-AppleBCMWLAN
+  156   0.3  0.0 /usr/sbin/notifyd
+  101   0.3  0.0 /usr/libexec/configd
+58520   0.2  0.0 sshd-session: gaj [priv]
+  432   0.2  0.0 /usr/sbin/cfprefsd agent
+  353   0.1  0.0 /usr/libexec/sysmond
+  281   0.1  0.0 /usr/libexec/audioclocksyncd
+  199   0.1  0.0 /usr/libexec/symptomsd
+  165   0.1  0.0 /usr/sbin/cfprefsd daemon
+  133   0.1  0.0 /System/Library/CoreServices/launchservicesd
+58545   0.0  0.0 sed -n 1,25p
+PROCESSES_BEFORE_END
+PROBE_OUTPUT_BEGIN
+DEVICE=Apple M3 Max
+OS=Version 26.4 (Build 25E246)
+CONTRACT=BF16xBF16-to-FP32 mpp_descriptor=M16N32K16 relaxed_precision=false accumulator=one-cooperative-FP32-across-K steel=simdgroup-8x8x8-FP32
+MEASUREMENT=one-full-matrix-dispatch-per-command-buffer simdgroups_per_threadgroup=4 warmup_blocks=3 measured_blocks=8 samples_per_arm=16 order=ABBA timestamps=command-buffer-gpu-plus-cpu-wall
+WEIGHT_LEDGER measured_gflop_per_token=4.87325696 full_linear_gflop_per_token=4.87342080 coverage_percent=99.99664
+SHAPE name=gdn-attention-wide M=2048 K=2048 N=8192 useful_gflop=68.719477 threadgroups=8192 model_weight_gflop_per_token=1.34217728
+SHAPE name=gdn-z M=2048 K=2048 N=4096 useful_gflop=34.359738 threadgroups=4096 model_weight_gflop_per_token=0.50331648
+SHAPE name=gdn-a-b M=2048 K=2048 N=32 useful_gflop=0.268435 threadgroups=32 model_weight_gflop_per_token=0.00786432
+SHAPE name=gdn-attention-output M=2048 K=4096 N=2048 useful_gflop=34.359738 threadgroups=2048 model_weight_gflop_per_token=0.67108864
+SHAPE name=attention-kv-shared-gate-up M=2048 K=2048 N=512 useful_gflop=4.294967 threadgroups=512 model_weight_gflop_per_token=0.20971520
+SHAPE name=shared-routed-down M=2048 K=512 N=2048 useful_gflop=4.294967 threadgroups=2048 model_weight_gflop_per_token=0.75497472
+SHAPE name=router M=2048 K=2048 N=256 useful_gflop=2.147484 threadgroups=256 model_weight_gflop_per_token=0.04194304
+SHAPE name=routed-gate-up-primary M=2048 K=2048 N=1024 useful_gflop=8.589935 threadgroups=1024 model_weight_gflop_per_token=1.34217728
+CORRECTNESS shape=gdn-attention-wide M=2048 K=2048 N=8192 status=pass elements=16777216 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=e4188c383c219b4a mpp_hash=e4188c383c219b4a
+CORRECTNESS shape=gdn-z M=2048 K=2048 N=4096 status=pass elements=8388608 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=012214104cd4b314 mpp_hash=012214104cd4b314
+CORRECTNESS shape=gdn-a-b M=2048 K=2048 N=32 status=pass elements=65536 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=dc601d64e5289922 mpp_hash=dc601d64e5289922
+CORRECTNESS shape=gdn-attention-output M=2048 K=4096 N=2048 status=pass elements=4194304 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=d92dcf3fd6e45dee mpp_hash=d92dcf3fd6e45dee
+CORRECTNESS shape=attention-kv-shared-gate-up M=2048 K=2048 N=512 status=pass elements=1048576 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=861c7573ee435a7d mpp_hash=861c7573ee435a7d
+CORRECTNESS shape=shared-routed-down M=2048 K=512 N=2048 status=pass elements=4194304 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=087b6cf9e8aba57d mpp_hash=087b6cf9e8aba57d
+CORRECTNESS shape=router M=2048 K=2048 N=256 status=pass elements=524288 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=a7690312bdf75593 mpp_hash=a7690312bdf75593
+CORRECTNESS shape=routed-gate-up-primary M=2048 K=2048 N=1024 status=pass elements=2097152 fp32_changed=0 bf16_changed=0 max_abs=0 max_rel=0 qmm_1e-3=pass nonfinite=0 steel_hash=9a4b538e52cc65ac mpp_hash=9a4b538e52cc65ac
+CORRECTNESS_GATE=pass shapes=8
+WARMUP shape=gdn-attention-wide blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=gdn-attention-wide arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.410445625 gpu_end_s=455062.415810375 gpu_ms=5.364750 kernel_start_s=455062.410341375 kernel_end_s=455062.410371917 kernel_ms=0.030542 cpu_wall_ms=5.624750 useful_gpu_tflops=12.8094 useful_cpu_tflops=12.2173
+SAMPLE shape=gdn-attention-wide arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.416119667 gpu_end_s=455062.423234250 gpu_ms=7.114583 kernel_start_s=455062.416012250 kernel_end_s=455062.416043750 kernel_ms=0.031500 cpu_wall_ms=7.378083 useful_gpu_tflops=9.6590 useful_cpu_tflops=9.3140
+SAMPLE shape=gdn-attention-wide arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.423547792 gpu_end_s=455062.430647125 gpu_ms=7.099333 kernel_start_s=455062.423437917 kernel_end_s=455062.423469750 kernel_ms=0.031833 cpu_wall_ms=7.359833 useful_gpu_tflops=9.6797 useful_cpu_tflops=9.3371
+SAMPLE shape=gdn-attention-wide arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.430985917 gpu_end_s=455062.436367125 gpu_ms=5.381208 kernel_start_s=455062.430891125 kernel_end_s=455062.430918167 kernel_ms=0.027042 cpu_wall_ms=5.619875 useful_gpu_tflops=12.7703 useful_cpu_tflops=12.2279
+SAMPLE shape=gdn-attention-wide arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.436636625 gpu_end_s=455062.442034250 gpu_ms=5.397625 kernel_start_s=455062.436562250 kernel_end_s=455062.436581000 kernel_ms=0.018750 cpu_wall_ms=5.612791 useful_gpu_tflops=12.7314 useful_cpu_tflops=12.2434
+SAMPLE shape=gdn-attention-wide arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.442311667 gpu_end_s=455062.449415250 gpu_ms=7.103583 kernel_start_s=455062.442226750 kernel_end_s=455062.442258000 kernel_ms=0.031250 cpu_wall_ms=7.334542 useful_gpu_tflops=9.6739 useful_cpu_tflops=9.3693
+SAMPLE shape=gdn-attention-wide arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.449713500 gpu_end_s=455062.456791125 gpu_ms=7.077625 kernel_start_s=455062.449608750 kernel_end_s=455062.449640500 kernel_ms=0.031750 cpu_wall_ms=7.325250 useful_gpu_tflops=9.7094 useful_cpu_tflops=9.3812
+SAMPLE shape=gdn-attention-wide arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.457068375 gpu_end_s=455062.462444250 gpu_ms=5.375875 kernel_start_s=455062.456980167 kernel_end_s=455062.457007500 kernel_ms=0.027333 cpu_wall_ms=5.606375 useful_gpu_tflops=12.7829 useful_cpu_tflops=12.2574
+SAMPLE shape=gdn-attention-wide arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.462770000 gpu_end_s=455062.468141042 gpu_ms=5.371042 kernel_start_s=455062.462642000 kernel_end_s=455062.462673292 kernel_ms=0.031292 cpu_wall_ms=5.643875 useful_gpu_tflops=12.7944 useful_cpu_tflops=12.1759
+SAMPLE shape=gdn-attention-wide arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.468424625 gpu_end_s=455062.475520500 gpu_ms=7.095875 kernel_start_s=455062.468328792 kernel_end_s=455062.468355750 kernel_ms=0.026958 cpu_wall_ms=7.342708 useful_gpu_tflops=9.6844 useful_cpu_tflops=9.3589
+SAMPLE shape=gdn-attention-wide arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.475831000 gpu_end_s=455062.482918792 gpu_ms=7.087792 kernel_start_s=455062.475721375 kernel_end_s=455062.475752875 kernel_ms=0.031500 cpu_wall_ms=7.345166 useful_gpu_tflops=9.6955 useful_cpu_tflops=9.3557
+SAMPLE shape=gdn-attention-wide arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.483220125 gpu_end_s=455062.488609750 gpu_ms=5.389625 kernel_start_s=455062.483113417 kernel_end_s=455062.483144542 kernel_ms=0.031125 cpu_wall_ms=5.641250 useful_gpu_tflops=12.7503 useful_cpu_tflops=12.1816
+SAMPLE shape=gdn-attention-wide arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.488883792 gpu_end_s=455062.494267292 gpu_ms=5.383500 kernel_start_s=455062.488801167 kernel_end_s=455062.488825750 kernel_ms=0.024583 cpu_wall_ms=5.598333 useful_gpu_tflops=12.7648 useful_cpu_tflops=12.2750
+SAMPLE shape=gdn-attention-wide arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.494540375 gpu_end_s=455062.501658500 gpu_ms=7.118125 kernel_start_s=455062.494451500 kernel_end_s=455062.494482000 kernel_ms=0.030500 cpu_wall_ms=7.369750 useful_gpu_tflops=9.6542 useful_cpu_tflops=9.3245
+SAMPLE shape=gdn-attention-wide arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.501948125 gpu_end_s=455062.509023875 gpu_ms=7.075750 kernel_start_s=455062.501860625 kernel_end_s=455062.501888000 kernel_ms=0.027375 cpu_wall_ms=7.306000 useful_gpu_tflops=9.7120 useful_cpu_tflops=9.4059
+SAMPLE shape=gdn-attention-wide arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.509313542 gpu_end_s=455062.514684250 gpu_ms=5.370708 kernel_start_s=455062.509213792 kernel_end_s=455062.509245167 kernel_ms=0.031375 cpu_wall_ms=5.606666 useful_gpu_tflops=12.7952 useful_cpu_tflops=12.2567
+SAMPLE shape=gdn-attention-wide arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.514957542 gpu_end_s=455062.520334292 gpu_ms=5.376750 kernel_start_s=455062.514868125 kernel_end_s=455062.514894375 kernel_ms=0.026250 cpu_wall_ms=5.607833 useful_gpu_tflops=12.7809 useful_cpu_tflops=12.2542
+SAMPLE shape=gdn-attention-wide arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.520624792 gpu_end_s=455062.527714625 gpu_ms=7.089833 kernel_start_s=455062.520538375 kernel_end_s=455062.520569250 kernel_ms=0.030875 cpu_wall_ms=7.331000 useful_gpu_tflops=9.6927 useful_cpu_tflops=9.3738
+SAMPLE shape=gdn-attention-wide arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.528021792 gpu_end_s=455062.535051917 gpu_ms=7.030125 kernel_start_s=455062.527916042 kernel_end_s=455062.527949042 kernel_ms=0.033000 cpu_wall_ms=7.287584 useful_gpu_tflops=9.7750 useful_cpu_tflops=9.4297
+SAMPLE shape=gdn-attention-wide arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.535333667 gpu_end_s=455062.540696667 gpu_ms=5.363000 kernel_start_s=455062.535251000 kernel_end_s=455062.535275542 kernel_ms=0.024542 cpu_wall_ms=5.590625 useful_gpu_tflops=12.8136 useful_cpu_tflops=12.2919
+SAMPLE shape=gdn-attention-wide arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.540988000 gpu_end_s=455062.546366000 gpu_ms=5.378000 kernel_start_s=455062.540889375 kernel_end_s=455062.540920625 kernel_ms=0.031250 cpu_wall_ms=5.619000 useful_gpu_tflops=12.7779 useful_cpu_tflops=12.2298
+SAMPLE shape=gdn-attention-wide arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.546638667 gpu_end_s=455062.553709375 gpu_ms=7.070708 kernel_start_s=455062.546555625 kernel_end_s=455062.546581250 kernel_ms=0.025625 cpu_wall_ms=7.297500 useful_gpu_tflops=9.7189 useful_cpu_tflops=9.4169
+SAMPLE shape=gdn-attention-wide arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.554000917 gpu_end_s=455062.561059125 gpu_ms=7.058208 kernel_start_s=455062.553905750 kernel_end_s=455062.553936417 kernel_ms=0.030667 cpu_wall_ms=7.311084 useful_gpu_tflops=9.7361 useful_cpu_tflops=9.3994
+SAMPLE shape=gdn-attention-wide arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.561340042 gpu_end_s=455062.566708542 gpu_ms=5.368500 kernel_start_s=455062.561257625 kernel_end_s=455062.561282250 kernel_ms=0.024625 cpu_wall_ms=5.599833 useful_gpu_tflops=12.8005 useful_cpu_tflops=12.2717
+SAMPLE shape=gdn-attention-wide arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.566988917 gpu_end_s=455062.572357875 gpu_ms=5.368958 kernel_start_s=455062.566898417 kernel_end_s=455062.566929042 kernel_ms=0.030625 cpu_wall_ms=5.597916 useful_gpu_tflops=12.7994 useful_cpu_tflops=12.2759
+SAMPLE shape=gdn-attention-wide arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.572626000 gpu_end_s=455062.579735917 gpu_ms=7.109917 kernel_start_s=455062.572542792 kernel_end_s=455062.572567417 kernel_ms=0.024625 cpu_wall_ms=7.346792 useful_gpu_tflops=9.6653 useful_cpu_tflops=9.3537
+SAMPLE shape=gdn-attention-wide arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.580027917 gpu_end_s=455062.587139250 gpu_ms=7.111333 kernel_start_s=455062.579936250 kernel_end_s=455062.579967375 kernel_ms=0.031125 cpu_wall_ms=7.341833 useful_gpu_tflops=9.6634 useful_cpu_tflops=9.3600
+SAMPLE shape=gdn-attention-wide arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.587414667 gpu_end_s=455062.592789250 gpu_ms=5.374583 kernel_start_s=455062.587330625 kernel_end_s=455062.587355167 kernel_ms=0.024542 cpu_wall_ms=5.613750 useful_gpu_tflops=12.7860 useful_cpu_tflops=12.2413
+SAMPLE shape=gdn-attention-wide arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.593088167 gpu_end_s=455062.598481042 gpu_ms=5.392875 kernel_start_s=455062.592982500 kernel_end_s=455062.593014250 kernel_ms=0.031750 cpu_wall_ms=5.641167 useful_gpu_tflops=12.7426 useful_cpu_tflops=12.1818
+SAMPLE shape=gdn-attention-wide arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.598756667 gpu_end_s=455062.605778250 gpu_ms=7.021583 kernel_start_s=455062.598671250 kernel_end_s=455062.598697375 kernel_ms=0.026125 cpu_wall_ms=7.259125 useful_gpu_tflops=9.7869 useful_cpu_tflops=9.4666
+SAMPLE shape=gdn-attention-wide arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.606081542 gpu_end_s=455062.613095875 gpu_ms=7.014333 kernel_start_s=455062.605993167 kernel_end_s=455062.606019417 kernel_ms=0.026250 cpu_wall_ms=7.254042 useful_gpu_tflops=9.7970 useful_cpu_tflops=9.4733
+SAMPLE shape=gdn-attention-wide arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.613377750 gpu_end_s=455062.618735750 gpu_ms=5.358000 kernel_start_s=455062.613294125 kernel_end_s=455062.613318750 kernel_ms=0.024625 cpu_wall_ms=5.577958 useful_gpu_tflops=12.8256 useful_cpu_tflops=12.3198
+SUMMARY shape=gdn-attention-wide arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=5.375229 gpu_p10_ms=5.364750 gpu_p90_ms=5.392875 gpu_min_ms=5.358000 gpu_max_ms=5.397625 cpu_wall_median_ms=5.610312 useful_gpu_tflops=12.7845 useful_cpu_tflops=12.2488 model_weight_gflop_per_token=1.34217728
+SUMMARY shape=gdn-attention-wide arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=7.088813 gpu_p10_ms=7.030125 gpu_p90_ms=7.114583 gpu_min_ms=7.014333 gpu_max_ms=7.118125 cpu_wall_median_ms=7.332771 useful_gpu_tflops=9.6941 useful_cpu_tflops=9.3716 model_weight_gflop_per_token=1.34217728
+COMPARISON shape=gdn-attention-wide mpp_over_steel=1.3188 mpp_gpu_tflops=12.7845 steel_gpu_tflops=9.6941
+WARMUP shape=gdn-z blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=gdn-z arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.655775375 gpu_end_s=455062.658405375 gpu_ms=2.630000 kernel_start_s=455062.655683125 kernel_end_s=455062.655710667 kernel_ms=0.027542 cpu_wall_ms=2.878792 useful_gpu_tflops=13.0645 useful_cpu_tflops=11.9355
+SAMPLE shape=gdn-z arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.658703000 gpu_end_s=455062.661595000 gpu_ms=2.892000 kernel_start_s=455062.658598125 kernel_end_s=455062.658628875 kernel_ms=0.030750 cpu_wall_ms=3.149333 useful_gpu_tflops=11.8810 useful_cpu_tflops=10.9102
+SAMPLE shape=gdn-z arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.661899917 gpu_end_s=455062.664788375 gpu_ms=2.888458 kernel_start_s=455062.661793875 kernel_end_s=455062.661824917 kernel_ms=0.031042 cpu_wall_ms=3.134584 useful_gpu_tflops=11.8955 useful_cpu_tflops=10.9615
+SAMPLE shape=gdn-z arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.665024875 gpu_end_s=455062.667657625 gpu_ms=2.632750 kernel_start_s=455062.664934875 kernel_end_s=455062.664959875 kernel_ms=0.025000 cpu_wall_ms=2.858500 useful_gpu_tflops=13.0509 useful_cpu_tflops=12.0202
+SAMPLE shape=gdn-z arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.667955375 gpu_end_s=455062.670587125 gpu_ms=2.631750 kernel_start_s=455062.667847917 kernel_end_s=455062.667878417 kernel_ms=0.030500 cpu_wall_ms=2.885083 useful_gpu_tflops=13.0559 useful_cpu_tflops=11.9094
+SAMPLE shape=gdn-z arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.670868125 gpu_end_s=455062.673760375 gpu_ms=2.892250 kernel_start_s=455062.670777875 kernel_end_s=455062.670804250 kernel_ms=0.026375 cpu_wall_ms=3.200000 useful_gpu_tflops=11.8799 useful_cpu_tflops=10.7374
+SAMPLE shape=gdn-z arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.674128667 gpu_end_s=455062.677019667 gpu_ms=2.891000 kernel_start_s=455062.674021792 kernel_end_s=455062.674052542 kernel_ms=0.030750 cpu_wall_ms=3.147917 useful_gpu_tflops=11.8851 useful_cpu_tflops=10.9151
+SAMPLE shape=gdn-z arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.677305000 gpu_end_s=455062.679934250 gpu_ms=2.629250 kernel_start_s=455062.677214500 kernel_end_s=455062.677238750 kernel_ms=0.024250 cpu_wall_ms=2.879500 useful_gpu_tflops=13.0683 useful_cpu_tflops=11.9325
+SAMPLE shape=gdn-z arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.680237625 gpu_end_s=455062.682869875 gpu_ms=2.632250 kernel_start_s=455062.680132750 kernel_end_s=455062.680164542 kernel_ms=0.031792 cpu_wall_ms=2.868667 useful_gpu_tflops=13.0534 useful_cpu_tflops=11.9776
+SAMPLE shape=gdn-z arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.683152125 gpu_end_s=455062.686036500 gpu_ms=2.884375 kernel_start_s=455062.683059125 kernel_end_s=455062.683085750 kernel_ms=0.026625 cpu_wall_ms=3.119000 useful_gpu_tflops=11.9124 useful_cpu_tflops=11.0163
+SAMPLE shape=gdn-z arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.686323917 gpu_end_s=455062.689217875 gpu_ms=2.893958 kernel_start_s=455062.686229500 kernel_end_s=455062.686256292 kernel_ms=0.026792 cpu_wall_ms=3.147834 useful_gpu_tflops=11.8729 useful_cpu_tflops=10.9154
+SAMPLE shape=gdn-z arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.689511000 gpu_end_s=455062.692138875 gpu_ms=2.627875 kernel_start_s=455062.689415750 kernel_end_s=455062.689443167 kernel_ms=0.027417 cpu_wall_ms=2.932791 useful_gpu_tflops=13.0751 useful_cpu_tflops=11.7157
+SAMPLE shape=gdn-z arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.692501167 gpu_end_s=455062.695131292 gpu_ms=2.630125 kernel_start_s=455062.692400000 kernel_end_s=455062.692430625 kernel_ms=0.030625 cpu_wall_ms=2.876833 useful_gpu_tflops=13.0639 useful_cpu_tflops=11.9436
+SAMPLE shape=gdn-z arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.695414375 gpu_end_s=455062.698302250 gpu_ms=2.887875 kernel_start_s=455062.695321792 kernel_end_s=455062.695348750 kernel_ms=0.026958 cpu_wall_ms=3.143666 useful_gpu_tflops=11.8979 useful_cpu_tflops=10.9298
+SAMPLE shape=gdn-z arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.698608500 gpu_end_s=455062.701515250 gpu_ms=2.906750 kernel_start_s=455062.698503667 kernel_end_s=455062.698531000 kernel_ms=0.027333 cpu_wall_ms=3.145000 useful_gpu_tflops=11.8207 useful_cpu_tflops=10.9252
+SAMPLE shape=gdn-z arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.701754750 gpu_end_s=455062.704386000 gpu_ms=2.631250 kernel_start_s=455062.701661417 kernel_end_s=455062.701687000 kernel_ms=0.025583 cpu_wall_ms=2.873417 useful_gpu_tflops=13.0583 useful_cpu_tflops=11.9578
+SAMPLE shape=gdn-z arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.704672292 gpu_end_s=455062.707304625 gpu_ms=2.632333 kernel_start_s=455062.704583875 kernel_end_s=455062.704609625 kernel_ms=0.025750 cpu_wall_ms=2.854000 useful_gpu_tflops=13.0530 useful_cpu_tflops=12.0392
+SAMPLE shape=gdn-z arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.707590500 gpu_end_s=455062.710480750 gpu_ms=2.890250 kernel_start_s=455062.707491542 kernel_end_s=455062.707522292 kernel_ms=0.030750 cpu_wall_ms=3.199625 useful_gpu_tflops=11.8882 useful_cpu_tflops=10.7387
+SAMPLE shape=gdn-z arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.710821792 gpu_end_s=455062.713709625 gpu_ms=2.887833 kernel_start_s=455062.710736250 kernel_end_s=455062.710767250 kernel_ms=0.031000 cpu_wall_ms=3.127083 useful_gpu_tflops=11.8981 useful_cpu_tflops=10.9878
+SAMPLE shape=gdn-z arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.713993125 gpu_end_s=455062.716625500 gpu_ms=2.632375 kernel_start_s=455062.713903042 kernel_end_s=455062.713928292 kernel_ms=0.025250 cpu_wall_ms=2.865500 useful_gpu_tflops=13.0528 useful_cpu_tflops=11.9908
+SAMPLE shape=gdn-z arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.716924917 gpu_end_s=455062.719555167 gpu_ms=2.630250 kernel_start_s=455062.716821625 kernel_end_s=455062.716852500 kernel_ms=0.030875 cpu_wall_ms=2.932667 useful_gpu_tflops=13.0633 useful_cpu_tflops=11.7162
+SAMPLE shape=gdn-z arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.719900625 gpu_end_s=455062.722789250 gpu_ms=2.888625 kernel_start_s=455062.719797292 kernel_end_s=455062.719828000 kernel_ms=0.030708 cpu_wall_ms=3.155250 useful_gpu_tflops=11.8948 useful_cpu_tflops=10.8897
+SAMPLE shape=gdn-z arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.723091000 gpu_end_s=455062.725982375 gpu_ms=2.891375 kernel_start_s=455062.722990000 kernel_end_s=455062.723021292 kernel_ms=0.031292 cpu_wall_ms=3.138917 useful_gpu_tflops=11.8835 useful_cpu_tflops=10.9464
+SAMPLE shape=gdn-z arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.726280125 gpu_end_s=455062.728910667 gpu_ms=2.630542 kernel_start_s=455062.726191000 kernel_end_s=455062.726218000 kernel_ms=0.027000 cpu_wall_ms=2.932500 useful_gpu_tflops=13.0618 useful_cpu_tflops=11.7169
+SAMPLE shape=gdn-z arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.729393500 gpu_end_s=455062.732023250 gpu_ms=2.629750 kernel_start_s=455062.729173000 kernel_end_s=455062.729197667 kernel_ms=0.024667 cpu_wall_ms=3.002458 useful_gpu_tflops=13.0658 useful_cpu_tflops=11.4439
+SAMPLE shape=gdn-z arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.732308875 gpu_end_s=455062.735197500 gpu_ms=2.888625 kernel_start_s=455062.732215875 kernel_end_s=455062.732243250 kernel_ms=0.027375 cpu_wall_ms=3.115542 useful_gpu_tflops=11.8948 useful_cpu_tflops=11.0285
+SAMPLE shape=gdn-z arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.735475750 gpu_end_s=455062.738370667 gpu_ms=2.894917 kernel_start_s=455062.735382625 kernel_end_s=455062.735413667 kernel_ms=0.031042 cpu_wall_ms=3.212500 useful_gpu_tflops=11.8690 useful_cpu_tflops=10.6956
+SAMPLE shape=gdn-z arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.738731125 gpu_end_s=455062.741362750 gpu_ms=2.631625 kernel_start_s=455062.738639125 kernel_end_s=455062.738664125 kernel_ms=0.025000 cpu_wall_ms=2.869875 useful_gpu_tflops=13.0565 useful_cpu_tflops=11.9726
+SAMPLE shape=gdn-z arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.741655125 gpu_end_s=455062.744283917 gpu_ms=2.628792 kernel_start_s=455062.741553667 kernel_end_s=455062.741584417 kernel_ms=0.030750 cpu_wall_ms=2.866417 useful_gpu_tflops=13.0705 useful_cpu_tflops=11.9870
+SAMPLE shape=gdn-z arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.744509750 gpu_end_s=455062.747409500 gpu_ms=2.899750 kernel_start_s=455062.744423125 kernel_end_s=455062.744448625 kernel_ms=0.025500 cpu_wall_ms=3.194708 useful_gpu_tflops=11.8492 useful_cpu_tflops=10.7552
+SAMPLE shape=gdn-z arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.747767875 gpu_end_s=455062.750661625 gpu_ms=2.893750 kernel_start_s=455062.747672167 kernel_end_s=455062.747699167 kernel_ms=0.027000 cpu_wall_ms=3.146208 useful_gpu_tflops=11.8738 useful_cpu_tflops=10.9210
+SAMPLE shape=gdn-z arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.750957792 gpu_end_s=455062.753587625 gpu_ms=2.629833 kernel_start_s=455062.750863417 kernel_end_s=455062.750890167 kernel_ms=0.026750 cpu_wall_ms=2.877208 useful_gpu_tflops=13.0654 useful_cpu_tflops=11.9420
+SUMMARY shape=gdn-z arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=2.630396 gpu_p10_ms=2.629250 gpu_p90_ms=2.632375 gpu_min_ms=2.627875 gpu_max_ms=2.632750 cpu_wall_median_ms=2.877020 useful_gpu_tflops=13.0626 useful_cpu_tflops=11.9428 model_weight_gflop_per_token=0.50331648
+SUMMARY shape=gdn-z arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=2.891187 gpu_p10_ms=2.887875 gpu_p90_ms=2.899750 gpu_min_ms=2.884375 gpu_max_ms=2.906750 cpu_wall_median_ms=3.147021 useful_gpu_tflops=11.8843 useful_cpu_tflops=10.9182 model_weight_gflop_per_token=0.50331648
+COMPARISON shape=gdn-z mpp_over_steel=1.0991 mpp_gpu_tflops=13.0626 steel_gpu_tflops=11.8843
+WARMUP shape=gdn-a-b blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=gdn-a-b arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.757445375 gpu_end_s=455062.757514125 gpu_ms=0.068750 kernel_start_s=455062.757367000 kernel_end_s=455062.757390375 kernel_ms=0.023375 cpu_wall_ms=0.266666 useful_gpu_tflops=3.9045 useful_cpu_tflops=1.0066
+SAMPLE shape=gdn-a-b arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.757731750 gpu_end_s=455062.757842792 gpu_ms=0.111042 kernel_start_s=455062.757650875 kernel_end_s=455062.757676292 kernel_ms=0.025417 cpu_wall_ms=0.311125 useful_gpu_tflops=2.4174 useful_cpu_tflops=0.8628
+SAMPLE shape=gdn-a-b arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.758064000 gpu_end_s=455062.758174167 gpu_ms=0.110167 kernel_start_s=455062.757977625 kernel_end_s=455062.758003000 kernel_ms=0.025375 cpu_wall_ms=0.317708 useful_gpu_tflops=2.4366 useful_cpu_tflops=0.8449
+SAMPLE shape=gdn-a-b arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.758406125 gpu_end_s=455062.758475125 gpu_ms=0.069000 kernel_start_s=455062.758318000 kernel_end_s=455062.758344250 kernel_ms=0.026250 cpu_wall_ms=0.277583 useful_gpu_tflops=3.8904 useful_cpu_tflops=0.9670
+SAMPLE shape=gdn-a-b arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.758680625 gpu_end_s=455062.758749292 gpu_ms=0.068667 kernel_start_s=455062.758610750 kernel_end_s=455062.758630417 kernel_ms=0.019667 cpu_wall_ms=0.249833 useful_gpu_tflops=3.9093 useful_cpu_tflops=1.0745
+SAMPLE shape=gdn-a-b arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.758959375 gpu_end_s=455062.759070375 gpu_ms=0.111000 kernel_start_s=455062.758875875 kernel_end_s=455062.758896125 kernel_ms=0.020250 cpu_wall_ms=0.314958 useful_gpu_tflops=2.4183 useful_cpu_tflops=0.8523
+SAMPLE shape=gdn-a-b arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.759309875 gpu_end_s=455062.759420292 gpu_ms=0.110417 kernel_start_s=455062.759208667 kernel_end_s=455062.759239250 kernel_ms=0.030583 cpu_wall_ms=0.322750 useful_gpu_tflops=2.4311 useful_cpu_tflops=0.8317
+SAMPLE shape=gdn-a-b arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.759632917 gpu_end_s=455062.759702167 gpu_ms=0.069250 kernel_start_s=455062.759546500 kernel_end_s=455062.759571542 kernel_ms=0.025042 cpu_wall_ms=0.275583 useful_gpu_tflops=3.8763 useful_cpu_tflops=0.9741
+SAMPLE shape=gdn-a-b arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.759932417 gpu_end_s=455062.760001667 gpu_ms=0.069250 kernel_start_s=455062.759837125 kernel_end_s=455062.759863875 kernel_ms=0.026750 cpu_wall_ms=0.283542 useful_gpu_tflops=3.8763 useful_cpu_tflops=0.9467
+SAMPLE shape=gdn-a-b arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.760221667 gpu_end_s=455062.760332375 gpu_ms=0.110708 kernel_start_s=455062.760135750 kernel_end_s=455062.760160792 kernel_ms=0.025042 cpu_wall_ms=0.310917 useful_gpu_tflops=2.4247 useful_cpu_tflops=0.8634
+SAMPLE shape=gdn-a-b arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.760542292 gpu_end_s=455062.760652750 gpu_ms=0.110458 kernel_start_s=455062.760461750 kernel_end_s=455062.760487125 kernel_ms=0.025375 cpu_wall_ms=0.310833 useful_gpu_tflops=2.4302 useful_cpu_tflops=0.8636
+SAMPLE shape=gdn-a-b arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.760871250 gpu_end_s=455062.760940375 gpu_ms=0.069125 kernel_start_s=455062.760787292 kernel_end_s=455062.760807167 kernel_ms=0.019875 cpu_wall_ms=0.274875 useful_gpu_tflops=3.8833 useful_cpu_tflops=0.9766
+SAMPLE shape=gdn-a-b arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.761158000 gpu_end_s=455062.761226542 gpu_ms=0.068542 kernel_start_s=455062.761077500 kernel_end_s=455062.761097292 kernel_ms=0.019792 cpu_wall_ms=0.260583 useful_gpu_tflops=3.9164 useful_cpu_tflops=1.0301
+SAMPLE shape=gdn-a-b arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.761438875 gpu_end_s=455062.761549667 gpu_ms=0.110792 kernel_start_s=455062.761352750 kernel_end_s=455062.761377750 kernel_ms=0.025000 cpu_wall_ms=0.315333 useful_gpu_tflops=2.4229 useful_cpu_tflops=0.8513
+SAMPLE shape=gdn-a-b arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.761759667 gpu_end_s=455062.761869250 gpu_ms=0.109583 kernel_start_s=455062.761682375 kernel_end_s=455062.761707625 kernel_ms=0.025250 cpu_wall_ms=0.308375 useful_gpu_tflops=2.4496 useful_cpu_tflops=0.8705
+SAMPLE shape=gdn-a-b arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.762081250 gpu_end_s=455062.762150292 gpu_ms=0.069042 kernel_start_s=455062.762005625 kernel_end_s=455062.762025875 kernel_ms=0.020250 cpu_wall_ms=0.254958 useful_gpu_tflops=3.8880 useful_cpu_tflops=1.0529
+SAMPLE shape=gdn-a-b arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.762361667 gpu_end_s=455062.762430167 gpu_ms=0.068500 kernel_start_s=455062.762275250 kernel_end_s=455062.762300625 kernel_ms=0.025375 cpu_wall_ms=0.276334 useful_gpu_tflops=3.9188 useful_cpu_tflops=0.9714
+SAMPLE shape=gdn-a-b arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.762762375 gpu_end_s=455062.762873042 gpu_ms=0.110667 kernel_start_s=455062.762572625 kernel_end_s=455062.762604875 kernel_ms=0.032250 cpu_wall_ms=0.420584 useful_gpu_tflops=2.4256 useful_cpu_tflops=0.6382
+SAMPLE shape=gdn-a-b arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.763091875 gpu_end_s=455062.763201750 gpu_ms=0.109875 kernel_start_s=455062.763008000 kernel_end_s=455062.763028250 kernel_ms=0.020250 cpu_wall_ms=0.307250 useful_gpu_tflops=2.4431 useful_cpu_tflops=0.8737
+SAMPLE shape=gdn-a-b arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.763405875 gpu_end_s=455062.763474667 gpu_ms=0.068792 kernel_start_s=455062.763330000 kernel_end_s=455062.763353792 kernel_ms=0.023792 cpu_wall_ms=0.254459 useful_gpu_tflops=3.9022 useful_cpu_tflops=1.0549
+SAMPLE shape=gdn-a-b arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.763679375 gpu_end_s=455062.763747792 gpu_ms=0.068417 kernel_start_s=455062.763599250 kernel_end_s=455062.763624750 kernel_ms=0.025500 cpu_wall_ms=0.269709 useful_gpu_tflops=3.9235 useful_cpu_tflops=0.9953
+SAMPLE shape=gdn-a-b arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.763966625 gpu_end_s=455062.764076917 gpu_ms=0.110292 kernel_start_s=455062.763883292 kernel_end_s=455062.763903500 kernel_ms=0.020208 cpu_wall_ms=0.303542 useful_gpu_tflops=2.4339 useful_cpu_tflops=0.8843
+SAMPLE shape=gdn-a-b arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.764283375 gpu_end_s=455062.764394125 gpu_ms=0.110750 kernel_start_s=455062.764201917 kernel_end_s=455062.764227667 kernel_ms=0.025750 cpu_wall_ms=0.312750 useful_gpu_tflops=2.4238 useful_cpu_tflops=0.8583
+SAMPLE shape=gdn-a-b arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.764611667 gpu_end_s=455062.764680167 gpu_ms=0.068500 kernel_start_s=455062.764529125 kernel_end_s=455062.764554917 kernel_ms=0.025792 cpu_wall_ms=0.262375 useful_gpu_tflops=3.9188 useful_cpu_tflops=1.0231
+SAMPLE shape=gdn-a-b arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.764886917 gpu_end_s=455062.764955875 gpu_ms=0.068958 kernel_start_s=455062.764806042 kernel_end_s=455062.764831667 kernel_ms=0.025625 cpu_wall_ms=0.268666 useful_gpu_tflops=3.8927 useful_cpu_tflops=0.9991
+SAMPLE shape=gdn-a-b arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.765172625 gpu_end_s=455062.765282917 gpu_ms=0.110292 kernel_start_s=455062.765089792 kernel_end_s=455062.765109500 kernel_ms=0.019708 cpu_wall_ms=0.310125 useful_gpu_tflops=2.4339 useful_cpu_tflops=0.8656
+SAMPLE shape=gdn-a-b arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.765496125 gpu_end_s=455062.765606417 gpu_ms=0.110292 kernel_start_s=455062.765414625 kernel_end_s=455062.765434750 kernel_ms=0.020125 cpu_wall_ms=0.312333 useful_gpu_tflops=2.4339 useful_cpu_tflops=0.8595
+SAMPLE shape=gdn-a-b arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.765824750 gpu_end_s=455062.765893375 gpu_ms=0.068625 kernel_start_s=455062.765741292 kernel_end_s=455062.765761375 kernel_ms=0.020083 cpu_wall_ms=0.270708 useful_gpu_tflops=3.9116 useful_cpu_tflops=0.9916
+SAMPLE shape=gdn-a-b arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.766111542 gpu_end_s=455062.766180167 gpu_ms=0.068625 kernel_start_s=455062.766026500 kernel_end_s=455062.766046042 kernel_ms=0.019542 cpu_wall_ms=0.271209 useful_gpu_tflops=3.9116 useful_cpu_tflops=0.9898
+SAMPLE shape=gdn-a-b arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.766387542 gpu_end_s=455062.766497750 gpu_ms=0.110208 kernel_start_s=455062.766312500 kernel_end_s=455062.766332625 kernel_ms=0.020125 cpu_wall_ms=0.302708 useful_gpu_tflops=2.4357 useful_cpu_tflops=0.8868
+SAMPLE shape=gdn-a-b arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.766708125 gpu_end_s=455062.766817750 gpu_ms=0.109625 kernel_start_s=455062.766630917 kernel_end_s=455062.766651042 kernel_ms=0.020125 cpu_wall_ms=0.294334 useful_gpu_tflops=2.4487 useful_cpu_tflops=0.9120
+SAMPLE shape=gdn-a-b arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.767046000 gpu_end_s=455062.767114625 gpu_ms=0.068625 kernel_start_s=455062.766945292 kernel_end_s=455062.766976250 kernel_ms=0.030958 cpu_wall_ms=0.288209 useful_gpu_tflops=3.9116 useful_cpu_tflops=0.9314
+SUMMARY shape=gdn-a-b arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=0.068708 gpu_p10_ms=0.068500 gpu_p90_ms=0.069250 gpu_min_ms=0.068417 gpu_max_ms=0.069250 cpu_wall_median_ms=0.270209 useful_gpu_tflops=3.9069 useful_cpu_tflops=0.9934 model_weight_gflop_per_token=0.00786432
+SUMMARY shape=gdn-a-b arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=0.110354 gpu_p10_ms=0.109875 gpu_p90_ms=0.111000 gpu_min_ms=0.109583 gpu_max_ms=0.111042 cpu_wall_median_ms=0.311021 useful_gpu_tflops=2.4325 useful_cpu_tflops=0.8631 model_weight_gflop_per_token=0.00786432
+COMPARISON shape=gdn-a-b mpp_over_steel=1.6061 mpp_gpu_tflops=3.9069 steel_gpu_tflops=2.4325
+WARMUP shape=gdn-attention-output blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=gdn-attention-output arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.804184625 gpu_end_s=455062.806861500 gpu_ms=2.676875 kernel_start_s=455062.804085917 kernel_end_s=455062.804124292 kernel_ms=0.038375 cpu_wall_ms=2.936000 useful_gpu_tflops=12.8358 useful_cpu_tflops=11.7029
+SAMPLE shape=gdn-attention-output arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.807145625 gpu_end_s=455062.810027375 gpu_ms=2.881750 kernel_start_s=455062.807051750 kernel_end_s=455062.807079250 kernel_ms=0.027500 cpu_wall_ms=3.102875 useful_gpu_tflops=11.9232 useful_cpu_tflops=11.0735
+SAMPLE shape=gdn-attention-output arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.810249125 gpu_end_s=455062.813131875 gpu_ms=2.882750 kernel_start_s=455062.810168000 kernel_end_s=455062.810192375 kernel_ms=0.024375 cpu_wall_ms=3.103125 useful_gpu_tflops=11.9191 useful_cpu_tflops=11.0726
+SAMPLE shape=gdn-attention-output arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.813401625 gpu_end_s=455062.816077917 gpu_ms=2.676292 kernel_start_s=455062.813317667 kernel_end_s=455062.813337125 kernel_ms=0.019458 cpu_wall_ms=2.889292 useful_gpu_tflops=12.8386 useful_cpu_tflops=11.8921
+SAMPLE shape=gdn-attention-output arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.816345500 gpu_end_s=455062.819022750 gpu_ms=2.677250 kernel_start_s=455062.816259000 kernel_end_s=455062.816290292 kernel_ms=0.031292 cpu_wall_ms=2.901375 useful_gpu_tflops=12.8340 useful_cpu_tflops=11.8426
+SAMPLE shape=gdn-attention-output arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.819288500 gpu_end_s=455062.822169125 gpu_ms=2.880625 kernel_start_s=455062.819205125 kernel_end_s=455062.819230750 kernel_ms=0.025625 cpu_wall_ms=3.112000 useful_gpu_tflops=11.9279 useful_cpu_tflops=11.0410
+SAMPLE shape=gdn-attention-output arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.822444917 gpu_end_s=455062.825326292 gpu_ms=2.881375 kernel_start_s=455062.822355917 kernel_end_s=455062.822380667 kernel_ms=0.024750 cpu_wall_ms=3.116541 useful_gpu_tflops=11.9248 useful_cpu_tflops=11.0250
+SAMPLE shape=gdn-attention-output arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.825610000 gpu_end_s=455062.828288167 gpu_ms=2.678167 kernel_start_s=455062.825523875 kernel_end_s=455062.825544750 kernel_ms=0.020875 cpu_wall_ms=2.901000 useful_gpu_tflops=12.8296 useful_cpu_tflops=11.8441
+SAMPLE shape=gdn-attention-output arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.828510875 gpu_end_s=455062.831188125 gpu_ms=2.677250 kernel_start_s=455062.828425750 kernel_end_s=455062.828445500 kernel_ms=0.019750 cpu_wall_ms=2.901584 useful_gpu_tflops=12.8340 useful_cpu_tflops=11.8417
+SAMPLE shape=gdn-attention-output arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.831462750 gpu_end_s=455062.834347125 gpu_ms=2.884375 kernel_start_s=455062.831376417 kernel_end_s=455062.831407917 kernel_ms=0.031500 cpu_wall_ms=3.110625 useful_gpu_tflops=11.9124 useful_cpu_tflops=11.0459
+SAMPLE shape=gdn-attention-output arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.834629417 gpu_end_s=455062.837516375 gpu_ms=2.886958 kernel_start_s=455062.834545917 kernel_end_s=455062.834572500 kernel_ms=0.026583 cpu_wall_ms=3.235417 useful_gpu_tflops=11.9017 useful_cpu_tflops=10.6199
+SAMPLE shape=gdn-attention-output arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.837876625 gpu_end_s=455062.840552542 gpu_ms=2.675917 kernel_start_s=455062.837792875 kernel_end_s=455062.837818125 kernel_ms=0.025250 cpu_wall_ms=2.893083 useful_gpu_tflops=12.8404 useful_cpu_tflops=11.8765
+SAMPLE shape=gdn-attention-output arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.840822792 gpu_end_s=455062.843498750 gpu_ms=2.675958 kernel_start_s=455062.840740292 kernel_end_s=455062.840766667 kernel_ms=0.026375 cpu_wall_ms=2.903417 useful_gpu_tflops=12.8402 useful_cpu_tflops=11.8342
+SAMPLE shape=gdn-attention-output arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.843778000 gpu_end_s=455062.846654875 gpu_ms=2.876875 kernel_start_s=455062.843687542 kernel_end_s=455062.843713917 kernel_ms=0.026375 cpu_wall_ms=3.183042 useful_gpu_tflops=11.9434 useful_cpu_tflops=10.7946
+SAMPLE shape=gdn-attention-output arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.847002917 gpu_end_s=455062.849883625 gpu_ms=2.880708 kernel_start_s=455062.846914292 kernel_end_s=455062.846944917 kernel_ms=0.030625 cpu_wall_ms=3.115167 useful_gpu_tflops=11.9275 useful_cpu_tflops=11.0298
+SAMPLE shape=gdn-attention-output arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.850162625 gpu_end_s=455062.852839292 gpu_ms=2.676667 kernel_start_s=455062.850074250 kernel_end_s=455062.850100542 kernel_ms=0.026292 cpu_wall_ms=2.899500 useful_gpu_tflops=12.8368 useful_cpu_tflops=11.8502
+SAMPLE shape=gdn-attention-output arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.853089375 gpu_end_s=455062.855765792 gpu_ms=2.676417 kernel_start_s=455062.853015042 kernel_end_s=455062.853034000 kernel_ms=0.018958 cpu_wall_ms=2.893500 useful_gpu_tflops=12.8380 useful_cpu_tflops=11.8748
+SAMPLE shape=gdn-attention-output arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.856046125 gpu_end_s=455062.858927375 gpu_ms=2.881250 kernel_start_s=455062.855958292 kernel_end_s=455062.855978750 kernel_ms=0.020458 cpu_wall_ms=3.111167 useful_gpu_tflops=11.9253 useful_cpu_tflops=11.0440
+SAMPLE shape=gdn-attention-output arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.859221917 gpu_end_s=455062.862100375 gpu_ms=2.878458 kernel_start_s=455062.859121875 kernel_end_s=455062.859152542 kernel_ms=0.030667 cpu_wall_ms=3.123167 useful_gpu_tflops=11.9369 useful_cpu_tflops=11.0016
+SAMPLE shape=gdn-attention-output arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.862368500 gpu_end_s=455062.865044750 gpu_ms=2.676250 kernel_start_s=455062.862285542 kernel_end_s=455062.862316500 kernel_ms=0.030958 cpu_wall_ms=2.973875 useful_gpu_tflops=12.8388 useful_cpu_tflops=11.5539
+SAMPLE shape=gdn-attention-output arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.865391167 gpu_end_s=455062.868067167 gpu_ms=2.676000 kernel_start_s=455062.865303125 kernel_end_s=455062.865323500 kernel_ms=0.020375 cpu_wall_ms=2.909542 useful_gpu_tflops=12.8400 useful_cpu_tflops=11.8093
+SAMPLE shape=gdn-attention-output arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.868342000 gpu_end_s=455062.871218625 gpu_ms=2.876625 kernel_start_s=455062.868256000 kernel_end_s=455062.868286667 kernel_ms=0.030667 cpu_wall_ms=3.118458 useful_gpu_tflops=11.9445 useful_cpu_tflops=11.0182
+SAMPLE shape=gdn-attention-output arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.871537542 gpu_end_s=455062.874418292 gpu_ms=2.880750 kernel_start_s=455062.871432000 kernel_end_s=455062.871467750 kernel_ms=0.035750 cpu_wall_ms=3.202583 useful_gpu_tflops=11.9274 useful_cpu_tflops=10.7288
+SAMPLE shape=gdn-attention-output arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.874757375 gpu_end_s=455062.877434000 gpu_ms=2.676625 kernel_start_s=455062.874671500 kernel_end_s=455062.874702417 kernel_ms=0.030917 cpu_wall_ms=2.907417 useful_gpu_tflops=12.8370 useful_cpu_tflops=11.8180
+SAMPLE shape=gdn-attention-output arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.877720375 gpu_end_s=455062.880396750 gpu_ms=2.676375 kernel_start_s=455062.877626875 kernel_end_s=455062.877657500 kernel_ms=0.030625 cpu_wall_ms=2.895417 useful_gpu_tflops=12.8382 useful_cpu_tflops=11.8669
+SAMPLE shape=gdn-attention-output arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.880623750 gpu_end_s=455062.883500625 gpu_ms=2.876875 kernel_start_s=455062.880537542 kernel_end_s=455062.880557542 kernel_ms=0.020000 cpu_wall_ms=3.161333 useful_gpu_tflops=11.9434 useful_cpu_tflops=10.8688
+SAMPLE shape=gdn-attention-output arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.883839375 gpu_end_s=455062.886719500 gpu_ms=2.880125 kernel_start_s=455062.883753125 kernel_end_s=455062.883779625 kernel_ms=0.026500 cpu_wall_ms=3.116875 useful_gpu_tflops=11.9299 useful_cpu_tflops=11.0238
+SAMPLE shape=gdn-attention-output arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.887001500 gpu_end_s=455062.889679417 gpu_ms=2.677917 kernel_start_s=455062.886915417 kernel_end_s=455062.886936167 kernel_ms=0.020750 cpu_wall_ms=2.901416 useful_gpu_tflops=12.8308 useful_cpu_tflops=11.8424
+SAMPLE shape=gdn-attention-output arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.889904167 gpu_end_s=455062.892580875 gpu_ms=2.676708 kernel_start_s=455062.889818917 kernel_end_s=455062.889838875 kernel_ms=0.019958 cpu_wall_ms=2.949042 useful_gpu_tflops=12.8366 useful_cpu_tflops=11.6512
+SAMPLE shape=gdn-attention-output arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.892906667 gpu_end_s=455062.895784625 gpu_ms=2.877958 kernel_start_s=455062.892822000 kernel_end_s=455062.892852625 kernel_ms=0.030625 cpu_wall_ms=3.105958 useful_gpu_tflops=11.9389 useful_cpu_tflops=11.0625
+SAMPLE shape=gdn-attention-output arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.896093250 gpu_end_s=455062.898971125 gpu_ms=2.877875 kernel_start_s=455062.895971250 kernel_end_s=455062.896002375 kernel_ms=0.031125 cpu_wall_ms=3.135834 useful_gpu_tflops=11.9393 useful_cpu_tflops=10.9571
+SAMPLE shape=gdn-attention-output arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.899195750 gpu_end_s=455062.901872292 gpu_ms=2.676542 kernel_start_s=455062.899111292 kernel_end_s=455062.899131417 kernel_ms=0.020125 cpu_wall_ms=2.895334 useful_gpu_tflops=12.8374 useful_cpu_tflops=11.8673
+SUMMARY shape=gdn-attention-output arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=2.676583 gpu_p10_ms=2.676000 gpu_p90_ms=2.677917 gpu_min_ms=2.675917 gpu_max_ms=2.678167 cpu_wall_median_ms=2.901396 useful_gpu_tflops=12.8372 useful_cpu_tflops=11.8425 model_weight_gflop_per_token=0.67108864
+SUMMARY shape=gdn-attention-output arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=2.880667 gpu_p10_ms=2.876875 gpu_p90_ms=2.884375 gpu_min_ms=2.876625 gpu_max_ms=2.886958 cpu_wall_median_ms=3.116708 useful_gpu_tflops=11.9277 useful_cpu_tflops=11.0244 model_weight_gflop_per_token=0.67108864
+COMPARISON shape=gdn-attention-output mpp_over_steel=1.0762 mpp_gpu_tflops=12.8372 steel_gpu_tflops=11.9277
+WARMUP shape=attention-kv-shared-gate-up blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.909409250 gpu_end_s=455062.909761875 gpu_ms=0.352625 kernel_start_s=455062.909326417 kernel_end_s=455062.909354375 kernel_ms=0.027958 cpu_wall_ms=0.560542 useful_gpu_tflops=12.1800 useful_cpu_tflops=7.6622
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.909984375 gpu_end_s=455062.910367250 gpu_ms=0.382875 kernel_start_s=455062.909903417 kernel_end_s=455062.909929625 kernel_ms=0.026208 cpu_wall_ms=0.654375 useful_gpu_tflops=11.2177 useful_cpu_tflops=6.5635
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.910709500 gpu_end_s=455062.911092042 gpu_ms=0.382542 kernel_start_s=455062.910617625 kernel_end_s=455062.910648125 kernel_ms=0.030500 cpu_wall_ms=0.676416 useful_gpu_tflops=11.2274 useful_cpu_tflops=6.3496
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.911435167 gpu_end_s=455062.911787875 gpu_ms=0.352708 kernel_start_s=455062.911348625 kernel_end_s=455062.911374375 kernel_ms=0.025750 cpu_wall_ms=0.571125 useful_gpu_tflops=12.1771 useful_cpu_tflops=7.5202
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.912006875 gpu_end_s=455062.912360375 gpu_ms=0.353500 kernel_start_s=455062.911924417 kernel_end_s=455062.911944375 kernel_ms=0.019958 cpu_wall_ms=0.557583 useful_gpu_tflops=12.1498 useful_cpu_tflops=7.7028
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.912709250 gpu_end_s=455062.913096542 gpu_ms=0.387292 kernel_start_s=455062.912498417 kernel_end_s=455062.912524875 kernel_ms=0.026458 cpu_wall_ms=0.722500 useful_gpu_tflops=11.0897 useful_cpu_tflops=5.9446
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.913324875 gpu_end_s=455062.913706500 gpu_ms=0.381625 kernel_start_s=455062.913236000 kernel_end_s=455062.913262250 kernel_ms=0.026250 cpu_wall_ms=0.583666 useful_gpu_tflops=11.2544 useful_cpu_tflops=7.3586
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.913922375 gpu_end_s=455062.914275000 gpu_ms=0.352625 kernel_start_s=455062.913834500 kernel_end_s=455062.913859750 kernel_ms=0.025250 cpu_wall_ms=0.565583 useful_gpu_tflops=12.1800 useful_cpu_tflops=7.5939
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.914509167 gpu_end_s=455062.914863667 gpu_ms=0.354500 kernel_start_s=455062.914414542 kernel_end_s=455062.914444667 kernel_ms=0.030125 cpu_wall_ms=0.575500 useful_gpu_tflops=12.1156 useful_cpu_tflops=7.4630
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.915101000 gpu_end_s=455062.915483500 gpu_ms=0.382500 kernel_start_s=455062.915005292 kernel_end_s=455062.915035750 kernel_ms=0.030458 cpu_wall_ms=0.664917 useful_gpu_tflops=11.2287 useful_cpu_tflops=6.4594
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.915811917 gpu_end_s=455062.916194417 gpu_ms=0.382500 kernel_start_s=455062.915726250 kernel_end_s=455062.915757292 kernel_ms=0.031042 cpu_wall_ms=0.684458 useful_gpu_tflops=11.2287 useful_cpu_tflops=6.2750
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.916540542 gpu_end_s=455062.916893250 gpu_ms=0.352708 kernel_start_s=455062.916457042 kernel_end_s=455062.916481625 kernel_ms=0.024583 cpu_wall_ms=0.561291 useful_gpu_tflops=12.1771 useful_cpu_tflops=7.6519
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.917104250 gpu_end_s=455062.917457500 gpu_ms=0.353250 kernel_start_s=455062.917022167 kernel_end_s=455062.917042375 kernel_ms=0.020208 cpu_wall_ms=0.556667 useful_gpu_tflops=12.1584 useful_cpu_tflops=7.7155
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.917680500 gpu_end_s=455062.918063750 gpu_ms=0.383250 kernel_start_s=455062.917593625 kernel_end_s=455062.917619375 kernel_ms=0.025750 cpu_wall_ms=0.590625 useful_gpu_tflops=11.2067 useful_cpu_tflops=7.2719
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.918273917 gpu_end_s=455062.918654917 gpu_ms=0.381000 kernel_start_s=455062.918199167 kernel_end_s=455062.918223750 kernel_ms=0.024583 cpu_wall_ms=0.582750 useful_gpu_tflops=11.2729 useful_cpu_tflops=7.3702
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.918884875 gpu_end_s=455062.919237375 gpu_ms=0.352500 kernel_start_s=455062.918802500 kernel_end_s=455062.918821875 kernel_ms=0.019375 cpu_wall_ms=0.558542 useful_gpu_tflops=12.1843 useful_cpu_tflops=7.6896
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.919477750 gpu_end_s=455062.919831042 gpu_ms=0.353292 kernel_start_s=455062.919376042 kernel_end_s=455062.919407250 kernel_ms=0.031208 cpu_wall_ms=0.582250 useful_gpu_tflops=12.1570 useful_cpu_tflops=7.3765
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.920053875 gpu_end_s=455062.920437500 gpu_ms=0.383625 kernel_start_s=455062.919973417 kernel_end_s=455062.919999500 kernel_ms=0.026083 cpu_wall_ms=0.666000 useful_gpu_tflops=11.1957 useful_cpu_tflops=6.4489
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.920776750 gpu_end_s=455062.921158917 gpu_ms=0.382167 kernel_start_s=455062.920693500 kernel_end_s=455062.920720542 kernel_ms=0.027042 cpu_wall_ms=0.678458 useful_gpu_tflops=11.2385 useful_cpu_tflops=6.3305
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.921509625 gpu_end_s=455062.921862667 gpu_ms=0.353042 kernel_start_s=455062.921415792 kernel_end_s=455062.921447375 kernel_ms=0.031583 cpu_wall_ms=0.578291 useful_gpu_tflops=12.1656 useful_cpu_tflops=7.4270
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.922074000 gpu_end_s=455062.922426750 gpu_ms=0.352750 kernel_start_s=455062.921997625 kernel_end_s=455062.922017625 kernel_ms=0.020000 cpu_wall_ms=0.550250 useful_gpu_tflops=12.1757 useful_cpu_tflops=7.8055
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.922651167 gpu_end_s=455062.923033375 gpu_ms=0.382208 kernel_start_s=455062.922562500 kernel_end_s=455062.922589375 kernel_ms=0.026875 cpu_wall_ms=0.606250 useful_gpu_tflops=11.2372 useful_cpu_tflops=7.0845
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.923307625 gpu_end_s=455062.923689750 gpu_ms=0.382125 kernel_start_s=455062.923223750 kernel_end_s=455062.923254750 kernel_ms=0.031000 cpu_wall_ms=0.680708 useful_gpu_tflops=11.2397 useful_cpu_tflops=6.3096
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.924041375 gpu_end_s=455062.924394375 gpu_ms=0.353000 kernel_start_s=455062.923945875 kernel_end_s=455062.923976792 kernel_ms=0.030917 cpu_wall_ms=0.587042 useful_gpu_tflops=12.1670 useful_cpu_tflops=7.3163
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.924629917 gpu_end_s=455062.924982667 gpu_ms=0.352750 kernel_start_s=455062.924535750 kernel_end_s=455062.924566000 kernel_ms=0.030250 cpu_wall_ms=0.572958 useful_gpu_tflops=12.1757 useful_cpu_tflops=7.4961
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.925204625 gpu_end_s=455062.925586750 gpu_ms=0.382125 kernel_start_s=455062.925123542 kernel_end_s=455062.925149500 kernel_ms=0.025958 cpu_wall_ms=0.663542 useful_gpu_tflops=11.2397 useful_cpu_tflops=6.4728
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.925925125 gpu_end_s=455062.926307917 gpu_ms=0.382792 kernel_start_s=455062.925840875 kernel_end_s=455062.925867667 kernel_ms=0.026792 cpu_wall_ms=0.602667 useful_gpu_tflops=11.2201 useful_cpu_tflops=7.1266
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.926535000 gpu_end_s=455062.926887875 gpu_ms=0.352875 kernel_start_s=455062.926446875 kernel_end_s=455062.926472292 kernel_ms=0.025417 cpu_wall_ms=0.552250 useful_gpu_tflops=12.1714 useful_cpu_tflops=7.7772
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.927089292 gpu_end_s=455062.927442000 gpu_ms=0.352708 kernel_start_s=455062.927013750 kernel_end_s=455062.927039250 kernel_ms=0.025500 cpu_wall_ms=0.548709 useful_gpu_tflops=12.1771 useful_cpu_tflops=7.8274
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.927661792 gpu_end_s=455062.928043292 gpu_ms=0.381500 kernel_start_s=455062.927584667 kernel_end_s=455062.927608792 kernel_ms=0.024125 cpu_wall_ms=0.577375 useful_gpu_tflops=11.2581 useful_cpu_tflops=7.4388
+SAMPLE shape=attention-kv-shared-gate-up arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.928277125 gpu_end_s=455062.928658750 gpu_ms=0.381625 kernel_start_s=455062.928176042 kernel_end_s=455062.928207500 kernel_ms=0.031458 cpu_wall_ms=0.680042 useful_gpu_tflops=11.2544 useful_cpu_tflops=6.3157
+SAMPLE shape=attention-kv-shared-gate-up arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.928991000 gpu_end_s=455062.929344000 gpu_ms=0.353000 kernel_start_s=455062.928909750 kernel_end_s=455062.928934125 kernel_ms=0.024375 cpu_wall_ms=0.573459 useful_gpu_tflops=12.1670 useful_cpu_tflops=7.4896
+SUMMARY shape=attention-kv-shared-gate-up arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=0.352812 gpu_p10_ms=0.352625 gpu_p90_ms=0.353500 gpu_min_ms=0.352500 gpu_max_ms=0.354500 cpu_wall_median_ms=0.563437 useful_gpu_tflops=12.1735 useful_cpu_tflops=7.6228 model_weight_gflop_per_token=0.20971520
+SUMMARY shape=attention-kv-shared-gate-up arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=0.382354 gpu_p10_ms=0.381625 gpu_p90_ms=0.383625 gpu_min_ms=0.381000 gpu_max_ms=0.387292 cpu_wall_median_ms=0.664230 useful_gpu_tflops=11.2330 useful_cpu_tflops=6.4661 model_weight_gflop_per_token=0.20971520
+COMPARISON shape=attention-kv-shared-gate-up mpp_over_steel=1.0837 mpp_gpu_tflops=12.1735 steel_gpu_tflops=11.2330
+WARMUP shape=shared-routed-down blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=shared-routed-down arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.936684375 gpu_end_s=455062.937023250 gpu_ms=0.338875 kernel_start_s=455062.936605542 kernel_end_s=455062.936628875 kernel_ms=0.023333 cpu_wall_ms=0.540125 useful_gpu_tflops=12.6742 useful_cpu_tflops=7.9518
+SAMPLE shape=shared-routed-down arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.937285250 gpu_end_s=455062.937647625 gpu_ms=0.362375 kernel_start_s=455062.937202125 kernel_end_s=455062.937228542 kernel_ms=0.026417 cpu_wall_ms=0.688125 useful_gpu_tflops=11.8523 useful_cpu_tflops=6.2416
+SAMPLE shape=shared-routed-down arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.938021000 gpu_end_s=455062.938382542 gpu_ms=0.361542 kernel_start_s=455062.937934125 kernel_end_s=455062.937965375 kernel_ms=0.031250 cpu_wall_ms=0.588375 useful_gpu_tflops=11.8796 useful_cpu_tflops=7.2997
+SAMPLE shape=shared-routed-down arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.938614250 gpu_end_s=455062.938953750 gpu_ms=0.339500 kernel_start_s=455062.938527125 kernel_end_s=455062.938552500 kernel_ms=0.025375 cpu_wall_ms=0.544750 useful_gpu_tflops=12.6509 useful_cpu_tflops=7.8843
+SAMPLE shape=shared-routed-down arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.939168292 gpu_end_s=455062.939507792 gpu_ms=0.339500 kernel_start_s=455062.939086875 kernel_end_s=455062.939106792 kernel_ms=0.019917 cpu_wall_ms=0.541416 useful_gpu_tflops=12.6509 useful_cpu_tflops=7.9328
+SAMPLE shape=shared-routed-down arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.939719625 gpu_end_s=455062.940082250 gpu_ms=0.362625 kernel_start_s=455062.939643417 kernel_end_s=455062.939663417 kernel_ms=0.020000 cpu_wall_ms=0.565500 useful_gpu_tflops=11.8441 useful_cpu_tflops=7.5950
+SAMPLE shape=shared-routed-down arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.940323750 gpu_end_s=455062.940686042 gpu_ms=0.362292 kernel_start_s=455062.940223375 kernel_end_s=455062.940253750 kernel_ms=0.030375 cpu_wall_ms=0.662416 useful_gpu_tflops=11.8550 useful_cpu_tflops=6.4838
+SAMPLE shape=shared-routed-down arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.941030667 gpu_end_s=455062.941370042 gpu_ms=0.339375 kernel_start_s=455062.940945167 kernel_end_s=455062.940976125 kernel_ms=0.030958 cpu_wall_ms=0.548042 useful_gpu_tflops=12.6555 useful_cpu_tflops=7.8369
+SAMPLE shape=shared-routed-down arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.941585667 gpu_end_s=455062.941925500 gpu_ms=0.339833 kernel_start_s=455062.941504750 kernel_end_s=455062.941530042 kernel_ms=0.025292 cpu_wall_ms=0.530416 useful_gpu_tflops=12.6385 useful_cpu_tflops=8.0974
+SAMPLE shape=shared-routed-down arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.942139750 gpu_end_s=455062.942502125 gpu_ms=0.362375 kernel_start_s=455062.942050000 kernel_end_s=455062.942076250 kernel_ms=0.026250 cpu_wall_ms=0.579541 useful_gpu_tflops=11.8523 useful_cpu_tflops=7.4110
+SAMPLE shape=shared-routed-down arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.942723792 gpu_end_s=455062.943086375 gpu_ms=0.362583 kernel_start_s=455062.942644250 kernel_end_s=455062.942668875 kernel_ms=0.024625 cpu_wall_ms=0.570084 useful_gpu_tflops=11.8455 useful_cpu_tflops=7.5339
+SAMPLE shape=shared-routed-down arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.943325000 gpu_end_s=455062.943664375 gpu_ms=0.339375 kernel_start_s=455062.943228917 kernel_end_s=455062.943259792 kernel_ms=0.030875 cpu_wall_ms=0.550709 useful_gpu_tflops=12.6555 useful_cpu_tflops=7.7990
+SAMPLE shape=shared-routed-down arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.943882375 gpu_end_s=455062.944221417 gpu_ms=0.339042 kernel_start_s=455062.943795667 kernel_end_s=455062.943815042 kernel_ms=0.019375 cpu_wall_ms=0.553042 useful_gpu_tflops=12.6680 useful_cpu_tflops=7.7661
+SAMPLE shape=shared-routed-down arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.944456375 gpu_end_s=455062.944818625 gpu_ms=0.362250 kernel_start_s=455062.944362375 kernel_end_s=455062.944392500 kernel_ms=0.030125 cpu_wall_ms=0.653292 useful_gpu_tflops=11.8564 useful_cpu_tflops=6.5743
+SAMPLE shape=shared-routed-down arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.945173375 gpu_end_s=455062.945536250 gpu_ms=0.362875 kernel_start_s=455062.945071500 kernel_end_s=455062.945102375 kernel_ms=0.030875 cpu_wall_ms=0.595625 useful_gpu_tflops=11.8359 useful_cpu_tflops=7.2109
+SAMPLE shape=shared-routed-down arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.945748875 gpu_end_s=455062.946087917 gpu_ms=0.339042 kernel_start_s=455062.945674167 kernel_end_s=455062.945694125 kernel_ms=0.019958 cpu_wall_ms=0.543667 useful_gpu_tflops=12.6680 useful_cpu_tflops=7.9000
+SAMPLE shape=shared-routed-down arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.946321000 gpu_end_s=455062.946660917 gpu_ms=0.339917 kernel_start_s=455062.946232875 kernel_end_s=455062.946258625 kernel_ms=0.025750 cpu_wall_ms=0.549458 useful_gpu_tflops=12.6354 useful_cpu_tflops=7.8167
+SAMPLE shape=shared-routed-down arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.946875500 gpu_end_s=455062.947238500 gpu_ms=0.363000 kernel_start_s=455062.946796875 kernel_end_s=455062.946822042 kernel_ms=0.025167 cpu_wall_ms=0.569625 useful_gpu_tflops=11.8319 useful_cpu_tflops=7.5400
+SAMPLE shape=shared-routed-down arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.947466417 gpu_end_s=455062.947828250 gpu_ms=0.361833 kernel_start_s=455062.947381000 kernel_end_s=455062.947407500 kernel_ms=0.026500 cpu_wall_ms=0.574583 useful_gpu_tflops=11.8700 useful_cpu_tflops=7.4749
+SAMPLE shape=shared-routed-down arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.948062417 gpu_end_s=455062.948401500 gpu_ms=0.339083 kernel_start_s=455062.947970792 kernel_end_s=455062.948000875 kernel_ms=0.030083 cpu_wall_ms=0.545833 useful_gpu_tflops=12.6664 useful_cpu_tflops=7.8686
+SAMPLE shape=shared-routed-down arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.948615542 gpu_end_s=455062.948954875 gpu_ms=0.339333 kernel_start_s=455062.948531375 kernel_end_s=455062.948551292 kernel_ms=0.019917 cpu_wall_ms=0.551209 useful_gpu_tflops=12.6571 useful_cpu_tflops=7.7919
+SAMPLE shape=shared-routed-down arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.949202667 gpu_end_s=455062.949565000 gpu_ms=0.362333 kernel_start_s=455062.949110000 kernel_end_s=455062.949141375 kernel_ms=0.031375 cpu_wall_ms=0.588916 useful_gpu_tflops=11.8536 useful_cpu_tflops=7.2930
+SAMPLE shape=shared-routed-down arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.949799667 gpu_end_s=455062.950163167 gpu_ms=0.363500 kernel_start_s=455062.949707042 kernel_end_s=455062.949737375 kernel_ms=0.030333 cpu_wall_ms=0.579667 useful_gpu_tflops=11.8156 useful_cpu_tflops=7.4094
+SAMPLE shape=shared-routed-down arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.950385625 gpu_end_s=455062.950725125 gpu_ms=0.339500 kernel_start_s=455062.950302250 kernel_end_s=455062.950327750 kernel_ms=0.025500 cpu_wall_ms=0.544833 useful_gpu_tflops=12.6509 useful_cpu_tflops=7.8831
+SAMPLE shape=shared-routed-down arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.950944917 gpu_end_s=455062.951284167 gpu_ms=0.339250 kernel_start_s=455062.950861375 kernel_end_s=455062.950881917 kernel_ms=0.020542 cpu_wall_ms=0.543291 useful_gpu_tflops=12.6602 useful_cpu_tflops=7.9055
+SAMPLE shape=shared-routed-down arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.951506125 gpu_end_s=455062.951869125 gpu_ms=0.363000 kernel_start_s=455062.951418542 kernel_end_s=455062.951443625 kernel_ms=0.025083 cpu_wall_ms=0.648292 useful_gpu_tflops=11.8319 useful_cpu_tflops=6.6251
+SAMPLE shape=shared-routed-down arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.952216917 gpu_end_s=455062.952580250 gpu_ms=0.363333 kernel_start_s=455062.952121000 kernel_end_s=455062.952151500 kernel_ms=0.030500 cpu_wall_ms=0.668375 useful_gpu_tflops=11.8210 useful_cpu_tflops=6.4260
+SAMPLE shape=shared-routed-down arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.952932500 gpu_end_s=455062.953272125 gpu_ms=0.339625 kernel_start_s=455062.952831542 kernel_end_s=455062.952862542 kernel_ms=0.031000 cpu_wall_ms=0.573125 useful_gpu_tflops=12.6462 useful_cpu_tflops=7.4939
+SAMPLE shape=shared-routed-down arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.953488000 gpu_end_s=455062.953827375 gpu_ms=0.339375 kernel_start_s=455062.953407250 kernel_end_s=455062.953432750 kernel_ms=0.025500 cpu_wall_ms=0.539958 useful_gpu_tflops=12.6555 useful_cpu_tflops=7.9543
+SAMPLE shape=shared-routed-down arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.954038417 gpu_end_s=455062.954400500 gpu_ms=0.362083 kernel_start_s=455062.953962125 kernel_end_s=455062.953981917 kernel_ms=0.019792 cpu_wall_ms=0.570084 useful_gpu_tflops=11.8618 useful_cpu_tflops=7.5339
+SAMPLE shape=shared-routed-down arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.954636042 gpu_end_s=455062.954998292 gpu_ms=0.362250 kernel_start_s=455062.954546542 kernel_end_s=455062.954566250 kernel_ms=0.019708 cpu_wall_ms=0.560083 useful_gpu_tflops=11.8564 useful_cpu_tflops=7.6684
+SAMPLE shape=shared-routed-down arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.955195500 gpu_end_s=455062.955534625 gpu_ms=0.339125 kernel_start_s=455062.955121500 kernel_end_s=455062.955140625 kernel_ms=0.019125 cpu_wall_ms=0.529791 useful_gpu_tflops=12.6649 useful_cpu_tflops=8.1069
+SUMMARY shape=shared-routed-down arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=0.339375 gpu_p10_ms=0.339042 gpu_p90_ms=0.339833 gpu_min_ms=0.338875 gpu_max_ms=0.339917 cpu_wall_median_ms=0.544791 useful_gpu_tflops=12.6555 useful_cpu_tflops=7.8837 model_weight_gflop_per_token=0.75497472
+SUMMARY shape=shared-routed-down arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=0.362375 gpu_p10_ms=0.362083 gpu_p90_ms=0.363333 gpu_min_ms=0.361542 gpu_max_ms=0.363500 cpu_wall_median_ms=0.584021 useful_gpu_tflops=11.8523 useful_cpu_tflops=7.3541 model_weight_gflop_per_token=0.75497472
+COMPARISON shape=shared-routed-down mpp_over_steel=1.0678 mpp_gpu_tflops=12.6555 steel_gpu_tflops=11.8523
+WARMUP shape=router blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=router arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.960646250 gpu_end_s=455062.960846667 gpu_ms=0.200417 kernel_start_s=455062.960568000 kernel_end_s=455062.960591000 kernel_ms=0.023000 cpu_wall_ms=0.399333 useful_gpu_tflops=10.7151 useful_cpu_tflops=5.3777
+SAMPLE shape=router arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.961061125 gpu_end_s=455062.961280875 gpu_ms=0.219750 kernel_start_s=455062.960983917 kernel_end_s=455062.961008917 kernel_ms=0.025000 cpu_wall_ms=0.407583 useful_gpu_tflops=9.7724 useful_cpu_tflops=5.2688
+SAMPLE shape=router arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.961481500 gpu_end_s=455062.961700750 gpu_ms=0.219250 kernel_start_s=455062.961407125 kernel_end_s=455062.961427125 kernel_ms=0.020000 cpu_wall_ms=0.416584 useful_gpu_tflops=9.7947 useful_cpu_tflops=5.1550
+SAMPLE shape=router arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.961919542 gpu_end_s=455062.962120000 gpu_ms=0.200458 kernel_start_s=455062.961838500 kernel_end_s=455062.961863875 kernel_ms=0.025375 cpu_wall_ms=0.402916 useful_gpu_tflops=10.7129 useful_cpu_tflops=5.3299
+SAMPLE shape=router arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.962336667 gpu_end_s=455062.962537500 gpu_ms=0.200833 kernel_start_s=455062.962256500 kernel_end_s=455062.962281875 kernel_ms=0.025375 cpu_wall_ms=0.537125 useful_gpu_tflops=10.6929 useful_cpu_tflops=3.9981
+SAMPLE shape=router arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.962894042 gpu_end_s=455062.963109875 gpu_ms=0.215833 kernel_start_s=455062.962808542 kernel_end_s=455062.962829125 kernel_ms=0.020583 cpu_wall_ms=0.425125 useful_gpu_tflops=9.9497 useful_cpu_tflops=5.0514
+SAMPLE shape=router arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.963330417 gpu_end_s=455062.963545875 gpu_ms=0.215458 kernel_start_s=455062.963248042 kernel_end_s=455062.963273542 kernel_ms=0.025500 cpu_wall_ms=0.410000 useful_gpu_tflops=9.9670 useful_cpu_tflops=5.2378
+SAMPLE shape=router arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.963756917 gpu_end_s=455062.963958250 gpu_ms=0.201333 kernel_start_s=455062.963673042 kernel_end_s=455062.963693042 kernel_ms=0.020000 cpu_wall_ms=0.398083 useful_gpu_tflops=10.6663 useful_cpu_tflops=5.3946
+SAMPLE shape=router arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.964166417 gpu_end_s=455062.964366875 gpu_ms=0.200458 kernel_start_s=455062.964085750 kernel_end_s=455062.964111000 kernel_ms=0.025250 cpu_wall_ms=0.404042 useful_gpu_tflops=10.7129 useful_cpu_tflops=5.3150
+SAMPLE shape=router arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.964592500 gpu_end_s=455062.964808375 gpu_ms=0.215875 kernel_start_s=455062.964504375 kernel_end_s=455062.964524542 kernel_ms=0.020167 cpu_wall_ms=0.419791 useful_gpu_tflops=9.9478 useful_cpu_tflops=5.1156
+SAMPLE shape=router arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.965018625 gpu_end_s=455062.965234542 gpu_ms=0.215917 kernel_start_s=455062.964939000 kernel_end_s=455062.964964250 kernel_ms=0.025250 cpu_wall_ms=0.409667 useful_gpu_tflops=9.9459 useful_cpu_tflops=5.2420
+SAMPLE shape=router arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.965441792 gpu_end_s=455062.965642125 gpu_ms=0.200333 kernel_start_s=455062.965363125 kernel_end_s=455062.965388375 kernel_ms=0.025250 cpu_wall_ms=0.398500 useful_gpu_tflops=10.7196 useful_cpu_tflops=5.3889
+SAMPLE shape=router arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.965860875 gpu_end_s=455062.966061750 gpu_ms=0.200875 kernel_start_s=455062.965776125 kernel_end_s=455062.965796000 kernel_ms=0.019875 cpu_wall_ms=0.406125 useful_gpu_tflops=10.6906 useful_cpu_tflops=5.2877
+SAMPLE shape=router arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.966282500 gpu_end_s=455062.966498125 gpu_ms=0.215625 kernel_start_s=455062.966196875 kernel_end_s=455062.966222417 kernel_ms=0.025542 cpu_wall_ms=0.421875 useful_gpu_tflops=9.9593 useful_cpu_tflops=5.0903
+SAMPLE shape=router arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.966721750 gpu_end_s=455062.966936917 gpu_ms=0.215167 kernel_start_s=455062.966640042 kernel_end_s=455062.966666000 kernel_ms=0.025958 cpu_wall_ms=0.409125 useful_gpu_tflops=9.9806 useful_cpu_tflops=5.2490
+SAMPLE shape=router arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455062.967146417 gpu_end_s=455062.967347625 gpu_ms=0.201208 kernel_start_s=455062.967063625 kernel_end_s=455062.967083792 kernel_ms=0.020167 cpu_wall_ms=0.403541 useful_gpu_tflops=10.6729 useful_cpu_tflops=5.3216
+SAMPLE shape=router arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455062.967560750 gpu_end_s=455062.967761250 gpu_ms=0.200500 kernel_start_s=455062.967481250 kernel_end_s=455062.967507625 kernel_ms=0.026375 cpu_wall_ms=0.398541 useful_gpu_tflops=10.7106 useful_cpu_tflops=5.3884
+SAMPLE shape=router arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455062.967973500 gpu_end_s=455062.968189000 gpu_ms=0.215500 kernel_start_s=455062.967895000 kernel_end_s=455062.967920042 kernel_ms=0.025042 cpu_wall_ms=0.413542 useful_gpu_tflops=9.9651 useful_cpu_tflops=5.1929
+SAMPLE shape=router arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455062.968405750 gpu_end_s=455062.968621250 gpu_ms=0.215500 kernel_start_s=455062.968323375 kernel_end_s=455062.968348875 kernel_ms=0.025500 cpu_wall_ms=0.420459 useful_gpu_tflops=9.9651 useful_cpu_tflops=5.1075
+SAMPLE shape=router arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455062.968845375 gpu_end_s=455062.969045250 gpu_ms=0.199875 kernel_start_s=455062.968758375 kernel_end_s=455062.968783750 kernel_ms=0.025375 cpu_wall_ms=0.407667 useful_gpu_tflops=10.7441 useful_cpu_tflops=5.2677
+SAMPLE shape=router arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455062.969262375 gpu_end_s=455062.969462542 gpu_ms=0.200167 kernel_start_s=455062.969181125 kernel_end_s=455062.969206292 kernel_ms=0.025167 cpu_wall_ms=0.402792 useful_gpu_tflops=10.7285 useful_cpu_tflops=5.3315
+SAMPLE shape=router arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455062.969676250 gpu_end_s=455062.969891375 gpu_ms=0.215125 kernel_start_s=455062.969598250 kernel_end_s=455062.969623500 kernel_ms=0.025250 cpu_wall_ms=0.407042 useful_gpu_tflops=9.9825 useful_cpu_tflops=5.2758
+SAMPLE shape=router arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455062.970094500 gpu_end_s=455062.970308750 gpu_ms=0.214250 kernel_start_s=455062.970020292 kernel_end_s=455062.970045000 kernel_ms=0.024708 cpu_wall_ms=0.409750 useful_gpu_tflops=10.0233 useful_cpu_tflops=5.2410
+SAMPLE shape=router arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455062.970521500 gpu_end_s=455062.970721375 gpu_ms=0.199875 kernel_start_s=455062.970444750 kernel_end_s=455062.970464875 kernel_ms=0.020125 cpu_wall_ms=0.399292 useful_gpu_tflops=10.7441 useful_cpu_tflops=5.3782
+SAMPLE shape=router arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455062.971059625 gpu_end_s=455062.971260250 gpu_ms=0.200625 kernel_start_s=455062.970858167 kernel_end_s=455062.970883167 kernel_ms=0.025000 cpu_wall_ms=0.526125 useful_gpu_tflops=10.7040 useful_cpu_tflops=4.0817
+SAMPLE shape=router arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455062.971480000 gpu_end_s=455062.971695250 gpu_ms=0.215250 kernel_start_s=455062.971399167 kernel_end_s=455062.971424750 kernel_ms=0.025583 cpu_wall_ms=0.418875 useful_gpu_tflops=9.9767 useful_cpu_tflops=5.1268
+SAMPLE shape=router arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455062.971921000 gpu_end_s=455062.972135750 gpu_ms=0.214750 kernel_start_s=455062.971832625 kernel_end_s=455062.971857750 kernel_ms=0.025125 cpu_wall_ms=0.424208 useful_gpu_tflops=9.9999 useful_cpu_tflops=5.0623
+SAMPLE shape=router arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455062.972354250 gpu_end_s=455062.972554167 gpu_ms=0.199917 kernel_start_s=455062.972271417 kernel_end_s=455062.972296875 kernel_ms=0.025458 cpu_wall_ms=0.393750 useful_gpu_tflops=10.7419 useful_cpu_tflops=5.4539
+SAMPLE shape=router arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455062.972765917 gpu_end_s=455062.972966125 gpu_ms=0.200208 kernel_start_s=455062.972683625 kernel_end_s=455062.972710000 kernel_ms=0.026375 cpu_wall_ms=0.401917 useful_gpu_tflops=10.7262 useful_cpu_tflops=5.3431
+SAMPLE shape=router arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455062.973185792 gpu_end_s=455062.973400792 gpu_ms=0.215000 kernel_start_s=455062.973100292 kernel_end_s=455062.973120250 kernel_ms=0.019958 cpu_wall_ms=0.423000 useful_gpu_tflops=9.9883 useful_cpu_tflops=5.0768
+SAMPLE shape=router arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455062.973614292 gpu_end_s=455062.973829375 gpu_ms=0.215083 kernel_start_s=455062.973537875 kernel_end_s=455062.973563250 kernel_ms=0.025375 cpu_wall_ms=0.412875 useful_gpu_tflops=9.9844 useful_cpu_tflops=5.2013
+SAMPLE shape=router arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455062.974046792 gpu_end_s=455062.974247250 gpu_ms=0.200458 kernel_start_s=455062.973965250 kernel_end_s=455062.973990875 kernel_ms=0.025625 cpu_wall_ms=0.395375 useful_gpu_tflops=10.7129 useful_cpu_tflops=5.4315
+SUMMARY shape=router arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=0.200458 gpu_p10_ms=0.199917 gpu_p90_ms=0.201208 gpu_min_ms=0.199875 gpu_max_ms=0.201333 cpu_wall_median_ms=0.402355 useful_gpu_tflops=10.7129 useful_cpu_tflops=5.3373 model_weight_gflop_per_token=0.04194304
+SUMMARY shape=router arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=0.215479 gpu_p10_ms=0.215000 gpu_p90_ms=0.219250 gpu_min_ms=0.214250 gpu_max_ms=0.219750 cpu_wall_median_ms=0.415063 useful_gpu_tflops=9.9661 useful_cpu_tflops=5.1739 model_weight_gflop_per_token=0.04194304
+COMPARISON shape=router mpp_over_steel=1.0749 mpp_gpu_tflops=10.7129 steel_gpu_tflops=9.9661
+WARMUP shape=routed-gate-up-primary blocks=3 gpu_complete_per_arm=6 order=ABBA
+SAMPLE shape=routed-gate-up-primary arm=mpp block=1 position=A1 gpu_complete=yes gpu_start_s=455062.986330000 gpu_end_s=455062.987013375 gpu_ms=0.683375 kernel_start_s=455062.986220625 kernel_end_s=455062.986260500 kernel_ms=0.039875 cpu_wall_ms=0.923125 useful_gpu_tflops=12.5699 useful_cpu_tflops=9.3053
+SAMPLE shape=routed-gate-up-primary arm=steel block=1 position=B1 gpu_complete=yes gpu_start_s=455062.987226417 gpu_end_s=455062.987959250 gpu_ms=0.732833 kernel_start_s=455062.987144000 kernel_end_s=455062.987163375 kernel_ms=0.019375 cpu_wall_ms=0.943041 useful_gpu_tflops=11.7215 useful_cpu_tflops=9.1088
+SAMPLE shape=routed-gate-up-primary arm=steel block=1 position=B2 gpu_complete=yes gpu_start_s=455062.988180875 gpu_end_s=455062.988913042 gpu_ms=0.732167 kernel_start_s=455062.988102000 kernel_end_s=455062.988126417 kernel_ms=0.024417 cpu_wall_ms=0.942458 useful_gpu_tflops=11.7322 useful_cpu_tflops=9.1144
+SAMPLE shape=routed-gate-up-primary arm=mpp block=1 position=A2 gpu_complete=yes gpu_start_s=455062.989188917 gpu_end_s=455062.989871792 gpu_ms=0.682875 kernel_start_s=455062.989099750 kernel_end_s=455062.989126542 kernel_ms=0.026792 cpu_wall_ms=0.983917 useful_gpu_tflops=12.5791 useful_cpu_tflops=8.7303
+SAMPLE shape=routed-gate-up-primary arm=mpp block=2 position=A1 gpu_complete=yes gpu_start_s=455062.990227625 gpu_end_s=455062.990910000 gpu_ms=0.682375 kernel_start_s=455062.990127000 kernel_end_s=455062.990157500 kernel_ms=0.030500 cpu_wall_ms=0.996250 useful_gpu_tflops=12.5883 useful_cpu_tflops=8.6223
+SAMPLE shape=routed-gate-up-primary arm=steel block=2 position=B1 gpu_complete=yes gpu_start_s=455062.991249250 gpu_end_s=455062.991982542 gpu_ms=0.733292 kernel_start_s=455062.991166500 kernel_end_s=455062.991186750 kernel_ms=0.020250 cpu_wall_ms=0.941167 useful_gpu_tflops=11.7142 useful_cpu_tflops=9.1269
+SAMPLE shape=routed-gate-up-primary arm=steel block=2 position=B2 gpu_complete=yes gpu_start_s=455062.992210250 gpu_end_s=455062.992941250 gpu_ms=0.731000 kernel_start_s=455062.992115500 kernel_end_s=455062.992142250 kernel_ms=0.026750 cpu_wall_ms=0.949583 useful_gpu_tflops=11.7509 useful_cpu_tflops=9.0460
+SAMPLE shape=routed-gate-up-primary arm=mpp block=2 position=A2 gpu_complete=yes gpu_start_s=455062.993182917 gpu_end_s=455062.993866125 gpu_ms=0.683208 kernel_start_s=455062.993086125 kernel_end_s=455062.993118625 kernel_ms=0.032500 cpu_wall_ms=0.897292 useful_gpu_tflops=12.5729 useful_cpu_tflops=9.5732
+SAMPLE shape=routed-gate-up-primary arm=mpp block=3 position=A1 gpu_complete=yes gpu_start_s=455062.994074875 gpu_end_s=455062.994758417 gpu_ms=0.683542 kernel_start_s=455062.993999125 kernel_end_s=455062.994024125 kernel_ms=0.025000 cpu_wall_ms=0.962083 useful_gpu_tflops=12.5668 useful_cpu_tflops=8.9285
+SAMPLE shape=routed-gate-up-primary arm=steel block=3 position=B1 gpu_complete=yes gpu_start_s=455062.995097292 gpu_end_s=455062.995829000 gpu_ms=0.731708 kernel_start_s=455062.995014750 kernel_end_s=455062.995041792 kernel_ms=0.027042 cpu_wall_ms=1.019583 useful_gpu_tflops=11.7396 useful_cpu_tflops=8.4249
+SAMPLE shape=routed-gate-up-primary arm=steel block=3 position=B2 gpu_complete=yes gpu_start_s=455062.996182667 gpu_end_s=455062.996916250 gpu_ms=0.733583 kernel_start_s=455062.996083000 kernel_end_s=455062.996114125 kernel_ms=0.031125 cpu_wall_ms=0.966750 useful_gpu_tflops=11.7096 useful_cpu_tflops=8.8854
+SAMPLE shape=routed-gate-up-primary arm=mpp block=3 position=A2 gpu_complete=yes gpu_start_s=455062.997145500 gpu_end_s=455062.997828167 gpu_ms=0.682667 kernel_start_s=455062.997057917 kernel_end_s=455062.997083500 kernel_ms=0.025583 cpu_wall_ms=0.890625 useful_gpu_tflops=12.5829 useful_cpu_tflops=9.6448
+SAMPLE shape=routed-gate-up-primary arm=mpp block=4 position=A1 gpu_complete=yes gpu_start_s=455062.998038625 gpu_end_s=455062.998721500 gpu_ms=0.682875 kernel_start_s=455062.997964375 kernel_end_s=455062.997985500 kernel_ms=0.021125 cpu_wall_ms=0.872208 useful_gpu_tflops=12.5791 useful_cpu_tflops=9.8485
+SAMPLE shape=routed-gate-up-primary arm=steel block=4 position=B1 gpu_complete=yes gpu_start_s=455062.998930625 gpu_end_s=455062.999666250 gpu_ms=0.735625 kernel_start_s=455062.998851917 kernel_end_s=455062.998878042 kernel_ms=0.026125 cpu_wall_ms=1.003916 useful_gpu_tflops=11.6771 useful_cpu_tflops=8.5564
+SAMPLE shape=routed-gate-up-primary arm=steel block=4 position=B2 gpu_complete=yes gpu_start_s=455062.999988167 gpu_end_s=455063.000722292 gpu_ms=0.734125 kernel_start_s=455062.999909500 kernel_end_s=455062.999934125 kernel_ms=0.024625 cpu_wall_ms=1.018333 useful_gpu_tflops=11.7009 useful_cpu_tflops=8.4353
+SAMPLE shape=routed-gate-up-primary arm=mpp block=4 position=A2 gpu_complete=yes gpu_start_s=455063.001049625 gpu_end_s=455063.001733000 gpu_ms=0.683375 kernel_start_s=455063.000973292 kernel_end_s=455063.000997875 kernel_ms=0.024583 cpu_wall_ms=0.892875 useful_gpu_tflops=12.5699 useful_cpu_tflops=9.6205
+SAMPLE shape=routed-gate-up-primary arm=mpp block=5 position=A1 gpu_complete=yes gpu_start_s=455063.001953375 gpu_end_s=455063.002636042 gpu_ms=0.682667 kernel_start_s=455063.001871750 kernel_end_s=455063.001891542 kernel_ms=0.019792 cpu_wall_ms=0.974125 useful_gpu_tflops=12.5829 useful_cpu_tflops=8.8181
+SAMPLE shape=routed-gate-up-primary arm=steel block=5 position=B1 gpu_complete=yes gpu_start_s=455063.002990792 gpu_end_s=455063.003729500 gpu_ms=0.738708 kernel_start_s=455063.002899375 kernel_end_s=455063.002930417 kernel_ms=0.031042 cpu_wall_ms=1.041250 useful_gpu_tflops=11.6283 useful_cpu_tflops=8.2496
+SAMPLE shape=routed-gate-up-primary arm=steel block=5 position=B2 gpu_complete=yes gpu_start_s=455063.004087750 gpu_end_s=455063.004821792 gpu_ms=0.734042 kernel_start_s=455063.003987375 kernel_end_s=455063.004018375 kernel_ms=0.031000 cpu_wall_ms=1.053209 useful_gpu_tflops=11.7022 useful_cpu_tflops=8.1560
+SAMPLE shape=routed-gate-up-primary arm=mpp block=5 position=A2 gpu_complete=yes gpu_start_s=455063.005189292 gpu_end_s=455063.005872250 gpu_ms=0.682958 kernel_start_s=455063.005085875 kernel_end_s=455063.005117000 kernel_ms=0.031125 cpu_wall_ms=0.912917 useful_gpu_tflops=12.5775 useful_cpu_tflops=9.4093
+SAMPLE shape=routed-gate-up-primary arm=mpp block=6 position=A1 gpu_complete=yes gpu_start_s=455063.006083417 gpu_end_s=455063.006771167 gpu_ms=0.687750 kernel_start_s=455063.006008125 kernel_end_s=455063.006031667 kernel_ms=0.023542 cpu_wall_ms=0.877583 useful_gpu_tflops=12.4899 useful_cpu_tflops=9.7882
+SAMPLE shape=routed-gate-up-primary arm=steel block=6 position=B1 gpu_complete=yes gpu_start_s=455063.006983125 gpu_end_s=455063.007715500 gpu_ms=0.732375 kernel_start_s=455063.006901250 kernel_end_s=455063.006921042 kernel_ms=0.019792 cpu_wall_ms=0.945375 useful_gpu_tflops=11.7289 useful_cpu_tflops=9.0863
+SAMPLE shape=routed-gate-up-primary arm=steel block=6 position=B2 gpu_complete=yes gpu_start_s=455063.008003625 gpu_end_s=455063.008736500 gpu_ms=0.732875 kernel_start_s=455063.007902250 kernel_end_s=455063.007932917 kernel_ms=0.030667 cpu_wall_ms=1.041084 useful_gpu_tflops=11.7209 useful_cpu_tflops=8.2510
+SAMPLE shape=routed-gate-up-primary arm=mpp block=6 position=A2 gpu_complete=yes gpu_start_s=455063.009072250 gpu_end_s=455063.009754250 gpu_ms=0.682000 kernel_start_s=455063.008986167 kernel_end_s=455063.009017250 kernel_ms=0.031083 cpu_wall_ms=0.962500 useful_gpu_tflops=12.5952 useful_cpu_tflops=8.9246
+SAMPLE shape=routed-gate-up-primary arm=mpp block=7 position=A1 gpu_complete=yes gpu_start_s=455063.010091667 gpu_end_s=455063.010773875 gpu_ms=0.682208 kernel_start_s=455063.009993667 kernel_end_s=455063.010024792 kernel_ms=0.031125 cpu_wall_ms=0.911708 useful_gpu_tflops=12.5914 useful_cpu_tflops=9.4218
+SAMPLE shape=routed-gate-up-primary arm=steel block=7 position=B1 gpu_complete=yes gpu_start_s=455063.010991167 gpu_end_s=455063.011724375 gpu_ms=0.733208 kernel_start_s=455063.010911250 kernel_end_s=455063.010936750 kernel_ms=0.025500 cpu_wall_ms=0.937583 useful_gpu_tflops=11.7155 useful_cpu_tflops=9.1618
+SAMPLE shape=routed-gate-up-primary arm=steel block=7 position=B2 gpu_complete=yes gpu_start_s=455063.011939917 gpu_end_s=455063.012671625 gpu_ms=0.731708 kernel_start_s=455063.011864500 kernel_end_s=455063.011884667 kernel_ms=0.020167 cpu_wall_ms=0.940750 useful_gpu_tflops=11.7396 useful_cpu_tflops=9.1309
+SAMPLE shape=routed-gate-up-primary arm=mpp block=7 position=A2 gpu_complete=yes gpu_start_s=455063.012901625 gpu_end_s=455063.013583625 gpu_ms=0.682000 kernel_start_s=455063.012820292 kernel_end_s=455063.012846000 kernel_ms=0.025708 cpu_wall_ms=0.966125 useful_gpu_tflops=12.5952 useful_cpu_tflops=8.8911
+SAMPLE shape=routed-gate-up-primary arm=mpp block=8 position=A1 gpu_complete=yes gpu_start_s=455063.013942500 gpu_end_s=455063.014624875 gpu_ms=0.682375 kernel_start_s=455063.013840875 kernel_end_s=455063.013871625 kernel_ms=0.030750 cpu_wall_ms=0.980125 useful_gpu_tflops=12.5883 useful_cpu_tflops=8.7641
+SAMPLE shape=routed-gate-up-primary arm=steel block=8 position=B1 gpu_complete=yes gpu_start_s=455063.014942750 gpu_end_s=455063.015678417 gpu_ms=0.735667 kernel_start_s=455063.014865250 kernel_end_s=455063.014890167 kernel_ms=0.024917 cpu_wall_ms=0.945666 useful_gpu_tflops=11.6764 useful_cpu_tflops=9.0835
+SAMPLE shape=routed-gate-up-primary arm=steel block=8 position=B2 gpu_complete=yes gpu_start_s=455063.015902000 gpu_end_s=455063.016633750 gpu_ms=0.731750 kernel_start_s=455063.015816542 kernel_end_s=455063.015847125 kernel_ms=0.030583 cpu_wall_ms=0.936958 useful_gpu_tflops=11.7389 useful_cpu_tflops=9.1679
+SAMPLE shape=routed-gate-up-primary arm=mpp block=8 position=A2 gpu_complete=yes gpu_start_s=455063.016844167 gpu_end_s=455063.017527375 gpu_ms=0.683208 kernel_start_s=455063.016769250 kernel_end_s=455063.016788500 kernel_ms=0.019250 cpu_wall_ms=0.948334 useful_gpu_tflops=12.5729 useful_cpu_tflops=9.0579
+SUMMARY shape=routed-gate-up-primary arm=mpp samples=16 gpu_complete_samples=16 gpu_median_ms=0.682875 gpu_p10_ms=0.682208 gpu_p90_ms=0.683542 gpu_min_ms=0.682000 gpu_max_ms=0.687750 cpu_wall_median_ms=0.935730 useful_gpu_tflops=12.5791 useful_cpu_tflops=9.1799 model_weight_gflop_per_token=1.34217728
+SUMMARY shape=routed-gate-up-primary arm=steel samples=16 gpu_complete_samples=16 gpu_median_ms=0.733042 gpu_p10_ms=0.731708 gpu_p90_ms=0.735667 gpu_min_ms=0.731000 gpu_max_ms=0.738708 cpu_wall_median_ms=0.947625 useful_gpu_tflops=11.7182 useful_cpu_tflops=9.0647 model_weight_gflop_per_token=1.34217728
+COMPARISON shape=routed-gate-up-primary mpp_over_steel=1.0735 mpp_gpu_tflops=12.5791 steel_gpu_tflops=11.7182
+WEIGHTED arm=mpp method=real-model-work-harmonic useful_gpu_tflops=12.6478 useful_cpu_tflops=9.8720 represented_gflop_per_token=4.87325696
+WEIGHTED arm=steel method=real-model-work-harmonic useful_gpu_tflops=11.0401 useful_cpu_tflops=8.8513 represented_gflop_per_token=4.87325696
+WEIGHTED_COMPARISON mpp_over_steel=1.1456 continuation_threshold_tflops=22.0
+VERDICT=stop weighted_gpu_tflops=12.6478 threshold=22.0 reason=below-weighted-M3-gate no_serving_integration=true
+PROBE_OUTPUT_END
+POWER_AFTER_BEGIN
+POWER_SOURCE=Now drawing from 'AC Power'
+POWER_MODE_AC=2
+PMSET_THERM_BEGIN
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+PMSET_THERM_END
+PMSET_BATT_BEGIN
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; finishing charge; 0:05 remaining present: true
+PMSET_BATT_END
+PMSET_CUSTOM_BEGIN
+Battery Power:
+ Sleep On Power Button 1
+ powermode            0
+ standby              0
+ ttyskeepawake        1
+ hibernatemode        0
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         5
+ womp                 0
+ networkoversleep     0
+ sleep                0
+ lessbright           1
+ tcpkeepalive         1
+ disksleep            0
+ SleepServices        1
+AC Power:
+ Sleep On Power Button 1
+ powermode            2
+ standby              0
+ ttyskeepawake        1
+ hibernatemode        0
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         5
+ womp                 1
+ networkoversleep     0
+ sleep                0
+ tcpkeepalive         1
+ disksleep            0
+ SleepServices        1
+PMSET_CUSTOM_END
+POWER_AFTER_END
+PROCESSES_AFTER_BEGIN
+ 7449   0.6  0.1 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService
+  353   0.4  0.0 /usr/libexec/sysmond
+  477   0.1  0.1 /System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+58588   0.0  0.0 sed -n 1,25p
+58587   0.0  0.0 sort -k2 -nr
+58586   0.0  0.0 ps -axo pid,pcpu,pmem,command
+58565   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58564   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58563   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58562   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58561   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58560   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+58525   0.0  0.0 /bin/bash ./run.sh /Users/gaj/work/mpp-throughput-probe-055f/result
+58524   0.0  0.0 sshd-session: gaj@notty
+58521   0.0  0.0 <defunct>
+58520   0.0  0.0 sshd-session: gaj [priv]
+58519   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+39087   0.0  0.0 /usr/libexec/fskit_agent
+39075   0.0  0.0 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/SimulatorTrampoline.xpc/Contents/MacOS/SimulatorTrampoline
+39073   0.0  0.0 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged
+39072   0.0  0.0 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/com.apple.CoreSimulator.CoreSimulatorService.xpc/Contents/MacOS/com.apple.CoreSimulator.CoreSimulatorService
+31410   0.0  0.1 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+31409   0.0  0.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTEncoderXPCService.xpc/Contents/MacOS/VTEncoderXPCService
+31408   0.0  0.1 /System/Library/PrivateFrameworks/AppleNeuralEngine.framework/XPCServices/ANECompilerService.xpc/Contents/MacOS/ANECompilerService
+31407   0.0  0.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService
+PROCESSES_AFTER_END

@@ -275,6 +275,17 @@ Three schema-6 burst repetitions, default geometry, AC/High Power:
 Checksums stable. The binding B=4 2.5× bar is **3,893.5 tok/s** or
 **8.4150 s**. B=4 still equals B=1 8K within noise. See `notes/037`.
 
+## 2026-08-24T06:44Z — E9 MPP reduction-order probe preregistered
+
+E8 exercised only strict K=16 MPP multiply-accumulate. E9 isolates the
+remaining association schedules at fixed M=16/N=32/K=16: compiler legality of
+static K=8, runtime dynamic K=8 staged calls, separate MPP multiply plus
+explicit FP32 addition, and K=16 calls with zero-padded 8-term halves.
+
+The reference is the actual incumbent 8x8 FP32
+`simdgroup_multiply_accumulate`, called twice. No serving integration and no
+timing; unchanged QMM tolerances decide. See `notes/038`.
+
 ## 2026-08-24T06:47Z — complete baseline matrix
 
 One schema-6 binary, three repetitions:

@@ -20,6 +20,12 @@ e2-control-b4-2048	2026-08-24T05:53:16Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E
 e2-wide-b4-2048	2026-08-24T05:54:32Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E2-wide-cohort	chunk1024-budget4096	2048	4	prefill_tps	1698.4	tok/s	1.034x_adjacent_control	no	checksum mismatch rows 0 and 3; throughput far below 2.5x
 e2-wide-b4-2048	2026-08-24T05:54:32Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E2-wide-cohort	chunk1024-budget4096	2048	4	correctness	0	pass	0.5x_rows_match	no	2 of 4 row token checksums changed
 b2-2048-baseline	2026-08-24T05:56:00Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	H0-b2-baseline	default-chunk-budget	2048	2	prefill_tps	1626.4	tok/s	1.00	baseline	schema5 harness; makespan_ms=2517.2; checksums stable
+e3-w4-gate	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	w4-sorted-gather	2048	1	tflops	10.89	TFLOPS	1.00	roof	exact serving M=16384 K2048 N1024
+e3-bf16-gate	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-sorted-gather	2048	1	tflops	10.93	TFLOPS	1.004x	no	dense cache has no gain; excludes dequant cost
+e3-monolithic-gate	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-single-matrix	2048	1	tflops	12.30	TFLOPS	1.129x	roof	illegal MoE semantics; arithmetic upper bound
+e3-w4-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	w4-sorted-gather	2048	1	tflops	10.22	TFLOPS	1.00	roof	exact serving M=16384 K512 N2048
+e3-bf16-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-sorted-gather	2048	1	tflops	8.37	TFLOPS	0.819x	no	dense cache regresses
+e3-monolithic-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-single-matrix	2048	1	tflops	11.60	TFLOPS	1.135x	roof	illegal MoE semantics; arithmetic upper bound
 
 
 

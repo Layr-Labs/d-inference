@@ -101,5 +101,11 @@ E2 closed packing: `[4,1024]` was +3.4% and changed greedy output. The
 next ranked objective is a numerically equivalent faster gathered W4 QMM
 at the existing 512/2,048 geometry.
 
+E3 measured that W4 gather (10.9 TFLOPS), dequantized BF16 gather
+(10.9), and even an illegal monolithic BF16 matrix (12.3) are separated
+by only 1.13×. A dense expert cache and dequantization deletion are dead;
+the exact arithmetic roof itself is below the 2.5× requirement
+(`notes/028`).
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

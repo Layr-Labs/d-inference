@@ -193,3 +193,20 @@ Next: remove the now-dead serving chunk/budget knobs while retaining the
 B=1/B=2/B=4 measurement harness. Move exclusively to arithmetic-equivalent
 gathered W4 QMM kernel experiments at the existing geometry.
 
+## 2026-08-24T06:04Z — E3 dense arithmetic roof
+
+Measured the exact same quantized weights through three paths at M=16,384:
+
+- W4 sorted gather: gate_up **10.89 TFLOPS**, down **10.22**;
+- dequantized BF16 sorted gather: **10.93 / 8.37**;
+- illegal one-matrix BF16 GEMM roof: **12.30 / 11.60**.
+
+Dequantization is free relative to the MMA and a 60–75 GiB BF16 cache
+cannot pay. Even deleting expert grouping gains only 1.13×. If QMM is
+93% of prefill, the impossible bound “monolithic QMM + all other work
+free” is only ~1.22×. See `notes/028`.
+
+The 2.5× target at the same exact operation count would need ~27 TFLOPS,
+over 2× the measured monolithic M3 roof. Remaining BM/BN/BK experiments
+can recover single-digit/low-teens efficiency; they cannot close 2.5×.
+

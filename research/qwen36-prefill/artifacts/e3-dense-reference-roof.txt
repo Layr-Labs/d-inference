@@ -1,0 +1,23 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-23 23:04:24.482.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-23 23:04:24.482.
+Test Suite 'QwenExpertDenseReferencePerfTests' started at 2026-08-23 23:04:24.482.
+Test Case '-[MLXTests.QwenExpertDenseReferencePerfTests testDenseBF16UpperBoundAtServingAssignmentCount]' started.
+[qwen-expert-dense-reference] gate_up_fused T2048 route=w4 median=6.3132ms p10=6.3061 p90=6.3242 tflops=10.89
+[qwen-expert-dense-reference] gate_up_fused T2048 route=bf16 median=6.2896ms p10=6.2580 p90=6.4125 tflops=10.93
+[qwen-expert-dense-reference] gate_up_fused T2048 route=bf16-monolithic-roof median=5.5864ms p10=5.5737 p90=5.6113 tflops=12.30
+[qwen-expert-dense-reference] down T2048 route=w4 median=3.3636ms p10=3.3451 p90=3.4016 tflops=10.22
+[qwen-expert-dense-reference] down T2048 route=bf16 median=4.1037ms p10=4.0739 p90=4.2240 tflops=8.37
+[qwen-expert-dense-reference] down T2048 route=bf16-monolithic-roof median=2.9625ms p10=2.9365 p90=3.0354 tflops=11.60
+Test Case '-[MLXTests.QwenExpertDenseReferencePerfTests testDenseBF16UpperBoundAtServingAssignmentCount]' passed (1.030 seconds).
+Test Suite 'QwenExpertDenseReferencePerfTests' passed at 2026-08-23 23:04:25.513.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.030 (1.030) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-23 23:04:25.513.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.030 (1.031) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:04:25.513.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.030 (1.031) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

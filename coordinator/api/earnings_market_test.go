@@ -288,7 +288,7 @@ func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.
 
 func TestActiveAliasMembersDeduplicatesDesiredAndFallback(t *testing.T) {
 	records := map[string]store.ModelRegistryRecord{
-		"shared": {ID: "shared"},
+		"shared": {ModelRegistryEntry: store.ModelRegistryEntry{ID: "shared"}},
 	}
 	got := activeAliasMembers(store.ModelAlias{
 		DesiredBuild:  "shared",

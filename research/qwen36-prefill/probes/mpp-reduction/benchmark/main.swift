@@ -48,6 +48,8 @@ private struct VariantTimingSummary {
 private struct CellTimingResult {
     let cell: BenchmarkCell
     let summaries: [KernelVariant: VariantTimingSummary]
+    let staticK16Correctness: Bool
+    let dynamicK8Correctness: Bool
 }
 
 private let adversaryCells = [
@@ -258,9 +260,11 @@ private func benchmark(
         b: inputs.b,
         reference: reference,
         actual: output)
-    guard fullLegality[.mppDynamicK8] == true else {
-        throw ProbeFailure.message(
-            "\(cell.name): dynamic K=8 failed full-shape QMM correctness")
+    for variant in [KernelVariant.mppStaticK16, .mppDynamicK8] {
+        print(
+            "CORRECTNESS_GATE scope=full cell=\(cell.name) "
+                + "variant=\(variant.rawValue) "
+                + "status=\((fullLegality[variant] ?? false) ? "pass" : "fail")")
     }
 
     for warmup in 0..<configuration.warmups {
@@ -335,7 +339,11 @@ private func benchmark(
                 + "gpu_median_tflops=\(formatTFLOPS(medianTFLOPS)) "
                 + "gpu_best_sample_tflops=\(formatTFLOPS(bestSampleTFLOPS))")
     }
-    return CellTimingResult(cell: cell, summaries: summaries)
+    return CellTimingResult(
+        cell: cell,
+        summaries: summaries,
+        staticK16Correctness: fullLegality[.mppStaticK16] ?? false,
+        dynamicK8Correctness: fullLegality[.mppDynamicK8] ?? false)
 }
 
 private func printWeightedResults(_ results: [CellTimingResult]) throws -> Bool {
@@ -410,10 +418,10 @@ private func run() throws {
             + "omitted_scalar_gate_fraction=0.000034")
 
     let adversaryLegality = try runAdversaryCorrectness(runner: runner)
-    guard adversaryLegality[.mppDynamicK8] == true else {
-        print("TIMING=skipped reason=dynamic-k8-adversary-correctness")
-        print("RESULT=reject threshold_status=not-run")
-        return
+    if adversaryLegality[.mppDynamicK8] != true {
+        print(
+            "TIMING=run validity=invalid-upper-bound "
+                + "reason=dynamic-k8-adversary-correctness")
     }
 
     var results: [CellTimingResult] = []
@@ -422,8 +430,19 @@ private func run() throws {
             runner: runner, cell: cell, configuration: configuration))
     }
     let thresholdPass = try printWeightedResults(results)
+    let dynamicCorrectness = adversaryLegality[.mppDynamicK8] == true
+        && results.allSatisfy(\.dynamicK8Correctness)
+    let staticCorrectness = adversaryLegality[.mppStaticK16] == true
+        && results.allSatisfy(\.staticK16Correctness)
     print(
-        "RESULT=complete dynamic_k8_correctness=pass "
+        "CORRECTNESS_GATE scope=aggregate variant=mpp-static-k16 "
+            + "status=\(staticCorrectness ? "pass" : "fail")")
+    print(
+        "CORRECTNESS_GATE scope=aggregate variant=mpp-dynamic-k8 "
+            + "status=\(dynamicCorrectness ? "pass" : "fail")")
+    print(
+        "RESULT=complete "
+            + "dynamic_k8_correctness=\(dynamicCorrectness ? "pass" : "fail") "
             + "threshold_status=\(thresholdPass ? "pass" : "fail")")
 }
 

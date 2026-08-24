@@ -25,11 +25,15 @@ struct LiveChatConfiguration: Sendable {
     var clientFactory: @Sendable (LocalEndpointInfo) -> LocalEndpointClient
 
     init(
-        discoveryReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
+        discoveryReader: @escaping @Sendable () -> LocalEndpointInfo? = {
+            LocalEndpointDiscovery.readInfo()
+        },
         modelProvider: @escaping @Sendable () -> String? = {
             DaemonStateFile.read()?.currentModel
         },
-        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            ProcessIdentity.read(pid: $0)
+        },
         clientFactory: @escaping @Sendable (LocalEndpointInfo) -> LocalEndpointClient = { info in
             LocalEndpointClient(info: info)
         }

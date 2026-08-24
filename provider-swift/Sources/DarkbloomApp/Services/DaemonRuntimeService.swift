@@ -64,8 +64,12 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         cliTimeout: Duration = .seconds(120),
         settleTimeout: Duration = .seconds(30),
         providerName: String = ProcessInfo.processInfo.environment["DARKBLOOM_PROVIDER_NAME"] ?? "This Mac",
-        localEndpointReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
-        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
+        localEndpointReader: @escaping @Sendable () -> LocalEndpointInfo? = {
+            LocalEndpointDiscovery.readInfo()
+        },
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            ProcessIdentity.read(pid: $0)
+        },
         selectionInstalled: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentInstalled,
         serviceLoaded: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentLoaded
     ) {

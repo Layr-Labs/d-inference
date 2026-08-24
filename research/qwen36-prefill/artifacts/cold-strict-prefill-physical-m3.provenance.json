@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "probe": "qwen-cold-strict-prefill-physical-profile",
+  "host": {
+    "model": "Mac15,9",
+    "gpu": "Apple M3 Max, 40 cores",
+    "os": "macOS 26.4 (25E246)",
+    "xcode": "26.5 (17F42)",
+    "swift": "6.3.2",
+    "power_source": "AC Power",
+    "power_mode": 2
+  },
+  "benchmark": {
+    "binary_version": "0.8.10",
+    "binary_sha256": "0fded5e1ddb1ac0f3c10382ff446990763081621a01500e37dc4e672213fdfdb",
+    "mlx_metallib_sha256": "08c48889aee7a8d126e47b12528e8f3e2c43f45866de938be11a8777a952b033",
+    "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+    "prompt_tokens_per_request": 8192,
+    "decode_tokens_per_request": 2,
+    "iterations": 3,
+    "kv_backend": "contiguous",
+    "prefix_cache": "off",
+    "numerical_posture": "strict-default-top8",
+    "redactions": [
+      "Absolute benchmark-user home paths were replaced with /Users/benchmark before archival."
+    ]
+  },
+  "profiler": {
+    "trace_seconds": 5,
+    "trace_iterations": 1,
+    "throughput_is_untraced": true,
+    "trace_uses_separate_identical_process": true,
+    "source_sha256": {
+      "research/qwen36-prefill/probes/prefill-physical/run.sh": "654dfa47c7bed022e458543eef806066357acf9f25c84c1710ba2007d5e9499b",
+      "research/qwen36-prefill/probes/prefill-physical/counter_access.swift": "e6de15884c40606e2e10ded8c5bd04e46efa2b7c8bfcc09086dee62f2b1b4547",
+      "research/qwen36-prefill/probes/prefill-physical/summarize_prefill.py": "28c03c1ca410657e6eac1f865c385a018fec3b3b978abc0b1a46e7c46f1b7302",
+      "research/qwen36-prefill/probes/mpp-throughput/agx_metrics.py": "f36a4016efbdcb347d168837e34ad5ea3f074394a300e73eabc7a2355f101285",
+      "research/qwen36-prefill/probes/mpp-throughput/summarize_physical.py": "f7ad9506187b5fe0132b7f703d862a2b20c10280cb9b61ba9fbd43d55b6be509"
+    }
+  },
+  "cells": {
+    "b1": {
+      "started_at_utc": "2026-08-24T20:00:56Z",
+      "finished_at_utc": "2026-08-24T20:01:57Z",
+      "trace_size_kib": 87800,
+      "report": "research/qwen36-prefill/artifacts/cold-strict-prefill-b1-8192-m3.json",
+      "report_sha256": "51a747b758b41df75aee53c9f83f8ed3b2a6ebdb4123e95576254b4226a1f873",
+      "physical_summary": "research/qwen36-prefill/artifacts/cold-strict-prefill-b1-physical-m3.txt",
+      "physical_summary_sha256": "ff08aef2062c7f59c1966abe2334d757db6194a12c8ed52d705fcced30d412d5",
+      "trace_export_sha256": "research/qwen36-prefill/artifacts/cold-strict-prefill-b1-trace-sha256-m3.txt"
+    },
+    "b2": {
+      "started_at_utc": "2026-08-24T20:06:34Z",
+      "finished_at_utc": "2026-08-24T20:11:04Z",
+      "trace_size_kib": 84368,
+      "report": "research/qwen36-prefill/artifacts/cold-strict-prefill-b2-8192-m3.json",
+      "report_sha256": "20298e69bb15d86a06dba583506ca88c502f10db03dde5209a56c5aaa6a73889",
+      "physical_summary": "research/qwen36-prefill/artifacts/cold-strict-prefill-b2-physical-m3.txt",
+      "physical_summary_sha256": "d6990f7f796370b1c0d45e4d30accdac6fefb3df69f1290b086e42d22857b5ce",
+      "trace_export_sha256": "research/qwen36-prefill/artifacts/cold-strict-prefill-b2-trace-sha256-m3.txt"
+    },
+    "b4": {
+      "started_at_utc": "2026-08-24T20:13:00Z",
+      "finished_at_utc": "2026-08-24T20:21:40Z",
+      "trace_size_kib": 81376,
+      "report": "research/qwen36-prefill/artifacts/cold-strict-prefill-b4-8192-m3.json",
+      "report_sha256": "dc852b874a562209d27cf266ad0aa2e662047a173d2e45ad6d1f1c742619ab80",
+      "physical_summary": "research/qwen36-prefill/artifacts/cold-strict-prefill-b4-physical-m3.txt",
+      "physical_summary_sha256": "7decf558ff8d52a5b02a52ea8294378e18874e6f0a764aa3376f3671febf9c92",
+      "trace_export_sha256": "research/qwen36-prefill/artifacts/cold-strict-prefill-b4-trace-sha256-m3.txt"
+    }
+  },
+  "counter_access": {
+    "powermetrics": "denied: powermetrics must be invoked as the superuser",
+    "power_profiler": "unsupported on macOS",
+    "metal_counter_sets": [
+      "timestamp:GPUTimestamp"
+    ],
+    "xctrace_gpu_counters": [
+      "RT Unit Active"
+    ],
+    "live_gpu_frequency_hz": "unavailable",
+    "live_gpu_power_watts": "unavailable",
+    "static_max_frequency_hz": 1380000000
+  },
+  "limitations": [
+    "The macOS host exposes no unprivileged live GPU frequency or power sample.",
+    "The available Metal counter set is timestamp-only; the xctrace counter is ray-tracing-specific and does not establish shader, occupancy, cache, or bandwidth saturation.",
+    "The five-second physical traces are separate runs of the same strict workload, so they characterize the execution posture without contaminating the untraced throughput values.",
+    "The binary and metallib are content-pinned, but this capture does not add a model aggregate hash or reconstruct the binary's source commit."
+  ]
+}

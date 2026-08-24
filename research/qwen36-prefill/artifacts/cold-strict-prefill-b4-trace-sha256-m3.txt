@@ -1,0 +1,10 @@
+34f34d8d7d0a21bfd6a484a5ae3f0cfbc4dc1e7689f36d937bb98c43c6055ee0  ./device-thermal-state-intervals.xml
+8bcf58714042447db9012cfc00f6ec175c0ea0a79d6d310c1b426724f2bff6fe  ./gpu-counter-info.xml
+d6ec6895ccb4f998a0ce1b646054e55a8e967f7b6335fc4ccdcc78d38170ffeb  ./gpu-performance-device-state-intervals.xml
+8f419dfdf7f661eb80a6ac925cadb751c91efee734f6c2abca1fc4113b561fe0  ./gpu-performance-state-info.xml
+96ac621a715581653f339169166f4097aea13c443b7cc959cacfdc3731ba1f40  ./gpu-performance-state-intervals.xml
+d990503e165c1c840466f945f3aef7884ad8ed171f9fd97dbd069b0ac7d827bc  ./graphics-compiler-spill-events.xml
+36619cc1ddf4084b59525d809d0820cb4316c699d97082d8e5f8e2eb0330c644  ./metal-application-command-buffer-submissions.xml
+111d2354600b51696fbdc007cac856e689ac768e0d7090b7533f8e6f27588a27  ./metal-gpu-intervals.xml
+d1a9cb87a783aa505c2de81f5b359b2027b5abe167bfb79c5d511d9794cc1b87  ./metal-gpu-state-intervals.xml
+0f5012e98cc59f16b9940774bddeb5602b882c41ebabc2691f9063b79561f2d7  ./metal-kernel-resource-allocations.xml

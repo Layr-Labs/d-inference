@@ -1,0 +1,30 @@
+AGX_SAMPLE_COUNTS valid=37 errors=0
+AGX_UTILIZATION phase=after samples=1 median_percent=0.000 p10_percent=0.000 p90_percent=0.000 min_percent=0.000 max_percent=0.000 samples_ge_90=0 samples_ge_99=0
+AGX_UTILIZATION phase=before samples=1 median_percent=96.000 p10_percent=96.000 p90_percent=96.000 min_percent=96.000 max_percent=96.000 samples_ge_90=1 samples_ge_99=0
+AGX_ACTIVE_UTILIZATION phase=before samples=1 median_percent=96.000 p10_percent=96.000 p90_percent=96.000 min_percent=96.000 max_percent=96.000
+AGX_UTILIZATION phase=during samples=35 median_percent=0.000 p10_percent=0.000 p90_percent=99.000 min_percent=0.000 max_percent=100.000 samples_ge_90=11 samples_ge_99=9
+AGX_ACTIVE_UTILIZATION phase=during samples=12 median_percent=99.000 p10_percent=98.000 p90_percent=100.000 min_percent=68.000 max_percent=100.000
+GPU_CLOCK_OBSERVABILITY live_frequency_hz=unavailable static_table_max_frequency_hz=1380000000 qualitative_performance_level=available_via_xctrace note=trace_level_enums_are_not_perf_state_table_indices
+TRACE_DEVICE_STATE raw_state=1 raw_desired_state=0 duration_s=0.001062 fraction=0.000194 semantics=opaque_performance_level
+TRACE_DEVICE_STATE raw_state=2 raw_desired_state=0 duration_s=0.066668 fraction=0.012200 semantics=opaque_performance_level
+TRACE_DEVICE_STATE raw_state=3 raw_desired_state=0 duration_s=5.396937 fraction=0.987606 semantics=opaque_performance_level
+TRACE_DEVICE_STATE_SUMMARY rows=429 duration_s=5.464667 frequency_mapping=not_valid
+TRACE_PERFORMANCE_LEVEL state=Maximum duration_s=5.396937 fraction=0.987606
+TRACE_PERFORMANCE_LEVEL state=Medium duration_s=0.066668 fraction=0.012200
+TRACE_PERFORMANCE_LEVEL state=Minimum duration_s=0.001062 fraction=0.000194
+TRACE_PERFORMANCE_REASON reason=Maximum_GPU_Performance_state_due_to_active_device_conditions duration_s=5.396937 fraction=0.987606
+TRACE_PERFORMANCE_REASON reason=Medium_GPU_Performance_state_due_to_active_device_conditions duration_s=0.066668 fraction=0.012200
+TRACE_PERFORMANCE_REASON reason=Minimum_GPU_Performance_state_due_to_active_device_conditions duration_s=0.001062 fraction=0.000194
+TRACE_PERFORMANCE_LEVEL_SUMMARY rows=429 duration_s=5.464667 induced_s=5.464667
+TRACE_THERMAL state=Nominal duration_s=5.766432 fraction=1.000000
+TRACE_GPU_STATE state=Active duration_s=5.446778 fraction=0.985443
+TRACE_GPU_STATE state=Idle duration_s=0.080459 fraction=0.014557
+TRACE_GPU_INTERVALS process= rows=11 channels=Compute:11 span_s=0.043489 busy_s=0.043480 duty_fraction=0.999797 idle_gap_s=0.000009 gap_count=10 gap_median_us=0.875 gap_p90_us=1.041 gap_max_us=1.083 gaps_over_1ms=0 gaps_over_1ms_s=0.000000 start_latency_median_us=0.000 start_latency_p90_us=0.000
+TRACE_GPU_INTERVALS process=darkbloom_(42033) rows=1731 channels=Compute:1731 span_s=5.483747 busy_s=5.403298 duty_fraction=0.985330 idle_gap_s=0.080449 gap_count=1730 gap_median_us=0.792 gap_p90_us=3.959 gap_max_us=13362.333 gaps_over_1ms=21 gaps_over_1ms_s=0.076740 start_latency_median_us=36156.333 start_latency_p90_us=45807.708
+TRACE_COUNTER_INFO status=available rows=1
+TRACE_COUNTER name=RT_Unit_Active type=Percentage max_value=100 description=Percentage_of_GPU_Cores_where_raytracing_unit_is_active.
+TRACE_CONSISTENT_STATE available=yes enabled=no sustained=no
+TRACE_TABLE schema=graphics-compiler-spill-events status=exported rows=0
+TRACE_TABLE schema=metal-kernel-resource-allocations status=exported rows=0
+TRACE_TABLE schema=metal-gpu-intervals status=exported rows=1742
+TRACE_TABLE schema=metal-application-command-buffer-submissions status=exported rows=3296

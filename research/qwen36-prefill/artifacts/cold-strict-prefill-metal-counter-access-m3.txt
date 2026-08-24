@@ -1,0 +1,7 @@
+METAL_COUNTER_DEVICE name=Apple_M3_Max
+METAL_COUNTER_SAMPLING point=stage_boundary supported=true
+METAL_COUNTER_SAMPLING point=draw_boundary supported=false
+METAL_COUNTER_SAMPLING point=dispatch_boundary supported=false
+METAL_COUNTER_SAMPLING point=blit_boundary supported=false
+METAL_COUNTER_SET_COUNT=1
+METAL_COUNTER_SET name=timestamp counters=GPUTimestamp allocation=pass

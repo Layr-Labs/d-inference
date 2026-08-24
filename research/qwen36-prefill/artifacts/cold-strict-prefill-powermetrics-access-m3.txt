@@ -1,0 +1,1 @@
+powermetrics must be invoked as the superuser

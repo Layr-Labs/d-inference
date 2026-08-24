@@ -1,0 +1,129 @@
+{
+  "arrivalMaxAttemptsPerSample": 3,
+  "arrivalToleranceMs": 20,
+  "batchSize": 1,
+  "decodeTokensPerRequest": 2,
+  "gemmaOptimizations": {
+    "environment": {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"
+    },
+    "prefillLayer18": true,
+    "weightedR1": true
+  },
+  "iterations": 3,
+  "kvBackend": {
+    "resolved": [
+      "contiguous"
+    ],
+    "selection": "contiguous"
+  },
+  "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath": "/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local",
+  "patterns": [
+    {
+      "arrivalDelaysMs": [
+        0
+      ],
+      "arrivalWithinTolerance": true,
+      "firstTokensMatchBurst": true,
+      "firstTokensStableAcrossIterations": true,
+      "maxArrivalErrorMs": 0.006875,
+      "measuredArrivalOffsetsMs": [
+        0.006541
+      ],
+      "medianAggregateDecodeTokensPerSecond": 88.21388408907345,
+      "medianAggregatePrefillTokensPerSecond": 1555.7979154793486,
+      "medianMakespanMs": 5276.169959,
+      "medianPerRequestDecodeTokensPerSecond": 88.21388408907345,
+      "medianPrefillMakespanMs": 5264.822583,
+      "medianTTFTMs": 5264.822583,
+      "name": "burst",
+      "outputsMatchBurst": true,
+      "outputsStableAcrossIterations": true,
+      "samples": [
+        {
+          "aggregateDecodeTokensPerSecond": 88.3893281200129,
+          "aggregatePrefillTokensPerSecond": 1557.4060196328512,
+          "discardedAttempts": 0,
+          "endToEndTokensPerSecond": 0.37945462836106975,
+          "iteration": 1,
+          "makespanMs": 5270.722375,
+          "maxArrivalErrorMs": 0.006875,
+          "prefillMakespanMs": 5259.386375,
+          "rows": [
+            {
+              "arrivalErrorMs": 0.006875,
+              "completedAtMs": 5270.722375,
+              "decodeTokensPerSecond": 88.3893281200129,
+              "firstTokenAtMs": 5259.39325,
+              "firstTokenChecksum": "ff9c08acdc7ed934",
+              "firstTokenID": 4129,
+              "generatedTokens": 2,
+              "row": 0,
+              "scheduledDelayMs": 0,
+              "submittedAtMs": 0.006875,
+              "tokenChecksum": "b2014a3de7504b34",
+              "ttftMs": 5259.386375
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond": 88.21388408907345,
+          "aggregatePrefillTokensPerSecond": 1555.7979154793486,
+          "discardedAttempts": 0,
+          "endToEndTokensPerSecond": 0.37906284587903283,
+          "iteration": 2,
+          "makespanMs": 5276.169959,
+          "maxArrivalErrorMs": 0.005542,
+          "prefillMakespanMs": 5264.822583,
+          "rows": [
+            {
+              "arrivalErrorMs": 0.005542,
+              "completedAtMs": 5276.169959,
+              "decodeTokensPerSecond": 88.21388408907345,
+              "firstTokenAtMs": 5264.828125,
+              "firstTokenChecksum": "ff9c08acdc7ed934",
+              "firstTokenID": 4129,
+              "generatedTokens": 2,
+              "row": 0,
+              "scheduledDelayMs": 0,
+              "submittedAtMs": 0.005542,
+              "tokenChecksum": "b2014a3de7504b34",
+              "ttftMs": 5264.822583
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond": 85.75562972845823,
+          "aggregatePrefillTokensPerSecond": 1551.6047696138917,
+          "discardedAttempts": 0,
+          "endToEndTokensPerSecond": 0.37802023102848176,
+          "iteration": 3,
+          "makespanMs": 5290.722125,
+          "maxArrivalErrorMs": 0.006541,
+          "prefillMakespanMs": 5279.050542,
+          "rows": [
+            {
+              "arrivalErrorMs": 0.006541,
+              "completedAtMs": 5290.722125,
+              "decodeTokensPerSecond": 85.75562972845823,
+              "firstTokenAtMs": 5279.057083,
+              "firstTokenChecksum": "ff9c08acdc7ed934",
+              "firstTokenID": 4129,
+              "generatedTokens": 2,
+              "row": 0,
+              "scheduledDelayMs": 0,
+              "submittedAtMs": 0.006541,
+              "tokenChecksum": "b2014a3de7504b34",
+              "ttftMs": 5279.050542
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "promptTokensPerRequest": 8192,
+  "schemaVersion": 7
+}

@@ -1,0 +1,66 @@
+AGX_INVENTORY model=Apple M3 Max gpu_gen=15 gpu_variant=C cores=40 mgpus=4 trace_code=3.44.6
+PERF_STATE_TABLES tables=4 states_per_table=14 advertised_nonzero_states=13 base_state=1
+PERF_STATE table=0 state=0 frequency_hz=0 voltage_mv=125
+PERF_STATE table=0 state=1 frequency_hz=338000000 voltage_mv=615
+PERF_STATE table=0 state=2 frequency_hz=618000000 voltage_mv=660
+PERF_STATE table=0 state=3 frequency_hz=796000000 voltage_mv=715
+PERF_STATE table=0 state=4 frequency_hz=832000000 voltage_mv=755
+PERF_STATE table=0 state=5 frequency_hz=924000000 voltage_mv=755
+PERF_STATE table=0 state=6 frequency_hz=952000000 voltage_mv=790
+PERF_STATE table=0 state=7 frequency_hz=1056000000 voltage_mv=790
+PERF_STATE table=0 state=8 frequency_hz=1064000000 voltage_mv=845
+PERF_STATE table=0 state=9 frequency_hz=1182000000 voltage_mv=845
+PERF_STATE table=0 state=10 frequency_hz=1182000000 voltage_mv=905
+PERF_STATE table=0 state=11 frequency_hz=1312000000 voltage_mv=905
+PERF_STATE table=0 state=12 frequency_hz=1242000000 voltage_mv=925
+PERF_STATE table=0 state=13 frequency_hz=1380000000 voltage_mv=925
+PERF_STATE table=1 state=0 frequency_hz=0 voltage_mv=125
+PERF_STATE table=1 state=1 frequency_hz=338000000 voltage_mv=630
+PERF_STATE table=1 state=2 frequency_hz=618000000 voltage_mv=675
+PERF_STATE table=1 state=3 frequency_hz=796000000 voltage_mv=725
+PERF_STATE table=1 state=4 frequency_hz=832000000 voltage_mv=760
+PERF_STATE table=1 state=5 frequency_hz=924000000 voltage_mv=760
+PERF_STATE table=1 state=6 frequency_hz=952000000 voltage_mv=790
+PERF_STATE table=1 state=7 frequency_hz=1056000000 voltage_mv=790
+PERF_STATE table=1 state=8 frequency_hz=1064000000 voltage_mv=850
+PERF_STATE table=1 state=9 frequency_hz=1182000000 voltage_mv=850
+PERF_STATE table=1 state=10 frequency_hz=1182000000 voltage_mv=920
+PERF_STATE table=1 state=11 frequency_hz=1312000000 voltage_mv=920
+PERF_STATE table=1 state=12 frequency_hz=1242000000 voltage_mv=945
+PERF_STATE table=1 state=13 frequency_hz=1380000000 voltage_mv=945
+PERF_STATE table=2 state=0 frequency_hz=0 voltage_mv=125
+PERF_STATE table=2 state=1 frequency_hz=338000000 voltage_mv=625
+PERF_STATE table=2 state=2 frequency_hz=618000000 voltage_mv=660
+PERF_STATE table=2 state=3 frequency_hz=796000000 voltage_mv=710
+PERF_STATE table=2 state=4 frequency_hz=832000000 voltage_mv=750
+PERF_STATE table=2 state=5 frequency_hz=924000000 voltage_mv=750
+PERF_STATE table=2 state=6 frequency_hz=952000000 voltage_mv=780
+PERF_STATE table=2 state=7 frequency_hz=1056000000 voltage_mv=780
+PERF_STATE table=2 state=8 frequency_hz=1064000000 voltage_mv=840
+PERF_STATE table=2 state=9 frequency_hz=1182000000 voltage_mv=840
+PERF_STATE table=2 state=10 frequency_hz=1182000000 voltage_mv=905
+PERF_STATE table=2 state=11 frequency_hz=1312000000 voltage_mv=905
+PERF_STATE table=2 state=12 frequency_hz=1242000000 voltage_mv=930
+PERF_STATE table=2 state=13 frequency_hz=1380000000 voltage_mv=930
+PERF_STATE table=3 state=0 frequency_hz=0 voltage_mv=125
+PERF_STATE table=3 state=1 frequency_hz=338000000 voltage_mv=625
+PERF_STATE table=3 state=2 frequency_hz=618000000 voltage_mv=660
+PERF_STATE table=3 state=3 frequency_hz=796000000 voltage_mv=715
+PERF_STATE table=3 state=4 frequency_hz=832000000 voltage_mv=755
+PERF_STATE table=3 state=5 frequency_hz=924000000 voltage_mv=755
+PERF_STATE table=3 state=6 frequency_hz=952000000 voltage_mv=790
+PERF_STATE table=3 state=7 frequency_hz=1056000000 voltage_mv=790
+PERF_STATE table=3 state=8 frequency_hz=1064000000 voltage_mv=845
+PERF_STATE table=3 state=9 frequency_hz=1182000000 voltage_mv=845
+PERF_STATE table=3 state=10 frequency_hz=1182000000 voltage_mv=905
+PERF_STATE table=3 state=11 frequency_hz=1312000000 voltage_mv=905
+PERF_STATE table=3 state=12 frequency_hz=1242000000 voltage_mv=925
+PERF_STATE table=3 state=13 frequency_hz=1380000000 voltage_mv=925
+PERF_STATE_MAX_FREQUENCY_HZ=1380000000
+THROTTLE_CHANNEL_DEFINITION name=Throttle_Counter_HWPI sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=Throttle_Counter_DPE sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=Throttle_Counter_Misc sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=Throttle_Counter_IVDM sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=Throttle_Counter_Total sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=IVDM:_Min_Active_Throttle_Percent sampled_value=unavailable-via-ioreg
+THROTTLE_CHANNEL_DEFINITION name=IVDM:_Max_Throttle_Percent sampled_value=unavailable-via-ioreg

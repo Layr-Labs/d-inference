@@ -717,3 +717,22 @@ discard/error paths release the claim. Six cache tests, eight engine tests,
 ten provider benchmark tests, and the release build pass. Ordered patch 075
 advances the gitlink-base replay tree to
 `c267de0434835bda4a40c1b8c4ddedffbebf1664`.
+
+## 2026-08-24T20:22Z — cold strict physical posture measured
+
+Untraced B1/B2/B4 8K burst throughput is **1,555.8 / 1,497.3 /
+1,547.6 tok/s**, within 0.7% of the binding baseline. B4 contributes
+256.7 seconds of measured prefill with -0.021% first-to-last burst drift;
+all bounded traces remain thermally Nominal.
+
+Metal System Trace records **98.53% / 99.26% / 98.69%** Compute duty and
+32–40 ms median queued start latency. Even deleting every observed idle
+microsecond bounds command-overlap recovery at +1.49% / +0.74% / +1.32%.
+The GPU is not host-feed starved.
+
+Unprivileged `powermetrics` is denied, Power Profiler is unsupported on
+macOS, and `MTLCounterSampleBuffer` exposes only `GPUTimestamp`. B4's
+61.15% Medium performance-level interval under 99% active utilization is
+the remaining anomaly. Next capture must use labeled device-scope GPU
+profiling plus privileged clock/power correlation; no hardware theorem is
+claimed. See `notes/048`.

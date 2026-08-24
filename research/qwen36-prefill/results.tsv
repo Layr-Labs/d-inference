@@ -13,6 +13,9 @@ e1-tile-t8192	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2
 e1-legacy-t8192	2026-08-24T05:40:36Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	legacy	8192	1	qmm_ms	26.117	ms	1.00	meta	gate_up_fused
 e1-tile-t512	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	allowlist	512	1	qmm_ms	2.328	ms	0.85x_vs_legacy	meta	tile slower at small M
 e1-correctness	2026-08-24T05:40:25Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-numerics	allowlist	65536	1	sorted_gather	1	pass	pass	keep-gate	SortedGatherQuantizedMMTests including new M
+e1-tflops-t2048	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	2048	1	tflops	10.5	TFLOPS	n/a	meta	2*M*N*K / tile_ms; confirms 011 ALU roof
+e1-tflops-t4096	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	4096	1	tflops	11.0	TFLOPS	n/a	meta	linear in M
+e1-tflops-t8192	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	8192	1	tflops	11.2	TFLOPS	n/a	meta	not 24 TFLOPS; 2.5x packing illegal
 
 
 

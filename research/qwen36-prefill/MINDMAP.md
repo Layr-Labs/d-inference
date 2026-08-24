@@ -82,7 +82,7 @@ hits the tile allowlist max (M=16384). See `notes/009` and `notes/018`.
 | Rank | Node | Expected | Risk | Why now |
 |---:|---|---|---|---|
 | 1 | Extend tile allowlist M=32768 / 65536 | Unlocks 2.0× / 4.0× tokens per weight stream | Descriptor alloc, metallib | **E1 measured** (`notes/021`). Tile hits; 1.06× vs legacy (1.3× kernel bar missed). Isolated QMM linear in M. Allowlist stays; spend it in E2. |
-| 2 | S3 wide packed cohort `[B,C]` | B2 1.4–2.0×; B4 2.0–3.5× | Decode delay, memory, admission | Spend the new tile shapes on the aggregate target |
+| 2 | S3 wide packed cohort `[B,C]` | **1.08–1.25×** (011+E1), not 2.0–3.5× | Decode delay, memory | E2 measures 011. Isolated QMM is 11 TFLOPS and linear in M (`notes/023`). |
 | 3 | A1 query-block width sweep | 0–8% B1; 0–12% B4 | Numerics, score bytes | Retune D=256 for wider cohorts |
 | 4 | B2 final-layer tail narrowing | 2–8% B1/B4 | Frontier logits | Delete discarded final-layer rows |
 | 5 | A1 packed row-local SDPA batching | 5–15% B4; B1 unchanged | Isolation, maxBufferLength | Delete B−1 attention dispatch chains |
@@ -92,6 +92,10 @@ hits the tile allowlist max (M=16384). See `notes/009` and `notes/018`.
 | 99 | Raise chunk without new M | **negative** (legacy fallback) | Proven by contracts | Dead as a solo move |
 | 99 | M4 mega-kernel | negative | Proven | Dead |
 
-B=1 one-shot 8K becomes a guarded cell inside rank 2 after M=65536; it is not
-ranked above the aggregate objective. B=4 2.5× is M=32768 plus a second lever,
-or M=65536 alone if the wider cohort holds.
+B=1 one-shot 8K is a no-regression cell, not a 2.5× path (011: illegal on
+this ALU roof). B=4 2.5× is **not** available from packing alone: E1+011
+say one rectangle is ~1.1×. If E2 confirms that, the remaining 2×-class
+lever is gathered 4-bit QMM efficiency, not cohort width.
+
+Wavefront / concurrent encode (013) is not a scheduler knob: one process
+GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

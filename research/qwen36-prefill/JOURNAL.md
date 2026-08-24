@@ -161,3 +161,17 @@ Allowlist stays (correct, hits, not slower at E2 shapes). CBv2 tok/s
 unchanged until E2 raises chunk/budget on a binary that contains this
 gate. See `notes/021`.
 
+## 2026-08-24T05:48Z — explorers closed; 011 vs 012
+
+All research explorers finished. Packed already fires (010/014). Metal
+has one GPU stream and no overlap lever we can turn from Swift (013).
+Reviewer still requires B=2 harness + decode A/B (016; harness is
+committed, binary rebuilding).
+
+011 decomposes the B=1 curve as `66.2 ms + 0.566 ms·N` and predicts
+`[4,2048]` at **1.08–1.25×**, not 012's 2.0–3.5×. E1 isolated QMM is
+**10.5–11.2 TFLOPS** and linear in M (`notes/023`). That confirms the
+ALU roof. E2 is now a test of 011, not a 2.5× attempt by widening the
+cohort. If it lands ~1.1×, escalate: 2.5× needs a faster gathered
+4-bit QMM, not a bigger step budget.
+

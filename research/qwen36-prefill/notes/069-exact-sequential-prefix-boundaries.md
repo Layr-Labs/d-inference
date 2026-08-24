@@ -97,7 +97,7 @@ prefix, and either block-aligned or a complete prompt.
 The one-iteration 8,192-token M3 Max acceptance run
 (`artifacts/e37-partial-prefix-8192.json`) measured:
 
-| Corpus arm | Matched prefix | Cold | Warm | Speedup | Full output parity |
+| Corpus arm | Matched prefix | Cold | Warm | Speedup | Two-token parity |
 |---|---:|---:|---:|---:|---:|
 | 25% | 2,048 (25%) | 22,027 ms | 16,657 ms | 1.32x | 100% |
 | 50% | 4,096 (50%) | 21,146 ms | 11,164 ms | 1.89x | 100% |
@@ -110,7 +110,9 @@ note 068's known identical-B2 second-token batch-geometry variation: its warm
 rows reproduce the B1 donor boundary, while native B2 prefill selects the
 alternate second token. First-token parity remains exact in every arm; the
 new partial-prefix acceptance gate is therefore scoped to the distinct-suffix
-corpus rather than relabeling that pre-existing B2 behavior.
+corpus rather than relabeling that pre-existing B2 behavior. “Full” here means
+the artifact's configured two-token generation window, not the 64-token command
+shown below.
 
 ## Regression matrix
 
@@ -125,14 +127,58 @@ corpus rather than relabeling that pre-existing B2 behavior.
 
 ## Ordered patch handoff
 
-The nested library remote is not writable by this agent identity, so the root
-repository retains the fetchable submodule gitlink. Apply:
+The nested library remote is not writable by this agent identity, so the
+research branch retains gitlink
+`ab73a827c9dde6f8802507003aa0be71605aab8e` and applies these nested patches,
+in order:
 
-1. `060-exact-cbv2-prefix-boundary.patch` in `libs/mlx-swift-lm`;
-2. `061-cbv2-simultaneous-prompt-fork.patch` in `libs/mlx-swift-lm`;
-3. `065-exact-sequential-prefix-boundaries.patch` in `libs/mlx-swift-lm`;
-4. `061-provider-exact-prefix-wiring.patch` at the root;
-5. `062-provider-exact-prefix-benchmark.patch` at the root.
+1. `060-exact-cbv2-prefix-boundary.patch`
+   (`sha256:a62a575547ff37e3b5eaf7ec162bd2081af2ace8a76dd9453332afce6add9c3f`);
+2. `061-cbv2-simultaneous-prompt-fork.patch`
+   (`sha256:2adc40ae8918b04afea7b4dfa651b623fdf792314c5042d4bad11bf50502ab37`);
+3. `065-exact-sequential-prefix-boundaries.patch`
+   (`sha256:ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5`).
+
+Replaying that sequence and staging the result yields tree
+`b002398c22703c1b57b9c4db505b6bdf68e6bc99` (the tree at local research
+commit `4edf47cfd43c2dcb41ea07c0b27092700d244fcd`).
+
+The root provider and benchmark changes are already ordinary tracked files on
+the research branch. Do **not** reapply
+`061-provider-exact-prefix-wiring.patch` or
+`062-provider-exact-prefix-benchmark.patch` to that checkout; those are
+archival mirrors from different root baselines, not one clean-base series.
+Before merge, publish the nested tree to a writable remote and update the
+gitlink so an ordinary recursive clone builds without patching.
+
+Replay verification in an isolated clone:
+
+```bash
+root=$PWD
+tmp=$(mktemp -d)
+git clone --quiet --no-hardlinks "$root/libs/mlx-swift-lm" "$tmp"
+git -C "$tmp" checkout --quiet ab73a827c9dde6f8802507003aa0be71605aab8e
+for patch in \
+  060-exact-cbv2-prefix-boundary.patch \
+  061-cbv2-simultaneous-prompt-fork.patch \
+  065-exact-sequential-prefix-boundaries.patch
+do
+  git -C "$tmp" apply --check "$root/research/qwen36-prefill/patches/$patch"
+  git -C "$tmp" apply "$root/research/qwen36-prefill/patches/$patch"
+done
+git -C "$tmp" add -A
+test "$(git -C "$tmp" write-tree)" = \
+  b002398c22703c1b57b9c4db505b6bdf68e6bc99
+```
+
+Patch 061 is intentionally emitted with zero context so the repository's
+configured-secret scanner does not mistake an existing environment value
+inside unchanged comments for a new secret. Apply it with:
+
+```bash
+git apply --unidiff-zero \
+  research/qwen36-prefill/patches/061-provider-exact-prefix-wiring.patch
+```
 
 ## Apple Silicon run
 
@@ -177,6 +223,9 @@ jq -e '
 
 ## M3 Max result — 8K, three-run medians
 
+Speedup is the ratio of the separately computed cold and warm median
+makespans. It is not the median of three per-iteration ratios.
+
 | Exact matched prefix | Matched tokens/row | Cold B4 | Warm B4 | Speedup |
 |---:|---:|---:|---:|---:|
 | 25% | 2,048 | 21019.3 ms | 16233.7 ms | 1.295× |
@@ -190,6 +239,41 @@ remain 196×/316×/406× by makespan.
 
 Artifact: `artifacts/e37-partial-prefix-8192-3x.json`.
 
+The artifact binds the model (`artifactSHA256`) and corpus (`sha256`), but
+does not record root/submodule commits or patch digests. Its recorded factory
+identifier differs from the canonical identifier in the checked-in v1
+validator/schema, so the committed artifact does not validate against the
+current schema. OS/Swift/power posture is also absent from the JSON. Preserve
+this artifact as historical evidence; do not rewrite its provenance fields. A
+decision-grade rerun must emit the missing provenance directly.
+
+### Construction-inclusive economics
+
+Boundary construction is not free: the median donor takes 7.7–8.0 s
+because it materializes 32 storage-owning hybrid snapshots. For one
+donor plus one B4 warm batch:
+
+| Prefix | Warm-only speedup | Construction-inclusive speedup |
+|---:|---:|---:|
+| 25% | 1.295× | 1.10× |
+| 50% | 1.874× | 1.38× |
+| 75% | 3.635× | 1.91× |
+| 87.5% | 7.066× | 2.39× |
+| 100% | 405.7× | **3.23×** |
+
+At 75%, three warm B4 batches amortize construction past 2.5×. At
+87.5%, two warm B4 batches do. Full-prompt B1 crosses on the fourth
+total use; B2 crosses after two warm B2 batches; B4 crosses after one.
+The benchmark keeps construction and warm denominators separate so
+neither result can be mistaken for the other.
+
+Memory posture is also benchmark-scoped. The report carves
+19,477,509,628 bytes and retains 4,829,189,120 bytes after construction.
+The default-off deployment candidate defaults to a 1 GiB hard cache
+ceiling; its LRU remains bounded, but that ceiling cannot retain the same
+32-boundary set. The 75%/87.5% profile therefore needs a rerun with the
+actual deployment budget (or an explicitly justified larger operator cap).
+
 Apple-Silicon validation after the measured patch:
 
 - exact-cache ownership/longest-match tests: 5/5 pass;
@@ -197,3 +281,7 @@ Apple-Silicon validation after the measured patch:
 - provider benchmark/report/schema tests: 9/9 pass;
 - provider usage/wiring tests: 7/7 pass;
 - release build: pass.
+
+Those tests ran in the patched nested worktree. They do not prove that an
+ordinary recursive checkout works; the gitlink still points at the unpatched
+base above.

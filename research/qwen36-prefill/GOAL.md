@@ -88,15 +88,33 @@ hybrid-state reuse:
 - sequential B4 75%-common 8K: **3.635×**;
 - sequential B4 87.5%-common 8K: **7.066×**.
 
-These are three-run medians. Every cached/forked object includes all ten
-attention K/V rows, all thirty recurrent states/tails, position, and
-frontier logits where applicable. Partial suffix outputs match cold
-controls exactly.
+These are ratios of the cold and candidate three-run median burst
+makespans, using effective prompt throughput (`sum(requested prompt
+tokens) / burst makespan`) as the denominator. Every cached/forked object
+includes all ten attention K/V rows, all thirty recurrent states/tails,
+position, and frontier logits where applicable.
 
-This satisfies the 2.5× objective for reuse-bearing workloads without
-changing weights or quality. The distinct, unrelated cold-prompt cell
-remains the next optimization target and must not be conflated with the
-measured reuse profiles.
+Correctness evidence is narrower than the intended 64-token gate: the
+decision artifacts generated only two tokens. First-token parity is exact
+in every cell and the two-token partial-suffix and B4 sequences match cold
+controls. Identical B2 warm/fork rows retain the known second-token
+batch-geometry difference (`fullTokenEqualityRate = 0`).
+
+Cache construction is reported separately and costs ~8 s at 8K when all
+32 exact boundaries are materialized; the stated reuse speedups are warm
+or live-fork makespans, not construction-inclusive single-hit claims.
+The partial-prefix benchmark carved 19,477,509,628 bytes and retained
+4,829,189,120 bytes after construction. The default-off deployment
+candidate defaults to a 1 GiB cache ceiling, so retention of the measured
+75%/87.5% boundaries is not yet established under its default budget.
+
+This clears the 2.5× performance threshold for the named reuse-bearing
+workloads without changing weights. It does **not** yet satisfy the full
+merge/ship objective: 64-token parity, fork execution evidence, complete
+code provenance, deployment-budget parity, and a clean submodule commit
+remain open. The distinct, unrelated cold-prompt cell remains the next
+optimization target and must not be conflated with the measured reuse
+profiles.
 
 ## Architecture facts (do not rediscover)
 

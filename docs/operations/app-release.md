@@ -111,8 +111,12 @@ the legacy `recovery/update.lock` second so they also exclude provider versions
 released before the shared lock existed. Lock files are never unlinked; the
 kernel releases ownership on exit or crash without PID-based stale takeover.
 The shell path applies the same monotonic version rule and journals its final
-rename/link transaction, so the next installer rolls back an interrupted
-pre-commit swap or finishes cleanup after a committed swap. Concurrent valid
+rename transaction in one atomically published, disk-synchronized manifest.
+App and `bin/` directory identities make rollback restart-safe even if recovery
+itself is interrupted; unrecognized content created after a crash is preserved.
+The next installer rolls back an interrupted pre-commit swap or finishes cleanup
+after a committed swap. Legacy flat bundles are rejected once `Darkbloom.app`
+exists because they carry no authenticated app version. Concurrent valid app
 installers therefore finish at the highest version instead of letting the last
 stale copy win.
 

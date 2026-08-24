@@ -788,6 +788,16 @@ public struct SelfUpdater: Sendable {
                 operation: operation,
                 timeout: timeout
             )
+            if let pendingInstall = try InstallMutationLock.pendingOneShotTransaction(
+                in: installRoot
+            ) {
+                processLock.release()
+                installMutationLock.release()
+                throw UpdateError.replaceFailed(
+                    "shell installer transaction requires recovery at "
+                        + pendingInstall.path
+                )
+            }
             return UpdateSession(
                 installMutationLock: installMutationLock,
                 processLock: processLock,

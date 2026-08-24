@@ -318,6 +318,7 @@ read_canonical_app_version() {
 compare_numeric_identifiers() {
     local left=$1
     local right=$2
+    local LC_ALL=C
     while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do left=${left#0}; done
     while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do right=${right#0}; done
     if [ "${#left}" -lt "${#right}" ]; then
@@ -335,6 +336,7 @@ compare_numeric_identifiers() {
 
 semver_is_older() {
     semver_is_valid "$1" && semver_is_valid "$2" || return 1
+    local LC_ALL=C
     local candidate_no_build=${1%%+*}
     local installed_no_build=${2%%+*}
     local candidate_core=${candidate_no_build%%-*}
@@ -424,16 +426,39 @@ prepare_app_install_lock_file() {
     chmod 600 "$lock"
 }
 
-acquire_app_install_lock_fd() {
-    local descriptor=$1
-    local deadline=$2
-    while ! /usr/bin/lockf -s -t 0 "$descriptor"; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            fail_install "Another Darkbloom installation is still active."
-            return 1
-        fi
-        sleep 0.05
-    done
+terminate_install_lock_child() {
+    local signal=$1
+    local status=$2
+    if [ -n "${INSTALL_LOCK_CHILD_PID:-}" ]; then
+        kill "-$signal" "$INSTALL_LOCK_CHILD_PID" 2>/dev/null || true
+        wait "$INSTALL_LOCK_CHILD_PID" 2>/dev/null || true
+    fi
+    [ -z "${INSTALL_LOCK_HELPER_PATH:-}" ] \
+        || rm -f "$INSTALL_LOCK_HELPER_PATH"
+    exit "$status"
+}
+
+locked_install_dispatch() {
+    local install_dir=$1
+    local action=$2
+    shift 2
+
+    recover_interrupted_install_transactions "$install_dir" || return 1
+    if install_path_exists "$install_dir/recovery/transaction.json"; then
+        fail_install \
+            "A SelfUpdater transaction needs recovery before the shell installer can run."
+        return 1
+    fi
+
+    case "$action" in
+        install_bundle_atomically_locked|install_lock_noop|install_lock_probe_body)
+            "$action" "$@"
+            ;;
+        *)
+            fail_install "Unsupported locked installer action: $action"
+            return 64
+            ;;
+    esac
 }
 
 with_app_install_lock() {
@@ -445,79 +470,330 @@ with_app_install_lock() {
     prepare_app_install_lock_file "$primary_lock" || return 1
     prepare_app_install_lock_file "$legacy_lock" || return 1
 
-    exec 8>>"$primary_lock"
-    exec 9>>"$legacy_lock"
-    local deadline=$(( $(date +%s) + 30 ))
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    [ -x /usr/bin/perl ] || {
+        fail_install "The macOS system Perl runtime required for safe installation is missing."
+        return 1
+    }
+
+    local helper
+    helper=$(/usr/bin/mktemp \
+        "${TMPDIR:-/tmp}/darkbloom-install-lock.XXXXXX") || return 1
+    chmod 700 "$helper" || {
+        rm -f "$helper"
+        return 1
+    }
+    {
+        printf '%s\n' '#!/bin/bash' 'set -euo pipefail'
+        declare -f
+        printf '%s\n' 'locked_install_dispatch "$@"'
+    } > "$helper" || {
+        rm -f "$helper"
+        return 1
+    }
+
+    INSTALL_LOCK_HELPER_PATH=$helper
+    INSTALL_LOCK_CHILD_PID=""
+    INSTALL_TEST_MODE="$INSTALL_TEST_MODE" \
+    FAN_HELPER_REQUIREMENT="$FAN_HELPER_REQUIREMENT" \
+    DARKBLOOM_DESIGNATED_REQUIREMENT="$DARKBLOOM_DESIGNATED_REQUIREMENT" \
+    DARKBLOOM_FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT" \
+    /usr/bin/perl -MFcntl=:DEFAULT,:flock,:mode,F_SETFD \
+        -MErrno=EAGAIN,EINTR,EWOULDBLOCK -MTime::HiRes=time,sleep -e '
+        use strict;
+        use warnings;
+
+        my ($primary, $legacy, $helper, @command) = @ARGV;
+        my $timeout = $ENV{DARKBLOOM_INSTALL_LOCK_TIMEOUT} // 30;
+        $timeout = 30 unless $timeout =~ /\A(?:0|[1-9][0-9]*)\z/;
+        my $deadline = time() + $timeout;
+
+        sub acquire_lock {
+            my ($path, $deadline) = @_;
+            sysopen(my $handle, $path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600)
+                or die "Could not open installation lock $path: $!\n";
+            my @status = stat($handle);
+            @status && S_ISREG($status[2])
+                or die "Installation lock is not a regular file: $path\n";
+            chmod(0600, $handle)
+                or die "Could not secure installation lock $path: $!\n";
+            fcntl($handle, F_SETFD, 0)
+                or die "Could not preserve installation lock $path: $!\n";
+
+            while (!flock($handle, LOCK_EX | LOCK_NB)) {
+                next if $! == EINTR;
+                if ($! == EWOULDBLOCK || $! == EAGAIN) {
+                    die "Another Darkbloom installation is still active.\n"
+                        if time() >= $deadline;
+                    sleep(0.05);
+                    next;
+                }
+                die "Could not acquire installation lock $path: $!\n";
+            }
+            return $handle;
+        }
+
+        my $primary_handle = acquire_lock($primary, $deadline);
+        my $legacy_handle = acquire_lock($legacy, $deadline);
+        truncate($legacy_handle, 0)
+            or die "Could not clear legacy update owner record: $!\n";
+        seek($legacy_handle, 0, 0)
+            or die "Could not rewind legacy update lock: $!\n";
+
+        exec("/bin/bash", $helper, @command)
+            or die "Could not launch locked installer body: $!\n";
+    ' "$primary_lock" "$legacy_lock" "$helper" "$install_dir" "$@" &
+    INSTALL_LOCK_CHILD_PID=$!
+    trap 'terminate_install_lock_child HUP 129' HUP
+    trap 'terminate_install_lock_child INT 130' INT
+    trap 'terminate_install_lock_child TERM 143' TERM
 
     local status=0
-    acquire_app_install_lock_fd 8 "$deadline" || status=$?
-    if [ "$status" -eq 0 ]; then
-        acquire_app_install_lock_fd 9 "$deadline" || status=$?
-    fi
-    if [ "$status" -eq 0 ]; then
-        : > "$legacy_lock" || status=$?
-    fi
-    if [ "$status" -eq 0 ]; then
-        recover_interrupted_install_transactions "$install_dir" || status=$?
-    fi
-    if [ "$status" -eq 0 ]; then
-        "$@" || status=$?
-    fi
-
+    wait "$INSTALL_LOCK_CHILD_PID" || status=$?
     trap - HUP INT TERM
-    exec 9>&-
-    exec 8>&-
+    INSTALL_LOCK_CHILD_PID=""
+    rm -f "$helper"
+    INSTALL_LOCK_HELPER_PATH=""
     return "$status"
 }
 
 transaction_value() {
     local backup=$1
     local name=$2
-    sed -n '1p' "$backup/.$name" 2>/dev/null || true
+    awk -F= -v key="$name" '
+        $1 == key {
+            print substr($0, length(key) + 2)
+            exit
+        }
+    ' "$backup/.transaction" 2>/dev/null || true
 }
 
-mark_install_transaction_phase() {
-    local backup=$1
-    local phase=$2
-    local temporary="$backup/.transaction-phase.tmp-$$"
-    printf '%s\n' "$phase" > "$temporary" \
-        && chmod 600 "$temporary" \
-        && mv "$temporary" "$backup/.transaction-phase"
+path_identity() {
+    local path=$1
+    stat -f '%d:%i' "$path" 2>/dev/null \
+        || stat -c '%d:%i' "$path" 2>/dev/null
+}
+
+path_matches_identity() {
+    local path=$1
+    local expected=$2
+    install_path_exists "$path" \
+        && [ "$(path_identity "$path" 2>/dev/null || true)" = "$expected" ]
+}
+
+sync_install_directories() {
+    /usr/bin/perl -MFcntl=:DEFAULT,:mode -MIO::Handle -e '
+        use strict;
+        use warnings;
+        for my $path (@ARGV) {
+            sysopen(my $directory, $path, O_RDONLY)
+                or die "Could not open directory $path for sync: $!\n";
+            my @status = stat($directory);
+            @status && S_ISDIR($status[2])
+                or die "Sync path is not a directory: $path\n";
+            $directory->sync
+                or die "Could not sync directory $path: $!\n";
+        }
+    ' "$@"
+}
+
+sync_install_tree() {
+    local root=$1
+    /usr/bin/perl -MFile::Find -MFcntl=:DEFAULT,:mode -MIO::Handle -e '
+        use strict;
+        use warnings;
+        my $root = shift;
+        my @directories;
+        find(
+            {
+                no_chdir => 1,
+                wanted => sub {
+                    my $path = $File::Find::name;
+                    my @status = lstat($path);
+                    @status or die "Could not inspect $path: $!\n";
+                    return if S_ISLNK($status[2]);
+                    if (S_ISREG($status[2])) {
+                        sysopen(my $file, $path, O_RDONLY)
+                            or die "Could not open $path for sync: $!\n";
+                        $file->sync
+                            or die "Could not sync $path: $!\n";
+                    } elsif (S_ISDIR($status[2])) {
+                        push @directories, $path;
+                    }
+                },
+            },
+            $root
+        );
+        for my $path (sort { length($b) <=> length($a) } @directories) {
+            sysopen(my $directory, $path, O_RDONLY)
+                or die "Could not open directory $path for sync: $!\n";
+            $directory->sync
+                or die "Could not sync directory $path: $!\n";
+        }
+    ' "$root"
 }
 
 write_install_transaction() {
     local backup=$1
     local kind=$2
-    local had_previous=$3
-    local previous_was_foreign=${4:-0}
-    local staging_name=$5
-    [[ "$staging_name" == .install-staging-* ]] \
-        && [[ "$staging_name" != */* ]] \
+    local phase=$3
+    local had_app=$4
+    local had_bin=$5
+    local previous_was_foreign=$6
+    local staging_name=$7
+    local candidate_app_identity=$8
+    local candidate_bin_identity=$9
+    local previous_app_identity=${10}
+    local previous_bin_identity=${11}
+    local transaction_id=${12}
+    local manifest="$backup/.transaction"
+    local temporary="$backup/.transaction.tmp-$$-$RANDOM"
+
+    [[ "$kind" =~ ^(app|flat)$ ]] \
+        && [[ "$phase" =~ ^(prepared|committed|rolled_back)$ ]] \
+        && [[ "$had_app" =~ ^[01]$ ]] \
+        && [[ "$had_bin" =~ ^[01]$ ]] \
+        && [[ "$previous_was_foreign" =~ ^[01]$ ]] \
+        && [[ "$transaction_id" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] \
+        && [ "$staging_name" = ".install-staging-$transaction_id" ] \
+        && [[ "$candidate_app_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && [[ "$candidate_bin_identity" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$previous_app_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && [[ "$previous_bin_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && { [ "$had_app" -eq 1 ] || [ "$previous_app_identity" = "none" ]; } \
+        && { [ "$had_app" -eq 0 ] || [ "$previous_app_identity" != "none" ]; } \
+        && { [ "$had_bin" -eq 1 ] || [ "$previous_bin_identity" = "none" ]; } \
+        && { [ "$had_bin" -eq 0 ] || [ "$previous_bin_identity" != "none" ]; } \
+        && { [ "$kind" = "app" ] || { [ "$had_app" -eq 0 ] \
+            && [ "$candidate_app_identity" = "none" ]; }; } \
         || return 1
-    printf '1\n' > "$backup/.transaction-version" \
-        && printf '%s\n' "$kind" > "$backup/.transaction-kind" \
-        && printf '%s\n' "$had_previous" > "$backup/.had-previous" \
-        && printf '%s\n' "$previous_was_foreign" > "$backup/.previous-was-foreign" \
-        && printf '%s\n' "$staging_name" > "$backup/.staging-name" \
-        && chmod 600 "$backup"/.transaction-* \
-            "$backup/.had-previous" "$backup/.previous-was-foreign" \
-            "$backup/.staging-name" \
-        && mark_install_transaction_phase "$backup" prepared
+
+    (
+        umask 077
+        {
+            printf 'version=2\n'
+            printf 'id=%s\n' "$transaction_id"
+            printf 'kind=%s\n' "$kind"
+            printf 'phase=%s\n' "$phase"
+            printf 'had_app=%s\n' "$had_app"
+            printf 'had_bin=%s\n' "$had_bin"
+            printf 'previous_was_foreign=%s\n' "$previous_was_foreign"
+            printf 'staging_name=%s\n' "$staging_name"
+            printf 'candidate_app_identity=%s\n' "$candidate_app_identity"
+            printf 'candidate_bin_identity=%s\n' "$candidate_bin_identity"
+            printf 'previous_app_identity=%s\n' "$previous_app_identity"
+            printf 'previous_bin_identity=%s\n' "$previous_bin_identity"
+        } > "$temporary"
+    ) || return 1
+
+    /usr/bin/perl -MFcntl=:DEFAULT,:mode -MIO::Handle -e '
+        use strict;
+        use warnings;
+        my ($temporary, $manifest, $directory) = @ARGV;
+        sysopen(my $file, $temporary, O_RDWR | O_NOFOLLOW)
+            or die "Could not open transaction manifest $temporary: $!\n";
+        my @status = stat($file);
+        @status && S_ISREG($status[2])
+            or die "Transaction manifest is not a regular file: $temporary\n";
+        $file->sync
+            or die "Could not sync transaction manifest $temporary: $!\n";
+        close($file)
+            or die "Could not close transaction manifest $temporary: $!\n";
+        rename($temporary, $manifest)
+            or die "Could not publish transaction manifest $manifest: $!\n";
+        sysopen(my $parent, $directory, O_RDONLY)
+            or die "Could not open transaction directory $directory: $!\n";
+        $parent->sync
+            or die "Could not sync transaction directory $directory: $!\n";
+    ' "$temporary" "$manifest" "$backup" || {
+        rm -f "$temporary"
+        return 1
+    }
+}
+
+load_install_transaction() {
+    local backup=$1
+    [ -f "$backup/.transaction" ] \
+        && [ ! -L "$backup/.transaction" ] \
+        && [ "$(wc -l < "$backup/.transaction" | tr -d '[:space:]')" = "12" ] \
+        || return 1
+
+    TX_VERSION=$(transaction_value "$backup" version)
+    TX_ID=$(transaction_value "$backup" id)
+    TX_KIND=$(transaction_value "$backup" kind)
+    TX_PHASE=$(transaction_value "$backup" phase)
+    TX_HAD_APP=$(transaction_value "$backup" had_app)
+    TX_HAD_BIN=$(transaction_value "$backup" had_bin)
+    TX_PREVIOUS_WAS_FOREIGN=$(transaction_value "$backup" previous_was_foreign)
+    TX_STAGING_NAME=$(transaction_value "$backup" staging_name)
+    TX_CANDIDATE_APP_IDENTITY=$(transaction_value \
+        "$backup" candidate_app_identity)
+    TX_CANDIDATE_BIN_IDENTITY=$(transaction_value \
+        "$backup" candidate_bin_identity)
+    TX_PREVIOUS_APP_IDENTITY=$(transaction_value \
+        "$backup" previous_app_identity)
+    TX_PREVIOUS_BIN_IDENTITY=$(transaction_value \
+        "$backup" previous_bin_identity)
+
+    [ "$TX_VERSION" = "2" ] \
+        && [ "${backup##*/}" = ".install-backup-$TX_ID" ] \
+        && [[ "$TX_ID" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] \
+        && [[ "$TX_KIND" =~ ^(app|flat)$ ]] \
+        && [[ "$TX_PHASE" =~ ^(prepared|committed|rolled_back)$ ]] \
+        && [[ "$TX_HAD_APP" =~ ^[01]$ ]] \
+        && [[ "$TX_HAD_BIN" =~ ^[01]$ ]] \
+        && [[ "$TX_PREVIOUS_WAS_FOREIGN" =~ ^[01]$ ]] \
+        && [ "$TX_STAGING_NAME" = ".install-staging-$TX_ID" ] \
+        && [[ "$TX_CANDIDATE_APP_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && [[ "$TX_CANDIDATE_BIN_IDENTITY" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$TX_PREVIOUS_APP_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && [[ "$TX_PREVIOUS_BIN_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
+        && { [ "$TX_HAD_APP" -eq 1 ] \
+            || [ "$TX_PREVIOUS_APP_IDENTITY" = "none" ]; } \
+        && { [ "$TX_HAD_APP" -eq 0 ] \
+            || [ "$TX_PREVIOUS_APP_IDENTITY" != "none" ]; } \
+        && { [ "$TX_HAD_BIN" -eq 1 ] \
+            || [ "$TX_PREVIOUS_BIN_IDENTITY" = "none" ]; } \
+        && { [ "$TX_HAD_BIN" -eq 0 ] \
+            || [ "$TX_PREVIOUS_BIN_IDENTITY" != "none" ]; }
+}
+
+mark_install_transaction_phase() {
+    local backup=$1
+    local phase=$2
+    load_install_transaction "$backup" || return 1
+    write_install_transaction \
+        "$backup" "$TX_KIND" "$phase" "$TX_HAD_APP" "$TX_HAD_BIN" \
+        "$TX_PREVIOUS_WAS_FOREIGN" "$TX_STAGING_NAME" \
+        "$TX_CANDIDATE_APP_IDENTITY" "$TX_CANDIDATE_BIN_IDENTITY" \
+        "$TX_PREVIOUS_APP_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
+        "$TX_ID"
 }
 
 cleanup_recorded_staging() {
     local backup=$1
     local install_dir=$2
-    local staging_name
-    staging_name=$(transaction_value "$backup" staging-name)
-    [ -z "$staging_name" ] && return 0
-    [[ "$staging_name" == .install-staging-* ]] \
-        && [[ "$staging_name" != */* ]] \
-        || return 1
-    rm -rf "$install_dir/$staging_name"
+    load_install_transaction "$backup" || return 1
+    rm -rf "$install_dir/$TX_STAGING_NAME"
+    sync_install_directories "$install_dir"
+}
+
+durable_move() {
+    local source=$1
+    local destination=$2
+    mv "$source" "$destination" \
+        && sync_install_directories "${source%/*}" "${destination%/*}"
+}
+
+retire_install_transaction() {
+    local backup=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local garbage="$install_dir/.install-garbage-$transaction_id"
+    rm -rf "$garbage" || return 1
+    durable_move "$backup" "$garbage" || return 1
+    install_test_crash "transaction-retired"
+    rm -rf "$garbage" || return 1
+    sync_install_directories "$install_dir"
 }
 
 remove_managed_links() {
@@ -528,19 +804,6 @@ remove_managed_links() {
         rm -rf "${bin_dir:?}/$name" 2>/dev/null || failed=1
     done
     return "$failed"
-}
-
-snapshot_managed_links() {
-    local backup_bin=$1
-    local bin_dir=$2
-    local name
-    mkdir -p "$backup_bin" || return 1
-    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
-        if install_path_exists "$bin_dir/$name"; then
-            cp -pPR "$bin_dir/$name" "$backup_bin/$name" || return 1
-        fi
-    done
-    : > "${backup_bin%/bin}/.links-snapshotted"
 }
 
 app_payload_complete() {
@@ -581,97 +844,142 @@ flat_layout_complete() {
             "darkbloom-enclave" ]
 }
 
-install_canonical_managed_links() {
-    local install_dir=$1
-    local destination="$install_dir/Darkbloom.app"
-    local bin_dir="$install_dir/bin"
-    app_payload_complete "$destination" || return 1
-    mkdir -p "$bin_dir" \
-        && remove_managed_links "$bin_dir" \
-        && ln -s "../Darkbloom.app/Contents/MacOS/darkbloom" \
-            "$bin_dir/darkbloom" \
-        && ln -s "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" \
-            "$bin_dir/darkbloom-enclave" \
-        && ln -s "../Darkbloom.app/Contents/MacOS/mlx.metallib" \
-            "$bin_dir/mlx.metallib" \
-        && ln -s "darkbloom-enclave" "$bin_dir/eigeninference-enclave" \
-        && chmod +x \
-            "$destination/Contents/MacOS/darkbloom" \
-            "$destination/Contents/MacOS/darkbloom-enclave"
+prepare_app_candidate_bin() {
+    local current_bin=$1
+    local candidate_bin=$2
+    rm -rf "$candidate_bin" || return 1
+    mkdir -p "$candidate_bin" || return 1
+    if [ -d "$current_bin" ] && [ ! -L "$current_bin" ]; then
+        cp -pPR "$current_bin/." "$candidate_bin/" || return 1
+    fi
+    remove_managed_links "$candidate_bin" \
+        && create_managed_link \
+            "../Darkbloom.app/Contents/MacOS/darkbloom" \
+            "$candidate_bin/darkbloom" "link-darkbloom" \
+        && create_managed_link \
+            "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" \
+            "$candidate_bin/darkbloom-enclave" "link-darkbloom-enclave" \
+        && create_managed_link \
+            "../Darkbloom.app/Contents/MacOS/mlx.metallib" \
+            "$candidate_bin/mlx.metallib" "link-metallib" \
+        && create_managed_link \
+            "darkbloom-enclave" \
+            "$candidate_bin/eigeninference-enclave" "link-legacy-enclave"
 }
 
-restore_all_backed_up_bin_entries() {
-    local backup_bin=$1
-    local bin_dir=$2
-    local entry
-    [ -d "$backup_bin" ] || return 0
-    mkdir -p "$bin_dir" || return 1
-    for entry in "$backup_bin"/*; do
-        install_path_exists "$entry" || continue
-        rm -rf "$bin_dir/${entry##*/}" \
-            && mv "$entry" "$bin_dir/${entry##*/}" \
-            || return 1
-    done
+preserve_unexpected_live_path() {
+    local path=$1
+    local install_dir=$2
+    local label=$3
+    local transaction_id=$4
+    local preserved="$install_dir/$label.interrupted-$transaction_id"
+    install_path_exists "$preserved" && return 1
+    durable_move "$path" "$preserved" || return 1
+    echo "  ⚠ Preserved content created during interrupted installation at:"
+    echo "      $preserved"
+}
+
+restore_transaction_component() {
+    local backup_path=$1
+    local destination=$2
+    local had_previous=$3
+    local candidate_identity=$4
+    local previous_identity=$5
+    local install_dir=$6
+    local label=$7
+    local transaction_id=$8
+
+    if [ "$had_previous" -eq 0 ]; then
+        if path_matches_identity "$destination" "$candidate_identity"; then
+            rm -rf "$destination" || return 1
+            sync_install_directories "${destination%/*}" || return 1
+        fi
+        return 0
+    fi
+
+    if ! install_path_exists "$backup_path"; then
+        path_matches_identity "$destination" "$previous_identity"
+        return $?
+    fi
+
+    if install_path_exists "$destination"; then
+        if path_matches_identity "$destination" "$previous_identity"; then
+            return 0
+        elif path_matches_identity "$destination" "$candidate_identity"; then
+            rm -rf "$destination" || return 1
+            sync_install_directories "${destination%/*}" || return 1
+        else
+            preserve_unexpected_live_path \
+                "$destination" "$install_dir" "$label" "$transaction_id" \
+                || return 1
+        fi
+    fi
+    durable_move "$backup_path" "$destination"
 }
 
 recover_prepared_app_transaction() {
     local backup=$1
     local install_dir=$2
-    local had_previous
-    had_previous=$(transaction_value "$backup" had-previous)
-    [[ "$had_previous" =~ ^[01]$ ]] || return 1
-    [ -f "$backup/.links-snapshotted" ] || return 1
-
+    load_install_transaction "$backup" || return 1
     local destination="$install_dir/Darkbloom.app"
-    if install_path_exists "$backup/Darkbloom.app"; then
-        rm -rf "$destination" \
-            && mv "$backup/Darkbloom.app" "$destination" \
-            || return 1
-    elif [ "$had_previous" -eq 0 ]; then
-        rm -rf "$destination" || return 1
-    fi
-    restore_managed_links "$backup/bin" "$install_dir/bin" || return 1
+    restore_transaction_component \
+        "$backup/Darkbloom.app" "$destination" "$TX_HAD_APP" \
+        "$TX_CANDIDATE_APP_IDENTITY" "$TX_PREVIOUS_APP_IDENTITY" \
+        "$install_dir" "Darkbloom.app" "$TX_ID" \
+        || return 1
+    install_test_crash "recovery-app-restored"
+    restore_transaction_component \
+        "$backup/bin" "$install_dir/bin" "$TX_HAD_BIN" \
+        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
+        "$install_dir" "bin" "$TX_ID" \
+        || return 1
+    install_test_crash "recovery-bin-restored"
+    mark_install_transaction_phase "$backup" rolled_back || return 1
+    install_test_crash "app-transaction-rolled-back"
     cleanup_recorded_staging "$backup" "$install_dir" || return 1
-    rm -rf "$backup"
+    retire_install_transaction "$backup" "$install_dir" "$TX_ID"
 }
 
 finalize_committed_app_transaction() {
     local backup=$1
     local install_dir=$2
-    local previous_was_foreign
-    previous_was_foreign=$(transaction_value "$backup" previous-was-foreign)
-    [[ "$previous_was_foreign" =~ ^[01]$ ]] || return 1
-    managed_app_layout_complete "$install_dir" || return 1
+    load_install_transaction "$backup" || return 1
+    managed_app_layout_complete "$install_dir" \
+        && path_matches_identity \
+            "$install_dir/Darkbloom.app" "$TX_CANDIDATE_APP_IDENTITY" \
+        && path_matches_identity \
+            "$install_dir/bin" "$TX_CANDIDATE_BIN_IDENTITY" \
+        || return 1
 
-    if [ "$previous_was_foreign" -eq 1 ] \
-        && install_path_exists "$backup/Darkbloom.app"
-    then
-        local preserved
-        preserved=$(foreign_bundle_destination "$install_dir")
-        mv "$backup/Darkbloom.app" "$preserved" || return 1
+    if [ "$TX_PREVIOUS_WAS_FOREIGN" -eq 1 ]; then
+        local preserved="$install_dir/Darkbloom.app.foreign-$TX_ID"
+        if install_path_exists "$backup/Darkbloom.app"; then
+            install_path_exists "$preserved" && return 1
+            durable_move "$backup/Darkbloom.app" "$preserved" || return 1
+        else
+            install_path_exists "$preserved" || return 1
+        fi
         echo "  ⚠ Preserved the previous foreign app at:"
         echo "      $preserved"
     fi
     cleanup_recorded_staging "$backup" "$install_dir" || return 1
-    rm -rf "$backup"
+    retire_install_transaction "$backup" "$install_dir" "$TX_ID"
 }
 
 recover_prepared_flat_transaction() {
     local backup=$1
     local install_dir=$2
-    local had_previous
-    had_previous=$(transaction_value "$backup" had-previous)
-    [[ "$had_previous" =~ ^[01]$ ]] || return 1
-
-    if [ -d "$backup/bin" ]; then
-        rm -rf "$install_dir/bin" \
-            && mv "$backup/bin" "$install_dir/bin" \
-            || return 1
-    elif [ "$had_previous" -eq 0 ]; then
-        rm -rf "$install_dir/bin" || return 1
-    fi
+    load_install_transaction "$backup" || return 1
+    restore_transaction_component \
+        "$backup/bin" "$install_dir/bin" "$TX_HAD_BIN" \
+        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
+        "$install_dir" "bin" "$TX_ID" \
+        || return 1
+    install_test_crash "recovery-bin-restored"
+    mark_install_transaction_phase "$backup" rolled_back || return 1
+    install_test_crash "flat-transaction-rolled-back"
     cleanup_recorded_staging "$backup" "$install_dir" || return 1
-    rm -rf "$backup"
+    retire_install_transaction "$backup" "$install_dir" "$TX_ID"
 }
 
 recover_legacy_install_transaction() {
@@ -680,19 +988,73 @@ recover_legacy_install_transaction() {
     local destination="$install_dir/Darkbloom.app"
 
     if install_path_exists "$backup/Darkbloom.app"; then
-        rm -rf "$destination" \
-            && mv "$backup/Darkbloom.app" "$destination" \
-            || return 1
-        restore_all_backed_up_bin_entries \
-            "$backup/bin" "$install_dir/bin" || return 1
-    elif app_payload_complete "$destination"; then
-        install_canonical_managed_links "$install_dir" || return 1
-    elif [ -d "$backup/bin" ]; then
+        local restore="$install_dir/.install-legacy-app-$$-$RANDOM"
+        rm -rf "$restore" || return 1
+        cp -pPR "$backup/Darkbloom.app" "$restore" || return 1
         rm -rf "$destination" || return 1
-        restore_all_backed_up_bin_entries \
-            "$backup/bin" "$install_dir/bin" || return 1
+        mv "$restore" "$destination" || return 1
+    fi
+    if [ -d "$backup/bin" ]; then
+        if [ -f "$backup/.links-snapshotted" ]; then
+            mkdir -p "$install_dir/bin" \
+                && remove_managed_links "$install_dir/bin" \
+                || return 1
+            local entry
+            for entry in "$backup/bin"/*; do
+                install_path_exists "$entry" || continue
+                cp -pPR "$entry" "$install_dir/bin/${entry##*/}" || return 1
+            done
+        else
+            local bin_restore="$install_dir/.install-legacy-bin-$$-$RANDOM"
+            rm -rf "$bin_restore" || return 1
+            cp -pPR "$backup/bin" "$bin_restore" || return 1
+            rm -rf "$install_dir/bin" || return 1
+            mv "$bin_restore" "$install_dir/bin" || return 1
+        fi
     fi
     rm -rf "$backup"
+}
+
+recover_v1_install_transaction() {
+    local backup=$1
+    local install_dir=$2
+    local phase
+    local kind
+    local had_previous
+    phase=$(sed -n '1p' "$backup/.transaction-phase" 2>/dev/null || true)
+    kind=$(sed -n '1p' "$backup/.transaction-kind" 2>/dev/null || true)
+    had_previous=$(sed -n '1p' "$backup/.had-previous" 2>/dev/null || true)
+
+    if [ -z "$phase" ]; then
+        rm -rf "$backup"
+        return
+    fi
+    [[ "$kind" =~ ^(app|flat)$ ]] \
+        && [[ "$phase" =~ ^(prepared|committed)$ ]] \
+        && [[ "$had_previous" =~ ^[01]$ ]] \
+        || return 1
+
+    if [ "$phase" = "committed" ]; then
+        if [ "$kind" = "app" ]; then
+            managed_app_layout_complete "$install_dir" || return 1
+            local previous_was_foreign
+            previous_was_foreign=$(sed -n '1p' \
+                "$backup/.previous-was-foreign" 2>/dev/null || true)
+            [[ "$previous_was_foreign" =~ ^[01]$ ]] || return 1
+            if [ "$previous_was_foreign" -eq 1 ] \
+                && install_path_exists "$backup/Darkbloom.app"
+            then
+                local preserved
+                preserved=$(foreign_bundle_destination "$install_dir")
+                mv "$backup/Darkbloom.app" "$preserved" || return 1
+            fi
+        else
+            flat_layout_complete "$install_dir/bin" || return 1
+        fi
+        rm -rf "$backup"
+        return
+    fi
+    recover_legacy_install_transaction "$backup" "$install_dir"
 }
 
 recover_interrupted_install_transactions() {
@@ -700,80 +1062,69 @@ recover_interrupted_install_transactions() {
     local backup
     for backup in "$install_dir"/.install-backup-*; do
         [ -d "$backup" ] || continue
-        local version
-        local kind
-        local phase
-        version=$(transaction_value "$backup" transaction-version)
-        kind=$(transaction_value "$backup" transaction-kind)
-        phase=$(transaction_value "$backup" transaction-phase)
-
-        if [ -z "$version" ] && [ -z "$kind" ] && [ -z "$phase" ]; then
-            recover_legacy_install_transaction "$backup" "$install_dir" || {
+        if [ -f "$backup/.transaction" ]; then
+            load_install_transaction "$backup" || {
+                fail_install "Installer transaction metadata is invalid at $backup."
+                return 1
+            }
+            case "$TX_KIND:$TX_PHASE" in
+                app:prepared)
+                    recover_prepared_app_transaction "$backup" "$install_dir"
+                    ;;
+                app:committed)
+                    finalize_committed_app_transaction "$backup" "$install_dir"
+                    ;;
+                flat:prepared)
+                    recover_prepared_flat_transaction "$backup" "$install_dir"
+                    ;;
+                flat:committed)
+                    flat_layout_complete "$install_dir/bin" \
+                        && path_matches_identity \
+                            "$install_dir/bin" "$TX_CANDIDATE_BIN_IDENTITY" \
+                        && cleanup_recorded_staging "$backup" "$install_dir" \
+                        && retire_install_transaction \
+                            "$backup" "$install_dir" "$TX_ID"
+                    ;;
+                app:rolled_back|flat:rolled_back)
+                    cleanup_recorded_staging "$backup" "$install_dir" \
+                        && retire_install_transaction \
+                            "$backup" "$install_dir" "$TX_ID"
+                    ;;
+                *)
+                    false
+                    ;;
+            esac || {
                 fail_install "Could not recover interrupted installer transaction $backup."
                 return 1
             }
             continue
         fi
-        if [ "$version" != "1" ] || [[ ! "$kind" =~ ^(app|flat)$ ]]; then
-            fail_install "Installer transaction metadata is invalid at $backup."
-            return 1
-        fi
-        if [ -z "$phase" ]; then
-            cleanup_recorded_staging "$backup" "$install_dir" || return 1
-            rm -rf "$backup" || return 1
+        if [ -e "$backup/.transaction-version" ]; then
+            recover_v1_install_transaction "$backup" "$install_dir" || {
+                fail_install "Could not recover version-one installer transaction $backup."
+                return 1
+            }
             continue
         fi
-
-        case "$kind:$phase" in
-            app:prepared)
-                recover_prepared_app_transaction "$backup" "$install_dir"
-                ;;
-            app:committed)
-                finalize_committed_app_transaction "$backup" "$install_dir"
-                ;;
-            flat:prepared)
-                recover_prepared_flat_transaction "$backup" "$install_dir"
-                ;;
-            flat:committed)
-                flat_layout_complete "$install_dir/bin" \
-                    && cleanup_recorded_staging "$backup" "$install_dir" \
-                    && rm -rf "$backup"
-                ;;
-            *)
-                fail_install "Installer transaction phase is invalid at $backup."
-                return 1
-                ;;
-        esac || {
-            fail_install "Could not recover interrupted installer transaction $backup."
+        recover_legacy_install_transaction "$backup" "$install_dir" || {
+            fail_install "Could not recover legacy installer transaction $backup."
             return 1
         }
     done
-}
 
-restore_backed_up_links() {
-    local backup_bin=$1
-    local bin_dir=$2
-    local name
-    local failed=0
-    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
-        if install_path_exists "$backup_bin/$name"; then
-            if ! rm -rf "${bin_dir:?}/$name" 2>/dev/null; then
-                failed=1
-                continue
-            fi
-            mv "$backup_bin/$name" "$bin_dir/$name" 2>/dev/null || failed=1
-        fi
+    local debris
+    local removed=0
+    for debris in \
+        "$install_dir"/.install-staging-* \
+        "$install_dir"/.install-garbage-* \
+        "$install_dir"/.install-restore-* \
+        "$install_dir"/.install-legacy-*
+    do
+        install_path_exists "$debris" || continue
+        rm -rf "$debris" || return 1
+        removed=1
     done
-    return "$failed"
-}
-
-restore_managed_links() {
-    local backup_bin=$1
-    local bin_dir=$2
-    local failed=0
-    remove_managed_links "$bin_dir" || failed=1
-    restore_backed_up_links "$backup_bin" "$bin_dir" || failed=1
-    return "$failed"
+    [ "$removed" -eq 0 ] || sync_install_directories "$install_dir"
 }
 
 create_managed_link() {
@@ -824,76 +1175,94 @@ ensure_user_app_shortcut() {
 commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
+    local transaction_id=$3
+    local backup="$install_dir/.install-backup-$transaction_id"
     local destination="$install_dir/Darkbloom.app"
     local bin_dir="$install_dir/bin"
+    local stage_root=${staged_app%/Darkbloom.app}
+    local candidate_bin="$stage_root/.candidate-bin"
     local previous_app="$backup/Darkbloom.app"
-    local had_previous=0
+    local previous_bin="$backup/bin"
+    local had_app=0
+    local had_bin=0
     local previous_was_foreign=0
-    local staging_name=${staged_app%/Darkbloom.app}
+    local previous_app_identity=none
+    local previous_bin_identity=none
+    local staging_name=$stage_root
     staging_name=${staging_name##*/}
     validate_app_version_transition "$staged_app" "$destination" || return 1
-    mkdir -p "$backup" "$bin_dir" || {
-        rm -rf "$backup"
-        return 1
-    }
 
     if install_path_exists "$destination"; then
         existing_bundle_is_ours "$destination" || previous_was_foreign=1
-        had_previous=1
+        had_app=1
+        previous_app_identity=$(path_identity "$destination") || return 1
     fi
-    snapshot_managed_links "$backup/bin" "$bin_dir" \
-        && write_install_transaction \
-            "$backup" app "$had_previous" "$previous_was_foreign" \
-            "$staging_name" \
-        || {
-            rm -rf "$backup"
+    if install_path_exists "$bin_dir"; then
+        had_bin=1
+        previous_bin_identity=$(path_identity "$bin_dir") || return 1
+    fi
+
+    prepare_app_candidate_bin "$bin_dir" "$candidate_bin" || return 1
+    local app_bin="$staged_app/Contents/MacOS"
+    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave" || return 1
+    sync_install_tree "$staged_app" \
+        && sync_install_tree "$candidate_bin" \
+        || return 1
+    local candidate_app_identity
+    local candidate_bin_identity
+    candidate_app_identity=$(path_identity "$staged_app") || return 1
+    candidate_bin_identity=$(path_identity "$candidate_bin") || return 1
+
+    mkdir "$backup" || return 1
+    sync_install_directories "$install_dir" || {
+        rm -rf "$backup"
+        return 1
+    }
+    write_install_transaction \
+        "$backup" app prepared "$had_app" "$had_bin" \
+        "$previous_was_foreign" "$staging_name" \
+        "$candidate_app_identity" "$candidate_bin_identity" \
+        "$previous_app_identity" "$previous_bin_identity" \
+        "$transaction_id" || {
+        rm -rf "$backup"
+        sync_install_directories "$install_dir" || true
+        return 1
+    }
+    install_test_crash "transaction-prepared"
+
+    if [ "$had_app" -eq 1 ]; then
+        durable_move "$destination" "$previous_app" || {
+            recover_prepared_app_transaction "$backup" "$install_dir" || true
             return 1
         }
-
-    if [ "$had_previous" -eq 1 ]; then
-        if ! mv "$destination" "$previous_app"; then
-            rm -rf "$backup"
-            return 1
-        fi
         install_test_crash "previous-app-moved"
     fi
+    if [ "$had_bin" -eq 1 ]; then
+        durable_move "$bin_dir" "$previous_bin" || {
+            recover_prepared_app_transaction "$backup" "$install_dir" || true
+            return 1
+        }
+        install_test_crash "previous-bin-moved"
+    fi
     if install_test_fault "staged-app-move" \
-        || ! mv "$staged_app" "$destination"
+        || ! durable_move "$staged_app" "$destination"
     then
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     fi
     install_test_crash "staged-app-moved"
-    remove_managed_links "$bin_dir" || {
+    durable_move "$candidate_bin" "$bin_dir" || {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     }
-
-    local app_bin="$destination/Contents/MacOS"
-    if ! create_managed_link \
-        "../Darkbloom.app/Contents/MacOS/darkbloom" \
-        "$bin_dir/darkbloom" "link-darkbloom" \
-        || ! create_managed_link \
-            "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" \
-            "$bin_dir/darkbloom-enclave" "link-darkbloom-enclave" \
-        || ! create_managed_link \
-            "../Darkbloom.app/Contents/MacOS/mlx.metallib" \
-            "$bin_dir/mlx.metallib" "link-metallib" \
-        || ! create_managed_link \
-            "darkbloom-enclave" \
-            "$bin_dir/eigeninference-enclave" "link-legacy-enclave"
-    then
+    if install_test_fault "app-chmod"; then
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     fi
-    if install_test_fault "app-chmod" \
-        || ! chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
-    then
-        recover_prepared_app_transaction "$backup" "$install_dir" || true
-        return 1
-    fi
-    managed_app_layout_complete "$install_dir" || {
+    managed_app_layout_complete "$install_dir" \
+        && path_matches_identity "$destination" "$candidate_app_identity" \
+        && path_matches_identity "$bin_dir" "$candidate_bin_identity" \
+        || {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     }
@@ -912,35 +1281,59 @@ commit_staged_app() {
 commit_staged_flat_bundle() {
     local staged_bin=$1
     local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
+    local transaction_id=$3
+    local backup="$install_dir/.install-backup-$transaction_id"
     local destination="$install_dir/bin"
-    local had_previous=0
+    local had_bin=0
+    local previous_bin_identity=none
     local staging_name=${staged_bin%/bin}
     staging_name=${staging_name##*/}
-    mkdir -p "$backup"
-    if install_path_exists "$destination"; then
-        had_previous=1
+    if install_path_exists "$install_dir/Darkbloom.app"; then
+        fail_install \
+            "A legacy flat release cannot replace an installed Darkbloom.app."
+        return 1
     fi
-    write_install_transaction \
-        "$backup" flat "$had_previous" 0 "$staging_name" || {
+    if install_path_exists "$destination"; then
+        had_bin=1
+        previous_bin_identity=$(path_identity "$destination") || return 1
+    fi
+    chmod +x "$staged_bin/darkbloom" "$staged_bin/darkbloom-enclave" \
+        && ln -sfn "darkbloom-enclave" \
+            "$staged_bin/eigeninference-enclave" \
+        && flat_layout_complete "$staged_bin" \
+        && sync_install_tree "$staged_bin" \
+        || return 1
+    local candidate_bin_identity
+    candidate_bin_identity=$(path_identity "$staged_bin") || return 1
+
+    mkdir "$backup" || return 1
+    sync_install_directories "$install_dir" || {
         rm -rf "$backup"
         return 1
     }
-    if [ "$had_previous" -eq 1 ]; then
-        mv "$destination" "$backup/bin" || {
-            rm -rf "$backup"
+    write_install_transaction \
+        "$backup" flat prepared 0 "$had_bin" 0 "$staging_name" \
+        none "$candidate_bin_identity" none "$previous_bin_identity" \
+        "$transaction_id" || {
+        rm -rf "$backup"
+        sync_install_directories "$install_dir" || true
+        return 1
+    }
+    install_test_crash "transaction-prepared"
+    if [ "$had_bin" -eq 1 ]; then
+        durable_move "$destination" "$backup/bin" || {
+            recover_prepared_flat_transaction "$backup" "$install_dir" || true
             return 1
         }
         install_test_crash "flat-previous-moved"
     fi
-    if ! mv "$staged_bin" "$destination"; then
+    if ! durable_move "$staged_bin" "$destination"; then
         recover_prepared_flat_transaction "$backup" "$install_dir" || true
         return 1
     fi
     install_test_crash "flat-layout-moved"
-    if ! chmod +x "$destination/darkbloom" "$destination/darkbloom-enclave" \
-        || ! ln -sfn "darkbloom-enclave" "$destination/eigeninference-enclave" \
-        || ! flat_layout_complete "$destination"
+    if ! flat_layout_complete "$destination" \
+        || ! path_matches_identity "$destination" "$candidate_bin_identity"
     then
         recover_prepared_flat_transaction "$backup" "$install_dir" || true
         return 1
@@ -950,21 +1343,33 @@ commit_staged_flat_bundle() {
         return 1
     }
     install_test_crash "flat-transaction-committed"
-    rm -rf "$backup" || {
+    cleanup_recorded_staging "$backup" "$install_dir" \
+        && retire_install_transaction "$backup" "$install_dir" "$transaction_id" \
+        || {
         echo "  ⚠ Installed successfully, but could not remove transaction backup $backup." >&2
     }
 }
 
 install_bundle_atomically() {
+    local install_dir=$2
+    with_app_install_lock \
+        "$install_dir" install_bundle_atomically_locked "$@"
+}
+
+install_bundle_atomically_locked() {
     local archive=$1
     local install_dir=$2
     local binary_hash=${3:-}
     local metallib_hash=${4:-}
-    local stage="$install_dir/.install-staging-$$-$RANDOM"
+    local transaction_id="$$-$RANDOM-$(date +%s)"
+    local stage="$install_dir/.install-staging-$transaction_id"
     rm -rf "$stage"
     mkdir -p "$stage"
+    sync_install_directories "$install_dir"
+    install_test_crash "staging-created"
     if ! tar xzf "$archive" -C "$stage"; then
         rm -rf "$stage"
+        sync_install_directories "$install_dir" || true
         return 1
     fi
 
@@ -996,8 +1401,8 @@ install_bundle_atomically() {
             rm -rf "$stage"
             return 1
         }
-        with_app_install_lock \
-            "$install_dir" commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
+        commit_staged_app \
+            "$stage/Darkbloom.app" "$install_dir" "$transaction_id" || {
             rm -rf "$stage"
             fail_install "Atomic app swap failed; previous install was restored."
             return 1
@@ -1017,14 +1422,15 @@ install_bundle_atomically() {
                 return 1
             }
         fi
-        with_app_install_lock \
-            "$install_dir" commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
+        commit_staged_flat_bundle \
+            "$flat_bin" "$install_dir" "$transaction_id" || {
             rm -rf "$stage"
             fail_install "Atomic flat-bundle swap failed; previous install was restored."
             return 1
         }
     fi
     rm -rf "$stage"
+    sync_install_directories "$install_dir"
 }
 
 install_lock_noop() {

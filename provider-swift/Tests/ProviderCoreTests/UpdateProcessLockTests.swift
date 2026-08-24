@@ -59,6 +59,46 @@ struct UpdateProcessLockTests {
         }
     }
 
+    @Test("self-updater refuses a pending shell transaction and releases locks")
+    func updaterRejectsShellRecoveryJournal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pending-shell-install-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pending = root.appendingPathComponent(
+            ".install-transaction-interrupted",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: pending,
+            withIntermediateDirectories: true
+        )
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: root,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+
+        do {
+            _ = try updater.beginUpdateSession(
+                operation: "must-recover-shell-first",
+                timeout: 0
+            )
+            Issue.record("self-updater ignored a pending shell transaction")
+        } catch UpdateError.replaceFailed(let reason) {
+            #expect(reason.contains(pending.path))
+        }
+
+        try FileManager.default.removeItem(at: pending)
+        let recovered = try updater.beginUpdateSession(
+            operation: "locks-were-released",
+            timeout: 0
+        )
+        recovered.release()
+    }
+
     #if canImport(Darwin)
     @Test("kernel releases lock after owner is killed")
     func crashedOwnerRecovery() throws {

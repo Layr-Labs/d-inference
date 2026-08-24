@@ -274,8 +274,11 @@ VALID_SEMVERS=(
     "1.0.0-0.3.7"
     "1.0.0-x.7.z.92+build.01"
     "184467440737095516160.0.1"
+    "1.0.0-184467440737095516160"
 )
 INVALID_SEMVERS=(
+    ""
+    "v1.0.0"
     "1.0"
     "01.0.0"
     "1.01.0"
@@ -396,6 +399,16 @@ test_install_lock_signal_exit() {
         echo "$installer never entered the installation lock probe" >&2
         exit 1
     fi
+
+    if DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        kill -KILL "$holder_pid" 2>/dev/null || true
+        wait "$holder_pid" 2>/dev/null || true
+        echo "$installer body ran without holding its kernel lock" >&2
+        exit 1
+    fi
+    test ! -e "$after"
 
     kill -TERM "$holder_pid"
     local status=0
@@ -622,7 +635,10 @@ assert_interrupted_app_transaction_recovers() {
 }
 
 for crash_point in \
+    staging-created \
+    transaction-prepared \
     previous-app-moved \
+    previous-bin-moved \
     staged-app-moved \
     managed-links-installed
 do
@@ -632,9 +648,97 @@ done
 assert_interrupted_app_transaction_recovers \
     "$REPO_ROOT/scripts/install.sh" source app-transaction-committed committed
 assert_interrupted_app_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source transaction-retired committed
+assert_interrupted_app_transaction_recovers \
     "$REPO_ROOT/coordinator/api/install.sh" embedded staged-app-moved rollback
 assert_interrupted_app_transaction_recovers \
     "$REPO_ROOT/coordinator/api/install.sh" embedded app-transaction-committed committed
+
+assert_recovery_is_restart_safe() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/recovery-restart-$label"
+    local destination="$install_dir/Darkbloom.app"
+    local bin_dir="$install_dir/bin"
+
+    write_existing_bundle "$destination" com.example.foreign
+    printf 'foreign payload\n' > "$destination/foreign-payload"
+    mkdir -p "$bin_dir"
+    printf 'previous darkbloom\n' > "$bin_dir/darkbloom"
+    printf 'previous metallib\n' > "$bin_dir/mlx.metallib"
+    ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
+    ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the setup crash for recovery restart" >&2
+        exit 1
+    fi
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=recovery-app-restored \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer survived the injected recovery crash" >&2
+        exit 1
+    fi
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "com.example.foreign"
+    test "$(cat "$destination/foreign-payload")" = "foreign payload"
+    test "$(cat "$bin_dir/darkbloom")" = "previous darkbloom"
+    test "$(cat "$bin_dir/mlx.metallib")" = "previous metallib"
+    local debris
+    for debris in \
+        "$install_dir"/.install-backup-* \
+        "$install_dir"/.install-staging-* \
+        "$install_dir"/*.interrupted-*
+    do
+        if [ -e "$debris" ] || [ -L "$debris" ]; then
+            echo "restart-safe recovery left unexpected debris: $debris" >&2
+            exit 1
+        fi
+    done
+}
+
+assert_fresh_recovery_preserves_replacement() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/fresh-replacement-$label"
+    local destination="$install_dir/Darkbloom.app"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the fresh-install crash" >&2
+        exit 1
+    fi
+
+    rm -rf "$destination"
+    write_existing_bundle "$destination" com.example.after-crash
+    printf 'created after crash\n' > "$destination/foreign-payload"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "com.example.after-crash"
+    test "$(cat "$destination/foreign-payload")" = "created after crash"
+}
+
+assert_recovery_is_restart_safe "$REPO_ROOT/scripts/install.sh" source
+assert_recovery_is_restart_safe \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
+assert_fresh_recovery_preserves_replacement \
+    "$REPO_ROOT/scripts/install.sh" source
+assert_fresh_recovery_preserves_replacement \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
 
 assert_interrupted_flat_transaction_recovers() {
     local installer=$1
@@ -677,11 +781,37 @@ assert_interrupted_flat_transaction_recovers() {
 }
 
 assert_interrupted_flat_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source transaction-prepared rollback
+assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/scripts/install.sh" source flat-previous-moved rollback
 assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/scripts/install.sh" source flat-transaction-committed committed
 assert_interrupted_flat_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source transaction-retired committed
+assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/coordinator/api/install.sh" embedded flat-layout-moved rollback
+
+# A legacy release has no authenticated app version and must never overwrite
+# the CLI links for an installed app. Otherwise SelfUpdater continues to launch
+# the app while users invoke unrelated stale flat binaries from bin/.
+for installer_label in source embedded; do
+    if [ "$installer_label" = "source" ]; then
+        layout_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        layout_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    layout_install="$ROOT/flat-over-app-$installer_label"
+    run_install_with "$layout_installer" "$VALID" "$layout_install"
+    if run_install_with "$layout_installer" "$FLAT_LEGACY" "$layout_install"; then
+        echo "$installer_label installer replaced app layout with flat release" >&2
+        exit 1
+    fi
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+        "$layout_install/Darkbloom.app/Contents/Info.plist")" = "2.0.0"
+    test -L "$layout_install/bin/darkbloom"
+    test "$(readlink "$layout_install/bin/darkbloom")" = \
+        "../Darkbloom.app/Contents/MacOS/darkbloom"
+done
 
 # Release and unsigned-dev identifiers are the only replaceable owners. They
 # are swapped in place without producing a misleading foreign backup.

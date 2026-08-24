@@ -14,6 +14,7 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
     case copiedExecutableUnavailable(path: String)
     case downgradeRejected(sourceVersion: String, installedVersion: String)
     case downgradeRecoveryStatePresent(path: String)
+    case pendingInstallRecovery(path: String)
     case installFailed(path: String, reason: String)
 
     var errorDescription: String? {
@@ -34,6 +35,9 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
         case .downgradeRecoveryStatePresent(let path):
             "Darkbloom cannot perform the requested rollback while SelfUpdater state "
                 + "still exists at \(path)."
+        case .pendingInstallRecovery(let path):
+            "Darkbloom cannot replace the installed app while another installer "
+                + "transaction needs recovery at \(path)."
         case .installFailed(let path, let reason):
             "Darkbloom could not atomically install the verified app at \(path): \(reason)"
         }
@@ -47,6 +51,9 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
         case .downgradeRecoveryStatePresent:
             "Stop Darkbloom and archive its recovery directory before retrying the "
                 + "documented signed-release rollback."
+        case .pendingInstallRecovery:
+            "Let the existing Darkbloom CLI recover a self-update, or rerun the shell "
+                + "installer to recover its transaction, then reopen this app."
         default:
             "Check that ~/.darkbloom and your home Applications folder are writable, "
                 + "then reopen the downloaded Darkbloom app. No administrator access is required."
@@ -280,6 +287,7 @@ struct AppInstallCoordinator {
         at destinationURL: URL,
         nonce: String
     ) throws -> URL? {
+        try rejectPendingForeignTransactions()
         guard itemExists(at: destinationURL) else {
             do {
                 try fileManager.moveItem(at: stagingURL, to: destinationURL)
@@ -328,6 +336,26 @@ struct AppInstallCoordinator {
             return nil
         }
         return backupURL
+    }
+
+    private func rejectPendingForeignTransactions() throws {
+        let installRoot = destinationURL.deletingLastPathComponent()
+        let selfUpdate = InstallMutationLock.selfUpdateTransactionURL(
+            in: installRoot
+        )
+        if itemExists(at: selfUpdate) {
+            throw AppInstallCoordinatorError.pendingInstallRecovery(
+                path: selfUpdate.path
+            )
+        }
+        if let shellInstall = try InstallMutationLock.pendingOneShotTransaction(
+            in: installRoot,
+            fileManager: fileManager
+        ) {
+            throw AppInstallCoordinatorError.pendingInstallRecovery(
+                path: shellInstall.path
+            )
+        }
     }
 
     private func attemptUserShortcut(nonce: String) {
@@ -396,14 +424,14 @@ struct AppInstallCoordinator {
     private func canonicalSemanticVersion(
         of metadata: BundleMetadata,
         at url: URL
-    ) throws -> BundleSemanticVersion {
-        guard let shortVersion = BundleSemanticVersion(metadata.shortVersion) else {
+    ) throws -> SemanticVersion {
+        guard let shortVersion = SemanticVersion(metadata.shortVersion) else {
             throw AppInstallCoordinatorError.invalidBundle(
                 path: url.path,
                 reason: "CFBundleShortVersionString is not canonical semantic versioning"
             )
         }
-        guard let bundleVersion = BundleSemanticVersion(metadata.bundleVersion) else {
+        guard let bundleVersion = SemanticVersion(metadata.bundleVersion) else {
             throw AppInstallCoordinatorError.invalidBundle(
                 path: url.path,
                 reason: "CFBundleVersion is not canonical semantic versioning"

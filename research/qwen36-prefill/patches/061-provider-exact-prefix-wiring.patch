@@ -393,7 +393,7 @@ index 00000000..652e9177
 +    /// Versioned snapshot/execution contract. Changing this value invalidates
 +    /// every key even if model artifacts and prompt tokens stay unchanged.
 +    static let exactPrefixCachePolicyDomain =
-+        "darkbloom.cbv2-exact-prompt-state-v1"
++        "darkbloom.cbv2-exact-prompt-state-v2"
 +
 +    /// Environment resolution is fail-closed:
 +    ///   * absent/unrecognized enable values keep the feature off;
@@ -1344,7 +1344,7 @@ index 00000000..499e8b8b
 +        #expect(try identity(backend: .paged).policyIdentity != base.policyIdentity)
 +        #expect(try identity(dtype: "float16").policyIdentity != base.policyIdentity)
 +        #expect(
-+            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v2")
++            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v3")
 +                .policyIdentity != base.policyIdentity)
 +    }
 +

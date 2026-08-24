@@ -213,5 +213,11 @@ E=8 improves quality to 66% while missing speed at 2.41×. Both are closed
 (`notes/077`): exact frontier computation cannot recover discarded historical
 hidden-state information.
 
+E51 expands the full-depth suffix to 192 rows and composes prefill top-k4.
+It is the first quality-passing non-reuse cold profile: **3.04×/3.02×/3.14×**
+at B1/B2/B4×8K and 2.64× at B4×2K, with 96.44% blind quality and no new
+fatal failure (`notes/080`). Short B1 remains open: 1.54× at 512 and 2.35×
+at 2K.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

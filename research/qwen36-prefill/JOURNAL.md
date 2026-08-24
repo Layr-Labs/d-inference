@@ -622,6 +622,19 @@ The target >2.5× boundaries therefore survive the deployed default
 budget. Completion equality remains 75%, so the quality blocker is
 unchanged.
 
+## 2026-08-24T21:03Z — E51 suffix192 + top-k4 passes long cold cells
+
+The bounded full-depth suffix finds a quality/performance frontier:
+
+- B1/B2/B4×8K: **3.036× / 3.017× / 3.144×**;
+- B4×2K: **2.635×**;
+- blind quality: 217/300 versus native 225/300 (**96.44%**);
+- zero candidate-only fatal failures.
+
+B1×512/2K remain only 1.543×/2.352× because the fixed 192-row suffix
+dominates short prompts. The long aggregate cold objective is real; the full
+short-prompt matrix is not complete. See `notes/080`.
+
 ## 2026-08-24T15:29Z — E42 final-block replay rejected
 
 Restoring the 7,936-token boundary and replaying the final 256 prompt

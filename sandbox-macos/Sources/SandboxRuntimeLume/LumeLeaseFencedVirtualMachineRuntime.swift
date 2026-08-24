@@ -24,7 +24,7 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
 
     public func capabilities() async throws -> SandboxRuntimeCapabilities {
         try capacityArbiter.requireStorageDirectory(storageDirectory)
-        try await runtime.capabilities()
+        return try await runtime.capabilities()
     }
 
     public func inspect(

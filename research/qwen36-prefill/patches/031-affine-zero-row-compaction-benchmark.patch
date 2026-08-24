@@ -1,0 +1,200 @@
+diff --git a/Tests/MLXTests/QwenAffineZeroRowCompactionPerfTests.swift b/Tests/MLXTests/QwenAffineZeroRowCompactionPerfTests.swift
+new file mode 100644
+--- /dev/null
++++ b/Tests/MLXTests/QwenAffineZeroRowCompactionPerfTests.swift
+@@ -0,0 +1,195 @@
++// Copyright © 2026 Eigen Labs.
++//
++// Exact arithmetic-roof experiment for affine W4/g64 expert output rows that
++// are identically zero. It compares the ordinary fused Qwen gate_up projection
++// (N=1024) with a compact projection containing only the live gate/up rows
++// (N=512), then restores the omitted zero rows.
++//
++// This is deliberately an optimistic necessary-condition benchmark:
++//
++// - every expert has the same 256/512 live-row count;
++// - live rows are already packed before zero rows;
++// - checkpoint repacking and expert-specific row maps are outside timing.
++//
++// The real checkpoint must be inspected layer by layer before this mechanism
++// is considered for serving. Run explicitly on an Apple GPU with:
++//
++//   MLX_W4_ZERO_ROW_PERF=1 MLX_GATHER_QMM_EXPERT_SLICES=trust \
++//     swift test --filter QwenAffineZeroRowCompactionPerfTests
++
++import Foundation
++import MLX
++import XCTest
++
++#if canImport(Metal)
++
++final class QwenAffineZeroRowCompactionPerfTests: XCTestCase {
++    override class func setUp() {
++        setDefaultDevice()
++    }
++
++    func testExactGateUpZeroRowCompactionRoof() throws {
++        try XCTSkipUnless(
++            ProcessInfo.processInfo.environment["MLX_W4_ZERO_ROW_PERF"] == "1",
++            "zero-row compaction perf run is explicit opt-in")
++
++        let expertCount = 256
++        let inputDimensions = 2048
++        let hiddenDimensions = 512
++        let activeRows = 256
++        let assignments = 16_384
++        let groupSize = 64
++        let bits = 4
++        let iterations = 15
++        let warmup = 3
++
++        func quantizedRows() throws -> (MLXArray, MLXArray, MLXArray) {
++            let dense = MLXRandom.normal(
++                [expertCount, activeRows, inputDimensions]
++            ).asType(.bfloat16)
++            let result = quantized(
++                dense, groupSize: groupSize, bits: bits, mode: .affine)
++            return (result.wq, result.scales, try XCTUnwrap(result.biases))
++        }
++
++        let gate = try quantizedRows()
++        let up = try quantizedRows()
++        let omittedRows = hiddenDimensions - activeRows
++        let packedInputDimensions = inputDimensions * bits / 32
++        let scaleGroups = inputDimensions / groupSize
++        let zeroPacked = MLXArray.zeros(
++            [expertCount, omittedRows, packedInputDimensions], dtype: .uint32)
++        // q=0 and bias=0 decode to an exact zero for every scale. A unit scale
++        // avoids relying on a special zero-row quantizer representation.
++        let zeroScales = MLXArray.ones(
++            [expertCount, omittedRows, scaleGroups], dtype: .bfloat16)
++        let zeroBiases = MLXArray.zeros(
++            [expertCount, omittedRows, scaleGroups], dtype: .bfloat16)
++
++        // Fused checkpoint layout is [all gate rows; all up rows].
++        let fullWeights = concatenated(
++            [gate.0, zeroPacked, up.0, zeroPacked], axis: 1)
++        let fullScales = concatenated(
++            [gate.1, zeroScales, up.1, zeroScales], axis: 1)
++        let fullBiases = concatenated(
++            [gate.2, zeroBiases, up.2, zeroBiases], axis: 1)
++
++        // The candidate preserves every live packed row and its affine
++        // metadata byte-for-byte; it only omits rows proven to decode to zero.
++        let compactWeights = concatenated([gate.0, up.0], axis: 1)
++        let compactScales = concatenated([gate.1, up.1], axis: 1)
++        let compactBiases = concatenated([gate.2, up.2], axis: 1)
++
++        let rowsPerExpert = assignments / expertCount
++        let expertIndices: [Int32] = (0 ..< expertCount).flatMap {
++            Array(repeating: Int32($0), count: rowsPerExpert)
++        }
++        let rhsIndices = MLXArray(expertIndices).asType(.uint32)
++        let x = MLXRandom.normal(
++            [assignments, 1, inputDimensions]
++        ).asType(.bfloat16)
++        eval(
++            fullWeights, fullScales, fullBiases,
++            compactWeights, compactScales, compactBiases,
++            rhsIndices, x)
++
++        func run(
++            weights: MLXArray, scales: MLXArray, biases: MLXArray
++        ) -> MLXArray {
++            gatherQuantizedMM(
++                x,
++                weights,
++                scales: scales,
++                biases: biases,
++                rhsIndices: rhsIndices,
++                transpose: true,
++                groupSize: groupSize,
++                bits: bits,
++                mode: .affine,
++                sortedIndices: true)
++        }
++
++        func restoreZeroRows(_ compact: MLXArray) -> MLXArray {
++            let gateOutput = compact[.ellipsis, ..<activeRows]
++            let upOutput = compact[.ellipsis, activeRows...]
++            let zeros = MLXArray.zeros(
++                [assignments, 1, omittedRows], dtype: .bfloat16)
++            return concatenated(
++                [gateOutput, zeros, upOutput, zeros], axis: -1)
++        }
++
++        let fullOutput = run(
++            weights: fullWeights, scales: fullScales, biases: fullBiases)
++        let compactOutput = run(
++            weights: compactWeights, scales: compactScales,
++            biases: compactBiases)
++        let restoredOutput = restoreZeroRows(compactOutput)
++        eval(fullOutput, restoredOutput)
++
++        XCTAssertEqual(fullOutput.shape, restoredOutput.shape)
++        XCTAssertTrue(
++            (fullOutput .== restoredOutput).all().item(Bool.self),
++            "omitting affine rows with q=0 and bias=0 must be bitwise exact")
++
++        let routes: [(name: String, outputRows: Int, run: () -> MLXArray)] = [
++            (
++                "full-gate-up", 2 * hiddenDimensions,
++                {
++                    run(
++                        weights: fullWeights, scales: fullScales,
++                        biases: fullBiases)
++                }
++            ),
++            (
++                "compact-live-rows", 2 * activeRows,
++                {
++                    run(
++                        weights: compactWeights, scales: compactScales,
++                        biases: compactBiases)
++                }
++            ),
++            (
++                "compact-plus-zero-restore", 2 * activeRows,
++                {
++                    restoreZeroRows(
++                        run(
++                            weights: compactWeights, scales: compactScales,
++                            biases: compactBiases))
++                }
++            ),
++        ]
++
++        for route in routes {
++            for _ in 0 ..< warmup { eval(route.run()) }
++            var samples: [Double] = []
++            samples.reserveCapacity(iterations)
++            GPU.clearAndArmGemma4ExpertQMMDiagnostics()
++            for _ in 0 ..< iterations {
++                let start = DispatchTime.now().uptimeNanoseconds
++                eval(route.run())
++                let end = DispatchTime.now().uptimeNanoseconds
++                samples.append(Double(end - start) / 1e6)
++            }
++            let counters = GPU.snapshotAndDisarmGemma4ExpertQMMDiagnostics()
++            samples.sort()
++            let median = samples[samples.count / 2]
++            let p10 = samples[samples.count / 10]
++            let p90 = samples[(samples.count * 9) / 10]
++            let physicalOperations =
++                2.0 * Double(assignments)
++                * Double(inputDimensions) * Double(route.outputRows)
++            let physicalTFLOPS =
++                physicalOperations / (median / 1e3) / 1e12
++            var line = "[qwen-affine-zero-row] route=\(route.name) "
++            line += "median=" + String(format: "%.4f", median) + "ms "
++            line += "p10=" + String(format: "%.4f", p10) + " "
++            line += "p90=" + String(format: "%.4f", p90) + " "
++            line += "physical_tflops=" + String(format: "%.2f", physicalTFLOPS)
++            line += " hits=\(counters.hits) fallbacks=\(counters.fallbacks) "
++            line += "n=\(iterations)\n"
++            FileHandle.standardError.write(Data(line.utf8))
++        }
++    }
++}
++
++#endif

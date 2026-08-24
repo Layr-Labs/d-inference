@@ -193,3 +193,16 @@ Next: remove the now-dead serving chunk/budget knobs while retaining the
 B=1/B=2/B=4 measurement harness. Move exclusively to arithmetic-equivalent
 gathered W4 QMM kernel experiments at the existing geometry.
 
+## 2026-08-24T06:09Z — E3 exact BK64 tile ready for Mac
+
+The regular Steel `BlockMMA` and W4/g64 loader contracts admit BK64 without
+changing the 8-wide K accumulation sequence. Threadgroup storage rises from
+5,120 to 9,216 bytes (below M3's 32 KiB cap); full-threadgroup barriers fall
+129→65 at K=2,048 and 33→17 at K=512. Sorted BM32 descriptors and BN32 stay
+unchanged.
+
+An AOT BK64 symbol and explicit `MLX_GATHER_QMM_EXPERT_BK=64` process selector
+are prototyped with BK32 remaining the default. Correctness and a focused
+M=16,384/32,768 microbenchmark are wired. Kill unless all four gate-up/down
+cells reach at least 1.30x versus BK32 with zero fallbacks. See `notes/028`.
+

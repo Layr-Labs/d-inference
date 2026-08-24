@@ -1,6 +1,10 @@
 # 062 — exact Qwen prefix-reuse benchmark
 
-Status: **implemented as an ordered patch handoff; M3 Max prompt-512 diagnostic verified**
+Status: **historical full-prompt result; generalized by note 069**
+
+Note 069 preserves this benchmark contract and extends its exact-state cache to
+longest block-aligned prefixes for the 25/50/75/90-percent sequential corpus.
+The M3 measurements below remain the full-prompt baseline.
 
 Exact warm-prefix reuse is a separate product path from the cold 8K objective.
 The existing quality corpus intentionally disables prefix caching and remains

@@ -543,3 +543,18 @@ With no prior cache entry, one leader computes and forks state:
 The 2.5× objective is reached through correct KV+GDN construction, not a
 faster wrong kernel. Distinct cold prompts remain an active target;
 partial durable-prefix reuse is next. See `notes/068`.
+
+## 2026-08-24 — durable exact boundaries generalized
+
+The default-off exact Qwen cache now snapshots every finalized whole-block
+cold-prefill boundary, indexes model/policy/scope-bound token prefixes, and
+returns the longest exact match to later sequential requests. Partial adopters
+receive independent K/V and all recurrent owners at `M`, then execute their
+distinct suffix normally; cached frontier logits remain exclusive to complete
+prompt hits.
+
+The regression matrix covers partial B1/B2/B4, suffix/decode parity against
+cache-disabled controls, longest-match fallback, frontier upgrade, pin/LRU
+accounting, and provider report/schema integration. The 8K benchmark's 75% and
+90% corpus arms now target 6,144 and 7,168 saved tokens respectively while
+retaining exact output equality. See `notes/069`.

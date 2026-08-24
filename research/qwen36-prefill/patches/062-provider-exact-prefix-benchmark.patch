@@ -1,5 +1,5 @@
 diff --git a/provider-swift/Benchmarks/QwenPrefixReuse/README.md b/provider-swift/Benchmarks/QwenPrefixReuse/README.md
-index 186275b776442ea4a085c406666f03e4ecbb3bee..487dd6a6ac61bfc1d3b541f4e5fefa59af2daff6 100644
+index 186275b7..0b63ebc3 100644
 --- a/provider-swift/Benchmarks/QwenPrefixReuse/README.md
 +++ b/provider-swift/Benchmarks/QwenPrefixReuse/README.md
 @@ -5,7 +5,7 @@ corpus. It loads one checkpoint once and constructs exactly one engine through
@@ -16,28 +16,29 @@ index 186275b776442ea4a085c406666f03e4ecbb3bee..487dd6a6ac61bfc1d3b541f4e5fefa59
  outcomes remain in the JSON; they are never rewritten as hits.
  
 +The benchmark injects `ExactPrefixCacheV2` only into this opt-in engine. It
-+carves one fifth of the unified request-state grant for one resident boundary
-+and gives the remaining four fifths to the four live engine rows; cache RAM is
-+not silently added on top of the serving grant. Existing serving and quality
-+defaults remain unchanged.
++carves one fifth of the unified request-state grant for block-aligned exact
++boundaries and gives the remaining four fifths to the four live engine rows;
++cache RAM is not silently added on top of the serving grant. Existing serving
++and quality defaults remain unchanged.
 +
  Scenarios:
  
  - identical prompts at B=1, B=2, and B=4;
-@@ -27,6 +33,12 @@ checkpoint tokenization. This avoids treating character overlap as token
+@@ -27,6 +33,13 @@ checkpoint tokenization. This avoids treating character overlap as token
  overlap. Greedy, fixed-length cold and warm outputs are compared by first token
  and full raw token sequence.
  
-+The current exact-state cache is intentionally full-prompt-only. Identical B1,
-+B2, and B4 rows can hit. The 25/50/75/90-percent rows are expected to remain
-+honest misses until arbitrary-boundary recurrent snapshots exist; keeping those
-+arms in the report prevents a full-prompt result from being presented as
-+general common-prefix reuse.
++Cold construction snapshots K/V, all recurrent state, and scalar position at
++each 256-token boundary. Warm requests choose the longest exact boundary and
++run only their distinct suffix normally. Full-prompt hits also restore cached
++frontier logits; partial hits never do. The 25/50/75/90-percent rows therefore
++measure durable sequential-prefix reuse directly, including the rounded-down
++block boundary observed in each row.
 +
  Files:
  
  - `qwen-prefix-natural-v1.json`: original CC0 synthetic prose.
-@@ -51,4 +63,5 @@ swift build -c release
+@@ -51,4 +64,5 @@ swift build -c release
  
  A successful command means the measurement completed and validated, not that
  every warm request hit. Read `capabilitySupported`, row-level `cacheOutcome`,
@@ -45,7 +46,7 @@ index 186275b776442ea4a085c406666f03e4ecbb3bee..487dd6a6ac61bfc1d3b541f4e5fefa59
 +`prefixCacheMatchPolicy`, and `cacheAccountingIncludingConstruction` before
 +interpreting speedups.
 diff --git a/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json b/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
-index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5eb8247ed 100644
+index c22859e6..d06861a9 100644
 --- a/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
 +++ b/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
 @@ -94,9 +94,10 @@
@@ -70,14 +71,14 @@ index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5
 +          "enum": ["PrefixCacheV2", "ExactPrefixCacheV2"]
 +        },
 +        "prefixCacheMatchPolicy": {
-+          "enum": ["whole-block-prefix", "exact-full-prompt"]
++          "enum": ["whole-block-prefix", "longest-exact-block-prefix"]
 +        },
          "prefixCacheRequested": {"const": true},
 +        "prefixCacheBudgetBytes": {"type": "integer", "minimum": 1},
          "cacheBlockTokens": {"type": "integer", "minimum": 1},
          "cacheSaltScope": {"type": "string", "minLength": 1},
          "capabilitySupported": {"type": "boolean"},
-@@ -125,7 +133,36 @@
+@@ -125,7 +133,35 @@
            "type": "object",
            "additionalProperties": {"type": "string"}
          }
@@ -104,10 +105,9 @@ index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5
 +            }
 +          },
 +          "then": {
-+            "required": ["prefixCacheBudgetBytes"],
-+            "not": {"required": ["cacheBlockTokens"]},
++            "required": ["prefixCacheBudgetBytes", "cacheBlockTokens"],
 +            "properties": {
-+              "prefixCacheMatchPolicy": {"const": "exact-full-prompt"}
++              "prefixCacheMatchPolicy": {"const": "longest-exact-block-prefix"}
 +            }
 +          }
 +        }
@@ -115,7 +115,7 @@ index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5
      },
      "kvBackend": {
        "type": "object",
-@@ -294,7 +331,7 @@
+@@ -294,7 +330,7 @@
          "row": {"$ref": "#/$defs/row"},
          "donationObserved": {"type": "boolean"},
          "submitToCacheReadyMs": {"type": "number", "minimum": 0},
@@ -125,7 +125,7 @@ index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5
        }
      },
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
-index 049daa2dfb06f38c808462f055f2e638e75070f3..213a756f3e004d7b60d1c3148e385c12f8d6f6bd 100644
+index 049daa2d..fb78d42b 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
 @@ -29,7 +29,7 @@ struct QwenPrefixEngineBatch: Sendable {
@@ -157,9 +157,9 @@ index 049daa2dfb06f38c808462f055f2e638e75070f3..213a756f3e004d7b60d1c3148e385c12
 -    /// adoption size instead of reporting the larger staging view.
 +    /// Convert the request-correlated lookup size to the state handed to
 +    /// backend adoption. Exact-state direct hits adopt the whole atomic
-+    /// snapshot, including non-token-linear recurrent state and frontier
-+    /// logits. Historical tail replay slices token-linear full-attention
-+    /// arrays to the saved-token frontier.
++    /// snapshot, including non-token-linear recurrent state and, only for a
++    /// full-prompt hit, frontier logits. Historical tail replay slices
++    /// token-linear full-attention arrays to the saved-token frontier.
      private static func adoptedStateBytes(
          usage: CBv2Usage,
          lookupBytes: Int,
@@ -177,8 +177,8 @@ index 049daa2dfb06f38c808462f055f2e638e75070f3..213a756f3e004d7b60d1c3148e385c12
          case .direct, .frozenFullReplay:
 -            adoptedTokens = matched
 +            // Direct exact-state Qwen hits include fixed recurrent state and
-+            // frontier logits, so bytes are not generally divisible by the
-+            // prompt length. The complete lookup snapshot is adopted.
++            // may include frontier logits, so bytes are not generally
++            // divisible by the matched length. Adopt the complete snapshot.
 +            return lookupBytes
          case .tailReplay:
 -            adoptedTokens = saved
@@ -205,7 +205,7 @@ index 049daa2dfb06f38c808462f055f2e638e75070f3..213a756f3e004d7b60d1c3148e385c12
  
      private static func describe(_ reason: CBv2FinishReason) -> String {
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
-index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95e999c946 100644
+index 3264bba6..4be5c86d 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
 @@ -17,6 +17,7 @@ public enum QwenPrefixReuseBenchmark {
@@ -224,7 +224,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
  
          log("hashing fixed model artifact \(modelID)")
          guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
-@@ -130,20 +132,30 @@ public enum QwenPrefixReuseBenchmark {
+@@ -130,20 +132,33 @@ public enum QwenPrefixReuseBenchmark {
                  maximumContextTokens: sizing.maxContextLength)
          }
  
@@ -235,7 +235,9 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
                  residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
                  configReserveBytes: 0),
              UInt64(Int.max)))
--        let blockSize = CBv2BlockHasher.defaultBlockSize
++        let exactCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
++        let kvCapacity = totalStateCapacity - exactCacheBudget
+         let blockSize = CBv2BlockHasher.defaultBlockSize
 -        let cache = QwenPrefixTrackingCache(config: .init(
 -            blockSize: blockSize,
 -            promptContractID: "qwen-prefix-benchmark:\(artifactSHA256)",
@@ -243,8 +245,6 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
 -            maxBytes: nil,
 -            materializeOnDonate: true))
 -        let processEnvironment = ProcessInfo.processInfo.environment
-+        let exactCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
-+        let kvCapacity = totalStateCapacity - exactCacheBudget
 +        guard kvCapacity > 0, exactCacheBudget > 0 else {
 +            throw QwenPrefixBenchmarkError.insufficientStateBudget(
 +                totalBytes: totalStateCapacity)
@@ -257,14 +257,16 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
 +            config: .init(
 +                modelIdentity: "qwen-prefix-benchmark:\(artifactSHA256)",
 +                policyIdentity:
-+                    "qwen-prefix-benchmark-v1;kv=\(kvBackend.rawValue);"
++                    "qwen-prefix-benchmark-v2;kv=\(kvBackend.rawValue);"
++                        + "block=\(blockSize);"
 +                        + (policyIdentity.isEmpty ? "strict-default" : policyIdentity),
 +                scopeID: "benchmark-default-unused",
++                blockSize: blockSize,
 +                maxBytes: exactCacheBudget))
          let components = try await container.perform { context -> EngineComponents in
              let scenarios = try QwenPrefixPromptBuilder.prepare(
                  corpus: corpus.corpus,
-@@ -248,9 +260,12 @@ public enum QwenPrefixReuseBenchmark {
+@@ -248,9 +263,12 @@ public enum QwenPrefixReuseBenchmark {
                  kvBackend: BenchmarkKVBackend(
                      selection: kvBackend.rawValue,
                      resolved: [components.resolvedKVBackend]),
@@ -279,7 +281,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
                  cacheSaltScope: "unique per scenario iteration",
                  capabilitySupported: components.capabilitySupported,
                  capabilityStrategy: components.capabilityStrategy,
-@@ -274,7 +289,7 @@ public enum QwenPrefixReuseBenchmark {
+@@ -274,7 +292,7 @@ public enum QwenPrefixReuseBenchmark {
  
      private static func measureAll(
          engine: any CBv2Engine,
@@ -288,7 +290,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
          scenarios: [QwenPrefixPreparedScenario],
          iterations: Int,
          decodeTokens: Int,
-@@ -316,7 +331,7 @@ public enum QwenPrefixReuseBenchmark {
+@@ -316,7 +334,7 @@ public enum QwenPrefixReuseBenchmark {
                      prefixCacheEnabled: true,
                      cacheSalt: salt)
                  let constructionRow = construction.rows[0]
@@ -297,8 +299,8 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
                  if capabilitySupported {
                      donation = await cache.waitForDonation(
                          requestID: constructionRow.requestID,
-@@ -337,7 +352,10 @@ public enum QwenPrefixReuseBenchmark {
-                     cacheSalt: salt)
+@@ -342,7 +360,10 @@ public enum QwenPrefixReuseBenchmark {
+                     cacheSalt: warmSalt)
                  if capabilitySupported {
                      await cache.waitForDonations(
 -                        requestIDs: warm.rows.map(\.requestID),
@@ -309,7 +311,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
                          timeout: timeout)
                  }
  
-@@ -362,7 +380,7 @@ public enum QwenPrefixReuseBenchmark {
+@@ -367,7 +388,7 @@ public enum QwenPrefixReuseBenchmark {
          iteration: Int,
          cold: QwenPrefixEngineBatch,
          construction: QwenPrefixEngineRow,
@@ -318,7 +320,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
          warm: QwenPrefixEngineBatch
      ) -> QwenPrefixReuseReport.Sample {
          let coldReport = batchReport(cold, prefixCacheEnabled: false)
-@@ -378,8 +396,8 @@ public enum QwenPrefixReuseBenchmark {
+@@ -383,8 +404,8 @@ public enum QwenPrefixReuseBenchmark {
          let submitToReady = donation.map {
              milliseconds(from: construction.submittedAtNs, to: $0.publishedAtNs)
          }
@@ -329,7 +331,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
          }
          let cacheRows = [constructionReport] + warmReport.rows
          return QwenPrefixReuseReport.Sample(
-@@ -389,7 +407,7 @@ public enum QwenPrefixReuseBenchmark {
+@@ -394,7 +415,7 @@ public enum QwenPrefixReuseBenchmark {
                  row: constructionReport,
                  donationObserved: donation != nil,
                  submitToCacheReadyMs: submitToReady,
@@ -338,7 +340,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
                  cacheBytesAfterReady: donation?.cacheBytesAfterPublish ?? 0),
              warm: warmReport,
              cacheAccountingIncludingConstruction: .init(rows: cacheRows),
-@@ -520,6 +538,12 @@ public enum QwenPrefixReuseBenchmark {
+@@ -525,6 +546,12 @@ public enum QwenPrefixReuseBenchmark {
          return Double(end - start) / 1_000_000
      }
  
@@ -351,7 +353,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
      private static func median(_ values: [Double]) -> Double {
          guard !values.isEmpty else { return 0 }
          let sorted = values.sorted()
-@@ -572,6 +596,7 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
+@@ -577,6 +604,7 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
      case modelFingerprintUnavailable
      case modelArtifactChangedDuringRun
      case requestIDOverflow
@@ -359,7 +361,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
      case cacheDidNotEvict(Int)
      case missingScenario(String)
  
-@@ -601,6 +626,9 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
+@@ -606,6 +634,9 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
              return "Qwen prefix benchmark model artifact changed during the run"
          case .requestIDOverflow:
              return "Qwen prefix benchmark exhausted the CBv2 request-id space"
@@ -370,7 +372,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
              return "Qwen prefix benchmark cache retained \(bytes) bytes after full eviction"
          case .missingScenario(let id):
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
-index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3654f1a7a 100644
+index d0349f1d..f666e2b8 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
 @@ -38,9 +38,12 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
@@ -394,8 +396,8 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
 -        /// Exact logical `nbytes` of cache state handed to backend adoption,
 -        /// after tail-replay slicing. Zero on every non-hit.
 +        /// Exact logical `nbytes` of cache state handed to backend adoption.
-+        /// For Qwen this is the atomic attention + recurrent + frontier
-+        /// snapshot. Zero on every non-hit.
++        /// For Qwen this is the atomic attention + recurrent snapshot, plus
++        /// frontier logits only on a full-prompt hit. Zero on every non-hit.
          public let stateBytesCloned: Int
      }
  
@@ -420,8 +422,8 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
 +                && engine.prefixCacheMatchPolicy == "whole-block-prefix"
 +                && (engine.cacheBlockTokens ?? 0) > 0)
 +            || (engine.prefixCacheImplementation == "ExactPrefixCacheV2"
-+                && engine.prefixCacheMatchPolicy == "exact-full-prompt"
-+                && engine.cacheBlockTokens == nil
++                && engine.prefixCacheMatchPolicy == "longest-exact-block-prefix"
++                && (engine.cacheBlockTokens ?? 0) > 0
 +                && (engine.prefixCacheBudgetBytes ?? 0) > 0)
 +        let validCapabilityContract =
 +            engine.capabilitySupported
@@ -499,7 +501,25 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
                    scenario.requestedCommonPrefixFraction == 1,
                    scenario.constructedCommonPrefixTokens == configuration.promptTokens,
                    scenario.constructedCommonPrefixFraction == 1,
-@@ -334,8 +382,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -321,6 +369,17 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+                     scenario: scenario.id,
+                     iteration: sample.iteration)
+             }
++            if scenario.kind == QwenPrefixScenarioKind.commonPrefix.rawValue,
++                let commonTokens = scenario.constructedCommonPrefixTokens
++            {
++                guard sample.warm.rows.allSatisfy({
++                    $0.cacheOutcome != "hit" || $0.matchedTokens <= commonTokens
++                }) else {
++                    throw QwenPrefixReportError.invalidSample(
++                        scenario: scenario.id,
++                        iteration: sample.iteration)
++                }
++            }
+             let cacheRows = [sample.cacheConstruction.row] + sample.warm.rows
+             guard sample.cacheAccountingIncludingConstruction
+                     == CacheAccounting(rows: cacheRows),
+@@ -334,8 +393,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                      iteration: sample.iteration)
              }
              if sample.cacheConstruction.donationObserved {
@@ -511,7 +531,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
                        sample.cacheConstruction.cacheBytesAfterReady > 0
                  else {
                      throw QwenPrefixReportError.invalidSample(
-@@ -344,7 +393,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -344,7 +404,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                  }
              } else {
                  guard sample.cacheConstruction.submitToCacheReadyMs == nil,
@@ -520,24 +540,24 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
                        sample.cacheConstruction.cacheBytesAfterReady == 0
                  else {
                      throw QwenPrefixReportError.invalidSample(
-@@ -463,6 +512,16 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -463,6 +523,16 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
              "disabled", "skipped_policy", "miss", "hit",
              "skipped_capacity", "adoption_failed",
          ]
 +        let validExactHit =
-+            engine.prefixCacheMatchPolicy != "exact-full-prompt"
++            engine.prefixCacheMatchPolicy != "longest-exact-block-prefix"
 +            || row.cacheOutcome != "hit"
-+            || (row.matchedTokens == row.promptTokens
-+                && row.savedPrefillTokens == row.promptTokens
++            || (row.savedPrefillTokens == row.matchedTokens
 +                && row.replayTokens == 0
 +                && row.reuseStrategy == "direct")
 +        let validMatchAlignment = engine.cacheBlockTokens.map { blockTokens in
-+            row.matchedTokens % blockTokens == 0
++            row.matchedTokens == row.promptTokens
++                || row.matchedTokens % blockTokens == 0
 +        } ?? true
          guard row.row >= 0,
                row.promptTokens == configuration.promptTokens,
                row.ttftMs.isFinite,
-@@ -478,12 +537,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -478,12 +548,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                row.finishReason == "length",
                validOutcomes.contains(row.cacheOutcome),
                row.matchedTokens >= 0,
@@ -553,7 +573,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
                (row.cacheOutcome == "hit"
                  ? row.matchedTokens > 0
                      && row.savedPrefillTokens > 0
-@@ -542,6 +602,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+@@ -542,6 +613,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
      case invalidScenario(String)
      case invalidSample(scenario: String, iteration: Int)
      case invalidRow(scenario: String, iteration: Int, row: Int)
@@ -561,7 +581,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
  
      public var description: String {
          switch self {
-@@ -565,6 +626,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+@@ -565,6 +637,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
          case .invalidRow(let scenario, let iteration, let row):
              return "Qwen prefix report scenario '\(scenario)' iteration \(iteration) "
                  + "row \(row) is inconsistent"
@@ -571,7 +591,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3
      }
  }
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
-index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb846c66dcd 100644
+index 7d0a1c06..05d3a607 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 @@ -2,15 +2,33 @@ import Foundation
@@ -634,7 +654,7 @@ index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb8
      func stats() -> CBv2PrefixCacheStats {
          cache.stats()
      }
-@@ -192,3 +220,153 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
+@@ -192,3 +220,155 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
          }
      }
  }
@@ -652,19 +672,21 @@ index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb8
 +
 +    init(config: CBv2ExactPrefixCacheConfig) {
 +        cache = ExactPrefixCacheV2(config: config)
++        cacheBlockTokens = config.blockSize
 +        cacheBudgetBytes = config.maxBytes
 +    }
 +
 +    let implementationName = "ExactPrefixCacheV2"
-+    let matchPolicy = "exact-full-prompt"
-+    let cacheBlockTokens: Int? = nil
++    let matchPolicy = "longest-exact-block-prefix"
++    let cacheBlockTokens: Int?
 +    let cacheBudgetBytes: Int?
 +    var bytesInUse: Int { cache.bytesInUse }
++    var exactSnapshotBlockSize: Int { cache.exactSnapshotBlockSize }
 +
 +    func shouldAwaitDonation(after outcome: CBv2PrefixCacheOutcome) -> Bool {
-+        // Exact donations publish synchronously at a finalized prompt
-+        // boundary. A hit reuses an existing entry and does not publish a
-+        // second copy; only a miss can create a request-correlated donation.
++        // Exact donations publish synchronously at finalized prompt-prefix
++        // boundaries. A hit reuses existing entries and does not publish a
++        // second copy; only a miss can create request-correlated donations.
 +        outcome == .miss
 +    }
 +
@@ -707,12 +729,12 @@ index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb8
 +            layerKinds: layerKinds,
 +            cacheSalt: cacheSalt)
 +        guard cache.stats().donations > before else { return }
-+        let observation = QwenPrefixDonationObservation(
-+            publishedAtNs: DispatchTime.now().uptimeNanoseconds,
++        let publishedAt =
++            donationsByRequest[requestID]?.publishedAtNs
++            ?? DispatchTime.now().uptimeNanoseconds
++        donationsByRequest[requestID] = QwenPrefixDonationObservation(
++            publishedAtNs: publishedAt,
 +            cacheBytesAfterPublish: cache.bytesInUse)
-+        if donationsByRequest[requestID] == nil {
-+            donationsByRequest[requestID] = observation
-+        }
 +    }
 +
 +    func acceptsExactDonation(byteCount: Int) -> Bool {
@@ -789,7 +811,7 @@ index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb8
 +    }
 +}
 diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
-index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45717e8a94 100644
+index a47e9cf4..332b709d 100644
 --- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 @@ -200,6 +200,42 @@ struct QwenPrefixReuseTests {
@@ -835,12 +857,12 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
      @Test
      func reportRoundTripsAndKeepsConstructionMissInRates() throws {
          let report = makeReport()
-@@ -241,6 +277,29 @@ struct QwenPrefixReuseTests {
+@@ -241,6 +277,31 @@ struct QwenPrefixReuseTests {
          }
      }
  
 +    @Test
-+    func exactReportAcceptsFullPromptHitsAndHonestPartialMisses() throws {
++    func exactReportAcceptsFullAndLongestBlockAlignedPartialHits() throws {
 +        let report = makeReport(exactCache: true)
 +        try report.validate()
 +
@@ -853,10 +875,12 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
 +                        && $0.savedPrefillTokens == $0.promptTokens
 +                })
 +            } else {
++                let expected = try #require(scenario.constructedCommonPrefixTokens)
++                let expectedMatched = (expected / 256) * 256
 +                #expect(warmRows.allSatisfy {
-+                    $0.cacheOutcome == "miss"
-+                        && $0.matchedTokens == 0
-+                        && $0.savedPrefillTokens == 0
++                    $0.cacheOutcome == "hit"
++                        && $0.matchedTokens == expectedMatched
++                        && $0.savedPrefillTokens == expectedMatched
 +                })
 +            }
 +        }
@@ -865,7 +889,7 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
      private func repositoryRoot() -> URL {
          URL(fileURLWithPath: #filePath)
              .deletingLastPathComponent()
-@@ -261,7 +320,51 @@ struct QwenPrefixReuseTests {
+@@ -261,7 +322,51 @@ struct QwenPrefixReuseTests {
              })
      }
  
@@ -918,15 +942,15 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
          let promptTokens = 1_024
          let decodeTokens = 2
          let shapes: [(String, String, Int, Double)] = [
-@@ -278,6 +381,7 @@ struct QwenPrefixReuseTests {
+@@ -278,6 +383,7 @@ struct QwenPrefixReuseTests {
              let matchedTokens = min(
                  commonTokens,
                  ((promptTokens - 1) / 256) * 256)
-+            let warmHit = !exactCache || shape.1 == "identical"
++            let warmHit = true
              let coldRows = (0 ..< shape.2).map {
                  reportRow(
                      row: $0,
-@@ -296,10 +400,11 @@ struct QwenPrefixReuseTests {
+@@ -296,10 +402,23 @@ struct QwenPrefixReuseTests {
                  reportRow(
                      row: $0,
                      requestID: UInt64(3_000 + scenarioIndex * 100 + $0),
@@ -935,14 +959,26 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
 -                    saved: matchedTokens,
 -                    stateBytes: matchedTokens * 16)
 +                    outcome: warmHit ? "hit" : "miss",
-+                    matched: warmHit ? (exactCache ? promptTokens : matchedTokens) : 0,
-+                    saved: warmHit ? (exactCache ? promptTokens : matchedTokens) : 0,
++                    matched:
++                        warmHit
++                        ? (exactCache && shape.1 == "identical"
++                            ? promptTokens : matchedTokens)
++                        : 0,
++                    saved:
++                        warmHit
++                        ? (exactCache && shape.1 == "identical"
++                            ? promptTokens : matchedTokens)
++                        : 0,
 +                    stateBytes:
-+                        warmHit ? (exactCache ? promptTokens * 16 + 7 : matchedTokens * 16) : 0)
++                        warmHit
++                        ? (exactCache
++                            ? (shape.1 == "identical" ? promptTokens : matchedTokens) * 16 + 7
++                            : matchedTokens * 16)
++                        : 0)
              }
              let cold = reportBatch(rows: coldRows, enabled: false)
              let warm = reportBatch(rows: warmRows, enabled: true)
-@@ -318,7 +423,7 @@ struct QwenPrefixReuseTests {
+@@ -318,7 +437,7 @@ struct QwenPrefixReuseTests {
                      row: construction,
                      donationObserved: true,
                      submitToCacheReadyMs: 12,
@@ -951,7 +987,7 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
                      cacheBytesAfterReady: commonTokens * 16),
                  warm: warm,
                  cacheAccountingIncludingConstruction: .init(rows: cacheRows),
-@@ -380,9 +485,14 @@ struct QwenPrefixReuseTests {
+@@ -380,8 +499,13 @@ struct QwenPrefixReuseTests {
                  kvBackend: BenchmarkKVBackend(
                      selection: "contiguous",
                      resolved: ["contiguous"]),
@@ -960,15 +996,13 @@ index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45
 +                prefixCacheImplementation:
 +                    exactCache ? "ExactPrefixCacheV2" : "PrefixCacheV2",
 +                prefixCacheMatchPolicy:
-+                    exactCache ? "exact-full-prompt" : "whole-block-prefix",
++                    exactCache ? "longest-exact-block-prefix" : "whole-block-prefix",
                  prefixCacheRequested: true,
--                cacheBlockTokens: 256,
 +                prefixCacheBudgetBytes: exactCache ? 1_024 * 1_024 * 1_024 : nil,
-+                cacheBlockTokens: exactCache ? nil : 256,
+                 cacheBlockTokens: 256,
                  cacheSaltScope: "unique per scenario iteration",
                  capabilitySupported: true,
-                 capabilityStrategy: "direct",
-@@ -535,3 +645,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
+@@ -535,3 +659,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
  
      func shutdown() async {}
  }

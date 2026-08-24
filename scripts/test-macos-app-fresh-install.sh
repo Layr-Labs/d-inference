@@ -441,13 +441,13 @@ grep -Fq 'AppInstallLaunchState.ready' "$LLDB_LOG" || {
 }
 echo "Live install state verified: ready; installation failure view not selected"
 grep -Fq \
-  'DARKBLOOM_WINDOW|matches=1|title=Darkbloom|identifier=main|frame=1040x680|visible=1' \
+  'DARKBLOOM_WINDOW|matches=1|title=Darkbloom|identifier=dev.darkbloom.main-window|frame=1040x680|visible=1' \
   "$LLDB_LOG" || {
   echo "DarkbloomApp in-process main-window contract did not match" >&2
   cat "$LLDB_LOG" >&2
   exit 1
 }
-echo "AppKit main window verified: identifier=main title=Darkbloom frame=1040x680"
+echo "AppKit main window verified: identifier=dev.darkbloom.main-window title=Darkbloom frame=1040x680"
 
 kill -0 "$APP_PID" 2>/dev/null || {
   echo "DarkbloomApp exited immediately after main-window verification" >&2

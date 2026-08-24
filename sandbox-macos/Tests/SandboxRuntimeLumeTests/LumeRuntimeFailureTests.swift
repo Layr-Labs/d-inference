@@ -2934,6 +2934,10 @@ private struct FakeLumeFixture {
         exit 64
         ;;
       stop)
+        if [ "$behavior" = "stop-liveness-inconclusive" ]; then
+          printf '%s\\n' "VM liveness is inconclusive" >&2
+          exit 70
+        fi
         printf '%s\\n' "stopped" > "$state_file"
         ;;
       create)

@@ -1,0 +1,367 @@
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+index 04bf10c..2438126 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+@@ -382,6 +382,9 @@ final class CBv2InFlightStep {
+     /// Prompt-prefix boundaries captured by this step. Their detached roots
+     /// ride `evalTargets`; finalize atomically donates only non-discarded rows.
+     var exactPrefixDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
++    /// Temporary E40/E41 state/logit probes. Their scalar reductions ride the
++    /// ordinary step evaluation and are read only at the existing host fence.
++    var divergenceFrames: [CBv2DivergenceDiagnostics.Frame] = []
+     /// Non-nil marks this step as an MTP round (verify and/or seed work,
+     /// finalized by `finalizeMTPRound`). MTP rounds NEVER chain: the
+     /// chained path's finalize loop and `deferredReleases` assume exactly
+@@ -1060,6 +1063,15 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 if isFullPrompt, let frontier = exact.frontierLogits {
+                     exactFrontierLogits[requestID] = frontier
+                 }
++                // #region agent log
++                CBv2DivergenceDiagnostics.recordAdoption(
++                    requestID: requestID,
++                    matched: adoption.matched,
++                    snapshot: exact,
++                    adoptedState: state,
++                    recurrent: recurrent,
++                    layerKinds: layerKinds)
++                // #endregion
+             }
+ 
+             kvStates[requestID] = state
+@@ -1201,6 +1213,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+         {
+             beginMTPPlan()
+             let plan = scheduler.plan()
++            recordDivergenceSchedule(plan)
+             if isPureDecodePlan(plan, matching: ids) {
+                 if CBv2StepProfiler.enabled {
+                     CBv2StepProfiler.record(
+@@ -1310,6 +1323,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+         // running rows in markAdmitted below.
+         let waitingBeforePlan = Set(scheduler.waiting.map(\.id))
+         let plan = scheduler.plan()
++        recordDivergenceSchedule(plan)
+         handlePreemptions(plan.preemptions)
+         guard !plan.assignments.isEmpty else {
+             publishGauges()
+@@ -1345,6 +1359,26 @@ public final class EngineLoopV2: @unchecked Sendable {
+ 
+     // MARK: Step execution
+ 
++    private func recordDivergenceSchedule(_ plan: CBv2StepPlan) {
++        guard CBv2DivergenceDiagnostics.enabled else { return }
++        let assignments = plan.assignments.compactMap { id, count
++            -> CBv2DivergenceDiagnostics.Assignment? in
++            guard let rec = scheduler.record(for: id) else { return nil }
++            return CBv2DivergenceDiagnostics.Assignment(
++                id: id,
++                start: rec.numComputedTokens - count,
++                count: count,
++                generatedTokens: rec.generatedTokenCount,
++                promptTokens: rec.request.promptTokens.count,
++                pendingSamples: rec.pendingSamples)
++        }
++        // #region agent log
++        CBv2DivergenceDiagnostics.recordSchedule(
++            engineStep: stepCount,
++            assignments: assignments)
++        // #endregion
++    }
++
+     private func isPureDecodePlan(_ plan: CBv2StepPlan, matching ids: [CBv2RequestID]) -> Bool {
+         guard plan.preemptions.isEmpty, plan.assignments.count == ids.count else { return false }
+         for (i, assignment) in plan.assignments.enumerated() {
+@@ -1670,6 +1704,20 @@ public final class EngineLoopV2: @unchecked Sendable {
+         for id in ids { params.append(scheduler.record(for: id)!.request.sampling) }
+ 
+         let inputs = lazyTokens.reshaped([ids.count, 1])
++        let positionOffsetsBefore = rowStates.map(Self.positionOffset)
++        let divergenceStateBefore: [CBv2DivergenceDiagnostics.StateProbe?] =
++            zip(ids, rowStates).map { id, state in
++                guard let rec = scheduler.record(for: id),
++                    let recurrent = recurrentStates[id]
++                else { return nil }
++                return CBv2DivergenceDiagnostics.captureState(
++                    requestID: id,
++                    modelInputStart: rec.numComputedTokens - 1,
++                    promptTokens: rec.request.promptTokens.count,
++                    layerKinds: layerKinds,
++                    state: state,
++                    recurrent: recurrent)
++            }
+         let forwardStart = CBv2StepProfiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+         let (last, cacheInnerState, recurrent) = decodeLogits(
+             rowStates: rowStates, tokens: inputs, ids: ids)  // [B, vocab]
+@@ -1693,6 +1741,35 @@ public final class EngineLoopV2: @unchecked Sendable {
+         }
+         scheduler.markPendingSamples(ids: ids)
+         var toEval = [sampled]
++        var divergenceFrames: [CBv2DivergenceDiagnostics.Frame] = []
++        for (index, id) in ids.enumerated() {
++            guard let rec = scheduler.record(for: id),
++                let recurrentState = recurrentStates[id],
++                let frame = CBv2DivergenceDiagnostics.makeFrame(
++                    requestID: id,
++                    engineStep: stepCount,
++                    path: "chained-decode",
++                    cohortSize: ids.count,
++                    assignmentCount: plan.assignments.count,
++                    modelInputStart: rec.numComputedTokens - 1,
++                    modelInputCount: 1,
++                    generatedTokens: rec.generatedTokenCount,
++                    promptTokens: rec.request.promptTokens.count,
++                    positionOffsetBefore: positionOffsetsBefore[index],
++                    positionIDs: rec.request.positionState.map {
++                        CBv2PositionState.decodePositionIds(
++                            states: [$0],
++                            cacheOffsets: [positionOffsetsBefore[index]])
++                    } ?? nil,
++                    stateBefore: divergenceStateBefore[index],
++                    layerKinds: layerKinds,
++                    state: rowStates[index],
++                    recurrent: recurrentState,
++                    logits: last[index])
++            else { continue }
++            divergenceFrames.append(frame)
++            toEval.append(contentsOf: frame.evaluationArrays)
++        }
+         if let stepLogprobs { toEval.append(contentsOf: stepLogprobs.evalTargets) }
+         // Collapse the eager caches' lazy offset/KV chains this step (DAR-325).
+         if !cacheInnerState.isEmpty {
+@@ -1711,6 +1788,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+             wallStartedNanos: wallStartedNanos)
+         if let stepLogprobs { step.logprobSegments = [stepLogprobs] }
+         step.recurrentEvaluations = recurrent
++        step.divergenceFrames = divergenceFrames
+         return step
+     }
+ 
+@@ -1771,6 +1849,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+         var recurrentEvaluations: [CBv2RequestID: CBv2RecurrentStateEvaluation] = [:]
+         var evalTargets: [MLXArray] = []
+         var exactDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
++        var divergenceFrames: [CBv2DivergenceDiagnostics.Frame] = []
+ 
+         // Exact full-prompt hits sample their cached prompt-frontier logits.
+         // Their KV/recurrent state is already at `prompt.count`; no model
+@@ -1792,6 +1871,36 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 rowContext: { exactFrontierRows.map { Self.samplerRow($0.rec) } })
+             for (index, row) in exactFrontierRows.enumerated() {
+                 exactFrontierSampled[row.rec.id] = sampled[index ..< index + 1]
++                if let state = kvStates[row.rec.id],
++                    let recurrent = recurrentStates[row.rec.id],
++                    let stateBefore = CBv2DivergenceDiagnostics.captureState(
++                        requestID: row.rec.id,
++                        modelInputStart: row.start,
++                        promptTokens: row.rec.request.promptTokens.count,
++                        layerKinds: layerKinds,
++                        state: state,
++                        recurrent: recurrent),
++                    let frame = CBv2DivergenceDiagnostics.makeFrame(
++                        requestID: row.rec.id,
++                        engineStep: stepCount,
++                        path: "exact-frontier",
++                        cohortSize: exactFrontierRows.count,
++                        assignmentCount: work.count,
++                        modelInputStart: row.start,
++                        modelInputCount: 0,
++                        generatedTokens: row.rec.generatedTokenCount,
++                        promptTokens: row.rec.request.promptTokens.count,
++                        positionOffsetBefore: Self.positionOffset(state),
++                        positionIDs: nil,
++                        stateBefore: stateBefore,
++                        layerKinds: layerKinds,
++                        state: state,
++                        recurrent: recurrent,
++                        logits: logits[index])
++                {
++                    divergenceFrames.append(frame)
++                    evalTargets.append(contentsOf: frame.evaluationArrays)
++                }
+             }
+             if let stepLogprobs = sampler.takeStepLogprobs() {
+                 logprobSegments.append(stepLogprobs)
+@@ -1802,11 +1911,24 @@ public final class EngineLoopV2: @unchecked Sendable {
+         let decodeRows = work.filter(\.isDecode)
+         var decodeSampled: MLXArray?
+         if !decodeRows.isEmpty {
++            let decodeStates = decodeRows.map { kvStates[$0.rec.id]! }
++            let positionOffsetsBefore = decodeStates.map(Self.positionOffset)
++            let divergenceStateBefore: [CBv2DivergenceDiagnostics.StateProbe?] =
++                zip(decodeRows, decodeStates).map { row, state in
++                    guard let recurrent = recurrentStates[row.rec.id] else { return nil }
++                    return CBv2DivergenceDiagnostics.captureState(
++                        requestID: row.rec.id,
++                        modelInputStart: row.start,
++                        promptTokens: row.rec.request.promptTokens.count,
++                        layerKinds: layerKinds,
++                        state: state,
++                        recurrent: recurrent)
++                }
+             let inputs = MLXArray(decodeRows.map { Int32($0.rec.tokens[$0.start]) })
+                 .reshaped([decodeRows.count, 1])
+             let decodeIDs = decodeRows.map(\.rec.id)
+             let (last, decodeInnerState, recurrent) = decodeLogits(
+-                rowStates: decodeRows.map { kvStates[$0.rec.id]! }, tokens: inputs,
++                rowStates: decodeStates, tokens: inputs,
+                 ids: decodeIDs)
+             cacheInnerState.append(contentsOf: decodeInnerState)
+             recurrentEvaluations.merge(recurrent) { _, _ in
+@@ -1822,6 +1944,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+                     exactDonations[row.rec.id] = donation
+                     evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
+                 }
++                if let recurrentState = recurrentStates[row.rec.id],
++                    let frame = CBv2DivergenceDiagnostics.makeFrame(
++                        requestID: row.rec.id,
++                        engineStep: stepCount,
++                        path: "mixed-decode",
++                        cohortSize: decodeRows.count,
++                        assignmentCount: work.count,
++                        modelInputStart: row.start,
++                        modelInputCount: 1,
++                        generatedTokens: row.rec.generatedTokenCount,
++                        promptTokens: row.rec.request.promptTokens.count,
++                        positionOffsetBefore: positionOffsetsBefore[index],
++                        positionIDs: CBv2PositionState.decodePositionIds(
++                            states: [row.rec.request.positionState],
++                            cacheOffsets: [positionOffsetsBefore[index]]),
++                        stateBefore: divergenceStateBefore[index],
++                        layerKinds: layerKinds,
++                        state: decodeStates[index],
++                        recurrent: recurrentState,
++                        logits: last[index])
++                {
++                    divergenceFrames.append(frame)
++                    evalTargets.append(contentsOf: frame.evaluationArrays)
++                }
+             }
+             decodeSampled = sampler.sample(
+                 logits: last,
+@@ -1889,7 +2035,21 @@ public final class EngineLoopV2: @unchecked Sendable {
+                             .map(Int32.init))
+                 }
+                 let inputs = MLXArray(flatTokens).reshaped([group.rows.count, group.count])
+-                let caches = eagerCaches(rowStates: group.rows.map { kvStates[$0.rec.id]! })
++                let rowStates = group.rows.map { kvStates[$0.rec.id]! }
++                let divergenceStateBefore: [CBv2DivergenceDiagnostics.StateProbe?] =
++                    group.samples
++                    ? zip(group.rows, rowStates).map { row, state in
++                        guard let recurrent = recurrentStates[row.rec.id] else { return nil }
++                        return CBv2DivergenceDiagnostics.captureState(
++                            requestID: row.rec.id,
++                            modelInputStart: row.start,
++                            promptTokens: row.rec.request.promptTokens.count,
++                            layerKinds: layerKinds,
++                            state: state,
++                            recurrent: recurrent)
++                    }
++                    : Array(repeating: nil, count: group.rows.count)
++                let caches = eagerCaches(rowStates: rowStates)
+                 let requirement: CBv2PrefillRequirement =
+                     group.samples ? .lastPositionLogits : .evaluationOnly
+                 let spanContexts = group.rows.map {
+@@ -1938,6 +2098,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+                     }
+                 }
+                 if group.samples {
++                    for (index, row) in group.rows.enumerated() {
++                        guard let state = kvStates[row.rec.id],
++                            let recurrent = recurrentStates[row.rec.id],
++                            let frame = CBv2DivergenceDiagnostics.makeFrame(
++                                requestID: row.rec.id,
++                                engineStep: stepCount,
++                                path: "packed-prefill-frontier",
++                                cohortSize: group.rows.count,
++                                assignmentCount: work.count,
++                                modelInputStart: row.start,
++                                modelInputCount: row.count,
++                                generatedTokens: row.rec.generatedTokenCount,
++                                promptTokens: row.rec.request.promptTokens.count,
++                                positionOffsetBefore: row.start,
++                                positionIDs: nil,
++                                stateBefore: divergenceStateBefore[index],
++                                layerKinds: layerKinds,
++                                state: state,
++                                recurrent: recurrent,
++                                logits: output[index])
++                        else { continue }
++                        divergenceFrames.append(frame)
++                        evalTargets.append(contentsOf: frame.evaluationArrays)
++                    }
+                     // Parity seam: the frontier logits, as this backend
+                     // computed them, BEFORE the sampler touches them.
+                     if let capture = prefillFrontierCapture() {
+@@ -1976,7 +2160,20 @@ public final class EngineLoopV2: @unchecked Sendable {
+             if packedIDs.contains(rec.id) { continue }
+             let slice = rec.tokens[row.start ..< row.start + row.count]
+             let inputs = MLXArray(slice.map(Int32.init)).reshaped([1, row.count])
+-            let caches = eagerCaches(rowStates: [kvStates[rec.id]!])
++            let state = kvStates[rec.id]!
++            let divergenceStateBefore: CBv2DivergenceDiagnostics.StateProbe? =
++                row.samples
++                ? recurrentStates[rec.id].flatMap {
++                    CBv2DivergenceDiagnostics.captureState(
++                        requestID: rec.id,
++                        modelInputStart: row.start,
++                        promptTokens: rec.request.promptTokens.count,
++                        layerKinds: layerKinds,
++                        state: state,
++                        recurrent: $0)
++                }
++                : nil
++            let caches = eagerCaches(rowStates: [state])
+             let requirement: CBv2PrefillRequirement =
+                 row.samples ? .lastPositionLogits : .evaluationOnly
+             let output: MLXArray
+@@ -2025,6 +2222,30 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
+             }
+             if row.samples {
++                if let state = kvStates[rec.id],
++                    let recurrent = recurrentStates[rec.id],
++                    let frame = CBv2DivergenceDiagnostics.makeFrame(
++                        requestID: rec.id,
++                        engineStep: stepCount,
++                        path: "solo-prefill-frontier",
++                        cohortSize: 1,
++                        assignmentCount: work.count,
++                        modelInputStart: row.start,
++                        modelInputCount: row.count,
++                        generatedTokens: rec.generatedTokenCount,
++                        promptTokens: rec.request.promptTokens.count,
++                        positionOffsetBefore: row.start,
++                        positionIDs: rec.request.positionState?.promptSlice(
++                            row.start ..< row.start + row.count),
++                        stateBefore: divergenceStateBefore,
++                        layerKinds: layerKinds,
++                        state: state,
++                        recurrent: recurrent,
++                        logits: output[0])
++                {
++                    divergenceFrames.append(frame)
++                    evalTargets.append(contentsOf: frame.evaluationArrays)
++                }
+                 if let capture = prefillFrontierCapture() {
+                     capture(rec.id, output[0])
+                 }
+@@ -2085,6 +2306,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+         step.logprobSegments = logprobSegments
+         step.recurrentEvaluations = recurrentEvaluations
+         step.exactPrefixDonations = exactDonations
++        step.divergenceFrames = divergenceFrames
+         for row in exactFrontierRows {
+             exactFrontierLogits.removeValue(forKey: row.rec.id)
+         }
+@@ -2335,6 +2557,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+             sampler.confirmSampledTokens(
+                 host.map(Int.init), requestIDs: step.sampledRows)
+         }
++        // #region agent log
++        for frame in step.divergenceFrames {
++            CBv2DivergenceDiagnostics.record(frame)
++        }
++        // #endregion
+ 
+         // Recurrent state follows the same one-step-late transaction as KV.
+         // A discarded chained successor never becomes visible: rollback pops

@@ -129,10 +129,10 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 		p.Location = &cp
 	}
 
-	// Restore account linkage
-	if rec.AccountID != "" && p.AccountID == "" {
-		p.AccountID = rec.AccountID
-	}
+	// Account linkage is never restored from a serial-matched record. Only the
+	// current connection's provider token may establish ownership; carrying an
+	// old AccountID across logout or device transfer would credit and self-route
+	// work to the previous operator.
 
 	// Restore lifetime counters and the last raw session counters so future
 	// heartbeats can merge cleanly after coordinator or provider restarts. The

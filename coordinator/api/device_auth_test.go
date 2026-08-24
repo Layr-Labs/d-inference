@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -128,6 +129,47 @@ func TestDeviceTokenMissingField(t *testing.T) {
 	srv.handleDeviceToken(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestDeviceTokenRevokeUsesRealHTTPRouteAndIsIdempotent(t *testing.T) {
+	srv, st := deviceTestServer()
+	const token = "eigeninference-pt-revoke-me"
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256Hash(token),
+		AccountID: "acct-revoke",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	revoke := func() *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := revoke(); rec.Code != http.StatusNoContent {
+		t.Fatalf("first revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.GetProviderToken(token); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoked token error = %v, want ErrNotFound", err)
+	}
+	if rec := revoke(); rec.Code != http.StatusNoContent {
+		t.Fatalf("idempotent revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceTokenRevokeRequiresBearerToken(t *testing.T) {
+	srv, _ := deviceTestServer()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 

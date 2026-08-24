@@ -207,5 +207,11 @@ opt-in exact-cache cold misses pay the canonical 256-token/unpacked cost.
 E47 blind quality retains **99.56%** of native with 11/12 identical
 continuations and no candidate-only fatal failure (`notes/074`).
 
+E49 full-frontier state river reaches **2.80×** cold B4×2K at E=4, but
+quality collapses to 40% of native with six candidate-only fatal failures.
+E=8 improves quality to 66% while missing speed at 2.41×. Both are closed
+(`notes/077`): exact frontier computation cannot recover discarded historical
+hidden-state information.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

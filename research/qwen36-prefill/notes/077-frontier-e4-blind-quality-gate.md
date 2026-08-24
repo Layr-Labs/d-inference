@@ -6,7 +6,7 @@ cold-prefill policy**
 This review compares:
 
 - native baseline: `artifacts/e30-quality-baseline-128.json`;
-- frontier E4 candidate: `artifacts/e49-quality-frontier-e4-128.json`;
+- frontier E4 candidate: `artifacts/e49-quality-frontier-e4-128.json.gz`;
 - committed corpus:
   `provider-swift/Benchmarks/QualityCorpus/qwen-quality-v1.json`.
 
@@ -137,7 +137,7 @@ need a new artifact and a fresh blind gate against the same native baseline.
 ## E8 follow-up
 
 The more conservative E8 candidate in
-`artifacts/e49-quality-frontier-e8-128.json` uses the same committed prompts,
+`artifacts/e49-quality-frontier-e8-128.json.gz` uses the same committed prompts,
 corpus/model hashes, greedy fixed-length generation, and 128-token cutoff as the
 native report. Its semantic score again excludes run/profile labels, policy
 metadata, token identity, checksums, agreement, prefixes, and timing.

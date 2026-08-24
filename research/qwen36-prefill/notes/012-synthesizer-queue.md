@@ -79,7 +79,7 @@ together in advance.
   `maxBufferLength`, or if outputs/KV/GDN state differ from `[4,512]`.
   Kill any serving keep that delays an arriving decode row.
 - **Files that would change:** Measurement posture in
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Serving.swift`;
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`; <!-- pragma: allowlist secret -->
   B=2/B=4, aggregate-prefill, activity, and shape evidence in
   `provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmark.swift`.
   A kept pure-prefill policy would then update

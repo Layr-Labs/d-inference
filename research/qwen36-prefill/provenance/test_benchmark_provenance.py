@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 import benchmark_provenance as provenance
+import host_capture
+import model_capture
 
 
 class SerializationTests(unittest.TestCase):
@@ -94,6 +96,41 @@ class SecretSafetyTests(unittest.TestCase):
         with self.assertRaises(provenance.ProvenanceError):
             provenance.parse_settings(["batch=2", "batch=4"])
 
+    def test_gpu_capture_drops_serial_and_display_identifiers(self) -> None:
+        profiler_output = """
+        Apple M3 Max:
+          Chipset Model: Apple M3 Max
+          Total Number of Cores: 40
+          Metal Support: Metal 4
+          Displays:
+            Serial Number: must-not-appear
+            Display Serial Number: also-must-not-appear
+        """
+        command_result = {
+            "argv": ["system_profiler", "SPDisplaysDataType"],
+            "available": True,
+            "exit_code": 0,
+            "stderr": "",
+            "stdout": profiler_output,
+        }
+        with mock.patch.object(
+            host_capture, "run_command", return_value=command_result
+        ):
+            result = host_capture._capture_gpu_summary()
+
+        serialized = provenance.pretty_json(result)
+        self.assertNotIn("must-not-appear", serialized)
+        self.assertEqual(
+            result["adapters"],
+            [
+                {
+                    "chipset_model": "Apple M3 Max",
+                    "core_count": "40",
+                    "metal_support": "Metal 4",
+                }
+            ],
+        )
+
 
 class GitProvenanceTests(unittest.TestCase):
     def test_recursive_submodule_status_preserves_state_and_sha(self) -> None:
@@ -175,15 +212,17 @@ class ModelIdentityTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             with mock.patch.object(
-                provenance, "sha256_file", wraps=provenance.sha256_file
-            ) as hash_spy:
+                model_capture,
+                "file_record",
+                wraps=model_capture.file_record,
+            ) as record_spy:
                 result = provenance.capture_model(
                     model, registry_manifest_path=manifest_path
                 )
 
-            hashed_paths = [call.args[0] for call in hash_spy.call_args_list]
+            recorded_paths = [call.args[0] for call in record_spy.call_args_list]
             self.assertFalse(
-                any(path.suffix == ".safetensors" for path in hashed_paths)
+                any(path.suffix == ".safetensors" for path in recorded_paths)
             )
             self.assertTrue(result["identity"]["complete"])
             self.assertEqual(
@@ -235,6 +274,7 @@ class ModelIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             model = Path(temporary) / "local"
             model.mkdir()
+            (model / "config.json").write_text("{}\n", encoding="utf-8")
             (model / "model.safetensors").write_bytes(b"weight")
             with self.assertRaises(provenance.ProvenanceError):
                 provenance.capture_model(model, snapshot_id="moving-main")

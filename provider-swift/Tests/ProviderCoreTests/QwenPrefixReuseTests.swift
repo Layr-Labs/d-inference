@@ -262,18 +262,24 @@ struct QwenPrefixReuseTests {
             blockSize: 2,
             maxBytes: at2.byteCount + at4.byteCount))
         let prefix = [10, 11, 12, 13]
+        let donorID = CBv2RequestID(60)
         cache.donateExact(
-            requestID: CBv2RequestID(60),
+            requestID: donorID,
             tokens: Array(prefix.prefix(2)),
             snapshot: at2,
             layerKinds: [exactLayerKind],
             cacheSalt: "scope")
+        let firstDonation = try #require(cache.donation(for: donorID))
+        try await Task.sleep(for: .milliseconds(1))
         cache.donateExact(
-            requestID: CBv2RequestID(60),
+            requestID: donorID,
             tokens: prefix,
             snapshot: at4,
             layerKinds: [exactLayerKind],
             cacheSalt: "scope")
+        let finalDonation = try #require(cache.donation(for: donorID))
+        #expect(finalDonation.publishedAtNs > firstDonation.publishedAtNs)
+        #expect(finalDonation.cacheBytesAfterPublish == at2.byteCount + at4.byteCount)
 
         let engine = ExactPrefixScriptedEngine(
             cache: cache,

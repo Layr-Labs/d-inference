@@ -1,0 +1,48 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/benchmark/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/benchmark/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/benchmark/work/d-inference/provider-swift->/users/benchmark/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/benchmark/work/d-inference/provider-swift->/users/benchmark/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/14] Write sources
+[3/14] Write swift-version--58304C5D6DBC2206.txt
+[5/8] Compiling ProviderCoreTests EngineV2ExactPrefixCacheTests.swift
+[6/8] Emitting module ProviderCoreTests
+[7/8] Compiling ProviderCoreTests QwenPrefixReuseTests.swift
+[7/9] Write Objects.LinkFileList
+[8/9] Linking DarkbloomProviderPackageTests
+Build complete! (27.93s)
+Test Suite 'Selected tests' started at 2026-08-24 08:16:43.332.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 08:16:43.333.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 08:16:43.333.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 08:16:43.333.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 exact prefix cache deployment policy" started.
+◇ Test "slot factory installs exact Qwen cache and carves its grant" started.
+◇ Test "exact opt-in independently requires verified load-bracket weights" started.
+◇ Test "cache carve remains part of total admission through re-slicing" started.
+◇ Test "exact cache is default-off and unrecognized enable values fail closed" started.
+◇ Test "re-slice floor is evaluated after the fixed exact-cache carve" started.
+◇ Test "legacy attention cache remains isolated from exact-state policy" started.
+◇ Test "hard byte and fraction ceilings are carved from the slot grant" started.
+◇ Test "enabled malformed budgets fail closed without a carve" started.
+◇ Test "artifact, policy, backend, and dtype changes invalidate identities" started.
+◇ Test "exact-capable Qwen selects only the stronger cache" started.
+✔ Test "re-slice floor is evaluated after the fixed exact-cache carve" passed after 0.001 seconds.
+✔ Test "exact opt-in independently requires verified load-bracket weights" passed after 0.001 seconds.
+✔ Test "enabled malformed budgets fail closed without a carve" passed after 0.001 seconds.
+✔ Test "exact cache is default-off and unrecognized enable values fail closed" passed after 0.001 seconds.
+✔ Test "legacy attention cache remains isolated from exact-state policy" passed after 0.001 seconds.
+✔ Test "exact-capable Qwen selects only the stronger cache" passed after 0.001 seconds.
+✔ Test "cache carve remains part of total admission through re-slicing" passed after 0.001 seconds.
+✔ Test "hard byte and fraction ceilings are carved from the slot grant" passed after 0.001 seconds.
+✔ Test "artifact, policy, backend, and dtype changes invalidate identities" passed after 0.002 seconds.
+✔ Test "slot factory installs exact Qwen cache and carves its grant" passed after 0.073 seconds.
+✔ Suite "EngineV2 exact prefix cache deployment policy" passed after 0.073 seconds.
+✔ Test run with 10 tests in 1 suite passed after 0.074 seconds.

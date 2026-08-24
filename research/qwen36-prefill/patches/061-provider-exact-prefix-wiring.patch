@@ -1064,10 +1064,10 @@ index 63f5e6e4..3d6933fe 100644
 +
 diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
 new file mode 100644
-index 00000000..f772cf1c
+index 00000000..f582c28c
 --- /dev/null
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,390 @@
 +// Copyright © 2026 Eigen Labs.
 +//
 +// Deployment policy and accounting for Qwen exact prompt-state reuse.
@@ -1185,6 +1185,7 @@ index 00000000..f772cf1c
 +        #expect(
 +            absent.maxBytes
 +                == EngineV2SlotFactory.defaultExactPrefixCacheMaxBytes)
++        #expect(absent.maxBytes == 2_147_483_648)
 +        #expect(
 +            absent.maxFraction
 +                == EngineV2SlotFactory.defaultExactPrefixCacheMaxFraction)
@@ -1535,7 +1536,7 @@ index 8892f6cd..11454aa3 100644
 +    }
 +
 diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
-index 31dfd105..fe5915b9 100644
+index 31dfd105..374d87fb 100644
 --- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 @@ -33,0 +34,17 @@ struct QwenPrefixReuseTests {
@@ -1556,3 +1557,18 @@ index 31dfd105..fe5915b9 100644
 +        ])
 +    }
 +
+@@ -247,0 +265 @@ struct QwenPrefixReuseTests {
++        let donorID = CBv2RequestID(60)
+@@ -249 +267 @@ struct QwenPrefixReuseTests {
+-            requestID: CBv2RequestID(60),
++            requestID: donorID,
+@@ -253,0 +272,2 @@ struct QwenPrefixReuseTests {
++        let firstDonation = try #require(cache.donation(for: donorID))
++        try await Task.sleep(for: .milliseconds(1))
+@@ -255 +275 @@ struct QwenPrefixReuseTests {
+-            requestID: CBv2RequestID(60),
++            requestID: donorID,
+@@ -259,0 +280,3 @@ struct QwenPrefixReuseTests {
++        let finalDonation = try #require(cache.donation(for: donorID))
++        #expect(finalDonation.publishedAtNs > firstDonation.publishedAtNs)
++        #expect(finalDonation.cacheBytesAfterPublish == at2.byteCount + at4.byteCount)

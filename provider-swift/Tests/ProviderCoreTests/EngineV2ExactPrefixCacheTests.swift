@@ -115,6 +115,7 @@ struct EngineV2ExactPrefixCacheTests {
         #expect(
             absent.maxBytes
                 == EngineV2SlotFactory.defaultExactPrefixCacheMaxBytes)
+        #expect(absent.maxBytes == 2_147_483_648)
         #expect(
             absent.maxFraction
                 == EngineV2SlotFactory.defaultExactPrefixCacheMaxFraction)

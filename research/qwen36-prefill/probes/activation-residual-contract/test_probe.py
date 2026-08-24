@@ -67,6 +67,29 @@ class ArithmeticBudgetTests(unittest.TestCase):
             result.components["routed_output_reconstruction"], 128 * 4 * 64
         )
 
+    def test_preregistered_schedule_covers_topk4_linear_ledger(self) -> None:
+        schedule = budget.preregistered_b4_schedule()
+
+        self.assertAlmostEqual(
+            schedule["topk4_linear_gflop_per_token"],
+            budget.TOPK4_LINEAR_GFLOP_PER_TOKEN,
+            places=12,
+        )
+        self.assertAlmostEqual(
+            schedule["candidate_linear_gflop_per_token"],
+            0.94326088,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            schedule["effective_linear_fraction"],
+            0.24393913476256304,
+            places=12,
+        )
+        self.assertGreater(
+            schedule["composition"]["native_speedup"],
+            3.10,
+        )
+
 
 class NumericalProbeTests(unittest.TestCase):
     def test_rank_complete_fixture_reconstructs_projection(self) -> None:

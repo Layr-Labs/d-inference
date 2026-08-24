@@ -7,6 +7,12 @@ b1-8192	2026-08-24T05:23:22Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-bas
 b4-2048-i1	2026-08-24T05:24:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	prefill_tps_from_makespan	1663	tok/s	1.00	pending	makespan 4926ms; discarded first harness; see official rows
 b4-2048-burst	2026-08-24T05:28:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	prefill_tps	1661	tok/s	0.995	baseline	median 2 burst iters; TTFT 4827/5044; JSON artifacts/baseline-arrival-2048.json
 b4-2048-burst	2026-08-24T05:28:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	ttft_median	4936	ms	4.03x_vs_b1	baseline	all 4 rows equal TTFT
+e1-tile-t4096	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	allowlist-32768	4096	1	qmm_ms	12.516	ms	1.06x_vs_legacy	keep-gate	hits=25; 1.3x kernel bar missed
+e1-legacy-t4096	2026-08-24T05:40:36Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	legacy	4096	1	qmm_ms	13.241	ms	1.00	meta	gate_up_fused
+e1-tile-t8192	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	allowlist-65536	8192	1	qmm_ms	24.486	ms	1.07x_vs_legacy	keep-gate	hits=25; 1.3x kernel bar missed
+e1-legacy-t8192	2026-08-24T05:40:36Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	legacy	8192	1	qmm_ms	26.117	ms	1.00	meta	gate_up_fused
+e1-tile-t512	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tile-vs-legacy	allowlist	512	1	qmm_ms	2.328	ms	0.85x_vs_legacy	meta	tile slower at small M
+e1-correctness	2026-08-24T05:40:25Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-numerics	allowlist	65536	1	sorted_gather	1	pass	pass	keep-gate	SortedGatherQuantizedMMTests including new M
 
 
 

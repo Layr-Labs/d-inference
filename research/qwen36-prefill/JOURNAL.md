@@ -150,3 +150,14 @@ Next: compile mlx-swift tests on the M3 Max and A/B tile vs legacy
 at M=16384 (control), 32768, 65536. Keep only if tile ≥1.3× legacy
 and numerics hold. See `notes/020`.
 
+## 2026-08-24T05:40Z — E1 measured
+
+Correctness PASS (new M included). Tile HIT 25/25 at M=32768 and
+65536 on the installed 0.8.10 metallib. Tile/legacy at T4096 = 1.06×,
+T8192 = 1.07×. **Missed the 1.3× kernel-only keep bar.** Isolated QMM
+time is linear in M, so this kernel is not the 2× weight-stream win.
+
+Allowlist stays (correct, hits, not slower at E2 shapes). CBv2 tok/s
+unchanged until E2 raises chunk/budget on a binary that contains this
+gate. See `notes/021`.
+

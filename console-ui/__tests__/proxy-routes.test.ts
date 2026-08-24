@@ -10,6 +10,7 @@ import {
 // Tests for the proxy routes added in the direct-fetch → proxy migration.
 
 const upstream = stubUpstreamFetch();
+const CACHE_CONTROL = "Cache-Control";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -29,7 +30,7 @@ describe("GET /api/earnings/market", () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(res.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(res.headers.get(CACHE_CONTROL)).toContain("s-maxage=60");
   });
 
   it("never CDN-caches a transient coordinator failure", async () => {
@@ -43,7 +44,7 @@ describe("GET /api/earnings/market", () => {
     const res = await GET();
 
     expect(res.status).toBe(503);
-    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(res.headers.get(CACHE_CONTROL)).toBe("no-store");
   });
 
   it("terminates a stalled coordinator request as unavailable", async () => {
@@ -62,7 +63,7 @@ describe("GET /api/earnings/market", () => {
     const res = await pending;
 
     expect(res.status).toBe(503);
-    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(res.headers.get(CACHE_CONTROL)).toBe("no-store");
   });
 });
 

@@ -321,3 +321,19 @@ rounding boundary. A two-term adversary expected 0.125 and produced
 Candidate B is numerically illegal. Existing probe and machine-readable
 evidence are in `probes/e9-native-uint4` and note 041.
 
+## 2026-08-24T07:09Z — E12 MPP reduction path survives
+
+Reproduced the fixed-shape Metal 4 probe on M3:
+
+- static K=8 descriptor: compiler rejects (K dynamic or multiple of 16);
+- supported static K16 cooperative load/store: bit-identical to two
+  incumbent Steel K8 calls across all fixtures;
+- dynamic K8 twice and explicit-add variants: unchanged QMM/Qwen
+  tolerances (mixed-exponent BF16 output bit-identical);
+- MLX NAX manual register mapping: catastrophic errors.
+
+E6/E8 failed because MLX's NAX register-layout assumption is invalid on
+the M3 fallback, not because MPP arithmetic is inherently incompatible.
+Candidate A reopens only through supported cooperative load/store.
+Timing is next; no serving integration yet. See `notes/042`.
+

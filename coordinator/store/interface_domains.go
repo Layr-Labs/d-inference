@@ -579,10 +579,13 @@ type ProviderEarningsStore interface {
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
 
 	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
-	// across ALL accounts that have ever owned the key.
+	// across ALL accounts that have ever owned the key. It wraps ErrNotFound when
+	// the provider has no earnings; operational read errors are returned intact.
 	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
 
-	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
+	// GetAccountEarningsSummary returns lifetime aggregates for an account across
+	// all linked nodes. It wraps ErrNotFound when the account has no earnings;
+	// operational read errors are returned intact.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
 	// AccountEarningsWindows returns the account's last-24h and last-7d row

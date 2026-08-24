@@ -822,7 +822,7 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, err := s.store.GetAccountEarningsSummary(accountID)
+	summary, err := s.accountEarningsSummary(accountID)
 	if err != nil {
 		s.logger.Error("get account earnings summary failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings summary"))

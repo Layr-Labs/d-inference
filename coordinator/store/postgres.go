@@ -4165,6 +4165,18 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 	return results, nil
 }
 
+func scanEarningsSummary(row pgx.Row) (ProviderEarningsSummary, error) {
+	var summary ProviderEarningsSummary
+	err := row.Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProviderEarningsSummary{}, ErrNotFound
+	}
+	if err != nil {
+		return ProviderEarningsSummary{}, err
+	}
+	return summary, nil
+}
+
 // GetProviderEarningsSummary returns lifetime aggregates for a provider node.
 // Reads from the materialized earnings_summary table (PK lookup) instead of
 // scanning all provider_earnings rows.
@@ -4172,18 +4184,15 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
+	summary, err := scanEarningsSummary(s.pool.QueryRow(ctx,
 		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
 		 FROM earnings_summary
 		 WHERE key = $1 AND key_type = 'provider'`,
 		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	))
 	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
+		return ProviderEarningsSummary{}, fmt.Errorf("store: provider earnings summary %q: %w", providerKey, err)
 	}
-
 	return summary, nil
 }
 
@@ -4194,18 +4203,15 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
+	summary, err := scanEarningsSummary(s.pool.QueryRow(ctx,
 		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
 		 FROM earnings_summary
 		 WHERE key = $1 AND key_type = 'account'`,
 		accountID,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	))
 	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
+		return ProviderEarningsSummary{}, fmt.Errorf("store: account earnings summary %q: %w", accountID, err)
 	}
-
 	return summary, nil
 }
 

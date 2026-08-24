@@ -475,3 +475,19 @@ Single four-layer artifact ablations under top-k4 range from 97.1%
 token agreement (layers 28–31) to 2.6% (layers 0–3). First/final blocks
 are critical; middle redundancy is nonuniform. Combining enough blocks
 to reach 2.5× still collapses quality. See `notes/066`.
+
+## 2026-08-24T09:48Z — exact full-prompt CBv2 boundary implemented
+
+Implemented the default-off RAM proof for Qwen's complete hybrid boundary:
+10 full-attention K/V rows and offsets, all 30 request-owned GDN conv/FP32
+SSM states, scalar model position, and frontier logits. Qwen's historical
+KV-only capability remains disabled; only the stronger exact-state cache
+contract activates reuse.
+
+Snapshots are storage-owning, cache entries are hard-budgeted/pinned LRU,
+and every adopter receives independent attention/recurrent wrappers. The
+first test tier covers exact B1 repeat, warm B2/B4 cohorts sharing one cold
+prefill, cancellation isolation, identity scoping, accounting, and eviction.
+The exact-only library and root wiring are preserved as ordered patches `060`
+and `061` because this agent cannot push the nested library remote. See
+`notes/060`.

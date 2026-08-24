@@ -1,0 +1,65 @@
+diff --git "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift" "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
+index 6b8d4094..9697c2f0 100644
+--- "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
++++ "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
+@@ -988,7 +988,9 @@ extension EngineV2Factory {
+         let (backend, caches) = try preparedBackend.consume(
+             model: model,
+             maxConcurrentRequests: maxConcurrentRequests)
+-        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
++        let effectivePrefixCache = prefixCacheIsSupported(
++            capabilities: preparedBackend.modelCapabilities,
++            prefixCache: prefixCache)
+             ? prefixCache : nil
+         // The ONE config, read back off the preparation. `consume` has
+         // already refused a `maxConcurrentRequests` that differs from the
+@@ -1024,6 +1026,20 @@ extension EngineV2Factory {
+             pagedPoolDType: preparedBackend.pagedPoolDType)
+     }
+ 
++    /// Preserve the hard distinction between historical KV-only reuse and
++    /// recurrent exact-state reuse. Qwen must never become cache-eligible
++    /// merely because a legacy `CBv2PrefixCache` was supplied; its caller has
++    /// to inject the stronger, default-off RAM cache explicitly.
++    static func prefixCacheIsSupported(
++        capabilities: CBv2ModelCapabilities,
++        prefixCache: (any CBv2PrefixCache)?
++    ) -> Bool {
++        guard let prefixCache else { return false }
++        if capabilities.supportsPrefixReuse { return true }
++        return capabilities.supportsExactStatePrefixReuse
++            && prefixCache is any CBv2ExactStatePrefixCache
++    }
++
+     /// Shared final assembly for both backends.
+     private static func makeEngineV2(
+         model: any LanguageModel,
+diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
+index 6f263c70..44d4fc33 100644
+--- a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
+@@ -100,6 +100,24 @@ struct EngineV2PrefixCacheUsageTests {
+         ) == Int.max)
+     }
+ 
++    @Test("recurrent models accept only the stronger exact-state cache")
++    func recurrentCachePairing() {
++        var recurrent = CBv2ModelCapabilities.initialRecurrentTarget
++        recurrent.supportsExactStatePrefixReuse = true
++        let exact = ExactPrefixCacheV2(
++            config: .init(modelIdentity: "qwen-test", maxBytes: 0))
++        let legacy = PrefixCacheV2()
++
++        #expect(EngineV2Factory.prefixCacheIsSupported(
++            capabilities: recurrent, prefixCache: exact))
++        #expect(!EngineV2Factory.prefixCacheIsSupported(
++            capabilities: recurrent, prefixCache: legacy))
++        #expect(!EngineV2Factory.prefixCacheIsSupported(
++            capabilities: recurrent, prefixCache: nil))
++        #expect(EngineV2Factory.prefixCacheIsSupported(
++            capabilities: .attentionOnly, prefixCache: legacy))
++    }
++
+     @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")
+     func usageSignalRecords() async throws {
+         let engine = PrefixScriptedEngine(events: [

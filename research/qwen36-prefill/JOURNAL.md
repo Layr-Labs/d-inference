@@ -275,16 +275,17 @@ Three schema-6 burst repetitions, default geometry, AC/High Power:
 Checksums stable. The binding B=4 2.5× bar is **3,893.5 tok/s** or
 **8.4150 s**. B=4 still equals B=1 8K within noise. See `notes/037`.
 
-## 2026-08-24T06:44Z — E9 MPP reduction-order probe preregistered
+## 2026-08-24T06:44Z — MPP reduction-order probe preregistered
 
-E8 exercised only strict K=16 MPP multiply-accumulate. E9 isolates the
+E8 exercised only strict K=16 MPP multiply-accumulate. This probe isolates the
 remaining association schedules at fixed M=16/N=32/K=16: compiler legality of
 static K=8, runtime dynamic K=8 staged calls, separate MPP multiply plus
 explicit FP32 addition, and K=16 calls with zero-padded 8-term halves.
 
 The reference is the actual incumbent 8x8 FP32
 `simdgroup_multiply_accumulate`, called twice. No serving integration and no
-timing; unchanged QMM tolerances decide. See `notes/038`.
+timing; unchanged QMM tolerances decide. See
+`notes/041-mpp-reduction-order.md`.
 
 ## 2026-08-24T06:47Z — complete baseline matrix
 
@@ -298,4 +299,22 @@ One schema-6 binary, three repetitions:
 
 B=1 TTFT 356.2 / 1,224.7 / 5,295.6 ms. All required denominators are
 now first-class harness artifacts. See `notes/038`.
+
+## 2026-08-24T07:01Z — portable MPP passes the fixed-shape reduction gate
+
+On M3 Max/macOS 26.4, static BF16 K=8 is compiler-rejected: K must be dynamic
+or a multiple of 16. Dynamic K=8 staged calls execute and pass unchanged QMM
+and Qwen tolerances; separate multiply plus explicit FP32 addition gives the
+same result.
+
+More importantly, strict static K=16 MPP is bit-identical to two Steel K=8
+calls on all three fixtures when operands/results use supported tensor or
+cooperative-tensor load/store. Replacing those operations with MLX
+`BaseNAXFrag`'s numeric per-lane indexing fails every fixture. The forced E6/E8
+route therefore exposed an M3 cooperative-tensor register-layout mismatch, not
+an isolated 16-term reduction-order failure.
+
+Candidate A is not closed by reduction order, but remains unproven beyond this
+fixed-shape correctness probe. No timing and no serving integration. See
+`notes/041-mpp-reduction-order.md`.
 

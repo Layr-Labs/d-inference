@@ -1,0 +1,13 @@
+In file included from /Users/gaj/work/mpp-reduction-probe-95ff/static-k8-rejected.metal:3:
+In file included from /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MetalPerformancePrimitives.h:10:
+In file included from /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:389:
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/__impl/MPPTensorOpsMatMul2dImpl.h:4272:9: error: static_assert failed due to requirement '(mpp::tensor_ops::matmul2d_descriptor{16, 32, 8, false, false, false, 0}.k % 16) == 0' "K must be dynamic or a multiple of 16"
+        static_assert((descriptor.k % 16) == 0, "K must be dynamic or a multiple of 16");
+        ^             ~~~~~~~~~~~~~~~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/MPPTensorOpsMatMul2d.h:415:24: note: in instantiation of function template specialization 'mpp::tensor_ops::__mutmul2d_detail::__run<{16, 32, 8, false, false, false, 0}, metal::execution_simdgroups<1>, metal::tensor<device bfloat, metal::extents<int, 8, 16>, metal::tensor_inline>, metal::tensor<device bfloat, metal::extents<int, 32, 8>, metal::tensor_inline>, metal::tensor<device float, metal::extents<int, 32, 16>, metal::tensor_inline>>' requested here
+    __mutmul2d_detail::__run<Descriptor, Scope, LeftOperandType,
+                       ^
+/Users/gaj/work/mpp-reduction-probe-95ff/static-k8-rejected.metal:30:13: note: in instantiation of function template specialization 'mpp::tensor_ops::matmul2d<{16, 32, 8, false, false, false, 0}, metal::execution_simdgroups<1>>::run<metal::tensor<device bfloat, metal::extents<int, 8, 16>, metal::tensor_inline>, metal::tensor<device bfloat, metal::extents<int, 32, 8>, metal::tensor_inline>, metal::tensor<device float, metal::extents<int, 32, 16>, metal::tensor_inline>, void>' requested here
+  operation.run(a_tensor, b_tensor, c_tensor);
+            ^
+1 error generated.

@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 @testable import ProviderCore
@@ -96,6 +97,85 @@ struct KVPoolReclaimerTests {
         #expect(await reclaimer.reclaimCount == 1)
     }
 
+    @Test("telemetry records reclaim volume and blocking duration")
+    func telemetryRecordsObservedReclaim() async {
+        let spy = ReclaimSpy(reclaimable: 3 * gib)
+        let reclaimer = KVPoolReclaimer(
+            clearCache: {
+                Thread.sleep(forTimeInterval: 0.005)
+                spy.clear()
+            },
+            reclaimableBytes: { spy.reclaimable },
+            minInterval: .zero,
+            proactiveThresholdBytes: 2 * gib)
+
+        #expect(await reclaimer.sweep())
+        let telemetry = reclaimer.telemetrySnapshot()
+        #expect(telemetry.sweepSignals == 1)
+        #expect(telemetry.reclaims == 1)
+        #expect(telemetry.reclaimedBytes == 3 * gib)
+        #expect(telemetry.lastReclaimedBytes == 3 * gib)
+        #expect(telemetry.lastReclaimDurationMs >= 1)
+    }
+
+    @Test("heartbeat telemetry snapshot never waits for a blocking GPU clear")
+    func telemetrySnapshotDoesNotWaitForClear() async {
+        let gate = BlockingReclaimGate()
+        let spy = ReclaimSpy(reclaimable: 3 * gib)
+        let reclaimer = KVPoolReclaimer(
+            clearCache: {
+                gate.enterClear()
+                spy.clear()
+            },
+            reclaimableBytes: { spy.reclaimable },
+            minInterval: .zero,
+            proactiveThresholdBytes: 2 * gib)
+
+        let reclaim = Task { await reclaimer.sweep() }
+        #expect(gate.waitUntilClearStarted())
+        let failsafe = Task {
+            try? await taskSleep(.milliseconds(250))
+            gate.releaseClear()
+        }
+
+        let startedAt = ContinuousClock.now
+        let duringClear = reclaimer.telemetrySnapshot()
+        let snapshotLatency = ContinuousClock.now - startedAt
+        gate.releaseClear()
+        failsafe.cancel()
+
+        #expect(snapshotLatency < .milliseconds(100))
+        #expect(duringClear.sweepSignals == 1)
+        #expect(duringClear.reclaims == 0)
+        #expect(await reclaim.value)
+        #expect(reclaimer.telemetrySnapshot().reclaims == 1)
+    }
+
+    @Test("sweep signals are counted even when the threshold gate skips the flush")
+    func sweepSignalCountTracksWiring() async {
+        // `sweepSignalCount` is the wiring seam the periodic drivers
+        // (ProviderLoop capacity tick, StandaloneServer sweep task) are
+        // asserted through — it must tick on EVERY signal, flushed or gated,
+        // or a test-process pool below the threshold would hide a lost caller
+        // (the v0.7.5 regression this observability exists for).
+        let spy = ReclaimSpy(reclaimable: 0)
+        let reclaimer = KVPoolReclaimer(
+            clearCache: { spy.clear() },
+            reclaimableBytes: { spy.reclaimable },
+            minInterval: .zero,
+            proactiveThresholdBytes: 2 * gib)
+
+        #expect(await reclaimer.sweepSignalCount == 0)
+        #expect(!(await reclaimer.sweep()))              // empty pool: flush gated out…
+        #expect(await reclaimer.sweepSignalCount == 1)   // …but the signal is counted
+        #expect(await reclaimer.reclaimCount == 0)
+
+        spy.reclaimable = 3 * gib
+        #expect(await reclaimer.sweep())
+        #expect(await reclaimer.sweepSignalCount == 2)
+        #expect(await reclaimer.reclaimCount == 1)
+    }
+
     @Test("the on-pressure and proactive paths share one rate-limit window")
     func sweepAndReclaimShareRateLimit() async {
         let spy = ReclaimSpy(reclaimable: 4 * gib, shrinkOnClear: false)
@@ -119,6 +199,7 @@ private final class ReclaimSpy: @unchecked Sendable {
     private var _reclaimable: UInt64
     private var _clearCount = 0
 
+
     init(reclaimable: UInt64, shrinkOnClear: Bool = true) {
         self._reclaimable = reclaimable
         self.shrinkOnClear = shrinkOnClear
@@ -138,5 +219,29 @@ private final class ReclaimSpy: @unchecked Sendable {
 
     var clearCount: Int {
         lock.lock(); defer { lock.unlock() }; return _clearCount
+    }
+}
+
+private final class BlockingReclaimGate: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var released = false
+
+    func enterClear() {
+        started.signal()
+        release.wait()
+    }
+
+    func waitUntilClearStarted() -> Bool {
+        started.wait(timeout: .now() + 2) == .success
+    }
+
+    func releaseClear() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !released else { return }
+        released = true
+        release.signal()
     }
 }

@@ -1,0 +1,78 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "1",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "EigenLabs\/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp",
+  "modelPath" : "$HOME\/.cache\/huggingface\/hub\/models--EigenLabs--Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp\/snapshots\/baseline-work",
+  "promptLengths" : [
+    8192,
+    16384
+  ],
+  "samples" : [
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 1.618221111585887,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13254.849125
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 1.6037988544744233,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13136.716417000001
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 1.6007275414479307,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 13111.559292
+    },
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 1.7533773321735946,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 28725.580833
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 1.7567204851370324,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 28780.351708000002
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 1.7997212913996214,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 29484.833917
+    }
+  ],
+  "schemaVersion" : 2,
+  "strategies" : [
+    "cbv2"
+  ]
+}

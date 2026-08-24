@@ -1158,10 +1158,12 @@ public struct SelfUpdater: Sendable {
         // The signed child must prove the production TOML projection,
         // overwrite precedence, early safe-R1 latch, and packaged AOT before
         // it reaches the existing paged-kernel GPU smoke.
+        var smokeEnvironment = try PackagedRuntimeSmoke.retainedValidationEnvironment()
+        smokeEnvironment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
         let smokeOutput = try BoundedProcess.runCapturingStandardOutput(
             executable,
             arguments: ["runtime-smoke"],
-            environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"],
+            environment: smokeEnvironment,
             timeout: Self.artifactVerificationTimeout)
         guard PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(smokeOutput)
         else {

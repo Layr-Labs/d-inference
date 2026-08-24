@@ -50,23 +50,41 @@ public enum PackagedRuntimeSmoke {
     /// signed-child gate proves config authority and overwrite precedence,
     /// rather than merely observing a cooperative parent environment.
     ///
-    /// The retained projection is computed in `.retainedValidation` context:
-    /// `BoundedProcess` merges the parent's environment into this child, so a
-    /// foreground/local trust-mode provider (or installer shell) exporting
-    /// `MLX_GATHER_QMM_EXPERT_SLICES=trust` must not leak into the expected
-    /// safe-R1 value and fail the smoke — the gate validates the retained
-    /// config, not the launching environment.
-    public static func verifyGemmaOptimizations() throws {
+    /// The retained projection and `apply` both use `.retainedValidation`:
+    /// `BoundedProcess` merges the parent's environment into this child, and
+    /// serving now defaults to `trust`, so a parent
+    /// `MLX_GATHER_QMM_EXPERT_SLICES=trust` (or an unset key that serving
+    /// would project as `trust`) must not leak into the expected safe-R1
+    /// value and fail the smoke — the gate validates the retained config,
+    /// not the launching environment.
+    public static func retainedValidationEnvironment() throws -> [String: String] {
         let config = try retainedConfiguration()
         let projection = GemmaOptimizationEnvironment.projection(
             for: config.gemmaOptimizations,
             context: .retainedValidation)
         try validateRetainedProjection(projection)
+        return projection
+    }
+
+    /// Seed the process-global MLX latch variables before command parsing can
+    /// trigger any eager Metal access. This is the bootstrap boundary used by
+    /// a v0.8.10 child launched from an older updater that cannot provide the
+    /// new pre-exec environment itself.
+    public static func seedRetainedValidationEnvironment() throws {
+        let config = try retainedConfiguration()
+        try GemmaOptimizationEnvironment.apply(
+            config.gemmaOptimizations, context: .retainedValidation)
+    }
+
+    public static func verifyGemmaOptimizations() throws {
+        let config = try retainedConfiguration()
+        let projection = try retainedValidationEnvironment()
 
         for key in projection.keys {
             _ = setenv(key, "poisoned-by-runtime-smoke", 1)
         }
-        try GemmaOptimizationEnvironment.apply(config.gemmaOptimizations)
+        try GemmaOptimizationEnvironment.apply(
+            config.gemmaOptimizations, context: .retainedValidation)
 
         let appliedEnvironment = Dictionary(
             uniqueKeysWithValues: projection.keys.compactMap { key in

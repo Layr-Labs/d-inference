@@ -71,6 +71,9 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "desired_build is required", withParam("desired_build")))
 		return
 	}
+	s.modelAliasMutationMu.Lock()
+	defer s.modelAliasMutationMu.Unlock()
+
 	// Namespace + takeover rules. Normally an alias id must not collide with a
 	// concrete model id (resolution would be ambiguous), and an alias may never
 	// name itself as a member. `takeover` is the deliberate exception for the
@@ -131,12 +134,32 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	if req.Active != nil {
 		active = *req.Active
 	}
+	retiredBuilds := retiredBuildsAfterUpsert(prior, req.DesiredBuild, req.PreviousBuild)
+	if active {
+		aliases, err := s.store.ListModelAliases()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to validate alias members"))
+			return
+		}
+		members := make(map[string]struct{}, 2+len(retiredBuilds))
+		members[req.DesiredBuild] = struct{}{}
+		if req.PreviousBuild != "" {
+			members[req.PreviousBuild] = struct{}{}
+		}
+		for _, retired := range retiredBuilds {
+			members[retired] = struct{}{}
+		}
+		if clone, conflict := concreteOpenRouterAliasUsingBuild(aliases, members); conflict {
+			writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", "concrete model "+clone.SourceModel+" is pinned by OpenRouter alias "+clone.AliasID+"; delete or retarget that alias first"))
+			return
+		}
+	}
 	alias := &store.ModelAlias{
 		AliasID:       req.AliasID,
 		DisplayName:   req.DisplayName,
 		DesiredBuild:  req.DesiredBuild,
 		PreviousBuild: req.PreviousBuild,
-		RetiredBuilds: retiredBuildsAfterUpsert(prior, req.DesiredBuild, req.PreviousBuild),
+		RetiredBuilds: retiredBuilds,
 
 		Active: active,
 	}

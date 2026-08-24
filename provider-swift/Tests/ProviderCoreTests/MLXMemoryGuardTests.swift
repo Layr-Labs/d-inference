@@ -8,9 +8,71 @@ private let gib = 1024 * 1024 * 1024
     let limits = MLXMemoryGuard.recommendedLimits(
         physicalBytes: UInt64(64 * gib), reserveBytes: UInt64(6 * gib))
     #expect(limits.memoryLimitBytes == 58 * gib)
-    // cache fraction 0.75 of the ceiling, never above it.
-    #expect(limits.cacheLimitBytes == Int(Double(58 * gib) * 0.75))
+    // The absolute cache cap binds well below the 0.75 fraction here
+    // (0.75 × 58 GiB = 43.5 GiB of allowed hoard was the field bug).
+    #expect(limits.cacheLimitBytes == 8 * gib)
     #expect(limits.cacheLimitBytes <= limits.memoryLimitBytes)
+}
+
+@Test func mlxGuardCacheCapBoundsBigMachines() {
+    // The field incident: a 512 GB Mac Studio serving a ~21 GB model
+    // accumulated ~377 GB of freed buffers in MLX's cache — exactly the
+    // old 0.75 × (512 − 6) GiB ≈ 379.5 GiB allowance. The absolute cap
+    // must bound the pool by WORKLOAD, not machine size.
+    let limits = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(512 * gib), reserveBytes: UInt64(6 * gib))
+    #expect(limits.memoryLimitBytes == 506 * gib)
+    #expect(limits.cacheLimitBytes == Int(MLXMemoryGuard.defaultCacheLimitGB) * gib)
+}
+
+@Test func mlxGuardCacheFractionStillBindsSmallMachines() {
+    // 16 GiB box: 0.75 × (16 − 6) GiB = 7.5 GiB < the 8 GiB absolute cap,
+    // so the proportional scale-down still governs small machines.
+    let limits = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(16 * gib), reserveBytes: UInt64(6 * gib))
+    #expect(limits.memoryLimitBytes == 10 * gib)
+    #expect(limits.cacheLimitBytes == Int(Double(10 * gib) * 0.75))
+}
+
+@Test func mlxGuardCacheCapOverridesClampToFloorAndCeiling() {
+    // A raised cap is honored up to the fraction bound (an operator can
+    // restore bigger pools), never past the memory limit.
+    let raised = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(512 * gib), reserveBytes: UInt64(6 * gib),
+        cacheCapBytes: UInt64(64 * gib))
+    #expect(raised.cacheLimitBytes == 64 * gib)
+
+    // A zero/tiny cap lands on the 1 GiB floor so buffer reuse survives a
+    // pathological override.
+    let floored = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(64 * gib), reserveBytes: UInt64(6 * gib),
+        cacheCapBytes: 0)
+    #expect(floored.cacheLimitBytes == MLXMemoryGuard.minimumLimitBytes / 2)
+
+    // A huge cap can never push the cache past the memory limit itself.
+    let huge = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(16 * gib), reserveBytes: UInt64(6 * gib),
+        cacheFraction: 1.0, cacheCapBytes: UInt64.max)
+    #expect(huge.cacheLimitBytes <= huge.memoryLimitBytes)
+}
+
+@Test func mlxGuardCacheCapResolutionPrefersExplicitThenEnvThenDefault() {
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(explicit: UInt64(3 * gib), env: [:]) == UInt64(3 * gib))
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_CACHE_LIMIT_GB": "32"]) == UInt64(32) * 1_073_741_824)
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(explicit: nil, env: [:])
+        == MLXMemoryGuard.defaultCacheLimitGB * 1_073_741_824)
+    // Garbage env falls back to the default rather than crashing.
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_CACHE_LIMIT_GB": "not-a-number"])
+        == MLXMemoryGuard.defaultCacheLimitGB * 1_073_741_824)
+    // Same saturation contract as the reserve: a huge finite override clamps,
+    // never traps (the configureOnce-crash class the reserve fix covered).
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_CACHE_LIMIT_GB": "1e308"]) == UInt64.max)
+    // Zero is honored (lands on the 1 GiB floor in recommendedLimits).
+    #expect(MLXMemoryGuard.resolvedCacheCapBytes(
+        explicit: nil, env: ["DARKBLOOM_MLX_CACHE_LIMIT_GB": "0"]) == 0)
 }
 
 @Test func mlxGuardNeverExceedsPhysicalRAM() {
@@ -66,21 +128,46 @@ private let gib = 1024 * 1024 * 1024
         explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "0"]) == 0)
 }
 
-@Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
-    MLXMemoryGuard._resetForTest()
-    var applied: [MLXMemoryGuard.Limits] = []
-    let first = MLXMemoryGuard.configureOnce(
-        reserveBytes: UInt64(6 * gib),
-        physicalBytes: UInt64(32 * gib),
-        apply: { applied.append($0) })
-    let second = MLXMemoryGuard.configureOnce(
-        reserveBytes: UInt64(6 * gib),
-        physicalBytes: UInt64(32 * gib),
-        apply: { applied.append($0) })
+/// Serialized: both tests reset + trip the process-global once-flag, so
+/// running them in parallel would race `configured` and flake.
+@Suite("MLXMemoryGuard.configureOnce", .serialized)
+struct MLXMemoryGuardConfigureOnceTests {
 
-    #expect(first != nil)
-    #expect(second == nil, "second call must be a no-op (ceiling set once per process)")
-    #expect(applied.count == 1)
-    #expect(applied.first?.memoryLimitBytes == 26 * gib)
-    MLXMemoryGuard._resetForTest()
+    @Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
+        MLXMemoryGuard._resetForTest()
+        var applied: [MLXMemoryGuard.Limits] = []
+        let first = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            physicalBytes: UInt64(32 * gib),
+            apply: { applied.append($0) })
+        let second = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            physicalBytes: UInt64(32 * gib),
+            apply: { applied.append($0) })
+
+        #expect(first != nil)
+        #expect(second == nil, "second call must be a no-op (ceiling set once per process)")
+        #expect(applied.count == 1)
+        #expect(applied.first?.memoryLimitBytes == 26 * gib)
+        MLXMemoryGuard._resetForTest()
+    }
+
+    @Test func mlxGuardConfigureOnceThreadsTheCacheCapThrough() {
+        // Pins the configureOnce → recommendedLimits(cacheCapBytes:) composition:
+        // dropping the argument would silently fall back to the default cap
+        // (the values coincide) and only the override path would break — the
+        // shape of bug a defaulted parameter invites.
+        MLXMemoryGuard._resetForTest()
+        var applied: [MLXMemoryGuard.Limits] = []
+        let limits = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            cacheCapBytes: UInt64(2 * gib),
+            physicalBytes: UInt64(64 * gib),
+            apply: { applied.append($0) })
+        #expect(limits?.cacheLimitBytes == 2 * gib)
+        #expect(applied.first?.cacheLimitBytes == 2 * gib)
+        #expect(MLXMemoryGuard.configuredLimitsSnapshot() == limits)
+        MLXMemoryGuard._resetForTest()
+        #expect(MLXMemoryGuard.configuredLimitsSnapshot() == nil)
+    }
 }

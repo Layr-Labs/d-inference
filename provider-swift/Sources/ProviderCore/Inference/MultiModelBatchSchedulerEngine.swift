@@ -47,7 +47,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `/apply-template`. When `acquire` is in use, this is the only
     /// way to find a tokenizer for the utility endpoints (since
     /// `registryProvider` is nil in that mode).
-    private let tokenizerProvider: (@Sendable (String?) async throws -> TokenizerHandle)?
+    private let tokenizerProvider: (@Sendable (String?) async throws -> TokenizerResolution)?
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -157,7 +157,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// `/v1/models` discovery endpoint sees the full set (P2 #3).
     public init(
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
-        tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
+        tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerResolution,
         availableModels: @escaping @Sendable () async -> [String],
         defaultMaxTokens: Int = 4096
     ) {
@@ -266,6 +266,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // forwards, but media must first run the wrapper's vision tower and
         // splice its embeddings; token-only preparation would discard media.
         if isVLM, let container, MediaIngest.hasMedia(request) {
+            var visionRequest = request
+            visionRequest.messages = ChatTemplateFixes.normalizeMessages(
+                request.messages,
+                context: ChatTemplateFixContext(
+                    modelId: request.model, modelType: modelType))
             // `.auto` constrains nothing and `.none` hides the tools outright
             // (post-generation validation rejects any emitted call), so both
             // ride the media path unchanged. `.required`/`.named` need the
@@ -296,7 +301,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // if it won't fit we reject with a retryable error instead of OOMing.
             // Released on every exit.
             let mediaReqId = "vlm-\(UUID().uuidString.prefix(12))"
-            let projectedBytes = MediaIngest.projectedDecodeBytes(request)
+            let projectedBytes = MediaIngest.projectedDecodeBytes(visionRequest)
             // Scheduler-free vision gate (v0.7.5): the per-slot
             // `VisionMemoryGate` carries the slot's fp16 KV rate + context
             // window and reserves against the same shared budget the old
@@ -311,7 +316,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // output tokens would under-count the prompt + vision tokens that also
             // occupy KV.
             let kvTokens = MediaIngest.projectedKVTokens(
-                request, defaultMaxTokens: defaultMaxTokens,
+                visionRequest, defaultMaxTokens: defaultMaxTokens,
                 contextLength: mediaGate.contextLength)
             let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
@@ -324,7 +329,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
             }
             do {
-                try await MediaIngest.validateMedia(request)
+                try await MediaIngest.validateMedia(visionRequest)
             } catch {
                 await mediaGate.release(requestId: mediaReqId)
                 await releaseBox.fire()
@@ -354,7 +359,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     let visionPrepared = try await plumbing.prepare(
-                        container, request, reasoningEffort)
+                        container, visionRequest, reasoningEffort)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -379,7 +384,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let upstream = await bridge.submitTokenized(
                         promptTokens: visionPrepared.promptTokens,
                         request: Self.translate(
-                            openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
+                            openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
                             logprobs: engineV2Logprobs != nil ? true : nil,
                             topLogprobs: engineV2Logprobs?.topLogprobs,
                             logitBias: engineV2Sampling?.logitBias,
@@ -403,8 +408,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // TTFT becomes the full thinking duration. Same probe
                     // as the text path below.
                     let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
-                        reasoningParser: request.reasoningParser,
-                        stream: request.stream,
+                        reasoningParser: visionRequest.reasoningParser,
+                        stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     )
@@ -453,7 +458,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
-                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
+                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: visionError))
@@ -469,7 +474,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // pre-content failover retries it invisibly elsewhere.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
-                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
+                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
                             modelId: modelId, mediaKind: mediaKind, error: error))
@@ -842,8 +847,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     }
 
     public func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse {
-        let tokenizer = try await resolveTokenizer(modelId: request.model)
-        let tokens = tokenizer.inner.encode(
+        let resolved = try await resolveTokenizer(modelId: request.model)
+        let tokens = resolved.tokenizer.inner.encode(
             text: request.prompt,
             addSpecialTokens: request.addSpecialTokens ?? true
         )
@@ -851,8 +856,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     }
 
     public func detokenize(_ request: DetokenizeRequest) async throws -> DetokenizeResponse {
-        let tokenizer = try await resolveTokenizer(modelId: request.model)
-        let text = tokenizer.inner.decode(
+        let resolved = try await resolveTokenizer(modelId: request.model)
+        let text = resolved.tokenizer.inner.decode(
             tokenIds: request.tokens,
             skipSpecialTokens: request.skipSpecialTokens ?? false
         )
@@ -860,13 +865,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     }
 
     public func applyTemplate(_ request: ApplyTemplateRequest) async throws -> TokenizeResponse {
-        let tokenizer = try await resolveTokenizer(modelId: request.model)
+        let resolved = try await resolveTokenizer(modelId: request.model)
         let messages = request.messages.map { $0.templateMessageDict() }
         let tools = request.tools?.map { $0.toolSpec() }
         // Drop JSON `null` / `Optional` leaves the Jinja bridge
         // can't convert before rendering (mirrors `streamChatCompletion`).
-        let fixContext = ChatTemplateFixContext(modelId: request.model)
-        let tokens = try tokenizer.inner.applyChatTemplate(
+        let fixContext = ChatTemplateFixContext(
+            modelId: request.model, modelType: resolved.modelType)
+        let tokens = try resolved.tokenizer.inner.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
             tools: ChatTemplateFixes.normalizeTools(tools, context: fixContext),
             additionalContext: nil
@@ -879,13 +885,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Resolve the tokenizer for a request. If the request specifies a
     /// `model`, prefer that. Otherwise fall back to any resident model
     /// (sorted for determinism). Throws when no model is loaded.
-    private func resolveTokenizer(modelId: String?) async throws -> TokenizerHandle {
+    private func resolveTokenizer(modelId: String?) async throws -> TokenizerResolution {
         if let tokenizerProvider {
             return try await tokenizerProvider(modelId)
         }
         let registry = await (registryProvider?() ?? [:])
         if let modelId, let entry = registry[modelId] {
-            return entry.tokenizer
+            return TokenizerResolution(
+                tokenizer: entry.tokenizer, modelType: entry.modelType)
         }
         if let modelId, registry[modelId] == nil {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
@@ -893,7 +900,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if let firstKey = registry.keys.sorted().first,
             let entry = registry[firstKey]
         {
-            return entry.tokenizer
+            return TokenizerResolution(
+                tokenizer: entry.tokenizer, modelType: entry.modelType)
         }
         throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
     }

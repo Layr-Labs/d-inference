@@ -283,26 +283,34 @@ public enum LaunchAgent: Sendable {
     /// override that did not reach the launchd jobs would split them across
     /// two files — the watchdog tripping one path while the daemon and the
     /// operator's clear verb read another.
+    /// `DARKBLOOM_MLX_CACHE_LIMIT_GB` / `DARKBLOOM_MLX_MEMORY_RESERVE_GB`:
+    /// the `MLXMemoryGuard` operator knobs (buffer-pool cap and whole-machine
+    /// memory ceiling reserve). The daemon is where they matter — a shell
+    /// export that did not reach launchd would silently no-op in the normal
+    /// `darkbloom start` deployment, leaving the advertised recovery lever
+    /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
+        "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
-    /// One value-conditional entry rides along: the operator `trust`
+    /// One value-conditional entry rides along: the operator drain
     /// refinement of the expert-slice route
-    /// (`GemmaOptimizationEnvironment.daemonTrustPassthrough`). launchd does
-    /// not inherit the installing shell, so without persisting it into the
-    /// plist the background daemon would collapse `trust` back to `1`. The
-    /// config-backed `0`/`1` values remain excluded — `provider.toml` stays
-    /// authoritative for whether the route runs at all.
+    /// (`GemmaOptimizationEnvironment.daemonDrainPassthrough`). Serving
+    /// defaults to `trust`; launchd does not inherit the installing shell, so
+    /// without persisting exact `1` into the plist the background daemon
+    /// would collapse a drain export back to `trust`. Config-backed `0` /
+    /// `trust` remain excluded — `provider.toml` stays authoritative for
+    /// whether the route runs, and `trust` is the default whenever it does.
     static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
-        var out = GemmaOptimizationEnvironment.daemonTrustPassthrough(
+        var out = GemmaOptimizationEnvironment.daemonDrainPassthrough(
             from: environment)
         for key in passthroughEnvKeys {
             if let value = environment[key], !value.isEmpty {

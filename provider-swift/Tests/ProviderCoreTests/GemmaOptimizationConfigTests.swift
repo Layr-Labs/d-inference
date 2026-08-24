@@ -85,22 +85,24 @@ struct GemmaOptimizationEnvironmentTests {
         "MLX_GATHER_QMM_EXPERT_SLICES",
     ]
 
-    @Test("projection emits exactly the three selected controls")
+    @Test("projection emits the selected controls")
     func exactProjection() {
         let enabled = GemmaOptimizationEnvironment.projection(
-            for: GemmaOptimizationSettings()
+            for: GemmaOptimizationSettings(),
+            getenv: { _ in nil }
         )
         #expect(enabled == [
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
-            "MLX_GATHER_QMM_EXPERT_SLICES": "1",
+            "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
         ])
 
         let disabled = GemmaOptimizationEnvironment.projection(
             for: GemmaOptimizationSettings(
                 prefillLayer18: false,
                 weightedR1: false
-            )
+            ),
+            getenv: { _ in nil }
         )
         #expect(disabled == [
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
@@ -109,30 +111,52 @@ struct GemmaOptimizationEnvironmentTests {
         ])
     }
 
-    @Test("weighted unsort and safe R1 are atomic in every projection")
+    @Test("weighted unsort and safe R1 stay coupled on or off")
     func weightedR1IsAtomic() {
         for enabled in [false, true] {
             let projection = GemmaOptimizationEnvironment.projection(
-                for: GemmaOptimizationSettings(weightedR1: enabled)
+                for: GemmaOptimizationSettings(weightedR1: enabled),
+                getenv: { _ in nil }
             )
-            #expect(
-                projection[GemmaOptimizationEnvironment.weightedUnsortKey]
-                    == projection[GemmaOptimizationEnvironment.safeR1Key]
-            )
+            let unsort = projection[GemmaOptimizationEnvironment.weightedUnsortKey]
+            let slices = projection[GemmaOptimizationEnvironment.safeR1Key]
+            if enabled {
+                #expect(unsort == "1")
+                #expect(slices == GemmaOptimizationEnvironment.trustedSafeR1Value)
+            } else {
+                #expect(unsort == "0")
+                #expect(slices == "0")
+            }
             #expect(Set(projection.keys) == expectedKeys)
         }
     }
 
-    @Test("serving projection preserves the operator trust refinement")
-    func servingProjectionPreservesTrust() {
+    @Test("serving default is trust when the route is on")
+    func servingDefaultsToTrust() {
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(weightedR1: true),
+            getenv: { _ in nil }
+        )
+        #expect(
+            projection[GemmaOptimizationEnvironment.safeR1Key]
+                == GemmaOptimizationEnvironment.trustedSafeR1Value
+        )
+        #expect(projection[GemmaOptimizationEnvironment.weightedUnsortKey] == "1")
+    }
+
+    @Test("exact drain export restores the descriptor-retract readback")
+    func servingProjectionHonorsDrain() {
         let projection = GemmaOptimizationEnvironment.projection(
             for: GemmaOptimizationSettings(weightedR1: true),
             getenv: { key in
-                key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+                key == GemmaOptimizationEnvironment.safeR1Key
+                    ? GemmaOptimizationEnvironment.drainedSafeR1Value : nil
             }
         )
-        #expect(projection[GemmaOptimizationEnvironment.safeR1Key] == "trust")
-        // Only safe R1 is refined; the coupled weighted key stays config-exact.
+        #expect(
+            projection[GemmaOptimizationEnvironment.safeR1Key]
+                == GemmaOptimizationEnvironment.drainedSafeR1Value
+        )
         #expect(projection[GemmaOptimizationEnvironment.weightedUnsortKey] == "1")
     }
 
@@ -145,16 +169,17 @@ struct GemmaOptimizationEnvironmentTests {
         #expect(projection[GemmaOptimizationEnvironment.safeR1Key] == "0")
     }
 
-    @Test("only the exact trust value survives; others collapse to config")
-    func nonTrustOperatorValuesCollapse() {
-        for shellValue in ["0", "1", "2", "TRUST", "trust ", ""] {
+    @Test("only the exact drain value survives; others become serving trust")
+    func onlyExactDrainSurvives() {
+        for shellValue in ["0", "2", "TRUST", "trust ", "trust", ""] {
             let projection = GemmaOptimizationEnvironment.projection(
                 for: GemmaOptimizationSettings(weightedR1: true),
                 getenv: { _ in shellValue }
             )
             #expect(
-                projection[GemmaOptimizationEnvironment.safeR1Key] == "1",
-                "shell value \(shellValue.debugDescription) must collapse to 1"
+                projection[GemmaOptimizationEnvironment.safeR1Key]
+                    == GemmaOptimizationEnvironment.trustedSafeR1Value,
+                "shell value \(shellValue.debugDescription) must become trust"
             )
         }
     }
@@ -174,22 +199,22 @@ struct GemmaOptimizationEnvironmentTests {
         #expect(!consulted, "hermetic context must not read ambient environment")
     }
 
-    @Test("daemon passthrough persists exactly the trust refinement")
-    func daemonTrustPassthroughIsExact() {
+    @Test("daemon passthrough persists exactly the drain refinement")
+    func daemonDrainPassthroughIsExact() {
         let key = GemmaOptimizationEnvironment.safeR1Key
         #expect(
-            GemmaOptimizationEnvironment.daemonTrustPassthrough(
-                from: [key: "trust", "PATH": "/usr/bin"])
-                == [key: "trust"]
+            GemmaOptimizationEnvironment.daemonDrainPassthrough(
+                from: [key: "1", "PATH": "/usr/bin"])
+                == [key: "1"]
         )
-        // Config-backed and malformed values never reach the daemon plist.
-        for value in ["0", "1", "poison", "TRUST", ""] {
+        // Serving-default and malformed values never reach the daemon plist.
+        for value in ["0", "trust", "poison", "TRUST", ""] {
             #expect(
-                GemmaOptimizationEnvironment.daemonTrustPassthrough(
+                GemmaOptimizationEnvironment.daemonDrainPassthrough(
                     from: [key: value]).isEmpty
             )
         }
-        #expect(GemmaOptimizationEnvironment.daemonTrustPassthrough(from: [:]).isEmpty)
+        #expect(GemmaOptimizationEnvironment.daemonDrainPassthrough(from: [:]).isEmpty)
     }
 
     @Test("apply overwrites every projected value")
@@ -200,8 +225,11 @@ struct GemmaOptimizationEnvironmentTests {
             prefillLayer18: false,
             weightedR1: true
         )
+        let getenv: (String) -> String? = { _ in nil }
 
-        try GemmaOptimizationEnvironment.apply(settings) { name, value, overwrite in
+        try GemmaOptimizationEnvironment.apply(
+            settings, getenv: getenv
+        ) { name, value, overwrite in
             values[name] = value
             overwrites[name] = overwrite
             return 0
@@ -210,12 +238,13 @@ struct GemmaOptimizationEnvironmentTests {
         #expect(values == [
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
-            "MLX_GATHER_QMM_EXPERT_SLICES": "1",
+            "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
         ])
         // The application boundary must hand the environment exactly what
         // projection() reports, or the release matrix describes a dispatch
         // that never happened.
-        #expect(values == GemmaOptimizationEnvironment.projection(for: settings))
+        #expect(values == GemmaOptimizationEnvironment.projection(
+            for: settings, getenv: getenv))
         #expect(Set(overwrites.keys) == expectedKeys)
         #expect(overwrites.values.allSatisfy { $0 == 1 })
     }

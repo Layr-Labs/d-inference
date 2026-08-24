@@ -165,7 +165,11 @@ verify_staged_app() {
             return 1
         }
 
-    DARKBLOOM_NO_UPDATE_CHECK=1 "$executable" runtime-smoke >/dev/null \
+    DARKBLOOM_NO_UPDATE_CHECK=1 \
+        DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+        MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+        MLX_GATHER_QMM_EXPERT_SLICES=1 \
+        "$executable" runtime-smoke >/dev/null \
         || {
             fail_install "Packaged paged-kernel runtime smoke failed."
             return 1

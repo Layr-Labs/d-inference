@@ -243,12 +243,14 @@ public enum MediaIngest {
         _ request: OpenAIChatCompletionRequest,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxImagesPerRequest: Int = Self.maxImagesPerRequest,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws {
         _ = try await buildUserInput(
             from: request, maxImagePixels: maxImagePixels,
             maxRequestImagePixels: maxRequestImagePixels,
+            maxImagesPerRequest: maxImagesPerRequest,
             maxVideosPerRequest: maxVideosPerRequest,
             maxRequestVideoFramePixels: maxRequestVideoFramePixels)
     }
@@ -263,19 +265,23 @@ public enum MediaIngest {
         reasoningEffort: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
+        maxImagesPerRequest: Int = Self.maxImagesPerRequest,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
         var chatMessages: [Chat.Message] = []
         var totalPixels = 0
         var totalVideoPixels = 0
+        var imageCount = 0
         var videoCount = 0
         for message in request.messages {
             let (text, images, videos) = try await parts(
                 from: message.content, totalPixels: &totalPixels,
-                totalVideoPixels: &totalVideoPixels, videoCount: &videoCount,
+                totalVideoPixels: &totalVideoPixels,
+                imageCount: &imageCount, videoCount: &videoCount,
                 maxImagePixels: maxImagePixels,
                 maxRequestImagePixels: maxRequestImagePixels,
+                maxImagesPerRequest: maxImagesPerRequest,
                 maxVideosPerRequest: maxVideosPerRequest,
                 maxRequestVideoFramePixels: maxRequestVideoFramePixels)
             switch message.role {
@@ -304,9 +310,11 @@ public enum MediaIngest {
         from content: OpenAIMessageContent,
         totalPixels: inout Int,
         totalVideoPixels: inout Int,
+        imageCount: inout Int,
         videoCount: inout Int,
         maxImagePixels: Int,
         maxRequestImagePixels: Int,
+        maxImagesPerRequest: Int,
         maxVideosPerRequest: Int,
         maxRequestVideoFramePixels: Int
     ) async throws -> (text: String, images: [UserInput.Image], videos: [UserInput.Video]) {
@@ -326,6 +334,19 @@ public enum MediaIngest {
                 case .imageURL(let uri):
                     guard uri.hasPrefix("data:") else {
                         throw MediaError.invalidURL(uri)
+                    }
+                    // Per-request image COUNT, not just pixels. The aggregate
+                    // pixel cap bounds decode RAM but not the image count: the
+                    // processor resizes each image down, so 384 MP of input can
+                    // still be dozens of images, and the vision tower now runs
+                    // once PER IMAGE under the model container's lock
+                    // (EngineV2VisionTowerRun). Without this a legal request
+                    // could hold that lock for minutes before the token budget
+                    // rejected it at submit. Mirrors maxVideosPerRequest.
+                    imageCount += 1
+                    guard imageCount <= maxImagesPerRequest else {
+                        throw MediaError.mediaTooLarge(
+                            "request has \(imageCount) images; cap is \(maxImagesPerRequest)")
                     }
                     let data = try dataFromDataURI(uri)
                     // Charge the request-wide aggregate from the HEADER pixel count
@@ -425,6 +446,13 @@ public enum MediaIngest {
     /// capped at ``maxImagePixels`` (a frame is an image).
     public static let maxVideoDurationSeconds = resolveMaxSeconds(
         env: "DARKBLOOM_MAX_VIDEO_SECONDS", defaultSeconds: 600)
+
+    /// Max inline image parts per request — bounds the number of sequential
+    /// vision-tower forward passes one request can drive (the tower runs once
+    /// per image) independently of their pixel count, which the processor
+    /// resizes away. The image analog of `maxVideosPerRequest`.
+    public static let maxImagesPerRequest = resolveMaxCount(
+        env: "DARKBLOOM_MAX_IMAGES_PER_REQUEST", defaultCount: 16)
 
     /// Max inline video parts per request — bounds the "many tiny valid MP4s"
     /// amplification (each video passes per-part checks, but the model samples

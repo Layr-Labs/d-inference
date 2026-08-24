@@ -497,10 +497,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// upserts, so a provider returning from a long offline period is still
 		// recognized as part of the alias's fleet.
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS retired_builds JSONB NOT NULL DEFAULT '[]'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
-		// OpenRouter-only aliases clone an existing public alias in the provider
-		// feed while keeping an independent API id and marketplace identities.
+		// OpenRouter-only aliases clone an existing public alias or concrete model
+		// while keeping an independent API id and marketplace identities. Existing
+		// rows predate source_kind and therefore retain standard-alias semantics.
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS openrouter_only BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS source_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT 'standard_alias'; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS openrouter_slug TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS hugging_face_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 

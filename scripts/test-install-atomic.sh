@@ -24,6 +24,13 @@ int main(int argc, char **argv) {
         fputs(fan_capability, stderr);
         return 0;
     }
+    const char *chunk_eval = getenv("DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL");
+    const char *weighted = getenv("MLX_GEMMA4_FUSED_WEIGHTED_UNSORT");
+    const char *safe_r1 = getenv("MLX_GATHER_QMM_EXPERT_SLICES");
+    if (chunk_eval == NULL || strcmp(chunk_eval, "18") != 0) return 4;
+    if (weighted == NULL || strcmp(weighted, "1") != 0) return 5;
+    if (safe_r1 == NULL || strcmp(safe_r1, "1") != 0) return 6;
+
     char resolved[PATH_MAX];
     if (realpath(argv[0], resolved) == NULL) return 2;
     char first[PATH_MAX], second[PATH_MAX], third[PATH_MAX];
@@ -457,7 +464,11 @@ test -f "$INSTALL/Darkbloom.app/sentinel"
 
 run_install "$VALID" "$INSTALL"
 test ! -f "$INSTALL/Darkbloom.app/sentinel"
-DARKBLOOM_NO_UPDATE_CHECK=1 "$INSTALL/bin/darkbloom" runtime-smoke
+DARKBLOOM_NO_UPDATE_CHECK=1 \
+    DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+    MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+    MLX_GATHER_QMM_EXPERT_SLICES=1 \
+    "$INSTALL/bin/darkbloom" runtime-smoke
 INSTALLED_FAN_HELPER="$INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 INSTALLED_FAN_MARKER="$INSTALL/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 test -f "$INSTALLED_FAN_HELPER"
@@ -483,7 +494,11 @@ if run_install "$TAMPERED" "$INSTALL"; then
     echo "tampered signed app unexpectedly installed" >&2
     exit 1
 fi
-DARKBLOOM_NO_UPDATE_CHECK=1 "$INSTALL/bin/darkbloom" runtime-smoke
+DARKBLOOM_NO_UPDATE_CHECK=1 \
+    DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+    MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+    MLX_GATHER_QMM_EXPERT_SLICES=1 \
+    "$INSTALL/bin/darkbloom" runtime-smoke
 
 INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
 COORD_INSTALL="$ROOT/coordinator-install"

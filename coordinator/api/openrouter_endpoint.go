@@ -28,15 +28,9 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Provider-reported model types (when any provider is online) let us
-	// exclude non-text models even though the registry currently stores every
-	// model as "text".
-	aggTypeByID := make(map[string]string)
-	for _, m := range s.registry.ListModels() {
-		if m.ModelType != "" {
-			aggTypeByID[m.ID] = m.ModelType
-		}
-	}
+	// Provider-reported model types override the catalog's text fallback so
+	// known non-text models never enter the OpenRouter provider feed.
+	aggTypeByID := s.openRouterAggregateTypeByID()
 
 	// Public aliases get the same treatment as /v1/models: the alias is the
 	// purchasable entry and its member builds are hidden, so the marketplace
@@ -57,42 +51,10 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		if _, hidden := hiddenBuilds[id]; hidden {
 			continue
 		}
-		cm := catalogByID[id]
-		// Text-only feed: prefer the provider-reported type, fall back to the
-		// catalog type. Excludes only known non-text modalities
-		// (embedding/tts/image/audio/rerank); text/chat/unknown stay listed.
-		modelType := cm.ModelType
-		if at, ok := aggTypeByID[id]; ok {
-			modelType = at
-		}
-		if isNonTextModelType(modelType) {
+		entry, ok := s.openRouterEntryForConcrete(id, catalogByID, registryByID, aggTypeByID)
+		if !ok {
 			continue
 		}
-
-		reg, hasReg := registryByID[id]
-		entry := types.OpenRouterModel{
-			ID:                id,
-			HuggingFaceID:     huggingFaceIDForModel(id, reg.Metadata),
-			Name:              openRouterModelName(cm, reg, hasReg, id),
-			InputModalities:   []string{"text"},
-			OutputModalities:  []string{"text"},
-			SupportedFeatures: []string{},
-			IsReady:           true,
-		}
-		// Quantization comes from the registry entry (the catalog row carries
-		// none); legacy rows simply omit it.
-		s.openRouterModelFieldsFor(id, reg.Quantization, reg, hasReg).applyToFeed(&entry)
-
-		// is_ready is a launch/staging flag and the slug is per-model; both
-		// come from registry metadata (defaults apply for legacy rows).
-		if hasReg {
-			entry.IsReady = openRouterIsReady(reg.Metadata)
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, reg.Metadata)}
-		} else {
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, nil)}
-		}
-		entry.Datacenters = s.modelDatacenters(id)
-
 		data = append(data, entry)
 	}
 
@@ -193,10 +155,16 @@ func (s *Server) openRouterAliasEntries(
 	}
 
 	// OpenRouter-only aliases clone the complete source entry, then replace only
-	// the three configured identities. This keeps pricing, limits, features,
-	// readiness, and datacenters exactly synchronized with the source alias.
+	// the three configured identities. Persisted source kind prevents a later
+	// standard-alias mutation from changing concrete-source routing or feeds.
 	for _, a := range openRouterAliases {
-		source, ok := standardEntries[a.SourceModel]
+		var source types.OpenRouterModel
+		var ok bool
+		if openRouterAliasUsesConcreteSource(a) {
+			source, ok = s.openRouterEntryForConcrete(a.SourceModel, catalogByID, registryByID, aggTypeByID)
+		} else {
+			source, ok = standardEntries[a.SourceModel]
+		}
 		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
 			s.logger.Warn("OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
 			continue

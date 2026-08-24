@@ -172,6 +172,16 @@ private final class PrepareCallCounter: @unchecked Sendable {
     func increment() { lock.withLock { _count += 1 } }
 }
 
+private final class VisionRequestCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _messages: [OpenAIChatMessage]?
+    var messages: [OpenAIChatMessage]? { lock.withLock { _messages } }
+
+    func record(_ request: OpenAIChatCompletionRequest) {
+        lock.withLock { _messages = request.messages }
+    }
+}
+
 // MARK: - Harness
 
 /// One synthetic prepared submission: prompt `[7, 7, P, P, P, 8]` with a
@@ -217,6 +227,7 @@ private func makeRoutingEngine(
     container: ModelContainer?,
     bridge: EngineV2Bridge?,
     plumbing: EngineV2VisionPlumbing?,
+    modelType: String = "gemma4",
     visionGate: VisionMemoryGate? = nil,
     reasoningEffort: String? = nil
 ) -> MultiModelBatchSchedulerEngine {
@@ -225,7 +236,7 @@ private func makeRoutingEngine(
             [
                 "test/vlm-stub": .init(
                     tokenizer: TokenizerHandle(VisionStubTokenizer()),
-                    modelType: "gemma4",
+                    modelType: modelType,
                     container: container,
                     isVLM: true,
                     engineV2Bridge: bridge,
@@ -746,6 +757,41 @@ struct EngineV2VisionRoutingTests {
         let submitted = try #require(engine.submitted.first)
         #expect(submitted.promptTokens == prepared.promptTokens)
         #expect(try #require(submitted.multimodal).spans == prepared.spans)
+    }
+
+    @Test("Qwen media path normalizes late system turns before vision preparation")
+    func qwenMediaNormalizesLateSystemTurn() async throws {
+        let engine = VisionScriptedEngine(
+            script: .stream([
+                .delta(text: "ok", tokens: [10], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 1)),
+            ]))
+        let bridge = makeBridge(engine: engine)
+        let (prepared, _) = makePreparedSubmission()
+        let capture = VisionRequestCapture()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, request, _ in
+                capture.record(request)
+                return prepared
+            },
+            emitTelemetry: { _ in }
+        )
+        let router = makeRoutingEngine(
+            container: makeStubContainer(),
+            bridge: bridge,
+            plumbing: plumbing,
+            modelType: "qwen3_5_moe")
+        var request = imageRequest()
+        request.messages.append(.init(
+            role: .system, content: .text("late vision policy")))
+
+        let content = try await collectContent(
+            try await router.streamChatCompletion(request: request))
+        #expect(content == "ok")
+        let messages = try #require(capture.messages)
+        #expect(messages.map(\.role) == [.system, .user])
+        #expect(messages[0].content == .text("late vision policy"))
+        #expect(messages[1].content.hasMedia)
     }
 
     @Test("v2 success path releases the vision memory reservation exactly once")

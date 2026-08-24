@@ -2595,7 +2595,9 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	)
 
 	// Restore persisted state: if this provider was previously known (by serial
-	// number or SE key), restore trust level, reputation, and account linkage.
+	// number or SE key), restore trust and reputation. Account ownership is
+	// deliberately excluded and is established only from the current token
+	// after this function returns.
 	// Fresh attestation verification still runs (above), but stored reputation
 	// is preserved so routing quality is maintained across coordinator restarts.
 	if s.storedProviders != nil {

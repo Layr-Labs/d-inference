@@ -1837,8 +1837,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)           // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)         // no auth — polls with device_code secret
+	s.mux.HandleFunc("DELETE /v1/device/token", s.handleDeviceTokenRevoke) // provider token authenticates itself
 	// Device approve issues a long-lived provider→account linking token —
 	// same risk class as /v1/auth/keys, so financial-tier limit applies.
 	// Uses requirePrivyAuth to reject API keys (interactive session only).

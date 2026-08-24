@@ -70,6 +70,23 @@ func TestRestoreProviderStateClearsProofsForSelfSignedRecord(t *testing.T) {
 	}
 }
 
+func TestRestoreProviderStateNeverRestoresAccountOwnership(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("new-session", nil, testRegisterMessage())
+
+	reg.RestoreProviderState(p, &store.ProviderRecord{
+		ID:        "old-session",
+		AccountID: "previous-operator",
+	})
+
+	p.Mu().Lock()
+	accountID := p.AccountID
+	p.Mu().Unlock()
+	if accountID != "" {
+		t.Fatalf("restored account_id = %q, want empty until current token authentication", accountID)
+	}
+}
+
 // TestProviderCountByTrustStatus buckets connected providers by (trust, status),
 // excluding offline providers (they are not a live routability problem) while
 // including untrusted (the cohort we want visibility into).

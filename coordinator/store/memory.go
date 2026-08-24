@@ -2499,10 +2499,10 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return nil, errors.New("provider token not found")
+		return nil, fmt.Errorf("provider token: %w", ErrNotFound)
 	}
 	if !pt.Active {
-		return nil, errors.New("provider token is revoked")
+		return nil, fmt.Errorf("provider token revoked: %w", ErrNotFound)
 	}
 	copy := *pt
 	return &copy, nil
@@ -2515,7 +2515,7 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return errors.New("provider token not found")
+		return fmt.Errorf("provider token: %w", ErrNotFound)
 	}
 	pt.Active = false
 	return nil

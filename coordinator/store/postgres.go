@@ -134,6 +134,62 @@ const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
 	END IF;
 END $$`
 
+const earningsSummaryExcludeBaseRewardJobsMigration = `DO $$ BEGIN
+	-- Serialize concurrent coordinator startups before checking the one-shot
+	-- marker. Block earning writers while the two summary projections are
+	-- rebuilt so no credit can land between an aggregate snapshot and its
+	-- absolute upsert.
+	LOCK TABLE schema_migrations IN SHARE ROW EXCLUSIVE MODE;
+	IF NOT EXISTS (
+		SELECT 1 FROM schema_migrations
+		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'
+	) THEN
+		LOCK TABLE provider_earnings IN SHARE MODE;
+		LOCK TABLE earnings_summary IN SHARE ROW EXCLUSIVE MODE;
+
+		INSERT INTO earnings_summary (
+			key, key_type, total_count, total_micro_usd,
+			total_prompt_tokens, total_completion_tokens, updated_at
+		)
+		SELECT account_id, 'account',
+		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+		       COALESCE(SUM(amount_micro_usd), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0), NOW()
+		  FROM provider_earnings
+		 WHERE account_id <> ''
+		 GROUP BY account_id
+		ON CONFLICT (key, key_type) DO UPDATE SET
+			total_count = EXCLUDED.total_count,
+			total_micro_usd = EXCLUDED.total_micro_usd,
+			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = EXCLUDED.total_completion_tokens,
+			updated_at = NOW();
+
+		INSERT INTO earnings_summary (
+			key, key_type, total_count, total_micro_usd,
+			total_prompt_tokens, total_completion_tokens, updated_at
+		)
+		SELECT provider_key, 'provider',
+		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+		       COALESCE(SUM(amount_micro_usd), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0), NOW()
+		  FROM provider_earnings
+		 WHERE provider_key <> ''
+		 GROUP BY provider_key
+		ON CONFLICT (key, key_type) DO UPDATE SET
+			total_count = EXCLUDED.total_count,
+			total_micro_usd = EXCLUDED.total_micro_usd,
+			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = EXCLUDED.total_completion_tokens,
+			updated_at = NOW();
+
+		INSERT INTO schema_migrations (id)
+		VALUES ('earnings_summary_exclude_base_reward_jobs_v1');
+	END IF;
+END $$`
+
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
@@ -667,54 +723,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 
 		// Repair summaries created before base rewards were excluded from job
 		// counts. Money still includes base rewards; only inference work counts as
-		// a job. The schema marker keeps this full historical aggregation one-shot.
-		`DO $$ BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM schema_migrations
-				WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'
-			) THEN
-				INSERT INTO earnings_summary (
-					key, key_type, total_count, total_micro_usd,
-					total_prompt_tokens, total_completion_tokens, updated_at
-				)
-				SELECT account_id, 'account',
-				       COUNT(*) FILTER (WHERE model <> 'base_reward'),
-				       COALESCE(SUM(amount_micro_usd), 0),
-				       COALESCE(SUM(prompt_tokens), 0),
-				       COALESCE(SUM(completion_tokens), 0), NOW()
-				  FROM provider_earnings
-				 WHERE account_id <> ''
-				 GROUP BY account_id
-				ON CONFLICT (key, key_type) DO UPDATE SET
-					total_count = EXCLUDED.total_count,
-					total_micro_usd = EXCLUDED.total_micro_usd,
-					total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-					total_completion_tokens = EXCLUDED.total_completion_tokens,
-					updated_at = NOW();
-
-				INSERT INTO earnings_summary (
-					key, key_type, total_count, total_micro_usd,
-					total_prompt_tokens, total_completion_tokens, updated_at
-				)
-				SELECT provider_key, 'provider',
-				       COUNT(*) FILTER (WHERE model <> 'base_reward'),
-				       COALESCE(SUM(amount_micro_usd), 0),
-				       COALESCE(SUM(prompt_tokens), 0),
-				       COALESCE(SUM(completion_tokens), 0), NOW()
-				  FROM provider_earnings
-				 WHERE provider_key <> ''
-				 GROUP BY provider_key
-				ON CONFLICT (key, key_type) DO UPDATE SET
-					total_count = EXCLUDED.total_count,
-					total_micro_usd = EXCLUDED.total_micro_usd,
-					total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-					total_completion_tokens = EXCLUDED.total_completion_tokens,
-					updated_at = NOW();
-
-				INSERT INTO schema_migrations (id)
-				VALUES ('earnings_summary_exclude_base_reward_jobs_v1');
-			END IF;
-		END $$`,
+		// a job. The migration locks earning writers around its absolute rebuild.
+		earningsSummaryExcludeBaseRewardJobsMigration,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -4006,6 +4016,9 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: provider token: %w", ErrNotFound)
+		}
 		return nil, fmt.Errorf("store: provider token not found: %w", err)
 	}
 	return &pt, nil
@@ -4023,7 +4036,7 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 		return fmt.Errorf("store: revoke provider token: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("provider token not found")
+		return fmt.Errorf("store: provider token: %w", ErrNotFound)
 	}
 	return nil
 }

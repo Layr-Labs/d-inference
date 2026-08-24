@@ -592,6 +592,141 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 	}
 }
 
+func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	const (
+		accountID   = "acct-summary-repair"
+		providerKey = "key-summary-repair"
+	)
+
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO provider_earnings (
+			account_id, provider_id, provider_key, job_id, model,
+			amount_micro_usd, prompt_tokens, completion_tokens
+		) VALUES
+			($1, 'provider-a', $2, 'repair-work', 'model-a', 100, 10, 2),
+			($1, 'provider-a', $2, 'repair-floor', 'base_reward', 200, 0, 0);
+		INSERT INTO earnings_summary (
+			key, key_type, total_count, total_micro_usd,
+			total_prompt_tokens, total_completion_tokens
+		) VALUES
+			($1, 'account', 2, 300, 10, 2),
+			($2, 'provider', 2, 300, 10, 2)
+		ON CONFLICT (key, key_type) DO UPDATE SET
+			total_count = EXCLUDED.total_count,
+			total_micro_usd = EXCLUDED.total_micro_usd,
+			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = EXCLUDED.total_completion_tokens;
+		DELETE FROM schema_migrations
+		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'`,
+		accountID, providerKey,
+	); err != nil {
+		t.Fatalf("seed stale summary: %v", err)
+	}
+
+	blocker, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	defer blocker.Rollback(ctx)
+	if _, err := blocker.Exec(ctx, "LOCK TABLE provider_earnings IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("lock provider_earnings: %v", err)
+	}
+
+	migrationDone := make(chan error, 1)
+	go func() {
+		_, err := s.pool.Exec(context.Background(), earningsSummaryExcludeBaseRewardJobsMigration)
+		migrationDone <- err
+	}()
+	waitForPostgresLock(t, s, "provider_earnings", "ShareLock")
+
+	creditDone := make(chan error, 1)
+	go func() {
+		creditDone <- s.CreditProviderAccount(&ProviderEarning{
+			AccountID:        accountID,
+			ProviderID:       "provider-a",
+			ProviderKey:      providerKey,
+			JobID:            "repair-concurrent-work",
+			Model:            "model-b",
+			AmountMicroUSD:   400,
+			PromptTokens:     5,
+			CompletionTokens: 3,
+		})
+	}()
+	select {
+	case err := <-creditDone:
+		t.Fatalf("credit escaped the migration lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release blocker: %v", err)
+	}
+	if err := <-migrationDone; err != nil {
+		t.Fatalf("repair migration: %v", err)
+	}
+	if err := <-creditDone; err != nil {
+		t.Fatalf("concurrent credit: %v", err)
+	}
+
+	for _, summary := range []struct {
+		key     string
+		keyType string
+	}{
+		{accountID, "account"},
+		{providerKey, "provider"},
+	} {
+		var count, total, prompt, completion int64
+		if err := s.pool.QueryRow(ctx, `
+			SELECT total_count, total_micro_usd,
+			       total_prompt_tokens, total_completion_tokens
+			  FROM earnings_summary
+			 WHERE key = $1 AND key_type = $2`,
+			summary.key, summary.keyType,
+		).Scan(&count, &total, &prompt, &completion); err != nil {
+			t.Fatalf("read %s summary: %v", summary.keyType, err)
+		}
+		if count != 2 || total != 700 || prompt != 15 || completion != 5 {
+			t.Fatalf("%s summary = count:%d total:%d prompt:%d completion:%d",
+				summary.keyType, count, total, prompt, completion)
+		}
+	}
+}
+
+func waitForPostgresLock(
+	t *testing.T,
+	s *PostgresStore,
+	tableName, mode string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		err := s.pool.QueryRow(context.Background(), `
+			SELECT EXISTS (
+				SELECT 1
+				  FROM pg_locks lock
+				  JOIN pg_class relation ON relation.oid = lock.relation
+				  JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+				 WHERE namespace.nspname = current_schema()
+				   AND relation.relname = $1
+				   AND lock.mode = $2
+				   AND NOT lock.granted
+			)`,
+			tableName, mode,
+		).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("inspect postgres locks: %v", err)
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s on %s", mode, tableName)
+}
+
 // TestPostgresDeleteProvidersBySerial is the FK-ordering regression: a
 // raw DELETE FROM providers fails when a provider_reputation row exists (the FK
 // has no ON DELETE CASCADE), so the delete must remove reputation first. It also

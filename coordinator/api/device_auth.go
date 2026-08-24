@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -163,6 +164,28 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code is no longer valid"))
 	}
+}
+
+// handleDeviceTokenRevoke invalidates the long-lived token before a provider
+// deletes its local copy. Unknown/already-revoked tokens are idempotent success;
+// store failures are surfaced so the client does not falsely report unlinking.
+// DELETE /v1/device/token
+func (s *Server) handleDeviceTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	token := extractBearerToken(r)
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing provider token"))
+		return
+	}
+	if err := s.store.RevokeProviderToken(token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.logger.Error("failed to revoke provider token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to revoke provider token"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleDeviceApprove approves a device code, linking it to the authenticated user's account.

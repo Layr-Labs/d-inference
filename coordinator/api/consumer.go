@@ -1582,20 +1582,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inject model-specific defaults from the registry: reasoning_parser
-	// and max_tokens bound. Single DB lookup (cached for platform prices).
+	// Inject model-specific request defaults from the registry, then apply the
+	// model's max_tokens bound. Single DB lookup (cached for platform prices).
 	maxOutputBound := defaultMaxOutputTokens
 	// modelMaxContext is the model's max context window (0 = unknown), used by the
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
-		// Reasoning parser from runtime_parameters.
-		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
-			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
-				parsed["reasoning_parser"] = rp
-				rawBody, _ = marshalForwardBody(parsed)
-			}
+		if injectModelRuntimeDefaults(parsed, rec.RuntimeParameters) {
+			rawBody, _ = marshalForwardBody(parsed)
 		}
 		// Use the registry's max_output_length as the default max_tokens
 		// bound instead of the hardcoded 8192. This lets models like

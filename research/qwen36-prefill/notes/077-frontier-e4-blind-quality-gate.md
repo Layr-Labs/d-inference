@@ -1,7 +1,7 @@
-# 077 — Frontier E4 blind 128-token semantic quality gate
+# 077 — Frontier E4/E8 blind 128-token semantic quality gate
 
-Status: **FAIL even for an explicitly approximate, default-off cold-prefill
-policy**
+Status: **E4 and E8 both FAIL even for an explicitly approximate, default-off
+cold-prefill policy**
 
 This review compares:
 
@@ -133,3 +133,75 @@ The result rejects the E4 policy as measured. It does not reject the broader
 state-river mechanism: a materially more conservative frontier (more complete
 layers, sensitivity-guided restoration, or another state construction) would
 need a new artifact and a fresh blind gate against the same native baseline.
+
+## E8 follow-up
+
+The more conservative E8 candidate in
+`artifacts/e49-quality-frontier-e8-128.json` uses the same committed prompts,
+corpus/model hashes, greedy fixed-length generation, and 128-token cutoff as the
+native report. Its semantic score again excludes run/profile labels, policy
+metadata, token identity, checksums, agreement, prefixes, and timing.
+
+Unlike E4, E8 is prospective relative to this note's explicit approximate
+screen: commit `273cafe7` fixed the four criteria above at
+`2026-08-24T20:03:06Z`, while the E8 report records creation at
+`2026-08-24T20:05:38.624Z`.
+
+### E8 per-case scores
+
+| Case | Native T/F/K/I/C/X | Frontier E8 T/F/K/I/C/X | Relative quality | Semantic judgment |
+|---|---:|---:|---|---|
+| `reasoning-rate-plan` | 3/5/—/3/4/0 | 2/3/—/2/3/0 | native win | E8 correctly retains the cutter, polisher, and operation order, but incorrectly treats the explicit precedence as an assumption and stops before the 4/6-minute rates, schedule, result, or bottleneck. |
+| `reasoning-constraint-order` | 3/4/—/3/4/0 | 0/0/—/0/2/3 | native win; candidate fatal | E8 treats prompt words such as “Five,” “every,” “valid,” and “briefly” as puzzle entities. The named talks and every ordering constraint disappear. |
+| `reasoning-estimation` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both preserve the 37 hikers, 9 hours, warm weather, assumptions, and safety-margin direction, then stop before selecting rates or doing arithmetic. |
+| `code-python-bug` | 3/—/3/3/4/0 | 1/—/1/1/2/1 | native win | E8 falsely says the function does not track run length, then mutates `longest_run` into a different partial function. It provides neither the actual two-fault diagnosis, a correction, nor tests. |
+| `code-swift-actor` | 2/—/3/2/4/0 | 1/—/2/1/3/1 | native win | E8 keeps keyed strings, expiration, and concurrency as topics but makes `actor` only one option beside `struct`/`class`, loses the exact `ExpiringCache` API and stale-delete behavior, and emits no Swift code. |
+| `factual-heat-pump` | 3/4/—/3/4/0 | 4/5/—/3/4/0 | E8 win | E8 correctly reaches the substantive mechanism: a heat pump moves environmental heat, COP can exceed one, and conservation includes electrical work plus transferred heat. It still stops before naming two degrading conditions. |
+| `factual-database-index` | 4/5/—/3/4/0 | 4/5/—/3/4/0 | tie | E8 correctly retains B-tree versus hash, equality, ranges, write amplification, and generality, then begins accurate B-tree characteristics. Like native, it does not complete both query examples. |
+| `factual-probability` | 4/5/—/3/4/0 | 2/3/—/2/3/1 | native win | E8 correctly identifies PPV and the low-prevalence issue but loops on whether 96% is sensitivity or specificity, loses 92%, 3%, and 10,000, and performs no calculation. |
+| `long-context-expedition-log` | 4/5/—/3/4/0 | 1/1/—/1/2/3 | native win; candidate fatal | E8 recognizes an expedition question but invents `Team 1`/`Team 2` as prompt content, extracts no authoritative identifier, and reaches none of the four answers. |
+| `long-context-incident-summary` | 3/5/—/3/4/0 | 1/1/—/1/3/2 | native win; candidate fatal | E8 notices attachments and manifests but invents a side effect in which R40 workers unexpectedly handle load. It misses the repeated inner-loop fetch, process-local flag, stable database, and required actions. |
+| `instruction-json-only` | 0/3/—/0/4/0 | 0/0/—/0/0/5 | inherited fatal; native win | Both violate the JSON-only envelope immediately. E8 additionally corrupts the supplied sentence into a continuation-long `Hello` loop, producing neither JSON nor any requested field. |
+| `instruction-rewrite` | 3/5/—/2/4/0 | 3/5/—/2/4/0 | tie | Both accurately separate concrete facts from emotional language and preserve the delayed/recovered record counts, but neither reaches the 70–100-word update or final next step. |
+
+### E8 relative aggregate
+
+| Metric | Native | Frontier E8 | Candidate delta |
+|---|---:|---:|---:|
+| Mean final-answer trajectory | 2.92 | 1.83 | -1.08 |
+| Mean applicable correctness (`F/K`) | 4.25 | 2.50 | -1.75 |
+| Mean instruction adherence | 2.58 | 1.58 | -1.00 |
+| Mean coherence | 4.00 | 2.83 | -1.17 |
+| Mean corruption severity | 0.00 | 1.33 | +1.33 |
+| Adjusted quality total | 225/300 (75.00%) | 149/300 (49.67%) | **-25.33 percentage points** |
+
+Pairwise result: **3 ties, 1 E8 win, and 8 native wins**. E8 retains
+**66.22%** of the native adjusted score. It improves materially over E4's
+90/300 and six candidate-only fatal cases, but remains far outside the accepted
+region.
+
+### E8 fatal failures and decision
+
+- **Candidate-only fatal failures: 3.**
+  `reasoning-constraint-order`, `long-context-expedition-log`, and
+  `long-context-incident-summary`.
+- **Inherited fatal failures: 1.** `instruction-json-only` already violates
+  the envelope in native; E8 adds an independent catastrophic repetition mode
+  within that failed case.
+- E8 has three `X >= 3` cases: the ordering-task substitution, expedition
+  source corruption, and repeated-`Hello` collapse.
+- E8 breaches the policy's mean-loss limit in trajectory (-1.08), applicable
+  correctness (-1.75), and coherence (-1.17); instruction adherence lands
+  exactly on the -1.00 boundary.
+
+**FAIL; not a viable quality frontier.** E8 fails every top-level acceptance
+criterion: 66.22% score retention is below 95%, it adds three fatal cases and
+three `X >= 3` cases, and three mean dimensions exceed the allowed loss.
+
+The supplied B4x2K performance context is **2.41x**, 0.09x below the 2.5x
+research objective; that measurement is not contained in the semantic-quality
+artifact and is therefore not independently revalidated here. E8 is a
+directional quality improvement over E4, but trading away speed still leaves
+severe prompt loss and corruption. It is outside both the measured performance
+target and the semantic feasible region, so it should not be retained as the
+quality/speed frontier.

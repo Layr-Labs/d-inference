@@ -182,6 +182,17 @@ public actor EngineV2Bridge {
     /// model-load gate subtracts. nil in unit
     /// tests ⇒ no shared gating/accounting.
     let kvBudget: GlobalKVCacheBudget?
+    /// Process-local exact prompt-state cache. Its hard byte ceiling is a
+    /// construction-fixed carve from this slot's total UnifiedMemoryCap grant;
+    /// `slotKVBytesClaim`, re-slicing, and shutdown all account for it.
+    nonisolated let exactPrefixCache: ExactPrefixCacheV2?
+    nonisolated let exactPrefixCacheConfigured: Bool
+    /// Bounded construction reason. Artifact/cache identities are never kept
+    /// in status or telemetry.
+    nonisolated let exactPrefixCacheReason: String
+    /// Derived from the cache object's immutable hard ceiling, never from a
+    /// second caller-supplied number that could drift and undercount RAM.
+    nonisolated let exactPrefixCacheBudgetBytes: Int
     /// Encrypted SSD offload tier (v0.7.5, default for CBv2-supported models
     /// when Secure Enclave KEK construction succeeds):
     /// the SAME instance handed to the engine as its `CBv2PrefixCache`.
@@ -324,6 +335,9 @@ public actor EngineV2Bridge {
         auxiliaryTokenGranularity: Int = 1,
         auxiliaryTokenAllocationPadding: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
+        exactPrefixCache: ExactPrefixCacheV2? = nil,
+        exactPrefixCacheConfigured: Bool = false,
+        exactPrefixCacheReason: String = "config_disabled",
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
@@ -352,6 +366,13 @@ public actor EngineV2Bridge {
         self.auxiliaryTokenAllocationPadding = max(
             0, auxiliaryTokenAllocationPadding)
         self.kvBudget = kvBudget
+        self.exactPrefixCache = exactPrefixCache
+        self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
+        self.exactPrefixCacheReason =
+            EngineV2SlotFactory.ExactPrefixCacheDecisionReason(
+                rawValue: exactPrefixCacheReason)?.rawValue
+            ?? "unknown"
+        self.exactPrefixCacheBudgetBytes = exactPrefixCache?.config.maxBytes ?? 0
         self.ssdPrefixCache = ssdPrefixCache
         self.prefixCacheBaseStatus = prefixCacheStatus ?? PrefixCacheModelStatus(
             modelId: modelId,
@@ -873,7 +894,8 @@ public actor EngineV2Bridge {
     /// instant is otherwise indistinguishable from one holding its fair
     /// share.
     public func updateKVBytesCapacity(_ bytes: Int) {
-        let requested = max(0, bytes)
+        let totalRequested = max(0, bytes)
+        let requested = max(0, totalRequested - exactPrefixCacheBudgetBytes)
         guard let engine = ownedEngine else { return }
         guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)
@@ -1033,6 +1055,11 @@ public actor EngineV2Bridge {
         // The bridge may remain in a local teardown variable; explicitly drop
         // the concrete engine so target and assistant ownership does not.
         ownedEngine = nil
+        // Exact RAM entries are process-local warmth. Release every unpinned
+        // snapshot immediately on slot teardown instead of waiting for this
+        // bridge object itself to deinitialize. Engine shutdown has balanced
+        // all adoption pins before this point.
+        exactPrefixCache?.evict(toFit: 0)
         prefixCacheEvidenceSequencer?.shutdown()
         // SSD tier teardown AFTER the engine drain: queued donation writes
         // are dropped, staging pins/reservations released, on-disk files

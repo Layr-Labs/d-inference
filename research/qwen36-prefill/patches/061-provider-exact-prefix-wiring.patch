@@ -1,68 +1,1472 @@
+diff --git a/console-ui/src/lib/telemetry-types.ts b/console-ui/src/lib/telemetry-types.ts
+index 6ac68222..36b6912c 100644
+--- a/console-ui/src/lib/telemetry-types.ts
++++ b/console-ui/src/lib/telemetry-types.ts
+@@ -142,0 +143,14 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
++  // Process-local exact-state RAM cache posture and cumulative counters.
++  // No identities, artifact hashes, scopes, token IDs, or content.
++  "exact_prefix_cache_configured",
++  "exact_prefix_cache_active",
++  "exact_prefix_cache_reason",
++  "exact_prefix_cache_budget_bytes",
++  "exact_prefix_cache_bytes_in_use",
++  "exact_prefix_cache_entries",
++  "exact_prefix_cache_hits",
++  "exact_prefix_cache_misses",
++  "exact_prefix_cache_tokens_saved",
++  "exact_prefix_cache_donations",
++  "exact_prefix_cache_donations_dropped",
++  "exact_prefix_cache_evictions",
+diff --git a/coordinator/api/telemetry_handlers.go b/coordinator/api/telemetry_handlers.go
+index 9818adf3..b5d08595 100644
+--- a/coordinator/api/telemetry_handlers.go
++++ b/coordinator/api/telemetry_handlers.go
+@@ -137,0 +138,15 @@ var telemetryFieldAllowlist = map[string]struct{}{
++	// Process-local exact-state RAM cache posture and cumulative counters.
++	// Aggregate values and bounded state only; never identities, artifact
++	// hashes, scope, token IDs, or prompt/completion content.
++	"exact_prefix_cache_configured":        {},
++	"exact_prefix_cache_active":            {},
++	"exact_prefix_cache_reason":            {},
++	"exact_prefix_cache_budget_bytes":      {},
++	"exact_prefix_cache_bytes_in_use":      {},
++	"exact_prefix_cache_entries":           {},
++	"exact_prefix_cache_hits":              {},
++	"exact_prefix_cache_misses":            {},
++	"exact_prefix_cache_tokens_saved":      {},
++	"exact_prefix_cache_donations":         {},
++	"exact_prefix_cache_donations_dropped": {},
++	"exact_prefix_cache_evictions":         {},
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift
+new file mode 100644
+index 00000000..79cd9639
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift
+@@ -0,0 +1,95 @@
++// Copyright © 2026 Eigen Labs.
++//
++// Status and periodic aggregate logging for the process-local exact-state RAM
++// cache. No prompt tokens, scopes, artifact digests, or cache keys leave the
++// cache object.
++
++import Foundation
++import MLXLMCommon
++#if canImport(os)
++import os
++#endif
++
++struct ExactPrefixCacheStatusSnapshot: Sendable, Equatable {
++    let configured: Bool
++    let active: Bool
++    let reason: String
++    let budgetBytes: Int
++    let bytesInUse: Int
++    let entries: Int
++    let hits: Int
++    let misses: Int
++    let tokensSaved: Int
++    let donations: Int
++    let donationsDropped: Int
++    let evictions: Int
++}
++
++extension EngineV2Bridge {
++    #if canImport(os)
++    private static let exactPrefixStatsLogger = Logger(
++        subsystem: "com.darkbloom.provider", category: "prefix_cache")
++    #endif
++
++    nonisolated func exactPrefixCacheStatusSnapshot()
++        -> ExactPrefixCacheStatusSnapshot
++    {
++        let stats = exactPrefixCache?.stats()
++        return ExactPrefixCacheStatusSnapshot(
++            configured: exactPrefixCacheConfigured,
++            active: exactPrefixCache != nil,
++            reason: exactPrefixCacheReason,
++            budgetBytes: exactPrefixCacheBudgetBytes,
++            bytesInUse: stats?.bytesInUse ?? 0,
++            entries: stats?.entryCount ?? 0,
++            hits: stats?.hits ?? 0,
++            misses: stats?.misses ?? 0,
++            tokensSaved: stats?.tokensSaved ?? 0,
++            donations: stats?.donations ?? 0,
++            donationsDropped: stats?.donationsDropped ?? 0,
++            evictions: stats?.evictions ?? 0)
++    }
++
++    /// Reuses the bridge's one prefix-cache task slot. Exact RAM and legacy
++    /// SSD are mutually exclusive for a slot.
++    func startExactPrefixCacheStatsLogger(
++        cache: ExactPrefixCacheV2,
++        intervalSecs: Int = PrefixCachePolicy.statsIntervalSecs()
++    ) {
++        prefixCacheStatsTask?.cancel()
++        prefixCacheStatsTask = nil
++        guard intervalSecs > 0 else { return }
++        let modelId = self.modelId
++        let budgetBytes = exactPrefixCacheBudgetBytes
++        prefixCacheStatsTask = Task.detached { [weak cache] in
++            while !Task.isCancelled {
++                try? await taskSleep(.seconds(intervalSecs))
++                if Task.isCancelled { return }
++                guard let cache else { return }
++                Self.logExactPrefixCacheStats(
++                    cache: cache, modelId: modelId, budgetBytes: budgetBytes)
++            }
++        }
++    }
++
++    static func logExactPrefixCacheStats(
++        cache: ExactPrefixCacheV2,
++        modelId: String,
++        budgetBytes: Int
++    ) {
++        let stats = cache.stats()
++        let (lookupSum, lookupOverflow) = stats.hits.addingReportingOverflow(
++            stats.misses)
++        let lookups = lookupOverflow ? Int.max : lookupSum
++        let rate =
++            lookups > 0
++            ? Double(stats.hits) * 100.0 / Double(lookups)
++            : 0
++        #if canImport(os)
++        let rateString = String(format: "%.1f", rate)
++        Self.exactPrefixStatsLogger.info(
++            "prefix cache stats (engine=v2, tier=ram_exact_state, model=\(modelId, privacy: .public)): budgetBytes=\(budgetBytes) bytesInUse=\(stats.bytesInUse) entries=\(stats.entryCount) lookups=\(lookups) hits=\(stats.hits) misses=\(stats.misses) hitRate=\(rateString, privacy: .public)% tokensSaved=\(stats.tokensSaved) donations=\(stats.donations) donationsDropped=\(stats.donationsDropped) evictions=\(stats.evictions)"
++        )
++        #endif
++    }
++}
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift
+index dbc08c05..a8fa7f06 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift
+@@ -99 +99,2 @@ extension EngineV2Bridge {
+-        DaemonSlotPostureBuilder.LiveSlot(
++        let exact = exactPrefixCacheStatusSnapshot()
++        return DaemonSlotPostureBuilder.LiveSlot(
+@@ -108 +109,7 @@ extension EngineV2Bridge {
+-            mtpInactiveReason: snapshot.fallbackReason?.rawValue)
++            mtpInactiveReason: snapshot.fallbackReason?.rawValue,
++            exactPrefixCacheConfigured: exact.configured,
++            exactPrefixCacheActive: exact.active,
++            exactPrefixCacheReason: exact.reason,
++            exactPrefixCacheBudgetBytes: exact.budgetBytes,
++            exactPrefixCacheBytesInUse: exact.bytesInUse,
++            exactPrefixCacheEntries: exact.entries)
+@@ -143,0 +151,14 @@ extension EngineV2Bridge {
++        let exact = exactPrefixCacheStatusSnapshot()
++        fields["exact_prefix_cache_configured"] = .bool(exact.configured)
++        fields["exact_prefix_cache_active"] = .bool(exact.active)
++        fields["exact_prefix_cache_reason"] = .string(exact.reason)
++        fields["exact_prefix_cache_budget_bytes"] = .int(exact.budgetBytes)
++        fields["exact_prefix_cache_bytes_in_use"] = .int(exact.bytesInUse)
++        fields["exact_prefix_cache_entries"] = .int(exact.entries)
++        fields["exact_prefix_cache_hits"] = .int(exact.hits)
++        fields["exact_prefix_cache_misses"] = .int(exact.misses)
++        fields["exact_prefix_cache_tokens_saved"] = .int(exact.tokensSaved)
++        fields["exact_prefix_cache_donations"] = .int(exact.donations)
++        fields["exact_prefix_cache_donations_dropped"] = .int(
++            exact.donationsDropped)
++        fields["exact_prefix_cache_evictions"] = .int(exact.evictions)
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift
+index e1ea5d47..0507d87e 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift
+@@ -278,2 +278,3 @@ extension EngineV2Bridge {
+-    /// The slot's TOTAL KV byte claim: for contiguous, the engine admission
+-    /// ceiling; for paged, the immutable PHYSICAL backend capacity.
++    /// The slot's TOTAL cache-memory claim: for contiguous, the engine
++    /// admission ceiling; for paged, the immutable PHYSICAL backend capacity;
++    /// plus the construction-fixed exact-state RAM cache carve.
+@@ -289 +290,3 @@ extension EngineV2Bridge {
+-        return engineClaim
++        let (total, overflow) = max(0, engineClaim).addingReportingOverflow(
++            exactPrefixCacheBudgetBytes)
++        return overflow ? Int.max : total
+@@ -292,2 +295,3 @@ extension EngineV2Bridge {
+-    /// Current logical admission target. Re-slice rollback uses this exact
+-    /// value; unlike `slotKVBytesClaim()`, it does
++    /// Current total logical grant (engine admission + fixed exact-cache
++    /// carve). Re-slice rollback uses this exact value; unlike
++    /// `slotKVBytesClaim()`, it does
+@@ -296 +300,8 @@ extension EngineV2Bridge {
+-        engine.capacity().kvBytesCapacity
++        let (total, overflow) = max(0, engine.capacity().kvBytesCapacity)
++            .addingReportingOverflow(exactPrefixCacheBudgetBytes)
++        return overflow ? Int.max : total
++    }
++
++    /// Construction-fixed RAM carve consumed by re-slice floor checks.
++    nonisolated func exactPrefixCacheFixedCarveBytes() -> Int {
++        exactPrefixCacheBudgetBytes
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+index 674c8e8b..049a8091 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+@@ -184,0 +185,11 @@ public actor EngineV2Bridge {
++    /// Process-local exact prompt-state cache. Its hard byte ceiling is a
++    /// construction-fixed carve from this slot's total UnifiedMemoryCap grant;
++    /// `slotKVBytesClaim`, re-slicing, and shutdown all account for it.
++    nonisolated let exactPrefixCache: ExactPrefixCacheV2?
++    nonisolated let exactPrefixCacheConfigured: Bool
++    /// Bounded construction reason. Artifact/cache identities are never kept
++    /// in status or telemetry.
++    nonisolated let exactPrefixCacheReason: String
++    /// Derived from the cache object's immutable hard ceiling, never from a
++    /// second caller-supplied number that could drift and undercount RAM.
++    nonisolated let exactPrefixCacheBudgetBytes: Int
+@@ -326,0 +338,3 @@ public actor EngineV2Bridge {
++        exactPrefixCache: ExactPrefixCacheV2? = nil,
++        exactPrefixCacheConfigured: Bool = false,
++        exactPrefixCacheReason: String = "config_disabled",
+@@ -354,0 +369,7 @@ public actor EngineV2Bridge {
++        self.exactPrefixCache = exactPrefixCache
++        self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
++        self.exactPrefixCacheReason =
++            EngineV2SlotFactory.ExactPrefixCacheDecisionReason(
++                rawValue: exactPrefixCacheReason)?.rawValue
++            ?? "unknown"
++        self.exactPrefixCacheBudgetBytes = exactPrefixCache?.config.maxBytes ?? 0
+@@ -876 +897,2 @@ public actor EngineV2Bridge {
+-        let requested = max(0, bytes)
++        let totalRequested = max(0, bytes)
++        let requested = max(0, totalRequested - exactPrefixCacheBudgetBytes)
+@@ -1035,0 +1058,5 @@ public actor EngineV2Bridge {
++        // Exact RAM entries are process-local warmth. Release every unpinned
++        // snapshot immediately on slot teardown instead of waiting for this
++        // bridge object itself to deinitialize. Engine shutdown has balanced
++        // all adoption pins before this point.
++        exactPrefixCache?.evict(toFit: 0)
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift
+index 7b864cf3..77705e4b 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift
+@@ -161,0 +162,3 @@ public enum EngineV2Factory {
++        exactPrefixCache: ExactPrefixCacheV2? = nil,
++        exactPrefixCacheConfigured: Bool = false,
++        exactPrefixCacheReason: String = "config_disabled",
+@@ -187,0 +191,3 @@ public enum EngineV2Factory {
++                exactPrefixCache: exactPrefixCache,
++                exactPrefixCacheConfigured: exactPrefixCacheConfigured,
++                exactPrefixCacheReason: exactPrefixCacheReason,
+@@ -203,0 +210 @@ public enum EngineV2Factory {
++            exactPrefixCache?.evict(toFit: 0)
 diff --git "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift" "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
-index 6b8d4094..196b453b 100644
+index 196b453b..969a3c19 100644
 --- "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
 +++ "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
-@@ -988,7 +988,9 @@ extension EngineV2Factory {
-         let (backend, caches) = try preparedBackend.consume(
-             model: model,
-             maxConcurrentRequests: maxConcurrentRequests)
--        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
-+        let effectivePrefixCache = prefixCacheIsSupported(
-+            capabilities: preparedBackend.modelCapabilities,
-+            prefixCache: prefixCache)
-             ? prefixCache : nil
-         // The ONE config, read back off the preparation. `consume` has
-         // already refused a `maxConcurrentRequests` that differs from the
-@@ -1024,6 +1026,21 @@ extension EngineV2Factory {
-             pagedPoolDType: preparedBackend.pagedPoolDType)
-     }
- 
-+    /// Preserve the hard distinction between historical KV-only reuse and
-+    /// recurrent exact-state reuse. Qwen must never become cache-eligible
-+    /// merely because a legacy `CBv2PrefixCache` was supplied; its caller has
-+    /// to inject the stronger, default-off RAM cache explicitly.
-+    static func prefixCacheIsSupported(
-+        capabilities: CBv2ModelCapabilities,
-+        prefixCache: (any CBv2PrefixCache)?
-+    ) -> Bool {
-+        guard let prefixCache else { return false }
-+        if prefixCache is any CBv2ExactStatePrefixCache {
-+            return capabilities.supportsExactStatePrefixReuse
+@@ -339,6 +339,5 @@ extension EngineV2Factory {
+-    ///   - prefixCache: the provider's encrypted `SSDPrefixCache`, with
+-    ///     per-donation benefit gating and zero serving-memory carve.
+-    ///     Widened to the existential (`any CBv2PrefixCache`) so
+-    ///     provider-side conformers plug in with ZERO mlx-swift-lm
+-    ///     changes (the engine already stores the cache existentially).
+-    ///     The local kill switch and construction are the caller's job.
++    ///   - prefixCache: either the provider's encrypted `SSDPrefixCache`
++    ///     (per-donation benefit gating, zero fixed serving-memory carve) or
++    ///     its opt-in exact-state RAM cache. Widened to the existential
++    ///     (`any CBv2PrefixCache`) so the concrete tier remains a caller
++    ///     decision. The local policy and construction are the caller's job.
+@@ -507,0 +507,31 @@ extension EngineV2Factory {
++
++        /// Tighten a prepared contiguous backend before it is consumed by the
++        /// engine. Exact-state RAM caching is decided only after backend
++        /// resolution (capability and backend identity are both inputs), so
++        /// its fixed budget is carved at this single pre-consume seam.
++        func resizeContiguousCapacity(_ bytes: Int) throws {
++            try lock.withLock {
++                guard kind == .contiguous else {
++                    throw CBv2KVError.backendIneligible(
++                        reason: "only a contiguous backend supports exact-state cache carving")
++                }
++                guard let backend else {
++                    throw CBv2KVError.backendIneligible(
++                        reason: "prepared backend was already consumed")
++                }
++                backend.updateBytesCapacity(max(0, bytes))
++            }
 +        }
-+        return capabilities.supportsPrefixReuse
++
++        /// The resolved backend's current physical/logical ceiling before
++        /// exact-cache carving. This preserves `clampKVBytesCapacity` as the
++        /// single upper-bound guard for a malformed upstream grant.
++        func bytesCapacity() throws -> Int {
++            try lock.withLock {
++                guard let backend else {
++                    throw CBv2KVError.backendIneligible(
++                        reason: "prepared backend was already consumed")
++                }
++                return max(0, backend.bytesCapacity)
++            }
++        }
+@@ -998,3 +1028,3 @@ extension EngineV2Factory {
+-        // `enablePrefixCache` — SSD cache construction deliberately runs
+-        // AFTER backend preparation, because the cache's replay capability
+-        // follows the backend that will actually serve. Everything else,
++        // `enablePrefixCache` — cache construction deliberately runs AFTER
++        // backend preparation, because both tiers' reuse capability follows
++        // the backend that will actually serve. Everything else,
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
+new file mode 100644
+index 00000000..652e9177
+--- /dev/null
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
+@@ -0,0 +1,314 @@
++// Copyright © 2026 Eigen Labs.
++//
++// Default-off deployment policy for exact Qwen prompt-state reuse. This is
++// deliberately separate from `PrefixCachePolicy`, which continues to own the
++// legacy KV-only encrypted SSD tier. A model must advertise the stronger
++// exact-state capability and the slot factory must provide verified artifact
++// identities before any RAM is carved from live KV.
++
++import CryptoKit
++import Foundation
++import MLXLMCommon
++
++extension EngineV2SlotFactory {
++
++    /// Explicit operator/programmatic controls for exact-state RAM reuse.
++    ///
++    /// Both limits are hard ceilings. The effective budget is:
++    ///
++    ///     min(maxBytes, maxFraction × slotGrant, slotGrant − liveKVFloor)
++    ///
++    /// where `slotGrant` already came from `UnifiedMemoryCap.kvBudgetBytes`.
++    /// The factory subtracts that exact result from the engine's KV ceiling.
++    struct ExactPrefixCacheConfiguration: Sendable, Equatable {
++        let enabled: Bool
++        let maxBytes: Int
++        let maxFraction: Double
++
++        init(enabled: Bool, maxBytes: Int, maxFraction: Double) {
++            self.enabled = enabled
++            self.maxBytes = maxBytes
++            self.maxFraction = maxFraction
++        }
 +    }
 +
-     /// Shared final assembly for both backends.
-     private static func makeEngineV2(
-         model: any LanguageModel,
-diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
-index 6f263c70..99eb97cb 100644
---- a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
-+++ b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
-@@ -100,6 +100,26 @@ struct EngineV2PrefixCacheUsageTests {
-         ) == Int.max)
-     }
- 
-+    @Test("recurrent models accept only the stronger exact-state cache")
-+    func recurrentCachePairing() {
-+        var recurrent = CBv2ModelCapabilities.initialRecurrentTarget
-+        recurrent.supportsExactStatePrefixReuse = true
++    enum ExactPrefixCacheDecisionReason: String, Sendable, Equatable {
++        case ready
++        case configDisabled = "config_disabled"
++        case invalidBudget = "invalid_budget"
++        case unsupportedModel = "unsupported_model"
++        case unsupportedBackend = "unsupported_backend"
++        case weightHashUnavailable = "weight_hash_unavailable"
++        case promptContractUnavailable = "prompt_contract_unavailable"
++        case insufficientKVGrant = "insufficient_kv_grant"
++    }
++
++    struct ExactPrefixCacheIdentity: Sendable, Equatable {
++        let modelIdentity: String
++        let policyIdentity: String
++    }
++
++    /// Pure construction decision. `cacheBudgetBytes + engineKVBytesCapacity`
++    /// always equals the nonnegative input grant.
++    struct ExactPrefixCacheDecision: Sendable, Equatable {
++        let configured: Bool
++        let reason: ExactPrefixCacheDecisionReason
++        let cacheBudgetBytes: Int
++        let engineKVBytesCapacity: Int
++        let identity: ExactPrefixCacheIdentity?
++
++        var isActive: Bool {
++            reason == .ready && cacheBudgetBytes > 0 && identity != nil
++        }
++    }
++
++    static let exactPrefixCacheEnabledEnvironmentKey =
++        "DARKBLOOM_EXACT_PREFIX_CACHE"
++    static let exactPrefixCacheMaxBytesEnvironmentKey =
++        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES"
++    static let exactPrefixCacheMaxFractionEnvironmentKey =
++        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION"
++
++    /// One GiB retains several measured Qwen boundaries, while the fractional
++    /// ceiling prevents the cache from dominating a small slot.
++    static let defaultExactPrefixCacheMaxBytes = 1_073_741_824
++    static let defaultExactPrefixCacheMaxFraction = 0.125
++
++    /// Versioned snapshot/execution contract. Changing this value invalidates
++    /// every key even if model artifacts and prompt tokens stay unchanged.
++    static let exactPrefixCachePolicyDomain =
++        "darkbloom.cbv2-exact-prompt-state-v1"
++
++    /// Environment resolution is fail-closed:
++    ///   * absent/unrecognized enable values keep the feature off;
++    ///   * once explicitly enabled, malformed budget values produce an invalid
++    ///     configuration instead of silently selecting a different RAM claim.
++    static func exactPrefixCacheConfiguration(
++        environment: [String: String] = ProcessInfo.processInfo.environment
++    ) -> ExactPrefixCacheConfiguration {
++        let enabled = affirmativeEnvironmentValue(
++            environment[exactPrefixCacheEnabledEnvironmentKey])
++        guard enabled else {
++            return ExactPrefixCacheConfiguration(
++                enabled: false,
++                maxBytes: defaultExactPrefixCacheMaxBytes,
++                maxFraction: defaultExactPrefixCacheMaxFraction)
++        }
++
++        let maxBytes: Int
++        if let raw = environment[exactPrefixCacheMaxBytesEnvironmentKey] {
++            maxBytes = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
++        } else {
++            maxBytes = defaultExactPrefixCacheMaxBytes
++        }
++
++        let maxFraction: Double
++        if let raw = environment[exactPrefixCacheMaxFractionEnvironmentKey] {
++            maxFraction =
++                Double(raw.trimmingCharacters(in: .whitespacesAndNewlines))
++                ?? .nan
++        } else {
++            maxFraction = defaultExactPrefixCacheMaxFraction
++        }
++        return ExactPrefixCacheConfiguration(
++            enabled: true, maxBytes: maxBytes, maxFraction: maxFraction)
++    }
++
++    /// Reusable cache identity needs a fresh pre/post-load cryptographic
++    /// weight bracket whenever either independent tier is requested. This
++    /// keeps the exact RAM opt-in functional when an operator explicitly
++    /// disables the legacy SSD tier.
++    static func cacheIdentityRequiresFreshWeightHash(
++        environment: [String: String] = ProcessInfo.processInfo.environment
++    ) -> Bool {
++        PrefixCachePolicy.isEnabled(environment: environment)
++            || exactPrefixCacheConfiguration(environment: environment).enabled
++    }
++
++    /// Resolve the exact-state cache and live-KV split without constructing
++    /// either object. The stronger model capability is the selection gate;
++    /// model names are never used as a capability proxy.
++    static func exactPrefixCacheDecision(
++        modelId: String,
++        capabilities: CBv2ModelCapabilities,
++        backend: EngineV2KVBackendKind,
++        backendDType: String?,
++        weightHash: String?,
++        promptContractID: String?,
++        slotKVBytesCapacity: Int,
++        configuration: ExactPrefixCacheConfiguration,
++        minimumEngineKVBytes: UInt64 = UnifiedMemoryCap.minimumLoadKVBytes,
++        policyDomain: String = exactPrefixCachePolicyDomain
++    ) -> ExactPrefixCacheDecision {
++        let slot = max(0, slotKVBytesCapacity)
++        func inactive(
++            _ reason: ExactPrefixCacheDecisionReason
++        ) -> ExactPrefixCacheDecision {
++            ExactPrefixCacheDecision(
++                configured: configuration.enabled,
++                reason: reason,
++                cacheBudgetBytes: 0,
++                engineKVBytesCapacity: slot,
++                identity: nil)
++        }
++
++        guard configuration.enabled else { return inactive(.configDisabled) }
++        guard capabilities.supportsExactStatePrefixReuse else {
++            return inactive(.unsupportedModel)
++        }
++        // The proved snapshot owns contiguous full-attention rows. Do not infer
++        // that a future exact-capable model makes paged adoption valid.
++        guard backend == .contiguous else { return inactive(.unsupportedBackend) }
++        guard configuration.maxBytes > 0,
++            configuration.maxFraction.isFinite,
++            configuration.maxFraction > 0,
++            configuration.maxFraction <= 1
++        else {
++            return inactive(.invalidBudget)
++        }
++
++        let identityResult = exactPrefixCacheIdentity(
++            modelId: modelId,
++            weightHash: weightHash,
++            promptContractID: promptContractID,
++            backend: backend,
++            backendDType: backendDType,
++            policyDomain: policyDomain)
++        switch identityResult {
++        case .failure(.weightHashUnavailable):
++            return inactive(.weightHashUnavailable)
++        case .failure(.promptContractUnavailable):
++            return inactive(.promptContractUnavailable)
++        case .failure(.invalidModel):
++            return inactive(.unsupportedModel)
++        case .success:
++            break
++        }
++
++        let floor = Int(min(minimumEngineKVBytes, UInt64(Int.max)))
++        guard slot > floor else { return inactive(.insufficientKVGrant) }
++        let scaled = Double(slot) * configuration.maxFraction
++        let fractionBudget =
++            !scaled.isFinite || scaled >= Double(Int.max)
++            ? Int.max
++            : max(0, Int(scaled.rounded(.down)))
++        let budget = min(configuration.maxBytes, fractionBudget, slot - floor)
++        guard budget > 0 else { return inactive(.insufficientKVGrant) }
++
++        guard case .success(let identity) = identityResult else {
++            preconditionFailure(
++                "exact prefix identity resolution changed within one decision")
++        }
++        return ExactPrefixCacheDecision(
++            configured: true,
++            reason: .ready,
++            cacheBudgetBytes: budget,
++            engineKVBytesCapacity: slot - budget,
++            identity: identity)
++    }
++
++    static func makeExactPrefixCache(
++        decision: ExactPrefixCacheDecision
++    ) -> ExactPrefixCacheV2? {
++        guard decision.isActive, let identity = decision.identity else { return nil }
++        return ExactPrefixCacheV2(
++            config: CBv2ExactPrefixCacheConfig(
++                modelIdentity: identity.modelIdentity,
++                policyIdentity: identity.policyIdentity,
++                maxBytes: decision.cacheBudgetBytes))
++    }
++
++    // MARK: - Verified identity
++
++    enum ExactPrefixCacheIdentityError: Error, Sendable, Equatable {
++        case invalidModel
++        case weightHashUnavailable
++        case promptContractUnavailable
++    }
++
++    /// Compose content-free cache identities from the verified live artifacts.
++    /// Only the resulting SHA-256 digests are retained by the cache; raw
++    /// artifact digests never enter logs, status, or telemetry.
++    static func exactPrefixCacheIdentity(
++        modelId: String,
++        weightHash: String?,
++        promptContractID: String?,
++        backend: EngineV2KVBackendKind,
++        backendDType: String?,
++        policyDomain: String = exactPrefixCachePolicyDomain
++    ) -> Result<ExactPrefixCacheIdentity, ExactPrefixCacheIdentityError> {
++        guard !modelId.isEmpty,
++            modelId == modelId.trimmingCharacters(in: .whitespacesAndNewlines),
++            modelId.utf8.count <= 1_024
++        else {
++            return .failure(.invalidModel)
++        }
++        guard let weightDigest = canonicalSHA256Digest(weightHash) else {
++            return .failure(.weightHashUnavailable)
++        }
++        guard let promptDigest = canonicalSHA256Digest(promptContractID) else {
++            return .failure(.promptContractUnavailable)
++        }
++        guard !policyDomain.isEmpty else { return .failure(.invalidModel) }
++
++        let modelIdentity = digestIdentity(
++            domain: "darkbloom.cbv2-exact-model-identity.v1",
++            fields: [
++                Data(modelId.utf8),
++                weightDigest,
++                promptDigest,
++            ])
++        let policyIdentity = digestIdentity(
++            domain: "darkbloom.cbv2-exact-policy-identity.v1",
++            fields: [
++                Data(policyDomain.utf8),
++                Data(backend.rawValue.utf8),
++                Data((backendDType ?? "native").utf8),
++            ])
++        return .success(
++            ExactPrefixCacheIdentity(
++                modelIdentity: modelIdentity,
++                policyIdentity: policyIdentity))
++    }
++
++    private static func affirmativeEnvironmentValue(_ raw: String?) -> Bool {
++        guard let value = raw?
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++            .lowercased()
++        else { return false }
++        return value == "1" || value == "true" || value == "yes" || value == "on"
++    }
++
++    private static func canonicalSHA256Digest(_ raw: String?) -> Data? {
++        guard let raw,
++            raw.count == 64,
++            raw == raw.lowercased(),
++            raw.unicodeScalars.allSatisfy({
++                (48 ... 57).contains($0.value)
++                    || (97 ... 102).contains($0.value)
++            })
++        else { return nil }
++        var bytes: [UInt8] = []
++        bytes.reserveCapacity(32)
++        var index = raw.startIndex
++        while index < raw.endIndex {
++            let next = raw.index(index, offsetBy: 2)
++            guard let byte = UInt8(raw[index ..< next], radix: 16) else { return nil }
++            bytes.append(byte)
++            index = next
++        }
++        return Data(bytes)
++    }
++
++    private static func digestIdentity(domain: String, fields: [Data]) -> String {
++        var input = Data(domain.utf8)
++        for field in fields {
++            var length = UInt32(field.count).bigEndian
++            withUnsafeBytes(of: &length) { input.append(contentsOf: $0) }
++            input.append(field)
++        }
++        return SHA256.hash(data: input)
++            .map { String(format: "%02x", $0) }
++            .joined()
++    }
++}
+diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
+index 42c46794..440adc2d 100644
+--- a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
++++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
+@@ -153,0 +154,2 @@ enum EngineV2SlotFactory {
++        exactDecision: ExactPrefixCacheDecision,
++        exactCache: ExactPrefixCacheV2?,
+@@ -155,0 +158,4 @@ enum EngineV2SlotFactory {
++        if exactCache != nil {
++            return "on (tier=ram_exact_state, budget="
++                + "\(exactDecision.cacheBudgetBytes) B, hard LRU, exact boundaries)"
++        }
+@@ -167,0 +174,3 @@ enum EngineV2SlotFactory {
++        if exactDecision.configured {
++            return "off (tier=ram_exact_state, reason=\(exactDecision.reason.rawValue))"
++        }
+@@ -184 +193 @@ enum EngineV2SlotFactory {
+-    ///   - kvBytesCapacity: this slot's total live-KV grant, already
++    ///   - kvBytesCapacity: this slot's total request-state grant, already
+@@ -186 +195 @@ enum EngineV2SlotFactory {
+-    ///     does not carve this grant.
++    ///     does not carve it; active exact-state RAM caching does.
+@@ -191,2 +200,5 @@ enum EngineV2SlotFactory {
+-    ///   - weightHash: the slot's verified weight hash binding for SSD
+-    ///     artifacts. Nil or blank disables reusable SSD caching.
++    ///   - weightHash: the slot's verified weight hash binding for cache
++    ///     artifacts/state. Exact RAM reuse requires canonical lowercase
++    ///     SHA-256; nil or invalid disables it.
++    ///   - exactPrefixCacheConfiguration: optional programmatic override for
++    ///     the default-off exact-state RAM policy. Nil resolves the environment.
+@@ -194 +206,2 @@ enum EngineV2SlotFactory {
+-    ///     (`DARKBLOOM_PREFIX_CACHE*`); injectable for tests.
++    ///     (`DARKBLOOM_PREFIX_CACHE*`, `DARKBLOOM_EXACT_PREFIX_CACHE*`);
++    ///     injectable for tests.
+@@ -216,0 +230 @@ enum EngineV2SlotFactory {
++        exactPrefixCacheConfiguration: ExactPrefixCacheConfiguration? = nil,
+@@ -236,0 +251 @@ enum EngineV2SlotFactory {
++            exactPrefixCacheConfiguration: exactPrefixCacheConfiguration,
+@@ -263,0 +279 @@ enum EngineV2SlotFactory {
++        exactPrefixCacheConfiguration: ExactPrefixCacheConfiguration? = nil,
+@@ -366,2 +382,5 @@ enum EngineV2SlotFactory {
+-        // SSD offload never carves the live KV grant.
+-        let engineKVBytesCapacity = kvBytesCapacity
++        // `kvBytesCapacity` is this slot's total share of the process-wide
++        // UnifiedMemoryCap grant. SSD offload leaves it unchanged; the
++        // default-off exact RAM tier carves its hard ceiling below, after the
++        // resolved backend and model capability are known.
++        var engineKVBytesCapacity = kvBytesCapacity
+@@ -396,0 +416,45 @@ enum EngineV2SlotFactory {
++        let exactConfiguration =
++            exactPrefixCacheConfiguration
++            ?? Self.exactPrefixCacheConfiguration(environment: environment)
++        let exactDecision: ExactPrefixCacheDecision
++        let exactPrefixCache: ExactPrefixCacheV2?
++        if let preparedBackend {
++            do {
++                let resolvedSlotGrant = try preparedBackend.bytesCapacity()
++                exactDecision = Self.exactPrefixCacheDecision(
++                    modelId: modelId,
++                    capabilities: preparedBackend.modelCapabilities,
++                    backend: preparedBackend.kind,
++                    backendDType: preparedBackend.pagedPoolDType,
++                    weightHash: weightHash,
++                    promptContractID: promptContractID,
++                    slotKVBytesCapacity: resolvedSlotGrant,
++                    configuration: exactConfiguration)
++                exactPrefixCache = Self.makeExactPrefixCache(
++                    decision: exactDecision)
++                if exactPrefixCache != nil {
++                    engineKVBytesCapacity = exactDecision.engineKVBytesCapacity
++                    try preparedBackend.resizeContiguousCapacity(engineKVBytesCapacity)
++                }
++            } catch {
++                EngineV2Factory.emitRefusalTelemetry(
++                    modelId: modelId,
++                    reason: EngineV2RefusalReason.classify(error),
++                    error: error,
++                    emitTelemetry: emitTelemetry)
++                throw error
++            }
++        } else {
++            // Scripted engines deliberately have no resolved model/backend
++            // identity. They cannot activate an exact-state cache even if a
++            // test injects an enabled configuration.
++            exactDecision = ExactPrefixCacheDecision(
++                configured: exactConfiguration.enabled,
++                reason: exactConfiguration.enabled
++                    ? .unsupportedBackend : .configDisabled,
++                cacheBudgetBytes: 0,
++                engineKVBytesCapacity: max(0, kvBytesCapacity),
++                identity: nil)
++            exactPrefixCache = nil
++        }
++
+@@ -415 +479,8 @@ enum EngineV2SlotFactory {
+-        if makeEngineOverride != nil {
++        if exactPrefixCache != nil {
++            // `PrefixCacheModelStatus` describes the coordinator's durable
++            // SSD receipt protocol, not this process-local exact RAM tier.
++            // Keep that advertisement disabled while exact-cache posture is
++            // reported separately through slot status and telemetry.
++            cacheConstructionStatus = PrefixCacheConstructionStatus(
++                state: .disabled, reason: .unsupportedLayout)
++        } else if makeEngineOverride != nil {
+@@ -550 +621,2 @@ enum EngineV2SlotFactory {
+-        let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
++        let enginePrefixCache: (any CBv2PrefixCache)? =
++            exactPrefixCache ?? ssdPrefixCache
+@@ -616,0 +689,3 @@ enum EngineV2SlotFactory {
++            exactPrefixCache: exactPrefixCache,
++            exactPrefixCacheConfigured: exactDecision.configured,
++            exactPrefixCacheReason: exactDecision.reason.rawValue,
+@@ -625 +700,3 @@ enum EngineV2SlotFactory {
+-        if let ssdPrefixCache {
++        if let exactPrefixCache {
++            await bridge.startExactPrefixCacheStatsLogger(cache: exactPrefixCache)
++        } else if let ssdPrefixCache {
+@@ -656,0 +734,2 @@ enum EngineV2SlotFactory {
++                    exactDecision: exactDecision,
++                    exactCache: exactPrefixCache,
+diff --git a/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift b/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
+index dec90290..5c0565cd 100644
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
+@@ -149,0 +150 @@ extension ProviderLoop {
++        let fixedCarveBytes: Int
+@@ -192,0 +194,2 @@ extension ProviderLoop {
++                    fixedCarveBytes:
++                        slot.engineV2.exactPrefixCacheFixedCarveBytes(),
+@@ -311,0 +315,4 @@ extension ProviderLoop {
++        let fixedCarveBytes = Dictionary(
++            uniqueKeysWithValues: existing.map {
++                ($0.slot.modelId, $0.fixedCarveBytes)
++            })
+@@ -323 +330 @@ extension ProviderLoop {
+-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
++            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
+@@ -342 +349 @@ extension ProviderLoop {
+-            targets, fixedCarveBytes: [:])
++            targets, fixedCarveBytes: fixedCarveBytes)
+diff --git a/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift b/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift
+index 29558110..42249430 100644
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift
+@@ -22,3 +22,3 @@ extension ProviderLoop {
+-    /// publication are deliberately separate: reusable SSD loads take two fresh
+-    /// cryptographic observations around container loading, then publish only
+-    /// after both hashes match.
++    /// publication are deliberately separate: reusable-cache loads take two
++    /// fresh cryptographic observations around container loading, then publish
++    /// only after both hashes match.
+@@ -33,2 +33,2 @@ extension ProviderLoop {
+-    /// responsive. Non-SSD loads may reuse an unchanged fingerprint/hash pair;
+-    /// reusable SSD loads always request a fresh cryptographic read.
++    /// responsive. Cold-only loads may reuse an unchanged fingerprint/hash
++    /// pair; either reusable cache tier requests a fresh cryptographic read.
+@@ -126 +126 @@ extension ProviderLoop {
+-                "Weight hash unavailable for \(modelId) — removed stale value \(previous.prefix(16))... and disabled reusable SSD cache")
++                "Weight hash unavailable for \(modelId) — removed stale value \(previous.prefix(16))... and disabled reusable prefix caches")
+@@ -129 +129 @@ extension ProviderLoop {
+-                "Weight hash unavailable for \(modelId) — reusable SSD cache disabled")
++                "Weight hash unavailable for \(modelId) — reusable prefix caches disabled")
+@@ -153,2 +153,2 @@ extension ProviderLoop {
+-    /// Complete a reusable SSD load as one fail-closed lifecycle transition.
+-    /// A missing observation disables SSD reuse for this load while preserving
++    /// Complete a reusable-cache load as one fail-closed lifecycle transition.
++    /// A missing observation disables reuse for this load while preserving
+@@ -177 +177 @@ extension ProviderLoop {
+-                "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
++                "Model '\(modelId)' changed while loading reusable cache state — unloaded"
+@@ -364 +364,2 @@ extension ProviderLoop {
+-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
++            let reusableCacheRequested =
++                EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash()
+@@ -368,2 +369,2 @@ extension ProviderLoop {
+-                requireFreshCryptographicHash: reusableSSDRequested)
+-            if !reusableSSDRequested {
++                requireFreshCryptographicHash: reusableCacheRequested)
++            if !reusableCacheRequested {
+@@ -395 +396 @@ extension ProviderLoop {
+-            if reusableSSDRequested {
++            if reusableCacheRequested {
+diff --git a/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift b/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift
+index 2bfbe457..5c6b62c8 100644
+--- a/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift
++++ b/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift
+@@ -662,0 +663 @@ public actor StandaloneServer {
++        let fixedCarveBytes: Int
+@@ -686,0 +688,2 @@ public actor StandaloneServer {
++                    fixedCarveBytes:
++                        slot.bridge.exactPrefixCacheFixedCarveBytes(),
+@@ -775,0 +779,4 @@ public actor StandaloneServer {
++        let fixedCarveBytes = Dictionary(
++            uniqueKeysWithValues: existing.map {
++                ($0.slot.modelId, $0.fixedCarveBytes)
++            })
+@@ -785 +792 @@ public actor StandaloneServer {
+-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
++            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
+@@ -802 +809 @@ public actor StandaloneServer {
+-            targets, fixedCarveBytes: [:])
++            targets, fixedCarveBytes: fixedCarveBytes)
+@@ -1298,2 +1305,3 @@ public actor StandaloneServer {
+-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+-            let preLoadCacheHash = reusableSSDRequested
++            let reusableCacheRequested =
++                EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash()
++            let preLoadCacheHash = reusableCacheRequested
+@@ -1316 +1324 @@ public actor StandaloneServer {
+-            let postLoadCacheHash = reusableSSDRequested
++            let postLoadCacheHash = reusableCacheRequested
+@@ -1320 +1328 @@ public actor StandaloneServer {
+-            if reusableSSDRequested {
++            if reusableCacheRequested {
+@@ -1329 +1337 @@ public actor StandaloneServer {
+-                        "Reusable SSD cache disabled for \(modelId) on this load — cryptographic weight hash unavailable")
++                        "Reusable prefix caches disabled for \(modelId) on this load — cryptographic weight hash unavailable")
+@@ -1335 +1343 @@ public actor StandaloneServer {
+-                        "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded")
++                        "Model '\(modelId)' changed while loading reusable cache state — unloaded")
+diff --git a/provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift b/provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift
+index 72d2d319..e6d099ae 100644
+--- a/provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift
++++ b/provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift
+@@ -156,0 +157,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
++        /// Process-local exact-state RAM cache posture. Optional so a current
++        /// CLI can still decode schema-1 state files written by an older daemon.
++        /// Identities, hashes, prompt tokens, and scopes are deliberately absent.
++        public var exactPrefixCacheConfigured: Bool?
++        public var exactPrefixCacheActive: Bool?
++        public var exactPrefixCacheReason: String?
++        public var exactPrefixCacheBudgetBytes: Int?
++        public var exactPrefixCacheBytesInUse: Int?
++        public var exactPrefixCacheEntries: Int?
+@@ -168,0 +178,6 @@ public struct DaemonState: Codable, Sendable, Equatable {
++            exactPrefixCacheConfigured: Bool? = nil,
++            exactPrefixCacheActive: Bool? = nil,
++            exactPrefixCacheReason: String? = nil,
++            exactPrefixCacheBudgetBytes: Int? = nil,
++            exactPrefixCacheBytesInUse: Int? = nil,
++            exactPrefixCacheEntries: Int? = nil,
+@@ -177,0 +193,6 @@ public struct DaemonState: Codable, Sendable, Equatable {
++            self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
++            self.exactPrefixCacheActive = exactPrefixCacheActive
++            self.exactPrefixCacheReason = exactPrefixCacheReason
++            self.exactPrefixCacheBudgetBytes = exactPrefixCacheBudgetBytes
++            self.exactPrefixCacheBytesInUse = exactPrefixCacheBytesInUse
++            self.exactPrefixCacheEntries = exactPrefixCacheEntries
+@@ -267,0 +289,6 @@ public enum DaemonSlotPostureBuilder {
++        public let exactPrefixCacheConfigured: Bool?
++        public let exactPrefixCacheActive: Bool?
++        public let exactPrefixCacheReason: String?
++        public let exactPrefixCacheBudgetBytes: Int?
++        public let exactPrefixCacheBytesInUse: Int?
++        public let exactPrefixCacheEntries: Int?
+@@ -275 +302,7 @@ public enum DaemonSlotPostureBuilder {
+-            mtpInactiveReason: String?
++            mtpInactiveReason: String?,
++            exactPrefixCacheConfigured: Bool? = nil,
++            exactPrefixCacheActive: Bool? = nil,
++            exactPrefixCacheReason: String? = nil,
++            exactPrefixCacheBudgetBytes: Int? = nil,
++            exactPrefixCacheBytesInUse: Int? = nil,
++            exactPrefixCacheEntries: Int? = nil
+@@ -282,0 +316,6 @@ public enum DaemonSlotPostureBuilder {
++            self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
++            self.exactPrefixCacheActive = exactPrefixCacheActive
++            self.exactPrefixCacheReason = exactPrefixCacheReason
++            self.exactPrefixCacheBudgetBytes = exactPrefixCacheBudgetBytes
++            self.exactPrefixCacheBytesInUse = exactPrefixCacheBytesInUse
++            self.exactPrefixCacheEntries = exactPrefixCacheEntries
+@@ -361 +400,7 @@ public enum DaemonSlotPostureBuilder {
+-                mtpInactiveReason: $0.mtpInactiveReason)
++                mtpInactiveReason: $0.mtpInactiveReason,
++                exactPrefixCacheConfigured: $0.exactPrefixCacheConfigured,
++                exactPrefixCacheActive: $0.exactPrefixCacheActive,
++                exactPrefixCacheReason: $0.exactPrefixCacheReason,
++                exactPrefixCacheBudgetBytes: $0.exactPrefixCacheBudgetBytes,
++                exactPrefixCacheBytesInUse: $0.exactPrefixCacheBytesInUse,
++                exactPrefixCacheEntries: $0.exactPrefixCacheEntries)
+diff --git a/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift b/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
+index e2184b24..684136b6 100644
+--- a/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
++++ b/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
+@@ -290,0 +291,3 @@ public enum LaunchAgent: Sendable {
++        "DARKBLOOM_EXACT_PREFIX_CACHE",
++        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES",
++        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION",
+diff --git a/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift b/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift
+index aee883c7..bf2edf14 100644
+--- a/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift
++++ b/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift
+@@ -275,0 +276,9 @@ public enum TelemetryFieldFilter {
++        // Process-local exact-state RAM cache posture and cumulative counters.
++        // Aggregate integers and bounded state only; never model/policy
++        // identities, artifact hashes, scope, token ids, or content.
++        "exact_prefix_cache_configured", "exact_prefix_cache_active",
++        "exact_prefix_cache_reason", "exact_prefix_cache_budget_bytes",
++        "exact_prefix_cache_bytes_in_use", "exact_prefix_cache_entries",
++        "exact_prefix_cache_hits", "exact_prefix_cache_misses",
++        "exact_prefix_cache_tokens_saved", "exact_prefix_cache_donations",
++        "exact_prefix_cache_donations_dropped", "exact_prefix_cache_evictions",
+diff --git a/provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift b/provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift
+index b8b9108c..6f6c6f3d 100644
+--- a/provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift
++++ b/provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift
+@@ -101 +101,5 @@ enum KVBackendPosture {
+-        return "\(slot.model): \(backendPhrase(slot)) | \(mtpPhrase(slot))"
++        var phrases = [backendPhrase(slot), mtpPhrase(slot)]
++        if slot.exactPrefixCacheConfigured != nil {
++            phrases.append(exactPrefixCachePhrase(slot))
++        }
++        return "\(slot.model): " + phrases.joined(separator: " | ")
+@@ -135,0 +140,14 @@ enum KVBackendPosture {
++
++    static func exactPrefixCachePhrase(_ slot: DaemonState.SlotPosture) -> String {
++        if slot.exactPrefixCacheActive == true {
++            return "exact-cache=active ("
++                + "\(slot.exactPrefixCacheBytesInUse ?? 0)/"
++                + "\(slot.exactPrefixCacheBudgetBytes ?? 0) B, "
++                + "entries=\(slot.exactPrefixCacheEntries ?? 0))"
++        }
++        guard slot.exactPrefixCacheConfigured == true else {
++            return "exact-cache=off"
++        }
++        return "exact-cache=inactive ("
++            + "\(slot.exactPrefixCacheReason ?? "reason unreported"))"
++    }
+diff --git a/provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift b/provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift
+index 63f5e6e4..3d6933fe 100644
+--- a/provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift
++++ b/provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift
+@@ -100,0 +101,43 @@ struct KVBackendPostureTests {
++    @Test("status reports exact RAM cache opt-in, budget, use, and refusal reason")
++    func statusReportsExactPrefixCache() {
++        let lines = KVBackendPosture.statusLines(
++            state: state(slots: [
++                .init(
++                    model: "qwen-active", kvBackend: "contiguous",
++                    exactPrefixCacheConfigured: true,
++                    exactPrefixCacheActive: true,
++                    exactPrefixCacheReason: "ready",
++                    exactPrefixCacheBudgetBytes: 1_073_741_824,
++                    exactPrefixCacheBytesInUse: 75_371_520,
++                    exactPrefixCacheEntries: 1),
++                .init(
++                    model: "qwen-refused", kvBackend: "contiguous",
++                    exactPrefixCacheConfigured: true,
++                    exactPrefixCacheActive: false,
++                    exactPrefixCacheReason: "weight_hash_unavailable",
++                    exactPrefixCacheBudgetBytes: 0,
++                    exactPrefixCacheBytesInUse: 0,
++                    exactPrefixCacheEntries: 0),
++                .init(
++                    model: "legacy", kvBackend: "contiguous",
++                    exactPrefixCacheConfigured: false,
++                    exactPrefixCacheActive: false,
++                    exactPrefixCacheReason: "config_disabled"),
++            ]),
++            now: 1000,
++            heartbeatIntervalSecs: heartbeat)
++        let text = lines.joined(separator: "\n")
++
++        #expect(
++            text.contains(
++                "qwen-active: kv=contiguous (requested auto) | mtp=disabled | "
++                    + "exact-cache=active (75371520/1073741824 B, entries=1)"))
++        #expect(
++            text.contains(
++                "qwen-refused: kv=contiguous (requested auto) | mtp=disabled | "
++                    + "exact-cache=inactive (weight_hash_unavailable)"))
++        #expect(
++            text.contains(
++                "legacy: kv=contiguous (requested auto) | mtp=disabled | exact-cache=off"))
++    }
++
+diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
+new file mode 100644
+index 00000000..499e8b8b
+--- /dev/null
++++ b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
+@@ -0,0 +1,389 @@
++// Copyright © 2026 Eigen Labs.
++//
++// Deployment policy and accounting for Qwen exact prompt-state reuse.
++
++import Foundation
++import MLXLLM
++import MLXLMCommon
++import Testing
++
++@testable import ProviderCore
++
++private let exactWeightA = String(repeating: "a", count: 64)
++private let exactWeightB = String(repeating: "b", count: 64)
++private let exactPromptA = String(repeating: "c", count: 64)
++private let exactPromptB = String(repeating: "d", count: 64)
++
++private func exactQwenCapabilities() -> CBv2ModelCapabilities {
++    var capabilities = CBv2ModelCapabilities.initialRecurrentTarget
++    capabilities.supportsExactStatePrefixReuse = true
++    return capabilities
++}
++
++private final class ExactAccountingEngine: CBv2Engine, @unchecked Sendable {
++    private let lock = NSLock()
++    private var bytesCapacity: Int
++
++    init(bytesCapacity: Int) {
++        self.bytesCapacity = bytesCapacity
++    }
++
++    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
++        AsyncStream { $0.finish() }
++    }
++
++    func cancel(_ id: CBv2RequestID) {}
++
++    func capacity() -> CBv2CapacitySnapshot {
++        lock.withLock {
++            CBv2CapacitySnapshot(
++                activeRequests: 0,
++                waitingRequests: 0,
++                kvBytesInUse: 0,
++                kvBytesCapacity: bytesCapacity,
++                kvBytesBackendCapacity: bytesCapacity,
++                activeTokens: 0)
++        }
++    }
++
++    func updateKVBytesCapacity(_ bytes: Int) {
++        lock.withLock { bytesCapacity = max(0, bytes) }
++    }
++
++    func shutdown() async {}
++}
++
++private struct ExactAccountingTokenizer: MLXLMCommon.Tokenizer {
++    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
++    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
++    func convertTokenToId(_ token: String) -> Int? { nil }
++    func convertIdToToken(_ id: Int) -> String? { nil }
++    var bosToken: String? { nil }
++    var eosToken: String? { nil }
++    var unknownToken: String? { nil }
++
++    func applyChatTemplate(
++        messages: [[String: any Sendable]],
++        tools: [[String: any Sendable]]?,
++        additionalContext: [String: any Sendable]?
++    ) throws -> [Int] {
++        []
++    }
++}
++
++private struct ExactSlotProcessorError: Error {}
++
++private struct ExactSlotProcessor: UserInputProcessor {
++    func prepare(input: UserInput) async throws -> LMInput {
++        throw ExactSlotProcessorError()
++    }
++}
++
++private func tinyExactQwenModel() throws -> Qwen35MoEModel {
++    let text: [String: Any] = [
++        "model_type": "qwen3_5_moe",
++        "hidden_size": 32,
++        "num_hidden_layers": 2,
++        "intermediate_size": 64,
++        "num_attention_heads": 2,
++        "num_key_value_heads": 1,
++        "head_dim": 16,
++        "linear_num_value_heads": 1,
++        "linear_num_key_heads": 1,
++        "linear_key_head_dim": 4,
++        "linear_value_head_dim": 4,
++        "linear_conv_kernel_dim": 2,
++        "vocab_size": 64,
++        "full_attention_interval": 2,
++    ]
++    let root: [String: Any] = [
++        "model_type": "qwen3_5_moe",
++        "text_config": text,
++    ]
++    let data = try JSONSerialization.data(withJSONObject: root)
++    return Qwen35MoEModel(
++        try JSONDecoder().decode(Qwen35Configuration.self, from: data))
++}
++
++@Suite("EngineV2 exact prefix cache deployment policy")
++struct EngineV2ExactPrefixCacheTests {
++    @Test("exact cache is default-off and unrecognized enable values fail closed")
++    func defaultOff() {
++        let absent = EngineV2SlotFactory.exactPrefixCacheConfiguration(
++            environment: [:])
++        #expect(absent.enabled == false)
++        #expect(
++            absent.maxBytes
++                == EngineV2SlotFactory.defaultExactPrefixCacheMaxBytes)
++        #expect(
++            absent.maxFraction
++                == EngineV2SlotFactory.defaultExactPrefixCacheMaxFraction)
++
++        for raw in ["0", "false", "disabled", "garbage"] {
++            #expect(
++                EngineV2SlotFactory.exactPrefixCacheConfiguration(
++                    environment: [
++                        EngineV2SlotFactory.exactPrefixCacheEnabledEnvironmentKey:
++                            raw
++                    ]).enabled == false)
++        }
++    }
++
++    @Test("exact opt-in independently requires verified load-bracket weights")
++    func exactIdentityHashGateIsIndependentFromSSD() {
++        let exactOnly = [
++            PrefixCachePolicy.environmentFlag: "0",
++            EngineV2SlotFactory.exactPrefixCacheEnabledEnvironmentKey: "1",
++        ]
++        #expect(
++            EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash(
++                environment: exactOnly))
++        #expect(
++            !EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash(
++                environment: [
++                    PrefixCachePolicy.environmentFlag: "0",
++                    EngineV2SlotFactory.exactPrefixCacheEnabledEnvironmentKey: "0",
++                ]))
++    }
++
++    @Test("exact-capable Qwen selects only the stronger cache")
++    func exactQwenSelection() throws {
++        let decision = EngineV2SlotFactory.exactPrefixCacheDecision(
++            modelId: "qwen3.6-35b-a3b",
++            capabilities: exactQwenCapabilities(),
++            backend: .contiguous,
++            backendDType: nil,
++            weightHash: exactWeightA,
++            promptContractID: exactPromptA,
++            slotKVBytesCapacity: 8_000,
++            configuration: .init(
++                enabled: true, maxBytes: 1_000, maxFraction: 0.25),
++            minimumEngineKVBytes: 1_000)
++        #expect(decision.isActive)
++        #expect(decision.reason == .ready)
++
++        let exact = try #require(
++            EngineV2SlotFactory.makeExactPrefixCache(decision: decision))
++        #expect(
++            EngineV2Factory.prefixCacheIsSupported(
++                capabilities: exactQwenCapabilities(), prefixCache: exact))
++        #expect(
++            !EngineV2Factory.prefixCacheIsSupported(
++                capabilities: exactQwenCapabilities(),
++                prefixCache: PrefixCacheV2()))
++    }
++
++    @Test("slot factory installs exact Qwen cache and carves its grant")
++    func slotConstruction() async throws {
++        let model = try tinyExactQwenModel()
++        let tokenizer = ExactAccountingTokenizer()
++        let container = ModelContainer(
++            context: ModelContext(
++                configuration: ModelConfiguration(id: "tiny/qwen"),
++                model: model,
++                processor: ExactSlotProcessor(),
++                tokenizer: tokenizer))
++        let preparedModel = EngineV2PreparedModel(
++            snapshot: EngineV2ModelSnapshot(
++                model: model, eosTokenIds: [1], extraEOSTokens: []),
++            servingModel: model,
++            assistant: nil,
++            mtpStatus: .disabled(.configDisabled, configured: false),
++            mtpArtifact: nil)
++        let slotGrant = 2 * 1_073_741_824
++        let cacheBudget = 268_435_456
++
++        let bundle = try await EngineV2SlotFactory.makeProductionBundle( // pragma: allowlist secret
++            modelId: "qwen3.6-tiny",
++            modelType: "qwen3_5_moe",
++            isVLM: false,
++            modelDirectory: nil,
++            container: container,
++            tokenizer: TokenizerHandle(tokenizer),
++            sizing: SlotSizingSnapshot(
++                weightsBytes: 1,
++                fp16KVBytesPerToken: 32,
++                maxContextLength: 100_000_000,
++                defaultMaxTokens: 32),
++            kvBytesCapacity: slotGrant,
++            maxConcurrentRequests: 2,
++            kvBudget: nil,
++            kvBackendConfig: "contiguous",
++            weightHash: exactWeightA,
++            exactPrefixCacheConfiguration: .init(
++                enabled: true,
++                maxBytes: cacheBudget,
++                maxFraction: 0.25),
++            specDecPreparation: SpecDecPreparation(
++                artifact: nil,
++                status: .disabled(.configDisabled, configured: false)),
++            preparedModel: preparedModel,
++            assemblyOverrides: .init(promptContractID: exactPromptA),
++            environment: [PrefixCachePolicy.environmentFlag: "0"])
++
++        let bridge = bundle.bridge
++        let cache = try #require(bridge.exactPrefixCache)
++        #expect(cache.config.maxBytes == cacheBudget)
++        #expect(bridge.ssdPrefixCache == nil)
++        #expect(bridge.exactPrefixCacheReason == "ready")
++        #expect(await bridge.resliceAdmissionBytesClaim() == slotGrant)
++        let capacity = await bridge.capacitySnapshot()
++        #expect(capacity.kvBytesCapacity == slotGrant - cacheBudget)
++        await bridge.shutdown()
++    }
++
++    @Test("hard byte and fraction ceilings are carved from the slot grant")
++    func budgetCarve() {
++        let configuration = EngineV2SlotFactory.ExactPrefixCacheConfiguration(
++            enabled: true, maxBytes: 4_000, maxFraction: 0.25)
++        let fractionBound = EngineV2SlotFactory.exactPrefixCacheDecision(
++            modelId: "qwen",
++            capabilities: exactQwenCapabilities(),
++            backend: .contiguous,
++            backendDType: nil,
++            weightHash: exactWeightA,
++            promptContractID: exactPromptA,
++            slotKVBytesCapacity: 10_000,
++            configuration: configuration,
++            minimumEngineKVBytes: 1_000)
++        #expect(fractionBound.cacheBudgetBytes == 2_500)
++        #expect(fractionBound.engineKVBytesCapacity == 7_500)
++        #expect(
++            fractionBound.cacheBudgetBytes
++                + fractionBound.engineKVBytesCapacity == 10_000)
++
++        let floorBound = EngineV2SlotFactory.exactPrefixCacheDecision(
++            modelId: "qwen",
++            capabilities: exactQwenCapabilities(),
++            backend: .contiguous,
++            backendDType: nil,
++            weightHash: exactWeightA,
++            promptContractID: exactPromptA,
++            slotKVBytesCapacity: 1_100,
++            configuration: configuration,
++            minimumEngineKVBytes: 1_000)
++        #expect(floorBound.cacheBudgetBytes == 100)
++        #expect(floorBound.engineKVBytesCapacity == 1_000)
++    }
++
++    @Test("cache carve remains part of total admission through re-slicing")
++    func bridgeAccounting() async throws {
++        let cache = ExactPrefixCacheV2(
++            config: .init(
++                modelIdentity: "test-model",
++                policyIdentity: "test-policy",
++                maxBytes: 100))
++        let engine = ExactAccountingEngine(bytesCapacity: 900)
++        let bridge = EngineV2Bridge(
++            engine: engine,
++            modelId: "qwen",
++            tokenizer: TokenizerHandle(ExactAccountingTokenizer()),
++            eosTokenIds: [],
++            exactPrefixCache: cache,
++            exactPrefixCacheConfigured: true,
++            exactPrefixCacheReason: "ready")
++
++        #expect(await bridge.slotKVBytesClaim() == 1_000)
++        #expect(await bridge.resliceAdmissionBytesClaim() == 1_000)
++        #expect(bridge.exactPrefixCacheFixedCarveBytes() == 100)
++
++        await bridge.updateKVBytesCapacity(700)
++        #expect(engine.capacity().kvBytesCapacity == 600)
++        #expect(await bridge.slotKVBytesClaim() == 700)
++        #expect(await bridge.resliceAdmissionBytesClaim() == 700)
++        await bridge.shutdown()
++    }
++
++    @Test("re-slice floor is evaluated after the fixed exact-cache carve")
++    func resliceFloorIncludesCarve() {
++        let floor = Int(EngineV2KVSizing.minimumServiceableGrantBytes)
++        #expect(
++            EngineV2KVSizing.resliceMeetsServiceabilityFloor(
++                ["qwen": floor + 100],
++                fixedCarveBytes: ["qwen": 100]))
++        #expect(
++            !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
++                ["qwen": floor],
++                fixedCarveBytes: ["qwen": 100]))
++    }
++
++    @Test("artifact, policy, backend, and dtype changes invalidate identities")
++    func identityChanges() throws {
++        func identity(
++            weight: String = exactWeightA,
++            prompt: String = exactPromptA,
++            backend: EngineV2KVBackendKind = .contiguous,
++            dtype: String? = nil,
++            policy: String = EngineV2SlotFactory.exactPrefixCachePolicyDomain
++        ) throws -> EngineV2SlotFactory.ExactPrefixCacheIdentity {
++            try EngineV2SlotFactory.exactPrefixCacheIdentity(
++                modelId: "qwen",
++                weightHash: weight,
++                promptContractID: prompt,
++                backend: backend,
++                backendDType: dtype,
++                policyDomain: policy
++            ).get()
++        }
++
++        let base = try identity()
++        #expect(try identity(weight: exactWeightB).modelIdentity != base.modelIdentity)
++        #expect(try identity(prompt: exactPromptB).modelIdentity != base.modelIdentity)
++        #expect(try identity(backend: .paged).policyIdentity != base.policyIdentity)
++        #expect(try identity(dtype: "float16").policyIdentity != base.policyIdentity)
++        #expect(
++            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v2")
++                .policyIdentity != base.policyIdentity)
++    }
++
++    @Test("legacy attention cache remains isolated from exact-state policy")
++    func legacyIsolation() {
++        let legacyDecision = EngineV2SlotFactory.exactPrefixCacheDecision(
++            modelId: "gemma",
++            capabilities: .attentionOnly,
++            backend: .contiguous,
++            backendDType: nil,
++            weightHash: exactWeightA,
++            promptContractID: exactPromptA,
++            slotKVBytesCapacity: 8_000,
++            configuration: .init(
++                enabled: true, maxBytes: 1_000, maxFraction: 0.25),
++            minimumEngineKVBytes: 1_000)
++        #expect(!legacyDecision.isActive)
++        #expect(legacyDecision.reason == .unsupportedModel)
++        #expect(legacyDecision.cacheBudgetBytes == 0)
++        #expect(legacyDecision.engineKVBytesCapacity == 8_000)
++        #expect(
++            EngineV2Factory.prefixCacheIsSupported(
++                capabilities: .attentionOnly, prefixCache: PrefixCacheV2()))
++
 +        let exact = ExactPrefixCacheV2(
-+            config: .init(modelIdentity: "qwen-test", maxBytes: 0))
-+        let legacy = PrefixCacheV2()
-+
-+        #expect(EngineV2Factory.prefixCacheIsSupported(
-+            capabilities: recurrent, prefixCache: exact))
-+        #expect(!EngineV2Factory.prefixCacheIsSupported(
-+            capabilities: recurrent, prefixCache: legacy))
-+        #expect(!EngineV2Factory.prefixCacheIsSupported(
-+            capabilities: recurrent, prefixCache: nil))
-+        #expect(EngineV2Factory.prefixCacheIsSupported(
-+            capabilities: .attentionOnly, prefixCache: legacy))
-+        #expect(!EngineV2Factory.prefixCacheIsSupported(
-+            capabilities: .attentionOnly, prefixCache: exact))
++            config: .init(modelIdentity: "qwen", maxBytes: 0))
++        #expect(
++            !EngineV2Factory.prefixCacheIsSupported(
++                capabilities: .attentionOnly, prefixCache: exact))
 +    }
 +
-     @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")
-     func usageSignalRecords() async throws {
-         let engine = PrefixScriptedEngine(events: [
++    @Test("enabled malformed budgets fail closed without a carve")
++    func invalidBudget() {
++        let parsed = EngineV2SlotFactory.exactPrefixCacheConfiguration(
++            environment: [
++                EngineV2SlotFactory.exactPrefixCacheEnabledEnvironmentKey: "true",
++                EngineV2SlotFactory.exactPrefixCacheMaxBytesEnvironmentKey: "not-an-int",
++            ])
++        let decision = EngineV2SlotFactory.exactPrefixCacheDecision(
++            modelId: "qwen",
++            capabilities: exactQwenCapabilities(),
++            backend: .contiguous,
++            backendDType: nil,
++            weightHash: exactWeightA,
++            promptContractID: exactPromptA,
++            slotKVBytesCapacity: 8_000,
++            configuration: parsed,
++            minimumEngineKVBytes: 1_000)
++        #expect(parsed.enabled)
++        #expect(decision.reason == .invalidBudget)
++        #expect(decision.cacheBudgetBytes == 0)
++        #expect(decision.engineKVBytesCapacity == 8_000)
++    }
++}
+diff --git a/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift b/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
+index 720ff2f1..8c760ebe 100644
+--- a/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
+@@ -61,0 +62,13 @@ struct LaunchAgentEnvironmentTests {
++    @Test func forwardsExactPrefixCacheOptInAndHardCeilings() {
++        let out = LaunchAgent.passthroughEnvironment(from: [
++            "DARKBLOOM_EXACT_PREFIX_CACHE": "1",
++            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES": "1073741824",
++            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION": "0.125",
++        ])
++        #expect(out == [
++            "DARKBLOOM_EXACT_PREFIX_CACHE": "1",
++            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES": "1073741824",
++            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION": "0.125",
++        ])
++    }
++
+diff --git a/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift b/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift
+index 8892f6cd..18b19144 100644
+--- a/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift
+@@ -66,0 +67,3 @@ private func makePostureBridge(
++    exactPrefixCache: ExactPrefixCacheV2? = nil,
++    exactPrefixCacheConfigured: Bool = false,
++    exactPrefixCacheReason: String = "config_disabled",
+@@ -73,0 +77,3 @@ private func makePostureBridge(
++        exactPrefixCache: exactPrefixCache,
++        exactPrefixCacheConfigured: exactPrefixCacheConfigured,
++        exactPrefixCacheReason: exactPrefixCacheReason,
+@@ -436,0 +443,40 @@ struct MTPPostureTelemetryTests {
++    @Test("exact RAM cache posture exposes aggregate status without identities")
++    func exactPrefixCachePosture() async {
++        let telemetry = PostureTelemetrySink()
++        let cache = ExactPrefixCacheV2(
++            config: .init(
++                modelIdentity: "identity-must-not-escape",
++                policyIdentity: "policy-must-not-escape",
++                maxBytes: 4096))
++        let bridge = makePostureBridge(
++            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 8192),
++            kvBackendKind: .contiguous,
++            exactPrefixCache: cache,
++            exactPrefixCacheConfigured: true,
++            exactPrefixCacheReason: "ready",
++            telemetry: telemetry)
++        await bridge.emitSlotPostureTelemetry(
++            ProviderMTPStatusSnapshot(
++                status: .disabled(.configDisabled, configured: false),
++                metrics: nil))
++
++        let event = telemetry.posture
++        #expect(field(event, "exact_prefix_cache_configured") == "true")
++        #expect(field(event, "exact_prefix_cache_active") == "true")
++        #expect(field(event, "exact_prefix_cache_reason") == "ready")
++        #expect(field(event, "exact_prefix_cache_budget_bytes") == "4096")
++        #expect(field(event, "exact_prefix_cache_bytes_in_use") == "0")
++        #expect(field(event, "exact_prefix_cache_entries") == "0")
++        #expect(field(event, "exact_prefix_cache_hits") == "0")
++        #expect(field(event, "exact_prefix_cache_misses") == "0")
++        #expect(field(event, "exact_prefix_cache_tokens_saved") == "0")
++        #expect(field(event, "exact_prefix_cache_donations") == "0")
++        #expect(field(event, "exact_prefix_cache_donations_dropped") == "0")
++        #expect(field(event, "exact_prefix_cache_evictions") == "0")
++        let serialized = event?.fields?.values.map(\.description).joined(separator: " ")
++        #expect(serialized?.contains("identity-must-not-escape") == false)
++        #expect(serialized?.contains("policy-must-not-escape") == false)
++
++        await bridge.shutdown()
++    }
++

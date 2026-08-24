@@ -59,6 +59,19 @@ struct LaunchAgentEnvironmentTests {
         #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
     }
 
+    @Test func forwardsExactPrefixCacheOptInAndHardCeilings() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_EXACT_PREFIX_CACHE": "1",
+            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES": "1073741824",
+            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION": "0.125",
+        ])
+        #expect(out == [
+            "DARKBLOOM_EXACT_PREFIX_CACHE": "1",
+            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES": "1073741824",
+            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION": "0.125",
+        ])
+    }
+
     @Test func forwardsResourceDebugOptOutToDaemon() {
         // The MLX resource telemetry is default-on; its documented opt-out
         // (DARKBLOOM_MLX_RESOURCE_DEBUG=0) only works on the launchd service if it

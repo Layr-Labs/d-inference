@@ -140,6 +140,20 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "prefix_construction_failure",
   "prefix_capacity_refusal",
   "prefix_cold_fallback",
+  // Process-local exact-state RAM cache posture and cumulative counters.
+  // No identities, artifact hashes, scopes, token IDs, or content.
+  "exact_prefix_cache_configured",
+  "exact_prefix_cache_active",
+  "exact_prefix_cache_reason",
+  "exact_prefix_cache_budget_bytes",
+  "exact_prefix_cache_bytes_in_use",
+  "exact_prefix_cache_entries",
+  "exact_prefix_cache_hits",
+  "exact_prefix_cache_misses",
+  "exact_prefix_cache_tokens_saved",
+  "exact_prefix_cache_donations",
+  "exact_prefix_cache_donations_dropped",
+  "exact_prefix_cache_evictions",
   // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
   // engine/runtime name; `kv_backend` is the KV storage kind, the same key
   // and vocabulary as BackendSlotCapacity.kv_backend on the heartbeat wire.

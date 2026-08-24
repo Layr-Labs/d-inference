@@ -288,6 +288,9 @@ public enum LaunchAgent: Sendable {
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
+        "DARKBLOOM_EXACT_PREFIX_CACHE",
+        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES",
+        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",

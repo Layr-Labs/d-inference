@@ -97,14 +97,15 @@ The root repository intentionally keeps the nested gitlink at
 4. `055-cbv2-prefill-diagnostics-stderr.patch`
    (`sha256:c6ec5a4da275f8758474516ddf05ef0ba34f1501dbb8628ab3f4dfc010897945`);
 5. `076-cbv2-frontier-state-river.patch`
-   (`sha256:03832133d6990921f24559c6726937f779403d0fb8a1ebc001731b4513d832b4`).
+   (`sha256:933d3e786b667215c07184d6e21a9277e602080231404ae4a2153d76bea11b83`).
 
 Patches 052–055 produce local nested commit
 `f45cadea2cf4a9257e667f03f367844f3d0da822` and tree
 `b917a59270bca73560aefef2e16646c34176585a`. Patch 076 produces local nested
-commits `4df7fc1f21a774f854d6319a2a0aba68f177093c` and
-`98793a7a68586b7722731e913c5974fd75ac8815`, with final tree
-`a4c38eed039e7b6b6eccdbd2173e3d2535a33d1d`.
+commits `4df7fc1f21a774f854d6319a2a0aba68f177093c`,
+`98793a7a68586b7722731e913c5974fd75ac8815`, and
+`420ece51556a45c3f0312f6e6dac4be45a318c1a`, with final tree
+`6a0a3cede2f6032933450ac3556bc63ec464edd7`.
 
 The parent agent owns the M3 throughput matrix and frozen semantic-quality
 gate. This handoff records implementation, replay provenance, and regression

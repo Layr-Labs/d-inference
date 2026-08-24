@@ -315,6 +315,77 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
     }
 
+    func testReducedPolicyAdoptionRaceAllowsStaleReservationCommit()
+        async throws
+    {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let previewBarrier = ReservationPreviewBarrier()
+        defer { previewBarrier.resume() }
+        let original = try SandboxHostCapacityArbiter(
+            stateDirectory: stateDirectory,
+            policy: SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
+            ),
+            currentDate: { now },
+            availableStorageBytes: { UInt64.max },
+            reservationPreviewed: { previewBarrier.pause() }
+        )
+        try initializeDedicated(original)
+        let resources = try makeResources(cpuCount: 8)
+        let firstGeneration = try generation(1)
+
+        let reservation = Task.detached {
+            try original.reserve(
+                sandboxID: SandboxID(),
+                generation: firstGeneration,
+                virtualMachineName: "sandbox-policy-adoption-race",
+                resources: resources,
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+        guard previewBarrier.waitUntilPaused() else {
+            previewBarrier.resume()
+            _ = try? await reservation.value
+            return XCTFail(
+                "old-policy reservation must pause after its accepted preview"
+            )
+        }
+
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+        XCTAssertEqual(
+            try reduced.snapshot().mode,
+            .sandboxDedicated,
+            "the fitting-state fast path currently returns without fencing"
+        )
+        previewBarrier.resume()
+
+        let staleLease = try await reservation.value
+        let violated = try reduced.snapshot()
+        XCTAssertEqual(staleLease.cpuCount, 8)
+        XCTAssertEqual(violated.leases, [staleLease])
+        XCTAssertEqual(
+            violated.mode,
+            .sandboxDedicated,
+            "diagnostic: stale commit leaves work authorization enabled"
+        )
+        XCTAssertGreaterThan(
+            violated.leases.reduce(UInt16(0)) { $0 + $1.cpuCount },
+            4,
+            "diagnostic: durable commitments exceed the adopted CPU limit"
+        )
+    }
+
     func testReducedPolicyFenceWaitsForActiveLeaseMutation() async throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -1417,6 +1488,24 @@ private enum ReservationOutcome: Equatable, Sendable {
     case reserved
     case exhausted
     case failed(String)
+}
+
+private final class ReservationPreviewBarrier: @unchecked Sendable {
+    private let paused = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+
+    func pause() {
+        paused.signal()
+        proceed.wait()
+    }
+
+    func waitUntilPaused() -> Bool {
+        paused.wait(timeout: .now() + 5) == .success
+    }
+
+    func resume() {
+        proceed.signal()
+    }
 }
 
 private actor RenewalStatus {

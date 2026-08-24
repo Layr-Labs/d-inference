@@ -7,6 +7,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
     private let currentDate: @Sendable () -> Date
     private let availableStorageBytes: @Sendable () throws -> UInt64
     private let storageIdentity: SandboxStorageVolumeIdentity
+    private let reservationPreviewed: (@Sendable () -> Void)?
 
     public init(
         stateDirectory: URL,
@@ -36,7 +37,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
         storageIdentity: SandboxStorageVolumeIdentity? = nil,
         currentDate: @escaping @Sendable () -> Date,
         availableStorageBytes:
-            @escaping @Sendable () throws -> UInt64
+            @escaping @Sendable () throws -> UInt64,
+        reservationPreviewed: (@Sendable () -> Void)? = nil
     ) throws {
         let identity = storageIdentity ?? SandboxStorageVolumeIdentity(
             canonicalPath: stateDirectory.standardizedFileURL.path
@@ -58,6 +60,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         self.currentDate = currentDate
         self.availableStorageBytes = availableStorageBytes
         self.storageIdentity = identity
+        self.reservationPreviewed = reservationPreviewed
     }
 
     package init(
@@ -68,7 +71,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
         availableStorageBytes:
             @escaping @Sendable () throws -> UInt64,
         directorySynchronizationError:
-            @escaping @Sendable (Int32) -> Int32?
+            @escaping @Sendable (Int32) -> Int32?,
+        reservationPreviewed: (@Sendable () -> Void)? = nil
     ) throws {
         let identity = storageIdentity ?? SandboxStorageVolumeIdentity(
             canonicalPath: stateDirectory.standardizedFileURL.path
@@ -91,6 +95,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         self.currentDate = currentDate
         self.availableStorageBytes = availableStorageBytes
         self.storageIdentity = identity
+        self.reservationPreviewed = reservationPreviewed
     }
 
     @discardableResult
@@ -239,11 +244,49 @@ public struct SandboxHostCapacityArbiter: Sendable {
             reservedGrowthBytes: reservedGrowthBytes,
             expiresAt: expiresAt
         )
+        // #region agent log
+        SandboxCapacityAgentDebugLog.append(
+            hypothesisId: "H1",
+            location: "HostCapacityArbiter.swift:242",
+            message: "reservation preview accepted process-local policy",
+            data: [
+                "leaseCount": String(preview.leases.count),
+                "maximumCPU": String(policy.maximumReservedCPUCount),
+                "mode": preview.mode.rawValue,
+                "requestedCPU": String(resources.cpuCount),
+            ]
+        )
+        // #endregion
+        reservationPreviewed?()
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: sandboxID
         )
         defer { withExtendedLifetime(operationLock) {} }
+        // #region agent log
+        SandboxCapacityAgentDebugLog.append(
+            hypothesisId: "H2",
+            location: "HostCapacityArbiter.swift:258",
+            message: "reservation acquired one lease lock",
+            data: [
+                "maximumCPU": String(policy.maximumReservedCPUCount),
+                "requestedCPU": String(resources.cpuCount),
+            ]
+        )
+        // #endregion
         return try store.update { state in
+            // #region agent log
+            SandboxCapacityAgentDebugLog.append(
+                hypothesisId: "H3",
+                location: "HostCapacityArbiter.swift:270",
+                message: "reservation loaded durable state before commit",
+                data: [
+                    "leaseCount": String(state.leases.count),
+                    "maximumCPU": String(policy.maximumReservedCPUCount),
+                    "mode": state.mode.rawValue,
+                    "requestedCPU": String(resources.cpuCount),
+                ]
+            )
+            // #endregion
             try reserve(
                 in: &state,
                 sandboxID: sandboxID,

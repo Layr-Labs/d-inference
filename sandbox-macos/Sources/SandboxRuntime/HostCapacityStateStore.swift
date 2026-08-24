@@ -92,6 +92,66 @@ struct SandboxCapacityState: Codable, Equatable {
     }
 }
 
+struct SandboxCapacityAgentDebugEvent: Encodable {
+    let hypothesisId: String
+    let location: String
+    let message: String
+    let data: [String: String]
+    let timestamp: Int64
+}
+
+enum SandboxCapacityAgentDebugLog {
+    static func append(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        data: [String: String]
+    ) {
+        let event = SandboxCapacityAgentDebugEvent(
+            hypothesisId: hypothesisId,
+            location: location,
+            message: message,
+            data: data,
+            timestamp: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard var encoded = try? encoder.encode(event) else {
+            return
+        }
+        encoded.append(0x0A)
+        let descriptor = Darwin.open(
+            "/opt/cursor/logs/debug.log",
+            O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            return
+        }
+        defer { close(descriptor) }
+        encoded.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else {
+                return
+            }
+            var offset = 0
+            while offset < buffer.count {
+                let written = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    buffer.count - offset
+                )
+                if written < 0, errno == EINTR {
+                    continue
+                }
+                guard written > 0 else {
+                    return
+                }
+                offset += written
+            }
+        }
+    }
+}
+
 struct SandboxCapacityStateStore: Sendable {
     private static let stateFileName = "capacity.json"
     private static let maximumStateBytes = 1_048_576

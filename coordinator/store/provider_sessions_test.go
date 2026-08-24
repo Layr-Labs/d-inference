@@ -204,9 +204,13 @@ func TestProviderSessionIdentitiesPreserveHistoricalKeys(t *testing.T) {
 			}
 			if err := st.UpsertProvider(ctx, ProviderRecord{
 				ID:           uniqueID("legacy-provider"),
+				Hardware:     []byte(`{}`),
+				Models:       []byte(`[]`),
+				Backend:      "legacy",
 				AccountID:    accountID,
 				PublicKey:    legacyKey,
 				SerialNumber: serial,
+				RegisteredAt: time.Now(),
 				LastSeen:     time.Now(),
 			}); err != nil {
 				t.Fatalf("upsert legacy provider: %v", err)

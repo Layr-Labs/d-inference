@@ -17,12 +17,12 @@ using ProbeCExtents = metal::extents<int, probeN, probeM>;
 using HalfAExtents = metal::extents<int, steelK, probeM>;
 using HalfBExtents = metal::extents<int, probeN, steelK>;
 
-METAL_FUNC auto full_a_tensor(const device bfloat* values) {
+METAL_FUNC auto full_a_tensor(device bfloat* values) {
   return metal::tensor(
       values, ProbeAExtents{}, metal::array<int, 2>{1, probeK});
 }
 
-METAL_FUNC auto full_b_tensor(const device bfloat* values) {
+METAL_FUNC auto full_b_tensor(device bfloat* values) {
   return metal::tensor(
       values, ProbeBExtents{}, metal::array<int, 2>{1, probeN});
 }
@@ -32,14 +32,14 @@ METAL_FUNC auto output_tensor(device float* values) {
       values, ProbeCExtents{}, metal::array<int, 2>{1, probeN});
 }
 
-METAL_FUNC auto half_a_tensor(const device bfloat* values, int k_offset) {
+METAL_FUNC auto half_a_tensor(device bfloat* values, int k_offset) {
   return metal::tensor(
       values + k_offset,
       HalfAExtents{},
       metal::array<int, 2>{1, probeK});
 }
 
-METAL_FUNC auto half_b_tensor(const device bfloat* values, int k_offset) {
+METAL_FUNC auto half_b_tensor(device bfloat* values, int k_offset) {
   return metal::tensor(
       values + k_offset * probeN,
       HalfBExtents{},
@@ -47,8 +47,8 @@ METAL_FUNC auto half_b_tensor(const device bfloat* values, int k_offset) {
 }
 
 kernel void steel_k8x2_reference(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]],
     ushort lane [[thread_index_in_simdgroup]],
     uint2 group [[threadgroup_position_in_grid]]) {
@@ -96,8 +96,8 @@ kernel void steel_k8x2_reference(
 }
 
 kernel void mpp_static_k16_macc_cooperative_inputs(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,
@@ -133,8 +133,8 @@ kernel void mpp_static_k16_macc_cooperative_inputs(
 }
 
 kernel void mpp_static_k16_macc_tensor_inputs(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,
@@ -153,8 +153,8 @@ kernel void mpp_static_k16_macc_tensor_inputs(
 }
 
 kernel void mpp_static_k16_multiply(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,
@@ -173,8 +173,8 @@ kernel void mpp_static_k16_multiply(
 }
 
 kernel void mpp_dynamic_k8_staged_macc(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,
@@ -196,8 +196,8 @@ kernel void mpp_dynamic_k8_staged_macc(
 }
 
 kernel void mpp_dynamic_k8_multiply_explicit_add(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,
@@ -231,10 +231,10 @@ kernel void mpp_dynamic_k8_multiply_explicit_add(
 }
 
 kernel void mpp_static_k16_padded_multiply_explicit_add(
-    const device bfloat* a0_values [[buffer(0)]],
-    const device bfloat* b0_values [[buffer(1)]],
-    const device bfloat* a1_values [[buffer(2)]],
-    const device bfloat* b1_values [[buffer(3)]],
+    device bfloat* a0_values [[buffer(0)]],
+    device bfloat* b0_values [[buffer(1)]],
+    device bfloat* a1_values [[buffer(2)]],
+    device bfloat* b1_values [[buffer(3)]],
     device float* output [[buffer(4)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       probeM,

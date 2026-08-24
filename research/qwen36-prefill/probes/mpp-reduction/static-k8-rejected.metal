@@ -8,8 +8,8 @@ using namespace mpp::tensor_ops;
 // This file is an expected compile failure. The run script verifies that the
 // macOS 26.4/26.5 SDK rejects a static BF16 K=8 descriptor for SIMD-group MPP.
 kernel void static_k8_is_not_legal(
-    const device bfloat* a [[buffer(0)]],
-    const device bfloat* b [[buffer(1)]],
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
     device float* c [[buffer(2)]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       16,

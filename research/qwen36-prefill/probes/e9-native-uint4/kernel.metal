@@ -27,7 +27,7 @@ using CExtents = metal::extents<int, 32, 16>;
 
 kernel void e9_native_uint4_affine_group64(
     const device bfloat* activations [[buffer(0)]],
-    const device uint4b_format* packed_codes [[buffer(1)]],
+    const device uchar* packed_codes [[buffer(1)]],
     const device bfloat* scales [[buffer(2)]],
     const device bfloat* biases [[buffer(3)]],
     device float* output [[buffer(4)]],
@@ -44,7 +44,10 @@ kernel void e9_native_uint4_affine_group64(
 
   auto x = metal::tensor(
       activations, XExtents(), metal::array<int, 2>{1, groupK});
-  auto q = metal::tensor(
+  auto q = metal::tensor<
+      const device uint4b_format,
+      QExtents,
+      metal::tensor_inline>(
       packed_codes, QExtents(), metal::array<int, 2>{1, tileN});
   auto c = metal::tensor(
       output, CExtents(), metal::array<int, 2>{1, tileN});

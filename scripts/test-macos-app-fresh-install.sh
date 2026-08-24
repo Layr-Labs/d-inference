@@ -209,9 +209,11 @@ let expectedBundleURL = URL(fileURLWithPath: CommandLine.arguments[2])
     .standardizedFileURL.resolvingSymlinksInPath()
 let expectedExecutableURL = expectedBundleURL
     .appendingPathComponent("Contents/MacOS/DarkbloomApp")
-// The launch animation begins in a smaller transitional surface. Waiting for
-// 1040x680 proves the normal welcome window reached its settled scene size.
-let expectedCGFrameSize = NSSize(width: 1040, height: 680)
+// CGWindow bounds describe the composited surface, not NSWindow.frame. Window
+// decorations can inset that surface by a few points depending on macOS. A
+// 40-point tolerance still rejects the smaller launch surface; LLDB verifies
+// the exact 1040x680 AppKit frame after this external readiness probe.
+let minimumCGSurfaceSize = NSSize(width: 1000, height: 640)
 let failureCopy = [
     "Darkbloom could not install itself",
     "Install location:",
@@ -340,8 +342,10 @@ repeat {
         Thread.sleep(forTimeInterval: 0.1)
         continue
     }
-    guard frame.size == expectedCGFrameSize else {
-        lastProblem = "CoreGraphics frame was \(frame.size), expected \(expectedCGFrameSize)"
+    guard frame.width >= minimumCGSurfaceSize.width,
+          frame.height >= minimumCGSurfaceSize.height
+    else {
+        lastProblem = "CoreGraphics surface was \(frame.size), expected at least \(minimumCGSurfaceSize)"
         Thread.sleep(forTimeInterval: 0.1)
         continue
     }

@@ -21,11 +21,16 @@ struct FreshInstallHarness: Sendable {
     let preferencesFile: URL
     let executable: URL
 
+    private let processIdentity: ProcessIdentity
     private let controlDirectory: URL
     private let machineDirectory: URL
     private let invocationFile: URL
 
     init(testName: String = #function) throws {
+        guard let processIdentity = ProcessIdentity.current() else {
+            throw HarnessError.currentProcessIdentityUnavailable
+        }
+        self.processIdentity = processIdentity
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "darkbloom-fresh-install-\(Self.safeName(testName))-\(UUID().uuidString)",
@@ -57,7 +62,7 @@ struct FreshInstallHarness: Sendable {
             )
         }
 
-        try FreshInstallFakeCLI.script.write(
+        try FreshInstallFakeCLI.script(processIdentity: processIdentity).write(
             to: executable,
             atomically: true,
             encoding: .utf8
@@ -240,9 +245,11 @@ struct FreshInstallHarness: Sendable {
 
     private func writeDaemonState(trust: DaemonState.Trust?) throws {
         let now = Date().timeIntervalSince1970
+        let pid = processIdentity.pid
         DaemonStateFile.write(
             DaemonState(
-                pid: Int32(ProcessInfo.processInfo.processIdentifier),
+                pid: pid,
+                processIdentity: processIdentity,
                 version: "0.0.0-fresh-install-test",
                 writtenAt: now,
                 startedAt: now - 1,
@@ -265,7 +272,7 @@ struct FreshInstallHarness: Sendable {
             port: 18_080,
             apiKey: "fresh-install-test-only",
             version: "0.0.0-fresh-install-test",
-            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            pid: processIdentity.pid,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
         let encoder = JSONEncoder()
@@ -286,5 +293,6 @@ struct FreshInstallHarness: Sendable {
 
     enum HarnessError: Error {
         case couldNotWrite(URL)
+        case currentProcessIdentityUnavailable
     }
 }

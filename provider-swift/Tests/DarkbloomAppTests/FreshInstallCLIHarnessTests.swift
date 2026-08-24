@@ -73,6 +73,10 @@ struct FreshInstallCLIHarnessTests {
         #expect(daemon.currentModel == FreshInstallHarness.modelID)
         #expect(daemon.inferenceActive)
         #expect(daemon.trust?.status == "pending")
+        let processIdentity = try #require(daemon.processIdentity)
+        #expect(processIdentity.pid == daemon.pid)
+        #expect(processIdentity.isCurrent())
+        #expect(DaemonStateRuntimeTruth.belongsToLiveProcess(daemon))
 
         let localData = try Data(
             contentsOf: harness.localDirectory.appendingPathComponent("local.json")

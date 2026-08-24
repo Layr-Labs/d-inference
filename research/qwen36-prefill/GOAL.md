@@ -3,6 +3,37 @@
 Read this file before every action. If a proposed experiment does not serve this
 goal, do not run it.
 
+## 2026-08-24 focus reset — current objective
+
+The owner paused generic cold-prefill optimization. The active goal is now:
+
+> Ship a shipping-quality Qwen 3.6 exact hybrid-state prefix cache and open
+> reviewable PRs once it is ready.
+
+The initial shipping scope is durable RAM prefix reuse only. Simultaneous
+prompt-fork, state-river, routing, mixed-precision, and kernel experiments stay
+default-off and out of the first cache PR unless required for correctness.
+
+Current completion gates:
+
+1. publish the final `mlx-swift-lm` implementation and update the root gitlink;
+2. restore exact Qwen boundaries: all ten K/V rows, thirty GDN states/tails,
+   scalar position, and full-hit frontier logits;
+3. preserve one deterministic cache-enabled numerical posture across donor,
+   miss, disabled-control, partial-hit suffix, and full hit;
+4. pass B1/B2/B4 full/partial parity, cancellation, rollback, tenant-scope,
+   LRU, and hard resident-plus-in-flight memory accounting;
+5. pass the fixed native/canonical semantic quality gate;
+6. expose truthful lookup/match/donation/eviction telemetry with no content;
+7. document cold-miss cost, construction amortization, memory carve, and
+   minimum useful hit rate;
+8. run full nested/provider/coordinator/console tests from a fresh recursive
+   checkout;
+9. receive two independent merge approvals and open the nested and root PRs.
+
+The cold 2.5× research below remains historical context and may resume later.
+It is not the current completion target.
+
 ## One-sentence objective
 
 Make Darkbloom's Qwen 3.6 35B A3B **aggregate continuous-batching prefill** at

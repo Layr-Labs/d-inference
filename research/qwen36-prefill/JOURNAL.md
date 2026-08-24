@@ -813,3 +813,25 @@ source-weight identity, and budget chunking. Ordered patch 079 replays exactly
 after 078. The parent owns the Metal tests, the additional 1.3× B1×512 gate
 (at least 2,877.0 tok/s), and E51 quality. See
 `notes/083-cross-layer-artifact-projection-batching-handoff.md`.
+
+## 2026-08-24T23:30Z — E56 prefix-cache review blockers closed
+
+Final review exposed two shipping defects: stateful-MTP execution could
+re-feed the last prompt token on an exact full hit and did not donate cold
+prefill boundaries; a same-length block-only entry could also fail to upgrade
+after lookup resumed from a shorter boundary.
+
+Commit `15a88f6` makes MTP graph construction sample cached frontiers without a
+target forward, donates cold MTP boundaries, and keeps adopted rows target-only
+because the exact snapshot does not own assistant-private history. Donation
+after a partial hit may now upgrade the completed full boundary. Focused
+regressions cover standalone and mixed MTP plans plus the upgrade lifecycle.
+
+The final gates pass: 860 nested tests, 2,166 provider tests, the provider
+release build, all coordinator tests, 498 console tests, and lint with zero
+errors. A 512-token real Qwen run retained 100% first/full continuation equality
+across seven scenarios; identical B1/B2/B4 hits measured 6.64×/10.60×/13.83×.
+That real-model harness does not bind an MTP drafter, so active MTP/cache
+coexistence remains covered by the focused integration suite until the
+installed-provider canary can run after nested publication. See
+`notes/083-prefix-cache-pr-handoff.md`.

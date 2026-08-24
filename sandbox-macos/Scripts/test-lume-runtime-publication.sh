@@ -137,6 +137,9 @@ destination="$TEST_ROOT/darkbloom-pinned-lume"
     "$first_identity"
 [[ ! -e "$first_staging" && ! -L "$first_staging" ]] \
     || fail "published staging name still exists"
+if compgen -G "$TEST_ROOT/.darkbloom-lume-quarantine.*" >/dev/null; then
+    fail "successful publication created a staging quarantine"
+fi
 [[ "$(mode_of "$destination")" == "0555" ]] \
     || fail "published root was not sealed"
 "$PYTHON" "$PUBLICATION_HELPER" verify "$TEST_ROOT" "$destination" "$first_identity"

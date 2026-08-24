@@ -80,6 +80,7 @@ handle_exit() {
             if quarantine_path="$(quarantine_staging_tree "$STAGING_DIR")"; then
                 if [[ -n "$quarantine_path" ]]; then
                     echo "failed Lume staging retained for inspection and offline reclamation: $quarantine_path" >&2
+                    finalization_failed=1
                 else
                     echo "Lume staging disappeared before its quarantine path could be reported: $STAGING_DIR" >&2
                     finalization_failed=1

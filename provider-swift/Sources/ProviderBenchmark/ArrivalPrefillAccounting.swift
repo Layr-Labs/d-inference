@@ -7,8 +7,55 @@ import Foundation
 public enum ArrivalPrefillAccounting: Sendable {
     public static let allowedBatchSizes: Set<Int> = [1, 2, 4]
 
+    public struct RowTiming: Sendable, Equatable {
+        public let submissionNs: UInt64
+        public let firstTokenNs: UInt64
+
+        public init(submissionNs: UInt64, firstTokenNs: UInt64) {
+            self.submissionNs = submissionNs
+            self.firstTokenNs = firstTokenNs
+        }
+    }
+
+    public struct Metrics: Sendable, Equatable {
+        public let makespanSeconds: Double
+        public let aggregateTokensPerSecond: Double
+
+        public init(makespanSeconds: Double, aggregateTokensPerSecond: Double) {
+            self.makespanSeconds = makespanSeconds
+            self.aggregateTokensPerSecond = aggregateTokensPerSecond
+        }
+    }
+
+    public enum AccountingError: Error, Equatable, CustomStringConvertible {
+        case unsupportedBatchSize(Int)
+        case invalidPromptTokens(Int)
+        case missingRows(expected: Int, actual: Int)
+        case firstTokenPrecedesSubmission(row: Int)
+        case invalidMakespan
+        case invalidAggregate
+
+        public var description: String {
+            switch self {
+            case .unsupportedBatchSize(let size):
+                return "arrival batch size must be 1, 2, or 4 (got \(size))"
+            case .invalidPromptTokens(let count):
+                return "arrival prompt tokens must be at least 2 (got \(count))"
+            case .missingRows(let expected, let actual):
+                return "arrival sample produced \(actual) completed rows, expected \(expected)"
+            case .firstTokenPrecedesSubmission(let row):
+                return "arrival row \(row) recorded its first token before submission"
+            case .invalidMakespan:
+                return "arrival prefill makespan must be positive and finite"
+            case .invalidAggregate:
+                return "arrival aggregate prefill throughput must be positive and finite"
+            }
+        }
+    }
+
     public static func prefillTokensPerRow(promptTokensPerRequest: Int) -> Int {
-        max(0, promptTokensPerRequest - 1)
+        guard promptTokensPerRequest > 1 else { return 0 }
+        return promptTokensPerRequest - 1
     }
 
     /// `max(first_token) - min(submission)`, in seconds.
@@ -25,10 +72,63 @@ public enum ArrivalPrefillAccounting: Sendable {
         promptTokensPerRequest: Int,
         prefillMakespanSeconds: Double
     ) -> Double {
-        guard batchSize > 0, prefillMakespanSeconds > 0 else { return 0 }
-        let tokens = Double(batchSize * prefillTokensPerRow(
-            promptTokensPerRequest: promptTokensPerRequest))
-        return tokens / prefillMakespanSeconds
+        guard batchSize > 0,
+              prefillMakespanSeconds.isFinite,
+              prefillMakespanSeconds > 0
+        else {
+            return 0
+        }
+        // Convert each factor before multiplying. `batchSize * (L - 1)` in
+        // `Int` traps on overflow for hostile API inputs before the value can
+        // be represented safely as a `Double`.
+        let tokens = Double(batchSize)
+            * Double(prefillTokensPerRow(promptTokensPerRequest: promptTokensPerRequest))
+        let aggregate = tokens / prefillMakespanSeconds
+        return aggregate.isFinite ? aggregate : 0
+    }
+
+    /// Validates that every requested row completed and derives the exact
+    /// acceptance metric from raw monotonic timestamps.
+    public static func metrics(
+        batchSize: Int,
+        promptTokensPerRequest: Int,
+        rows: [RowTiming]
+    ) throws -> Metrics {
+        guard allowedBatchSizes.contains(batchSize) else {
+            throw AccountingError.unsupportedBatchSize(batchSize)
+        }
+        guard promptTokensPerRequest >= 2 else {
+            throw AccountingError.invalidPromptTokens(promptTokensPerRequest)
+        }
+        guard rows.count == batchSize else {
+            throw AccountingError.missingRows(expected: batchSize, actual: rows.count)
+        }
+        for (row, timing) in rows.enumerated() {
+            guard timing.firstTokenNs >= timing.submissionNs else {
+                throw AccountingError.firstTokenPrecedesSubmission(row: row)
+            }
+        }
+        guard let minSubmission = rows.map(\.submissionNs).min(),
+              let maxFirstToken = rows.map(\.firstTokenNs).max()
+        else {
+            throw AccountingError.missingRows(expected: batchSize, actual: rows.count)
+        }
+        let makespan = prefillMakespanSeconds(
+            minSubmissionNs: minSubmission,
+            maxFirstTokenNs: maxFirstToken)
+        guard makespan.isFinite, makespan > 0 else {
+            throw AccountingError.invalidMakespan
+        }
+        let aggregate = aggregateTokensPerSecond(
+            batchSize: batchSize,
+            promptTokensPerRequest: promptTokensPerRequest,
+            prefillMakespanSeconds: makespan)
+        guard aggregate.isFinite, aggregate > 0 else {
+            throw AccountingError.invalidAggregate
+        }
+        return Metrics(
+            makespanSeconds: makespan,
+            aggregateTokensPerSecond: aggregate)
     }
 
     /// Arrival offsets for one named topology at `batchSize` rows.

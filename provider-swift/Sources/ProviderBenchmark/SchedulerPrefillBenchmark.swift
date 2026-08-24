@@ -13,9 +13,10 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 2 adds required effective config-projected Gemma settings.
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
-    /// 4 adds `firstTokenChecksum` so B=1 baseline/candidate parity is
-    /// machine-checkable without eyeballing TTFT.
-    public static let currentSchemaVersion = 4
+    /// 4 added a first-token checksum.
+    /// 5 canonicalizes that field as `tokenChecksum` (while retaining the
+    /// compatibility alias) and records effective CBv2 chunk/budget tuning.
+    public static let currentSchemaVersion = 5
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
@@ -29,8 +30,11 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         /// L=28k, and a TTFT curve averaged across that describes neither
         /// backend.
         public let resolvedKVBackend: String
-        /// Hex SHA-256 of the first emitted token id(s). Empty if the engine
-        /// produced no token before finish (the cell is then invalid).
+        /// Hex FNV-1a checksum of the first emitted token id. A sample with no
+        /// token throws and is omitted rather than encoding an empty checksum.
+        public let tokenChecksum: String
+        /// Schema-4 compatibility alias. New consumers use `tokenChecksum`.
+        @available(*, deprecated, renamed: "tokenChecksum")
         public let firstTokenChecksum: String
     }
 
@@ -40,6 +44,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     public let promptLengths: [Int]
     public let strategies: [String]
     public let iterations: Int
+    public let prefillChunkSize: Int
+    public let maxBatchedTokensPerStep: Int
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Selection versus the backends the measured engines were built with.
@@ -86,6 +92,9 @@ public enum SchedulerPrefillBenchmark {
     ) async throws -> SchedulerPrefillBenchmarkReport {
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
         let iterations = max(1, iterations)
+        let environment = ProcessInfo.processInfo.environment
+        let schedulerTuning = EngineV2Factory.effectiveSchedulerTuning(
+            environment: environment)
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
@@ -125,7 +134,8 @@ public enum SchedulerPrefillBenchmark {
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            environment: environment
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -140,7 +150,8 @@ public enum SchedulerPrefillBenchmark {
                     weightBytes: facts.weightBytes,
                     isVLM: isVLM,
                     modelDirectory: modelDirectory,
-                    kvBackend: kvBackend
+                    kvBackend: kvBackend,
+                    environment: environment
                 )
                 if !resolved.contains(sample.resolvedKVBackend) {
                     resolved.append(sample.resolvedKVBackend)
@@ -158,12 +169,13 @@ public enum SchedulerPrefillBenchmark {
             promptLengths: lengths,
             strategies: [strategyLabel],
             iterations: iterations,
+            prefillChunkSize: schedulerTuning.prefillChunkSize,
+            maxBatchedTokensPerStep: schedulerTuning.maxBatchedTokensPerStep,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
-            soloPrefillStripeTokens: EngineV2Factory.soloPrefillStripeTokens(
-                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize),
+            soloPrefillStripeTokens: schedulerTuning.soloPrefillStripeTokens,
             samples: samples
         )
     }
@@ -176,7 +188,8 @@ public enum SchedulerPrefillBenchmark {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        environment: [String: String]
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
@@ -203,14 +216,21 @@ public enum SchedulerPrefillBenchmark {
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
-                kvBackend: kvBackend)
+                kvBackend: kvBackend,
+                environment: environment)
             return EngineParts(
                 engine: build.engine,
                 resolvedBackend: build.resolvedKVBackendDescriptor)
         }
         let engine = parts.engine
 
-        let prompt = ThroughputSweep.tile(baseTokens, to: promptTokens, offset: iteration * 17)
+        let (promptOffset, promptOffsetOverflow) = iteration.multipliedReportingOverflow(by: 17)
+        guard !promptOffsetOverflow else {
+            await stopAndReclaim(engine)
+            throw BenchmarkError.integerOverflow("scheduler-prefill prompt offset")
+        }
+        let prompt = ThroughputSweep.tile(
+            baseTokens, to: promptTokens, offset: promptOffset)
         let started = ContinuousClock.now
         let stream = try engine.submit(CBv2Request(
             id: CBv2RequestID(1),
@@ -220,15 +240,13 @@ public enum SchedulerPrefillBenchmark {
         ))
 
         var firstOutput: Duration?
-        var firstTokenIDs: [Int] = []
+        var firstTokenID: Int?
         for await event in stream {
-            if firstOutput == nil {
-                firstOutput = ContinuousClock.now - started
-            }
             switch event {
             case .delta(_, let tokens, _):
-                if firstTokenIDs.isEmpty {
-                    firstTokenIDs = tokens
+                if firstTokenID == nil, let token = tokens.first {
+                    firstOutput = ContinuousClock.now - started
+                    firstTokenID = token
                 }
             case .finished(let reason, _):
                 if case .error(let message) = reason {
@@ -237,7 +255,10 @@ public enum SchedulerPrefillBenchmark {
                 }
             }
         }
-        let elapsed = firstOutput ?? (ContinuousClock.now - started)
+        guard let elapsed = firstOutput, let firstTokenID else {
+            await stopAndReclaim(engine)
+            throw BenchmarkError.noFirstToken
+        }
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
         await stopAndReclaim(engine)
@@ -248,7 +269,8 @@ public enum SchedulerPrefillBenchmark {
             ttftMs: ttftMs,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
             resolvedKVBackend: parts.resolvedBackend,
-            firstTokenChecksum: ArrivalPrefillAccounting.tokenChecksum(firstTokenIDs)
+            tokenChecksum: ArrivalPrefillAccounting.tokenChecksum([firstTokenID]),
+            firstTokenChecksum: ArrivalPrefillAccounting.tokenChecksum([firstTokenID])
         )
     }
 
@@ -260,10 +282,16 @@ public enum SchedulerPrefillBenchmark {
 
     private enum BenchmarkError: Error, CustomStringConvertible {
         case requestFailed(String)
+        case noFirstToken
+        case integerOverflow(String)
 
         var description: String {
             switch self {
             case .requestFailed(let message): return message
+            case .noFirstToken:
+                return "scheduler-prefill request completed without emitting a token"
+            case .integerOverflow(let context):
+                return "\(context) overflowed"
             }
         }
     }

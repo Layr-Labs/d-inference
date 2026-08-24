@@ -588,6 +588,25 @@ struct EngineV2KVBackendGateTests {
         #expect(!prepared.schedulerConfig.enablePrefixCache)
     }
 
+    @Test("chunk and budget env overrides reach the factory scheduler config")
+    func schedulerEnvironmentOverridesReachFactoryConfig() throws {
+        let model = try tinyGemma4Text()
+        let prepared = try EngineV2Factory.prepareProductionBackend( // pragma: allowlist secret
+            model: model,
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 4,
+            kvBackend: .contiguous,
+            maxContextLength: 8192,
+            environment: [
+                EngineV2Factory.prefillChunkKey: "1024",
+                EngineV2Factory.maxBatchedTokensKey: "4096",
+            ])
+        #expect(prepared.schedulerConfig.prefillChunkSize == 1024)
+        #expect(prepared.schedulerConfig.maxBatchedTokensPerStep == 4096)
+        #expect(prepared.schedulerConfig.soloPrefillStripeTokens == 2048)
+        #expect(prepared.schedulerConfig.maxConcurrentRequests == 4)
+    }
+
     @Test("slot factory hands the cache factory the RESOLVED backend's capability")
     func slotFactoryOrdersResolvedBackendBeforeCache() async throws {
         let model = try tinyGemma4Text()

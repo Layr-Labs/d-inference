@@ -132,6 +132,12 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var parityPrefixTokens = 28672
 
+    mutating func validate() throws {
+        guard ArrivalPrefillAccounting.allowedBatchSizes.contains(arrivalBatchSize) else {
+            throw ValidationError("--arrival-batch-size must be 1, 2, or 4")
+        }
+    }
+
     mutating func run() async throws {
         let snapshot = try loadRuntimeSnapshot(
             configPath: configOptions.config,

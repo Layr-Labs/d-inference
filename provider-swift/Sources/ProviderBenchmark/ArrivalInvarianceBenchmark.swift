@@ -15,6 +15,8 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         /// the request entered the engine later than the topology asked for.
         public let arrivalErrorMs: Double
         public let ttftMs: Double
+        /// First emitted token timestamp relative to the sample start.
+        public let firstTokenAtMs: Double
         public let decodeTokensPerSecond: Double
         public let generatedTokens: Int
         public let completedAtMs: Double
@@ -68,7 +70,9 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     /// 5 adds `batchSize` plus harness-computed prefill aggregate
     ///   (`prefillMakespanMs`, `aggregatePrefillTokensPerSecond`) so B=1/2/4
     ///   cells are first-class and not reconstructed from console rounding.
-    public static let currentSchemaVersion = 5
+    /// 6 adds every row's explicit `firstTokenAtMs` timestamp and records the
+    ///   effective CBv2 chunk/budget tuning used by the engine.
+    public static let currentSchemaVersion = 6
 
     public let schemaVersion: Int
     public let modelID: String
@@ -77,6 +81,9 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     public let decodeTokensPerRequest: Int
     public let batchSize: Int
     public let iterations: Int
+    public let prefillChunkSize: Int
+    public let maxBatchedTokensPerStep: Int
+    public let soloPrefillStripeTokens: Int?
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Bound enforced on every measured row's `arrivalErrorMs`. Samples that
@@ -193,6 +200,9 @@ public enum ArrivalInvarianceBenchmark {
         let patterns = patterns(batchSize: batchSize)
         let toleranceMs = resolvedToleranceMs(explicit: arrivalToleranceMs)
         let maxAttempts = max(1, maxAttemptsPerSample)
+        let environment = ProcessInfo.processInfo.environment
+        let schedulerTuning = EngineV2Factory.effectiveSchedulerTuning(
+            environment: environment)
         log("arrival tolerance \(String(format: "%.2f", toleranceMs)) ms, "
             + "up to \(maxAttempts) attempt(s) per sample")
         log("loading model \(modelID)")
@@ -232,7 +242,8 @@ public enum ArrivalInvarianceBenchmark {
             modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
             maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
-            kvBackend: kvBackend
+            kvBackend: kvBackend,
+            environment: environment
         )
         let engine = engineParts.engine
         log("kv backend selection \(kvBackend.rawValue), engine resolved "
@@ -262,7 +273,9 @@ public enum ArrivalInvarianceBenchmark {
                     maxAttempts: 1,
                     enforceTolerance: false
                 )
-                nextRequestID += UInt64(pattern.delaysMs.count)
+                nextRequestID = try addingRequestIDs(
+                    to: nextRequestID,
+                    count: pattern.delaysMs.count)
             }
 
             // Rotate topology order each repetition to avoid a fixed thermal or
@@ -285,7 +298,11 @@ public enum ArrivalInvarianceBenchmark {
                     )
                     // Every attempt burns a distinct block of request IDs so a
                     // retried sample can never collide with a discarded one.
-                    nextRequestID += UInt64(pattern.delaysMs.count * maxAttempts)
+                    let reservedIDs = try checkedRequestIDProduct(
+                        pattern.delaysMs.count, maxAttempts)
+                    nextRequestID = try addingRequestIDs(
+                        to: nextRequestID,
+                        count: reservedIDs)
                     log(
                         "  \(pattern.name) i=\(iteration): prefill "
                             + "\(String(format: "%.1f", sample.report.aggregatePrefillTokensPerSecond)) tok/s, "
@@ -352,6 +369,9 @@ public enum ArrivalInvarianceBenchmark {
             decodeTokensPerRequest: decodeTokens,
             batchSize: batchSize,
             iterations: iterations,
+            prefillChunkSize: schedulerTuning.prefillChunkSize,
+            maxBatchedTokensPerStep: schedulerTuning.maxBatchedTokensPerStep,
+            soloPrefillStripeTokens: schedulerTuning.soloPrefillStripeTokens,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             arrivalToleranceMs: toleranceMs,
@@ -401,25 +421,23 @@ public enum ArrivalInvarianceBenchmark {
         var worstObserved = 0.0
 
         for attempt in 0 ..< attempts {
+            let attemptOffset = try checkedRequestIDProduct(attempt, rowCount)
+            let attemptRequestIDBase = try addingRequestIDs(
+                to: requestIDBase,
+                count: attemptOffset)
             let (rows, scenarioStartedAt) = try await runArrivals(
                 engine: engine,
                 pattern: pattern,
                 prompts: prompts,
                 decodeTokens: decodeTokens,
-                requestIDBase: requestIDBase + UInt64(attempt * rowCount)
+                requestIDBase: attemptRequestIDBase
             )
             let maxArrivalError = rows
                 .map { abs($0.report.arrivalErrorMs) }
                 .max() ?? 0
 
-            if rows.count != rowCount {
-                throw BenchmarkError.missingRows(
-                    pattern: pattern.name,
-                    expected: rowCount,
-                    actual: rows.count)
-            }
             if !enforceTolerance || maxArrivalError <= toleranceMs {
-                return makeSample(
+                return try makeSample(
                     rows: rows,
                     iteration: iteration,
                     scenarioStartedAt: scenarioStartedAt,
@@ -466,6 +484,9 @@ public enum ArrivalInvarianceBenchmark {
         let rows = try await withThrowingTaskGroup(of: MeasuredRow.self) { group in
             for (row, delayMs) in pattern.delaysMs.enumerated() {
                 let prompt = prompts[row]
+                let requestID = try addingRequestIDs(
+                    to: requestIDBase,
+                    count: UInt64(row))
                 group.addTask {
                     try await sleepUntilArrival(
                         offsetMs: delayMs,
@@ -474,7 +495,7 @@ public enum ArrivalInvarianceBenchmark {
                     )
                     return try await consumeRow(
                         engine: engine,
-                        requestID: requestIDBase + UInt64(row),
+                        requestID: requestID,
                         row: row,
                         delayMs: delayMs,
                         prompt: prompt,
@@ -515,28 +536,29 @@ public enum ArrivalInvarianceBenchmark {
         discardedAttempts: Int,
         promptTokens: Int,
         batchSize: Int
-    ) -> MeasuredSample {
+    ) throws -> MeasuredSample {
         let first = rows.map(\.firstTokenAt).min() ?? scenarioStartedAt
         let last = rows.map(\.lastTokenAt).max() ?? first
         let finished = rows.map(\.finishedAt).max() ?? last
-        let decodeIntervals = rows.reduce(0) {
-            $0 + max(0, $1.report.generatedTokens - 1)
+        let decodeIntervals = rows.reduce(0.0) {
+            $0 + Double(max(0, $1.report.generatedTokens - 1))
         }
         let decodeSeconds = seconds(from: first, to: last)
         let makespanSeconds = seconds(from: scenarioStartedAt, to: finished)
         let aggregateTPS = decodeSeconds > 0
-            ? Double(decodeIntervals) / decodeSeconds
+            ? decodeIntervals / decodeSeconds
             : 0
-        let totalTokens = rows.reduce(0) { $0 + $1.report.generatedTokens }
-        let minSubmit = rows.map(\.submittedAt).min() ?? scenarioStartedAt
-        let maxFirst = rows.map(\.firstTokenAt).max() ?? first
-        let prefillSeconds = ArrivalPrefillAccounting.prefillMakespanSeconds(
-            minSubmissionNs: minSubmit,
-            maxFirstTokenNs: maxFirst)
-        let aggregatePrefill = ArrivalPrefillAccounting.aggregateTokensPerSecond(
+        let totalTokens = rows.reduce(0.0) {
+            $0 + Double($1.report.generatedTokens)
+        }
+        let prefillMetrics = try ArrivalPrefillAccounting.metrics(
             batchSize: batchSize,
             promptTokensPerRequest: promptTokens,
-            prefillMakespanSeconds: prefillSeconds)
+            rows: rows.map {
+                ArrivalPrefillAccounting.RowTiming(
+                    submissionNs: $0.submittedAt,
+                    firstTokenNs: $0.firstTokenAt)
+            })
 
         return MeasuredSample(
             report: ArrivalInvarianceBenchmarkReport.Sample(
@@ -544,13 +566,13 @@ public enum ArrivalInvarianceBenchmark {
                 rows: rows.map(\.report),
                 aggregateDecodeTokensPerSecond: aggregateTPS,
                 endToEndTokensPerSecond: makespanSeconds > 0
-                    ? Double(totalTokens) / makespanSeconds
+                    ? totalTokens / makespanSeconds
                     : 0,
                 makespanMs: makespanSeconds * 1000,
                 maxArrivalErrorMs: maxArrivalErrorMs,
                 discardedAttempts: discardedAttempts,
-                prefillMakespanMs: prefillSeconds * 1000,
-                aggregatePrefillTokensPerSecond: aggregatePrefill
+                prefillMakespanMs: prefillMetrics.makespanSeconds * 1000,
+                aggregatePrefillTokensPerSecond: prefillMetrics.aggregateTokensPerSecond
             ),
             outputs: rows.map(\.tokenIDs)
         )
@@ -562,7 +584,8 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         weightBytes: Int,
         maxConcurrentRequests: Int,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        environment: [String: String]
     ) async throws -> EngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -587,7 +610,8 @@ public enum ArrivalInvarianceBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
-                kvBackend: kvBackend
+                kvBackend: kvBackend,
+                environment: environment
             )
             return EngineParts(
                 engine: build.engine,
@@ -657,6 +681,7 @@ public enum ArrivalInvarianceBenchmark {
                 submittedAtMs: submittedAtMs,
                 arrivalErrorMs: submittedAtMs - Double(delayMs),
                 ttftMs: milliseconds(from: submittedAt, to: first),
+                firstTokenAtMs: milliseconds(from: scenarioStartedAt, to: first),
                 decodeTokensPerSecond: decodeTPS,
                 generatedTokens: tokenIDs.count,
                 completedAtMs: milliseconds(from: scenarioStartedAt, to: finishedAt),
@@ -684,6 +709,37 @@ public enum ArrivalInvarianceBenchmark {
         Double(end - start) / 1_000_000
     }
 
+    private static func checkedRequestIDProduct(
+        _ lhs: Int,
+        _ rhs: Int
+    ) throws -> UInt64 {
+        guard lhs >= 0, rhs >= 0 else { throw BenchmarkError.requestIDOverflow }
+        let (product, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard !overflow, let value = UInt64(exactly: product) else {
+            throw BenchmarkError.requestIDOverflow
+        }
+        return value
+    }
+
+    private static func addingRequestIDs(
+        to base: UInt64,
+        count: UInt64
+    ) throws -> UInt64 {
+        let (result, overflow) = base.addingReportingOverflow(count)
+        guard !overflow else { throw BenchmarkError.requestIDOverflow }
+        return result
+    }
+
+    private static func addingRequestIDs(
+        to base: UInt64,
+        count: Int
+    ) throws -> UInt64 {
+        guard count >= 0, let value = UInt64(exactly: count) else {
+            throw BenchmarkError.requestIDOverflow
+        }
+        return try addingRequestIDs(to: base, count: value)
+    }
+
     private static func median(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
@@ -706,7 +762,7 @@ public enum ArrivalInvarianceBenchmark {
             attempts: Int
         )
         case unsupportedBatchSize(Int)
-        case missingRows(pattern: String, expected: Int, actual: Int)
+        case requestIDOverflow
 
         var description: String {
             switch self {
@@ -725,8 +781,8 @@ public enum ArrivalInvarianceBenchmark {
                     + "noisy for this measurement"
             case .unsupportedBatchSize(let size):
                 return "--arrival-batch-size must be 1, 2, or 4 (got \(size))"
-            case .missingRows(let pattern, let expected, let actual):
-                return "arrival topology \(pattern) produced \(actual) rows, expected \(expected)"
+            case .requestIDOverflow:
+                return "arrival benchmark exhausted its request-id space"
             }
         }
     }

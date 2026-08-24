@@ -212,6 +212,12 @@ uses the quantized embedding's scales dtype and retains the ordinary weight
 dtype fallback. Shape, layer-index, SSM-FP32, identity, ownership, cancellation,
 and byte-accounting checks are unchanged.
 
+The post-fix snapshot reports 75,371,520 bytes and matches its independently
+summed arrays. The 1,474,560-byte reduction from the pre-fix estimate is exactly
+`30 * 1 * 3 * 8192 * (4 - 2)`: packed-`uint32` bytes that never belonged to the
+bfloat16 conv state. This corrects admission and cache accounting to the real
+owned arrays rather than weakening the hard budget.
+
 ## 8. Patch handoff
 
 The agent identity can push the root repository but cannot push

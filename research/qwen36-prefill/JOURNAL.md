@@ -504,3 +504,18 @@ accounting, follower and leader cancellation, post-fork follower departure,
 independent clone ownership, and zero terminal reservations. The prefill-work
 ceiling is `B / [B - (B - 1)s]`; B4 reaches 2.5x at 80% common-prefix overlap
 and approaches 4x for long identical prompts. See `notes/061`.
+
+## 2026-08-24T11:33Z — real Qwen exact-prefix donation fixed
+
+Default-off M3 instrumentation found the real-model donor reached every policy,
+layout, and budget gate, then failed recurrent snapshot validation: quantized
+embedding weights are packed `uint32`, but their output and all 30 conv tails
+are bfloat16. The recurrent spec had mistaken storage dtype for activation
+dtype.
+
+The spec now reads `QuantizedEmbedding.scales.dtype` with the ordinary weight
+dtype fallback. A quantized-embedding regression passes, as do all six exact
+cache/engine tests and eight provider benchmark tests. The prompt-512 M3 run
+now observes 75,371,520-byte donations and exact B1/B2/B4 hits with full output
+equality; distinct-suffix partial-prefix arms remain misses. See `notes/060`
+and `notes/062`.

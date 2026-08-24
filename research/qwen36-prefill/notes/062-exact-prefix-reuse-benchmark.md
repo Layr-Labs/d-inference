@@ -1,6 +1,6 @@
 # 062 — exact Qwen prefix-reuse benchmark
 
-Status: **implemented as an ordered patch handoff; no real-model numbers claimed**
+Status: **implemented as an ordered patch handoff; M3 Max prompt-512 diagnostic verified**
 
 Exact warm-prefix reuse is a separate product path from the cold 8K objective.
 The existing quality corpus intentionally disables prefix caching and remains
@@ -106,6 +106,35 @@ The mode is opt-in, mutually exclusive with the existing sweep, scheduler
 prefill, arrival, parity, and quality modes, and requires an explicit model.
 All pre-existing benchmark defaults remain cache-free.
 
+## M3 Max real-model verification
+
+The ordered validation tree was rebuilt and run from the Linux controller with:
+
+```bash
+/tmp/m3ssh 'cd "/private/tmp/qwen-prefix-provider-89df1025/provider-swift" &&
+  swift build -c debug --product darkbloom'
+
+/tmp/m3ssh 'cd "/private/tmp/qwen-prefix-provider-89df1025/provider-swift" &&
+  .build/arm64-apple-macosx/debug/darkbloom benchmark \
+    --model "qwen3.6-35b-a3b-vl-mtp-mxfp8" \
+    --qwen-prefix-reuse \
+    --qwen-prefix-corpus \
+      "Benchmarks/QwenPrefixReuse/qwen-prefix-natural-v1.json" \
+    --qwen-prefix-prompt-tokens 512 \
+    --qwen-prefix-decode-tokens 2 \
+    --qwen-prefix-iterations 1 \
+    --kv-backend contiguous \
+    --qwen-prefix-output "/tmp/exact-prefix-report.json"'
+```
+
+The post-fix report identifies `ExactPrefixCacheV2` with direct capability.
+Every construction request observed a 75,371,520-byte donation. Identical B1,
+B2, and B4 warm rows produced 1/1, 2/2, and 4/4 hits and saved 512, 1,024, and
+2,048 prompt tokens respectively. Every first token, complete token sequence,
+and finish reason matched its cache-disabled control. The 25/50/75/90-percent
+distinct-suffix rows remained 16/16 honest misses, as required by the
+full-prompt-only contract.
+
 ## Patch handoff
 
 The exact-state API lives in `Layr-Labs/mlx-swift-lm`, where the agent identity
@@ -135,8 +164,8 @@ state patches from note 060, the factory strips the cache and the report keeps
 disabled/miss outcomes rather than fabricating a warm hit. This benchmark
 change does not weaken that fail-closed production gate. <!-- pragma: allowlist secret -->
 
-No Apple-Silicon real-model run is attached here. Unit coverage fixes the
-scenario topology, token-boundary construction, request cache controls,
-request-correlated state-byte accounting, construction-inclusive miss rate,
-full-prompt-hit versus partial-prefix-miss validation, report round trip,
-committed corpus, schemas, and CLI isolation.
+Apple-Silicon verification complements unit coverage of scenario topology,
+token-boundary construction, request cache controls, request-correlated
+state-byte accounting, construction-inclusive miss rate, full-prompt-hit versus
+partial-prefix-miss validation, report round trip, committed corpus, schemas,
+and CLI isolation.

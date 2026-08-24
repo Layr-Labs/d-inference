@@ -59,7 +59,10 @@ capture_power() {
 }
 
 capture_processes() {
-    ps -axo pid,pcpu,pmem,command | sort -k2 -nr | sed -n '1,25p'
+    ps -axo pid,pcpu,pmem,command \
+        | sort -k2 -nr \
+        | sed -n '1,25p' \
+        | sed 's/[[:space:]]*$//'
 }
 
 power_gate_passes() {

@@ -71,15 +71,62 @@ struct CLIModelListOutput: Decodable, Equatable, Sendable {
     let models: [CLILocalModelEntry]
 }
 
+/// Mirror of `ProviderCore.ModelDownloadStoragePlan` from
+/// `models catalog --json --include-download-plans`.
+struct CLIModelDownloadStoragePlan: Decodable, Equatable, Sendable {
+    let remainingBytes: Int64
+    let reserveBytes: Int64
+    let requiredAvailableBytes: Int64
+    let availableBytes: Int64?
+    let hasSufficientCapacity: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case remainingBytes = "remaining_bytes"
+        case reserveBytes = "reserve_bytes"
+        case requiredAvailableBytes = "required_available_bytes"
+        case availableBytes = "available_bytes"
+        case hasSufficientCapacity = "has_sufficient_capacity"
+    }
+}
+
+private struct CLICatalogPlanOutput: Decodable {
+    let models: [CLICatalogModel]
+    let downloadPlans: [String: CLIModelDownloadStoragePlan]
+
+    enum CodingKeys: String, CodingKey {
+        case models
+        case downloadPlans = "download_plans"
+    }
+}
+
 /// Everything the library surface needs, sourced from one refresh pass:
 /// coordinator catalog + local scan + daemon warmth + this Mac's memory.
 struct ModelLibrarySnapshot: Equatable, Sendable {
     let catalog: [CLICatalogModel]
     let local: [CLILocalModelEntry]
+    let downloadPlans: [String: CLIModelDownloadStoragePlan]
     let warmModelIDs: Set<String>
     let servingModelID: String?
     let physicalMemoryGB: Int?
     let fetchedAt: Date
+
+    init(
+        catalog: [CLICatalogModel],
+        local: [CLILocalModelEntry],
+        downloadPlans: [String: CLIModelDownloadStoragePlan] = [:],
+        warmModelIDs: Set<String>,
+        servingModelID: String?,
+        physicalMemoryGB: Int?,
+        fetchedAt: Date
+    ) {
+        self.catalog = catalog
+        self.local = local
+        self.downloadPlans = downloadPlans
+        self.warmModelIDs = warmModelIDs
+        self.servingModelID = servingModelID
+        self.physicalMemoryGB = physicalMemoryGB
+        self.fetchedAt = fetchedAt
+    }
 }
 
 // MARK: - Download events
@@ -210,17 +257,22 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
 
         let catalogOutput = try await runShortCommand(
             executable: executable,
-            arguments: ["models", "catalog", "--json"],
+            arguments: ["models", "catalog", "--json", "--include-download-plans"],
             timeout: .seconds(45)
         )
         guard catalogOutput.status == 0 else {
             throw ModelCatalogCLIError.exited(catalogOutput.status, message: catalogOutput.stderrTail)
         }
-        let catalog: [CLICatalogModel]
+        let catalogPlan: CLICatalogPlanOutput
         do {
-            catalog = try JSONDecoder().decode([CLICatalogModel].self, from: catalogOutput.stdout)
+            catalogPlan = try JSONDecoder().decode(
+                CLICatalogPlanOutput.self,
+                from: catalogOutput.stdout
+            )
         } catch {
-            throw ModelCatalogCLIError.unreadableOutput(command: "models catalog --json")
+            throw ModelCatalogCLIError.unreadableOutput(
+                command: "models catalog --json --include-download-plans"
+            )
         }
 
         let listOutput = try await runShortCommand(
@@ -250,8 +302,9 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             ? daemonState?.currentModel
             : nil
         return ModelLibrarySnapshot(
-            catalog: catalog,
+            catalog: catalogPlan.models,
             local: local,
+            downloadPlans: catalogPlan.downloadPlans,
             warmModelIDs: stateIsFreshAndLive
                 ? Set(daemonState?.warmModels ?? [])
                 : [],

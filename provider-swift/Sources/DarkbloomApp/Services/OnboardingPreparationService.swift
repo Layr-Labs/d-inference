@@ -75,8 +75,11 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
                 model.totalSizeBytes ?? Int64((model.sizeGb * 1_000_000_000).rounded())
             )
             let installed = localIDs.contains(model.id)
-            if !installed, let freeStorage,
-               sizeBytes + Self.downloadHeadroomBytes > freeStorage {
+            if !installed, !storageAllowsDownload(
+                fullSizeBytes: sizeBytes,
+                plan: snapshot.downloadPlans[model.id],
+                fallbackAvailableBytes: freeStorage
+            ) {
                 return nil
             }
             return OnboardingModelChoice(
@@ -118,6 +121,36 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
             recommendedModelID: ordered[0].id,
             fetchedAt: snapshot.fetchedAt
         )
+    }
+
+    /// Live app plans come from the bundled CLI, which asks the downloader
+    /// to validate staged files, credit `.part` prefixes, and sample the actual
+    /// cache volume without mutating it. The fallback keeps injected/older test
+    /// adapters usable, but live planning never charges a resumed download the
+    /// full catalog size.
+    private func storageAllowsDownload(
+        fullSizeBytes: Int64,
+        plan: CLIModelDownloadStoragePlan?,
+        fallbackAvailableBytes: Int64?
+    ) -> Bool {
+        if let plan {
+            let reserve = max(Self.downloadHeadroomBytes, max(0, plan.reserveBytes))
+            let remaining = max(0, plan.remainingBytes)
+            let required = remaining > Int64.max - reserve
+                ? Int64.max
+                : remaining + reserve
+            if let available = plan.availableBytes {
+                return available >= required
+            }
+            return plan.hasSufficientCapacity
+        }
+
+        guard let fallbackAvailableBytes else { return true }
+        let size = max(0, fullSizeBytes)
+        let required = size > Int64.max - Self.downloadHeadroomBytes
+            ? Int64.max
+            : size + Self.downloadHeadroomBytes
+        return fallbackAvailableBytes >= required
     }
 
     func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {

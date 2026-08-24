@@ -166,8 +166,8 @@ enum FreshInstallFakeCLI {
           esac
         fi
 
-        if [ "$#" -eq 3 ] && [ "$1" = models ] && [ "$2" = catalog ] && [ "$3" = --json ]; then
-          printf '%s\n' '[{"id":"mlx-community/Qwen3.5-0.8B-MLX-4bit","s3_name":"mlx-community__Qwen3.5-0.8B-MLX-4bit/test","display_name":"Qwen 3.5 0.8B","model_type":"text","size_gb":0.5,"description":"Fresh-install fixture","min_ram_gb":16,"family":"Qwen","quantization":"4-bit","max_context_length":32768,"capabilities":["text-generation"],"total_size_bytes":1048576}]'
+        if [ "$#" -eq 4 ] && [ "$1" = models ] && [ "$2" = catalog ] && [ "$3" = --json ] && [ "$4" = --include-download-plans ]; then
+          printf '%s\n' '{"models":[{"id":"mlx-community/Qwen3.5-0.8B-MLX-4bit","s3_name":"mlx-community__Qwen3.5-0.8B-MLX-4bit/test","display_name":"Qwen 3.5 0.8B","model_type":"text","size_gb":0.5,"description":"Fresh-install fixture","min_ram_gb":16,"family":"Qwen","quantization":"4-bit","max_context_length":32768,"capabilities":["text-generation"],"total_size_bytes":1048576}],"download_plans":{"mlx-community/Qwen3.5-0.8B-MLX-4bit":{"remaining_bytes":1048576,"reserve_bytes":2147483648,"required_available_bytes":2148532224,"available_bytes":21474836480,"has_sufficient_capacity":true}}}'
           exit 0
         fi
 

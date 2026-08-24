@@ -89,22 +89,33 @@ struct ModelCatalogCLIRunnerTests {
         #!/bin/sh
         if [ "$2" = "catalog" ]; then
             /bin/cat <<'EOF'
-        [
-          {
-            "id" : "mlx-community/Qwen2.5-7B-Instruct-4bit",
-            "s3_name" : "mlx-community__Qwen2.5-7B-Instruct-4bit/abc",
-            "display_name" : "Qwen 2.5 7B",
-            "model_type" : "text",
-            "size_gb" : 4.7,
-            "description" : "Balanced generalist.",
-            "min_ram_gb" : 16,
-            "family" : "Qwen",
-            "quantization" : "4-bit",
-            "max_context_length" : 32768,
-            "capabilities" : ["text-generation","tools"],
-            "total_size_bytes" : 5000000000
+        {
+          "models" : [
+            {
+              "id" : "mlx-community/Qwen2.5-7B-Instruct-4bit",
+              "s3_name" : "mlx-community__Qwen2.5-7B-Instruct-4bit/abc",
+              "display_name" : "Qwen 2.5 7B",
+              "model_type" : "text",
+              "size_gb" : 4.7,
+              "description" : "Balanced generalist.",
+              "min_ram_gb" : 16,
+              "family" : "Qwen",
+              "quantization" : "4-bit",
+              "max_context_length" : 32768,
+              "capabilities" : ["text-generation","tools"],
+              "total_size_bytes" : 5000000000
+            }
+          ],
+          "download_plans" : {
+            "mlx-community/Qwen2.5-7B-Instruct-4bit" : {
+              "remaining_bytes" : 1000000000,
+              "reserve_bytes" : 2147483648,
+              "required_available_bytes" : 3147483648,
+              "available_bytes" : 4000000000,
+              "has_sufficient_capacity" : true
+            }
           }
-        ]
+        }
         EOF
             exit 0
         fi
@@ -159,6 +170,10 @@ struct ModelCatalogCLIRunnerTests {
         #expect(catalog.totalSizeBytes == 5_000_000_000)
         #expect(catalog.capabilities == ["text-generation", "tools"])
         #expect(catalog.minRamGb == 16)
+        let plan = try #require(snapshot.downloadPlans[catalog.id])
+        #expect(plan.remainingBytes == 1_000_000_000)
+        #expect(plan.reserveBytes == 2_147_483_648)
+        #expect(plan.hasSufficientCapacity)
 
         let local = try #require(snapshot.local.first)
         #expect(local.id == "mlx-community/Llama-3.2-3B-Instruct-4bit")

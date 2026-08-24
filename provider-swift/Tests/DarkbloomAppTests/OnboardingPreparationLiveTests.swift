@@ -34,6 +34,69 @@ struct OnboardingPreparationLiveTests {
         #expect(plan.recommendedModelID == large.id)
     }
 
+    @Test("A resumed model is admitted when remaining bytes and the 2 GiB reserve fit")
+    func resumedDownloadUsesRemainingBytes() async throws {
+        let model = catalogModel(
+            id: "catalog/mostly-staged",
+            minRAM: 16,
+            size: 10_000_000_000
+        )
+        let available = Int64(4 * 1_073_741_824)
+        let reserve = Int64(2 * 1_073_741_824)
+        let remaining: Int64 = 1_000_000_000
+        let service = service(
+            snapshot: snapshot(
+                catalog: [model],
+                memoryGB: 32,
+                downloadPlans: [
+                    model.id: CLIModelDownloadStoragePlan(
+                        remainingBytes: remaining,
+                        reserveBytes: reserve,
+                        requiredAvailableBytes: remaining + reserve,
+                        availableBytes: available,
+                        hasSufficientCapacity: true
+                    ),
+                ]
+            ),
+            availableStorageBytes: UInt64(available)
+        )
+
+        // The 10 GB full model plus reserve does not fit in ~4.3 GB, while
+        // the authoritative 1 GB remainder plus the 2 GiB reserve does.
+        let plan = try await service.fetchPlan()
+        #expect(plan.recommendedModelID == model.id)
+        #expect(plan.choices.first?.sizeBytes == 10_000_000_000)
+    }
+
+    @Test("Resume planning still holds back the full 2 GiB reserve")
+    func resumedDownloadPreservesReserve() async {
+        let model = catalogModel(
+            id: "catalog/reserve-boundary",
+            minRAM: 16,
+            size: 10_000_000_000
+        )
+        let available: Int64 = 3_000_000_000
+        let reserve = Int64(2 * 1_073_741_824)
+        let remaining: Int64 = 1_000_000_000
+        let service = service(snapshot: snapshot(
+            catalog: [model],
+            memoryGB: 32,
+            downloadPlans: [
+                model.id: CLIModelDownloadStoragePlan(
+                    remainingBytes: remaining,
+                    reserveBytes: reserve,
+                    requiredAvailableBytes: remaining + reserve,
+                    availableBytes: available,
+                    hasSufficientCapacity: false
+                ),
+            ]
+        ))
+
+        await #expect(throws: OnboardingPreparationServiceError.noCompatibleModel) {
+            try await service.fetchPlan()
+        }
+    }
+
     @Test("Unknown fit, excessive RAM, excessive disk, and embedding-only rows yield no compatible model")
     func noCompatibleModel() async {
         let entries = [
@@ -335,11 +398,13 @@ struct OnboardingPreparationLiveTests {
     private func snapshot(
         catalog: [CLICatalogModel],
         local: [CLILocalModelEntry] = [],
-        memoryGB: Int
+        memoryGB: Int,
+        downloadPlans: [String: CLIModelDownloadStoragePlan] = [:]
     ) -> ModelLibrarySnapshot {
         ModelLibrarySnapshot(
             catalog: catalog,
             local: local,
+            downloadPlans: downloadPlans,
             warmModelIDs: [],
             servingModelID: nil,
             physicalMemoryGB: memoryGB,

@@ -1949,6 +1949,19 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testStopUsesRecordThatSatisfiedTerminalStateWait() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "regress-after-first-stopped-observation"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 4)
+
+        try await runtime.stop(name: fixture.virtualMachineName)
+
+        XCTAssertTrue(fixture.stopStateProofWasConsumed)
+    }
+
     func testClaimAppearingAfterReplayStopsVirtualMachine() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
@@ -3502,6 +3515,14 @@ private struct FakeLumeFixture {
         FileManager.default.fileExists(atPath: guestCommandStarted.path)
     }
 
+    var stopStateProofWasConsumed: Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(
+                "stopped-observed"
+            ).path
+        )
+    }
+
     var guestReadinessProbeAttempts: Int {
         guard let contents = try? String(
             contentsOf: guestReadinessProbeAttemptsFile,
@@ -3717,6 +3738,15 @@ private struct FakeLumeFixture {
               ;;
           esac
         fi
+        if [ "$behavior" = "regress-after-first-stopped-observation" ] \
+          && [ "$state" = "stopped" ] \
+          && [ -f "$root/stop-completed" ]; then
+          if [ -f "$root/stopped-observed" ]; then
+            state=unknown
+          else
+            : > "$root/stopped-observed"
+          fi
+        fi
         printf '[{"name":"sandbox-failure-test","cpuCount":4,'
         printf '"memorySize":8589934592,"diskSize":{"total":107374182400},'
         printf '"status":"%s","sshAvailable":%s}]\\n' "$state" "$ready"
@@ -3890,6 +3920,9 @@ private struct FakeLumeFixture {
           fi
         fi
         printf '%s\\n' "stopped" > "$state_file"
+        if [ "$behavior" = "regress-after-first-stopped-observation" ]; then
+          : > "$root/stop-completed"
+        fi
         ;;
       create)
         name="$2"

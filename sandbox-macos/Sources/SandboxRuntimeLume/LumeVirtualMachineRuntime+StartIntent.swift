@@ -150,20 +150,13 @@ extension LumeVirtualMachineRuntime {
             timeoutSeconds: configuration.commandTimeoutSeconds,
             operation: "stop"
         )
-        try await waitForState(
+        let stopped = try await waitForState(
             name: name,
             expected: .stopped,
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
         if let process = runningProcesses.removeValue(forKey: name) {
             _ = await process.stop()
-        }
-        guard let stopped = try await inspect(name: name),
-              stopped.state == .stopped
-        else {
-            throw SandboxRuntimeError.malformedOutput(
-                "Lume stop completed without a stopped VM record"
-            )
         }
         try finishProvenStop(
             name: name,

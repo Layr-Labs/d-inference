@@ -65,7 +65,12 @@ struct ModelCatalogCLIRunnerTests {
     private func runner(
         script: URL,
         stateFileURL: URL? = nil,
-        physicalMemoryBytes: UInt64 = 32 * 1_073_741_824
+        physicalMemoryBytes: UInt64 = 32 * 1_073_741_824,
+        now: @escaping @Sendable () -> Date = Date.init,
+        processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            _ in nil
+        }
     ) -> ProcessModelCatalogCLIRunner {
         ProcessModelCatalogCLIRunner(
             locator: SystemDarkbloomCLILocator(
@@ -74,7 +79,10 @@ struct ModelCatalogCLIRunnerTests {
             ),
             stateFileURL: stateFileURL ?? FileManager.default.temporaryDirectory
                 .appendingPathComponent("missing-state-\(UUID().uuidString).json"),
-            physicalMemoryBytes: physicalMemoryBytes
+            physicalMemoryBytes: physicalMemoryBytes,
+            now: now,
+            processAlive: processAlive,
+            processIdentityReader: processIdentityReader
         )
     }
 
@@ -160,6 +168,88 @@ struct ModelCatalogCLIRunnerTests {
         #expect(snapshot.warmModelIDs == ["mlx-community/Llama-3.2-3B-Instruct-4bit"])
         #expect(snapshot.servingModelID == "mlx-community/Llama-3.2-3B-Instruct-4bit")
         #expect(snapshot.physicalMemoryGB == 32)
+    }
+
+    @Test("stale, dead, and PID-reused daemon records never keep models warm")
+    func inactiveRuntimeStateIsDiscounted() async throws {
+        let script = try makeStubCLI(contents: multiCommandScript)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let staleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stale-daemon-state-\(UUID().uuidString).json")
+        DaemonStateFile.write(
+            DaemonState(
+                pid: 4711,
+                version: "0.8.0",
+                writtenAt: now.timeIntervalSince1970 - 91,
+                startedAt: now.timeIntervalSince1970 - 120,
+                currentModel: "local-model",
+                warmModels: ["local-model"],
+                inferenceActive: true
+            ),
+            to: staleURL
+        )
+        defer { try? FileManager.default.removeItem(at: staleURL) }
+        let stale = try await runner(
+            script: script,
+            stateFileURL: staleURL,
+            now: { now }
+        ).fetchSnapshot()
+        #expect(stale.warmModelIDs.isEmpty)
+        #expect(stale.servingModelID == nil)
+
+        let deadURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dead-daemon-state-\(UUID().uuidString).json")
+        DaemonStateFile.write(
+            DaemonState(
+                pid: 4711,
+                version: "0.8.0",
+                writtenAt: now.timeIntervalSince1970 - 1,
+                startedAt: now.timeIntervalSince1970 - 120,
+                currentModel: "local-model",
+                warmModels: ["local-model"],
+                inferenceActive: true
+            ),
+            to: deadURL
+        )
+        defer { try? FileManager.default.removeItem(at: deadURL) }
+        let dead = try await runner(
+            script: script,
+            stateFileURL: deadURL,
+            now: { now },
+            processAlive: { _ in false }
+        ).fetchSnapshot()
+        #expect(dead.warmModelIDs.isEmpty)
+        #expect(dead.servingModelID == nil)
+
+        let recorded = ProcessIdentity(pid: 4711, startTimeMicros: 100)
+        let reusedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reused-daemon-state-\(UUID().uuidString).json")
+        DaemonStateFile.write(
+            DaemonState(
+                pid: 4711,
+                processIdentity: recorded,
+                version: "0.8.0",
+                writtenAt: now.timeIntervalSince1970 - 1,
+                startedAt: now.timeIntervalSince1970 - 120,
+                currentModel: "local-model",
+                warmModels: ["local-model"],
+                inferenceActive: true
+            ),
+            to: reusedURL
+        )
+        defer { try? FileManager.default.removeItem(at: reusedURL) }
+        let reused = try await runner(
+            script: script,
+            stateFileURL: reusedURL,
+            now: { now },
+            processAlive: { _ in true },
+            processIdentityReader: {
+                _ in ProcessIdentity(pid: 4711, startTimeMicros: 200)
+            }
+        ).fetchSnapshot()
+        #expect(reused.warmModelIDs.isEmpty)
+        #expect(reused.servingModelID == nil)
     }
 
     @Test("A non-zero CLI exit surfaces the last stderr line")

@@ -168,7 +168,7 @@ struct OnboardingProviderEvidence: Equatable, Sendable {
         self.daemonState = daemonState
         self.localEndpoint = localEndpoint
         self.processIsAlive = processIsAlive
-            ?? daemonState.map(Self.processBelongsToState)
+            ?? daemonState.map { DaemonStateRuntimeTruth.belongsToLiveProcess($0) }
             ?? false
         self.localEndpointProcessIsAlive = localEndpointProcessIsAlive
             ?? localEndpoint.map { daemonProcessAlive(pid: $0.pid) }
@@ -202,10 +202,4 @@ struct OnboardingProviderEvidence: Equatable, Sendable {
         return true
     }
 
-    private static func processBelongsToState(_ state: DaemonState) -> Bool {
-        if let identity = state.processIdentity {
-            return identity.pid == state.pid && identity.isCurrent()
-        }
-        return daemonProcessAlive(pid: state.pid)
-    }
 }

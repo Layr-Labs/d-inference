@@ -324,7 +324,7 @@ struct DaemonSnapshotMappingTests {
         }
     }
 
-    @Test("A recent model-load error → attention + problem; old error stays quiet in run state")
+    @Test("Model-load attention and banner expire together after five minutes")
     func loadErrorAttention() {
         var recent = freshState()
         recent.lastModelLoadError = .init(model: "gemma-4-26b-qat-4bit", message: "insufficient memory", at: referenceNow.timeIntervalSince1970 - 60)
@@ -339,7 +339,30 @@ struct DaemonSnapshotMappingTests {
         old.lastModelLoadError = .init(model: "gemma-4-26b-qat-4bit", message: "insufficient memory", at: referenceNow.timeIntervalSince1970 - 3_600)
         let oldSnapshot = DaemonSnapshotMapping.map(inputs(state: old, alive: true))
         #expect(oldSnapshot.runState == .online)
-        #expect(oldSnapshot.lastProblem?.id == "model-load-error")
+        #expect(oldSnapshot.lastProblem == nil)
+
+        var justInside = freshState()
+        justInside.lastModelLoadError = .init(
+            model: "gemma-4-26b-qat-4bit",
+            message: "insufficient memory",
+            at: referenceNow.timeIntervalSince1970 - 299
+        )
+        #expect(
+            DaemonSnapshotMapping.map(inputs(state: justInside, alive: true))
+                .lastProblem?.id == "model-load-error"
+        )
+
+        var atBoundary = freshState()
+        atBoundary.lastModelLoadError = .init(
+            model: "gemma-4-26b-qat-4bit",
+            message: "insufficient memory",
+            at: referenceNow.timeIntervalSince1970 - 300
+        )
+        let boundarySnapshot = DaemonSnapshotMapping.map(
+            inputs(state: atBoundary, alive: true)
+        )
+        #expect(boundarySnapshot.runState == .online)
+        #expect(boundarySnapshot.lastProblem == nil)
     }
 
     @Test("local.json maps to an endpoint only while the daemon runs")

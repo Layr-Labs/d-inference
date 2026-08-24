@@ -62,6 +62,14 @@ struct SandboxCapacityState: Codable, Equatable {
                 forKey: .generationHighWatermarks
             )
         } else {
+            guard !leases.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .leases,
+                    in: container,
+                    debugDescription:
+                        "legacy empty capacity state has no recoverable generation history"
+                )
+            }
             generationHighWatermarks = leases.map {
                 SandboxGenerationHighWatermark(
                     sandboxID: $0.scope.sandboxID,

@@ -127,6 +127,8 @@ requires all leases to be released before returning to inference mode. Every
 reservation receives a monotonically increasing fencing token. A bounded,
 durable per-sandbox generation high-water mark survives release and restart;
 equal or older generations fail closed instead of reclaiming prior authority.
+Schema-v1 state with active leases migrates conservatively; an empty v1 state is
+quarantined because its released-generation history cannot be reconstructed.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
@@ -228,6 +230,22 @@ launchd-supervised no-op returns a valid development proof envelope. It then
 reads the guest OS and architecture and leaves the base stopped. The opt-in live
 suite can clone and run exactly two guests concurrently, prove their filesystems
 are isolated, and leave both clones stopped:
+
+Run crash-retryable expiry cleanup as the dedicated broker identity. The command
+returns exit status 75 if any lease remains fenced because stop, ownership, or
+durability verification failed:
+
+```bash
+darkbloom-sandboxd reconcile-expired \
+  --lume /absolute/path/to/lume \
+  --storage /absolute/path/to/vms \
+  --capacity-dir /absolute/path/to/capacity \
+  --max-cpu 12 \
+  --max-memory-gib 32 \
+  --max-growth-gib 320 \
+  --storage-headroom-gib 20 \
+  --json
+```
 
 ```bash
 DARKBLOOM_SANDBOX_LIVE_VM=1 \

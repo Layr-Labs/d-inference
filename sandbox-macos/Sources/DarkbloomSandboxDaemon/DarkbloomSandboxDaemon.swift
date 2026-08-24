@@ -27,6 +27,10 @@ enum DarkbloomSandboxDaemon {
             try await runRestoreImage(Array(arguments.dropFirst()))
         case "prepare-base":
             try await PrepareBaseCommand.run(Array(arguments.dropFirst()))
+        case "reconcile-expired":
+            try await ReconcileExpiredCommand.run(
+                Array(arguments.dropFirst())
+            )
         case "version":
             print("darkbloom-sandboxd 0.1.0")
         case "help", "--help", "-h":
@@ -98,6 +102,9 @@ enum DarkbloomSandboxDaemon {
               darkbloom-sandboxd prepare-base --lume PATH --storage DIR
                 --ipsw FILE --name NAME [--cpu N] [--memory-gib N]
                 [--disk-gib N] [--json]
+              darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
+                --capacity-dir DIR --max-cpu N --max-memory-gib N
+                [--max-growth-gib N] [--storage-headroom-gib N] [--json]
               darkbloom-sandboxd version
             """
         )
@@ -113,6 +120,7 @@ enum DaemonCLIError: Error, CustomStringConvertible {
     case unknownCommand(String)
     case invalidArguments(String)
     case hostIneligible
+    case reconciliationIncomplete
     case outputEncoding
 
     var exitCode: Int32 {
@@ -121,6 +129,8 @@ enum DaemonCLIError: Error, CustomStringConvertible {
             64
         case .hostIneligible:
             78
+        case .reconciliationIncomplete:
+            75
         case .outputEncoding:
             70
         }
@@ -136,6 +146,8 @@ enum DaemonCLIError: Error, CustomStringConvertible {
             return "invalid \(command) arguments; run darkbloom-sandboxd help"
         case .hostIneligible:
             return "host is not eligible for macOS sandbox workloads"
+        case .reconciliationIncomplete:
+            return "one or more expired leases remain fenced for reconciliation"
         case .outputEncoding:
             return "failed to encode command output"
         }

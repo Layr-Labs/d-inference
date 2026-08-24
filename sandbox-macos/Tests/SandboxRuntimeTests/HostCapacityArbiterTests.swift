@@ -1007,6 +1007,73 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRejectsLegacyEmptyStateWithoutGenerationHistory() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        _ = try arbiter.initialize()
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: stateURL)
+            ) as? [String: Any]
+        )
+        object["schemaVersion"] = 1
+        object.removeValue(forKey: "generationHighWatermarks")
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
+        )
+
+        assertCapacityError(.corruptState) {
+            _ = try arbiter.snapshot()
+        }
+    }
+
+    func testGenerationHistoryCapacityFailsClosed() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let firstGeneration = try generation(1)
+        let state = SandboxCapacityState(
+            mode: .sandboxDedicated,
+            nextFencingToken: 1,
+            leases: [],
+            generationHighWatermarks: (
+                0..<SandboxCapacityState.maximumGenerationHighWatermarks
+            ).map { _ in
+                SandboxGenerationHighWatermark(
+                    sandboxID: SandboxID(),
+                    generation: firstGeneration
+                )
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.outputFormatting = [.sortedKeys]
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        try encoder.encode(state).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
+        )
+
+        assertCapacityError(.generationHistoryExhausted) {
+            _ = try arbiter.reserve(
+                sandboxID: SandboxID(),
+                generation: try generation(1),
+                virtualMachineName: "sandbox-history-full",
+                resources: try makeResources(),
+                expiresAt: Date(timeIntervalSince1970: 2_000_000_120)
+            )
+        }
+    }
+
     private func makeArbiter(
         stateDirectory: URL,
         maximumCPUCount: UInt16 = 8,

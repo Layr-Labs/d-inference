@@ -317,9 +317,9 @@ public enum CBv2DivergenceDiagnostics {
                 "scenario": batch.scenario,
                 "iteration": batch.iteration,
                 "forcedPrefillChunkTokensEnvironmentValue":
-                    forcedPrefillChunkTokensEnvironmentValue ?? NSNull(),
+                    forcedPrefillChunkTokensEnvironmentValue.map { $0 as Any } ?? NSNull(),
                 "forceUnpackedPrefillEnvironmentValue":
-                    forceUnpackedPrefillEnvironmentValue ?? NSNull(),
+                    forceUnpackedPrefillEnvironmentValue.map { $0 as Any } ?? NSNull(),
                 "forcedPrefillChunkTokens":
                     forcedPrefillChunkTokens.map { $0 as Any } ?? NSNull(),
                 "forcesUnpackedPrefill": forcesUnpackedPrefill,

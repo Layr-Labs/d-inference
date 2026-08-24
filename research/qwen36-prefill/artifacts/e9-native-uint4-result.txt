@@ -1,0 +1,26 @@
+PROBE=e9-native-uint4-affine-group64
+DATE_UTC=2026-08-24T07:04:57Z
+HOST=gaj’s MacBook Pro
+HW_MODEL=Mac15,9
+OS=26.4
+XCODE=Xcode 26.5;Build version 17F42;
+METAL=Apple metal version 32023.883 (metalfe-32023.883);Target: air64-apple-darwin25.4.0;Thread model: posix;InstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin;
+POWER_SOURCE=Now drawing from 'AC Power'
+POWER_MODE_AC=2
+SOURCE_SHA256=131e23a251d1722abe3b28360763c68e765c882f5e5824f470d4394bdf4eca59  kernel.metal;dd032bd852caea4f7225a8c482debf3b823d5487caca8b7b99ed4e7c4b30aeb1  main.swift;e416a4f26a2a6eefd129eb3b933a77b5239d50ff804ddd650c32faf9106a3588  run.sh;
+METAL_COMPILE=pass
+METALLIB_LINK=pass
+SWIFT_COMPILE=pass
+PROBE_EXIT=2
+DEVICE=Apple M3 Max
+OS=Version 26.4 (Build 25E246)
+SHAPE=M16xK64xN32 representative_of=M64xK2048xN1024
+MPP=bfloat_x_uint4b_format_to_float relaxed_precision=false
+PACKING=logical_KxN_low_nibble_first
+UNSIGNED_CODE_MAPPING=pass mismatches=0/512 max_abs=0 first="none"
+FACTORED_ALGEBRA=pass mismatches=0/512 max_abs=0 first="none"
+ADVERSARY_VALUES candidate=-1.5273438 factored=-1.5273438 incumbent=0.125
+ADVERSARIAL_INCUMBENT=fail mismatches=512/512 max_abs=1.65234375 first="index=0 expected=0.125 actual=-1.5273438"
+ADVERSARIAL_INCUMBENT_BF16_OUTPUT=fail mismatches=512/512 max_abs=1.65625 first="index=0 expected=0.125 actual=-1.53125"
+TIMING=skipped reason=adversarial_incumbent_tolerance
+VERDICT=reject reason=per_weight_bf16_rounding_contract

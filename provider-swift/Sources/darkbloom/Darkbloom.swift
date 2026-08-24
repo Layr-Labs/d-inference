@@ -21,6 +21,14 @@ struct Darkbloom: AsyncParsableCommand {
         LoggingSystem.bootstrap(StreamLogHandler.standardError)
     }()
 
+    private static let debugSubcommands: [ParsableCommand.Type] = {
+        #if DEBUG
+        [RuntimeLockProbe.self]
+        #else
+        []
+        #endif
+    }()
+
     static let configuration = CommandConfiguration(
         commandName: "darkbloom",
         abstract: "Swift-native provider CLI for Darkbloom.",
@@ -50,10 +58,7 @@ struct Darkbloom: AsyncParsableCommand {
             Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
-            #if DEBUG
-            RuntimeLockProbe.self,
-            #endif
-        ]
+        ] + debugSubcommands
     )
 
     mutating func run() async throws {

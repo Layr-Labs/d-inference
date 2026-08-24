@@ -2643,9 +2643,13 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
+//
+// maxPrefillTPS (the prefill sanity ceiling) is declared as a var in
+// prefill_fallback.go (default defaultMaxPrefillTPS = 20000, above the measured
+// p90 17,707) so the ingest zeroing here, the registration clamp below, and the
+// routing cap in resolvePrefillTPS share one tunable ceiling.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0
@@ -2742,7 +2746,9 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		// would make the TTFT estimate over-optimistic (prefill looks instant) and
 		// the hard gate over-accept; zeroing it makes resolvePrefillTPS fall back to
 		// the conservative decode×ratio estimate until the provider reports a sane
-		// value (provider fix: only sample cold prefills).
+		// value (provider fix: only sample cold prefills). The ceiling now sits
+		// above the measured p90 (17,707 tok/s; see defaultMaxPrefillTPS) so a
+		// genuinely-fast cold prefill from a fixed provider survives ingest.
 		if math.IsNaN(s.ObservedPrefillTPS) || s.ObservedPrefillTPS < 0 || s.ObservedPrefillTPS > maxPrefillTPS {
 			logger.Warn("provider slot observed_prefill_tps out of range; ignoring (fall back to estimate)",
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedPrefillTPS)

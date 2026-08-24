@@ -142,8 +142,7 @@ final class MyMacsStore {
             signInPreview()
         case .live:
             guard !isSigningIn else { return }
-            liveTask?.cancel()
-            let revision = nextLiveRevision()
+            let revision = supersedeLiveWork()
             isSigningIn = true
             liveTask = Task { [weak self] in
                 await self?.signInLive(revision: revision)
@@ -178,7 +177,6 @@ final class MyMacsStore {
         session?.signOut()
         didStart = false
         snapshot = nil
-        isSigningIn = false
         signInErrorMessage = nil
         availability = .signedOut
     }
@@ -199,9 +197,7 @@ final class MyMacsStore {
     // MARK: - Live transitions (mirrors of the fixture state machine)
 
     func signInLive() async {
-        liveTask?.cancel()
-        liveTask = nil
-        let revision = nextLiveRevision()
+        let revision = supersedeLiveWork()
         isSigningIn = true
         await signInLive(revision: revision)
     }
@@ -251,9 +247,7 @@ final class MyMacsStore {
     }
 
     func refreshLive(at date: Date = .now) async {
-        liveTask?.cancel()
-        liveTask = nil
-        let revision = nextLiveRevision()
+        let revision = supersedeLiveWork()
         guard let bearerToken = session?.accessToken() else {
             // No usable session: the coordinator cannot be queried at all.
             snapshot = nil
@@ -317,10 +311,8 @@ final class MyMacsStore {
     }
 
     private func scheduleRefreshLive() {
-        liveTask?.cancel()
-        let revision = nextLiveRevision()
+        let revision = supersedeLiveWork()
         guard let bearerToken = session?.accessToken() else {
-            liveTask = nil
             snapshot = nil
             availability = .signedOut
             return
@@ -340,10 +332,20 @@ final class MyMacsStore {
         return liveRevision
     }
 
-    private func invalidateLiveWork() {
-        _ = nextLiveRevision()
+    /// Cancel and invalidate whichever live operation previously owned the
+    /// store. Clearing the sign-in flag here is important when a refresh,
+    /// removal, sign-out, or 401 supersedes an authentication task whose
+    /// underlying browser callback ignores task cancellation.
+    @discardableResult
+    private func supersedeLiveWork() -> UInt64 {
         liveTask?.cancel()
         liveTask = nil
+        isSigningIn = false
+        return nextLiveRevision()
+    }
+
+    private func invalidateLiveWork() {
+        _ = supersedeLiveWork()
     }
 
     private func canPublish(revision: UInt64, bearerToken: String? = nil) -> Bool {
@@ -356,7 +358,7 @@ final class MyMacsStore {
         guard canPublish(revision: revision, bearerToken: bearerToken) else {
             return
         }
-        _ = nextLiveRevision()
+        invalidateLiveWork()
         session?.signOut()
         snapshot = nil
         signInErrorMessage = nil
@@ -371,9 +373,7 @@ final class MyMacsStore {
         else {
             return false
         }
-        liveTask?.cancel()
-        liveTask = nil
-        let revision = nextLiveRevision()
+        let revision = supersedeLiveWork()
         guard let bearerToken = session.accessToken() else {
             snapshot = nil
             availability = .signedOut

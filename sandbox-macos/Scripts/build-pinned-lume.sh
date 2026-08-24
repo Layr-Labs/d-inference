@@ -60,41 +60,55 @@ STAGING_ID=""
 PUBLICATION_ATTEMPTED=0
 PUBLISHED=0
 
-remove_staging_tree() {
-    /bin/bash "$SCRIPT_DIR/remove-sealed-lume-staging.sh" \
+quarantine_staging_tree() {
+    /bin/bash "$SCRIPT_DIR/quarantine-sealed-lume-staging.sh" \
         "$INSTALL_PARENT" \
         "$1" \
         "$STAGING_ID"
 }
 
-cleanup() {
+handle_exit() {
     status=$?
     trap - EXIT HUP INT TERM
-    cleanup_failed=0
+    finalization_failed=0
     if [[ -n "$BUILD_ROOT" ]]; then
-        rm -rf "$BUILD_ROOT" || cleanup_failed=1
+        rm -rf "$BUILD_ROOT" || finalization_failed=1
     fi
     if [[ -n "$STAGING_DIR" ]]; then
         if [[ -e "$STAGING_DIR" || -L "$STAGING_DIR" ]]; then
-            remove_staging_tree "$STAGING_DIR" || cleanup_failed=1
+            quarantine_path=""
+            if quarantine_path="$(quarantine_staging_tree "$STAGING_DIR")"; then
+                if [[ -n "$quarantine_path" ]]; then
+                    echo "failed Lume staging retained for inspection and offline reclamation: $quarantine_path" >&2
+                else
+                    echo "Lume staging disappeared before its quarantine path could be reported: $STAGING_DIR" >&2
+                    finalization_failed=1
+                fi
+            else
+                echo "failed Lume staging could not be safely quarantined; all entries were retained or moved ambiguously: $STAGING_DIR" >&2
+                finalization_failed=1
+            fi
         elif [[ "$PUBLICATION_ATTEMPTED" == "1" ]] \
             && [[ -e "$INSTALL_DIR" || -L "$INSTALL_DIR" ]]; then
             echo "Lume publication outcome is ambiguous; destination retained: $INSTALL_DIR" >&2
-            cleanup_failed=1
+            finalization_failed=1
         elif [[ "$PUBLICATION_ATTEMPTED" == "1" ]]; then
             echo "Lume publication outcome is ambiguous; neither staging nor destination exists" >&2
-            cleanup_failed=1
+            finalization_failed=1
+        else
+            echo "Lume staging disappeared before quarantine: $STAGING_DIR" >&2
+            finalization_failed=1
         fi
     fi
     if [[ "$PUBLISHED" == "1" && "$status" -ne 0 ]]; then
         echo "post-publication validation failed; destination retained: $INSTALL_DIR" >&2
     fi
-    if [[ "$status" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
+    if [[ "$status" -eq 0 && "$finalization_failed" -ne 0 ]]; then
         status=1
     fi
     exit "$status"
 }
-trap cleanup EXIT
+trap handle_exit EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -338,6 +352,8 @@ PUBLICATION_ATTEMPTED=1
     "$INSTALL_DIR" \
     "$STAGING_ID"
 PUBLISHED=1
+# Publication consumed the staging namespace entry, so a successful build has
+# no staging tree to quarantine.
 STAGING_DIR=""
 PROVENANCE_FILE="$INSTALL_DIR/lume.provenance.json"
 

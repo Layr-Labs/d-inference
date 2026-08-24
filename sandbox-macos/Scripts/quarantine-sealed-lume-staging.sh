@@ -9,4 +9,4 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${DARKBLOOM_LUME_PYTHON:-$(command -v python3)}"
-exec "$PYTHON" "$SCRIPT_DIR/lume-runtime-publication.py" cleanup "$1" "$2" "$3"
+exec "$PYTHON" "$SCRIPT_DIR/lume-runtime-publication.py" quarantine "$1" "$2" "$3"

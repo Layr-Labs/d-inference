@@ -10,6 +10,7 @@ import errno
 import os
 import platform
 import re
+import secrets
 import stat
 import sys
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 
 
 STAGING_NAME = re.compile(r"[.]darkbloom-lume-install[.][A-Za-z0-9]+")
+QUARANTINE_PREFIX = ".darkbloom-lume-quarantine."
 STAGING_ROOT_MODE = 0o700
 PUBLISHED_DIRECTORY_MODE = 0o555
 PUBLISHED_FILE_MODE = 0o444
@@ -491,11 +493,11 @@ def exclusive_rename(parent_fd: int, source_name: str, destination_name: str) ->
     if result != 0:
         error_number = ctypes.get_errno()
         if error_number == errno.EEXIST:
-            fail(f"Lume install destination already exists: {destination_name}")
+            fail(f"atomic no-replace destination already exists: {destination_name}")
         if error_number in {errno.ENOTSUP, errno.EINVAL}:
             fail("the install filesystem lacks atomic no-replace rename support")
         raise PublicationError(
-            f"atomic Lume publication failed: {os.strerror(error_number)}"
+            f"atomic no-replace rename failed: {os.strerror(error_number)}"
         )
 
 
@@ -565,31 +567,7 @@ def command_verify(arguments: argparse.Namespace) -> None:
         require_complete_tree(directories, files)
 
 
-def remove_tree_contents(descriptor: int) -> None:
-    os.fchmod(descriptor, STAGING_ROOT_MODE)
-    for entry in sorted_entries(descriptor):
-        require_safe_name(entry.name)
-        metadata = entry.stat(follow_symlinks=False)
-        if stat.S_ISDIR(metadata.st_mode):
-            child_fd = os.open(entry.name, directory_open_flags(), dir_fd=descriptor)
-            try:
-                opened = os.fstat(child_fd)
-                if FileIdentity.from_stat(opened) != FileIdentity.from_stat(metadata):
-                    fail(f"Lume staging directory changed during cleanup: {entry.name}")
-                remove_tree_contents(child_fd)
-            finally:
-                os.close(child_fd)
-            rebound = stat_child(descriptor, entry.name)
-            if rebound is None or FileIdentity.from_stat(rebound) != FileIdentity.from_stat(
-                metadata
-            ):
-                fail(f"Lume staging directory changed before removal: {entry.name}")
-            os.rmdir(entry.name, dir_fd=descriptor)
-            continue
-        os.unlink(entry.name, dir_fd=descriptor)
-
-
-def command_cleanup(arguments: argparse.Namespace) -> None:
+def command_quarantine(arguments: argparse.Namespace) -> None:
     expected_identity = FileIdentity.parse(arguments.identity)
     parent = require_canonical_absolute_path(arguments.parent, "Lume install parent")
     tree_name = require_child_path(parent, arguments.tree, "Lume staging tree")
@@ -602,20 +580,38 @@ def command_cleanup(arguments: argparse.Namespace) -> None:
             return
         require_owned_directory(metadata, "Lume staging tree")
         if FileIdentity.from_stat(metadata) != expected_identity:
-            fail(f"refusing cleanup of replaced Lume staging tree: {arguments.tree}")
+            fail(f"refusing quarantine of replaced Lume staging tree: {arguments.tree}")
         tree_fd = os.open(tree_name, directory_open_flags(), dir_fd=parent_fd)
         opened = os.fstat(tree_fd)
         if FileIdentity.from_stat(opened) != expected_identity:
-            fail(f"Lume staging tree changed during cleanup: {arguments.tree}")
+            fail(f"Lume staging tree changed while opening for quarantine: {arguments.tree}")
 
-        remove_tree_contents(tree_fd)
-        rebound = stat_child(parent_fd, tree_name)
-        if rebound is None or FileIdentity.from_stat(rebound) != expected_identity:
+        quarantine_name = (
+            f"{QUARANTINE_PREFIX}{expected_identity.device:x}."
+            f"{expected_identity.inode:x}.{secrets.token_hex(16)}"
+        )
+        quarantine_path = os.path.join(parent, quarantine_name)
+        try:
+            exclusive_rename(parent_fd, tree_name, quarantine_name)
+        except (OSError, PublicationError) as error:
+            raise PublicationError(
+                "Lume staging quarantine is ambiguous; no entry was deleted; "
+                f"source: {arguments.tree}; reserved quarantine: {quarantine_path}; {error}"
+            ) from error
+
+        opened_after = FileIdentity.from_stat(os.fstat(tree_fd))
+        quarantined = stat_child(parent_fd, quarantine_name)
+        if (
+            opened_after != expected_identity
+            or quarantined is None
+            or FileIdentity.from_stat(quarantined) != opened_after
+        ):
             fail(
-                "Lume staging namespace became ambiguous during cleanup; "
-                f"emptied expected root retained: {arguments.tree}"
+                "Lume staging namespace became ambiguous during quarantine; "
+                "no entry was deleted; "
+                f"quarantine entry retained if present: {quarantine_path}"
             )
-        os.rmdir(tree_name, dir_fd=parent_fd)
+        print(quarantine_path)
     finally:
         if tree_fd >= 0:
             os.close(tree_fd)
@@ -665,11 +661,11 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("identity")
     verify.set_defaults(handler=command_verify)
 
-    cleanup = commands.add_parser("cleanup")
-    cleanup.add_argument("parent")
-    cleanup.add_argument("tree")
-    cleanup.add_argument("identity")
-    cleanup.set_defaults(handler=command_cleanup)
+    quarantine = commands.add_parser("quarantine")
+    quarantine.add_argument("parent")
+    quarantine.add_argument("tree")
+    quarantine.add_argument("identity")
+    quarantine.set_defaults(handler=command_quarantine)
 
     return root
 

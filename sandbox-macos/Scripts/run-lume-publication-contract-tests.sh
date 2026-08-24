@@ -25,8 +25,8 @@ EXPECTED_CASES=(
     no-overwrite
     hardlink-rejection
     post-publication-retention
-    identity-bound-cleanup
-    cleanup-replacement
+    identity-bound-quarantine
+    quarantine-replacement
     unsafe-path-rejection
 )
 case "$(uname -s)" in

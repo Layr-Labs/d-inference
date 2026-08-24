@@ -263,10 +263,18 @@ permits filesystem-specific `EACCES` when renaming a write-disabled directory,
 so publication uses fd-relative `renameatx_np(RENAME_EXCL)` before sealing the
 final root to `0555`. The destination is never replaced, and the executable is
 first launched from its stable final path. A post-rename failure retains and
-reports the ambiguous destination. Cleanup keeps the expected staging
-descriptor open while emptying it, revalidates its parent binding before root
-removal, and fails without deleting a replacement if that binding changed.
-Neither initialization nor cleanup edits caller-owned parent ACLs or modes.
+reports the ambiguous destination. A pre-publication failure never deletes its
+staging tree automatically. The helper opens and verifies the expected staging
+inode, atomically moves the current parent entry with the same no-replace
+syscall to a cryptographically unique `.darkbloom-lume-quarantine.*` name in
+that parent, then verifies that name against the still-open descriptor. It
+reports the quarantine path and retains the complete tree for inspection and
+offline reclamation. A namespace replacement that wins before the rename is
+also retained, causes verification to report ambiguity, and triggers no
+recursive unlink or `rmdir`. Successful publication has no quarantine; a
+missing staging name after a committed rename is a no-op and never targets the
+destination. Neither initialization nor quarantine edits caller-owned parent
+ACLs or modes.
 Before executing Lume, the adapter requires the complete immutable directory
 tree and provenance to match the audited lock; it rejects added, removed,
 replaced, or modified runtime entries. The production installation must be

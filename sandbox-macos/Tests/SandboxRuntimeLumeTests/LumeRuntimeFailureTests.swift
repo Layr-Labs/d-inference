@@ -722,7 +722,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             XCTAssertEqual(
                 error,
                 .commandFailed(
-                    command: "stop",
+                    command: "lume stop",
                     exitCode: 70,
                     stderr: "VM liveness is inconclusive"
                 )

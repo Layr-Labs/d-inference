@@ -282,6 +282,34 @@ Apple-Silicon validation after the measured patch:
 - provider usage/wiring tests: 7/7 pass;
 - release build: pass.
 
+## 64-token continuation gate
+
+E40 reruns the full 8K matrix for three iterations with 64 greedy
+continuation tokens:
+
+| Profile | Cold median | Reuse median | Speedup | First token | Full 64-token equality |
+|---|---:|---:|---:|---:|---:|
+| B1 full hit | 5972.7 ms | 679.8 ms | **8.786×** | 100% | 0% |
+| B2 full hit | 11840.3 | 880.3 | **13.450×** | 100% | 0% |
+| B4 full hit | 22206.0 | 1273.8 | **17.432×** | 100% | 0% |
+| B4 25% partial | 22545.4 | 17594.3 | 1.281× | 100% | 75% |
+| B4 50% partial | 22304.2 | 12480.9 | 1.787× | 100% | 75% |
+| B4 75% partial | 22318.8 | 7099.4 | **3.144×** | 100% | 75% |
+| B4 87.5% partial | 22268.9 | 4287.5 | **5.194×** | 100% | 75% |
+
+The performance bar survives realistic continuation length and first-token
+parity remains exact. Long free-running token equality does **not**: full
+hits diverge after a two-token common prefix, and one of four partial rows
+diverges under changed batching/timing. The boundary tensors are
+shape/dtype/ownership exact by code and tests, but this is not user-visible
+64-token semantic parity. Shipping still requires a completion-quality gate
+or a replay posture that preserves the cold decode schedule.
+
+Artifacts:
+
+- `artifacts/e40-partial-prefix-8192-decode64-3x.json.gz`
+- `artifacts/e40-partial-prefix-8192-decode64-3x.provenance.json`
+
 Those tests ran in the patched nested worktree. They do not prove that an
 ordinary recursive checkout works; the gitlink still points at the unpatched
 base above.

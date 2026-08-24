@@ -94,11 +94,12 @@ tokens) / burst makespan`) as the denominator. Every cached/forked object
 includes all ten attention K/V rows, all thirty recurrent states/tails,
 position, and frontier logits where applicable.
 
-Correctness evidence is narrower than the intended 64-token gate: the
-decision artifacts generated only two tokens. First-token parity is exact
-in every cell and the two-token partial-suffix and B4 sequences match cold
-controls. Identical B2 warm/fork rows retain the known second-token
-batch-geometry difference (`fullTokenEqualityRate = 0`).
+The 64-token E40 rerun keeps the performance result (B4 75% = 3.144×,
+87.5% = 5.194×) and first-token parity is 100%. It rejects a stronger
+parity claim: full-prompt hits have 0% complete-sequence equality and
+partial B4 hits have 75%, consistent with decode batching/timing
+divergence after an identical boundary. Boundary ownership is exact by
+code/tests; user-visible continuation parity is not.
 
 Cache construction is reported separately and costs ~8 s at 8K when all
 32 exact boundaries are materialized; the stated reuse speedups are warm
@@ -110,11 +111,10 @@ candidate defaults to a 1 GiB cache ceiling, so retention of the measured
 
 This clears the 2.5× performance threshold for the named reuse-bearing
 workloads without changing weights. It does **not** yet satisfy the full
-merge/ship objective: 64-token parity, fork execution evidence, complete
-code provenance, deployment-budget parity, and a clean submodule commit
-remain open. The distinct, unrelated cold-prompt cell remains the next
-optimization target and must not be conflated with the measured reuse
-profiles.
+merge/ship objective: completion-quality parity, fork execution evidence,
+deployment-budget parity, and a clean submodule commit remain open. The
+distinct, unrelated cold-prompt cell remains the next optimization target
+and must not be conflated with the measured reuse profiles.
 
 ## Architecture facts (do not rediscover)
 

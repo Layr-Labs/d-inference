@@ -89,6 +89,33 @@ self-proving.
 6. Version or reconcile the report schema. Do not edit historical artifact
    provenance strings to make old JSON pass a newer validator.
 
+## Post-audit follow-up
+
+Completed after the initial verdict:
+
+- E40 ran the full 8K matrix for three iterations with 64 generated tokens.
+  The 75%/87.5% B4 profiles remain above target at 3.144×/5.194× and
+  first-token parity is 100%.
+- E40 also confirms the outstanding quality issue: full-sequence equality is
+  0% for full hits and 75% for partial B4 hits.
+- A sidecar now binds E40 to binary/metallib/model/corpus hashes, the root
+  source equivalent, submodule base/patched tree, patch digests, OS, Swift,
+  and post-run AC/high-power posture.
+- The deployment slot wiring ran on Apple Silicon: 70 focused policy,
+  wiring, telemetry, launch, and CLI tests pass; the release build passes;
+  the complete provider suite passes 2,215 tests in 231 suites.
+- Coordinator API tests and all 498 console tests pass.
+
+Still open:
+
+- completion-quality parity or a replay posture that preserves the cold decode
+  schedule;
+- self-reported live-fork activity in a new fork performance artifact;
+- a deployment-budget-equivalent 75%/87.5% rerun (the measured cache retained
+  ~4.83 GB versus the 1 GiB default);
+- publishing the nested library tree and updating the gitlink;
+- replacing, not rewriting, historical reports whose schema identity drifted.
+
 Until these are complete, the correct statement is: **2.5× is measured for
 specific exact-reuse workloads; unrelated cold prompts are unchanged; the
 research is not yet decision-grade or merge-ready.**

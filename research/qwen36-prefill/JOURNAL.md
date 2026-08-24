@@ -594,3 +594,17 @@ Three-run 8K medians:
 - 87.5% aligned from requested 90%: **7.066×**.
 
 Every distinct-suffix row retains exact first/full-token and finish parity.
+
+## 2026-08-24T14:00Z — 64-token gate keeps speed, rejects parity
+
+Three-run E40 medians with 64 greedy continuation tokens:
+
+- full-prompt B1/B2/B4: **8.786× / 13.450× / 17.432×**;
+- B4 75%/87.5% exact prefixes: **3.144× / 5.194×**.
+
+First-token parity is 100%. Complete 64-token equality is 0% for full
+hits and 75% for partial B4 hits. The target boundary is structurally
+exact, but changed decode timing/batching produces user-visible
+continuation divergence. Performance passes; completion quality remains
+an explicit shipping blocker. E40 has a separate code/artifact/system
+provenance sidecar.

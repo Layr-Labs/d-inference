@@ -4,6 +4,9 @@ import Testing
 
 @Suite("App install coordinator")
 struct AppInstallCoordinatorTests {
+    private let shippingBundleIdentifier =
+        AppInstallCoordinator.productionBundleIdentifier // pragma: allowlist secret
+
     @Test("managed installer path continues and creates the user shortcut")
     func managedInstallerPathIsValid() throws {
         let fixture = try Fixture()
@@ -49,7 +52,7 @@ struct AppInstallCoordinatorTests {
         let source = fixture.home.appendingPathComponent("Downloads/Darkbloom.app")
         try fixture.makeApp(
             at: source,
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             payload: "downloaded"
         )
         let executor = RecordingExecutor()
@@ -87,7 +90,7 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         let source = try fixture.makeApp(
             at: fixture.root.appendingPathComponent("Applications/Darkbloom.app"),
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             payload: "system-applications"
         )
         let executor = RecordingExecutor()
@@ -106,7 +109,7 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         let source = try fixture.makeApp(
             at: fixture.shortcut,
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             payload: "home-applications"
         )
         let executor = RecordingExecutor()
@@ -137,7 +140,7 @@ struct AppInstallCoordinatorTests {
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             payload: "darkbloom"
         )
         let executor = RecordingExecutor()
@@ -160,13 +163,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.0.0",
             payload: "ad-hoc"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "2.0.0",
             payload: "production"
         )
@@ -196,13 +199,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.0.0",
             payload: "old"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.productionBundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "2.0.0",
             payload: "new"
         )
@@ -230,13 +233,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.10.0",
             payload: "damaged-equal-version"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.10.0",
             payload: "repaired-equal-version"
         )
@@ -256,13 +259,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.10.0",
             payload: "newer-installed"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.9.9",
             payload: "stale-download"
         )
@@ -297,13 +300,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "2.0.0",
             payload: "newer-installed"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.9.0",
             payload: "operator-selected-predecessor"
         )
@@ -324,13 +327,13 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         _ = try fixture.makeApp(
             at: fixture.destination,
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "2.0.0",
             payload: "newer-installed"
         )
         let source = try fixture.makeApp(
             at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
-            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            identifier: shippingBundleIdentifier,
             version: "1.9.0",
             payload: "operator-selected-predecessor"
         )

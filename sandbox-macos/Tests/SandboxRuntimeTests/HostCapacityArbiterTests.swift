@@ -217,24 +217,24 @@ final class HostCapacityArbiterTests: XCTestCase {
             device: 99,
             inode: 101
         )
-        let reopened = try SandboxHostCapacityArbiter(
-            stateDirectory: stateDirectory,
-            policy: SandboxCapacityPolicy(
-                maximumReservedCPUCount: 8,
-                maximumReservedMemoryBytes:
-                    16 * SandboxResourcePolicy.gibibyte,
-                maximumReservedGrowthBytes:
-                    300 * SandboxResourcePolicy.gibibyte,
-                storageHeadroomBytes:
-                    20 * SandboxResourcePolicy.gibibyte
-            ),
-            storageIdentity: differentIdentity,
-            currentDate: { Date(timeIntervalSince1970: 2_000_000_000) },
-            availableStorageBytes: { UInt64.max }
-        )
-
         assertCapacityError(.storageIdentityMismatch) {
-            _ = try reopened.snapshot()
+            _ = try SandboxHostCapacityArbiter(
+                stateDirectory: stateDirectory,
+                policy: SandboxCapacityPolicy(
+                    maximumReservedCPUCount: 8,
+                    maximumReservedMemoryBytes:
+                        16 * SandboxResourcePolicy.gibibyte,
+                    maximumReservedGrowthBytes:
+                        300 * SandboxResourcePolicy.gibibyte,
+                    storageHeadroomBytes:
+                        20 * SandboxResourcePolicy.gibibyte
+                ),
+                storageIdentity: differentIdentity,
+                currentDate: {
+                    Date(timeIntervalSince1970: 2_000_000_000)
+                },
+                availableStorageBytes: { UInt64.max }
+            )
         }
     }
 
@@ -822,9 +822,8 @@ final class HostCapacityArbiterTests: XCTestCase {
             [.posixPermissions: 0o755],
             ofItemAtPath: insecureDirectory.path
         )
-        let insecure = try makeArbiter(stateDirectory: insecureDirectory)
         assertCapacityError(.unsafeStatePath) {
-            _ = try insecure.initialize()
+            _ = try makeArbiter(stateDirectory: insecureDirectory)
         }
 
         let corruptDirectory = temporaryStateDirectory()
@@ -859,15 +858,13 @@ final class HostCapacityArbiterTests: XCTestCase {
             at: alias,
             withDestinationURL: target
         )
-        let arbiter = try makeArbiter(
-            stateDirectory: alias.appendingPathComponent(
-                "capacity",
-                isDirectory: true
-            )
-        )
-
         assertCapacityError(.unsafeStatePath) {
-            _ = try arbiter.initialize()
+            _ = try makeArbiter(
+                stateDirectory: alias.appendingPathComponent(
+                    "capacity",
+                    isDirectory: true
+                )
+            )
         }
     }
 
@@ -886,15 +883,13 @@ final class HostCapacityArbiterTests: XCTestCase {
             throw POSIXError(.EACCES)
         }
         defer { try? FileManager.default.removeItem(at: root) }
-        let arbiter = try makeArbiter(
-            stateDirectory: shared.appendingPathComponent(
-                "capacity",
-                isDirectory: true
-            )
-        )
-
         assertCapacityError(.unsafeStatePath) {
-            _ = try arbiter.initialize()
+            _ = try makeArbiter(
+                stateDirectory: shared.appendingPathComponent(
+                    "capacity",
+                    isDirectory: true
+                )
+            )
         }
     }
 
@@ -907,10 +902,8 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         try addInheritableACL(to: stateDirectory)
-        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-
         assertCapacityError(.unsafeStatePath) {
-            _ = try arbiter.initialize()
+            _ = try makeArbiter(stateDirectory: stateDirectory)
         }
     }
 
@@ -1055,9 +1048,8 @@ final class HostCapacityArbiterTests: XCTestCase {
             ofItemAtPath: stateURL.path
         )
 
-        let reopened = try makeArbiter(stateDirectory: stateDirectory)
         assertCapacityError(.corruptState) {
-            _ = try reopened.snapshot()
+            _ = try makeArbiter(stateDirectory: stateDirectory)
         }
     }
 

@@ -143,6 +143,14 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
+    func validateExistingStateIfPresent() throws {
+        do {
+            _ = try read()
+        } catch SandboxCapacityError.uninitialized {
+            return
+        }
+    }
+
     func read() throws -> SandboxCapacityState {
         try withLockedDirectory { directoryDescriptor in
             try readState(from: directoryDescriptor)

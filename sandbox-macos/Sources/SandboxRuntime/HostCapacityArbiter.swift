@@ -44,10 +44,12 @@ public struct SandboxHostCapacityArbiter: Sendable {
             device: 0,
             inode: 0
         )
-        self.store = try SandboxCapacityStateStore(
+        let store = try SandboxCapacityStateStore(
             stateDirectory: stateDirectory,
             storageIdentity: identity
         )
+        try store.validateExistingStateIfPresent()
+        self.store = store
         self.policy = policy
         self.currentDate = currentDate
         self.availableStorageBytes = availableStorageBytes
@@ -70,11 +72,13 @@ public struct SandboxHostCapacityArbiter: Sendable {
             device: 0,
             inode: 0
         )
-        self.store = try SandboxCapacityStateStore(
+        let store = try SandboxCapacityStateStore(
             stateDirectory: stateDirectory,
             storageIdentity: identity,
             directorySynchronizationError: directorySynchronizationError
         )
+        try store.validateExistingStateIfPresent()
+        self.store = store
         self.policy = policy
         self.currentDate = currentDate
         self.availableStorageBytes = availableStorageBytes

@@ -287,7 +287,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 ]
             )
             // #endregion
-            try reserve(
+            return try reserve(
                 in: &state,
                 sandboxID: sandboxID,
                 generation: generation,

@@ -171,5 +171,13 @@ E17–E19 timed half accumulation, native uint4 factoring, and relaxed MPP,
 but all were flat/slower (`notes/056`). New active branches are work
 deletion and direct cache/state construction.
 
+Reverse-state closure (`notes/050`): layers 0–38 need every hidden row; only
+layer 39 has exact dead hidden work (1.023–1.032x ceiling). Exact state-only
+GDN, cache quantization, WY, and projection fusion cannot supply 2.5x.
+Artifact-only skipped layers are the direct cold path: GDN state-only plus
+attention K/V-only on 32 layers, with `0-3,36-39` full, has a 2.59–2.74x
+arithmetic ceiling but extreme quality risk. Exact warm-prefix reuse reaches
+2.5x at >=60% overlap and remains a separate product metric.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

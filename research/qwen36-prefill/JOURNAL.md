@@ -407,3 +407,25 @@ logits. See `GOAL.md`, `program.md`, and `notes/055`.
 
 Numerical freedom does not create hardware throughput in these M3
 fallbacks. Move to work deletion/state construction. See `notes/056`.
+
+## 2026-08-24T08:36Z — reverse-state dependency closure
+
+Worked backward from the actual post-prefill product in `notes/050`:
+10 complete attention K/V layers, 30 GDN terminal SSM/conv states, and one
+frontier logit vector per row.
+
+Exact dead hidden work exists only after layer 39 commits K/V, for a
+**1.023–1.032x** ceiling. Making every GDN scan free is only **1.022x**;
+quantized cache, WY scan, and projection fusion are supporting levers rather
+than 2.5x candidates.
+
+The direct cold-target construction is now explicit: make skipped GDN layers
+state-only and skipped attention layers K/V-only. Keeping only layers
+`0-3,36-39` fully active has an optimistic **2.59–2.74x** arithmetic profile
+while still constructing every required artifact. Quality risk is severe and
+binding.
+
+Five experiments are ranked and gated in `notes/050`. Run the already-captured
+default-off fixed-k seam first for information; the highest cold-target bet is
+the artifact-only depth ladder. Exact prefix reuse can exceed 2.5x at >=60%
+warm overlap but is deliberately excluded from the cold baseline claim.

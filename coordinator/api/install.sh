@@ -606,10 +606,8 @@ restore_all_backed_up_bin_entries() {
     local entry
     [ -d "$backup_bin" ] || return 0
     mkdir -p "$bin_dir" || return 1
-    shopt -s nullglob
-    local -a entries=("$backup_bin"/*)
-    shopt -u nullglob
-    for entry in "${entries[@]}"; do
+    for entry in "$backup_bin"/*; do
+        install_path_exists "$entry" || continue
         rm -rf "$bin_dir/${entry##*/}" \
             && mv "$entry" "$bin_dir/${entry##*/}" \
             || return 1
@@ -700,10 +698,7 @@ recover_legacy_install_transaction() {
 recover_interrupted_install_transactions() {
     local install_dir=$1
     local backup
-    shopt -s nullglob
-    local -a backups=("$install_dir"/.install-backup-*)
-    shopt -u nullglob
-    for backup in "${backups[@]}"; do
+    for backup in "$install_dir"/.install-backup-*; do
         [ -d "$backup" ] || continue
         local version
         local kind

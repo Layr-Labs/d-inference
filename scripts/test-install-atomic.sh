@@ -558,16 +558,28 @@ assert_interrupted_app_transaction_recovers() {
     fi
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
-    shopt -s nullglob
-    local backups=("$install_dir"/.install-backup-*)
-    local staging=("$install_dir"/.install-staging-*)
-    local preserved=("$install_dir"/Darkbloom.app.foreign-*)
-    shopt -u nullglob
-    test "${#backups[@]}" -eq 0
-    test "${#staging[@]}" -eq 0
+    local debris
+    for debris in \
+        "$install_dir"/.install-backup-* \
+        "$install_dir"/.install-staging-*
+    do
+        if [ -e "$debris" ] || [ -L "$debris" ]; then
+            echo "installer recovery left transaction debris: $debris" >&2
+            exit 1
+        fi
+    done
+    local preserved_count=0
+    local preserved_path=""
+    local candidate
+    for candidate in "$install_dir"/Darkbloom.app.foreign-*; do
+        if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+            preserved_count=$((preserved_count + 1))
+            preserved_path=$candidate
+        fi
+    done
 
     if [ "$expected" = "rollback" ]; then
-        test "${#preserved[@]}" -eq 0
+        test "$preserved_count" -eq 0
         test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
             "$destination/Contents/Info.plist")" = "com.example.foreign"
         test "$(cat "$destination/foreign-payload")" = "foreign payload"
@@ -580,8 +592,8 @@ assert_interrupted_app_transaction_recovers() {
         test "$(readlink "$bin_dir/eigeninference-enclave")" = \
             "previous-legacy-enclave"
     else
-        test "${#preserved[@]}" -eq 1
-        test -f "${preserved[0]}/foreign-payload"
+        test "$preserved_count" -eq 1
+        test -f "$preserved_path/foreign-payload"
         test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
             "$destination/Contents/Info.plist")" = "io.darkbloom.provider"
         test -L "$bin_dir/darkbloom"
@@ -636,12 +648,16 @@ assert_interrupted_flat_transaction_recovers() {
     else
         test ! -e "$install_dir/bin/previous-only"
     fi
-    shopt -s nullglob
-    local backups=("$install_dir"/.install-backup-*)
-    local staging=("$install_dir"/.install-staging-*)
-    shopt -u nullglob
-    test "${#backups[@]}" -eq 0
-    test "${#staging[@]}" -eq 0
+    local debris
+    for debris in \
+        "$install_dir"/.install-backup-* \
+        "$install_dir"/.install-staging-*
+    do
+        if [ -e "$debris" ] || [ -L "$debris" ]; then
+            echo "flat installer recovery left transaction debris: $debris" >&2
+            exit 1
+        fi
+    done
 }
 
 assert_interrupted_flat_transaction_recovers \

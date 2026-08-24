@@ -18,6 +18,8 @@ public enum SandboxArtifactKeyStoreError:
     case sourceChanged
     case unsafePermissions(UInt16)
     case unsafeOwner(UInt32)
+    case unsafeLinkCount(UInt64)
+    case extendedACL
     case publicationUncertain(Int32)
     case io(String)
 
@@ -41,6 +43,10 @@ public enum SandboxArtifactKeyStoreError:
             return "wrapped sandbox key permissions are too broad: \(String(mode, radix: 8))"
         case .unsafeOwner(let owner):
             return "wrapped sandbox key has unexpected owner \(owner)"
+        case .unsafeLinkCount(let count):
+            return "wrapped sandbox key has unexpected link count \(count)"
+        case .extendedACL:
+            return "wrapped sandbox key has an extended ACL"
         case .publicationUncertain(let code):
             return "wrapped sandbox key may be committed but not durable: errno \(code)"
         case .io(let message):
@@ -112,10 +118,18 @@ public struct SandboxArtifactKeyStore: Sendable {
                 guard metadata.st_uid == geteuid() else {
                     throw SandboxArtifactKeyStoreError.unsafeOwner(metadata.st_uid)
                 }
-                return try SandboxDescriptorIO.readUpTo(
+                guard metadata.st_nlink == 1 else {
+                    throw SandboxArtifactKeyStoreError.unsafeLinkCount(
+                        UInt64(metadata.st_nlink)
+                    )
+                }
+                try Self.requireNoExtendedACL(descriptor)
+                let data = try SandboxDescriptorIO.readUpTo(
                     Self.maximumEnvelopeBytes + 1,
                     from: descriptor
                 )
+                try Self.requireNoExtendedACL(descriptor)
+                return data
             }
         } catch {
             throw Self.mapDescriptorError(error)
@@ -213,6 +227,14 @@ public struct SandboxArtifactKeyStore: Sendable {
             }
         } catch {
             throw mapDescriptorError(error)
+        }
+    }
+
+    private static func requireNoExtendedACL(_ descriptor: Int32) throws {
+        do {
+            try SandboxDescriptorIO.requireNoExtendedACL(descriptor)
+        } catch SandboxDescriptorIOError.unsafeDestination {
+            throw SandboxArtifactKeyStoreError.extendedACL
         }
     }
 

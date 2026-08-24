@@ -191,6 +191,68 @@ final class SandboxArtifactKeyStoreTests: XCTestCase {
             )
         }
     }
+
+    func testLoadRejectsHardLinkedEnvelope() throws {
+        try XCTSkipUnless(
+            SandboxSecureEnclaveKey.isAvailable,
+            "test requires Apple Secure Enclave hardware"
+        )
+        let fixture = try KeyFixture()
+        defer { fixture.remove() }
+        let keyStore = SandboxArtifactKeyStore(
+            enclaveKey: try SandboxSecureEnclaveKey.makeTransient()
+        )
+        _ = try keyStore.create(at: fixture.envelope, context: fixture.context)
+        let alias = fixture.directory.appendingPathComponent("workspace.alias")
+        try FileManager.default.linkItem(at: fixture.envelope, to: alias)
+
+        XCTAssertThrowsError(try keyStore.load(
+            from: fixture.envelope,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxArtifactKeyStoreError,
+                .unsafeLinkCount(2)
+            )
+        }
+    }
+
+    func testLoadRejectsExtendedACLEnvelope() throws {
+        try XCTSkipUnless(
+            SandboxSecureEnclaveKey.isAvailable,
+            "test requires Apple Secure Enclave hardware"
+        )
+        let fixture = try KeyFixture()
+        defer { fixture.remove() }
+        let keyStore = SandboxArtifactKeyStore(
+            enclaveKey: try SandboxSecureEnclaveKey.makeTransient()
+        )
+        _ = try keyStore.create(at: fixture.envelope, context: fixture.context)
+        try addExtendedACL(to: fixture.envelope)
+
+        XCTAssertThrowsError(try keyStore.load(
+            from: fixture.envelope,
+            context: fixture.context
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxArtifactKeyStoreError,
+                .extendedACL
+            )
+        }
+    }
+
+    private func addExtendedACL(to url: URL) throws {
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [
+            "+a",
+            "everyone allow read,write",
+            url.path,
+        ]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0)
+    }
 }
 
 private struct KeyFixture {

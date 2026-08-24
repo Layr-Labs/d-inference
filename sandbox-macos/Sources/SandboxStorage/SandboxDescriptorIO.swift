@@ -12,6 +12,18 @@ enum SandboxDescriptorIOError: Error, Equatable {
 }
 
 enum SandboxDescriptorIO {
+    static func requireNoExtendedACL(_ descriptor: Int32) throws {
+        errno = 0
+        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+            if errno == ENOENT {
+                return
+            }
+            throw SandboxDescriptorIOError.io(errno)
+        }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        throw SandboxDescriptorIOError.unsafeDestination
+    }
+
     static func withStableSource<Result>(
         at source: URL,
         _ operation: (Int32, stat) throws -> Result
@@ -303,7 +315,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.unsafeDestination
         }
         do {
-            try Self.requireNoExtendedACL(parentDescriptor)
+            try SandboxDescriptorIO.requireNoExtendedACL(parentDescriptor)
         } catch {
             Darwin.close(parentDescriptor)
             throw error
@@ -335,7 +347,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.unsafeDestination
         }
         do {
-            try Self.requireNoExtendedACL(destinationDescriptor)
+            try SandboxDescriptorIO.requireNoExtendedACL(destinationDescriptor)
         } catch {
             Darwin.close(destinationDescriptor)
             temporaryName.withCString {
@@ -379,7 +391,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.io(errno)
         }
         try requireContentSHA256(expectedSHA256, descriptor: destinationDescriptor)
-        try Self.requireNoExtendedACL(destinationDescriptor)
+        try SandboxDescriptorIO.requireNoExtendedACL(destinationDescriptor)
         var metadata = stat()
         guard fstat(destinationDescriptor, &metadata) == 0,
               Self.isSafeStagingFile(metadata, linkCount: 0)
@@ -400,7 +412,7 @@ private final class PendingDestination {
             expectedSHA256,
             descriptor: destinationDescriptor
         )
-        try Self.requireNoExtendedACL(destinationDescriptor)
+        try SandboxDescriptorIO.requireNoExtendedACL(destinationDescriptor)
         var descriptorMetadata = stat()
         guard fstat(destinationDescriptor, &descriptorMetadata) == 0,
               Self.matchesStagingFile(
@@ -453,7 +465,7 @@ private final class PendingDestination {
         else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
-        try Self.requireNoExtendedACL(rebound)
+        try SandboxDescriptorIO.requireNoExtendedACL(rebound)
     }
 
     private func requireContentSHA256(
@@ -499,7 +511,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.publicationUncertain(EIO)
         }
         do {
-            try Self.requireNoExtendedACL(committedDescriptor)
+            try SandboxDescriptorIO.requireNoExtendedACL(committedDescriptor)
         } catch {
             throw SandboxDescriptorIOError.publicationUncertain(
                 Self.errorCode(error)
@@ -603,18 +615,6 @@ private final class PendingDestination {
             && metadata.st_uid == geteuid()
             && metadata.st_mode & 0o700 == 0o700
             && metadata.st_mode & 0o077 == 0
-    }
-
-    private static func requireNoExtendedACL(_ descriptor: Int32) throws {
-        errno = 0
-        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
-            if errno == ENOENT {
-                return
-            }
-            throw SandboxDescriptorIOError.io(errno)
-        }
-        defer { acl_free(UnsafeMutableRawPointer(acl)) }
-        throw SandboxDescriptorIOError.unsafeDestination
     }
 
     private static func errorCode(_ error: Error) -> Int32 {

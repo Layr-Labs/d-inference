@@ -51,6 +51,8 @@ unlinked file descriptor and publishes it with APFS `fclonefileat`, so there is
 no temporary pathname to replace and an existing destination is never
 overwritten. A post-clone sync failure is reported as `publicationUncertain`:
 the destination may exist and must be reconciled, never blindly deleted.
+Wrapped-key envelopes additionally require exactly one hard link and no
+extended ACL before and after descriptor-bound reads.
 Filesystem permissions are not a security boundary against another hostile
 process running as that same Unix identity; production launchd packaging must
 reserve the identity for the sandbox broker.

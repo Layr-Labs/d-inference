@@ -140,14 +140,16 @@ extension LumeVirtualMachineRuntime {
         }
 
         if let process = runningProcesses.removeValue(forKey: name) {
+            // Hardened Lume will not signal a different live owner process.
+            // End the child this actor started before asking Lume to reconcile
+            // the now-unlocked run marker and terminal VM state.
             _ = await process.stop()
-        } else {
-            _ = try await run(
-                arguments: storageArguments(["stop", name]),
-                timeoutSeconds: configuration.commandTimeoutSeconds,
-                operation: "stop"
-            )
         }
+        _ = try await run(
+            arguments: storageArguments(["stop", name]),
+            timeoutSeconds: configuration.commandTimeoutSeconds,
+            operation: "stop"
+        )
         try await waitForState(
             name: name,
             expected: .stopped,

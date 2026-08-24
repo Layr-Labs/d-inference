@@ -168,6 +168,20 @@ PLIST
     rm -rf "$stage"
 }
 
+make_flat_artifact() {
+    local output=$1
+    local stage="$ROOT/flat-stage-$RANDOM"
+    mkdir -p "$stage/bin"
+    cp "$ROOT/legacy" "$stage/bin/darkbloom"
+    cp "$ROOT/legacy" "$stage/bin/darkbloom-enclave"
+    cp "$ROOT/legacy" "$stage/bin/mlx.metallib"
+    codesign --force --sign - "$stage/bin/mlx.metallib"
+    codesign --force --sign - "$stage/bin/darkbloom-enclave"
+    codesign --force --sign - "$stage/bin/darkbloom"
+    tar czf "$output" -C "$stage" .
+    rm -rf "$stage"
+}
+
 hash_file() {
     shasum -a 256 "$1" | cut -d' ' -f1
 }
@@ -208,11 +222,13 @@ OLDER="$ROOT/older.tar.gz"
 NEWEST="$ROOT/newest.tar.gz"
 MISSING="$ROOT/missing.tar.gz"
 LEGACY="$ROOT/legacy.tar.gz"
+FLAT_LEGACY="$ROOT/flat-legacy.tar.gz"
 make_artifact "$VALID" paged yes yes 2.0.0
 make_artifact "$OLDER" paged yes yes 1.0.0
 make_artifact "$NEWEST" paged yes yes 3.0.0
 make_artifact "$MISSING" paged no yes 2.0.0
 make_artifact "$LEGACY" legacy no no 2.0.0
+make_flat_artifact "$FLAT_LEGACY"
 
 # The designated requirement must be applied to the complete app target,
 # whose main-executable signature seals Contents/Resources.
@@ -627,13 +643,13 @@ assert_interrupted_flat_transaction_recovers() {
     local expected=$4
     local install_dir="$ROOT/flat-crash-recovery-$label-$crash_point"
 
-    run_install_with "$installer" "$LEGACY" "$install_dir"
+    run_install_with "$installer" "$FLAT_LEGACY" "$install_dir"
     printf 'previous-only\n' > "$install_dir/bin/previous-only"
-    artifact_hashes "$LEGACY"
+    artifact_hashes "$FLAT_LEGACY"
     if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
         PATH="$CLT_SHIMS:$PATH" \
         bash "$installer" --install-bundle-test \
-            "$LEGACY" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FLAT_LEGACY" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
             "$FAN_HELPER_REQUIREMENT"
     then
         echo "$installer survived injected flat crash $crash_point" >&2

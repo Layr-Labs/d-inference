@@ -49,7 +49,6 @@ e9-bk64-down-t2048	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-te
 e9-bk64-gate-t4096	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	qmm_ms	12.2278	ms	1.008x	no	BK32=12.3299; hits25 fallbacks0
 e9-bk64-down-t4096	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	qmm_ms	6.3412	ms	1.002x	no	BK32=6.3552; hits25 fallbacks0
 e9-bk64-correctness	2026-08-24T06:58:32Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	correctness	1	pass	pass	meta	10 tests pass
-e9-native-uint4-correctness	2026-08-24T07:04:57Z	m3-max-128gb-2	a05f1d5f	standalone-metal-probe	2	yes	E9-native-uint4	bfloat-uint4-factored-affine-g64	2048	1	correctness	0	pass	fail	no	unsigned mapping and factored algebra exact; incumbent max_abs=1.65234375; timing skipped
 e10-bm64bn64-gate-t1024	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	1024	1	qmm_ms	5.8230	ms	0.572x	no	BM32=3.3294; tile waste
 e10-bm64bn64-gate-t2048	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	2048	1	qmm_ms	6.0037	ms	1.049x	no	BM32=6.3004
 e10-bm64bn64-down-t2048	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	2048	1	qmm_ms	3.2415	ms	1.033x	no	BM32=3.3495

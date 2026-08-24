@@ -10,15 +10,16 @@ import (
 )
 
 type earningsCatalogModel struct {
-	model          earningsMarketModel
-	capacityMember string
+	model                 earningsMarketModel
+	candidateMember       string
+	routingFallbackMember string
 }
 
 // buildEarningsCatalog collapses each active standard alias's full historical
-// lineage into one public calculator row. Live capacity comes from the first
-// active rollout member (Desired before Previous), matching alias routing and
-// the build a new provider converges to. Historical work is attributed
-// separately by the public identity persisted at settlement.
+// lineage into one public calculator row. Candidate metadata comes from Desired
+// when active because new providers converge there. Live competing capacity can
+// fall back to Previous when Desired has no eligible provider, matching alias
+// routing. Historical work is attributed separately by public identity.
 func buildEarningsCatalog(
 	records []store.ModelRegistryRecord,
 	aliases []store.ModelAlias,
@@ -62,11 +63,11 @@ func buildEarningsCatalog(
 		}
 		publicAliasIDs[alias.AliasID] = struct{}{}
 
-		capacityMember, ok := activeAliasMember(alias, recordsByID)
+		candidateMember, routingFallbackMember, ok := activeAliasTargets(alias, recordsByID)
 		if !ok {
 			continue
 		}
-		primary := recordsByID[capacityMember]
+		primary := recordsByID[candidateMember]
 		displayName := alias.DisplayName
 		if displayName == "" {
 			displayName = primary.DisplayName
@@ -82,7 +83,8 @@ func buildEarningsCatalog(
 				SizeBytes:   primary.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(primary.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMember: capacityMember,
+			candidateMember:       candidateMember,
+			routingFallbackMember: routingFallbackMember,
 		})
 	}
 
@@ -109,26 +111,33 @@ func buildEarningsCatalog(
 				SizeBytes:   record.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(record.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMember: record.ID,
+			candidateMember: record.ID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].model.ID < out[j].model.ID })
 	return out, nil
 }
 
-func activeAliasMember(
+func activeAliasTargets(
 	alias store.ModelAlias,
 	recordsByID map[string]store.ModelRegistryRecord,
-) (string, bool) {
+) (candidate, routingFallback string, ok bool) {
 	for _, build := range []string{alias.DesiredBuild, alias.PreviousBuild} {
 		if build == "" {
 			continue
 		}
 		if _, active := recordsByID[build]; active {
-			return build, true
+			if candidate == "" {
+				candidate = build
+				continue
+			}
+			if build != candidate {
+				routingFallback = build
+			}
+			break
 		}
 	}
-	return "", false
+	return candidate, routingFallback, candidate != ""
 }
 
 func uniqueNonemptyStrings(values []string) []string {
@@ -159,7 +168,9 @@ func validateEarningsCapacity(capacity registry.ModelCapacity) error {
 			return fmt.Errorf("model %q has invalid live capacity", capacity.ModelID)
 		}
 	}
-	if capacity.ModelID == "" || capacity.EligibleProviders < 0 {
+	if capacity.ModelID == "" || capacity.EligibleProviders < 0 ||
+		capacity.ObservedBenchmarkProviders < 0 ||
+		capacity.ObservedBenchmarkProviders > capacity.EligibleProviders {
 		return fmt.Errorf("model %q has invalid live capacity", capacity.ModelID)
 	}
 	return nil

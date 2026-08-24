@@ -13,6 +13,7 @@ import (
 )
 
 const earningsMarketWindow = 30 * 24 * time.Hour
+const earningsMarketFailureTTL = time.Second
 
 type earningsMarketModel struct {
 	ID                          string  `json:"id"`
@@ -71,7 +72,6 @@ func (s *Server) handleEarningsMarket(w http.ResponseWriter, _ *http.Request) {
 		writeCachedJSON(w, cached)
 		return
 	}
-
 	// Collapse concurrent cache misses into one bounded database aggregation.
 	// Re-check after acquiring the lock because another request may have filled
 	// the cache while this request waited.
@@ -79,6 +79,10 @@ func (s *Server) handleEarningsMarket(w http.ResponseWriter, _ *http.Request) {
 	defer s.earningsMarketMu.Unlock()
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
+		return
+	}
+	if time.Now().Before(s.earningsMarketFailureUntil) {
+		writeEarningsMarketFailureBody(w, s.earningsMarketFailureBody)
 		return
 	}
 
@@ -119,16 +123,31 @@ func (s *Server) handleEarningsMarket(w http.ResponseWriter, _ *http.Request) {
 		s.writeEarningsMarketFailure(w, "encode market snapshot", err)
 		return
 	}
+	s.earningsMarketFailureBody = nil
+	s.earningsMarketFailureUntil = time.Time{}
 	s.readCache.Set(cacheKey, body, 5*time.Minute)
 	writeCachedJSON(w, body)
 }
 
 func (s *Server) writeEarningsMarketFailure(w http.ResponseWriter, operation string, err error) {
 	s.logger.Error("earnings market unavailable", "operation", operation, "error", err)
-	writeJSON(w, http.StatusInternalServerError, errorResponse(
+	body, marshalErr := json.Marshal(errorResponse(
 		"internal_error",
 		"earnings market is temporarily unavailable",
 	))
+	if marshalErr != nil {
+		body = []byte(`{"error":{"type":"internal_error","message":"earnings market is temporarily unavailable"}}`)
+	}
+	s.earningsMarketFailureBody = body
+	s.earningsMarketFailureUntil = time.Now().Add(earningsMarketFailureTTL)
+	writeEarningsMarketFailureBody(w, body)
+}
+
+func writeEarningsMarketFailureBody(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write(body)
 }
 
 func buildEarningsMarketResponse(
@@ -161,12 +180,17 @@ func buildEarningsMarketResponse(
 	models := make([]earningsMarketModel, len(catalog))
 	for i, entry := range catalog {
 		model := entry.model
-		if capacity, ok := capacityByModel[entry.capacityMember]; ok {
-			model.AggregateTPS = capacity.AggregateTPS
-			model.AggregateMemoryBandwidthGBs = capacity.AggregateMemoryBandwidthGBs
+		if capacity, ok := routedEarningsCapacity(entry, capacityByModel); ok {
+			model.ProviderSupply = capacity.EligibleProviders
+			if earningsCapacityFullyObserved(capacity) {
+				model.AggregateTPS = capacity.BenchmarkTPS
+				model.AggregateMemoryBandwidthGBs = capacity.BenchmarkMemoryBandwidthGBs
+			}
+		}
+		if capacity, ok := capacityByModel[entry.candidateMember]; ok &&
+			earningsCapacityFullyObserved(capacity) {
 			model.BenchmarkTPS = capacity.BenchmarkTPS
 			model.BenchmarkMemoryBandwidthGBs = capacity.BenchmarkMemoryBandwidthGBs
-			model.ProviderSupply = capacity.EligibleProviders
 		}
 		models[i] = model
 		modelIndex[model.ID] = i
@@ -231,6 +255,30 @@ func buildEarningsMarketResponse(
 			Tiers:               baserewards.Tiers(),
 		},
 	}, nil
+}
+
+func routedEarningsCapacity(
+	entry earningsCatalogModel,
+	capacityByModel map[string]registry.ModelCapacity,
+) (registry.ModelCapacity, bool) {
+	primary, primaryFound := capacityByModel[entry.candidateMember]
+	if primaryFound && primary.EligibleProviders > 0 {
+		return primary, true
+	}
+	if entry.routingFallbackMember != "" {
+		if fallback, found := capacityByModel[entry.routingFallbackMember]; found &&
+			fallback.EligibleProviders > 0 {
+			return fallback, true
+		}
+	}
+	return primary, primaryFound
+}
+
+func earningsCapacityFullyObserved(capacity registry.ModelCapacity) bool {
+	return capacity.EligibleProviders > 0 &&
+		capacity.ObservedBenchmarkProviders == capacity.EligibleProviders &&
+		capacity.BenchmarkTPS > 0 &&
+		capacity.BenchmarkMemoryBandwidthGBs > 0
 }
 
 func validateEarningsBaseRewardsConfig(config BaseRewardsConfig) error {

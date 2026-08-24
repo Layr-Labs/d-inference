@@ -4837,6 +4837,7 @@ type ModelCapacity struct {
 	AggregateMemoryBandwidthGBs float64 `json:"aggregate_memory_bandwidth_gbps"` // sum for the same eligible model-provider pairs
 	BenchmarkTPS                float64 `json:"benchmark_tps"`                   // sum of model-specific observed decode TPS
 	BenchmarkMemoryBandwidthGBs float64 `json:"benchmark_memory_bandwidth_gbps"` // bandwidth paired with BenchmarkTPS
+	ObservedBenchmarkProviders  int     `json:"-"`                               // eligible providers contributing to BenchmarkTPS
 	EstimatedTTFTMs             int64   `json:"estimated_ttft_ms"`               // best-case TTFT from lowest-cost warm provider
 	TokenBudgetRemaining        int64   `json:"token_budget_remaining"`          // aggregate free budget across providers
 	TokenBudgetTotal            int64   `json:"token_budget_total"`              // aggregate total budget
@@ -5024,6 +5025,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		aggregateBW      float64
 		benchmarkTPS     float64
 		benchmarkBW      float64
+		benchmarked      int
 		budgetRemaining  int64
 		budgetTotal      int64
 		bestWarmTTFTMs   int64 // -1 = not set
@@ -5053,6 +5055,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 		a.benchmarkTPS += s.benchmarkTPS
 		a.benchmarkBW += s.benchmarkBandwidthGBs
+		if s.benchmarkTPS > 0 && s.benchmarkBandwidthGBs > 0 {
+			a.benchmarked++
+		}
 		if s.activeTokenBudgetMax > 0 {
 			headroom := s.activeTokenBudgetMax - s.activeTokenBudgetUsed - s.queuedTokenBudget
 			if headroom < 0 {
@@ -5142,6 +5147,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			AggregateMemoryBandwidthGBs: a.aggregateBW,
 			BenchmarkTPS:                a.benchmarkTPS,
 			BenchmarkMemoryBandwidthGBs: a.benchmarkBW,
+			ObservedBenchmarkProviders:  a.benchmarked,
 			EstimatedTTFTMs:             ttft,
 			TokenBudgetRemaining:        a.budgetRemaining,
 			TokenBudgetTotal:            a.budgetTotal,

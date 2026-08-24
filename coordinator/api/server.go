@@ -184,6 +184,8 @@ type Server struct {
 	mux                           *http.ServeMux
 	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
 	earningsMarketMu              sync.Mutex          // coalesces expensive earnings-market cache misses
+	earningsMarketFailureBody     []byte              // short-lived shared result for a failed cache fill
+	earningsMarketFailureUntil    time.Time           // retry boundary for earningsMarketFailureBody
 	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
 	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only

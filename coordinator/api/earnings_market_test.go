@@ -260,6 +260,7 @@ func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.
 			AggregateMemoryBandwidthGBs: 400,
 			BenchmarkTPS:                100,
 			BenchmarkMemoryBandwidthGBs: 400,
+			ObservedBenchmarkProviders:  1,
 		}},
 		work,
 		start,
@@ -288,29 +289,92 @@ func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.
 	}
 }
 
-func TestActiveAliasMemberPrefersDesiredThenPrevious(t *testing.T) {
+func TestActiveAliasTargetsPreferDesiredWithPreviousFallback(t *testing.T) {
 	records := map[string]store.ModelRegistryRecord{
 		"desired": {ModelRegistryEntry: store.ModelRegistryEntry{ID: "desired"}},
 		"shared":  {ModelRegistryEntry: store.ModelRegistryEntry{ID: "shared"}},
 	}
-	got, ok := activeAliasMember(store.ModelAlias{
+	candidate, fallback, ok := activeAliasTargets(store.ModelAlias{
 		DesiredBuild:  "desired",
 		PreviousBuild: "shared",
 	}, records)
-	if !ok || got != "desired" {
-		t.Fatalf("activeAliasMember = %q/%t, want desired/true", got, ok)
+	if !ok || candidate != "desired" || fallback != "shared" {
+		t.Fatalf(
+			"activeAliasTargets = %q/%q/%t, want desired/shared/true",
+			candidate,
+			fallback,
+			ok,
+		)
 	}
 	delete(records, "desired")
-	got, ok = activeAliasMember(store.ModelAlias{
+	candidate, fallback, ok = activeAliasTargets(store.ModelAlias{
 		DesiredBuild:  "desired",
 		PreviousBuild: "shared",
 	}, records)
-	if !ok || got != "shared" {
-		t.Fatalf("activeAliasMember fallback = %q/%t, want shared/true", got, ok)
+	if !ok || candidate != "shared" || fallback != "" {
+		t.Fatalf(
+			"activeAliasTargets previous-only = %q/%q/%t, want shared/empty/true",
+			candidate,
+			fallback,
+			ok,
+		)
 	}
 }
 
-func TestEarningsMarketHandlerMarksMissingObservedBenchmarkUnavailable(t *testing.T) {
+func TestBuildEarningsMarketUsesRoutablePreviousCapacityWithoutBorrowingItsBenchmark(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	const (
+		aliasID  = "rollout-market"
+		desired  = "rollout-desired"
+		previous = "rollout-previous"
+	)
+	addActiveEarningsModel(t, st, desired, "Desired", 32, 20_000_000_000)
+	addActiveEarningsModel(t, st, previous, "Previous", 32, 20_000_000_000)
+	records, err := st.ListActiveModelRegistryWithError()
+	if err != nil {
+		t.Fatalf("ListActiveModelRegistryWithError: %v", err)
+	}
+	start := time.Now().UTC().Add(-earningsMarketWindow)
+	response, err := buildEarningsMarketResponse(
+		records,
+		[]store.ModelAlias{{
+			AliasID: aliasID, DesiredBuild: desired, PreviousBuild: previous, Active: true,
+		}},
+		[]registry.ModelCapacity{{
+			ModelID:                     previous,
+			EligibleProviders:           1,
+			AggregateTPS:                999,
+			AggregateMemoryBandwidthGBs: 400,
+			BenchmarkTPS:                100,
+			BenchmarkMemoryBandwidthGBs: 400,
+			ObservedBenchmarkProviders:  1,
+		}},
+		[]store.ModelSettledWorkTotal{{
+			PublicModel: aliasID, WorkPayoutMicroUSD: 1_000_000,
+			PromptTokens: 100, CompletionTokens: 10, Jobs: 1,
+		}},
+		start,
+		start.Add(earningsMarketWindow),
+		BaseRewardsConfig{},
+	)
+	if err != nil {
+		t.Fatalf("buildEarningsMarketResponse: %v", err)
+	}
+	if len(response.Models) != 1 {
+		t.Fatalf("models = %+v, want one", response.Models)
+	}
+	model := response.Models[0]
+	if model.AggregateTPS != 100 || model.AggregateMemoryBandwidthGBs != 400 ||
+		model.ProviderSupply != 1 {
+		t.Fatalf("routed previous capacity = %+v, want measured 100 TPS / 400 GB/s", model)
+	}
+	if model.BenchmarkTPS != 0 || model.BenchmarkMemoryBandwidthGBs != 0 ||
+		model.EstimateAvailable || model.UnavailableReason != "throughput_benchmark_unavailable" {
+		t.Fatalf("desired candidate benchmark = %+v, want explicit unavailability", model)
+	}
+}
+
+func TestEarningsMarketHandlerMarksUnobservedCompetingCapacityUnavailable(t *testing.T) {
 	logger := quietLogger()
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
@@ -345,12 +409,55 @@ func TestEarningsMarketHandlerMarksMissingObservedBenchmarkUnavailable(t *testin
 		t.Fatalf("models = %+v, want one", response.Models)
 	}
 	model := response.Models[0]
-	if model.AggregateTPS <= 0 || model.ProviderSupply != 1 {
-		t.Fatalf("fallback capacity = %+v, want positive competing supply", model)
+	if model.AggregateTPS != 0 || model.AggregateMemoryBandwidthGBs != 0 ||
+		model.ProviderSupply != 1 {
+		t.Fatalf("unobserved competing capacity = %+v, want zero measured capacity and one provider", model)
 	}
 	if model.BenchmarkTPS != 0 || model.BenchmarkMemoryBandwidthGBs != 0 ||
-		model.EstimateAvailable || model.UnavailableReason != "throughput_benchmark_unavailable" {
-		t.Fatalf("unbenchmarked model = %+v, want explicit throughput unavailability", model)
+		model.EstimateAvailable || model.UnavailableReason != "competing_capacity_unavailable" {
+		t.Fatalf("unobserved model = %+v, want explicit competing-capacity unavailability", model)
+	}
+}
+
+func TestEarningsMarketHandlerRejectsPartialObservedCapacity(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const modelID = "partially-benchmarked-model"
+	addActiveEarningsModel(t, st, modelID, "Partial benchmark", 24, 8_000_000_000)
+	registerEarningsCapacity(t, reg, "observed-provider", modelID, 400, 100, false)
+	registerEarningsCapacity(t, reg, "unobserved-provider", modelID, 200, 0, false)
+	if err := st.RecordProviderEarning(&store.ProviderEarning{
+		JobID:            "partial-benchmark-job",
+		Model:            modelID,
+		PublicModel:      modelID,
+		AmountMicroUSD:   1_000_000,
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		CreatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("RecordProviderEarning: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/earnings/market", nil)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response earningsMarketResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Models) != 1 {
+		t.Fatalf("models = %+v, want one", response.Models)
+	}
+	model := response.Models[0]
+	if model.ProviderSupply != 2 || model.AggregateTPS != 0 || model.BenchmarkTPS != 0 ||
+		model.EstimateAvailable || model.UnavailableReason != "competing_capacity_unavailable" {
+		t.Fatalf("partial observed capacity = %+v, want explicit unavailability", model)
 	}
 }
 
@@ -365,11 +472,15 @@ type countingEarningsMarketStore struct {
 	store.Store
 	workCalls atomic.Int32
 	delay     time.Duration
+	workErr   error
 }
 
 func (s *countingEarningsMarketStore) ModelSettledWorkTotals(since, until time.Time) ([]store.ModelSettledWorkTotal, error) {
 	s.workCalls.Add(1)
 	time.Sleep(s.delay)
+	if s.workErr != nil {
+		return nil, s.workErr
+	}
 	return s.Store.ModelSettledWorkTotals(since, until)
 }
 
@@ -419,6 +530,52 @@ func TestEarningsMarketHandlerCoalescesConcurrentCacheMisses(t *testing.T) {
 	srv := NewServer(reg, counting, ServerConfig{}, logger)
 
 	const requestCount = 16
+	statuses := runConcurrentEarningsRequests(t, srv, requestCount)
+	for _, status := range statuses {
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+	}
+	if calls := counting.workCalls.Load(); calls != 1 {
+		t.Fatalf("settled-work queries = %d, want 1 for one concurrent cache miss", calls)
+	}
+}
+
+func TestEarningsMarketHandlerCoalescesConcurrentFailures(t *testing.T) {
+	counting := &countingEarningsMarketStore{
+		Store:   store.NewMemory(store.Config{}),
+		delay:   50 * time.Millisecond,
+		workErr: errors.New("database unavailable"),
+	}
+	srv := NewServer(registry.New(quietLogger()), counting, ServerConfig{}, quietLogger())
+
+	const requestCount = 16
+	statuses := runConcurrentEarningsRequests(t, srv, requestCount)
+	for _, status := range statuses {
+		if status != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", status)
+		}
+	}
+	if calls := counting.workCalls.Load(); calls != 1 {
+		t.Fatalf("failed settled-work queries = %d, want one shared failure", calls)
+	}
+
+	srv.earningsMarketMu.Lock()
+	srv.earningsMarketFailureUntil = time.Time{}
+	srv.earningsMarketMu.Unlock()
+	req := httptest.NewRequest(http.MethodGet, "/v1/earnings/market", nil)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("retry status = %d, want 500", recorder.Code)
+	}
+	if calls := counting.workCalls.Load(); calls != 2 {
+		t.Fatalf("queries after retry boundary = %d, want 2", calls)
+	}
+}
+
+func runConcurrentEarningsRequests(t *testing.T, srv *Server, requestCount int) []int {
+	t.Helper()
 	start := make(chan struct{})
 	statuses := make(chan int, requestCount)
 	var wg sync.WaitGroup
@@ -437,14 +594,11 @@ func TestEarningsMarketHandlerCoalescesConcurrentCacheMisses(t *testing.T) {
 	wg.Wait()
 	close(statuses)
 
+	out := make([]int, 0, requestCount)
 	for status := range statuses {
-		if status != http.StatusOK {
-			t.Fatalf("status = %d, want 200", status)
-		}
+		out = append(out, status)
 	}
-	if calls := counting.workCalls.Load(); calls != 1 {
-		t.Fatalf("settled-work queries = %d, want 1 for one concurrent cache miss", calls)
-	}
+	return out
 }
 
 func TestEarningsMarketHandlerReturns500OnStoreFailures(t *testing.T) {

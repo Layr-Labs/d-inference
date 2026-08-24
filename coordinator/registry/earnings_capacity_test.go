@@ -93,4 +93,7 @@ func TestModelCapacitySnapshotAggregatesBandwidthAndObservedBenchmark(t *testing
 			got.BenchmarkMemoryBandwidthGBs,
 		)
 	}
+	if got.ObservedBenchmarkProviders != 2 {
+		t.Fatalf("ObservedBenchmarkProviders = %d, want 2", got.ObservedBenchmarkProviders)
+	}
 }

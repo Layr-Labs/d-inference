@@ -1,0 +1,6 @@
+verified_at=2026-08-24T20:52:42Z
+6c14841ea6ccb1eaf71aada2b39142d9f88893e1895bbf41505ee5e967d1286d  /Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift
+ca266c6f55579cf258172520fef838657bd4961fbd6dc2e587f9cdc92574152b  /Users/gaj/work/d-inference/provider-swift/.build/release/darkbloom
+source_capture_reference_count=0
+source_capture_env_count=0
+binary_capture_string_count=0

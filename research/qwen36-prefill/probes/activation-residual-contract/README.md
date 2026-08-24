@@ -77,16 +77,17 @@ zero-context seam pinned to that exact source. Reproduce that overlay with
 `git apply --unidiff-zero`; first verify the source hash above. The ordinary
 patch remains the canonical overlay for the pinned `ab73a82` submodule.
 
-The scheduler performs an uncaptured 128-token warm-up. A nominal 8,192-token
-request has 8,191 measured prefill rows, normally emitted as three 2,048-row
-stripes plus one 2,047-row stripe. Validate and assemble those stripes:
+The scheduler performs an uncaptured 128-token warm-up. The observed
+8,192-token request executes four 2,048-row CBv2 stripes at this projection;
+the harness's `L-1` convention is throughput accounting, not the model-forward
+row count. Validate and assemble those stripes:
 
 ```bash
 python3 assemble_capture.py \
   --capture-directory /absolute/path/e50-layer12-gdn-out \
   --output /absolute/path/e50-layer12-gdn-out/activation-8k.npy \
   --manifest /absolute/path/e50-layer12-gdn-out/capture-manifest.json \
-  --expected-rows 8191 \
+  --expected-rows 8192 \
   --expected-input-width 4096 \
   --expected-output-width 2048 \
   --provenance root-commit,submodule-commit,patch-sha256

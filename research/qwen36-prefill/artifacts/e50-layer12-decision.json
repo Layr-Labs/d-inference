@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "experiment": "E50",
+  "decision": "kill",
+  "binding_gate": "M1 real-activation projection screen",
+  "reason": "0 of 20 frozen rank/repair cells passed; the registered cell failed NRMSE, p99 row error, p01 cosine, and sentinel recall",
+  "projection": "model.layers.12.linear_attn.out_proj",
+  "capture": {
+    "activation_shape": [
+      8192,
+      4096
+    ],
+    "activation_sha256": "2c97896d3a67e1b001bafb23d6296224770c47a9f517612b3365956b8d13a0f9",
+    "weight_shape": [
+      4096,
+      2048
+    ],
+    "dequantized_weight_sha256": "64ed7e90c0c273d9ed6a983340eb099f70021cdeef842c5e74cf434337463428",
+    "checkpoint_shard_sha256": "5d41d9eea6d3810155396ce20316a9e7b34495c366684f824f08c30d6a132f8d",
+    "top_k": 4,
+    "control_ttft_ms": 4415.8746249999995,
+    "capture_ttft_ms": 4458.240541,
+    "control_first_token_checksum": "f88780cce381ff53",
+    "capture_first_token_checksum": "f88780cce381ff53"
+  },
+  "registered_cell": {
+    "rank": 64,
+    "sentinel_columns": 16,
+    "repair_fraction": 0.12,
+    "candidate_mac_fraction": 0.218597412109375,
+    "nrmse": 0.31413692491063444,
+    "p99_row_relative_l2": 0.5393523782491685,
+    "p01_row_cosine": 0.8446941416046964,
+    "mean_row_cosine": 0.9470846317959567,
+    "sentinel_worst_row_recall": 0.6727642276422764,
+    "inclusive_candidate_seconds": 0.09797591395908967,
+    "reference_projection_seconds": 0.08438695082440972,
+    "candidate_to_reference_wall_ratio": 1.1610315694775548,
+    "checks": {
+      "arithmetic": true,
+      "nrmse": false,
+      "row_error": false,
+      "cosine": false,
+      "sentinel_recall": false
+    }
+  },
+  "sweep": {
+    "ranks": [
+      32,
+      48,
+      64,
+      80,
+      96
+    ],
+    "repair_fractions": [
+      0.08,
+      0.1,
+      0.12,
+      0.15
+    ],
+    "sentinel_columns": 16,
+    "cell_count": 20,
+    "pass_count": 0,
+    "wall_seconds": 6.03
+  },
+  "raw_bundle": {
+    "name": "e50_layer12_real_8k_repro.tar.gz",
+    "sha256": "4f2c310956bbcdae93185a35c6cee51e2b2e85ab370c4b00e6a7f5c09f3862eb"
+  },
+  "cleanup": {
+    "root_submodule_pointer_changed": false,
+    "temporary_helper_present": false,
+    "source_capture_reference_count": 0,
+    "source_capture_env_count": 0,
+    "binary_capture_string_count": 0
+  }
+}

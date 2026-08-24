@@ -92,6 +92,26 @@ The report validator permits honest misses/capacity skips, but any reported
 exact hit must be direct, replay-free, no longer than the constructed common
 prefix, and either block-aligned or a complete prompt.
 
+## Apple Silicon result
+
+The one-iteration 8,192-token M3 Max acceptance run
+(`artifacts/e37-partial-prefix-8192.json`) measured:
+
+| Corpus arm | Matched prefix | Cold | Warm | Speedup | Full output parity |
+|---|---:|---:|---:|---:|---:|
+| 25% | 2,048 (25%) | 22,027 ms | 16,657 ms | 1.32x | 100% |
+| 50% | 4,096 (50%) | 21,146 ms | 11,164 ms | 1.89x | 100% |
+| 75% | 6,144 (75%) | 21,076 ms | 5,866 ms | 3.59x | 100% |
+| 90% | 7,168 (87.5%) | 21,378 ms | 3,035 ms | 7.04x | 100% |
+
+All sixteen distinct-suffix warm rows were direct, replay-free hits and
+matched their cache-disabled token sequences exactly. The report also retains
+note 068's known identical-B2 second-token batch-geometry variation: its warm
+rows reproduce the B1 donor boundary, while native B2 prefill selects the
+alternate second token. First-token parity remains exact in every arm; the
+new partial-prefix acceptance gate is therefore scoped to the distinct-suffix
+corpus rather than relabeling that pre-existing B2 behavior.
+
 ## Regression matrix
 
 - cache longest-match, shorter fallback, full-frontier upgrade, LRU, pinning,
@@ -146,6 +166,11 @@ jq -e '
       | (.matchedTokens / .promptTokens)]
     | min >= 0.60)
   and
-  ([.scenarios[].summary.fullTokenEqualityRate] | min == 1)
+  ([.scenarios[]
+      | select(.kind == "common-prefix")
+      | .summary.fullTokenEqualityRate]
+    | min == 1)
+  and
+  ([.scenarios[].summary.firstTokenEqualityRate] | min == 1)
 ' /tmp/qwen-prefix-boundary-report.json
 ```

@@ -570,3 +570,16 @@ cache-disabled controls, longest-match fallback, frontier upgrade, pin/LRU
 accounting, and provider report/schema integration. The 8K benchmark's 75% and
 90% corpus arms now target 6,144 and 7,168 saved tokens respectively while
 retaining exact output equality. See `notes/069`.
+
+## 2026-08-24T12:51Z — durable partial-prefix reuse measured
+
+The M3 Max 8K corpus now records direct durable hits at every requested
+overlap: 2,048 / 4,096 / 6,144 / 7,168 tokens for the 25/50/75/90% arms.
+Warm makespan speedups are **1.32x / 1.89x / 3.59x / 7.04x** respectively.
+All sixteen distinct-suffix rows match their cache-disabled generated token
+sequences exactly; the 75% and 90% arms clear the 60% overlap target.
+
+The inherited identical-B2 second-token batch-geometry variation from note 068
+is unchanged and remains isolated from the new partial-prefix arms. The report
+passes its draft-2020-12 schema and is preserved as
+`artifacts/e37-partial-prefix-8192.json`.

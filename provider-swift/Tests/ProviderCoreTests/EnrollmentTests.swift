@@ -129,7 +129,8 @@ struct EnrollmentTests {
         try LocalDataCleanup.purge(
             configDirectory: false,
             legacyKeyFiles: false,
-            authToken: false
+            authToken: false,
+            secureEnclaveKey: false
         )
         // No-op should always succeed.
     }

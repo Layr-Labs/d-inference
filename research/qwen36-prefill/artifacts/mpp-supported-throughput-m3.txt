@@ -80,7 +80,7 @@ PROCESSES_BEFORE_BEGIN
   302   0.3  0.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x100000eb4 com.apple.DriverKit-AppleBCMWLAN
   156   0.3  0.0 /usr/sbin/notifyd
   101   0.3  0.0 /usr/libexec/configd
-58520   0.2  0.0 sshd-session: gaj [priv]  
+58520   0.2  0.0 sshd-session: gaj [priv]
   432   0.2  0.0 /usr/sbin/cfprefsd agent
   353   0.1  0.0 /usr/libexec/sysmond
   281   0.1  0.0 /usr/libexec/audioclocksyncd
@@ -465,9 +465,9 @@ PROCESSES_AFTER_BEGIN
 58561   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
 58560   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
 58525   0.0  0.0 /bin/bash ./run.sh /Users/gaj/work/mpp-throughput-probe-055f/result
-58524   0.0  0.0 sshd-session: gaj@notty  
+58524   0.0  0.0 sshd-session: gaj@notty
 58521   0.0  0.0 <defunct>
-58520   0.0  0.0 sshd-session: gaj [priv]  
+58520   0.0  0.0 sshd-session: gaj [priv]
 58519   0.0  0.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
 39087   0.0  0.0 /usr/libexec/fskit_agent
 39075   0.0  0.0 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/SimulatorTrampoline.xpc/Contents/MacOS/SimulatorTrampoline

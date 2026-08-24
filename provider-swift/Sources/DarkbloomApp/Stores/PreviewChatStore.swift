@@ -17,6 +17,11 @@ struct LiveChatConfiguration: Sendable {
     /// reported model (`GET /models`).
     var modelProvider: @Sendable () -> String?
 
+    /// Resolves PID + kernel start identity immediately before any request.
+    /// A PID-only existence check could send the bearer token or prompt to an
+    /// unrelated process after PID reuse.
+    var processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
+
     var clientFactory: @Sendable (LocalEndpointInfo) -> LocalEndpointClient
 
     init(
@@ -24,12 +29,14 @@ struct LiveChatConfiguration: Sendable {
         modelProvider: @escaping @Sendable () -> String? = {
             DaemonStateFile.read()?.currentModel
         },
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
         clientFactory: @escaping @Sendable (LocalEndpointInfo) -> LocalEndpointClient = { info in
             LocalEndpointClient(info: info)
         }
     ) {
         self.discoveryReader = discoveryReader
         self.modelProvider = modelProvider
+        self.processIdentityReader = processIdentityReader
         self.clientFactory = clientFactory
     }
 }
@@ -56,6 +63,11 @@ struct ChatFailure: Equatable, Sendable {
     static let noDiscovery = ChatFailure(
         title: "The provider is offline",
         detail: "Start the provider from the Overview, then send again."
+    )
+
+    static let untrustedDiscovery = ChatFailure(
+        title: "The local endpoint record is stale",
+        detail: "Restart the provider from the Overview before sending private prompts."
     )
 
     static let noModels = ChatFailure(
@@ -189,10 +201,28 @@ final class PreviewChatStore {
             failure = .noDiscovery
             return
         }
+        guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
+            info,
+            readIdentity: live.processIdentityReader
+        ) else {
+            isResponding = false
+            failure = .untrustedDiscovery
+            return
+        }
         let client = live.clientFactory(info)
 
         guard let model = await resolveModel(configuration: live, client: client) else {
             isResponding = false
+            return
+        }
+        // Model fallback may have awaited an authenticated `/models` request.
+        // Revalidate before the first request that carries plaintext prompts.
+        guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
+            info,
+            readIdentity: live.processIdentityReader
+        ) else {
+            isResponding = false
+            failure = .untrustedDiscovery
             return
         }
         activeModelID = model

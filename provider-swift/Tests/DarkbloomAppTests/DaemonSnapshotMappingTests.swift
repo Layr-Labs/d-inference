@@ -15,6 +15,7 @@ struct DaemonSnapshotMappingTests {
     ) -> DaemonState {
         DaemonState(
             pid: pid,
+            processIdentity: ProcessIdentity(pid: pid, startTimeMicros: 100),
             version: "0.8.5",
             writtenAt: referenceNow.timeIntervalSince1970 - 2,
             startedAt: referenceNow.timeIntervalSince1970 - 3_600,
@@ -367,14 +368,27 @@ struct DaemonSnapshotMappingTests {
 
     @Test("local.json maps to an endpoint only while the daemon runs")
     func endpointMapping() {
+        let identity = ProcessIdentity(pid: 4242, startTimeMicros: 100)
         let info = LocalEndpointInfo(
-            host: "0.0.0.0", port: 8000, apiKey: "dk-local-x", version: "0.8.5", pid: 1, updatedAt: "")
+            host: "0.0.0.0", port: 8000, apiKey: "dk-local-x",
+            version: "0.8.5", pid: identity.pid,
+            processIdentity: identity, updatedAt: "")
         #expect(info.baseURL == "http://127.0.0.1:8000/v1", "unspecified bind must dial loopback")
 
         let snapshot = DaemonSnapshotMapping.map(inputs(state: freshState(), alive: true, endpoint: info))
         #expect(snapshot.localEndpoint?.baseURL == URL(string: "http://127.0.0.1:8000/v1"))
         #expect(snapshot.localEndpoint?.requiresAuthentication == true)
         #expect(snapshot.localEndpoint?.isReachable == true)
+
+        var reused = info
+        reused.processIdentity = ProcessIdentity(
+            pid: identity.pid,
+            startTimeMicros: identity.startTimeMicros + 1
+        )
+        let untrusted = DaemonSnapshotMapping.map(
+            inputs(state: freshState(), alive: true, endpoint: reused)
+        )
+        #expect(untrusted.localEndpoint == nil)
 
         let paused = DaemonSnapshotMapping.map(inputs(state: nil, alive: false, endpoint: info))
         #expect(paused.localEndpoint == nil)

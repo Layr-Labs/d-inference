@@ -85,12 +85,14 @@ struct LocalEndpointFileTests {
 
     @Test func discoveryFileRoundTripsAndIsRemovable() throws {
         try withTempDir { _ in
+            let identity = ProcessIdentity(pid: 4242, startTimeMicros: 123_456)
             let info = LocalEndpoint.Info(
                 host: "127.0.0.1",
                 port: 8123,
                 apiKey: "dk-local-abc",
                 version: "9.9.9",
-                pid: 4242,
+                pid: identity.pid,
+                processIdentity: identity,
                 updatedAt: "2026-01-01T00:00:00Z"
             )
             #expect(info.baseURL == "http://127.0.0.1:8123/v1")
@@ -109,37 +111,48 @@ struct LocalEndpointFileTests {
 
     @Test func infoBaseURLRewritesWildcardBindToLoopback() throws {
         // A 0.0.0.0 bind is not dialable; the client URL must be loopback.
-        let info = LocalEndpoint.Info(host: "0.0.0.0", port: 9000, apiKey: "", version: "1", pid: 1, updatedAt: "t")
+        let identity = ProcessIdentity(pid: 1, startTimeMicros: 100)
+        let info = LocalEndpoint.Info(
+            host: "0.0.0.0", port: 9000, apiKey: "", version: "1",
+            pid: identity.pid, processIdentity: identity, updatedAt: "t")
         #expect(info.baseURL == "http://127.0.0.1:9000/v1")
         #expect(info.host == "0.0.0.0")
     }
 
-    @Test func readLiveInfoHonorsProcessLiveness() throws {
+    @Test func readLiveInfoRequiresExactKernelIdentity() throws {
         try withTempDir { _ in
-            // Our own pid is alive → readLiveInfo returns the record.
+            let current = try #require(ProcessIdentity.current())
+
+            // Our exact PID + start identity is live.
             let live = LocalEndpoint.Info(
                 host: "127.0.0.1", port: 8000, apiKey: "k", version: "1",
-                pid: ProcessInfo.processInfo.processIdentifier, updatedAt: "t"
+                pid: current.pid, processIdentity: current, updatedAt: "t"
             )
             try LocalEndpoint.writeInfo(live)
             #expect(LocalEndpoint.readLiveInfo() != nil)
 
-            // A dead pid → the file is present but readLiveInfo treats it as
-            // not-running (stale local.json from a Ctrl-C/crash).
-            let dead = LocalEndpoint.Info(
+            // The same live PID with another start identity models PID reuse.
+            let reused = LocalEndpoint.Info(
                 host: "127.0.0.1", port: 8000, apiKey: "k", version: "1",
-                pid: 999_999, updatedAt: "t"
+                pid: current.pid,
+                processIdentity: ProcessIdentity(
+                    pid: current.pid,
+                    startTimeMicros: current.startTimeMicros + 1
+                ),
+                updatedAt: "t"
             )
-            try LocalEndpoint.writeInfo(dead)
+            try LocalEndpoint.writeInfo(reused)
+            #expect(LocalEndpoint.readInfo() != nil)
+            #expect(LocalEndpoint.readLiveInfo() == nil)
+
+            // Legacy PID-only records decode but cannot authorize disclosure.
+            let legacy = LocalEndpoint.Info(
+                host: "127.0.0.1", port: 8000, apiKey: "k", version: "1",
+                pid: current.pid, updatedAt: "t"
+            )
+            try LocalEndpoint.writeInfo(legacy)
             #expect(LocalEndpoint.readInfo() != nil)
             #expect(LocalEndpoint.readLiveInfo() == nil)
         }
-    }
-
-    @Test func isProcessAliveDetectsSelfAndRejectsBogus() {
-        #expect(LocalEndpoint.isProcessAlive(ProcessInfo.processInfo.processIdentifier))
-        #expect(!LocalEndpoint.isProcessAlive(0))
-        #expect(!LocalEndpoint.isProcessAlive(-1))
-        #expect(!LocalEndpoint.isProcessAlive(999_999))
     }
 }

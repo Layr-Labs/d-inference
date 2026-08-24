@@ -9,12 +9,14 @@ struct ChatStoreTests {
     // MARK: Stubs
 
     private nonisolated func testInfo(apiKey: String = "dk-test") -> LocalEndpointInfo {
-        LocalEndpointInfo(
+        let identity = ProcessIdentity(pid: 4001, startTimeMicros: 100_000)
+        return LocalEndpointInfo(
             host: "127.0.0.1",
             port: 8000,
             apiKey: apiKey,
             version: "0.8.5",
-            pid: 4001,
+            pid: identity.pid,
+            processIdentity: identity,
             updatedAt: "2026-06-17T19:30:00Z"
         )
     }
@@ -56,6 +58,7 @@ struct ChatStoreTests {
         PreviewChatStore(live: LiveChatConfiguration(
             discoveryReader: { client.map { _ in self.testInfo() } },
             modelProvider: modelProvider,
+            processIdentityReader: { _ in self.testInfo().processIdentity },
             clientFactory: { _ in client! }
         ))
     }
@@ -116,6 +119,110 @@ struct ChatStoreTests {
     }
 
     // MARK: Failure states
+
+    @Test("Legacy endpoint identity is rejected before client creation")
+    func legacyIdentityDoesNotSendSecrets() async throws {
+        var info = testInfo()
+        info.processIdentity = nil
+        let recorder = ChatSecurityRecorder()
+        let store = PreviewChatStore(live: LiveChatConfiguration(
+            discoveryReader: { info },
+            modelProvider: { "gpt-oss-20b" },
+            processIdentityReader: { _ in self.testInfo().processIdentity },
+            clientFactory: { _ in
+                recorder.recordFactory()
+                return self.makeClient(lines: ["data: [DONE]"])
+            }
+        ))
+
+        let prompt = try #require(store.beginResponse(to: "private prompt"))
+        await store.respondLive(to: prompt)
+
+        #expect(store.failure == .untrustedDiscovery)
+        #expect(recorder.factoryCount == 0)
+        #expect(recorder.streamCount == 0)
+    }
+
+    @Test("PID reuse is rejected before client creation")
+    func reusedPIDDoesNotSendSecrets() async throws {
+        let info = testInfo()
+        let recorder = ChatSecurityRecorder()
+        let reused = ProcessIdentity(
+            pid: info.pid,
+            startTimeMicros: info.processIdentity!.startTimeMicros + 1
+        )
+        let store = PreviewChatStore(live: LiveChatConfiguration(
+            discoveryReader: { info },
+            modelProvider: { "gpt-oss-20b" },
+            processIdentityReader: { _ in reused },
+            clientFactory: { _ in
+                recorder.recordFactory()
+                return self.makeClient(lines: ["data: [DONE]"])
+            }
+        ))
+
+        let prompt = try #require(store.beginResponse(to: "private prompt"))
+        await store.respondLive(to: prompt)
+
+        #expect(store.failure == .untrustedDiscovery)
+        #expect(recorder.factoryCount == 0)
+        #expect(recorder.streamCount == 0)
+    }
+
+    @Test("Identity is revalidated after model lookup before plaintext POST")
+    func identityChangeDuringModelLookupDoesNotSendPrompt() async throws {
+        let info = testInfo()
+        let reused = ProcessIdentity(
+            pid: info.pid,
+            startTimeMicros: info.processIdentity!.startTimeMicros + 1
+        )
+        let identity = MutableProcessIdentity(info.processIdentity)
+        let recorder = ChatSecurityRecorder()
+        let client = LocalEndpointClient(
+            baseURL: URL(string: info.baseURL)!,
+            apiKey: info.apiKey,
+            dataTransport: { request in
+                recorder.recordCatalog(request)
+                identity.set(reused)
+                let data = #"{"data":[{"id":"endpoint-model"}]}"#.data(using: .utf8)!
+                return (
+                    data,
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!
+                )
+            },
+            lineTransport: { request in
+                recorder.recordStream(request)
+                return (
+                    AsyncThrowingStream { $0.finish() },
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!
+                )
+            }
+        )
+        let store = PreviewChatStore(live: LiveChatConfiguration(
+            discoveryReader: { info },
+            modelProvider: { nil },
+            processIdentityReader: identity.read,
+            clientFactory: { _ in client }
+        ))
+
+        let prompt = try #require(store.beginResponse(to: "private prompt"))
+        await store.respondLive(to: prompt)
+
+        #expect(recorder.catalogCount == 1)
+        #expect(recorder.catalogAuthorization == "Bearer dk-test")
+        #expect(recorder.streamCount == 0)
+        #expect(store.failure == .untrustedDiscovery)
+    }
 
     @Test("A missing discovery record fails with an actionable offline state")
     func missingDiscoveryFailsActionably() async throws {
@@ -414,6 +521,51 @@ struct ChatStoreTests {
                 bodies.append(body)
                 return bodies.count
             }
+        }
+    }
+
+    final class MutableProcessIdentity: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: ProcessIdentity?
+
+        init(_ value: ProcessIdentity?) {
+            self.value = value
+        }
+
+        func read(_: Int32) -> ProcessIdentity? {
+            lock.withLock { value }
+        }
+
+        func set(_ value: ProcessIdentity?) {
+            lock.withLock { self.value = value }
+        }
+    }
+
+    final class ChatSecurityRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var factories = 0
+        private var catalogRequests: [URLRequest] = []
+        private var streamRequests: [URLRequest] = []
+
+        var factoryCount: Int { lock.withLock { factories } }
+        var catalogCount: Int { lock.withLock { catalogRequests.count } }
+        var streamCount: Int { lock.withLock { streamRequests.count } }
+        var catalogAuthorization: String? {
+            lock.withLock {
+                catalogRequests.last?.value(forHTTPHeaderField: "Authorization")
+            }
+        }
+
+        func recordFactory() {
+            lock.withLock { factories += 1 }
+        }
+
+        func recordCatalog(_ request: URLRequest) {
+            lock.withLock { catalogRequests.append(request) }
+        }
+
+        func recordStream(_ request: URLRequest) {
+            lock.withLock { streamRequests.append(request) }
         }
     }
 }

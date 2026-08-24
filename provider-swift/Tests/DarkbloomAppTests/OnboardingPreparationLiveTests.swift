@@ -218,8 +218,10 @@ struct OnboardingPreparationLiveTests {
     @Test("Resume evidence rejects stale files and dead daemon processes")
     func providerEvidenceRequiresFreshLiveProcess() {
         let now = Date(timeIntervalSince1970: 2_000)
+        let identity = ProcessIdentity(pid: 42, startTimeMicros: 100)
         let fresh = DaemonState(
             pid: 42,
+            processIdentity: identity,
             version: "test",
             writtenAt: 1_990,
             startedAt: 1_900,
@@ -232,6 +234,7 @@ struct OnboardingPreparationLiveTests {
             apiKey: "test",
             version: "test",
             pid: 42,
+            processIdentity: identity,
             updatedAt: "1970-01-01T00:33:20Z"
         )
 
@@ -292,10 +295,12 @@ struct OnboardingPreparationLiveTests {
 
     private func providerEvidence(modelID: String) -> OnboardingProviderEvidence {
         let now = Date().timeIntervalSince1970
-        let pid = Int32(ProcessInfo.processInfo.processIdentifier)
+        let processIdentity = ProcessIdentity.current()!
+        let pid = processIdentity.pid
         return OnboardingProviderEvidence(
             daemonState: DaemonState(
                 pid: pid,
+                processIdentity: processIdentity,
                 version: "test",
                 writtenAt: now,
                 startedAt: now - 1,
@@ -308,6 +313,7 @@ struct OnboardingPreparationLiveTests {
                 apiKey: "test",
                 version: "test",
                 pid: pid,
+                processIdentity: processIdentity,
                 updatedAt: "2026-01-01T00:00:00Z"
             ),
             processIsAlive: true,

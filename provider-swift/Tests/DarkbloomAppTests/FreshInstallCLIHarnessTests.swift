@@ -84,6 +84,8 @@ struct FreshInstallCLIHarnessTests {
         let local = try JSONDecoder().decode(LocalEndpointInfo.self, from: localData)
         #expect(local.baseURL == "http://127.0.0.1:18080/v1")
         #expect(local.pid == daemon.pid)
+        #expect(local.processIdentity == daemon.processIdentity)
+        #expect(LocalEndpointRuntimeTruth.belongsToLiveProcess(local))
 
         #expect(try harness.invocations() == [
             ["doctor", "--json"],

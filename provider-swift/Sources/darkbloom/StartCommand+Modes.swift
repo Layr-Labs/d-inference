@@ -118,15 +118,29 @@ extension Start {
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
         // exit; the token file persists so the token survives restarts.
+        guard let processIdentity = ProcessIdentity.current() else {
+            await server.stop()
+            LocalEndpoint.removeInfo()
+            printError("Local server started, but its kernel process identity could not be read; refusing to publish an untrusted endpoint.")
+            throw ExitCode.failure
+        }
         let info = LocalEndpoint.Info(
             host: bind,
             port: port,
             apiKey: token ?? "",
             version: ProviderCore.version,
-            pid: ProcessInfo.processInfo.processIdentifier,
+            pid: processIdentity.pid,
+            processIdentity: processIdentity,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        try? LocalEndpoint.writeInfo(info)
+        do {
+            try LocalEndpoint.writeInfo(info)
+        } catch {
+            await server.stop()
+            LocalEndpoint.removeInfo()
+            printError("Local server started, but secure endpoint discovery could not be written: \(error.localizedDescription)")
+            throw ExitCode.failure
+        }
         defer { LocalEndpoint.removeInfo() }
 
         // The optional fan helper receives a renewable activity lease only

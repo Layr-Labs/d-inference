@@ -298,6 +298,8 @@ enum DaemonSnapshotMapping {
         isFresh: Bool
     ) -> ProviderLocalEndpointSnapshot? {
         guard isRunning, let info = inputs.localEndpoint,
+           let daemonIdentity = inputs.state?.processIdentity,
+           info.processIdentity == daemonIdentity,
            let baseURL = URL(string: info.baseURL)
         else {
             return nil

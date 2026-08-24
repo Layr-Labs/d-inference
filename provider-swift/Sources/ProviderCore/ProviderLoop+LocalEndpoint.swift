@@ -78,14 +78,25 @@ extension ProviderLoop {
     /// CONFIRMED to be ours.
     private func onLocalEndpointBound(_ cfg: LocalInferenceHTTPConfig) {
         logger.info("Local OpenAI endpoint listening on \(cfg.host):\(cfg.port) (unified mode)")
-        try? LocalEndpoint.writeInfo(LocalEndpoint.Info(
-            host: cfg.host,
-            port: cfg.port,
-            apiKey: cfg.authToken ?? "",
-            version: ProviderCore.version,
-            pid: ProcessInfo.processInfo.processIdentifier,
-            updatedAt: ISO8601DateFormatter().string(from: Date())
-        ))
+        guard let processIdentity = ProcessIdentity.current() else {
+            LocalEndpoint.removeInfo()
+            logger.error("Local endpoint discovery was not published because the kernel process identity could not be read")
+            return
+        }
+        do {
+            try LocalEndpoint.writeInfo(LocalEndpoint.Info(
+                host: cfg.host,
+                port: cfg.port,
+                apiKey: cfg.authToken ?? "",
+                version: ProviderCore.version,
+                pid: processIdentity.pid,
+                processIdentity: processIdentity,
+                updatedAt: ISO8601DateFormatter().string(from: Date())
+            ))
+        } catch {
+            LocalEndpoint.removeInfo()
+            logger.error("Local endpoint discovery could not be written: \(error.localizedDescription)")
+        }
     }
 
     /// Stop the local endpoint server, if running, and remove its discovery record.

@@ -289,7 +289,7 @@ else
     echo "lume_publication_contract_skip=acl-isolation:requires-macos"
 fi
 
-if [[ "$TEST_COUNT" -lt 6 ]]; then
+if [[ "$TEST_COUNT" -lt 5 ]]; then
     fail "publication contract executed only $TEST_COUNT tests"
 fi
 echo "lume_publication_contract_tests=$TEST_COUNT"

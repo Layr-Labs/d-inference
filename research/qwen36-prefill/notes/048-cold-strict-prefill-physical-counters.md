@@ -88,6 +88,11 @@ Burst is the binding simultaneous-arrival comparison:
 The current posture therefore reproduces the binding baseline within 0.7% and
 shows no hidden batch-throughput multiplier.
 
+This is a heterogeneous end-to-end model path, so tok/s is the valid aggregate
+metric. Assigning it one TFLOP/s number would mix projections with attention,
+GDN, routing, cache writes, and launch work without per-kernel operation
+counts. The standalone MPP TFLOP/s result remains separate.
+
 B=4 supplied 12 untraced prefill samples across the four arrival patterns,
 totaling 256.727 seconds of measured prefill. Its three burst samples were:
 
@@ -98,11 +103,14 @@ iteration 3  1547.322 tok/s
 first→last  -0.021%
 ```
 
-The best short sample is only 0.826% above the sustained burst median. B=2
+The best short sample is only 0.826% above the three-run burst median. B=2
 supplied 131.959 seconds of measured prefill and its burst first-to-last change
 was -0.189%. B=1 changed -0.372% over 15.803 seconds. All three bounded traces
 reported `Thermal State: Nominal` for 100% of the window. There is no measured
-thermal fade large enough to explain the missing 2.5×.
+thermal fade large enough to explain the missing 2.5×. The harness does not
+repeat burst after the final arrival pattern, so this is not a direct
+cold-versus-post-soak burst pair; it combines stable within-pattern samples,
+the bounded thermal trace, and the no-warning post-run power capture.
 
 ## Command-feed and overlap evidence
 

@@ -2730,10 +2730,12 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 	defer s.mu.RUnlock()
 
 	var summary ProviderEarningsSummary
+	found := false
 	for _, earning := range s.providerEarnings {
 		if earning.ProviderKey != providerKey {
 			continue
 		}
+		found = true
 		summary.TotalMicroUSD += earning.AmountMicroUSD
 		// base_reward rows add money but are not inference jobs.
 		if earning.Model != "base_reward" {
@@ -2741,6 +2743,9 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 			summary.PromptTokens += int64(earning.PromptTokens)
 			summary.CompletionTokens += int64(earning.CompletionTokens)
 		}
+	}
+	if !found {
+		return ProviderEarningsSummary{}, fmt.Errorf("provider earnings summary %q: %w", providerKey, ErrNotFound)
 	}
 
 	return summary, nil
@@ -2752,10 +2757,12 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 	defer s.mu.RUnlock()
 
 	var summary ProviderEarningsSummary
+	found := false
 	for _, earning := range s.providerEarnings {
 		if earning.AccountID != accountID {
 			continue
 		}
+		found = true
 		summary.TotalMicroUSD += earning.AmountMicroUSD
 		// base_reward rows add money but are not inference jobs.
 		if earning.Model != "base_reward" {
@@ -2763,6 +2770,9 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 			summary.PromptTokens += int64(earning.PromptTokens)
 			summary.CompletionTokens += int64(earning.CompletionTokens)
 		}
+	}
+	if !found {
+		return ProviderEarningsSummary{}, fmt.Errorf("account earnings summary %q: %w", accountID, ErrNotFound)
 	}
 
 	return summary, nil

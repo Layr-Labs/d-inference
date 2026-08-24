@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,15 @@ import (
 	apitypes "github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+type accountSummaryErrorStore struct {
+	store.Store
+	err error
+}
+
+func (s *accountSummaryErrorStore) GetAccountEarningsSummary(string) (store.ProviderEarningsSummary, error) {
+	return store.ProviderEarningsSummary{}, s.err
+}
 
 func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	srv, st := testWithdrawServer(t)
@@ -95,6 +105,54 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	if resp.Earnings[0].JobID != "job-2" {
 		t.Fatalf("latest earning job_id = %q, want job-2", resp.Earnings[0].JobID)
 	}
+}
+
+func TestAccountEarningsHTTPSummaryReadSemantics(t *testing.T) {
+	request := func(t *testing.T, srv *Server, st store.Store, rawToken, accountID string) *httptest.ResponseRecorder {
+		t.Helper()
+		tokenHash := sha256.Sum256([]byte(rawToken))
+		if err := st.CreateProviderToken(&store.ProviderToken{
+			TokenHash: fmt.Sprintf("%x", tokenHash[:]),
+			AccountID: accountID,
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("create provider token: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings", nil)
+		req.Header.Set("Authorization", "Bearer "+rawToken)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("empty account is zero summary", func(t *testing.T) {
+		srv, st := testWithdrawServer(t)
+		rec := request(t, srv, st, "eigeninference-pt-empty-summary", "acct-empty-summary")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var response apitypes.AccountEarningsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Count != 0 || response.TotalMicroUSD != 0 {
+			t.Fatalf("empty summary = %+v, want zero count and total", response)
+		}
+	})
+
+	t.Run("operational error fails closed", func(t *testing.T) {
+		srv, st := testWithdrawServer(t)
+		operationalErr := errors.New("summary database unavailable")
+		srv.store = &accountSummaryErrorStore{Store: st, err: operationalErr}
+
+		rec := request(t, srv, st, "eigeninference-pt-failed-summary", "acct-failed-summary")
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "failed to fetch earnings summary") {
+			t.Fatalf("unexpected error response: %s", rec.Body.String())
+		}
+	})
 }
 
 func TestAccountEarningsReflectsWritesImmediately(t *testing.T) {

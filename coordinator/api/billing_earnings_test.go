@@ -279,10 +279,10 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 	}
 	var inference, floor *store.ProviderEarning
 	for i := range payload.Earnings {
-		switch payload.Earnings[i].Model {
-		case "qwen3.5-9b":
+		switch payload.Earnings[i].JobID {
+		case "job-linked":
 			inference = &payload.Earnings[i]
-		case "base_reward":
+		case "floor:2026-08:" + currentKey:
 			floor = &payload.Earnings[i]
 		}
 	}

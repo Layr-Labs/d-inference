@@ -1452,10 +1452,10 @@ index 0000000..adf892b
 +}
 diff --git a/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
 new file mode 100644
-index 0000000..fe15222
+index 0000000..4852361
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,208 @@
 +import Foundation
 +import MLX
 +
@@ -1614,6 +1614,7 @@ index 0000000..fe15222
 +                maxBatchedTokensPerStep: max(batchSize * chunkSize, batchSize),
 +                prefillChunkSize: chunkSize,
 +                maxWaiting: max(8, batchSize * 2)),
++            loopConfig: .init(idleRecheckInterval: 0.1),
 +            admissionConfig: .init(
 +                watermarkFraction: 0, elementBytes: 4,
 +                fixedBytesPerRequest: 0),

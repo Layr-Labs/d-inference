@@ -84,6 +84,13 @@ public enum QwenQualityCorpusLoader {
         }
 
         let data = try Data(contentsOf: resolved, options: [.mappedIfSafe])
+        guard !data.isEmpty else {
+            throw QwenQualityCorpusError.emptyFile
+        }
+        guard data.count <= maximumFileBytes else {
+            throw QwenQualityCorpusError.fileTooLarge(
+                actual: data.count, maximum: maximumFileBytes)
+        }
         try rejectUnknownFields(in: data)
         let corpus: QwenQualityCorpus
         do {

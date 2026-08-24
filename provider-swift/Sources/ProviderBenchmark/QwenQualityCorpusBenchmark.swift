@@ -52,15 +52,6 @@ public enum QwenQualityCorpusBenchmark {
         }
 
         let modelDirectory = modelDirectory.resolvingSymlinksInPath().standardizedFileURL
-        let descriptor = try inspectModel(at: modelDirectory)
-        guard descriptor.modelType.lowercased().contains("qwen")
-            || descriptor.architecture?.lowercased().contains("qwen") == true
-        else {
-            throw QwenQualityCorpusBenchmarkError.notQwen(
-                modelType: descriptor.modelType,
-                architecture: descriptor.architecture)
-        }
-
         let loadedCorpus = try QwenQualityCorpusLoader.load(from: corpusURL)
         let baseline: QwenQualityCorpusReport?
         if let baselineReportURL {
@@ -71,16 +62,38 @@ public enum QwenQualityCorpusBenchmark {
         let policyEnvironment = capturedPolicyEnvironment()
 
         log("hashing fixed model artifact \(modelID)")
+        guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
+            snapshotDir: modelDirectory)
+        else {
+            throw QwenQualityCorpusBenchmarkError.modelFingerprintUnavailable
+        }
         guard let artifactSHA256 = WeightHasher.computeHash(
             snapshotDir: modelDirectory,
             modelID: modelID)
         else {
             throw QwenQualityCorpusBenchmarkError.modelHashUnavailable
         }
-        guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
-            snapshotDir: modelDirectory)
+        guard WeightHasher.snapshotFingerprint(snapshotDir: modelDirectory)
+            == fingerprintBefore
         else {
-            throw QwenQualityCorpusBenchmarkError.modelFingerprintUnavailable
+            throw QwenQualityCorpusBenchmarkError.modelArtifactChangedDuringRun
+        }
+
+        // Inspect only after the hash window is proven stable. Otherwise a
+        // config edit between inspection and hashing could make the report's
+        // model descriptor disagree with the artifact actually loaded.
+        let descriptor = try inspectModel(at: modelDirectory)
+        guard descriptor.modelType.lowercased().contains("qwen")
+            || descriptor.architecture?.lowercased().contains("qwen") == true
+        else {
+            throw QwenQualityCorpusBenchmarkError.notQwen(
+                modelType: descriptor.modelType,
+                architecture: descriptor.architecture)
+        }
+        guard WeightHasher.snapshotFingerprint(snapshotDir: modelDirectory)
+            == fingerprintBefore
+        else {
+            throw QwenQualityCorpusBenchmarkError.modelArtifactChangedDuringRun
         }
 
         log("loading model \(modelID) once")

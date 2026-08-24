@@ -267,11 +267,16 @@ public struct QwenQualityCorpusReport: Codable, Sendable {
             throw QwenQualityCorpusReportError.invalidFileSize(
                 actual: values.fileSize ?? 0, maximum: maximumReportBytes)
         }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard !data.isEmpty, data.count <= maximumReportBytes else {
+            throw QwenQualityCorpusReportError.invalidFileSize(
+                actual: data.count, maximum: maximumReportBytes)
+        }
         let report: QwenQualityCorpusReport
         do {
             report = try JSONDecoder().decode(
                 QwenQualityCorpusReport.self,
-                from: Data(contentsOf: url, options: [.mappedIfSafe]))
+                from: data)
         } catch {
             throw QwenQualityCorpusReportError.invalidJSON(String(describing: error))
         }

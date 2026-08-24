@@ -248,6 +248,18 @@ struct QwenQualityCorpusTests {
         try decoded.validate()
         #expect(decoded.cases == original.cases)
         #expect(decoded.model == original.model)
+
+        var object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var rows = try #require(object["cases"] as? [[String: Any]])
+        rows[0]["tokenChecksum"] = String(repeating: "0", count: 16)
+        object["cases"] = rows
+        let tampered = try JSONDecoder().decode(
+            QwenQualityCorpusReport.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(throws: QwenQualityCorpusReportError.invalidCase("one")) {
+            try tampered.validate()
+        }
     }
 
     @Test

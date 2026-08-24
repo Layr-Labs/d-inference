@@ -193,6 +193,17 @@ The fixture is deliberately hybrid: its recurrent scalar is the exact sum of
 tokens consumed, and its greedy logits depend on that scalar. Missing,
 off-by-one, or aliased recurrent restoration changes the checksum immediately.
 
+Apple-Silicon verification used Swift 6.3.2 on arm64 macOS 26.4 with a
+source-matched MLX metallib:
+
+- `swift test --filter CBv2PromptFork`: 9 tests, 0 failures;
+- `swift test --filter CBv2`: 420 XCTest cases (1 skipped), 0 failures, plus
+  480 Swift Testing cases in 68 suites, 0 failures.
+
+The broad filter includes the Qwen capability/configuration suite as well as
+scheduler, admission, cancellation, prefix reuse, paged/contiguous K/V, MTP,
+and end-to-end CBv2 regressions.
+
 ## 8. Aggregate ceiling
 
 Let:

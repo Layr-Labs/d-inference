@@ -224,5 +224,10 @@ strict B4×8K sustains 1,374 MHz median and 47.39 W with 100% median active
 residency. The trace's `Medium` label is not downclocking. Scheduling, thermal,
 and frequency lanes are closed; only kernel-internal stalls remain.
 
+Short-prompt matrix (`notes/082`): quality-passing suffix192+top-k4 is only
+1.54×/1.99×/2.15× at B1/B2/B4×512 and 2.35× at B1×2K. Suffix1 proves a
+2.85× arithmetic ceiling but fails quality. The remaining short-B1 mechanism
+must improve small-M state-producing kernels rather than delete more semantics.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

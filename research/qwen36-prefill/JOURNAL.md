@@ -658,6 +658,17 @@ The Metal trace's 61% `Medium` label is not a real frequency throttle.
 Clock, thermals, and command feed are closed; remaining strict headroom is
 inside kernels. See `notes/081`.
 
+## 2026-08-24T21:32Z — short cold matrix remains open
+
+Suffix192 + top-k4 reaches 2.70×/2.64× at B2/B4×2K, but only
+1.54×/1.99×/2.15× at B1/B2/B4×512 and 2.35× at B1×2K.
+
+A suffix sweep shows B1×512 can reach 2.85× only at the known unusable
+suffix1 state-river point. Suffix128 top-k4 reaches merely 1.82×; preserving
+quality needs suffix192 and does not approach the bar. Short B1 is now a
+small-M kernel/state-projection problem, not a scheduler, clock, or blind
+token-deletion problem. See `notes/082`.
+
 ## 2026-08-24T16:37Z — E43 moves divergence before adoption
 
 The full state/logit trace rejects cache corruption and decode scheduling.

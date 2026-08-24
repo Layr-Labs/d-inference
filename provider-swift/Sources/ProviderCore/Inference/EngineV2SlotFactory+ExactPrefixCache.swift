@@ -79,7 +79,7 @@ extension EngineV2SlotFactory {
     /// Versioned snapshot/execution contract. Changing this value invalidates
     /// every key even if model artifacts and prompt tokens stay unchanged.
     static let exactPrefixCachePolicyDomain =
-        "darkbloom.cbv2-exact-prompt-state-v2"
+        "darkbloom.cbv2-exact-prompt-state-v3"
 
     /// Environment resolution is fail-closed:
     ///   * absent/unrecognized enable values keep the feature off;

@@ -18,11 +18,18 @@ No KV-only Qwen path is enabled. A caller must still inject
 `CBv2ExactStatePrefixCache` and enable the request's cache policy explicitly.
 Existing serving, quality, and cold-throughput defaults remain cache-free.
 
-## Cold construction
+## Canonical exact-cache execution profile
 
-An exact-cache miss gives the scheduler the cache's block size. The scheduler
-clamps ordinary text prefill chunks at each whole-block boundary, without
-changing multimodal, disabled-cache, hit, or non-exact-cache rows.
+The presence of the default-off exact-state cache gives every text request the
+cache's block size. The scheduler clamps cache-disabled controls, misses, and
+post-hit suffixes at each whole-block boundary, and the engine disables packed
+prefill. The request's lookup result therefore cannot select a numerically
+different prompt execution posture. Multimodal requests remain excluded from
+exact lookup and from this text-only chunk clamp. With no exact cache instance,
+the existing scheduler and packed-prefill gates are unchanged.
+
+On an exact-cache miss, each resulting whole-block boundary is also a
+construction point:
 
 After each boundary forward:
 
@@ -46,6 +53,11 @@ candidate lengths in descending order. Keys remain scoped by:
 format epoch + model identity + policy identity + block size
 + authenticated scope + token count + exact UInt32 token prefix
 ```
+
+The serving policy domain is now
+`darkbloom.cbv2-exact-prompt-state-v3`; v2 entries are intentionally
+incompatible because they were constructed under a non-canonical prefill
+posture.
 
 The first layout/spec-valid entry is pinned and returned. A boundary-only entry
 at the request's full length is not a legal full hit because it has no logits;
@@ -120,7 +132,10 @@ shown below.
   identity, and exact byte accounting;
 - partial B1, B2, and B4 adoption;
 - distinct suffix execution (partial hits must perform a model forward);
-- complete generated-token parity against cache-disabled controls;
+- 64-token generated-token parity against cache-disabled B1/B2/B4 controls;
+- block-sized cache-disabled, miss, and hit-suffix prompt chunks;
+- packed-prefill veto with an exact cache and unchanged packed capability
+  without one;
 - full-prompt cached-frontier behavior;
 - adopter cancellation and subsequent reuse;
 - provider report/schema and request-correlated state-byte accounting.
@@ -137,11 +152,12 @@ in order:
 2. `061-cbv2-simultaneous-prompt-fork.patch`
    (`sha256:2adc40ae8918b04afea7b4dfa651b623fdf792314c5042d4bad11bf50502ab37`);
 3. `065-exact-sequential-prefix-boundaries.patch`
-   (`sha256:ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5`).
+   (`sha256:ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5`);
+4. `073-exact-cache-canonical-prefill-profile.patch`
+   (`sha256:5f4daf4ea35dc5ba39dc68adab03f46f9ed30aa783071cfee9644284f1dd6eda`).
 
 Replaying that sequence and staging the result yields tree
-`b002398c22703c1b57b9c4db505b6bdf68e6bc99` (the tree at local research
-commit `4edf47cfd43c2dcb41ea07c0b27092700d244fcd`).
+`535e53c129b1a03c474b5a7f75856ebda4e73af0`.
 
 The root provider and benchmark changes are already ordinary tracked files on
 the research branch. Do **not** reapply
@@ -161,14 +177,15 @@ git -C "$tmp" checkout --quiet ab73a827c9dde6f8802507003aa0be71605aab8e
 for patch in \
   060-exact-cbv2-prefix-boundary.patch \
   061-cbv2-simultaneous-prompt-fork.patch \
-  065-exact-sequential-prefix-boundaries.patch
+  065-exact-sequential-prefix-boundaries.patch \
+  073-exact-cache-canonical-prefill-profile.patch
 do
   git -C "$tmp" apply --check "$root/research/qwen36-prefill/patches/$patch"
   git -C "$tmp" apply "$root/research/qwen36-prefill/patches/$patch"
 done
 git -C "$tmp" add -A
 test "$(git -C "$tmp" write-tree)" = \
-  b002398c22703c1b57b9c4db505b6bdf68e6bc99
+  535e53c129b1a03c474b5a7f75856ebda4e73af0
 ```
 
 Patch 061 is intentionally emitted with zero context so the repository's
@@ -190,10 +207,12 @@ swift test --filter CBv2ExactPrefixCacheTests
 swift test --filter CBv2ExactPrefixEngineTests
 
 cd ../../provider-swift
+swift test --filter EngineV2ExactPrefixCacheTests
 swift test --filter QwenPrefixReuseTests
 swift test --filter EngineV2PrefixCacheUsageTests
 swift build -c release --product darkbloom
 
+DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648 \
 .build/release/darkbloom benchmark \
   --model qwen3.6-35b-a3b-vl-mtp-mxfp8 \
   --qwen-prefix-reuse \
@@ -308,6 +327,11 @@ diverges under changed batching/timing. The boundary tensors are
 shape/dtype/ownership exact by code and tests, but this is not user-visible
 64-token semantic parity. Shipping still requires a completion-quality gate
 or a replay posture that preserves the cold decode schedule.
+
+E45 subsequently resolved this blocker by proving that cache-disabled controls,
+misses, donors, and hit suffixes must share block-sized singleton prefill. The
+shipping profile is preserved in ordered patch 073; the E40/E41 numbers below
+remain historical measurements of the pre-profile execution policy.
 
 Artifacts:
 

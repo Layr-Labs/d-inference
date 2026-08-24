@@ -446,7 +446,7 @@ index 00000000..8c8dfb2d
 +    /// Versioned snapshot/execution contract. Changing this value invalidates
 +    /// every key even if model artifacts and prompt tokens stay unchanged.
 +    static let exactPrefixCachePolicyDomain =
-+        "darkbloom.cbv2-exact-prompt-state-v2"
++        "darkbloom.cbv2-exact-prompt-state-v3"
 +
 +    /// Environment resolution is fail-closed:
 +    ///   * absent/unrecognized enable values keep the feature off;
@@ -1067,7 +1067,7 @@ new file mode 100644
 index 00000000..f582c28c
 --- /dev/null
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,393 @@
 +// Copyright © 2026 Eigen Labs.
 +//
 +// Deployment policy and accounting for Qwen exact prompt-state reuse.
@@ -1380,6 +1380,9 @@ index 00000000..f582c28c
 +
 +    @Test("artifact, policy, backend, and dtype changes invalidate identities")
 +    func identityChanges() throws {
++        #expect(
++            EngineV2SlotFactory.exactPrefixCachePolicyDomain
++                == "darkbloom.cbv2-exact-prompt-state-v3")
 +        func identity(
 +            weight: String = exactWeightA,
 +            prompt: String = exactPromptA,
@@ -1403,7 +1406,7 @@ index 00000000..f582c28c
 +        #expect(try identity(backend: .paged).policyIdentity != base.policyIdentity)
 +        #expect(try identity(dtype: "float16").policyIdentity != base.policyIdentity)
 +        #expect(
-+            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v3")
++            try identity(policy: "darkbloom.cbv2-exact-prompt-state-v4")
 +                .policyIdentity != base.policyIdentity)
 +    }
 +

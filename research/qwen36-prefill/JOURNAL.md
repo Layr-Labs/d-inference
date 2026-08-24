@@ -630,3 +630,51 @@ B1/B2 remain divergent after 2/1 generated tokens; B4's median common
 prefix improves only to five. This disproves cached-frontier sampling as
 the sole cause. Revert the experiment and investigate adopted-cache
 layout / decode scheduling. See `notes/071`.
+
+## 2026-08-24T16:37Z — E43 moves divergence before adoption
+
+The full state/logit trace rejects cache corruption and decode scheduling.
+Every warm full-hit continuation matches its solo donor for all 64 tokens.
+For B1, donor and warm state/logits are identical through the first six decode
+steps despite compact adopted convolution-tail strides.
+
+The first difference is prefill posture. Native B1 uses 2,048-token chunks;
+cache construction stops at every 256-token snapshot boundary. Their prompt
+frontiers already differ in 79/80 state probes and logits. Native B2/B4 both
+use 512-token chunks but also differ from each other, isolating packed cohort
+width as another finite-precision dimension. Cursor and recurrent restore
+state are exact.
+
+Next, force a diagnostic-only 256-token, unpacked prefill posture in every arm.
+If complete equality returns, treat donor fidelity as the cache correctness
+contract and scheduler-posture variation as an explicit quality-gated numerical
+policy; do not ship the slow canonical posture. See `notes/072`.
+
+## 2026-08-24T17:02Z — E44 control run invalidated
+
+E44 reproduced the old 0% full-hit and 50/75/75/75% partial equality rates, but
+its trace proves neither control executed. The Mac binary was built at 16:28 UTC,
+17 minutes before the control commit; its source contains neither force hook.
+Cold B1 remained 2,048-token solo, cold B2/B4 remained 512-token packed, and no
+control-activation event appeared.
+
+The result therefore does not test posture sufficiency. The E45 probe now logs
+an unconditional revision/raw-environment record plus each scheduled row's
+effective snapshot boundary and packed-prefill gate. Rebuild from the new
+source before rerunning. See `notes/072`.
+
+## 2026-08-24T17:11Z — E45 proves canonical prefill is causal
+
+The rebuilt 256-token, unpacked control restored 100% first-token and full
+64-token equality in every B1/B2/B4 full-hit and partial-prefix scenario.
+Combined with E43's state trace, this confirms prompt chunk/cohort geometry and
+rejects cache adoption, recurrent restore, cursor state, and decode scheduling
+as causes.
+
+The shipping handoff now selects one engine-instance profile whenever the
+default-off exact-state cache is active: every text request (cache-disabled,
+miss, or hit suffix) clamps at the cache block size, and packed prefill is
+disabled. No exact cache leaves the existing path unchanged. The serving policy
+identity advances to `darkbloom.cbv2-exact-prompt-state-v3`; ordered patch 073
+pins B1/B2/B4 64-token parity, chunk geometry, and the packed gate. Temporary
+NDJSON instrumentation and control overrides were removed. See `notes/072`.

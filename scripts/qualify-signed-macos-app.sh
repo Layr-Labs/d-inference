@@ -67,13 +67,15 @@ EXPECTED_APNS_ENVIRONMENT='production' # pragma: allowlist secret
 
 [ -f "$INFO_PLIST" ] || fail "Contents/Info.plist is missing"
 for executable in "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
-    [ -f "$executable" ] && [ ! -L "$executable" ] && [ -x "$executable" ] \
-        || fail "required regular executable is missing: $executable"
+    if [ ! -f "$executable" ] || [ -L "$executable" ] || [ ! -x "$executable" ]; then
+        fail "required regular executable is missing: $executable"
+    fi
 done
 [ "$(/usr/bin/stat -f '%Lp' "$FAN_HELPER")" = "755" ] \
     || fail "fan helper mode must be 0755"
-[ -f "$METALLIB" ] && [ ! -L "$METALLIB" ] && [ -s "$METALLIB" ] \
-    || fail "mlx.metallib is missing, empty, or a symlink"
+if [ ! -f "$METALLIB" ] || [ -L "$METALLIB" ] || [ ! -s "$METALLIB" ]; then
+    fail "mlx.metallib is missing, empty, or a symlink"
+fi
 [ -s "$PROFILE" ] || fail "embedded provisioning profile is missing"
 
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")

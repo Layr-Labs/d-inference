@@ -43,7 +43,7 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
 | Code/run provenance | PARTIAL after E41 | Sidecar binds the exact root commit, nested base/tree and patch hashes, binary/metallib/model/corpus hashes, OS and Swift; power posture is post-run, and older reports retain schema drift. |
-| RAM/LRU/pinning | PARTIAL | Resident entries obey exact `nbytes`, LRU, pins, and a hard ceiling. Detached donation candidates are materialized before eviction and multiple candidates may coexist until finalization, so transient bytes can exceed the carved resident budget. |
+| RAM/LRU/pinning | PASS after E48 | Pre-copy reservations evict before allocation and charge resident plus all concurrent in-flight candidates to one hard ceiling; discard/error paths release reservations. |
 | Deployment budget equivalence | PASS after E41 | At the exact 2 GiB deployment ceiling, 6,144/7,168-token boundaries remain hits above 2.5×; 2,048/4,096-token boundaries are honestly evicted and miss. |
 | Replayable handoff | PARTIAL | The three nested patches replay from `ab73a827...` to tree `b002398c...`; the gitlink still points at the unpatched base, so a normal recursive clone is not buildable without manual patching. |
 | Deployment integration | PARTIAL | Default-off slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, daemon knobs, and a 2 GiB-equivalent performance run now exist. The nested tree is unpublished. |
@@ -119,7 +119,6 @@ Completed after the initial verdict:
 Still open:
 
 - self-reported live-fork activity in a new fork performance artifact;
-- bounding or reserving detached in-flight donation copies before evaluation;
 - publishing the nested library tree and updating the gitlink;
 - sanitizing legacy benchmark artifacts/history that retain private host/user
   identifiers;

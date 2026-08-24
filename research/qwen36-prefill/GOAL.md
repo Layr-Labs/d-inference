@@ -122,10 +122,9 @@ miss after LRU eviction.
 This clears the 2.5× performance threshold for the named reuse-bearing
 workloads without changing weights. It does **not** yet satisfy the full
 merge/ship objective: fork execution evidence, a clean submodule commit,
-transient donation-copy accounting, and private-history sanitization remain
-open. Exact-cache cold misses use the slower canonical posture; cache-free
-unrelated prompts remain byte-identical to the native engine and are not
-accelerated.
+and private-history sanitization remain open. Exact-cache cold misses use the
+slower canonical posture; cache-free unrelated prompts remain byte-identical
+to the native engine and are not accelerated.
 
 ## Architecture facts (do not rediscover)
 

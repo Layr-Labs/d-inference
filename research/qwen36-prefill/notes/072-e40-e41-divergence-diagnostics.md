@@ -183,7 +183,8 @@ for patch in \
   060-exact-cbv2-prefix-boundary.patch \
   061-cbv2-simultaneous-prompt-fork.patch \
   065-exact-sequential-prefix-boundaries.patch \
-  073-exact-cache-canonical-prefill-profile.patch
+  073-exact-cache-canonical-prefill-profile.patch \
+  075-exact-cache-donation-reservations.patch
 do
   git -C "$root/libs/mlx-swift-lm" apply \
     "$root/research/qwen36-prefill/patches/$patch"

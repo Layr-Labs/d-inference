@@ -155,9 +155,11 @@ in order:
    (`sha256:ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5`);
 4. `073-exact-cache-canonical-prefill-profile.patch`
    (`sha256:f70bda02bb92b18a8c66be6a3f147e90995da81eb161cc54df72ae2586536c83`).
+5. `075-exact-cache-donation-reservations.patch`
+   (`sha256:175173488a50f652c61b059b16271c53658b7e69c49c5066ee85a316cbf4baaa`).
 
 Replaying that sequence and staging the result yields tree
-`3004623fca35b8d1c061b5d1e2fe5be3eb3cf52c`.
+`c267de0434835bda4a40c1b8c4ddedffbebf1664`.
 
 The root provider and benchmark changes are already ordinary tracked files on
 the research branch. Do **not** reapply
@@ -178,14 +180,15 @@ for patch in \
   060-exact-cbv2-prefix-boundary.patch \
   061-cbv2-simultaneous-prompt-fork.patch \
   065-exact-sequential-prefix-boundaries.patch \
-  073-exact-cache-canonical-prefill-profile.patch
+  073-exact-cache-canonical-prefill-profile.patch \
+  075-exact-cache-donation-reservations.patch
 do
   git -C "$tmp" apply --check "$root/research/qwen36-prefill/patches/$patch"
   git -C "$tmp" apply "$root/research/qwen36-prefill/patches/$patch"
 done
 git -C "$tmp" add -A
 test "$(git -C "$tmp" write-tree)" = \
-  3004623fca35b8d1c061b5d1e2fe5be3eb3cf52c
+  c267de0434835bda4a40c1b8c4ddedffbebf1664
 ```
 
 Patch 061 is intentionally emitted with zero context so the repository's

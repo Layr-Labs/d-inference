@@ -707,3 +707,12 @@ Blind 128-token scoring against the fixed native baseline:
 The sole divergent expedition continuation is accurate, coherent, and
 less progressed at the forced cutoff. The canonical exact-cache policy
 passes the semantic quality gate as an explicit opt-in. See `notes/074`.
+
+## 2026-08-24T18:55Z — E48 transient donation bytes bounded
+
+Exact-cache snapshot copies are now reserved before MLX materializes them.
+Resident entries plus every concurrent in-flight candidate share the same
+hard cache ceiling; reservation failure occurs before allocation, and
+discard/error paths release the claim. Six cache tests, eight engine tests,
+ten provider benchmark tests, and the release build pass. Ordered patch 075
+advances the nested tree to `c267de0434835bda4a40c1b8c4ddedffbebf1664`.

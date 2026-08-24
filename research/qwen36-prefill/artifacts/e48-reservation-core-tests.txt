@@ -1,0 +1,45 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 11:51:18.954.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-08-24 11:51:18.954.
+Test Suite 'CBv2ExactPrefixCacheTests' started at 2026-08-24 11:51:18.954.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testKeyBindsExactTokensScopeModelAndPolicy]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testKeyBindsExactTokensScopeModelAndPolicy]' passed (0.068 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLRUEvictionPinsAdoptersAndNeverExceedsHardBudget]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLRUEvictionPinsAdoptersAndNeverExceedsHardBudget]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testPendingDonationReservationsShareTheHardCeiling]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testPendingDonationReservationsShareTheHardCeiling]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRequestCorrelatedReleaseCannotUnpinAnotherAdopter]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRequestCorrelatedReleaseCannotUnpinAnotherAdopter]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRestoredAttentionAndRecurrentStateAreRequestOwned]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRestoredAttentionAndRecurrentStateAreRequestOwned]' passed (0.002 seconds).
+Test Suite 'CBv2ExactPrefixCacheTests' passed at 2026-08-24 11:51:19.030.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.075 (0.076) seconds
+Test Suite 'CBv2ExactPrefixEngineTests' started at 2026-08-24 11:51:19.030.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testB1RepeatUsesCachedFrontierAndExactHybridState]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testB1RepeatUsesCachedFrontierAndExactHybridState]' passed (0.025 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCacheDisabledControlsAndExactHitsHave64TokenParityAtB1B2B4]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCacheDisabledControlsAndExactHitsHave64TokenParityAtB1B2B4]' passed (0.665 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingOneAdopterCannotPoisonTheCachedBoundary]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingOneAdopterCannotPoisonTheCachedBoundary]' passed (0.021 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingPartialAdopterPreservesBoundaryAndSuffixParity]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingPartialAdopterPreservesBoundaryAndSuffixParity]' passed (0.037 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testExactCacheProfileClampsDisabledMissAndHitSuffixPrefill]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testExactCacheProfileClampsDisabledMissAndHitSuffixPrefill]' passed (0.017 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testExactCacheProfileVetoesPackedPrefillWithoutChangingDefaultGate]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testExactCacheProfileVetoesPackedPrefillWithoutChangingDefaultGate]' passed (0.020 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testPartialBoundaryB1B2B4RunsDistinctSuffixAndMatchesColdOutput]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testPartialBoundaryB1B2B4RunsDistinctSuffixAndMatchesColdOutput]' passed (0.659 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testWarmB2AndB4ShareOnePrefillWithIndependentDecodeRows]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testWarmB2AndB4ShareOnePrefillWithIndependentDecodeRows]' passed (0.048 seconds).
+Test Suite 'CBv2ExactPrefixEngineTests' passed at 2026-08-24 11:51:20.522.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 1.491 (1.492) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-08-24 11:51:20.522.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 1.567 (1.568) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 11:51:20.522.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 1.567 (1.568) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

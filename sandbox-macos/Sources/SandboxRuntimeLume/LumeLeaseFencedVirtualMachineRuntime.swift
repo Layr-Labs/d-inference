@@ -55,7 +55,7 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.stop(name: name, scope: scope)
     }
 
-    public func delete(
+    package func delete(
         scope: SandboxOperationScope,
         name: String
     ) async throws {

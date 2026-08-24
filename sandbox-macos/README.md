@@ -133,9 +133,11 @@ generation history nor the runtime storage identity can be reconstructed.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
-create, start, inspect, stop, delete, and release carry the complete operation
-scope. Release stops and verifies the owned VM before its package-internal
-capacity release; callers cannot remove capacity directly.
+create, start, inspect, stop, and release carry the complete operation scope.
+Release stops and verifies the owned VM before its package-internal capacity
+release; callers cannot remove capacity directly. Physical deletion remains
+package-internal until deletion intent has its own durable crash-recovery state,
+so a crash cannot strand a running or missing VM behind released capacity.
 Guest execution is absent until the signed guest-control agent replaces Lume's
 shared bootstrap identity. The underlying Lume actor is package-only, validates
 the scope before creating a per-VM operation lock and again while holding it,

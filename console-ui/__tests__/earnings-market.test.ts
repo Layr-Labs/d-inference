@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseEarningsMarket } from "@/lib/api/earnings-market";
 
+const INVALID_RESPONSE = "Invalid earnings market response";
+
 function validMarket() {
   return {
     window_start: "2026-07-25T12:00:00Z",
@@ -52,16 +54,16 @@ describe("parseEarningsMarket", () => {
   it("rejects an empty model response instead of enabling a fabricated fallback", () => {
     const payload = validMarket();
     payload.models = [];
-    expect(() => parseEarningsMarket(payload)).toThrow("Invalid earnings market response");
+    expect(() => parseEarningsMarket(payload)).toThrow(INVALID_RESPONSE);
   });
 
   it("rejects an unreconciled or internally inconsistent response", () => {
     const unreconciled = validMarket();
     unreconciled.audit.modeled_work_micro_usd = 9_000_000;
-    expect(() => parseEarningsMarket(unreconciled)).toThrow("Invalid earnings market response");
+    expect(() => parseEarningsMarket(unreconciled)).toThrow(INVALID_RESPONSE);
 
     const unavailable = validMarket();
     unavailable.models[0].estimate_available = false;
-    expect(() => parseEarningsMarket(unavailable)).toThrow("Invalid earnings market response");
+    expect(() => parseEarningsMarket(unavailable)).toThrow(INVALID_RESPONSE);
   });
 });

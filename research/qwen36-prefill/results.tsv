@@ -35,6 +35,8 @@ e7-fp32-dequant-gate	2026-08-24T06:27:04Z	m3-max-128gb-2	upstream-56e026d8	mlx-s
 e7-fp32-dequant-down	2026-08-24T06:27:04Z	m3-max-128gb-2	upstream-56e026d8	mlx-swift-tests	2	yes	E7-FP32-dequant	fp32-reconstruct-once	2048	1	qmm_ms	3.2718	ms	1.034x	no	source-matched baseline 3.3834ms
 e7-fp32-dequant-correctness	2026-08-24T06:26:46Z	m3-max-128gb-2	upstream-56e026d8	mlx-swift-tests	2	yes	E7-FP32-dequant	fp32-reconstruct-once	2048	1	correctness	1	pass	pass	meta	adversarial -109.5 and all 10 sorted QMM tests pass
 e8-strict-mpp-correctness	2026-08-24T06:32:34Z	m3-max-128gb-2	remote-mpp-patch	mlx-swift-tests	2	yes	E8-strict-MPP	bf16xbf16-to-fp32-M3	2048	1	correctness	0	pass	fail	no	same 11 failures as relaxed E6; no timing
+b2-8192-baseline	2026-08-24T06:42:00Z	m3-max-128gb-2	3cfe7e89	ead0d577	2	yes	H0-b2-8k	default-chunk-budget	8192	2	prefill_tps	1500.7	tok/s	1.00	baseline	3 iters; makespan_ms=10916.5; checksums stable
+b4-8192-baseline	2026-08-24T06:39:00Z	m3-max-128gb-2	3cfe7e89	ead0d577	2	yes	H0-primary-8k	default-chunk-budget	8192	4	prefill_tps	1557.4	tok/s	1.00	baseline	3 iters; makespan_ms=21037.5; checksums stable; 2.5x bar=3893.5
 
 
 

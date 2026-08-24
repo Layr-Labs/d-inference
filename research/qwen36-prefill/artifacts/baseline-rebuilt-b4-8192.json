@@ -1,0 +1,856 @@
+{
+  "arrivalMaxAttemptsPerSample" : 3,
+  "arrivalToleranceMs" : 20,
+  "batchSize" : 4,
+  "decodeTokensPerRequest" : 2,
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--qwen3.6-35b-a3b-vl-mtp-mxfp8\/snapshots\/local",
+  "patterns" : [
+    {
+      "arrivalDelaysMs" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "arrivalWithinTolerance" : true,
+      "maxArrivalErrorMs" : 0.02375,
+      "measuredArrivalOffsetsMs" : [
+        0.007541,
+        0.013708,
+        0.020417,
+        0.019167
+      ],
+      "medianAggregateDecodeTokensPerSecond" : 181.94740582800284,
+      "medianAggregatePrefillTokensPerSecond" : 1557.4099771298204,
+      "medianMakespanMs" : 21061.2765,
+      "medianPerRequestDecodeTokensPerSecond" : 45.57076701978008,
+      "medianPrefillMakespanMs" : 21037.492042,
+      "medianTTFTMs" : 21037.477396000002,
+      "name" : "burst",
+      "outputsMatchBurst" : true,
+      "outputsStableAcrossIterations" : true,
+      "samples" : [
+        {
+          "aggregateDecodeTokensPerSecond" : 181.94740582800284,
+          "aggregatePrefillTokensPerSecond" : 1545.0770232739774,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.3768713813369088,
+          "iteration" : 1,
+          "makespanMs" : 21227.401167,
+          "maxArrivalErrorMs" : 0.020417,
+          "prefillMakespanMs" : 21205.415333,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.005167,
+              "completedAtMs" : 21227.334958,
+              "decodeTokensPerSecond" : 45.63015309874598,
+              "firstTokenAtMs" : 21205.413792,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.005167,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 21205.408625
+            },
+            {
+              "arrivalErrorMs" : 0.0125,
+              "completedAtMs" : 21227.353042,
+              "decodeTokensPerSecond" : 45.589673246046736,
+              "firstTokenAtMs" : 21205.4155,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.0125,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21205.403
+            },
+            {
+              "arrivalErrorMs" : 0.020417,
+              "completedAtMs" : 21227.401167,
+              "decodeTokensPerSecond" : 45.50073490511982,
+              "firstTokenAtMs" : 21205.4205,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.020417,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21205.400083
+            },
+            {
+              "arrivalErrorMs" : 0.019167,
+              "completedAtMs" : 21227.394333,
+              "decodeTokensPerSecond" : 45.55186079351341,
+              "firstTokenAtMs" : 21205.420083,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.019167,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21205.400916
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 168.16732884654493,
+          "aggregatePrefillTokensPerSecond" : 1557.4099771298204,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37984402322432825,
+          "iteration" : 2,
+          "makespanMs" : 21061.2765,
+          "maxArrivalErrorMs" : 0.02375,
+          "prefillMakespanMs" : 21037.492042,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.009666,
+              "completedAtMs" : 21061.23025,
+              "decodeTokensPerSecond" : 42.131132560257946,
+              "firstTokenAtMs" : 21037.488208,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.009666,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 21037.478542
+            },
+            {
+              "arrivalErrorMs" : 0.015041,
+              "completedAtMs" : 21061.249,
+              "decodeTokensPerSecond" : 42.116642631400666,
+              "firstTokenAtMs" : 21037.501708,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.015041,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21037.486667
+            },
+            {
+              "arrivalErrorMs" : 0.022875,
+              "completedAtMs" : 21061.271875,
+              "decodeTokensPerSecond" : 42.067772359168245,
+              "firstTokenAtMs" : 21037.499125,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.022875,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21037.47625
+            },
+            {
+              "arrivalErrorMs" : 0.02375,
+              "completedAtMs" : 21061.2765,
+              "decodeTokensPerSecond" : 42.058041274584085,
+              "firstTokenAtMs" : 21037.497375,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.02375,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21037.473625
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 186.12730819383128,
+          "aggregatePrefillTokensPerSecond" : 1560.5600099640967,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.380653001155376,
+          "iteration" : 3,
+          "makespanMs" : 21016.516291,
+          "maxArrivalErrorMs" : 0.018833,
+          "prefillMakespanMs" : 20995.027292,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.007541,
+              "completedAtMs" : 21016.478833,
+              "decodeTokensPerSecond" : 46.622311442821605,
+              "firstTokenAtMs" : 20995.023958,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.007541,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 20995.016417
+            },
+            {
+              "arrivalErrorMs" : 0.013708,
+              "completedAtMs" : 21016.495833,
+              "decodeTokensPerSecond" : 46.59099512541714,
+              "firstTokenAtMs" : 20995.027958,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.013708,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 20995.01425
+            },
+            {
+              "arrivalErrorMs" : 0.016541,
+              "completedAtMs" : 21016.515416,
+              "decodeTokensPerSecond" : 46.55719332381022,
+              "firstTokenAtMs" : 20995.0345,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.016541,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 20995.017959
+            },
+            {
+              "arrivalErrorMs" : 0.018833,
+              "completedAtMs" : 21016.516291,
+              "decodeTokensPerSecond" : 46.555385638743616,
+              "firstTokenAtMs" : 20995.034833,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.018833,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 20995.016
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "arrivalDelaysMs" : [
+        0,
+        25,
+        50,
+        75
+      ],
+      "arrivalWithinTolerance" : true,
+      "maxArrivalErrorMs" : 10.067416999999999,
+      "measuredArrivalOffsetsMs" : [
+        0.010083,
+        34.886708,
+        53.30775,
+        82.538917
+      ],
+      "medianAggregateDecodeTokensPerSecond" : 0.8847499955755311,
+      "medianAggregatePrefillTokensPerSecond" : 1534.007030650966,
+      "medianMakespanMs" : 21376.279416999998,
+      "medianPerRequestDecodeTokensPerSecond" : 56.0909505958702,
+      "medianPrefillMakespanMs" : 21358.441875,
+      "medianTTFTMs" : 21290.3104375,
+      "name" : "stagger-25ms",
+      "outputsMatchBurst" : true,
+      "outputsStableAcrossIterations" : true,
+      "samples" : [
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8836823063798909,
+          "aggregatePrefillTokensPerSecond" : 1534.007030650966,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37424660503070556,
+          "iteration" : 1,
+          "makespanMs" : 21376.279416999998,
+          "maxArrivalErrorMs" : 10.067416999999999,
+          "prefillMakespanMs" : 21358.441875,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.010083,
+              "completedAtMs" : 17961.251208,
+              "decodeTokensPerSecond" : 0.8996993095144287,
+              "firstTokenAtMs" : 16849.764542,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.010083,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16849.754459
+            },
+            {
+              "arrivalErrorMs" : 0.628499999999999,
+              "completedAtMs" : 21376.240333,
+              "decodeTokensPerSecond" : 56.2188600220659,
+              "firstTokenAtMs" : 21358.447458,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 25,
+              "submittedAtMs" : 25.6285,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21332.818958
+            },
+            {
+              "arrivalErrorMs" : 10.067416999999999,
+              "completedAtMs" : 21376.248833,
+              "decodeTokensPerSecond" : 56.18898017225743,
+              "firstTokenAtMs" : 21358.449958,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 50,
+              "submittedAtMs" : 60.067417,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21298.382541
+            },
+            {
+              "arrivalErrorMs" : 7.538916999999998,
+              "completedAtMs" : 21376.279417,
+              "decodeTokensPerSecond" : 56.097176915181464,
+              "firstTokenAtMs" : 21358.451958,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 75,
+              "submittedAtMs" : 82.538917,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21275.913041
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8847499955755311,
+          "aggregatePrefillTokensPerSecond" : 1534.80028422427,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37443933778594196,
+          "iteration" : 2,
+          "makespanMs" : 21365.276542,
+          "maxArrivalErrorMs" : 10.044625000000003,
+          "prefillMakespanMs" : 21347.402875,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.007709,
+              "completedAtMs" : 17955.282125,
+              "decodeTokensPerSecond" : 0.9000377906067445,
+              "firstTokenAtMs" : 16844.209542,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.007709,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16844.201833
+            },
+            {
+              "arrivalErrorMs" : 10.044625000000003,
+              "completedAtMs" : 21365.238625,
+              "decodeTokensPerSecond" : 56.08472427655893,
+              "firstTokenAtMs" : 21347.405917,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 25,
+              "submittedAtMs" : 35.044625,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21312.361292
+            },
+            {
+              "arrivalErrorMs" : 1.958708999999999,
+              "completedAtMs" : 21365.250709,
+              "decodeTokensPerSecond" : 56.05760748822006,
+              "firstTokenAtMs" : 21347.409875,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 50,
+              "submittedAtMs" : 51.958709,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21295.451166
+            },
+            {
+              "arrivalErrorMs" : 4.539249999999996,
+              "completedAtMs" : 21365.276542,
+              "decodeTokensPerSecond" : 56.022016652544444,
+              "firstTokenAtMs" : 21347.410584,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 75,
+              "submittedAtMs" : 79.53925,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21267.871334
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8854013666889483,
+          "aggregatePrefillTokensPerSecond" : 1533.162356998942,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.3740408176230553,
+          "iteration" : 3,
+          "makespanMs" : 21388.040083,
+          "maxArrivalErrorMs" : 10.051165999999995,
+          "prefillMakespanMs" : 21370.209,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.011875,
+              "completedAtMs" : 17975.725583,
+              "decodeTokensPerSecond" : 0.9046548787910509,
+              "firstTokenAtMs" : 16870.313166,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.011875,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16870.301291
+            },
+            {
+              "arrivalErrorMs" : 9.886707999999999,
+              "completedAtMs" : 21388.020083,
+              "decodeTokensPerSecond" : 56.17753764751729,
+              "firstTokenAtMs" : 21370.216041,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 25,
+              "submittedAtMs" : 34.886708,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21335.329333
+            },
+            {
+              "arrivalErrorMs" : 3.3077499999999986,
+              "completedAtMs" : 21388.038083,
+              "decodeTokensPerSecond" : 56.12879582909163,
+              "firstTokenAtMs" : 21370.219166,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 50,
+              "submittedAtMs" : 53.30775,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21316.911416
+            },
+            {
+              "arrivalErrorMs" : 10.051165999999995,
+              "completedAtMs" : 21388.040083,
+              "decodeTokensPerSecond" : 56.124861203218245,
+              "firstTokenAtMs" : 21370.220875,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 75,
+              "submittedAtMs" : 85.051166,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21285.169709
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "arrivalDelaysMs" : [
+        0,
+        100,
+        200,
+        300
+      ],
+      "arrivalWithinTolerance" : true,
+      "maxArrivalErrorMs" : 10.078000000000003,
+      "measuredArrivalOffsetsMs" : [
+        0.007708,
+        110.074084,
+        210.045125,
+        310.045625
+      ],
+      "medianAggregateDecodeTokensPerSecond" : 0.8850047260635192,
+      "medianAggregatePrefillTokensPerSecond" : 1535.2073015159483,
+      "medianMakespanMs" : 21359.625915999997,
+      "medianPerRequestDecodeTokensPerSecond" : 55.672374203100304,
+      "medianPrefillMakespanMs" : 21341.743208,
+      "medianTTFTMs" : 21084.0885835,
+      "name" : "stagger-100ms",
+      "outputsMatchBurst" : true,
+      "outputsStableAcrossIterations" : true,
+      "samples" : [
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8843908035627353,
+          "aggregatePrefillTokensPerSecond" : 1534.3083294417872,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37432153271185337,
+          "iteration" : 1,
+          "makespanMs" : 21372.000541999998,
+          "maxArrivalErrorMs" : 10.074084,
+          "prefillMakespanMs" : 21354.247625,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.010667,
+              "completedAtMs" : 17954.140125,
+              "decodeTokensPerSecond" : 0.9049596309861316,
+              "firstTokenAtMs" : 16849.11075,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.010667,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16849.100083
+            },
+            {
+              "arrivalErrorMs" : 10.074084,
+              "completedAtMs" : 21371.971417,
+              "decodeTokensPerSecond" : 56.44588592184852,
+              "firstTokenAtMs" : 21354.251792,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 100,
+              "submittedAtMs" : 110.074084,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21244.177708
+            },
+            {
+              "arrivalErrorMs" : 10.045125000000013,
+              "completedAtMs" : 21372.000542,
+              "decodeTokensPerSecond" : 56.37031645111879,
+              "firstTokenAtMs" : 21354.258292,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 200,
+              "submittedAtMs" : 210.045125,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21144.213167
+            },
+            {
+              "arrivalErrorMs" : 10.062292000000014,
+              "completedAtMs" : 21371.988167,
+              "decodeTokensPerSecond" : 56.403039424427284,
+              "firstTokenAtMs" : 21354.257209,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 300,
+              "submittedAtMs" : 310.062292,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21044.194917
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8850047260635192,
+          "aggregatePrefillTokensPerSecond" : 1535.2073015159483,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37453839460771576,
+          "iteration" : 2,
+          "makespanMs" : 21359.625915999997,
+          "maxArrivalErrorMs" : 9.561207999999993,
+          "prefillMakespanMs" : 21341.743208,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.006083,
+              "completedAtMs" : 17950.419916,
+              "decodeTokensPerSecond" : 0.9004758454747359,
+              "firstTokenAtMs" : 16839.87375,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.006083,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16839.867667
+            },
+            {
+              "arrivalErrorMs" : 9.561207999999993,
+              "completedAtMs" : 21359.595375,
+              "decodeTokensPerSecond" : 55.94470693700939,
+              "firstTokenAtMs" : 21341.716958,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 100,
+              "submittedAtMs" : 109.561208,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21232.15575
+            },
+            {
+              "arrivalErrorMs" : 2.7462500000000034,
+              "completedAtMs" : 21359.620125,
+              "decodeTokensPerSecond" : 55.87957950616422,
+              "firstTokenAtMs" : 21341.722708,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 200,
+              "submittedAtMs" : 202.74625,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21138.976458
+            },
+            {
+              "arrivalErrorMs" : 5.649999999999977,
+              "completedAtMs" : 21359.625916,
+              "decodeTokensPerSecond" : 55.94614042682654,
+              "firstTokenAtMs" : 21341.749291,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 300,
+              "submittedAtMs" : 305.65,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21036.099291
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8855092281968356,
+          "aggregatePrefillTokensPerSecond" : 1535.763010612894,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.3746708194868073,
+          "iteration" : 3,
+          "makespanMs" : 21352.0765,
+          "maxArrivalErrorMs" : 10.078000000000003,
+          "prefillMakespanMs" : 21334.020792,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.007708,
+              "completedAtMs" : 17941.317333,
+              "decodeTokensPerSecond" : 0.9038221395526239,
+              "firstTokenAtMs" : 16834.899625,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.007708,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16834.891917
+            },
+            {
+              "arrivalErrorMs" : 10.078000000000003,
+              "completedAtMs" : 21352.059375,
+              "decodeTokensPerSecond" : 55.465168900036396,
+              "firstTokenAtMs" : 21334.021375,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 100,
+              "submittedAtMs" : 110.078,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21223.943375
+            },
+            {
+              "arrivalErrorMs" : 10.046249999999986,
+              "completedAtMs" : 21352.0765,
+              "decodeTokensPerSecond" : 55.4140711177539,
+              "firstTokenAtMs" : 21334.0285,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 200,
+              "submittedAtMs" : 210.04625,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 21123.98225
+            },
+            {
+              "arrivalErrorMs" : 10.045624999999973,
+              "completedAtMs" : 21352.066875,
+              "decodeTokensPerSecond" : 55.43928705076852,
+              "firstTokenAtMs" : 21334.027458,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 300,
+              "submittedAtMs" : 310.045625,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 21023.981833
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "arrivalDelaysMs" : [
+        0,
+        250,
+        500,
+        750
+      ],
+      "arrivalWithinTolerance" : true,
+      "maxArrivalErrorMs" : 10.098749999999995,
+      "measuredArrivalOffsetsMs" : [
+        0.00675,
+        253.780584,
+        508.554375,
+        760.063375
+      ],
+      "medianAggregateDecodeTokensPerSecond" : 0.8842937302109916,
+      "medianAggregatePrefillTokensPerSecond" : 1535.5926553658956,
+      "medianMakespanMs" : 21354.375083,
+      "medianPerRequestDecodeTokensPerSecond" : 55.971063860319504,
+      "medianPrefillMakespanMs" : 21336.387541,
+      "medianTTFTMs" : 20706.725833,
+      "name" : "rolling-250ms",
+      "outputsMatchBurst" : true,
+      "outputsStableAcrossIterations" : true,
+      "samples" : [
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8842937302109916,
+          "aggregatePrefillTokensPerSecond" : 1533.6198519230193,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37415297174292456,
+          "iteration" : 1,
+          "makespanMs" : 21381.628917000002,
+          "maxArrivalErrorMs" : 10.063834000000043,
+          "prefillMakespanMs" : 21363.834042000002,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.005417,
+              "completedAtMs" : 17969.605584,
+              "decodeTokensPerSecond" : 0.8998140641314346,
+              "firstTokenAtMs" : 16858.243,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.005417,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16858.237583
+            },
+            {
+              "arrivalErrorMs" : 3.7805840000000046,
+              "completedAtMs" : 21381.617125,
+              "decodeTokensPerSecond" : 56.239936214913946,
+              "firstTokenAtMs" : 21363.83125,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 250,
+              "submittedAtMs" : 253.780584,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21110.050666
+            },
+            {
+              "arrivalErrorMs" : 8.554374999999993,
+              "completedAtMs" : 21381.622709,
+              "decodeTokensPerSecond" : 56.242311675993896,
+              "firstTokenAtMs" : 21363.839459,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 500,
+              "submittedAtMs" : 508.554375,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 20855.285084
+            },
+            {
+              "arrivalErrorMs" : 10.063834000000043,
+              "completedAtMs" : 21381.628917,
+              "decodeTokensPerSecond" : 56.21280504089454,
+              "firstTokenAtMs" : 21363.837334,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 750,
+              "submittedAtMs" : 760.063834,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 20603.7735
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8855866837429918,
+          "aggregatePrefillTokensPerSecond" : 1536.7894599194142,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37492811340422305,
+          "iteration" : 2,
+          "makespanMs" : 21337.423666,
+          "maxArrivalErrorMs" : 10.098749999999995,
+          "prefillMakespanMs" : 21319.771416,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.00675,
+              "completedAtMs" : 17925.060916,
+              "decodeTokensPerSecond" : 0.9054582033706914,
+              "firstTokenAtMs" : 16820.641791,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.00675,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16820.635041
+            },
+            {
+              "arrivalErrorMs" : 0.07791599999998766,
+              "completedAtMs" : 21337.404875,
+              "decodeTokensPerSecond" : 56.73477203259413,
+              "firstTokenAtMs" : 21319.774625,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 250,
+              "submittedAtMs" : 250.077916,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21069.696709
+            },
+            {
+              "arrivalErrorMs" : 10.098749999999995,
+              "completedAtMs" : 21337.414791,
+              "decodeTokensPerSecond" : 56.702733763540756,
+              "firstTokenAtMs" : 21319.776916,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 500,
+              "submittedAtMs" : 510.09875,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 20809.678166
+            },
+            {
+              "arrivalErrorMs" : 10.046790999999985,
+              "completedAtMs" : 21337.423666,
+              "decodeTokensPerSecond" : 56.67849830318746,
+              "firstTokenAtMs" : 21319.778166,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 750,
+              "submittedAtMs" : 760.046791,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 20559.731375
+            }
+          ]
+        },
+        {
+          "aggregateDecodeTokensPerSecond" : 0.8836257521594433,
+          "aggregatePrefillTokensPerSecond" : 1535.5926553658956,
+          "discardedAttempts" : 0,
+          "endToEndTokensPerSecond" : 0.37463048995372933,
+          "iteration" : 3,
+          "makespanMs" : 21354.375083,
+          "maxArrivalErrorMs" : 10.072917000000018,
+          "prefillMakespanMs" : 21336.387541,
+          "rows" : [
+            {
+              "arrivalErrorMs" : 0.010167,
+              "completedAtMs" : 17935.899417,
+              "decodeTokensPerSecond" : 0.9022631695354038,
+              "firstTokenAtMs" : 16827.5695,
+              "generatedTokens" : 2,
+              "row" : 0,
+              "scheduledDelayMs" : 0,
+              "submittedAtMs" : 0.010167,
+              "tokenChecksum" : "b2014a3de7504b34",
+              "ttftMs" : 16827.559333
+            },
+            {
+              "arrivalErrorMs" : 10.072917000000018,
+              "completedAtMs" : 21354.343167,
+              "decodeTokensPerSecond" : 55.72932267974448,
+              "firstTokenAtMs" : 21336.394625,
+              "generatedTokens" : 2,
+              "row" : 1,
+              "scheduledDelayMs" : 250,
+              "submittedAtMs" : 260.072917,
+              "tokenChecksum" : "ba48e6eee055d6ad",
+              "ttftMs" : 21076.321708
+            },
+            {
+              "arrivalErrorMs" : 8.083666999999991,
+              "completedAtMs" : 21354.375083,
+              "decodeTokensPerSecond" : 55.623283083073986,
+              "firstTokenAtMs" : 21336.39475,
+              "generatedTokens" : 2,
+              "row" : 2,
+              "scheduledDelayMs" : 500,
+              "submittedAtMs" : 508.083667,
+              "tokenChecksum" : "17dd6d1d47628ce7",
+              "ttftMs" : 20828.311083
+            },
+            {
+              "arrivalErrorMs" : 10.06337499999995,
+              "completedAtMs" : 21354.358,
+              "decodeTokensPerSecond" : 55.68328992913689,
+              "firstTokenAtMs" : 21336.397708,
+              "generatedTokens" : 2,
+              "row" : 3,
+              "scheduledDelayMs" : 750,
+              "submittedAtMs" : 760.063375,
+              "tokenChecksum" : "c9adb2f2abeb4ed3",
+              "ttftMs" : 20576.334333
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "promptTokensPerRequest" : 8192,
+  "schemaVersion" : 6
+}

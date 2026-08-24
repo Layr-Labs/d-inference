@@ -265,3 +265,13 @@ precision. No timing. Patch reversed and baseline restored. Candidate A
 from hostile review 032 is closed through MLX's available MPP primitive.
 See `notes/036`.
 
+## 2026-08-24T06:39Z — primary 8K baselines locked
+
+Three schema-6 burst repetitions, default geometry, AC/High Power:
+
+- B=2×8,192: **1,500.7 tok/s**, 10.9165 s median makespan;
+- B=4×8,192: **1,557.4 tok/s**, 21.0375 s median makespan.
+
+Checksums stable. The binding B=4 2.5× bar is **3,893.5 tok/s** or
+**8.4150 s**. B=4 still equals B=1 8K within noise. See `notes/037`.
+

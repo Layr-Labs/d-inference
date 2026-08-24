@@ -120,13 +120,14 @@ Apply `079-cbv2-cross-layer-artifact-projection-batching.patch` after patch
 078's final nested commit `e5ba752`.
 
 - patch SHA-256:
-  `68ff54af9867a4a13a1d6cd4975a6497e48cfe185bd16240f5d3ce1de113b40d`;
+  `d8a54149404ecf541b7b28b1beeb8576bbcd6c103cb36e54892af499f6dc01b0`;
 - nested commits:
   `2f67b8bcebaba60ad2625bbd4387b326c889363a`,
   `785c1c21217bd3c2e296b8de4ee6d503d08f22f2`,
   `77d3a05a0eca714014e922d542bf1b528d1352bc`,
   `fc32dae08048a0ee51f89742eaaa000572c51490`,
   `971667684e5e9a9d9605a48e0af4cd836057040b`,
-  `8cdbbdb52823ee4158463212445e23a78ce12d99`;
-- final tree: `0e3f6951b724b0c33bbcdcb1ef41f69d7fcc8d9f`, verified by clean
+  `8cdbbdb52823ee4158463212445e23a78ce12d99`,
+  `0063990684c4ccb559e1fc6cbbb70e1429143d1a`;
+- final tree: `705f6a17bf261a90b258daea87a26e1d28db6c3a`, verified by clean
   patch replay.

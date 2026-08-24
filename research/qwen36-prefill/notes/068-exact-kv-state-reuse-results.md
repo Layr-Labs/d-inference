@@ -65,9 +65,9 @@ after clone cost; B2 reaches the target through warm exact adoption.
 ## Scope
 
 This success is exact but reuse-dependent. Distinct cold prompts remain
-at the native baseline. V1 durable cache supports exact full-prompt hits;
-live prompt forking supports arbitrary simultaneous common prefixes.
-Partial durable-prefix lookup remains the next generalization.
+at the native baseline. Durable cache now supports longest exact
+256-token hybrid boundaries; live prompt forking supports arbitrary
+simultaneous common prefixes. See note 069 for partial sequential hits.
 
 Artifacts:
 

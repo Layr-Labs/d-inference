@@ -583,3 +583,14 @@ The inherited identical-B2 second-token batch-geometry variation from note 068
 is unchanged and remains isolated from the new partial-prefix arms. The report
 passes its draft-2020-12 schema and is preserved as
 `artifacts/e37-partial-prefix-8192.json`.
+
+## 2026-08-24T13:51Z — durable partial-prefix medians locked
+
+Three-run 8K medians:
+
+- 25% exact prefix: 1.295×;
+- 50%: 1.874×;
+- 75%: **3.635×**;
+- 87.5% aligned from requested 90%: **7.066×**.
+
+Every distinct-suffix row retains exact first/full-token and finish parity.

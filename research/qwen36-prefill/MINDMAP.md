@@ -199,5 +199,9 @@ warm full-prompt B1/B2/B4 = 15×–403×; cold simultaneous B4 identical
 prompts = 3.01×/3.25× at 512/8K; B4 90% common-prefix 8K = 2.627×.
 The cached/forked object is complete K/V + GDN state + position + logits.
 
+Durable longest-prefix boundaries (`notes/069`) extend this to sequential
+distinct suffixes: B4×8K 75% exact overlap = **3.635×**, 87.5% aligned
+overlap = **7.066×**, with exact output parity over three iterations.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

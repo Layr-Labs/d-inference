@@ -174,3 +174,18 @@ jq -e '
   ([.scenarios[].summary.firstTokenEqualityRate] | min == 1)
 ' /tmp/qwen-prefix-boundary-report.json
 ```
+
+## M3 Max result — 8K, three-run medians
+
+| Exact matched prefix | Matched tokens/row | Cold B4 | Warm B4 | Speedup |
+|---:|---:|---:|---:|---:|
+| 25% | 2,048 | 21019.3 ms | 16233.7 ms | 1.295× |
+| 50% | 4,096 | 20977.5 | 11191.3 | 1.874× |
+| 75% | 6,144 | 20971.5 | 5768.9 | **3.635×** |
+| requested 90% (87.5% aligned) | 7,168 | 20971.9 | 2968.0 | **7.066×** |
+
+Every partial-prefix row has exact first-token, full generated-token, and
+finish-reason parity in all three iterations. Full-prompt B1/B2/B4 hits
+remain 196×/316×/406× by makespan.
+
+Artifact: `artifacts/e37-partial-prefix-8192-3x.json`.

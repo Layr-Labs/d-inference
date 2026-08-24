@@ -518,11 +518,12 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
-	// ModelSettledWorkTotals returns positive, settled inference earnings grouped
-	// by the consumer-requested public model in [since, until). For legacy
-	// settlements, implementations may recover the identity from an unambiguous
-	// matching usage row; unresolved rows form an empty-key audit group.
-	// Base-reward rows are excluded. Results are ordered by public model.
+	// ModelSettledWorkTotals returns positive, settled inference earnings with
+	// nonnegative token usage, grouped by the consumer-requested public model in
+	// [since, until). For legacy settlements, implementations may recover the
+	// identity from an unambiguous matching usage row; unresolved rows form an
+	// empty-key audit group. Base-reward and malformed-usage rows are excluded.
+	// Results are ordered by public model.
 	ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error)
 
 	// RecordProviderPayout stores a payout record for a provider wallet.

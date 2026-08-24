@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-// ModelSettledWorkTotals aggregates positive inference settlements in
-// [since, until). The explicit upper bound makes repeated 30-day snapshots
-// auditable and gives the memory and PostgreSQL implementations identical edge
-// semantics.
+// ModelSettledWorkTotals aggregates positive inference settlements with
+// nonnegative token usage in [since, until). Malformed legacy rows are excluded
+// rather than allowing untrusted token counts to distort a market snapshot. The
+// explicit upper bound gives memory and PostgreSQL identical edge semantics.
 func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -30,7 +30,8 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 
 	byPublicModel := make(map[string]*ModelSettledWorkTotal)
 	for _, earning := range s.providerEarnings {
-		if earning.Model == "" || earning.Model == "base_reward" || earning.AmountMicroUSD <= 0 {
+		if earning.Model == "" || earning.Model == "base_reward" || earning.AmountMicroUSD <= 0 ||
+			earning.PromptTokens < 0 || earning.CompletionTokens < 0 {
 			continue
 		}
 		if earning.CreatedAt.Before(since) || !earning.CreatedAt.Before(until) {

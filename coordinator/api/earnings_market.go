@@ -216,6 +216,9 @@ func buildEarningsMarketResponse(
 
 	var audit earningsMarketAudit
 	for _, total := range work {
+		if err := validateEarningsWorkTotal(total); err != nil {
+			return earningsMarketResponse{}, err
+		}
 		paidTokens := total.PaidTokens()
 		audit.TotalSettledWorkMicroUSD += total.WorkPayoutMicroUSD
 		audit.TotalPaidTokens += paidTokens
@@ -255,6 +258,17 @@ func buildEarningsMarketResponse(
 			Tiers:               baserewards.Tiers(),
 		},
 	}, nil
+}
+
+func validateEarningsWorkTotal(total store.ModelSettledWorkTotal) error {
+	if total.WorkPayoutMicroUSD <= 0 ||
+		total.PromptTokens < 0 ||
+		total.CompletionTokens < 0 ||
+		total.Jobs <= 0 ||
+		total.PromptTokens > math.MaxInt64-total.CompletionTokens {
+		return fmt.Errorf("model %q has invalid settled work totals", total.PublicModel)
+	}
+	return nil
 }
 
 func routedEarningsCapacity(

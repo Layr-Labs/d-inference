@@ -6,10 +6,11 @@ import (
 	"time"
 )
 
-// ModelSettledWorkTotals aggregates positive inference settlements by the
-// consumer-requested public model in [since, until). Legacy settlement rows use
-// the matching usage record only when its non-empty public identity is
-// unambiguous; anything else stays in the empty audit group.
+// ModelSettledWorkTotals aggregates positive inference settlements with
+// nonnegative token usage by the consumer-requested public model in
+// [since, until). Legacy settlement rows use the matching usage record only when
+// its non-empty public identity is unambiguous; malformed usage is excluded and
+// ambiguous identity stays in the empty audit group.
 func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -42,6 +43,8 @@ func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelS
 			  AND earnings.model <> ''
 			  AND earnings.model <> 'base_reward'
 			  AND earnings.amount_micro_usd > 0
+			  AND earnings.prompt_tokens >= 0
+			  AND earnings.completion_tokens >= 0
 		)
 		SELECT public_model,
 		       COALESCE(SUM(amount_micro_usd), 0),

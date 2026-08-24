@@ -28,6 +28,8 @@ func TestModelSettledWorkTotals(t *testing.T) {
 				{JobID: uniqueID("job"), Model: "base_reward", AmountMicroUSD: 99_000_000, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: -1, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 9_000_000, PromptTokens: -1, CompletionTokens: 1, CreatedAt: start},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 8_000_000, PromptTokens: 1, CompletionTokens: -1, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 88_000_000, CreatedAt: start.Add(-time.Second)},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 77_000_000, CreatedAt: end},
 				{JobID: uniqueID("job"), Model: "", AmountMicroUSD: 66_000_000, CreatedAt: start},

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -631,5 +632,44 @@ func TestEarningsMarketHandlerReturns500OnInvalidCatalogMetadata(t *testing.T) {
 	srv.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestValidateEarningsWorkTotalRejectsMalformedUsage(t *testing.T) {
+	valid := store.ModelSettledWorkTotal{
+		PublicModel:        "model",
+		WorkPayoutMicroUSD: 1,
+		PromptTokens:       1,
+		CompletionTokens:   1,
+		Jobs:               1,
+	}
+	if err := validateEarningsWorkTotal(valid); err != nil {
+		t.Fatalf("valid total rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*store.ModelSettledWorkTotal){
+		"nonpositive payout": func(total *store.ModelSettledWorkTotal) {
+			total.WorkPayoutMicroUSD = 0
+		},
+		"negative prompt tokens": func(total *store.ModelSettledWorkTotal) {
+			total.PromptTokens = -1
+		},
+		"negative completion tokens": func(total *store.ModelSettledWorkTotal) {
+			total.CompletionTokens = -1
+		},
+		"nonpositive jobs": func(total *store.ModelSettledWorkTotal) {
+			total.Jobs = 0
+		},
+		"token overflow": func(total *store.ModelSettledWorkTotal) {
+			total.PromptTokens = math.MaxInt64
+			total.CompletionTokens = 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			total := valid
+			mutate(&total)
+			if err := validateEarningsWorkTotal(total); err == nil {
+				t.Fatalf("invalid total accepted: %+v", total)
+			}
+		})
 	}
 }

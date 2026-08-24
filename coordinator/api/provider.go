@@ -1748,6 +1748,11 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return
 	}
+	if !validCompletionUsage(msg.Usage) {
+		s.ddIncr("inference.invalid_completion_usage", nil)
+		s.handleInferenceError(providerID, provider, invalidCompletionUsageError(msg.RequestID))
+		return
+	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.

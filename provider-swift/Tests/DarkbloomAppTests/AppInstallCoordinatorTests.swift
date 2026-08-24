@@ -190,8 +190,8 @@ struct AppInstallCoordinatorTests {
         #expect(ownedCheck?.arguments == signatureArguments(for: fixture.destination))
     }
 
-    @Test("production-signed destination is atomically replaced after the owned check")
-    func ownedDestinationIsAtomicallyReplaced() throws {
+    @Test("newer signed source atomically replaces an older owned destination")
+    func newerSourceReplacesOwnedDestination() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         _ = try fixture.makeApp(
@@ -222,6 +222,138 @@ struct AppInstallCoordinatorTests {
         )
         #expect(!entries.contains { $0.hasPrefix(".Darkbloom.app.previous-") })
         #expect(!entries.contains { $0.hasPrefix(".Darkbloom.app.relocation-") })
+    }
+
+    @Test("equal signed source may repair an owned destination")
+    func equalSourceReplacesOwnedDestination() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.10.0",
+            payload: "damaged-equal-version"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.10.0",
+            payload: "repaired-equal-version"
+        )
+
+        let result = try fixture.coordinator(
+            source: source,
+            executor: RecordingExecutor()
+        ).coordinate()
+
+        #expect(result == .relocated(to: fixture.destination, preservedForeignApp: nil))
+        #expect(try fixture.payload(at: fixture.destination) == "repaired-equal-version")
+    }
+
+    @Test("older signed source is rejected before staging or destination mutation")
+    func olderSourceCannotReplaceOwnedDestination() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.10.0",
+            payload: "newer-installed"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.9.9",
+            payload: "stale-download"
+        )
+        let executor = RecordingExecutor()
+
+        do {
+            _ = try fixture.coordinator(source: source, executor: executor).coordinate()
+            Issue.record("expected a semantic-version downgrade rejection")
+        } catch AppInstallCoordinatorError.downgradeRejected(
+            let sourceVersion,
+            let installedVersion
+        ) {
+            #expect(sourceVersion == "1.9.9")
+            #expect(installedVersion == "1.10.0")
+        }
+
+        #expect(try fixture.payload(at: fixture.destination) == "newer-installed")
+        #expect(try fixture.payload(at: source) == "stale-download")
+        #expect(!FileManager.default.fileExists(atPath: fixture.shortcut.path))
+        #expect(!executor.invocations.contains { $0.executable.path == "/usr/bin/ditto" })
+        #expect(!executor.invocations.contains { $0.executable.path == "/usr/bin/open" })
+        let entries = try FileManager.default.contentsOfDirectory(
+            atPath: fixture.destination.deletingLastPathComponent().path
+        )
+        #expect(!entries.contains { $0.hasPrefix(".Darkbloom.app.relocation-") })
+        #expect(!entries.contains { $0.hasPrefix(".Darkbloom.app.previous-") })
+    }
+
+    @Test("explicit recovery override permits an older signed source")
+    func recoveryOverridePermitsOlderSource() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "2.0.0",
+            payload: "newer-installed"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.9.0",
+            payload: "operator-selected-predecessor"
+        )
+
+        let result = try fixture.coordinator(
+            source: source,
+            executor: RecordingExecutor(),
+            environment: [AppInstallCoordinator.allowDowngradeEnvironmentKey: "1"]
+        ).coordinate()
+
+        #expect(result == .relocated(to: fixture.destination, preservedForeignApp: nil))
+        #expect(try fixture.payload(at: fixture.destination) == "operator-selected-predecessor")
+    }
+
+    @Test("recovery override refuses to strand newer SelfUpdater state")
+    func recoveryOverrideRequiresArchivedUpdaterState() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "2.0.0",
+            payload: "newer-installed"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent("Downloads/Darkbloom.app"),
+            identifier: AppInstallCoordinator.[REDACTED]BundleIdentifier,
+            version: "1.9.0",
+            payload: "operator-selected-predecessor"
+        )
+        let stateURL = fixture.home
+            .appendingPathComponent(".darkbloom/recovery/state.json")
+        try FileManager.default.createDirectory(
+            at: stateURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("newer-state".utf8).write(to: stateURL)
+        let executor = RecordingExecutor()
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: executor,
+                environment: [AppInstallCoordinator.allowDowngradeEnvironmentKey: "1"]
+            ).coordinate()
+        }
+
+        #expect(try fixture.payload(at: fixture.destination) == "newer-installed")
+        #expect(try String(contentsOf: stateURL, encoding: .utf8) == "newer-state")
+        #expect(!executor.invocations.contains { $0.executable.path == "/usr/bin/ditto" })
     }
 
     @Test("foreign user shortcut file is preserved exactly")

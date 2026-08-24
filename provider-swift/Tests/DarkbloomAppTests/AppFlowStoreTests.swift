@@ -51,7 +51,15 @@ struct AppFlowStoreTests {
     @Test("A saved onboarding draft wins over machine bootstrap evidence")
     func savedDraftWinsOverMachineBootstrap() {
         let preferences = InMemoryAppFlowPreferences(
-            onboardingDraft: OnboardingDraft(step: .enrollment)
+            onboardingDraft: OnboardingDraft(
+                step: .enrollment,
+                readinessCompletedCount: 5,
+                accountPhase: .linked,
+                enrollmentPhase: .systemSettingsOpen,
+                preparationPhase: .reservingSpace,
+                preparationProgress: 0.04,
+                verificationCompletedCount: 0
+            )
         )
         let store = AppFlowStore(
             preferences: preferences,

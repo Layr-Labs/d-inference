@@ -297,13 +297,14 @@ private func benchmark(
                 output: output,
                 repeats: configuration.repeatsPerSample)
             timings[variant, default: []].append(timing)
+            let sampleTFLOPS = deliveredTFLOPS(
+                flops: cell.flops, milliseconds: timing.gpuMilliseconds)
             print(
                 "SAMPLE cell=\(cell.name) variant=\(variant.rawValue) "
                     + "index=\(sample + 1)/\(configuration.samples) "
                     + "gpu_ms=\(formatMilliseconds(timing.gpuMilliseconds)) "
                     + "cpu_ms=\(formatMilliseconds(timing.cpuMilliseconds)) "
-                    + "gpu_tflops=\(formatTFLOPS(deliveredTFLOPS("
-                    + "flops: cell.flops, milliseconds: timing.gpuMilliseconds)))")
+                    + "gpu_tflops=\(formatTFLOPS(sampleTFLOPS))")
         }
     }
 
@@ -318,6 +319,10 @@ private func benchmark(
         let gpu = try summarize(variantTimings.map(\.gpuMilliseconds))
         let cpu = try summarize(variantTimings.map(\.cpuMilliseconds))
         summaries[variant] = VariantTimingSummary(gpu: gpu, cpu: cpu)
+        let medianTFLOPS = deliveredTFLOPS(
+            flops: cell.flops, milliseconds: gpu.median)
+        let bestSampleTFLOPS = deliveredTFLOPS(
+            flops: cell.flops, milliseconds: gpu.minimum)
         print(
             "SUMMARY cell=\(cell.name) variant=\(variant.rawValue) "
                 + "samples=\(variantTimings.count) "
@@ -327,10 +332,8 @@ private func benchmark(
                 + "gpu_p90_ms=\(formatMilliseconds(gpu.p90)) "
                 + "gpu_max_ms=\(formatMilliseconds(gpu.maximum)) "
                 + "cpu_median_ms=\(formatMilliseconds(cpu.median)) "
-                + "gpu_median_tflops=\(formatTFLOPS(deliveredTFLOPS("
-                + "flops: cell.flops, milliseconds: gpu.median))) "
-                + "gpu_best_sample_tflops=\(formatTFLOPS(deliveredTFLOPS("
-                + "flops: cell.flops, milliseconds: gpu.minimum)))")
+                + "gpu_median_tflops=\(formatTFLOPS(medianTFLOPS)) "
+                + "gpu_best_sample_tflops=\(formatTFLOPS(bestSampleTFLOPS))")
     }
     return CellTimingResult(cell: cell, summaries: summaries)
 }

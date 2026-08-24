@@ -100,7 +100,8 @@ scripts/              build, signing, install, and deploy helpers
 ├── bundle-macos-app.sh Darkbloom.app assembly (CLI + GUI binaries, fonts, metallib) shared by CI and local builds
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
-├── test-macos-app-fresh-install.sh hermetic bundle/window + fresh-user onboarding boundary smoke (never real MDM/account)
+├── test-macos-app-unsigned-debug-lifecycle.sh hermetic unsigned DEBUG bundle/window + fresh-user lifecycle smoke (not signing/relocation)
+├── qualify-signed-macos-app.sh non-destructive Developer ID/notary/Gatekeeper qualification for a real artifact
 ├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
 └── entitlements.plist DarkbloomApp GUI main-executable entitlements (network only; the CLI keeps its own under provider-swift/)
 
@@ -233,7 +234,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
   - Fresh onboarding starts the provider only through exact noninteractive argv `darkbloom start --model <catalog-id> --local-endpoint`; completion requires fresh daemon state, live matching daemon/endpoint PIDs, selected model current/warm, and verified hardware trust. A successful launchd bootstrap alone is NOT setup success.
 - Account-scoped app data is the documented wrapper exception: the app talks to the coordinator directly with a Privy JWT minted via the console handoff page (`console-ui/src/app/auth/app-link/page.tsx` → `darkbloom://auth/callback#token=…` fragment-only, stored in the keychain): `FleetClient` + `AccountSessionManager` app-side. Changes to `/v1/me/*` response shapes need the console decoder AND `FleetClient`.
 - The app must never gain a ProviderCore/MLX dependency: it links only `ProviderCoreFoundation`. Shared wire/file types belong in the foundation layer (Linux-buildable, Foundation-only); anything inference-adjacent stays out (e.g. `DaemonSlotPostureBuilder` remains in ProviderCore because it consults `EngineV2KVBackendPolicy`; `DoctorReport` stays in ProviderCore since only the CLI emits it).
-- `scripts/test-macos-app-fresh-install.sh` assembles an unsigned production-ID fixture but launches the DEBUG executable with the DEBUG-only relocation bypass under `env -i`; it must reach the exact settled `main`/`Darkbloom` 1040×680 welcome window and `.ready` install state. Any installation-error window is a failure. Real signed relocation is covered separately by designated-requirement tests and the manual clean-Mac release checklist.
+- `scripts/test-macos-app-unsigned-debug-lifecycle.sh` assembles an unsigned release-ID fixture but launches the DEBUG executable with the DEBUG-only relocation bypass under `env -i`; it must reach the exact settled `main`/`Darkbloom` 1040×680 welcome window and `.ready` install state. Any installation-error window is a failure. It does not test signing or relocation; `scripts/qualify-signed-macos-app.sh` and the manual clean-Mac checklist cover the real protected artifact.
 
 ## Common Pitfalls
 

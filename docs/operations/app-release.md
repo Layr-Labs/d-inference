@@ -99,6 +99,32 @@ disposable path. Unsigned `dev.darkbloom.app` builds never relocate, and the
 debug-only `DARKBLOOM_SKIP_APP_RELOCATION=1` seam supports harnesses without
 creating a production bypass.
 
+When the canonical destination is an owned signed app, relocation parses
+`CFBundleShortVersionString` and `CFBundleVersion` as strict SemVer, requires
+the two fields to agree semantically, and compares them before creating a
+directory or staging a copy. Equal-version repair and upgrades are allowed;
+an older downloaded source is rejected so the live app cannot fall behind
+SelfUpdater's durable installed-version record.
+
+The sole downgrade override exists for the one-machine recovery procedure
+below. It remains signature-pinned and refuses to run while
+`~/.darkbloom/recovery/state.json` exists, so an operator cannot leave a newer
+SelfUpdater record attached to older live bytes:
+
+```bash
+~/.darkbloom/bin/darkbloom stop
+if [ -d ~/.darkbloom/recovery ]; then
+  mv ~/.darkbloom/recovery \
+    ~/.darkbloom/recovery.before-manual-rollback-"$(date +%Y%m%d-%H%M%S)"
+fi
+DARKBLOOM_ALLOW_APP_DOWNGRADE=1 \
+  "/path/to/prior/Darkbloom.app/Contents/MacOS/DarkbloomApp"
+```
+
+Keep the archived recovery directory as evidence; do not restore it over the
+older installation. The override does not admit ad-hoc signatures, bypass
+notarization, or alter the normal monotonic updater policy.
+
 The single persistent app path is compatible with the updater: for the
 bundled CLI, `SelfUpdater.installRoot(forExecutablePath:)` walks out of
 `Contents/MacOS` to writable `~/.darkbloom`. LaunchAgent setup therefore
@@ -191,8 +217,11 @@ Legacy coordinator/self-update asset
 ## Steps (human-approved release operator)
 
 1. Land source changes; confirm `swift build -c release --product DarkbloomApp`
-   builds, then run `scripts/test-bundle-macos-app.sh` and
-   `scripts/test-install-atomic.sh` locally.
+   builds, then run `scripts/test-bundle-macos-app.sh`,
+   `scripts/test-install-atomic.sh`, and
+   `scripts/test-macos-app-unsigned-debug-lifecycle.sh` locally. The last
+   command is intentionally an unsigned DEBUG lifecycle smoke, not a signing
+   or relocation qualification.
 2. Cut the release the usual way (tag `vX.Y.Z` for prod, or
    `workflow_dispatch` for dev). The workflow additionally: builds
    `DarkbloomApp`, assembles via `scripts/bundle-macos-app.sh`, signs app-clone
@@ -207,6 +236,37 @@ Legacy coordinator/self-update asset
    version, codesign, stapler, Gatekeeper, and runtime-smoke checks.
 
 ## Verification
+
+### Hermetic unsigned lifecycle coverage
+
+The normal macOS CI step named **Test unsigned debug app fresh-user lifecycle**
+runs `scripts/test-macos-app-unsigned-debug-lifecycle.sh`. It assembles an
+unsigned DEBUG bundle in an isolated temporary home, uses the DEBUG-only
+relocation bypass, and proves the exact welcome window plus ready install
+state. It does **not** claim Developer ID signing, notarization, stapling,
+Gatekeeper acceptance, or signed relocation.
+
+### Signed artifact qualification (no signing secrets required)
+
+Once the protected release job has produced a real post-staple app or public
+zip, qualify that artifact without modifying it:
+
+```bash
+./scripts/qualify-signed-macos-app.sh \
+  --expected-version 0.8.0 \
+  /path/to/Darkbloom-macOS-arm64.zip
+```
+
+The command extracts zips only into a temporary directory, then requires the
+pinned Developer ID requirements, hardened runtime, strict deep signature,
+stapled notarization ticket, Gatekeeper acceptance, matching semantic bundle
+versions, the shipping APNs/keychain profile contract, GUI entitlement
+separation, and required sealed resources. It has no ad-hoc or fake-notary
+mode. The release workflow runs the same command against the exact public zip
+before upload, preventing the operator checklist from drifting.
+
+This static qualification still cannot prove AMFI authorization at process
+spawn or relocation behavior. Those remain the clean-Mac steps below.
 
 After the **dev** release (before any prod tag):
 
@@ -246,12 +306,18 @@ After the **dev** release (before any prod tag):
 
 ## Rollback
 
-- **Whole release:** the app rolls back with the provider. Preferred lever:
-  deactivate the bad release row (`scripts/admin.sh releases deactivate
-  <version>`) and re-register the previous bundle + hashes (CI re-run of the
-  earlier tag, or the existing admin flow). `darkbloom update` then moves the
-  fleet back; the self-updater's predecessor-verification machinery accepts
-  the previous bundle because its identity pin is unchanged.
+- **Pending candidate:** SelfUpdater's verified-predecessor machinery performs
+  the automatic rollback after failed startup validation. This is the normal,
+  state-consistent rollback path.
+- **Whole release:** deactivate the bad release row (`scripts/admin.sh releases
+  deactivate <version>`) to stop further uptake. Re-registering an older row
+  does not make the monotonic self-updater downgrade already-promoted hosts.
+  Use a fixed strictly newer release for fleet recovery.
+- **One machine on a promoted bad release:** use the explicit signed-app
+  procedure in **Direct app relocation and writable updates**. It stops the
+  watchdog/provider, archives stale recovery state, and opts into exactly one
+  signed downgrade. Do not merely double-click an old app: the default guard
+  rejects it by design.
 - **Failed single-machine install:** install.sh's atomic swap restores the
   previous app dir on any failure; the foreign-bundle path never deletes user
   files.
@@ -263,11 +329,9 @@ After the **dev** release (before any prod tag):
   existing misuse-breaker behavior — re-register a known-good release to
   restore service.
 - **Direct-download app:** direct downloads become managed installs at
-  `~/.darkbloom/Darkbloom.app`, so release deactivation and normal updater
-  rollback protect them exactly like Terminal installs. For a one-machine
-  recovery, stop Darkbloom and open the prior stapled app once so relocation
-  atomically replaces the canonical app; verify the `~/Applications` symlink,
-  then select Go Online again only if the LaunchAgent needs to be rewritten.
+  `~/.darkbloom/Darkbloom.app`, so release deactivation and candidate rollback
+  protect them exactly like Terminal installs. Arbitrary downgrade remains an
+  explicit one-machine recovery, never an automatic relocation.
 
 ## Version-display sync rule (`LatestProviderVersion`)
 

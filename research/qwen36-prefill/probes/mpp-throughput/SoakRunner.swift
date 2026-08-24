@@ -237,7 +237,7 @@ final class SustainedMetalRunner {
             commandBuffer,
             label: "mpp-soak-timestamp-counter")
 
-        guard let data = sampleBuffer.resolveCounterRange(0..<2)
+        guard let data = try sampleBuffer.resolveCounterRange(0..<2)
         else {
             throw ProbeFailure.message("timestamp counter resolution returned nil")
         }

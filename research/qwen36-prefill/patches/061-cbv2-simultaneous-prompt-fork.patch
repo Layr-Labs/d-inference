@@ -1068,10 +1068,10 @@ index e74c209..61e9e9a 100644
          defer { lock.unlock() }
 diff --git a/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
 new file mode 100644
-index 0000000..4060f17
+index 0000000..8d72846
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,248 @@
 +import Foundation
 +import XCTest
 +
@@ -1214,12 +1214,10 @@ index 0000000..4060f17
 +            await cbv2PromptForkCollectAll(streams)
 +        }
 +
-+        let didForm = await cbv2SchedWait {
-+            harness.engine.promptForkActivity().cohortsFormed == 1
-+        }
++        let didForm = await waitForCohortToForm(harness: harness, gate: gate)
 +        XCTAssertTrue(didForm)
 +        harness.engine.cancel(CBv2RequestID(2))
-+        gate.release.signal()
++        gate.open()
 +        let results = await collection.value
 +        let activity = harness.engine.promptForkActivity()
 +        await harness.engine.shutdown()
@@ -1256,12 +1254,10 @@ index 0000000..4060f17
 +            await cbv2PromptForkCollectAll(streams)
 +        }
 +
-+        let didForm = await cbv2SchedWait {
-+            harness.engine.promptForkActivity().cohortsFormed == 1
-+        }
++        let didForm = await waitForCohortToForm(harness: harness, gate: gate)
 +        XCTAssertTrue(didForm)
 +        harness.engine.cancel(CBv2RequestID(1))
-+        gate.release.signal()
++        gate.open()
 +        let results = await collection.value
 +        let activity = harness.engine.promptForkActivity()
 +        await harness.engine.shutdown()
@@ -1277,6 +1273,33 @@ index 0000000..4060f17
 +        XCTAssertEqual(activity.followerRowsFellBack, 1)
 +        XCTAssertEqual(harness.backend.bytesReserved, 0)
 +        XCTAssertEqual(harness.engine.admissionForTesting.bytesReserved, 0)
++    }
++
++    /// A freshly-created engine can plan its first request before the second
++    /// enqueue block reaches the scheduler. Drive that already-started leader
++    /// one gated chunk at a time until the waiting follower is visible and the
++    /// cohort forms. The current forward remains blocked on return, preserving
++    /// the pre-boundary cancellation point the tests require.
++    private func waitForCohortToForm(
++        harness: CBv2PromptForkHarness,
++        gate: CBv2PromptForkForwardGate
++    ) async -> Bool {
++        for _ in 0 ..< 4 {
++            let formed = await cbv2SchedWait(timeoutSeconds: 0.1) {
++                harness.engine.promptForkActivity().cohortsFormed == 1
++            }
++            if formed { return true }
++            guard gate.entered.wait(timeout: .now() + 1) == .success else {
++                continue
++            }
++            if harness.engine.promptForkActivity().cohortsFormed == 1 {
++                return true
++            }
++            gate.advance()
++        }
++        return await cbv2SchedWait(timeoutSeconds: 1) {
++            harness.engine.promptForkActivity().cohortsFormed == 1
++        }
 +    }
 +
 +    private func submit(
@@ -1452,10 +1475,10 @@ index 0000000..adf892b
 +}
 diff --git a/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
 new file mode 100644
-index 0000000..4852361
+index 0000000..c1634be
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,220 @@
 +import Foundation
 +import MLX
 +
@@ -1463,18 +1486,30 @@ index 0000000..4852361
 +
 +final class CBv2PromptForkForwardGate: @unchecked Sendable {
 +    private let lock = NSLock()
-+    private var armed = true
++    private var isOpen = false
 +    let entered = DispatchSemaphore(value: 0)
-+    let release = DispatchSemaphore(value: 0)
++    private let release = DispatchSemaphore(value: 0)
 +
-+    func waitOnce() {
++    func waitIfClosed() {
 +        lock.lock()
-+        let shouldWait = armed
-+        armed = false
++        let shouldWait = !isOpen
 +        lock.unlock()
 +        guard shouldWait else { return }
 +        entered.signal()
 +        _ = release.wait(timeout: .now() + 10)
++    }
++
++    /// Release one blocked forward while keeping the next forward gated.
++    func advance() {
++        release.signal()
++    }
++
++    /// Release the current forward and leave all later forwards unblocked.
++    func open() {
++        lock.lock()
++        isOpen = true
++        lock.unlock()
++        release.signal()
 +    }
 +}
 +
@@ -1540,7 +1575,7 @@ index 0000000..4852361
 +        caches: [CBv2AttendingLayerCache],
 +        recurrentState: [CBv2RecurrentStateEvaluation]
 +    ) -> MLXArray {
-+        gate?.waitOnce()
++        gate?.waitIfClosed()
 +        lock.lock()
 +        forwardShapesStorage.append(tokens.shape)
 +        lock.unlock()

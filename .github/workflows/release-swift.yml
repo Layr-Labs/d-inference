@@ -930,6 +930,10 @@ jobs:
             "$ZIP_APP/Contents/Info.plist")" = "io.darkbloom.provider"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
             "$ZIP_APP/Contents/Info.plist")" = "$APP_BINARY_NAME"
+          # Keep the operator-facing, non-destructive qualification command
+          # exercised against the exact post-staple public artifact.
+          ./scripts/qualify-signed-macos-app.sh \
+            --expected-version "$VERSION" "$APP_ARCHIVE"
           ZIP_REPORTED=$("$ZIP_APP/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$ZIP_REPORTED"
           ZIP_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \

@@ -137,6 +137,98 @@ final class SandboxControlProtocolTests: XCTestCase {
         XCTAssertNil(payload["working_directory"])
     }
 
+    func testStrictCodecDecodesCoordinatorCommand() throws {
+        let data = try JSONEncoder().encode(commandEnvelope())
+        guard case .command(let decoded) =
+            try SandboxControlCodec.decodeCoordinatorMessage(data)
+        else {
+            return XCTFail("expected command message")
+        }
+        XCTAssertEqual(decoded, try commandEnvelope())
+    }
+
+    func testStrictCodecRejectsDuplicateAndUnknownFields() throws {
+        let valid = try String(
+            decoding: JSONEncoder().encode(commandEnvelope()),
+            as: UTF8.self
+        )
+        let mutations = [
+            valid.replacingOccurrences(
+                of: #""sequence":9"#,
+                with: #""sequence":9,"sequence":10"#
+            ),
+            valid.replacingOccurrences(
+                of: #""timeout_seconds":900"#,
+                with: #""timeout_seconds":900,"\u0074imeout_seconds":1"#
+            ),
+            valid.replacingOccurrences(
+                of: #""sequence":9"#,
+                with: #""sequence":9,"auth_token":"forbidden""#
+            ),
+            valid.replacingOccurrences(
+                of: #""fencing_token":7"#,
+                with: #""fencing_token":7,"authority":"forbidden""#
+            ),
+        ]
+        for mutation in mutations {
+            XCTAssertThrowsError(
+                try SandboxControlCodec.decodeCoordinatorMessage(
+                    Data(mutation.utf8)
+                ),
+                "accepted mutated frame: \(mutation)"
+            )
+        }
+    }
+
+    func testStrictCodecRejectsDirectionAndLeaseViolations() throws {
+        let command = try commandEnvelope()
+        let wrongDirection = SandboxControlEnvelope(
+            type: SandboxControlMessageType.hostRegister,
+            hostID: command.hostID,
+            connectionEpoch: command.connectionEpoch,
+            sequence: command.sequence,
+            payload: command.payload
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(wrongDirection)
+            )
+        )
+
+        let invalidTimeout = SandboxControlEnvelope(
+            type: SandboxControlMessageType.command,
+            hostID: command.hostID,
+            connectionEpoch: command.connectionEpoch,
+            sequence: command.sequence,
+            payload: SandboxWireCommand(
+                commandID: command.payload.commandID,
+                idempotencyKey: command.payload.idempotencyKey,
+                scope: command.payload.scope,
+                arguments: command.payload.arguments,
+                workingDirectory: "/workspace",
+                timeoutSeconds: 901
+            )
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(invalidTimeout)
+            )
+        )
+
+        let zeroSequence = SandboxControlEnvelope(
+            type: SandboxControlMessageType.command,
+            hostID: command.hostID,
+            connectionEpoch: command.connectionEpoch,
+            sequence: 0,
+            payload: command.payload
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(zeroSequence)
+            )
+        )
+    }
+
     private func commandEnvelope() throws
         -> SandboxControlEnvelope<SandboxWireCommand>
     {

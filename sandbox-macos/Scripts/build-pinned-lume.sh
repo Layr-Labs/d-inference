@@ -10,6 +10,7 @@ COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$LOCK_FILE")"
 SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$LOCK_FILE")"
 EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$LOCK_FILE")"
 PYTHON="$(command -v python3)"
+RUN_TESTS="${DARKBLOOM_LUME_RUN_TESTS:-0}"
 PATCH_RELATIVE_PATHS=()
 EXPECTED_PATCH_SHA256S=()
 while IFS=$'\t' read -r patch_path patch_sha256; do
@@ -76,6 +77,10 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]] \
     echo "refusing unexpected Lume code-signing identity" >&2
     exit 1
 fi
+if [[ "$RUN_TESTS" != "0" ]] && [[ "$RUN_TESTS" != "1" ]]; then
+    echo "DARKBLOOM_LUME_RUN_TESTS must be 0 or 1" >&2
+    exit 1
+fi
 for index in "${!PATCH_RELATIVE_PATHS[@]}"; do
     patch_file="$PACKAGE_DIR/${PATCH_RELATIVE_PATHS[$index]}"
     if [[ ! -f "$patch_file" ]]; then
@@ -138,6 +143,9 @@ for patch_path in "${PATCH_RELATIVE_PATHS[@]}"; do
 done
 
 SOURCE_ROOT="$BUILD_ROOT/$SOURCE_PATH"
+if [[ "$RUN_TESTS" == "1" ]]; then
+    /bin/bash "$PACKAGE_DIR/Scripts/run-pinned-lume-tests.sh" "$SOURCE_ROOT"
+fi
 (
     cd "$SOURCE_ROOT"
     LUME_TELEMETRY_ENABLED=false swift build -c release --product lume

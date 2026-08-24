@@ -131,6 +131,72 @@ final class SandboxProcessRunnerTests: XCTestCase {
         XCTAssertEqual(secondResult.exitCode, 0)
     }
 
+    func testCooperativeEOFIsStickyWhenStopImmediatelyFollowsSpawn()
+        async throws
+    {
+        let fixture = try ProcessControlFixture()
+        defer { fixture.remove() }
+        let process = try fixture.startEOFCooperativeProcess(
+            preReadDelay: "0.2"
+        )
+
+        let result = await process.stop(
+            cooperativeGracePeriod: .seconds(2),
+            signalGracePeriod: .milliseconds(100)
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(
+            String(decoding: result.standardOutput, as: UTF8.self),
+            "cooperative-eof"
+        )
+        XCTAssertFalse(fixture.signalMarkerExists)
+    }
+
+    func testOrdinaryCooperativeStopDoesNotUseSignalFallback() async throws {
+        let fixture = try ProcessControlFixture()
+        defer { fixture.remove() }
+        let process = try fixture.startEOFCooperativeProcess()
+        try await fixture.waitUntilReady()
+
+        let result = await process.stop(
+            cooperativeGracePeriod: .seconds(2),
+            signalGracePeriod: .milliseconds(100)
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(fixture.signalMarkerExists)
+    }
+
+    func testCooperativeStopRetainsBoundedSignalFallback() async throws {
+        let fixture = try ProcessControlFixture()
+        defer { fixture.remove() }
+        let process = try fixture.startUncooperativeProcess()
+        try await fixture.waitUntilReady()
+
+        let result = await process.stop(
+            cooperativeGracePeriod: .milliseconds(100),
+            signalGracePeriod: .seconds(1)
+        )
+
+        XCTAssertEqual(result.exitCode, 128 + SIGKILL)
+        XCTAssertTrue(fixture.signalMarkerExists)
+    }
+
+    func testManagedProcessDeinitClosesCooperativeEndpoint() async throws {
+        let fixture = try ProcessControlFixture()
+        defer { fixture.remove() }
+        var process: SandboxManagedProcess? =
+            try fixture.startEOFCooperativeProcess()
+        try await fixture.waitUntilReady()
+
+        process = nil
+        _ = process
+
+        try await fixture.waitUntilExitedCooperatively()
+        XCTAssertFalse(fixture.signalMarkerExists)
+    }
+
     func testDoesNotLeakParentEnvironment() async throws {
         let secretKey = "DARKBLOOM_PROCESS_RUNNER_PARENT_SECRET"
         setenv(secretKey, "must-not-leak", 1)
@@ -224,5 +290,109 @@ final class SandboxProcessRunnerTests: XCTestCase {
         }
         XCTAssertEqual(Darwin.kill(pid, 0), -1)
         XCTAssertEqual(errno, ESRCH)
+    }
+}
+
+private struct ProcessControlFixture {
+    private static let environmentVariable =
+        "DARKBLOOM_TEST_PROCESS_CONTROL_FD"
+
+    let directory: URL
+    let ready: URL
+    let signal: URL
+    let cooperativeExit: URL
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "darkbloom-process-control-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        ready = directory.appendingPathComponent("ready")
+        signal = directory.appendingPathComponent("signal")
+        cooperativeExit = directory.appendingPathComponent(
+            "cooperative-exit"
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+    }
+
+    var signalMarkerExists: Bool {
+        FileManager.default.fileExists(atPath: signal.path)
+    }
+
+    func startEOFCooperativeProcess(
+        preReadDelay: String? = nil
+    ) throws -> SandboxManagedProcess {
+        let delay = preReadDelay.map { "/bin/sleep \($0);" } ?? ""
+        return try SandboxProcessRunner().start(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                """
+                trap 'printf signal > "$2"; exit 91' TERM
+                printf ready > "$1"
+                \(delay)
+                descriptor="${\(Self.environmentVariable)}"
+                eval "/bin/cat <&$descriptor" >/dev/null
+                printf cooperative-eof
+                printf exited > "$3"
+                """,
+                "darkbloom-process-control",
+                ready.path,
+                signal.path,
+                cooperativeExit.path,
+            ],
+            cooperativeControl: SandboxCooperativeProcessControl(
+                environmentVariable: Self.environmentVariable
+            )
+        )
+    }
+
+    func startUncooperativeProcess() throws -> SandboxManagedProcess {
+        try SandboxProcessRunner().start(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                """
+                trap 'printf signal > "$2"' TERM
+                printf ready > "$1"
+                while :; do :; done
+                """,
+                "darkbloom-process-control",
+                ready.path,
+                signal.path,
+            ],
+            cooperativeControl: SandboxCooperativeProcessControl(
+                environmentVariable: Self.environmentVariable
+            )
+        )
+    }
+
+    func waitUntilReady() async throws {
+        try await waitForMarker(ready)
+    }
+
+    func waitUntilExitedCooperatively() async throws {
+        try await waitForMarker(cooperativeExit)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func waitForMarker(_ marker: URL) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: marker.path) {
+            guard clock.now < deadline else {
+                throw SandboxRuntimeError.operationTimedOut(
+                    marker.lastPathComponent
+                )
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 }

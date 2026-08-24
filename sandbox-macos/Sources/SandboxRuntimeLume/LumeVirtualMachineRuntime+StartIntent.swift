@@ -57,7 +57,7 @@ extension LumeVirtualMachineRuntime {
         unresolvedIntent: LumeVirtualMachineStartIntent.Intent?,
         expectedLease: SandboxCapacityLease?
     ) async throws {
-        _ = await process.stop()
+        _ = await stopManagedRunProcess(process)
         let observed = try await inspect(name: name)
         if let observed {
             try LumeVirtualMachineResourceCommitment.requireMatch(
@@ -126,7 +126,7 @@ extension LumeVirtualMachineRuntime {
         )
         if existing.state == .stopped {
             if let process = runningProcesses.removeValue(forKey: name) {
-                _ = await process.stop()
+                _ = await stopManagedRunProcess(process)
             }
             try finishProvenStop(
                 name: name,
@@ -140,11 +140,26 @@ extension LumeVirtualMachineRuntime {
         }
 
         if let process = runningProcesses.removeValue(forKey: name) {
-            // Hardened Lume will not signal a different live owner process.
-            // End the child this actor started before asking Lume to reconcile
-            // the now-unlocked run marker and terminal VM state.
-            _ = await process.stop()
+            // EOF asks the owning Lume process to stop its in-process VM. The
+            // child exits only after Virtualization.framework is terminal.
+            _ = await stopManagedRunProcess(process)
+            if let stopped = try await inspect(name: name),
+               stopped.state == .stopped
+            {
+                try finishProvenStop(
+                    name: name,
+                    owner: owner,
+                    ownership: ownershipCommitment,
+                    startIntentPlan: startIntentPlan,
+                    observed: stopped,
+                    expectedLease: expectedLease
+                )
+                return
+            }
         }
+        // The cooperative owner did not provide stopped proof. Retain the
+        // existing cross-process command as a bounded emergency fallback; the
+        // pinned Lume build still fails closed for a live foreign owner.
         _ = try await run(
             arguments: storageArguments(["stop", name]),
             timeoutSeconds: configuration.commandTimeoutSeconds,
@@ -156,7 +171,7 @@ extension LumeVirtualMachineRuntime {
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
         if let process = runningProcesses.removeValue(forKey: name) {
-            _ = await process.stop()
+            _ = await stopManagedRunProcess(process)
         }
         try finishProvenStop(
             name: name,
@@ -174,7 +189,7 @@ extension LumeVirtualMachineRuntime {
         locallyTerminatedIntent: LumeVirtualMachineStartIntent.Intent?
     ) async throws {
         if let process = runningProcesses.removeValue(forKey: name) {
-            _ = await process.stop()
+            _ = await stopManagedRunProcess(process)
         }
         let ownershipPresence = try LumeVirtualMachineOwnership.presence(
             name: name,
@@ -265,6 +280,16 @@ extension LumeVirtualMachineRuntime {
     ) -> SandboxRuntimeError {
         .unsupported(
             "leased VM \(name) is missing; refusing to release capacity"
+        )
+    }
+
+    private func stopManagedRunProcess(
+        _ process: SandboxManagedProcess
+    ) async -> SandboxProcessResult {
+        await process.stop(
+            cooperativeGracePeriod:
+                .seconds(configuration.commandTimeoutSeconds),
+            signalGracePeriod: .seconds(2)
         )
     }
 }

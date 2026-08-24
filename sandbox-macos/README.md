@@ -196,14 +196,20 @@ kernel-reported birth time before virtualization starts. Status keeps those
 descriptors and any acquired proof locks through marker classification, never
 deletes lifecycle authority, and reports `running` only after the framework
 start succeeds; `starting` and `stopping` remain fail-closed states. A
-same-process stop uses the in-memory virtualization service. After a controller
-restart, `F_GETLK` may prove that another process owns the lock, but that PID is
-never treated as a control capability: stop returns inconclusive and capacity
-stays reserved until an identity-bound owner channel exists or the owner exits.
+same-process stop uses the in-memory virtualization service. Before spawning
+`lume run`, the broker creates a private socketpair and gives the child one
+endpoint. Closing the broker endpoint requests same-process `VM.stop`; EOF is
+sticky even if the broker dies before the child begins monitoring, acquires run
+locks, or publishes its marker. The owner exits only after the virtualization
+service reaches a terminal state and clears the marker while still holding the
+run locks. `F_GETLK` PIDs remain observations, never control capabilities, so a
+foreign owner or failed cooperative stop remains inconclusive and keeps capacity
+reserved. SIGTERM/SIGKILL are bounded emergency fallbacks and do not authorize
+release without an independently observed stopped state.
 The broker also fsyncs a one-per-VM start intent, bound to the ownership
-installation and sandbox generation, before spawning `lume run`. A restarted
-reconciler retains capacity while that intent is unresolved, closing the window
-before the child publishes its own lock and lifecycle marker.
+installation, sandbox generation, and inherited lifecycle capability contract,
+before spawning `lume run`. A restarted reconciler may clear that intent only
+after stopped proof; unknown or owned states retain capacity.
 Legacy markers, replaced inodes, reused PIDs, missing owner locks, and ambiguous
 probes likewise retain capacity. Terminal cleanup clears the marker only while
 holding the original run locks; if emergency framework stop fails, the

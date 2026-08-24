@@ -5,7 +5,8 @@ import SandboxRuntime
 enum LumeVirtualMachineStartIntent {
     static let fileName = ".darkbloom-start-intent.json"
 
-    static let schemaVersion: UInt16 = 1
+    static let schemaVersion: UInt16 = 2
+    static let lifecycleControl = "broker_eof_v1"
     private static let maximumBytes = 16 * 1_024
 
     struct Intent: Equatable, Sendable {
@@ -268,18 +269,14 @@ enum LumeVirtualMachineStartIntent {
             )
             return .proceed
         }
+        if observedState == .stopped {
+            // This schema records the pre-spawn EOF capability contract. Once
+            // its broker is gone, a child still in the spawn-before-lock
+            // window observes sticky EOF and cannot publish or start later.
+            // A current stopped observation is terminal proof for this intent.
+            return .clearAfterStopped(intent)
+        }
         if locallyTerminatedIntent == intent {
-            if observedState == .stopped {
-                try clearAfterFailedStart(
-                    intent,
-                    name: name,
-                    ownership: ownership,
-                    owner: owner,
-                    terminalState: observedState,
-                    in: storageDirectory
-                )
-                return .proceed
-            }
             return .clearAfterStopped(intent)
         }
         if observedState == .starting {

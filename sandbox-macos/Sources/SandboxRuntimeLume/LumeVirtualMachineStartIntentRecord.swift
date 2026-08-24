@@ -12,6 +12,7 @@ extension LumeVirtualMachineStartIntent {
         let sandboxID: SandboxID?
         let sandboxGeneration: SandboxGeneration?
         let initiatingFencingToken: SandboxFencingToken?
+        let lifecycleControl: String
 
         init(
             name: String,
@@ -23,6 +24,8 @@ extension LumeVirtualMachineStartIntent {
             intentID = UUID()
             installationID = ownership.installationID
             self.name = name
+            lifecycleControl =
+                LumeVirtualMachineStartIntent.lifecycleControl
             switch owner {
             case .baseTemplate:
                 guard initiatingScope == nil else {
@@ -66,7 +69,9 @@ extension LumeVirtualMachineStartIntent {
 
         var isValid: Bool {
             guard schemaVersion == LumeVirtualMachineStartIntent.schemaVersion,
-                  SandboxVirtualMachineNamePolicy.isValid(name)
+                  SandboxVirtualMachineNamePolicy.isValid(name),
+                  lifecycleControl
+                      == LumeVirtualMachineStartIntent.lifecycleControl
             else {
                 return false
             }

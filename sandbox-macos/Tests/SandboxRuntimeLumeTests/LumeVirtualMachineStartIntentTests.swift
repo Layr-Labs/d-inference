@@ -28,7 +28,11 @@ final class LumeVirtualMachineStartIntentTests: XCTestCase {
                 with: Data(contentsOf: fixture.intentFile)
             ) as? [String: Any]
         )
-        XCTAssertEqual(object["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(object["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(
+            object["lifecycleControl"] as? String,
+            "broker_eof_v1"
+        )
         XCTAssertEqual(
             (object["intentID"] as? String)?.lowercased(),
             intent.intentID.uuidString.lowercased()
@@ -154,6 +158,33 @@ final class LumeVirtualMachineStartIntentTests: XCTestCase {
         try fixture.makeIntentPrivate()
 
         XCTAssertThrowsError(try fixture.load())
+    }
+
+    func testRejectsPreCapabilityStartIntentVersion() throws {
+        let fixture = try StartIntentFixture(scope: Self.scope())
+        defer { try? fixture.remove() }
+        _ = try fixture.persist(scope: fixture.scope)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: fixture.intentFile)
+            ) as? [String: Any]
+        )
+        object["schemaVersion"] = 1
+        object.removeValue(forKey: "lifecycleControl")
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: fixture.intentFile)
+        try fixture.makeIntentPrivate()
+
+        XCTAssertThrowsError(try fixture.load()) { error in
+            XCTAssertEqual(
+                error as? SandboxRuntimeError,
+                .unsupported(
+                    "VM \(fixture.name) start intent has an unsupported version"
+                )
+            )
+        }
     }
 
     func testRejectsIntentFromDifferentVMInstallation() throws {

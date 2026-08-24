@@ -1,0 +1,681 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index 1b727d96..b5376f5c 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -189,7 +189,13 @@ struct Run: AsyncParsableCommand {
+ 
+     @MainActor
+     func run() async throws {
++        let brokerLifecycle = try BrokerLifecycleCapability.inherited()
+         if detach {
++            guard brokerLifecycle == nil else {
++                throw ValidationError(
++                    "Broker-managed lifecycle control cannot be combined with --detach"
++                )
++            }
+             let result = try DetachedVMRunner.launch(vmName: name, logPath: logFile)
+             print("Started '\(name)' in the background (PID \(result.processIdentifier)).")
+             print("Log: \(result.logURL.path)")
+@@ -202,11 +208,17 @@ struct Run: AsyncParsableCommand {
+             "headless": displayMode == .none
+         ])
+ 
+-        try await runVM(displayMode: displayMode)
++        try await runVM(
++            displayMode: displayMode,
++            brokerLifecycle: brokerLifecycle
++        )
+     }
+ 
+     @MainActor
+-    private func runVM(displayMode: DisplayMode) async throws {
++    private func runVM(
++        displayMode: DisplayMode,
++        brokerLifecycle: BrokerLifecycleCapability?
++    ) async throws {
+         try await LumeController().runVM(
+             name: name,
+             noDisplay: noDisplay,
+@@ -225,7 +237,8 @@ struct Run: AsyncParsableCommand {
+             additionalDiskPaths: parsedAdditionalDisks.isEmpty ? nil : parsedAdditionalDisks,
+             networkMode: parsedNetworkMode,
+             clipboard: clipboard,
+-            vncPolicy: vnc
++            vncPolicy: vnc,
++            brokerLifecycle: brokerLifecycle
+         )
+     }
+ }
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 411ccae3..9a7c6023 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -1124,7 +1124,8 @@ final class LumeController {
+         networkMode: NetworkMode? = nil,
+         clipboard: Bool = false,
+         vncPolicy: VNCPolicy = .enabled,
+-        telemetryTransport: TelemetryTransport = .cli
++        telemetryTransport: TelemetryTransport = .cli,
++        brokerLifecycle: BrokerLifecycleCapability? = nil
+     ) async throws {
+         let normalizedName = normalizeVMName(name: name)
+         let effectiveDisplayMode = displayMode ?? (noDisplay ? .none : .vnc)
+@@ -1261,7 +1262,8 @@ final class LumeController {
+                 additionalDiskPaths: additionalDiskPaths,
+                 networkMode: networkMode,
+                 clipboard: clipboard,
+-                vncPolicy: vncPolicy)
++                vncPolicy: vncPolicy,
++                brokerLifecycle: brokerLifecycle)
+             Logger.info("VM started successfully", metadata: ["name": normalizedName])
+         } catch {
+             Logger.error("Failed to run VM", metadata: ["error": error.localizedDescription])
+diff --git a/libs/lume/src/VM/BrokerLifecycleCapability.swift b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+new file mode 100644
+index 00000000..98f5ae48
+--- /dev/null
++++ b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+@@ -0,0 +1,203 @@
++import Darwin
++import Dispatch
++import Foundation
++
++/// A pre-spawn descriptor whose peer is owned by the sandbox broker.
++///
++/// Peer closure is the control message. EOF is sticky, so a request made
++/// before VM registration or lock acquisition cannot be lost.
++final class BrokerLifecycleCapability: @unchecked Sendable {
++    static let environmentVariable = "DARKBLOOM_LUME_LIFECYCLE_FD"
++
++    typealias StopHandler = @Sendable () -> Void
++
++    private let endpoint: Endpoint
++    private let state = State()
++    private let source: DispatchSourceRead
++
++    static func inherited() throws -> BrokerLifecycleCapability? {
++        guard let value = ProcessInfo.processInfo.environment[
++            environmentVariable
++        ] else {
++            return nil
++        }
++        unsetenv(environmentVariable)
++        guard let descriptor = Int32(value),
++              descriptor > STDERR_FILENO
++        else {
++            throw VMError.internalError(
++                "Invalid broker lifecycle capability"
++            )
++        }
++        return try BrokerLifecycleCapability(fileDescriptor: descriptor)
++    }
++
++    init(fileDescriptor: Int32) throws {
++        guard fileDescriptor > STDERR_FILENO,
++              fcntl(fileDescriptor, F_GETFD) >= 0
++        else {
++            throw VMError.internalError(
++                "Invalid broker lifecycle capability"
++            )
++        }
++        let descriptorFlags = fcntl(fileDescriptor, F_GETFD)
++        let statusFlags = fcntl(fileDescriptor, F_GETFL)
++        guard descriptorFlags >= 0,
++              statusFlags >= 0,
++              fcntl(
++                  fileDescriptor,
++                  F_SETFD,
++                  descriptorFlags | FD_CLOEXEC
++              ) == 0,
++              fcntl(
++                  fileDescriptor,
++                  F_SETFL,
++                  statusFlags | O_NONBLOCK
++              ) == 0
++        else {
++            throw VMError.internalError(
++                "Could not secure broker lifecycle capability"
++            )
++        }
++
++        let endpoint = Endpoint(fileDescriptor: fileDescriptor)
++        self.endpoint = endpoint
++        source = DispatchSource.makeReadSource(
++            fileDescriptor: fileDescriptor,
++            queue: DispatchQueue(
++                label:
++                    "com.trycua.lume.broker-lifecycle.\(UUID().uuidString)"
++            )
++        )
++        source.setEventHandler { [weak self] in
++            self?.consumeControlEvent()
++        }
++        source.setCancelHandler {
++            endpoint.close()
++        }
++        source.resume()
++        consumeControlEvent()
++    }
++
++    deinit {
++        source.cancel()
++    }
++
++    var isStopRequested: Bool {
++        consumeControlEvent()
++        return state.isStopRequested
++    }
++
++    func installStopHandler(_ handler: @escaping StopHandler) {
++        state.install(handler)
++    }
++
++    func clearStopHandler() {
++        state.clearHandler()
++    }
++
++    private func consumeControlEvent() {
++        guard !state.isStopRequested else {
++            return
++        }
++        var byte: UInt8 = 0
++        while true {
++            let count = endpoint.readByte(into: &byte)
++            if count == 0 {
++                state.requestStop()
++                source.cancel()
++                return
++            }
++            if count > 0 {
++                // The protocol uses EOF only. Unexpected data fails safe.
++                state.requestStop()
++                source.cancel()
++                return
++            }
++            if errno == EINTR {
++                continue
++            }
++            if errno == EAGAIN || errno == EWOULDBLOCK {
++                return
++            }
++            state.requestStop()
++            source.cancel()
++            return
++        }
++    }
++
++    private final class Endpoint: @unchecked Sendable {
++        private let lock = NSLock()
++        private var fileDescriptor: Int32
++
++        init(fileDescriptor: Int32) {
++            self.fileDescriptor = fileDescriptor
++        }
++
++        func readByte(into byte: inout UInt8) -> Int {
++            lock.withLock {
++                guard fileDescriptor >= 0 else {
++                    errno = EBADF
++                    return -1
++                }
++                return Darwin.read(fileDescriptor, &byte, 1)
++            }
++        }
++
++        func close() {
++            let descriptor = lock.withLock {
++                let descriptor = fileDescriptor
++                fileDescriptor = -1
++                return descriptor
++            }
++            if descriptor >= 0 {
++                Darwin.close(descriptor)
++            }
++        }
++    }
++
++    private final class State: @unchecked Sendable {
++        private let lock = NSLock()
++        private var stopRequested = false
++        private var handler: StopHandler?
++
++        var isStopRequested: Bool {
++            lock.withLock { stopRequested }
++        }
++
++        func install(_ handler: @escaping StopHandler) {
++            let invokeImmediately = lock.withLock {
++                self.handler = handler
++                return stopRequested
++            }
++            if invokeImmediately {
++                handler()
++            }
++        }
++
++        func clearHandler() {
++            lock.withLock {
++                handler = nil
++            }
++        }
++
++        func requestStop() {
++            let handler = lock.withLock {
++                guard !stopRequested else {
++                    return nil as StopHandler?
++                }
++                stopRequested = true
++                return self.handler
++            }
++            handler?()
++        }
++    }
++}
++
++private extension NSLock {
++    func withLock<T>(_ operation: () -> T) -> T {
++        lock()
++        defer { unlock() }
++        return operation()
++    }
++}
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index 8721e066..b5fce766 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -63,6 +63,7 @@ class VM {
+     private var activeVNCPolicy: VNCPolicy = .enabled
+     private var activeRunIdentity: RunSessionIdentity?
+     private var activeRunPhase: VMRunLifecyclePhase?
++    private var activeBrokerLifecycle: BrokerLifecycleCapability?
+     private var runLifecycleIsActive = false
+     private var runStopRequested = false
+     private var runLifecycleExitWaiters:
+@@ -201,8 +202,28 @@ class VM {
+         vncPort: Int = 0, vncPassword: String? = nil, recoveryMode: Bool = false,
+         usbMassStoragePaths: [Path]? = nil, additionalDiskPaths: [Path]? = nil,
+         networkMode: NetworkMode? = nil, clipboard: Bool = false,
+-        vncPolicy: VNCPolicy = .enabled
++        vncPolicy: VNCPolicy = .enabled,
++        brokerLifecycle: BrokerLifecycleCapability? = nil
+     ) async throws {
++        guard !runLifecycleIsActive, activeBrokerLifecycle == nil else {
++            throw VMError.alreadyRunning(vmDirContext.name)
++        }
++        runStopRequested = brokerLifecycle?.isStopRequested ?? false
++        activeBrokerLifecycle = brokerLifecycle
++        brokerLifecycle?.installStopHandler { [weak self] in
++            Task { @MainActor [weak self] in
++                await self?.brokerRequestedStop()
++            }
++        }
++        defer {
++            if !runLifecycleIsActive {
++                activeBrokerLifecycle?.clearStopHandler()
++                activeBrokerLifecycle = nil
++                runStopRequested = false
++            }
++        }
++        try throwIfRunStopRequested()
++
+         // Defense in depth: the CLI and the controller reject these combinations
+         // first, but no caller may reach a VNC-dependent path with VNC disabled.
+         if let option = VNCPolicy.conflictingOption(
+@@ -217,6 +238,7 @@ class VM {
+         guard let resizeGuard = try vmDirContext.dir.tryAcquireResizeGuard(exclusive: false) else {
+             throw DiskResizeError.resizeInProgress(vmDirContext.name)
+         }
++        try throwIfRunStopRequested()
+         var retainResizeGuardOnExit = false
+         defer {
+             if !retainResizeGuardOnExit {
+@@ -270,6 +292,7 @@ class VM {
+         else {
+             throw VMError.alreadyRunning(vmDirContext.name)
+         }
++        try throwIfRunStopRequested()
+ 
+         // Hold both the compatibility config flock and a dedicated POSIX owner
+         // lock. The latter exposes its exact PID through F_GETLK without lsof.
+@@ -299,6 +322,7 @@ class VM {
+             throw VMError.alreadyRunning(vmDirContext.name)
+         }
+         runLocksAcquired = true
++        try throwIfRunStopRequested()
+         guard runLocks.pathsStillMatch(
+                   configPath: vmDirContext.dir.configPath.path,
+                   ownerLockPath:
+@@ -329,7 +353,14 @@ class VM {
+         )
+         // This write is a startup precondition. No VM service starts unless an
+         // authoritative marker for the exact held inodes is durable on disk.
++        try throwIfRunStopRequested()
+         try vmDirContext.dir.saveSession(initialSession)
++        do {
++            try throwIfRunStopRequested()
++        } catch {
++            try vmDirContext.dir.clearSession()
++            throw error
++        }
+         guard runLocks.pathsStillMatch(
+                   configPath: vmDirContext.dir.configPath.path,
+                   ownerLockPath:
+@@ -343,6 +374,14 @@ class VM {
+         activeRunIdentity = runIdentity
+         activeRunPhase = .starting
+         activeSharedDirectories = sharedDirectories
++        do {
++            try throwIfRunStopRequested()
++        } catch {
++            activeRunIdentity = nil
++            activeRunPhase = nil
++            try vmDirContext.dir.clearSession()
++            throw error
++        }
+         beginRunLifecycle()
+         var retainLifecycleOnExit = false
+         defer {
+@@ -364,6 +403,7 @@ class VM {
+ 
+         // Create and configure the VM
+         do {
++            try throwIfRunStopRequested()
+             // Create a lume-config shared directory so the guest can discover
+             // the VNC port/password at boot.  The directory is created empty now
+             // and populated after the VNC server starts (VirtioFS exposes live
+@@ -404,6 +444,7 @@ class VM {
+ 
+             Logger.info(
+                 "Initializing virtualization service", metadata: ["name": vmDirContext.name])
++            try throwIfRunStopRequested()
+             virtualizationService = try virtualizationServiceFactory(config)
+             Logger.info(
+                 "Successfully initialized virtualization service",
+@@ -413,6 +454,7 @@ class VM {
+                 Logger.error("Virtualization service is nil", metadata: ["name": vmDirContext.name])
+                 throw VMError.internalError("Virtualization service not initialized")
+             }
++            try throwIfRunStopRequested()
+ 
+             let presenter = displayPresenterFactory(displayMode, vncService)
+             displayPresenter = presenter
+@@ -476,11 +518,11 @@ class VM {
+             Logger.info(
+                 "Starting VM via virtualization service", metadata: ["name": vmDirContext.name])
+             try await service.start()
++            try throwIfRunStopRequested()
+             guard service.state == .running else {
+                 throw VMError.internalError(
+                     "Virtualization service start returned without a running state")
+             }
+-            try throwIfRunStopRequested()
+             try validateActiveRunIdentity(
+                 runLocks,
+                 expected: runIdentity)
+@@ -857,13 +899,14 @@ class VM {
+     }
+ 
+     private func beginRunLifecycle() {
+-        runStopRequested = false
+         runLifecycleIsActive = true
+         SharedVM.shared.register(self)
+     }
+ 
+     private func endRunLifecycle() {
+         SharedVM.shared.unregister(self)
++        activeBrokerLifecycle?.clearStopHandler()
++        activeBrokerLifecycle = nil
+         activeRunIdentity = nil
+         activeRunPhase = nil
+         runStopRequested = false
+@@ -885,11 +928,31 @@ class VM {
+     }
+ 
+     private func throwIfRunStopRequested() throws {
+-        if runStopRequested {
++        if runStopRequested
++            || activeBrokerLifecycle?.isStopRequested == true
++        {
++            runStopRequested = true
+             throw CancellationError()
+         }
+     }
+ 
++    private func brokerRequestedStop() async {
++        runStopRequested = true
++        guard runLifecycleIsActive else {
++            return
++        }
++        do {
++            try await stop()
++        } catch {
++            Logger.error(
++                "Broker-requested same-process VM stop failed",
++                metadata: [
++                    "name": vmDirContext.name,
++                    "error": error.localizedDescription,
++                ])
++        }
++    }
++
+     private func transitionRunPhase(
+         to phase: VMRunLifecyclePhase,
+         expectedIdentity: RunSessionIdentity
+diff --git a/libs/lume/tests/BrokerLifecycleCapabilityTests.swift b/libs/lume/tests/BrokerLifecycleCapabilityTests.swift
+new file mode 100644
+index 00000000..721fa7e2
+--- /dev/null
++++ b/libs/lume/tests/BrokerLifecycleCapabilityTests.swift
+@@ -0,0 +1,34 @@
++import Darwin
++import Dispatch
++import Foundation
++import Testing
++
++@testable import lume
++
++private enum BrokerCapabilityTestError: Error {
++  case socketPair
++}
++
++private func makeBrokerSocketPair() throws -> (owner: Int32, child: Int32) {
++  var descriptors = [Int32](repeating: -1, count: 2)
++  guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
++    throw BrokerCapabilityTestError.socketPair
++  }
++  return (descriptors[0], descriptors[1])
++}
++
++@Test("an endpoint closed before monitoring latches a broker stop request")
++func immediateBrokerEndpointClosureIsSticky() throws {
++  let descriptors = try makeBrokerSocketPair()
++  Darwin.close(descriptors.owner)
++  let capability = try BrokerLifecycleCapability(
++    fileDescriptor: descriptors.child)
++  let requested = DispatchSemaphore(value: 0)
++
++  capability.installStopHandler {
++    requested.signal()
++  }
++
++  #expect(requested.wait(timeout: .now() + 2) == .success)
++  #expect(capability.isStopRequested)
++}
+diff --git a/libs/lume/tests/Mocks/MockVM.swift b/libs/lume/tests/Mocks/MockVM.swift
+index 31013b8e..94fe6f25 100644
+--- a/libs/lume/tests/Mocks/MockVM.swift
++++ b/libs/lume/tests/Mocks/MockVM.swift
+@@ -26,7 +26,8 @@ class MockVM: VM {
+         vncPort: Int = 0, vncPassword: String? = nil, recoveryMode: Bool = false,
+         usbMassStoragePaths: [Path]? = nil, additionalDiskPaths: [Path]? = nil,
+         networkMode: NetworkMode? = nil, clipboard: Bool = false,
+-        vncPolicy: VNCPolicy = .enabled
++        vncPolicy: VNCPolicy = .enabled,
++        brokerLifecycle: BrokerLifecycleCapability? = nil
+     ) async throws {
+         mockIsRunning = true
+         try await super.run(
+@@ -35,7 +36,8 @@ class MockVM: VM {
+             usbMassStoragePaths: usbMassStoragePaths,
+             additionalDiskPaths: additionalDiskPaths,
+             networkMode: networkMode, clipboard: clipboard,
+-            vncPolicy: vncPolicy
++            vncPolicy: vncPolicy,
++            brokerLifecycle: brokerLifecycle
+         )
+     }
+ 
+diff --git a/libs/lume/tests/RunLockLivenessTests.swift b/libs/lume/tests/RunLockLivenessTests.swift
+index 55099e39..c15904d3 100644
+--- a/libs/lume/tests/RunLockLivenessTests.swift
++++ b/libs/lume/tests/RunLockLivenessTests.swift
+@@ -86,7 +86,8 @@ private final class GatedRunVM: MockVM {
+         additionalDiskPaths: [Path]? = nil,
+         networkMode: NetworkMode? = nil,
+         clipboard: Bool = false,
+-        vncPolicy: VNCPolicy = .enabled
++        vncPolicy: VNCPolicy = .enabled,
++        brokerLifecycle: BrokerLifecycleCapability? = nil
+     ) async throws {
+         cacheWasPresentAtEntry =
+             SharedVM.shared.getVM(for: vmDirContext.dir)
+diff --git a/libs/lume/tests/VMDisplayLifecycleTests.swift b/libs/lume/tests/VMDisplayLifecycleTests.swift
+index d39cc6e2..354a7040 100644
+--- a/libs/lume/tests/VMDisplayLifecycleTests.swift
++++ b/libs/lume/tests/VMDisplayLifecycleTests.swift
+@@ -1,3 +1,4 @@
++import Darwin
+ import Foundation
+ import Testing
+ 
+@@ -7,6 +8,25 @@ private enum PresenterTestError: Error {
+   case showFailed
+ }
+ 
++private func makeBrokerLifecycleCapability()
++  throws -> (owner: Int32, capability: BrokerLifecycleCapability)
++{
++  var descriptors = [Int32](repeating: -1, count: 2)
++  guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
++    throw POSIXError(.EIO)
++  }
++  do {
++    return (
++      descriptors[0],
++      try BrokerLifecycleCapability(fileDescriptor: descriptors[1])
++    )
++  } catch {
++    Darwin.close(descriptors[0])
++    Darwin.close(descriptors[1])
++    throw error
++  }
++}
++
+ @MainActor
+ private final class MockDisplayPresenter: VMDisplayPresenter {
+   private(set) var showCount = 0
+@@ -157,6 +177,104 @@ func transitionalRunPhasesAreUnknown() async throws {
+   #expect(SharedVM.shared.getVM(for: context.dir) == nil)
+ }
+ 
++@MainActor
++@Test("a pre-registration broker stop prevents VM startup")
++func brokerStopBeforeRegistrationIsLatched() async throws {
++  let (root, _, context) = try makeDisplayTestDirectory()
++  defer { try? FileManager.default.removeItem(at: root) }
++  let broker = try makeBrokerLifecycleCapability()
++  Darwin.close(broker.owner)
++  try await waitUntil { broker.capability.isStopRequested }
++  let service = MockVMVirtualizationService()
++  let vm = MockVM(
++    vmDirContext: context,
++    virtualizationServiceFactory: { _ in service },
++    vncServiceFactory: { MockVNCService(vmDirectory: $0) }
++  )
++
++  await #expect(throws: CancellationError.self) {
++    try await vm.run(
++      displayMode: .none,
++      sharedDirectories: [],
++      mount: nil,
++      vncPolicy: .disabled,
++      brokerLifecycle: broker.capability)
++  }
++
++  #expect(service.startCallCount == 0)
++  #expect(!context.dir.sessionsPath.exists())
++  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++}
++
++@MainActor
++@Test("broker stop during VZ startup reaches terminal state")
++func brokerStopDuringVirtualizationStartupIsLatched() async throws {
++  let (root, _, context) = try makeDisplayTestDirectory()
++  defer { try? FileManager.default.removeItem(at: root) }
++  let broker = try makeBrokerLifecycleCapability()
++  let service = MockVMVirtualizationService()
++  service.holdStartUntilReleased()
++  let vm = MockVM(
++    vmDirContext: context,
++    virtualizationServiceFactory: { _ in service },
++    vncServiceFactory: { MockVNCService(vmDirectory: $0) }
++  )
++  let runTask = Task {
++    try await vm.run(
++      displayMode: .none,
++      sharedDirectories: [],
++      mount: nil,
++      vncPolicy: .disabled,
++      brokerLifecycle: broker.capability)
++  }
++  try await waitUntil { service.startEntered }
++
++  Darwin.close(broker.owner)
++  try await waitUntil { broker.capability.isStopRequested }
++  service.releaseStart()
++
++  await #expect(throws: CancellationError.self) {
++    try await runTask.value
++  }
++  #expect(service.stopCallCount == 1)
++  #expect(service.state == .stopped)
++  #expect(!context.dir.sessionsPath.exists())
++  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++}
++
++@MainActor
++@Test("broker EOF performs an ordinary same-process VM stop")
++func brokerEOFStopsRunningVMInOwnerProcess() async throws {
++  let (root, _, context) = try makeDisplayTestDirectory()
++  defer { try? FileManager.default.removeItem(at: root) }
++  let broker = try makeBrokerLifecycleCapability()
++  let service = MockVMVirtualizationService()
++  let presenter = MockDisplayPresenter()
++  let vm = MockVM(
++    vmDirContext: context,
++    virtualizationServiceFactory: { _ in service },
++    vncServiceFactory: { MockVNCService(vmDirectory: $0) },
++    displayPresenterFactory: { _, _ in presenter }
++  )
++  let runTask = Task {
++    try await vm.run(
++      displayMode: .none,
++      sharedDirectories: [],
++      mount: nil,
++      vncPolicy: .disabled,
++      brokerLifecycle: broker.capability)
++  }
++  try await waitUntil { vm.runPhaseForLiveness == .running }
++
++  Darwin.close(broker.owner)
++
++  try await runTask.value
++  #expect(service.stopCallCount == 1)
++  #expect(service.state == .stopped)
++  #expect(!context.dir.sessionsPath.exists())
++  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++}
++
+ @MainActor
+ @Test("Every display mode uses the selected presenter and cleans it up once")
+ func presenterSelectionAndGuestShutdownCleanup() async throws {

@@ -402,7 +402,8 @@ extension LumeVirtualMachineRuntime {
                     "--display", "none",
                     "--vnc", "disabled",
                 ]),
-                environment: workspace.environment
+                environment: workspace.environment,
+                cooperativeControl: LumeLifecycleControl.processControl
             )
         } catch {
             do {

@@ -758,7 +758,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(retryResults.isEmpty)
     }
 
-    func testExpiredLeaseReconciliationRetainsCapacityForUnpublishedStart()
+    func testExpiredLeaseReconciliationReleasesAfterBrokerCrashStopsChild()
         async throws
     {
         let fixture = try FakeLumeFixture(
@@ -798,6 +798,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             startHolder: launchedStartHolder,
             controlledRunProcessIdentifier: controlledRunProcessIdentifier
         )
+        try await fixture.waitForState("stopped")
         clock.set(lease.expiresAt)
         let reopenedArbiter = try fixture.makeCapacityArbiter(clock: clock)
         let reopenedRuntime = try fixture.makeLeaseFencedRuntime(
@@ -805,51 +806,19 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
 
         let results = try await reopenedRuntime.reconcileExpiredLeases()
-        let leaseCountBeforeStatePublication =
-            try reopenedArbiter.snapshot().leases.count
-        try fixture.allowRunToPublishState()
-        try await fixture.waitForState("running")
-        let leaseCountAfterRunning =
-            try reopenedArbiter.snapshot().leases.count
-        let recoveryResults =
-            try await reopenedRuntime.reconcileExpiredLeases()
 
         XCTAssertEqual(results.count, 1)
-        let retainedResult = try XCTUnwrap(results.first)
-        if case .retained = retainedResult.outcome {
-            // Expected: a matching unresolved start intent retains capacity.
-        } else {
-            XCTFail(
-                "reconciliation released capacity for an unresolved launched start"
-            )
-        }
-        XCTAssertEqual(
-            leaseCountBeforeStatePublication,
-            1,
-            "capacity must remain reserved before the launched child publishes state"
-        )
-        XCTAssertEqual(
-            leaseCountAfterRunning,
-            1,
-            "a child must not become running after its capacity was released"
-        )
-        XCTAssertEqual(recoveryResults.count, 1)
-        let recoveryResult = try XCTUnwrap(recoveryResults.first)
-        XCTAssertEqual(recoveryResult.outcome, .released)
+        let result = try XCTUnwrap(results.first)
+        XCTAssertEqual(result.outcome, .released)
         XCTAssertGreaterThan(
-            recoveryResult.lease.scope.fencingToken,
-            retainedResult.lease.scope.fencingToken,
-            "recovery must match the intent after expiry fencing rotates"
+            result.lease.scope.fencingToken,
+            lease.scope.fencingToken
         )
         XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: fixture.startIntentFile.path
             )
-        )
-        try await fixture.waitForState("stopped")
-        try await fixture.waitForProcessExit(
-            controlledRunProcessIdentifier
         )
     }
 
@@ -1034,7 +1003,58 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(state, .unknown)
     }
 
-    func testPublicReleaseRetainsUnresolvedStartInUnprovenStates()
+    func testSignalFallbackRetainsCapacityWithoutStoppedProof()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "credentialed-readiness-uncooperative"
+        )
+        defer {
+            fixture.terminateControlledRunIfNeeded()
+            try? fixture.remove()
+        }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter,
+            commandTimeoutSeconds: 1
+        )
+        try await runtime.start(
+            scope: lease.scope,
+            name: lease.virtualMachineName
+        )
+
+        do {
+            try await runtime.release(
+                scope: lease.scope,
+                name: lease.virtualMachineName
+            )
+            XCTFail("fallback termination cannot release unproven capacity")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .commandFailed(
+                    command: "lume stop",
+                    exitCode: 70,
+                    stderr: "VM liveness is inconclusive"
+                )
+            )
+        }
+
+        XCTAssertEqual(try arbiter.snapshot().leases, [lease])
+        XCTAssertTrue(fixture.crossProcessStopWasInvoked)
+    }
+
+    func testPublicReleaseResolvesUnresolvedStartOnlyWithStoppedProof()
         async throws
     {
         for unresolvedState in ["stopped", "unknown", "absent"] {
@@ -1065,6 +1085,19 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 capacityArbiter: arbiter
             )
 
+            if unresolvedState == "stopped" {
+                try await runtime.release(
+                    scope: lease.scope,
+                    name: lease.virtualMachineName
+                )
+                XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+                XCTAssertFalse(
+                    FileManager.default.fileExists(
+                        atPath: fixture.startIntentFile.path
+                    )
+                )
+                continue
+            }
             do {
                 try await runtime.release(
                     scope: lease.scope,
@@ -1902,7 +1935,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
-    func testCancelledExecuteStopsLocallyManagedRunWithoutCrossProcessControl()
+    func testCancelledExecuteStopsLocallyManagedRunThroughCooperativeOwner()
         async throws
     {
         let fixture = try FakeLumeFixture(
@@ -1947,6 +1980,10 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )?.state
         XCTAssertEqual(state, .stopped)
         XCTAssertFalse(fixture.guestCommandWasStarted)
+        XCTAssertFalse(
+            fixture.crossProcessStopWasInvoked,
+            "a locally owned run must stop through inherited EOF"
+        )
     }
 
     func testStopUsesRecordThatSatisfiedTerminalStateWait() async throws {
@@ -3218,14 +3255,15 @@ private struct FakeLumeFixture {
 
     func makeLeaseFencedRuntime(
         capacityArbiter: SandboxHostCapacityArbiter,
+        commandTimeoutSeconds: UInt32 = 5,
         guestCommandPolicy: LumeGuestCommandPolicy = .disabled
     ) throws -> LumeLeaseFencedVirtualMachineRuntime {
         try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: executable,
                 storageDirectory: storage,
-                commandTimeoutSeconds: 5,
-                createTimeoutSeconds: 5,
+                commandTimeoutSeconds: commandTimeoutSeconds,
+                createTimeoutSeconds: commandTimeoutSeconds,
                 trustPolicy: .developmentAdHoc,
                 guestCommandPolicy: guestCommandPolicy
             ),
@@ -3426,13 +3464,11 @@ private struct FakeLumeFixture {
                         startHolderDiagnostics(startHolder)
                     )
                 }
-                guard Darwin.kill(controlledRunProcessIdentifier, 0) == 0 else {
-                    throw FakeLumeFixtureError.controlledRunExited(
-                        controlledRunProcessIdentifier,
-                        startHolderDiagnostics(startHolder)
-                    )
+                if Darwin.kill(controlledRunProcessIdentifier, 0) != 0,
+                   errno == ESRCH
+                {
+                    return
                 }
-                return
             }
             try await Task.sleep(for: .milliseconds(25))
         } while clock.now < deadline
@@ -3519,6 +3555,14 @@ private struct FakeLumeFixture {
         FileManager.default.fileExists(
             atPath: directory.appendingPathComponent(
                 "stopped-observed"
+            ).path
+        )
+    }
+
+    var crossProcessStopWasInvoked: Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(
+                "stop-invoked"
             ).path
         )
     }
@@ -3755,8 +3799,22 @@ private struct FakeLumeFixture {
         fi
         ;;
       run)
-        trap 'printf "%s\\n" "stopped" > "$state_file"; exit 0' EXIT HUP INT TERM
+        if [ "$behavior" = "credentialed-readiness-uncooperative" ]; then
+          trap '' HUP INT TERM
+        else
+          trap 'printf "%s\\n" "stopped" > "$state_file"; exit 0' EXIT HUP INT TERM
+        fi
         printf '%s\\n' "$$" > "$root/run-pid"
+        lifecycle_closed="$root/lifecycle-closed"
+        rm -f "$lifecycle_closed"
+        lifecycle_fd="${DARKBLOOM_LUME_LIFECYCLE_FD:-}"
+        if [ -n "$lifecycle_fd" ] \
+          && [ "$behavior" != "credentialed-readiness-uncooperative" ]; then
+          (
+            eval "/bin/cat <&$lifecycle_fd" >/dev/null 2>&1
+            : > "$lifecycle_closed"
+          ) &
+        fi
         if [ ! -f "$root/vms/sandbox-failure-test/.darkbloom-start-intent.json" ]; then
           printf '%s\\n' "missing durable start intent" >&2
           exit 78
@@ -3782,15 +3840,20 @@ private struct FakeLumeFixture {
           kill -KILL "$holder_pid"
           : > "$root/start-holder-crashed"
           while [ ! -f "$root/run-continue" ]; do
+            if [ -f "$lifecycle_closed" ]; then
+              exit 0
+            fi
             /bin/sleep 0.01
           done
           printf '%s\\n' "starting" > "$state_file"
         fi
         printf '%s\\n' "running" > "$state_file"
         while IFS= read -r current_state < "$state_file"; do
-          if [ "$current_state" = "stopped" ]; then
+          if [ "$current_state" = "stopped" ] \
+            || [ -f "$lifecycle_closed" ]; then
             exit 0
           fi
+          /bin/sleep 0.01
         done
         ;;
       ssh)
@@ -3908,7 +3971,9 @@ private struct FakeLumeFixture {
         exit 64
         ;;
       stop)
-        if [ "$behavior" = "stop-liveness-inconclusive" ]; then
+        : > "$root/stop-invoked"
+        if [ "$behavior" = "stop-liveness-inconclusive" ] \
+          || [ "$behavior" = "credentialed-readiness-uncooperative" ]; then
           printf '%s\\n' "VM liveness is inconclusive" >&2
           exit 70
         fi

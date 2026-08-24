@@ -3,7 +3,7 @@ import SandboxRuntime
 import XCTest
 
 final class LumeListJSONContractTests: XCTestCase {
-    func testPinnedLumeKeepsJSONCleanWhenRemovingStaleSession() async throws {
+    func testPinnedLumeKeepsJSONCleanForLegacyInconclusiveSession() async throws {
         guard let executablePath = ProcessInfo.processInfo.environment[
             "DARKBLOOM_SANDBOX_LUME_PATH"
         ] else {
@@ -38,7 +38,7 @@ final class LumeListJSONContractTests: XCTestCase {
         XCTAssertEqual(records, [
             LumeListJSONRecord(
                 name: LumeListJSONFixture.virtualMachineName,
-                status: "stopped"
+                status: "unknown"
             ),
         ])
     }

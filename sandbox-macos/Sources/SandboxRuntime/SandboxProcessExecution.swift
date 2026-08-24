@@ -10,6 +10,7 @@ final class ProcessExecution: @unchecked Sendable {
     private let exitSignal = ProcessExitSignal()
     private let standardOutput: BoundedProcessOutput
     private let standardError: BoundedProcessOutput
+    private let cooperativeControl: ProcessControlChannel?
     private let lock = NSLock()
     private var started = false
     private var processIdentifier: pid_t = 0
@@ -20,7 +21,9 @@ final class ProcessExecution: @unchecked Sendable {
         arguments: [String],
         environment: [String: String],
         currentDirectory: URL?,
-        maximumOutputBytes: Int
+        maximumOutputBytes: Int,
+        cooperativeControl configuration:
+            SandboxCooperativeProcessControl? = nil
     ) throws {
         let standardOutput = try BoundedProcessOutput(
             maximumBytes: maximumOutputBytes
@@ -34,11 +37,27 @@ final class ProcessExecution: @unchecked Sendable {
             _ = standardOutput.finish()
             throw error
         }
+        let cooperativeControl: ProcessControlChannel?
+        do {
+            cooperativeControl = try configuration.map { _ in
+                try ProcessControlChannel()
+            }
+        } catch {
+            _ = standardOutput.finish()
+            _ = standardError.finish()
+            throw error
+        }
+        var childEnvironment = environment
+        if let configuration {
+            childEnvironment[configuration.environmentVariable] =
+                String(ProcessControlChannel.childDescriptor)
+        }
         self.standardOutput = standardOutput
         self.standardError = standardError
+        self.cooperativeControl = cooperativeControl
         self.executable = executable
         self.arguments = arguments
-        self.environment = environment
+        self.environment = childEnvironment
         self.currentDirectory = currentDirectory
     }
 
@@ -71,10 +90,23 @@ final class ProcessExecution: @unchecked Sendable {
         defer { posix_spawnattr_destroy(&attributes) }
 
         try addFileActions(&fileActions)
+        var defaultSignals = sigset_t()
+        var signalMask = sigset_t()
         let flags = Int16(
-            POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+            POSIX_SPAWN_SETPGROUP
+                | POSIX_SPAWN_CLOEXEC_DEFAULT
+                | POSIX_SPAWN_SETSIGDEF
+                | POSIX_SPAWN_SETSIGMASK
         )
-        guard posix_spawnattr_setflags(&attributes, flags) == 0,
+        guard sigemptyset(&defaultSignals) == 0,
+              sigaddset(&defaultSignals, SIGTERM) == 0,
+              sigemptyset(&signalMask) == 0,
+              posix_spawnattr_setsigdefault(
+                  &attributes,
+                  &defaultSignals
+              ) == 0,
+              posix_spawnattr_setsigmask(&attributes, &signalMask) == 0,
+              posix_spawnattr_setflags(&attributes, flags) == 0,
               posix_spawnattr_setpgroup(&attributes, 0) == 0
         else {
             standardOutput.closeParentWriter()
@@ -105,6 +137,7 @@ final class ProcessExecution: @unchecked Sendable {
                 }
             }
         }
+        cooperativeControl?.closeChildSourceEndpoint()
         standardOutput.closeParentWriter()
         standardError.closeParentWriter()
         guard spawnStatus == 0 else {
@@ -131,35 +164,58 @@ final class ProcessExecution: @unchecked Sendable {
         send(signal: SIGTERM)
     }
 
+    @discardableResult
+    func requestCooperativeStop() -> Bool {
+        guard let cooperativeControl else {
+            return false
+        }
+        cooperativeControl.closeParentEndpoint()
+        return true
+    }
+
     func forceStop() {
         send(signal: SIGKILL)
     }
 
-    func stop(gracePeriod: Duration) async {
-        requestStop()
-        let exitedGracefully = await withTaskGroup(of: Bool.self) { group in
+    func stop(
+        cooperativeGracePeriod: Duration,
+        signalGracePeriod: Duration
+    ) async {
+        let cooperative = requestCooperativeStop()
+        if !cooperative {
+            requestStop()
+        }
+        await withTaskGroup(of: StopEvent.self) { group in
             group.addTask {
                 await self.waitUntilExit()
-                return true
+                return .exited
             }
             group.addTask {
-                do {
-                    try await Task.sleep(for: gracePeriod)
-                    return false
-                } catch {
-                    return false
+                try? await Task.sleep(
+                    for: cooperative
+                        ? cooperativeGracePeriod
+                        : signalGracePeriod
+                )
+                return cooperative
+                    ? .cooperativeDeadline
+                    : .signalDeadline
+            }
+            while let event = await group.next() {
+                switch event {
+                case .exited:
+                    group.cancelAll()
+                    while await group.next() != nil {}
+                    return
+                case .cooperativeDeadline:
+                    requestStop()
+                    group.addTask {
+                        try? await Task.sleep(for: signalGracePeriod)
+                        return .signalDeadline
+                    }
+                case .signalDeadline:
+                    forceStop()
                 }
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            if !first {
-                self.forceStop()
-            }
-            while await group.next() != nil {}
-            return first
-        }
-        if !exitedGracefully {
-            await waitUntilExit()
         }
     }
 
@@ -182,6 +238,8 @@ final class ProcessExecution: @unchecked Sendable {
     }
 
     func cleanup() {
+        cooperativeControl?.closeParentEndpoint()
+        cooperativeControl?.closeChildSourceEndpoint()
         _ = finishOutputCapture()
     }
 
@@ -252,6 +310,27 @@ final class ProcessExecution: @unchecked Sendable {
                 )
             }
         }
+        if let cooperativeControl {
+            let sourceDescriptor =
+                cooperativeControl.inheritedSourceDescriptor
+            guard sourceDescriptor >= 0,
+                  posix_spawn_file_actions_adddup2(
+                      &actions,
+                      sourceDescriptor,
+                      ProcessControlChannel.childDescriptor
+                  ) == 0,
+                  sourceDescriptor
+                      == ProcessControlChannel.childDescriptor
+                      || posix_spawn_file_actions_addclose(
+                          &actions,
+                          sourceDescriptor
+                      ) == 0
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "failed to inherit cooperative process control channel"
+                )
+            }
+        }
     }
 
     private func send(signal: Int32) {
@@ -283,6 +362,8 @@ final class ProcessExecution: @unchecked Sendable {
             code = 255
         }
         terminateRemainingProcessGroup(processIdentifier)
+        cooperativeControl?.closeParentEndpoint()
+        cooperativeControl?.closeChildSourceEndpoint()
         lock.withLock {
             exitCode = code
         }
@@ -334,6 +415,12 @@ final class ProcessExecution: @unchecked Sendable {
     struct ProcessOutput {
         let standardOutput: BoundedProcessOutputSnapshot
         let standardError: BoundedProcessOutputSnapshot
+    }
+
+    private enum StopEvent: Sendable {
+        case exited
+        case cooperativeDeadline
+        case signalDeadline
     }
 }
 

@@ -30,7 +30,9 @@ public final class SandboxManagedProcess: @unchecked Sendable {
     }
 
     deinit {
-        execution.forceStop()
+        if !execution.requestCooperativeStop() {
+            execution.forceStop()
+        }
     }
 
     public var isRunning: Bool {
@@ -42,10 +44,16 @@ public final class SandboxManagedProcess: @unchecked Sendable {
         return execution.result()
     }
 
-    public func stop(gracePeriod: Duration = .seconds(2)) async
+    public func stop(
+        cooperativeGracePeriod: Duration = .seconds(30),
+        signalGracePeriod: Duration = .seconds(2)
+    ) async
         -> SandboxProcessResult
     {
-        await execution.stop(gracePeriod: gracePeriod)
+        await execution.stop(
+            cooperativeGracePeriod: cooperativeGracePeriod,
+            signalGracePeriod: signalGracePeriod
+        )
         return execution.result()
     }
 }
@@ -60,7 +68,8 @@ public struct SandboxProcessRunner: Sendable {
         arguments: [String],
         environment: [String: String] = [:],
         currentDirectory: URL? = nil,
-        maximumOutputBytes: Int = defaultMaximumOutputBytes
+        maximumOutputBytes: Int = defaultMaximumOutputBytes,
+        cooperativeControl: SandboxCooperativeProcessControl? = nil
     ) throws -> SandboxManagedProcess {
         try validate(
             executable: executable,
@@ -70,14 +79,16 @@ public struct SandboxProcessRunner: Sendable {
         try validateInvocation(
             arguments: arguments,
             environment: environment,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            cooperativeControl: cooperativeControl
         )
         let execution = try ProcessExecution(
             executable: executable,
             arguments: arguments,
             environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
-            maximumOutputBytes: maximumOutputBytes
+            maximumOutputBytes: maximumOutputBytes,
+            cooperativeControl: cooperativeControl
         )
         do {
             try execution.start()
@@ -104,7 +115,8 @@ public struct SandboxProcessRunner: Sendable {
         try validateInvocation(
             arguments: arguments,
             environment: environment,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            cooperativeControl: nil
         )
 
         let execution = try ProcessExecution(
@@ -163,7 +175,8 @@ public struct SandboxProcessRunner: Sendable {
     private func validateInvocation(
         arguments: [String],
         environment: [String: String],
-        currentDirectory: URL?
+        currentDirectory: URL?,
+        cooperativeControl: SandboxCooperativeProcessControl?
     ) throws {
         guard arguments.allSatisfy({ !$0.contains("\0") }),
               environment.allSatisfy({
@@ -174,11 +187,29 @@ public struct SandboxProcessRunner: Sendable {
               }),
               currentDirectory.map({
                   $0.isFileURL && $0.baseURL == nil
+              }) ?? true,
+              cooperativeControl.map({
+                  Self.isValidEnvironmentVariable($0.environmentVariable)
+                      && environment[$0.environmentVariable] == nil
               }) ?? true
         else {
             throw SandboxRuntimeError.unsupported(
                 "process arguments, environment, or working directory are invalid"
             )
+        }
+    }
+
+    private static func isValidEnvironmentVariable(_ value: String) -> Bool {
+        guard let first = value.utf8.first,
+              first == 95 || (65...90).contains(first)
+                  || (97...122).contains(first)
+        else {
+            return false
+        }
+        return value.utf8.dropFirst().allSatisfy {
+            $0 == 95 || (65...90).contains($0)
+                || (97...122).contains($0)
+                || (48...57).contains($0)
         }
     }
 
@@ -218,7 +249,10 @@ public struct SandboxProcessRunner: Sendable {
 
             let first = await group.next() ?? .cancelled
             if first == .timedOut {
-                await execution.stop(gracePeriod: .seconds(2))
+                await execution.stop(
+                    cooperativeGracePeriod: .zero,
+                    signalGracePeriod: .seconds(2)
+                )
             }
             group.cancelAll()
             while await group.next() != nil {}

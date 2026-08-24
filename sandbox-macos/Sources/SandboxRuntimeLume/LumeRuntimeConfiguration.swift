@@ -28,10 +28,15 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0003-bind-run-lock-identity.patch"
     public static let pinnedRunLockIdentityPatchSHA256 =
         "189c2b7f3e0adde5966e15e7403ed7657cedfff60208102590e0eac6b524f3b7"
+    public static let pinnedBrokerLifecyclePatchPath =
+        "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch"
+    public static let pinnedBrokerLifecyclePatchSHA256 =
+        "4f6f6a5d30f67d4e05ccc30a1a8746fb29e2e737cfb9353363efb13e329ba653"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
         pinnedRunLockIdentityPatchPath: pinnedRunLockIdentityPatchSHA256,
+        pinnedBrokerLifecyclePatchPath: pinnedBrokerLifecyclePatchSHA256,
     ]
 
     public let executable: URL

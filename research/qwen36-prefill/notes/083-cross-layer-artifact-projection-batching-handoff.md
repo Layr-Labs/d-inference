@@ -78,6 +78,7 @@ the lazy stacks are evaluated.
 The patch adds regressions for:
 
 - default-off policy and strict malformed-budget fallback;
+- strict ascending layer IDs before the sorted gathered-QMM route;
 - the E51 B1/B2/B4 arithmetic and an actual two-layer budget cut;
 - gathered versus per-layer quantized projections at `rtol=1e-4`,
   `atol=1e-5`;
@@ -97,6 +98,13 @@ the focused tests, real gathered-QMM execution, and the E51 quality gate.
 
 ## M3 decision gate
 
+An explicit Metal-only `Qwen35ArtifactProjectionBatchPerfTests` probe compares
+per-layer QMM, aligned batched QMM, matrix-level gathered QMM, and a row-gather
+QMV control at the target dimensions. It defaults to two-layer chunks and
+historical `M` in `{320, 512, 2048, 8192}`, validates values, rotates route
+order, and reports 15-sample medians. It runs only when
+`DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH=1`.
+
 The locked E51 suffix192 + top-k4 B1×512 result is 2,213.1 tok/s. The requested
 additional 1.3× gate is therefore at least **2,877.0 tok/s** under the same
 model, prompt, power, and measurement protocol. Keep patch 079 only if:
@@ -112,11 +120,13 @@ Apply `079-cbv2-cross-layer-artifact-projection-batching.patch` after patch
 078's final nested commit `e5ba752`.
 
 - patch SHA-256:
-  `c6591ebc054bbd5233662de702bf1c7272b08945f8fe8fe4feccab7538a73669`;
+  `68ff54af9867a4a13a1d6cd4975a6497e48cfe185bd16240f5d3ce1de113b40d`;
 - nested commits:
   `2f67b8bcebaba60ad2625bbd4387b326c889363a`,
   `785c1c21217bd3c2e296b8de4ee6d503d08f22f2`,
   `77d3a05a0eca714014e922d542bf1b528d1352bc`,
-  `fc32dae08048a0ee51f89742eaaa000572c51490`;
-- final tree: `9d14cc56b414c17d920a17151868ceab56b2d5fe`, verified by clean
+  `fc32dae08048a0ee51f89742eaaa000572c51490`,
+  `971667684e5e9a9d9605a48e0af4cd836057040b`,
+  `8cdbbdb52823ee4158463212445e23a78ce12d99`;
+- final tree: `0e3f6951b724b0c33bbcdcb1ef41f69d7fcc8d9f`, verified by clean
   patch replay.

@@ -1,7 +1,7 @@
 From 2f67b8bcebaba60ad2625bbd4387b326c889363a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:53:03 +0000
-Subject: [PATCH 1/4] Batch Qwen artifact projections across layers
+Subject: [PATCH 1/6] Batch Qwen artifact projections across layers
 
 ---
  Libraries/MLXLLM/Models/Qwen35.swift          | 378 +++++++++++-
@@ -1723,7 +1723,7 @@ index 0000000..799243d
 From 785c1c21217bd3c2e296b8de4ee6d503d08f22f2 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:59:24 +0000
-Subject: [PATCH 2/4] Format Qwen artifact projection batching sources
+Subject: [PATCH 2/6] Format Qwen artifact projection batching sources
 
 ---
  .../Qwen35ArtifactProjectionBatch.swift       |  84 +++++----
@@ -2131,7 +2131,7 @@ index 799243d..8459335 100644
 From 77d3a05a0eca714014e922d542bf1b528d1352bc Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:01:24 +0000
-Subject: [PATCH 3/4] Test artifact projection chunk budgeting
+Subject: [PATCH 3/6] Test artifact projection chunk budgeting
 
 ---
  .../Qwen35ArtifactProjectionBatchTests.swift  | 30 +++++++++++++++++++
@@ -2185,7 +2185,7 @@ index 8459335..50f1629 100644
 From fc32dae08048a0ee51f89742eaaa000572c51490 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:04:46 +0000
-Subject: [PATCH 4/4] Test incumbent-shape artifact projection parity
+Subject: [PATCH 4/6] Test incumbent-shape artifact projection parity
 
 ---
  .../Qwen35ArtifactProjectionBatchTests.swift  | 62 +++++++++++++++++++
@@ -2264,6 +2264,483 @@ index 50f1629..3b2ac1d 100644
      @Test(arguments: [1, 2, 4])
      func b1B2B4ArtifactsOffsetsStateRollbackAndCancellationMatchSequential(
          batchSize: Int
+-- 
+2.43.0
+
+
+From 971667684e5e9a9d9605a48e0af4cd836057040b Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 22:05:31 +0000
+Subject: [PATCH 5/6] Add Qwen artifact batching decision probe
+
+---
+ ...en35ArtifactProjectionBatchPerfTests.swift | 396 ++++++++++++++++++
+ 1 file changed, 396 insertions(+)
+ create mode 100644 Tests/MLXLMTests/Qwen35ArtifactProjectionBatchPerfTests.swift
+
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchPerfTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchPerfTests.swift
+new file mode 100644
+index 0000000..810d0b3
+--- /dev/null
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchPerfTests.swift
+@@ -0,0 +1,396 @@
++#if canImport(Metal)
++
++import Foundation
++import MLX
++import MLXRandom
++import XCTest
++
++/// Explicit M3-only decision probe for cross-layer artifact projection
++/// batching. It compares the incumbent per-layer QMM graph with the two
++/// immutable packed-weight APIs that can represent the same work:
++///
++/// - batched `quantizedMM`, with aligned layer batch dimensions;
++/// - matrix-level `gatherQuantizedMM`, with one RHS index per MxK matrix.
++///
++/// The row-gather control deliberately reshapes each MxK matrix into M
++/// independent 1xK assignments. It detects accidental QMV routing and is not a
++/// serving candidate.
++///
++/// Run only when explicitly armed:
++///
++///     DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH=1 \
++///     DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH_M=512,2048,8192 \
++///       swift test -c release \
++///         --filter Qwen35ArtifactProjectionBatchPerfTests
++final class Qwen35ArtifactProjectionBatchPerfTests: XCTestCase {
++    private struct ProjectionCase {
++        let name: String
++        let outputDimensions: Int
++        let modelMultiplicity: Int
++    }
++
++    private struct Route {
++        let name: String
++        let run: () -> [MLXArray]
++    }
++
++    private struct ProjectionTiming {
++        let family: String
++        let modelMultiplicity: Int
++        let singleLayerMilliseconds: Double
++        let chunkMilliseconds: [String: Double]
++    }
++
++    private static let enabledKey =
++        "DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH"
++    private static let rowsKey =
++        "DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH_M"
++    private static let layersKey =
++        "DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH_LAYERS"
++
++    func testProjectionBatchRoutesAtRegisteredShapes() throws {
++        let environment = ProcessInfo.processInfo.environment
++        try XCTSkipUnless(
++            environment[Self.enabledKey] == "1",
++            "cross-layer artifact projection benchmark is explicit opt-in")
++
++        let rows = try parseRows(environment[Self.rowsKey])
++        let layerChunk = try parseLayerChunk(environment[Self.layersKey])
++        let inputDimensions = 2_048
++        let groupSize = 64
++        let bits = 4
++        let warmupRounds = 3
++        let measuredRounds = 15
++        let necessarySpeedup = 1.62058
++        let relativeTolerance = 1e-4
++        let absoluteTolerance = 1e-5
++        let cases = [
++            ProjectionCase(
++                name: "gdn_qkv",
++                outputDimensions: 8_192,
++                modelMultiplicity: 27),
++            ProjectionCase(
++                name: "gdn_a_or_b",
++                outputDimensions: 32,
++                modelMultiplicity: 54),
++            ProjectionCase(
++                name: "attention_k_or_v",
++                outputDimensions: 512,
++                modelMultiplicity: 18),
++        ]
++
++        MLXRandom.seed(0xA4_71_F4_C7)
++        var timingsByRowCount: [Int: [ProjectionTiming]] = [:]
++        for projection in cases {
++            let denseWeights = MLXRandom.normal([
++                layerChunk,
++                projection.outputDimensions,
++                inputDimensions,
++            ]).asType(.bfloat16)
++            let (weights, scales, biases) = quantized(
++                denseWeights,
++                groupSize: groupSize,
++                bits: bits,
++                mode: .affine)
++            var weightRoots = [weights, scales]
++            if let biases {
++                weightRoots.append(biases)
++            }
++            eval(weightRoots)
++
++            for rowCount in rows {
++                let inputs = MLXRandom.normal([
++                    layerChunk, rowCount, inputDimensions,
++                ]).asType(.bfloat16)
++                let matrixIndices = MLXArray(
++                    (0 ..< layerChunk).map(Int32.init))
++                let rowIndices = MLXArray(
++                    (0 ..< layerChunk).flatMap { layer in
++                        repeatElement(Int32(layer), count: rowCount)
++                    })
++                eval(inputs, matrixIndices, rowIndices)
++
++                func sequential() -> [MLXArray] {
++                    (0 ..< layerChunk).map { layer in
++                        quantizedMM(
++                            inputs[layer],
++                            weights[layer],
++                            scales: scales[layer],
++                            biases: biases.map { $0[layer] },
++                            transpose: true,
++                            groupSize: groupSize,
++                            bits: bits,
++                            mode: .affine)
++                    }
++                }
++
++                func singleLayer() -> [MLXArray] {
++                    [
++                        quantizedMM(
++                            inputs[0],
++                            weights[0],
++                            scales: scales[0],
++                            biases: biases.map { $0[0] },
++                            transpose: true,
++                            groupSize: groupSize,
++                            bits: bits,
++                            mode: .affine)
++                    ]
++                }
++
++                func batched() -> [MLXArray] {
++                    [
++                        quantizedMM(
++                            inputs,
++                            weights,
++                            scales: scales,
++                            biases: biases,
++                            transpose: true,
++                            groupSize: groupSize,
++                            bits: bits,
++                            mode: .affine)
++                    ]
++                }
++
++                func matrixGather() -> [MLXArray] {
++                    [
++                        gatherQuantizedMM(
++                            inputs,
++                            weights,
++                            scales: scales,
++                            biases: biases,
++                            rhsIndices: matrixIndices,
++                            transpose: true,
++                            groupSize: groupSize,
++                            bits: bits,
++                            mode: .affine,
++                            sortedIndices: true)
++                    ]
++                }
++
++                func rowGather() -> [MLXArray] {
++                    [
++                        gatherQuantizedMM(
++                            inputs.reshaped(
++                                layerChunk * rowCount, 1, inputDimensions),
++                            weights,
++                            scales: scales,
++                            biases: biases,
++                            rhsIndices: rowIndices,
++                            transpose: true,
++                            groupSize: groupSize,
++                            bits: bits,
++                            mode: .affine,
++                            sortedIndices: true)
++                            .reshaped(
++                                layerChunk,
++                                rowCount,
++                                projection.outputDimensions)
++                    ]
++                }
++
++                let reference = stacked(sequential(), axis: 0)
++                eval(reference)
++                for (name, run) in [
++                    ("batched_qmm", batched),
++                    ("matrix_gather_qmm", matrixGather),
++                    ("row_gather_control", rowGather),
++                ] {
++                    let actual = run()[0]
++                    eval(reference, actual)
++                    let maxAbsoluteError =
++                        (actual - reference).abs().max().item(Float.self)
++                    XCTAssertTrue(
++                        actual.allClose(
++                            reference,
++                            rtol: relativeTolerance,
++                            atol: absoluteTolerance)
++                            .item(Bool.self),
++                        "\(projection.name) \(name) diverged at "
++                            + "layers=\(layerChunk) M=\(rowCount); "
++                            + "max_abs=\(maxAbsoluteError)")
++                }
++
++                let routes = [
++                    Route(name: "single_layer_qmm", run: singleLayer),
++                    Route(name: "sequential_qmm", run: sequential),
++                    Route(name: "batched_qmm", run: batched),
++                    Route(
++                        name: "matrix_gather_qmm",
++                        run: matrixGather),
++                    Route(
++                        name: "row_gather_control",
++                        run: rowGather),
++                ]
++                for route in routes {
++                    for _ in 0 ..< warmupRounds {
++                        eval(route.run())
++                    }
++                }
++
++                var samples = Dictionary(
++                    uniqueKeysWithValues: routes.map {
++                        ($0.name, [Double]())
++                    })
++                for round in 0 ..< measuredRounds {
++                    for offset in routes.indices {
++                        let route =
++                            routes[(round + offset) % routes.count]
++                        let start =
++                            DispatchTime.now().uptimeNanoseconds
++                        eval(route.run())
++                        let end =
++                            DispatchTime.now().uptimeNanoseconds
++                        samples[route.name]!.append(
++                            Double(end - start) / 1e6)
++                    }
++                }
++
++                let medians = samples.mapValues(median)
++                let singleLayerMedian = try XCTUnwrap(
++                    medians["single_layer_qmm"])
++                let baseline = try XCTUnwrap(
++                    medians["sequential_qmm"])
++                let outputMiB =
++                    Double(
++                        layerChunk * rowCount
++                            * projection.outputDimensions * 2)
++                    / Double(1 << 20)
++                for route in routes {
++                    let routeMedian = try XCTUnwrap(
++                        medians[route.name])
++                    let routeBaseline =
++                        route.name == "single_layer_qmm"
++                        ? singleLayerMedian : baseline
++                    let speedup = routeBaseline / routeMedian
++                    let routeOutputMiB =
++                        route.name == "single_layer_qmm"
++                        ? outputMiB / Double(layerChunk) : outputMiB
++                    let line =
++                        "[qwen-artifact-projection-batch] "
++                        + "family=\(projection.name) "
++                        + "multiplicity=\(projection.modelMultiplicity) "
++                        + "layers=\(layerChunk) "
++                        + "M=\(rowCount) "
++                        + "K=\(inputDimensions) "
++                        + "N=\(projection.outputDimensions) "
++                        + "output_mib="
++                        + String(format: "%.3f", routeOutputMiB)
++                        + " route=\(route.name) "
++                        + "median_ms="
++                        + String(format: "%.4f", routeMedian)
++                        + " speedup="
++                        + String(format: "%.4f", speedup)
++                        + " samples=\(measuredRounds)\n"
++                    FileHandle.standardError.write(Data(line.utf8))
++                }
++                timingsByRowCount[rowCount, default: []].append(
++                    ProjectionTiming(
++                        family: projection.name,
++                        modelMultiplicity: projection.modelMultiplicity,
++                        singleLayerMilliseconds: singleLayerMedian,
++                        chunkMilliseconds: medians))
++                Memory.clearCache()
++            }
++        }
++
++        for rowCount in rows {
++            let timings = try XCTUnwrap(timingsByRowCount[rowCount])
++            XCTAssertEqual(timings.count, cases.count)
++            for routeName in [
++                "batched_qmm",
++                "matrix_gather_qmm",
++                "row_gather_control",
++            ] {
++                var incumbentMilliseconds = 0.0
++                var candidateMilliseconds = 0.0
++                var terms: [String] = []
++                for timing in timings {
++                    let groups = timing.modelMultiplicity / layerChunk
++                    let remainder = timing.modelMultiplicity % layerChunk
++                    let sequentialChunk = try XCTUnwrap(
++                        timing.chunkMilliseconds["sequential_qmm"])
++                    let candidateChunk = try XCTUnwrap(
++                        timing.chunkMilliseconds[routeName])
++                    incumbentMilliseconds +=
++                        Double(groups) * sequentialChunk
++                        + Double(remainder)
++                            * timing.singleLayerMilliseconds
++                    candidateMilliseconds +=
++                        Double(groups) * candidateChunk
++                        + Double(remainder)
++                            * timing.singleLayerMilliseconds
++                    terms.append(
++                        "\(timing.family):\(groups)x\(layerChunk)"
++                            + "+\(remainder)x1")
++                }
++                let speedup =
++                    incumbentMilliseconds / candidateMilliseconds
++                let isCandidate = routeName != "row_gather_control"
++                let disposition: String
++                if !isCandidate {
++                    disposition = "control_only"
++                } else if rowCount != 320 {
++                    disposition = "diagnostic"
++                } else if speedup >= necessarySpeedup {
++                    disposition = "advance_projection_gate"
++                } else {
++                    disposition = "kill"
++                }
++                let line =
++                    "[qwen-artifact-projection-batch-aggregate] "
++                    + "M=\(rowCount) "
++                    + "layers=\(layerChunk) "
++                    + "route=\(routeName) "
++                    + "incumbent_ms="
++                    + String(format: "%.4f", incumbentMilliseconds)
++                    + " candidate_ms="
++                    + String(format: "%.4f", candidateMilliseconds)
++                    + " speedup="
++                    + String(format: "%.4f", speedup)
++                    + " necessary_speedup="
++                    + String(format: "%.5f", necessarySpeedup)
++                    + " disposition=\(disposition) "
++                    + "terms=\(terms.joined(separator: ","))\n"
++                FileHandle.standardError.write(Data(line.utf8))
++            }
++        }
++    }
++
++    private func parseRows(_ raw: String?) throws -> [Int] {
++        guard let raw else {
++            return [320, 512, 2_048, 8_192]
++        }
++        let rows = raw.split(separator: ",").compactMap {
++            Int($0.trimmingCharacters(in: .whitespaces))
++        }
++        guard
++            !rows.isEmpty,
++            rows.allSatisfy({ $0 > 0 && $0 <= 8_192 })
++        else {
++            throw XCTSkip(
++                "invalid \(Self.rowsKey); expected comma-separated 1...8192")
++        }
++        return rows
++    }
++
++    private func parseLayerChunk(_ raw: String?) throws -> Int {
++        guard let raw else { return 2 }
++        guard
++            let count = Int(
++                raw.trimmingCharacters(in: .whitespacesAndNewlines)),
++            (2 ... 4).contains(count)
++        else {
++            throw XCTSkip(
++                "invalid \(Self.layersKey); expected 2...4")
++        }
++        return count
++    }
++
++    private func median(_ values: [Double]) -> Double {
++        let ordered = values.sorted()
++        return ordered[ordered.count / 2]
++    }
++}
++
++#endif
+-- 
+2.43.0
+
+
+From 8cdbbdb52823ee4158463212445e23a78ce12d99 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 22:06:31 +0000
+Subject: [PATCH 6/6] Fail closed on unordered projection layer IDs
+
+---
+ .../MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift  |  8 ++++++++
+ .../Qwen35ArtifactProjectionBatchTests.swift           | 10 ++++++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+index 3e56d70..40959ed 100644
+--- a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
++++ b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+@@ -304,6 +304,7 @@ final class Qwen35ArtifactProjectionWeightBank {
+             hiddenHistory.dim(1) > 0,
+             hiddenHistory.dim(2) == gdnQKV.inputDimensions,
+             !candidateLayerIndices.isEmpty,
++            Self.isStrictlyIncreasing(candidateLayerIndices),
+             maximumTransientBytes > 0
+         else {
+             return nil
+@@ -527,6 +528,13 @@ final class Qwen35ArtifactProjectionWeightBank {
+         return value
+     }
+ 
++    private static func isStrictlyIncreasing(_ values: [Int]) -> Bool {
++        for (lhs, rhs) in zip(values, values.dropFirst()) {
++            guard lhs < rhs else { return false }
++        }
++        return true
++    }
++
+     private static func checkedSum(_ values: [Int]) -> Int? {
+         var total = 0
+         for value in values {
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+index 3b2ac1d..0bd9945 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+@@ -116,6 +116,16 @@ struct Qwen35ArtifactProjectionBatchTests {
+         #expect(chunk.layerIndices == [4, 5])
+         #expect(chunk.projections.count == 2)
+         #expect(chunk.estimatedTransientBytes == twoGDNLayerBudget)
++        #expect(
++            bank.prepare(
++                hiddenHistory: history,
++                candidateLayerIndices: [5, 4],
++                maximumTransientBytes: twoGDNLayerBudget) == nil)
++        #expect(
++            bank.prepare(
++                hiddenHistory: history,
++                candidateLayerIndices: [4, 4],
++                maximumTransientBytes: twoGDNLayerBudget) == nil)
+     }
+ 
+     @Test func gatheredQuantizedFamiliesMatchSequentialProjectionsAndDoNotReplaceWeights()
 -- 
 2.43.0
 

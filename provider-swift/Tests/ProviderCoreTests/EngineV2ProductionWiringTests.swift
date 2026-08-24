@@ -1408,6 +1408,76 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted.isEmpty)
     }
 
+    @Test("required Qwen tool choice is parsed and validated before exposure")
+    func requiredQwenToolChoiceUsesFailClosedPostValidation() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(
+                text: "<tool_call>\n<function=get_weather>\n</function>\n</tool_call>",
+                tokens: [10], logprobs: nil),
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "qwen3.8-27b-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "qwen3_5",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "qwen3.8-27b-4bit",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "get_weather"))],
+            toolChoice: .mode(.required),
+            toolCallParser: "qwen3_coder")
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        var events: [MLXServerGenerationEvent] = []
+        for try await event in stream { events.append(event) }
+
+        #expect(events.contains { event in
+            guard case .toolCall(let call) = event else { return false }
+            return call.function.name == "get_weather"
+                && call.function.arguments.isEmpty
+        })
+        #expect(engine.submitted.count == 1)
+        #expect(engine.submitted[0].tokenConstraint == nil)
+    }
+
+    @Test("required Qwen tool choice rejects a non-XML parser before submit")
+    func requiredQwenToolChoiceRejectsParserOverride() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "qwen3.8-27b-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "qwen3_5",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "qwen3.8-27b-4bit",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "get_weather"))],
+            toolChoice: .mode(.required),
+            toolCallParser: "json")
+
+        do {
+            _ = try await providerEngine.streamChatCompletion(request: request)
+            Issue.record("expected Qwen parser mismatch rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .invalidToolPayload(
+                "inference-enforced Qwen tool_choice requires the qwen3_coder tool parser"))
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
     @Test("auto mode returns malformed tagged output as visible text")
     func autoToolParseFallbackIsVisible() async throws {
         let malformed =

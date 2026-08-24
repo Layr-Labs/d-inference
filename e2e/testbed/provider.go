@@ -185,20 +185,15 @@ func findProviderBinary() string {
 // can force paged OFF but never ON — so `engine_v2_kv_backend = "paged"` under
 // `[backend]` is the sole way an e2e run can exercise paged KV.
 //
-// Returns ("", nil) when neither knob is set, so the default path never
-// materialises a file and never grows a `--config` argument.
-//
-// `auto_update` / `auto_restart` are pinned off: a testbed provider must not
-// self-update mid-suite, and must not install the launchd crash-recovery
-// watchdog, which would outlive the test process.
+// A config is always returned, even when both performance knobs are unset.
+// `auto_update` / `auto_restart` must remain pinned off: otherwise the default
+// testbed launch installs a launchd watchdog that outlives the provider process
+// and leaks into later tests (or the operator's real provider session).
 func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	backend := ResolveKVBackend(cfg.KVBackend)
 	maxConcurrent, err := ResolveMaxConcurrent(cfg.MaxConcurrent)
 	if err != nil {
 		return "", err
-	}
-	if backend == "" && maxConcurrent == 0 {
-		return "", nil
 	}
 	switch backend {
 	case "", KVBackendAuto, KVBackendPaged, KVBackendContiguous:

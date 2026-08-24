@@ -1,6 +1,6 @@
 # 083 — Independent cross-layer artifact batching audit
 
-Date: 2026-08-24  
+Date: 2026-08-24
 Status: **ADVANCE only to the bounded M3 projection microbenchmark; do not
 enable in serving without its necessary wall-time gate**
 

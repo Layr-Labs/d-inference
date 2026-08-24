@@ -1,7 +1,7 @@
 # 024 — Gathered affine-W4 QMM kernel plan for M3 Max
 
-Status: **source audit complete; one upstream candidate and benchmark
-instrumentation prepared; no new M3 Max timing is claimed**
+Status: **source audit complete; one upstream candidate measured and rejected;
+benchmark instrumentation prepared; no 2x win is claimed**
 
 Scope: Qwen 3.6 35B-A3B text prefill, E=256/top-8, BF16 activations,
 affine W4 group-64 weights, `(K,N)=(2048,1024)` gate-up and
@@ -25,6 +25,11 @@ substantial fraction of the estimated 14.2–16.4 TFLOP/s M3 Max FP32 roof.
 Retiling, descriptor cleanup, and loader cleanup can test single-digit or
 low-teens losses. They cannot make the same FP32 instructions sustain
 23 TFLOP/s.
+
+Experiment 7 subsequently measured the prepared FP32 affine-dequant candidate on the
+M3 Max. It improved the exact M=16,384 routed pair by only **1.030x** and
+missed the preregistered 1.05x continuation bar (`notes/035`). This directly
+confirms that dequant arithmetic is secondary, not the hidden 2x term.
 
 There is a more important correction to the premise: faster gathered QMM is
 necessary but not sufficient for 2.5x end-to-end prefill. At 2,048 tokens the
@@ -226,7 +231,7 @@ iterations, AC/High Power, with route counters proving the intended kernel.
 Every candidate must first pass `SortedGatherQuantizedMMTests`, then full-model
 greedy/KV/GDN checks before it can be kept.
 
-### P0 — Upstream FP32 affine dequant arithmetic (prepared)
+### P0 — Upstream FP32 affine dequant arithmetic (measured; dead)
 
 Named candidate: **`fp32-affine-dequant`**.
 
@@ -240,7 +245,8 @@ output layout, or FP32 MMA contract.
 Mechanism: isolate whether scalar BF16 affine arithmetic causes avoidable
 conversion/instruction pressure in the shared loader. This reaches dense QMM,
 legacy gather, and expert tiles, so it is measurable across the real
-projection family. E3 says the likely gain is small; no M3 result is assumed.
+projection family. E3 predicted a small gain; experiment 7 confirmed only
+1.030x.
 
 Prepared artifacts:
 
@@ -257,11 +263,17 @@ scale `0.0185546875`, BF16 bias `-1.9921875`, and a 64-wide dot against ones
 produce `-110.0` with BF16 affine arithmetic and `-109.5` with float affine
 arithmetic followed by one BF16 store.
 
+Measured on M3 Max at M=16,384, the candidate passed the adversarial regression
+and all 10 sorted-gather tests. Gate-up improved 6.3125→6.1445 ms (1.027x),
+down improved 3.3834→3.2718 ms (1.034x), and the combined pair improved only
+9.6959→9.4163 ms (1.030x). It therefore failed the actual 1.05x continuation
+bar, received no full-model run, and was reversed (`notes/035`).
+
 Kill:
 
 - any fixture, sorted-gather tolerance, greedy token, KV, GDN, NaN/Inf, or
   decode regression;
-- performance geomean below 1.03x or any target cell slower by more than 2%;
+- performance geomean below 1.05x or any target cell slower by more than 2%;
 - even if it passes, classify it as cleanup—not the 2x lever—unless a target
   M3 measurement says otherwise.
 
@@ -371,11 +383,18 @@ Static checks completed:
   changes;
 - Swift 6.3.2 parses both the new regression and extended benchmark sources.
 
-No Metal runtime result is claimed. This cloud host cannot compile or execute
-Metal. A CPU-only `swift test` build was also attempted, but the package fails
-before test execution in pre-existing Linux-only `MLXFast` declarations after
-Metal sources are excluded; the candidate code is not implicated or exercised
-by that failure. The source-matched Mac sequence is:
+The source-matched M3 Max experiment 7 run passed the dedicated FP32-dequant
+regression, all 10 `SortedGatherQuantizedMMTests`, and tile-route diagnostics
+(25/25 hits, NAX false). Its 1.030x combined result failed the 1.05x
+continuation ratchet; both runtime patches were reversed and the baseline
+metallib restored. The logs are
+`artifacts/e7-fp32-dequant-{regression,correctness,perf}.txt`.
+
+This cloud host cannot compile or execute Metal. A CPU-only `swift test` build
+was also attempted, but the package fails before test execution in pre-existing
+Linux-only `MLXFast` declarations after Metal sources are excluded; the
+candidate code is not implicated or exercised by that failure. The
+source-matched experiment 7 rerun sequence is:
 
 1. apply E1 patch 0001 then patch 0003 to
    `libs/mlx-swift/Source/Cmlx/mlx`;
@@ -400,7 +419,7 @@ Repository primary sources:
 - `libs/mlx/mlx/backend/metal/device.cpp`
 - `libs/mlx-swift/Source/Cmlx/mlx-generated/{quantized.cpp,metal/quantized.h}`
 - `libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift`
-- `research/qwen36-prefill/notes/{011-explorer-moe-gdn,013-optimizer-metal,021-e1-tile-ab-results,023-e1-confirms-alu-bound,034-e6-portable-mpp-prereg}.md`
+- `research/qwen36-prefill/notes/{011-explorer-moe-gdn,013-optimizer-metal,021-e1-tile-ab-results,023-e1-confirms-alu-bound,034-e6-portable-mpp-prereg,035-e7-fp32-dequant-prereg}.md`
 
 External API constraints:
 

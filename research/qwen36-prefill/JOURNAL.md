@@ -796,3 +796,20 @@ transactions, no-duplicate offset/state checks, rollback, and cancellation
 coverage. Decode, MTP phases, vision embedding prefill, ordinary intermediate
 chunks, and the default-off path remain unchanged. The parent owns M3
 performance and quality gates. See `notes/078-suffix-frontier-state-river-handoff.md`.
+
+## 2026-08-24T21:40Z — cross-layer artifact projections handed off
+
+E51's unchanged historical rows now share matrix-level gathered QMM launches
+across immutable stacked GDN qkv/a/b and attention k/v weight families.
+Recurrence, K normalization, RoPE, K/V commitment, and suffix traversal remain
+sequential by layer. The opt-in fails back to E51 for malformed resource knobs,
+unsupported quantization, unsafe persistent/transient sizes, or ineligible
+caches.
+
+The 320-row B1×512 history retains 186.68 MiB of normalized inputs and raw
+artifacts and fits one 192 MiB batch; B2/B4 split at layer boundaries.
+Regressions pin B1/B2/B4 artifacts, offsets, state, rollback, cancellation,
+source-weight identity, and budget chunking. Ordered patch 079 replays exactly
+after 078. The parent owns the Metal tests, the additional 1.3× B1×512 gate
+(at least 2,877.0 tok/s), and E51 quality. See
+`notes/083-cross-layer-artifact-projection-batching-handoff.md`.

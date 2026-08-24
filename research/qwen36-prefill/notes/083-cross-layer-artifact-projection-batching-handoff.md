@@ -84,7 +84,7 @@ The patch adds regressions for:
   `atol=1e-5`;
 - B1/B2/B4 gathered history versus the incumbent full-rectangle projection
   slices, covering the incumbent history/suffix QMM split;
-- source parameter object identity before and after bank use;
+- source parameter object identity and exact bytes before and after bank use;
 - B1/B2/B4 artifact-only and suffix-frontier equivalence;
 - exact K/V cache offsets and row offsets;
 - recurrent conv/SSM equivalence, commit, rollback, cancelled-row removal, and
@@ -120,7 +120,7 @@ Apply `079-cbv2-cross-layer-artifact-projection-batching.patch` after patch
 078's final nested commit `e5ba752`.
 
 - patch SHA-256:
-  `d8a54149404ecf541b7b28b1beeb8576bbcd6c103cb36e54892af499f6dc01b0`;
+  `788799ddacc0d51894f5aa36f597e68811ae198fd9850e6d795fb306b1b15bc3`;
 - nested commits:
   `2f67b8bcebaba60ad2625bbd4387b326c889363a`,
   `785c1c21217bd3c2e296b8de4ee6d503d08f22f2`,
@@ -128,6 +128,7 @@ Apply `079-cbv2-cross-layer-artifact-projection-batching.patch` after patch
   `fc32dae08048a0ee51f89742eaaa000572c51490`,
   `971667684e5e9a9d9605a48e0af4cd836057040b`,
   `8cdbbdb52823ee4158463212445e23a78ce12d99`,
-  `0063990684c4ccb559e1fc6cbbb70e1429143d1a`;
-- final tree: `705f6a17bf261a90b258daea87a26e1d28db6c3a`, verified by clean
+  `0063990684c4ccb559e1fc6cbbb70e1429143d1a`,
+  `4e73236580544a342a6e0385d5f06331ed6a5266`;
+- final tree: `b3fdf3ccdd0cec69c35881c2f4c0f32603ee0202`, verified by clean
   patch replay.

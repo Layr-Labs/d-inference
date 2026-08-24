@@ -1,7 +1,7 @@
 From 2f67b8bcebaba60ad2625bbd4387b326c889363a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:53:03 +0000
-Subject: [PATCH 1/7] Batch Qwen artifact projections across layers
+Subject: [PATCH 1/8] Batch Qwen artifact projections across layers
 
 ---
  Libraries/MLXLLM/Models/Qwen35.swift          | 378 +++++++++++-
@@ -1723,7 +1723,7 @@ index 0000000..799243d
 From 785c1c21217bd3c2e296b8de4ee6d503d08f22f2 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:59:24 +0000
-Subject: [PATCH 2/7] Format Qwen artifact projection batching sources
+Subject: [PATCH 2/8] Format Qwen artifact projection batching sources
 
 ---
  .../Qwen35ArtifactProjectionBatch.swift       |  84 +++++----
@@ -2131,7 +2131,7 @@ index 799243d..8459335 100644
 From 77d3a05a0eca714014e922d542bf1b528d1352bc Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:01:24 +0000
-Subject: [PATCH 3/7] Test artifact projection chunk budgeting
+Subject: [PATCH 3/8] Test artifact projection chunk budgeting
 
 ---
  .../Qwen35ArtifactProjectionBatchTests.swift  | 30 +++++++++++++++++++
@@ -2185,7 +2185,7 @@ index 8459335..50f1629 100644
 From fc32dae08048a0ee51f89742eaaa000572c51490 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:04:46 +0000
-Subject: [PATCH 4/7] Test incumbent-shape artifact projection parity
+Subject: [PATCH 4/8] Test incumbent-shape artifact projection parity
 
 ---
  .../Qwen35ArtifactProjectionBatchTests.swift  | 62 +++++++++++++++++++
@@ -2271,7 +2271,7 @@ index 50f1629..3b2ac1d 100644
 From 971667684e5e9a9d9605a48e0af4cd836057040b Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:05:31 +0000
-Subject: [PATCH 5/7] Add Qwen artifact batching decision probe
+Subject: [PATCH 5/8] Add Qwen artifact batching decision probe
 
 ---
  ...en35ArtifactProjectionBatchPerfTests.swift | 396 ++++++++++++++++++
@@ -2687,7 +2687,7 @@ index 0000000..810d0b3
 From 8cdbbdb52823ee4158463212445e23a78ce12d99 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:06:31 +0000
-Subject: [PATCH 6/7] Fail closed on unordered projection layer IDs
+Subject: [PATCH 6/8] Fail closed on unordered projection layer IDs
 
 ---
  .../MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift  |  8 ++++++++
@@ -2748,7 +2748,7 @@ index 3b2ac1d..0bd9945 100644
 From 0063990684c4ccb559e1fc6cbbb70e1429143d1a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 22:07:31 +0000
-Subject: [PATCH 7/7] Format artifact batching decision probe
+Subject: [PATCH 7/8] Format artifact batching decision probe
 
 ---
  ...en35ArtifactProjectionBatchPerfTests.swift | 702 +++++++++---------
@@ -3507,6 +3507,50 @@ index 810d0b3..d814c18 100644
 -}
  
  #endif
+-- 
+2.43.0
+
+
+From 4e73236580544a342a6e0385d5f06331ed6a5266 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 22:09:03 +0000
+Subject: [PATCH 8/8] Verify artifact batching preserves weight bytes
+
+---
+ .../Qwen35ArtifactProjectionBatchTests.swift          | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+index 0bd9945..5c3bbe0 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+@@ -135,6 +135,10 @@ struct Qwen35ArtifactProjectionBatchTests {
+         MLXRandom.seed(0xB4_71)
+         let layers = makeQuantizedLayers(config)
+         let parametersBefore = parameterIdentity(layers)
++        let parameterValuesBefore = parametersBefore.mapValues {
++            $0 + MLXArray.zeros($0.shape, dtype: $0.dtype)
++        }
++        eval(Array(parameterValuesBefore.values))
+         let bank = try #require(
+             Qwen35ArtifactProjectionWeightBank(
+                 layers: layers,
+@@ -210,9 +214,14 @@ struct Qwen35ArtifactProjectionBatchTests {
+         let parametersAfter = parameterIdentity(layers)
+         #expect(parametersAfter.count == parametersBefore.count)
+         for (key, before) in parametersBefore {
++            let after = try #require(parametersAfter[key])
++            let valueBefore = try #require(parameterValuesBefore[key])
+             #expect(
+-                parametersAfter[key] === before,
++                after === before,
+                 Comment(rawValue: "projection batching replaced \(key)"))
++            #expect(
++                TinyArtifactQwen.identical(after, valueBefore),
++                Comment(rawValue: "projection batching mutated \(key)"))
+         }
+     }
+ 
 -- 
 2.43.0
 

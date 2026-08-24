@@ -350,6 +350,8 @@ Non-inferiority margins:
 - macro-average across the six: paired 95% lower confidence bound no worse
   than **−0.5 point**.
 
+For every task, both the observed candidate-minus-baseline difference and its
+one-sided paired 95% lower confidence bound must clear that task's margin.
 Every per-task margin is binding; a gain on one task cannot buy a large loss
 on another.
 

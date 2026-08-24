@@ -148,8 +148,10 @@ final class SandboxControlProtocolTests: XCTestCase {
     }
 
     func testStrictCodecRejectsDuplicateAndUnknownFields() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
         let valid = try String(
-            decoding: JSONEncoder().encode(commandEnvelope()),
+            decoding: encoder.encode(commandEnvelope()),
             as: UTF8.self
         )
         let mutations = [

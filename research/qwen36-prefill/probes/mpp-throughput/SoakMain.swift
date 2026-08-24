@@ -175,6 +175,9 @@ private func runShortSamples(
             dispatchCount: 1,
             label: "\(phase)-sample-\(index + 1)")
         samples.append(sample)
+        let rate = usefulTFLOPS(
+            operations: soakShape.usefulOperations,
+            seconds: sample.gpuSeconds)
         print(
             "SHORT_SAMPLE phase=\(phase)"
                 + " index=\(index + 1)"
@@ -183,10 +186,7 @@ private func runShortSamples(
                 + " gpu_ms=\(format(sample.gpuSeconds * 1e3, digits: 6))"
                 + " kernel_ms=\(format(sample.kernelSeconds * 1e3, digits: 6))"
                 + " cpu_ms=\(format(sample.cpuSeconds * 1e3, digits: 6))"
-                + " useful_gpu_tflops="
-                + "\(format(usefulTFLOPS(
-                    operations: soakShape.usefulOperations,
-                    seconds: sample.gpuSeconds), digits: 4))")
+                + " useful_gpu_tflops=\(format(rate, digits: 4))")
     }
     return samples
 }
@@ -327,12 +327,13 @@ private func run() throws {
                 operations: soakShape.usefulOperations
                     * Double(sample.dispatchCount),
                 seconds: sample.gpuSeconds)
+            let dispatchCount = records.reduce(0) {
+                $0 + $1.sample.dispatchCount
+            }
             print(
                 "SOAK_PROGRESS wall_s=\(format(wallEnd, digits: 3))"
                     + " command_buffers=\(records.count)"
-                    + " dispatches=\(records.reduce(0) {
-                        $0 + $1.sample.dispatchCount
-                    })"
+                    + " dispatches=\(dispatchCount)"
                     + " latest_gpu_tflops=\(format(rate, digits: 4))"
                     + " thermal="
                     + "\(thermalStateName(ProcessInfo.processInfo.thermalState))")
@@ -347,6 +348,10 @@ private func run() throws {
     }
 
     for (index, record) in records.enumerated() {
+        let rate = usefulTFLOPS(
+            operations: soakShape.usefulOperations
+                * Double(record.sample.dispatchCount),
+            seconds: record.sample.gpuSeconds)
         print(
             "SOAK_SAMPLE index=\(index + 1)"
                 + " wall_start_s=\(format(record.wallStartSeconds, digits: 6))"
@@ -357,11 +362,7 @@ private func run() throws {
                 + " gpu_ms=\(format(record.sample.gpuSeconds * 1e3, digits: 6))"
                 + " kernel_ms=\(format(record.sample.kernelSeconds * 1e3, digits: 6))"
                 + " cpu_ms=\(format(record.sample.cpuSeconds * 1e3, digits: 6))"
-                + " useful_gpu_tflops="
-                + "\(format(usefulTFLOPS(
-                    operations: soakShape.usefulOperations
-                        * Double(record.sample.dispatchCount),
-                    seconds: record.sample.gpuSeconds), digits: 4))")
+                + " useful_gpu_tflops=\(format(rate, digits: 4))")
     }
 
     let overall = try rateSummary(

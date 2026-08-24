@@ -101,9 +101,9 @@ export function BaseRewardsPanel({
                 <Info size={13} className="shrink-0 mt-0.5" />
                 <span>
                   {policy.enabled
-                    ? `The program is enabled; each amount remains subject to eligibility, the fleet-wide pool${
+                    ? `The program is enabled; each amount remains subject to eligibility and the fleet-wide pool cap${
                         policy.account_cap_fraction > 0
-                          ? `, and a ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
+                          ? `, plus a ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
                           : ""
                       }.`
                     : "The program is currently disabled; the policy table does not create a payout."}

@@ -50,7 +50,8 @@ format epoch + model identity + policy identity + block size
 The first layout/spec-valid entry is pinned and returned. A boundary-only entry
 at the request's full length is not a legal full hit because it has no logits;
 lookup continues to the next-shorter boundary. A later complete prompt can
-upgrade that entry with frontier logits when it is unpinned.
+donate an upgraded full boundary with frontier logits when the existing entry
+is unpinned.
 
 Adoption gives each request fresh attention and recurrent owners. For a partial
 match at `M`, the scheduler starts at `M` and forwards `[M, P)` normally. For a
@@ -136,4 +137,15 @@ swift build -c release --product darkbloom
   --qwen-prefix-iterations 3 \
   --kv-backend contiguous \
   --qwen-prefix-output /tmp/qwen-prefix-boundary-report.json
+
+jq -e '
+  ([.scenarios[]
+      | select(.kind == "common-prefix"
+          and .requestedCommonPrefixFraction >= 0.75)
+      | .samples[].warm.rows[]
+      | (.matchedTokens / .promptTokens)]
+    | min >= 0.60)
+  and
+  ([.scenarios[].summary.fullTokenEqualityRate] | min == 1)
+' /tmp/qwen-prefix-boundary-report.json
 ```

@@ -1,5 +1,5 @@
 diff --git "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift" "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
-index 6b8d4094..9697c2f0 100644
+index 6b8d4094..196b453b 100644
 --- "a/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
 +++ "b/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+\120roduction.swift"
 @@ -988,7 +988,9 @@ extension EngineV2Factory {
@@ -36,7 +36,7 @@ index 6b8d4094..9697c2f0 100644
      private static func makeEngineV2(
          model: any LanguageModel,
 diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
-index 6f263c70..44d4fc33 100644
+index 6f263c70..99eb97cb 100644
 --- a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
 @@ -100,6 +100,26 @@ struct EngineV2PrefixCacheUsageTests {

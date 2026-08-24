@@ -1,5 +1,5 @@
 diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
-index 30d9be9..0a53542 100644
+index 30d9be9..04bf10c 100644
 --- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
 +++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
 @@ -330,7 +330,7 @@ public struct CBv2EngineLoopConfig: Sendable {
@@ -93,9 +93,9 @@ index 30d9be9..0a53542 100644
  
          // Exact full-prompt hits sample their cached prompt-frontier logits.
          // Their KV/recurrent state is already at `prompt.count`; no model
-@@ -1782,6 +1796,17 @@ public final class EngineLoopV2: @unchecked Sendable {
-             if let stepLogprobs = sampler.takeStepLogprobs() {
-                 logprobSegments.append(stepLogprobs)
+@@ -1798,6 +1812,17 @@ public final class EngineLoopV2: @unchecked Sendable {
+             recurrentEvaluations.merge(recurrent) { _, _ in
+                 preconditionFailure("duplicate recurrent evaluation")
              }
 +            // A one-token final prompt slice shares the rectangular decode
 +            // implementation, but it is still the cold prompt frontier and
@@ -108,9 +108,9 @@ index 30d9be9..0a53542 100644
 +                    evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
 +                }
 +            }
-         }
- 
-         // Rectangular decode batch, in plan order.
+             decodeSampled = sampler.sample(
+                 logits: last,
+                 params: decodeRows.map(\.rec.request.sampling),
 @@ -1817,8 +1842,6 @@ public final class EngineLoopV2: @unchecked Sendable {
          // whole cohort. Span-bearing rows require the stronger model and
          // cache capabilities for row-local embeddings and attention masks.
@@ -283,7 +283,7 @@ index 602c609..b02583b 100644
                  matchedBoundary: snapshot.tokenCount,
                  exactStagedFullKVBytes: exactStagedFullKVBytes,
 diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
-index 6111802..daf0a14 100644
+index 6111802..9c5c67d 100644
 --- a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
 +++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
 @@ -1,9 +1,10 @@
@@ -444,7 +444,18 @@ index 6111802..daf0a14 100644
  public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sendable {
      private final class Entry {
          let key: Data
-@@ -229,6 +248,8 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+@@ -216,6 +235,10 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+ 
+     private let lock = NSLock()
+     private var entries: [Data: Entry] = [:]
++    /// Adoption pins are owned by the receipt id that created them. The
++    /// engine's request-correlated release therefore cannot accidentally
++    /// unpin another request that adopted the same immutable boundary.
++    private var pinsByRequest: [CBv2RequestID: [Data: Int]] = [:]
+     private var tick: UInt64 = 0
+     private var residentBytes = 0
+     private var hitCount = 0
+@@ -229,37 +252,53 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
          self.config = config
      }
  
@@ -453,7 +464,10 @@ index 6111802..daf0a14 100644
      // MARK: Exact-state lookup/donation
  
      public func lookupExact(
-@@ -238,28 +259,38 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+-        requestID _: CBv2RequestID,
++        requestID: CBv2RequestID,
+         tokens: [Int],
+         layerKinds: [CBv2LayerKind],
          recurrentStateSpec: CBv2RecurrentStateSpec,
          cacheSalt: String?
      ) -> CBv2ExactPrefixSnapshot? {
@@ -492,7 +506,11 @@ index 6111802..daf0a14 100644
 +            }
 +            tick &+= 1
 +            entry.lastAccess = tick
-+            entry.refInUse += 1
++            entry.refInUse = Self.saturatingAdd(entry.refInUse, 1)
++            var requestPins = pinsByRequest[requestID] ?? [:]
++            requestPins[entry.key] = Self.saturatingAdd(
++                requestPins[entry.key] ?? 0, 1)
++            pinsByRequest[requestID] = requestPins
 +            hitCount = Self.saturatingAdd(hitCount, 1)
 +            savedTokens = Self.saturatingAdd(savedTokens, candidate.tokenCount)
 +            return entry.snapshot
@@ -508,7 +526,7 @@ index 6111802..daf0a14 100644
      }
  
      public func donateExact(
-@@ -274,7 +305,7 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+@@ -274,7 +313,7 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
              snapshot.attention.count == layerKinds.count,
              Self.layoutMatches(snapshot: snapshot, layerKinds: layerKinds),
              acceptsExactDonation(byteCount: snapshot.byteCount),
@@ -517,7 +535,7 @@ index 6111802..daf0a14 100644
          else {
              lock.lock()
              droppedDonationCount = Self.saturatingAdd(droppedDonationCount, 1)
-@@ -287,7 +318,26 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+@@ -287,7 +326,26 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
          if let existing = entries[key] {
              tick &+= 1
              existing.lastAccess = tick
@@ -545,7 +563,7 @@ index 6111802..daf0a14 100644
          }
          // Make room BEFORE publishing the entry. Pinned adopters may prevent
          // eviction; in that case the donation is refused rather than letting
-@@ -321,7 +371,9 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+@@ -321,13 +379,40 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
      }
  
      public func endAdoption(tokens: [Int], matched: Int, cacheSalt: String?) {
@@ -556,7 +574,66 @@ index 6111802..daf0a14 100644
              return
          }
          lock.lock()
-@@ -400,11 +452,45 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         defer { lock.unlock() }
+-        guard let entry = entries[key] else { return }
+-        entry.refInUse = max(0, entry.refInUse - 1)
++        // Compatibility path for callers using the frozen pre-correlation
++        // protocol method. The engine uses the request-correlated overload
++        // below; here, release exactly one real owner rather than decrementing
++        // an unowned global refcount.
++        guard let requestID = pinsByRequest.first(where: {
++            ($0.value[key] ?? 0) > 0
++        })?.key else { return }
++        releasePinLocked(requestID: requestID, key: key)
++        if residentBytes > config.maxBytes {
++            evictLocked(toFit: config.maxBytes)
++        }
++    }
++
++    public func endAdoption(
++        requestID: CBv2RequestID,
++        tokens: [Int],
++        matched: Int,
++        cacheSalt: String?
++    ) {
++        guard matched > 0, matched <= tokens.count,
++            let key = key(tokens: tokens, tokenCount: matched, cacheSalt: cacheSalt)
++        else {
++            return
++        }
++        lock.lock()
++        defer { lock.unlock() }
++        releasePinLocked(requestID: requestID, key: key)
+         if residentBytes > config.maxBytes {
+             evictLocked(toFit: config.maxBytes)
+         }
+@@ -392,6 +477,25 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         }
+     }
+ 
++    private func releasePinLocked(requestID: CBv2RequestID, key: Data) {
++        guard var requestPins = pinsByRequest[requestID],
++            let count = requestPins[key],
++            count > 0
++        else { return }
++        if count == 1 {
++            requestPins.removeValue(forKey: key)
++        } else {
++            requestPins[key] = count - 1
++        }
++        if requestPins.isEmpty {
++            pinsByRequest.removeValue(forKey: requestID)
++        } else {
++            pinsByRequest[requestID] = requestPins
++        }
++        guard let entry = entries[key] else { return }
++        entry.refInUse = max(0, entry.refInUse - 1)
++    }
++
+     // MARK: Key and layout contracts
+ 
+     private func recordMiss() {
+@@ -400,11 +504,45 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
          lock.unlock()
      }
  
@@ -603,7 +680,7 @@ index 6111802..daf0a14 100644
          let model = Data(config.modelIdentity.utf8)
          let policy = Data(config.policyIdentity.utf8)
          let scope = Data((cacheSalt ?? config.scopeID).utf8)
-@@ -413,12 +499,13 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+@@ -413,12 +551,13 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
              scope.count <= Int(UInt32.max)
          else { return nil }
  
@@ -679,7 +756,7 @@ index af55024..60e37e2 100644
          // Chunks never split blocks, so a chunk can never START strictly
          // inside one (preemption restarts at 0; adoption is excluded for
 diff --git a/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift b/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
-index 01174e7..8951ee4 100644
+index 01174e7..7c9e838 100644
 --- a/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
 +++ b/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
 @@ -18,7 +18,7 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
@@ -701,10 +778,42 @@ index 01174e7..8951ee4 100644
              detachingFrontier: true)
          eval(result.evaluationArrays)
          return result
-@@ -232,4 +233,69 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
+@@ -232,4 +233,101 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
          backend.release(attentionB)
          try recurrentB.release()
      }
++
++    func testRequestCorrelatedReleaseCannotUnpinAnotherAdopter() throws {
++        let stored = try snapshot()
++        let tokens = [1, 2, 3, 4]
++        let cache = ExactPrefixCacheV2(
++            config: .init(modelIdentity: "qwen-request-pin", maxBytes: stored.byteCount))
++        cache.donateExact(
++            requestID: CBv2RequestID(1),
++            tokens: tokens,
++            snapshot: stored,
++            layerKinds: [layerKind],
++            cacheSalt: "tenant-a")
++
++        XCTAssertNotNil(lookup(cache, tokens: tokens))
++        cache.endAdoption(
++            requestID: CBv2RequestID(100),
++            tokens: tokens,
++            matched: tokens.count,
++            cacheSalt: "tenant-a")
++        cache.evict(toFit: 0)
++        XCTAssertEqual(
++            cache.bytesInUse, stored.byteCount,
++            "a different receipt id must not release the active adopter's pin")
++
++        cache.endAdoption(
++            requestID: CBv2RequestID(99),
++            tokens: tokens,
++            matched: tokens.count,
++            cacheSalt: "tenant-a")
++        cache.evict(toFit: 0)
++        XCTAssertEqual(cache.bytesInUse, 0)
++    }
 +
 +    func testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier() throws {
 +        let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9]

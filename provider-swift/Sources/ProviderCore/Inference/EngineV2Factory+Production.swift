@@ -988,7 +988,9 @@ extension EngineV2Factory {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
-        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
+        let effectivePrefixCache = prefixCacheIsSupported(
+            capabilities: preparedBackend.modelCapabilities,
+            prefixCache: prefixCache)
             ? prefixCache : nil
         // The ONE config, read back off the preparation. `consume` has
         // already refused a `maxConcurrentRequests` that differs from the
@@ -1022,6 +1024,21 @@ extension EngineV2Factory {
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType)
+    }
+
+    /// Preserve the hard distinction between historical KV-only reuse and
+    /// recurrent exact-state reuse. Qwen must never become cache-eligible
+    /// merely because a legacy `CBv2PrefixCache` was supplied; its caller has
+    /// to inject the stronger, default-off RAM cache explicitly.
+    static func prefixCacheIsSupported(
+        capabilities: CBv2ModelCapabilities,
+        prefixCache: (any CBv2PrefixCache)?
+    ) -> Bool {
+        guard let prefixCache else { return false }
+        if prefixCache is any CBv2ExactStatePrefixCache {
+            return capabilities.supportsExactStatePrefixReuse
+        }
+        return capabilities.supportsPrefixReuse
     }
 
     /// Shared final assembly for both backends.

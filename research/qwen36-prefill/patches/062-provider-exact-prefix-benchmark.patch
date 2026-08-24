@@ -591,7 +591,7 @@ index d0349f1d..f666e2b8 100644
      }
  }
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
-index 7d0a1c06..05d3a607 100644
+index 7d0a1c06..6d8f568d 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 @@ -2,15 +2,33 @@ import Foundation
@@ -654,7 +654,7 @@ index 7d0a1c06..05d3a607 100644
      func stats() -> CBv2PrefixCacheStats {
          cache.stats()
      }
-@@ -192,3 +220,155 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
+@@ -192,3 +220,168 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
          }
      }
  }
@@ -749,6 +749,19 @@ index 7d0a1c06..05d3a607 100644
 +        cache.endAdoption(tokens: tokens, matched: matched, cacheSalt: cacheSalt)
 +    }
 +
++    func endAdoption(
++        requestID: CBv2RequestID,
++        tokens: [Int],
++        matched: Int,
++        cacheSalt: String?
++    ) {
++        cache.endAdoption(
++            requestID: requestID,
++            tokens: tokens,
++            matched: matched,
++            cacheSalt: cacheSalt)
++    }
++
 +    func lookup(
 +        tokens _: [Int],
 +        layerKinds _: [CBv2LayerKind]
@@ -811,10 +824,10 @@ index 7d0a1c06..05d3a607 100644
 +    }
 +}
 diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
-index a47e9cf4..332b709d 100644
+index a47e9cf4..31dfd105 100644
 --- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
-@@ -200,6 +200,42 @@ struct QwenPrefixReuseTests {
+@@ -200,6 +200,83 @@ struct QwenPrefixReuseTests {
          #expect(cache.bytesInUse == 0)
      }
  
@@ -854,10 +867,51 @@ index a47e9cf4..332b709d 100644
 +        #expect(row.stateBytesCloned == snapshot.byteCount)
 +    }
 +
++    @Test
++    func exactTrackingCacheReportsLongestPartialBoundaryBytes() async throws {
++        let at2 = try exactSnapshot(tokenCount: 2, includesFrontier: false)
++        let at4 = try exactSnapshot(tokenCount: 4, includesFrontier: false)
++        let cache = QwenExactPrefixTrackingCache(config: .init(
++            modelIdentity: "qwen-exact-partial-test",
++            blockSize: 2,
++            maxBytes: at2.byteCount + at4.byteCount))
++        let prefix = [10, 11, 12, 13]
++        cache.donateExact(
++            requestID: CBv2RequestID(60),
++            tokens: Array(prefix.prefix(2)),
++            snapshot: at2,
++            layerKinds: [exactLayerKind],
++            cacheSalt: "scope")
++        cache.donateExact(
++            requestID: CBv2RequestID(60),
++            tokens: prefix,
++            snapshot: at4,
++            layerKinds: [exactLayerKind],
++            cacheSalt: "scope")
++
++        let engine = ExactPrefixScriptedEngine(
++            cache: cache,
++            layerKind: exactLayerKind,
++            recurrentSpec: exactRecurrentSpec)
++        let batch = try await QwenPrefixEngineRunner.run(
++            engine: engine,
++            cache: cache,
++            prompts: [prefix + [99]],
++            decodeTokens: 2,
++            requestIDBase: 70,
++            prefixCacheEnabled: true,
++            cacheSalt: "scope")
++
++        let row = try #require(batch.rows.first)
++        #expect(row.usage.prefixCacheOutcome == .hit)
++        #expect(row.usage.prefixCacheMatchedTokens == prefix.count)
++        #expect(row.stateBytesCloned == at4.byteCount)
++    }
++
      @Test
      func reportRoundTripsAndKeepsConstructionMissInRates() throws {
          let report = makeReport()
-@@ -241,6 +277,31 @@ struct QwenPrefixReuseTests {
+@@ -241,6 +318,38 @@ struct QwenPrefixReuseTests {
          }
      }
  
@@ -867,7 +921,9 @@ index a47e9cf4..332b709d 100644
 +        try report.validate()
 +
 +        for scenario in report.scenarios {
-+            let warmRows = try #require(scenario.samples.first).warm.rows
++            let sample = try #require(scenario.samples.first)
++            let warmRows = sample.warm.rows
++            #expect(sample.equality.allSatisfy { $0.fullTokensEqual })
 +            if scenario.kind == "identical" {
 +                #expect(warmRows.allSatisfy {
 +                    $0.cacheOutcome == "hit"
@@ -882,6 +938,11 @@ index a47e9cf4..332b709d 100644
 +                        && $0.matchedTokens == expectedMatched
 +                        && $0.savedPrefillTokens == expectedMatched
 +                })
++                if (scenario.requestedCommonPrefixFraction ?? 0) >= 0.75 {
++                    #expect(warmRows.allSatisfy {
++                        Double($0.matchedTokens) / Double($0.promptTokens) >= 0.60
++                    })
++                }
 +            }
 +        }
 +    }
@@ -889,7 +950,7 @@ index a47e9cf4..332b709d 100644
      private func repositoryRoot() -> URL {
          URL(fileURLWithPath: #filePath)
              .deletingLastPathComponent()
-@@ -261,7 +322,51 @@ struct QwenPrefixReuseTests {
+@@ -261,7 +370,55 @@ struct QwenPrefixReuseTests {
              })
      }
  
@@ -913,7 +974,10 @@ index a47e9cf4..332b709d 100644
 +        ])
 +    }
 +
-+    private func exactSnapshot(tokenCount: Int) throws -> CBv2ExactPrefixSnapshot {
++    private func exactSnapshot(
++        tokenCount: Int,
++        includesFrontier: Bool = true
++    ) throws -> CBv2ExactPrefixSnapshot {
 +        let attention = try CBv2ExactAttentionSnapshot(
 +            keys: MLXArray.zeros([1, 1, tokenCount, 1]),
 +            values: MLXArray.ones([1, 1, tokenCount, 1]),
@@ -932,7 +996,8 @@ index a47e9cf4..332b709d 100644
 +            modelPosition: tokenCount,
 +            attention: [attention],
 +            recurrentState: recurrent,
-+            frontierLogits: MLXArray([Float(1), Float(-1)]),
++            frontierLogits:
++                includesFrontier ? MLXArray([Float(1), Float(-1)]) : nil,
 +            detachingFrontier: true)
 +        eval(snapshot.evaluationArrays)
 +        return snapshot
@@ -942,7 +1007,7 @@ index a47e9cf4..332b709d 100644
          let promptTokens = 1_024
          let decodeTokens = 2
          let shapes: [(String, String, Int, Double)] = [
-@@ -278,6 +383,7 @@ struct QwenPrefixReuseTests {
+@@ -278,6 +435,7 @@ struct QwenPrefixReuseTests {
              let matchedTokens = min(
                  commonTokens,
                  ((promptTokens - 1) / 256) * 256)
@@ -950,7 +1015,7 @@ index a47e9cf4..332b709d 100644
              let coldRows = (0 ..< shape.2).map {
                  reportRow(
                      row: $0,
-@@ -296,10 +402,23 @@ struct QwenPrefixReuseTests {
+@@ -296,10 +454,23 @@ struct QwenPrefixReuseTests {
                  reportRow(
                      row: $0,
                      requestID: UInt64(3_000 + scenarioIndex * 100 + $0),
@@ -978,7 +1043,7 @@ index a47e9cf4..332b709d 100644
              }
              let cold = reportBatch(rows: coldRows, enabled: false)
              let warm = reportBatch(rows: warmRows, enabled: true)
-@@ -318,7 +437,7 @@ struct QwenPrefixReuseTests {
+@@ -318,7 +489,7 @@ struct QwenPrefixReuseTests {
                      row: construction,
                      donationObserved: true,
                      submitToCacheReadyMs: 12,
@@ -987,7 +1052,7 @@ index a47e9cf4..332b709d 100644
                      cacheBytesAfterReady: commonTokens * 16),
                  warm: warm,
                  cacheAccountingIncludingConstruction: .init(rows: cacheRows),
-@@ -380,8 +499,13 @@ struct QwenPrefixReuseTests {
+@@ -380,8 +551,13 @@ struct QwenPrefixReuseTests {
                  kvBackend: BenchmarkKVBackend(
                      selection: "contiguous",
                      resolved: ["contiguous"]),
@@ -1002,7 +1067,7 @@ index a47e9cf4..332b709d 100644
                  cacheBlockTokens: 256,
                  cacheSaltScope: "unique per scenario iteration",
                  capabilitySupported: true,
-@@ -535,3 +659,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
+@@ -535,3 +711,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
  
      func shutdown() async {}
  }

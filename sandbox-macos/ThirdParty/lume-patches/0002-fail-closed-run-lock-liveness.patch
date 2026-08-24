@@ -1939,12 +1939,61 @@ index fac0255da934ef3711c231dbfa3388387149a928..3f137de037bca893a69f5d9b05bf86fe
      }
  
      func openClient(url: String) async throws {
+diff --git a/libs/lume/tests/DebugLivenessLog.swift b/libs/lume/tests/DebugLivenessLog.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..147e235469509a5feff399fe9be677cd188c0506
+--- /dev/null
++++ b/libs/lume/tests/DebugLivenessLog.swift
+@@ -0,0 +1,43 @@
++import Foundation
++
++// #region agent log
++func debugLivenessLog(
++    hypothesisId: String,
++    location: String,
++    message: String,
++    data: [String: Any]
++) {
++    let path = "/opt/cursor/logs/debug.log"
++    let payload: [String: Any] = [
++        "hypothesisId": hypothesisId,
++        "location": location,
++        "message": message,
++        "data": data,
++        "timestamp": Int64(
++            Date().timeIntervalSince1970 * 1_000),
++    ]
++    guard var encoded = try? JSONSerialization.data(
++        withJSONObject: payload)
++    else {
++        return
++    }
++    encoded.append(0x0A)
++    if !FileManager.default.fileExists(atPath: path) {
++        _ = FileManager.default.createFile(
++            atPath: path,
++            contents: nil)
++    }
++    guard let handle = FileHandle(
++        forWritingAtPath: path)
++    else {
++        return
++    }
++    defer { try? handle.close() }
++    do {
++        try handle.seekToEnd()
++        try handle.write(contentsOf: encoded)
++    } catch {
++        return
++    }
++}
++// #endregion
 diff --git a/libs/lume/tests/RunLockLivenessTests.swift b/libs/lume/tests/RunLockLivenessTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf697263e0d
+index 0000000000000000000000000000000000000000..98ff0f546fd7ab71568688348f29e9f79d1c9068
 --- /dev/null
 +++ b/libs/lume/tests/RunLockLivenessTests.swift
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,639 @@
 +import Darwin
 +import Foundation
 +import Testing
@@ -2120,6 +2169,19 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    #expect(
 +        SharedVM.shared.getVM(
 +            for: fixture.directory) == nil)
++    // #region agent log
++    debugLivenessLog(
++        hypothesisId: "C",
++        location: "RunLockLivenessTests.swift:controllerCacheBeginsInsideRunLifecycle",
++        message: "observed cache state at VM.run entry",
++        data: [
++            "cacheAtEntry":
++                gatedVM.cacheWasPresentAtEntry ?? true,
++            "cacheAfterEntry":
++                SharedVM.shared.getVM(
++                    for: fixture.directory) != nil,
++        ])
++    // #endregion
 +
 +    factory.gate.release()
 +    await #expect(throws: GatedRunError.self) {
@@ -2383,6 +2445,20 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    #expect(!owner.isAlive())
 +    #expect(opener.isAlive())
 +    #expect(!fixture.directory.sessionsPath.exists())
++    // #region agent log
++    debugLivenessLog(
++        hypothesisId: "B,D",
++        location: "RunLockLivenessTests.swift:stopSignalsOnlyTheKernelLockOwner",
++        message: "validated kernel owner without signaling generic opener",
++        data: [
++            "ownerPid": owner.processIdentifier,
++            "ownerAlive": owner.isAlive(),
++            "openerPid": opener.processIdentifier,
++            "openerAlive": opener.isAlive(),
++            "markerPresent":
++                fixture.directory.sessionsPath.exists(),
++        ])
++    // #endregion
 +}
 +
 +@MainActor
@@ -2445,6 +2521,23 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    }
 +    #expect(owner.isAlive())
 +    #expect(fixture.directory.sessionsPath.exists())
++    // #region agent log
++    debugLivenessLog(
++        hypothesisId: "A",
++        location: "RunLockLivenessTests.swift:replacementConfigIsInconclusiveAndCannotStopOwner",
++        message: "replacement inode remained unknown without signaling owner",
++        data: [
++            "boundInode": String(
++                runIdentity.files.config.inode),
++            "currentInode": String(
++                RunLockFileIdentity(
++                    path: fixture.directory.configPath.path)?
++                    .inode ?? 0),
++            "ownerAlive": owner.isAlive(),
++            "markerPresent":
++                fixture.directory.sessionsPath.exists(),
++        ])
++    // #endregion
 +}
 +
 +@MainActor
@@ -2474,6 +2567,17 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    }
 +    #expect(owner.isAlive())
 +    #expect(fixture.directory.sessionsPath.exists())
++    // #region agent log
++    debugLivenessLog(
++        hypothesisId: "B",
++        location: "RunLockLivenessTests.swift:legacyMarkerCannotStopOwner",
++        message: "legacy marker failed closed before signal",
++        data: [
++            "ownerAlive": owner.isAlive(),
++            "markerPresent":
++                fixture.directory.sessionsPath.exists(),
++        ])
++    // #endregion
 +}
 +
 +@MainActor
@@ -2515,6 +2619,19 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    }
 +    #expect(owner.isAlive())
 +    #expect(fixture.directory.sessionsPath.exists())
++    // #region agent log
++    debugLivenessLog(
++        hypothesisId: "B",
++        location: "RunLockLivenessTests.swift:reusedProcessIdentityCannotStopOwner",
++        message: "reused PID birth mismatch failed closed before signal",
++        data: [
++            "processIdentifier":
++                actualIdentity.process.processIdentifier,
++            "ownerAlive": owner.isAlive(),
++            "markerPresent":
++                fixture.directory.sessionsPath.exists(),
++        ])
++    // #endregion
 +}
 diff --git a/libs/lume/tests/VMDisplayLifecycleTests.swift b/libs/lume/tests/VMDisplayLifecycleTests.swift
 index 04be4f46910eecef33d70c6085ecff6b3059f06f..d04e405b2d5c4b4092c09e7984fa574adf4c8cfd 100644
@@ -2551,7 +2668,7 @@ index 04be4f46910eecef33d70c6085ecff6b3059f06f..d04e405b2d5c4b4092c09e7984fa574a
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
  }
 diff --git a/libs/lume/tests/VNCPolicyTests.swift b/libs/lume/tests/VNCPolicyTests.swift
-index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29389d07e5 100644
+index e841706085e577f9f45f6c40824796dfcbfc2e39..c0968cd61734aa248704c3095cae280e97e4cfae 100644
 --- a/libs/lume/tests/VNCPolicyTests.swift
 +++ b/libs/lume/tests/VNCPolicyTests.swift
 @@ -1,4 +1,5 @@
@@ -2721,7 +2838,7 @@ index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29
      let displayContext = try #require(presenter.lastContext)
      #expect(displayContext.vncURL != nil)
  
-@@ -318,9 +404,44 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
+@@ -318,9 +404,56 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
  
    #expect(service.stopCallCount == 1)
    #expect(vnc.startCallCount == 0)
@@ -2761,12 +2878,24 @@ index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29
 +  #expect(!factoryCalled)
 +  #expect(service.startCallCount == 0)
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++  // #region agent log
++  debugLivenessLog(
++    hypothesisId: "A",
++    location: "VNCPolicyTests.swift:markerWriteFailurePreventsVMStart",
++    message: "marker failure prevented VM construction and start",
++    data: [
++      "factoryCalled": factoryCalled,
++      "startCallCount": service.startCallCount,
++      "cachePresent":
++        SharedVM.shared.getVM(for: context.dir) != nil,
++    ])
++  // #endregion
 +}
 +
  @MainActor
  @Test("VM.run refuses a VNC-disabled run that needs a VNC server")
  func vmRunRefusesConflictingVNCPolicy() async throws {
-@@ -349,27 +470,6 @@ func vmRunRefusesConflictingVNCPolicy() async throws {
+@@ -349,27 +482,6 @@ func vmRunRefusesConflictingVNCPolicy() async throws {
    #expect(!context.dir.sessionsPath.exists())
  }
  
@@ -2794,7 +2923,7 @@ index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29
  // MARK: - Cross-process status
  
  /// Creates an isolated storage location holding one stopped VM.
-@@ -398,15 +498,37 @@ private func makeStoppedVMLocation(named name: String) throws -> (URL, VMDirecto
+@@ -398,15 +510,37 @@ private func makeStoppedVMLocation(named name: String) throws -> (URL, VMDirecto
  }
  
  @MainActor
@@ -2836,7 +2965,7 @@ index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29
  
    let details = try controller.getDetails(name: "no-vnc-live", storage: storage.path)
    #expect(details.status == "running")
-@@ -421,14 +543,20 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
+@@ -421,14 +555,20 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
  }
  
  @MainActor
@@ -2861,7 +2990,7 @@ index e841706085e577f9f45f6c40824796dfcbfc2e39..5e2d52fd97683ea6029b328f78db8c29
  
    let details = try controller.getDetails(name: "no-vnc-stale", storage: storage.path)
    #expect(details.status == "stopped")
-@@ -437,70 +565,103 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+@@ -437,70 +577,103 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
  }
  
  @MainActor

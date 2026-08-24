@@ -78,7 +78,7 @@ index 4be5c86d..a69350c5 100644
 +    }
 +
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
-index 6d8f568d..01261af9 100644
+index 6d8f568d..97449a71 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
 @@ -294,3 +293,0 @@ final class QwenExactPrefixTrackingCache:
@@ -88,6 +88,18 @@ index 6d8f568d..01261af9 100644
 @@ -298 +295 @@ final class QwenExactPrefixTrackingCache:
 -            publishedAtNs: publishedAt,
 +            publishedAtNs: DispatchTime.now().uptimeNanoseconds,
+@@ -305,0 +303,11 @@ final class QwenExactPrefixTrackingCache:
++    func reserveExactDonation(
++        requestID: CBv2RequestID,
++        byteCount: Int
++    ) -> Bool {
++        cache.reserveExactDonation(requestID: requestID, byteCount: byteCount)
++    }
++
++    func cancelExactDonationReservation(requestID: CBv2RequestID) {
++        cache.cancelExactDonationReservation(requestID: requestID)
++    }
++
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift
 index b8711545..f34676af 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift

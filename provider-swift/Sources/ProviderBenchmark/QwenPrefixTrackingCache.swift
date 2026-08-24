@@ -300,6 +300,17 @@ final class QwenExactPrefixTrackingCache:
         cache.acceptsExactDonation(byteCount: byteCount)
     }
 
+    func reserveExactDonation(
+        requestID: CBv2RequestID,
+        byteCount: Int
+    ) -> Bool {
+        cache.reserveExactDonation(requestID: requestID, byteCount: byteCount)
+    }
+
+    func cancelExactDonationReservation(requestID: CBv2RequestID) {
+        cache.cancelExactDonationReservation(requestID: requestID)
+    }
+
     func endAdoption(tokens: [Int], matched: Int) {
         cache.endAdoption(tokens: tokens, matched: matched)
     }

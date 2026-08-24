@@ -1,0 +1,24 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 06:07:22.351.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-08-24 06:07:22.352.
+Test Suite 'CBv2ExactPrefixEngineTests' started at 2026-08-24 06:07:22.352.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testB1RepeatUsesCachedFrontierAndExactHybridState]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testB1RepeatUsesCachedFrontierAndExactHybridState]' passed (0.057 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingOneAdopterCannotPoisonTheCachedBoundary]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingOneAdopterCannotPoisonTheCachedBoundary]' passed (0.022 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingPartialAdopterPreservesBoundaryAndSuffixParity]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testCancellingPartialAdopterPreservesBoundaryAndSuffixParity]' passed (0.036 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testPartialBoundaryB1B2B4RunsDistinctSuffixAndMatchesColdOutput]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testPartialBoundaryB1B2B4RunsDistinctSuffixAndMatchesColdOutput]' passed (0.153 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testWarmB2AndB4ShareOnePrefillWithIndependentDecodeRows]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixEngineTests testWarmB2AndB4ShareOnePrefillWithIndependentDecodeRows]' passed (0.051 seconds).
+Test Suite 'CBv2ExactPrefixEngineTests' passed at 2026-08-24 06:07:22.670.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.319 (0.319) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-08-24 06:07:22.671.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.319 (0.319) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 06:07:22.671.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.319 (0.320) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

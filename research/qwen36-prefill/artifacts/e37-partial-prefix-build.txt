@@ -1,0 +1,906 @@
+Fetching https://github.com/apple/swift-atomics.git from cache
+Fetching https://github.com/apple/swift-service-context.git from cache
+Fetching https://github.com/apple/swift-numerics from cache
+Fetching https://github.com/apple/swift-http-structured-headers.git from cache
+Fetching https://github.com/apple/swift-distributed-tracing.git from cache
+Fetching https://github.com/huggingface/swift-huggingface.git from cache
+Fetching https://github.com/hummingbird-project/hummingbird.git from cache
+Fetching https://github.com/swiftlang/swift-syntax.git from cache
+Fetching https://github.com/apple/swift-argument-parser.git from cache
+Fetching https://github.com/apple/swift-algorithms.git from cache
+Fetching https://github.com/apple/swift-async-algorithms.git from cache
+Fetching https://github.com/apple/swift-nio-http2.git from cache
+Fetched https://github.com/apple/swift-atomics.git from cache (0.60s)
+Fetching https://github.com/adam-fowler/compress-nio.git from cache
+Fetched https://github.com/apple/swift-http-structured-headers.git from cache (0.70s)
+Fetched https://github.com/apple/swift-nio-http2.git from cache (0.70s)
+Fetched https://github.com/apple/swift-distributed-tracing.git from cache (0.70s)
+Fetched https://github.com/apple/swift-numerics from cache (0.70s)
+Fetched https://github.com/apple/swift-algorithms.git from cache (0.70s)
+Fetched https://github.com/huggingface/swift-huggingface.git from cache (0.70s)
+Fetched https://github.com/hummingbird-project/hummingbird.git from cache (0.70s)
+Fetching https://github.com/jedisct1/swift-sodium.git from cache
+Fetching https://github.com/hummingbird-project/hummingbird-websocket.git from cache
+Fetching https://github.com/apple/swift-http-types.git from cache
+Fetching https://github.com/swift-server/swift-service-lifecycle.git from cache
+Fetching https://github.com/hummingbird-project/swift-websocket.git from cache
+Fetching https://github.com/apple/swift-nio-extras.git from cache
+Fetching https://github.com/apple/swift-log.git from cache
+Fetched https://github.com/swiftlang/swift-syntax.git from cache (0.71s)
+Fetched https://github.com/apple/swift-service-context.git from cache (0.71s)
+Fetched https://github.com/apple/swift-async-algorithms.git from cache (0.71s)
+Fetched https://github.com/apple/swift-argument-parser.git from cache (0.72s)
+Fetching https://github.com/ibireme/yyjson.git from cache
+Fetching https://github.com/huggingface/swift-transformers from cache
+Fetching https://github.com/apple/swift-nio-ssl.git from cache
+Fetching https://github.com/apple/swift-asn1.git from cache
+Fetched https://github.com/ibireme/yyjson.git from cache (0.36s)
+Fetching https://github.com/apple/swift-collections.git from cache
+Fetched https://github.com/apple/swift-log.git from cache (0.39s)
+Fetching https://github.com/apple/swift-nio-transport-services.git from cache
+Fetched https://github.com/hummingbird-project/swift-websocket.git from cache (0.41s)
+Fetched https://github.com/apple/swift-nio-extras.git from cache (0.42s)
+Fetching https://github.com/mattt/EventSource.git from cache
+Fetching https://github.com/apple/swift-nio.git from cache
+Fetched https://github.com/apple/swift-nio-ssl.git from cache (0.42s)
+Fetching https://github.com/apple/swift-system from cache
+Fetched https://github.com/hummingbird-project/hummingbird-websocket.git from cache (0.45s)
+Fetched https://github.com/swift-server/swift-service-lifecycle.git from cache (0.45s)
+Fetched https://github.com/jedisct1/swift-sodium.git from cache (0.45s)
+Fetched https://github.com/apple/swift-http-types.git from cache (0.45s)
+Fetching https://github.com/apple/swift-crypto.git from cache
+Fetching https://github.com/LebJe/TOMLKit.git from cache
+Fetching https://github.com/swift-server/async-http-client.git from cache
+Fetching https://github.com/apple/swift-metrics.git from cache
+Fetched https://github.com/adam-fowler/compress-nio.git from cache (0.58s)
+Fetching https://github.com/apple/swift-certificates.git from cache
+Fetched https://github.com/huggingface/swift-transformers from cache (0.48s)
+Fetching https://github.com/huggingface/swift-jinja.git from cache
+Fetched https://github.com/apple/swift-asn1.git from cache (0.57s)
+Fetching https://github.com/apple/swift-configuration.git from cache
+Fetched https://github.com/mattt/EventSource.git from cache (0.32s)
+Fetched https://github.com/apple/swift-collections.git from cache (0.36s)
+Fetched https://github.com/apple/swift-nio-transport-services.git from cache (0.36s)
+Fetched https://github.com/apple/swift-system from cache (0.35s)
+Fetched https://github.com/apple/swift-certificates.git from cache (0.34s)
+Fetched https://github.com/LebJe/TOMLKit.git from cache (0.38s)
+Fetched https://github.com/apple/swift-crypto.git from cache (0.38s)
+Fetched https://github.com/huggingface/swift-jinja.git from cache (0.34s)
+Computing version for https://github.com/hummingbird-project/hummingbird-websocket.git
+Fetched https://github.com/apple/swift-metrics.git from cache (0.41s)
+Fetched https://github.com/swift-server/async-http-client.git from cache (0.41s)
+Fetched https://github.com/apple/swift-nio.git from cache (0.44s)
+Fetched https://github.com/apple/swift-configuration.git from cache (0.32s)
+Computed https://github.com/hummingbird-project/hummingbird-websocket.git at 2.6.0 (2.03s)
+Computing version for https://github.com/hummingbird-project/hummingbird.git
+Computed https://github.com/hummingbird-project/hummingbird.git at 2.23.0 (0.51s)
+Computing version for https://github.com/LebJe/TOMLKit.git
+Computed https://github.com/LebJe/TOMLKit.git at 0.6.0 (0.55s)
+Computing version for https://github.com/jedisct1/swift-sodium.git
+Computed https://github.com/jedisct1/swift-sodium.git at 0.10.0 (0.51s)
+Computing version for https://github.com/mattt/EventSource.git
+Computed https://github.com/mattt/EventSource.git at 1.3.0 (0.45s)
+Computing version for https://github.com/huggingface/swift-jinja.git
+Computed https://github.com/huggingface/swift-jinja.git at 2.3.5 (0.36s)
+Computing version for https://github.com/huggingface/swift-transformers
+Computed https://github.com/huggingface/swift-transformers at 1.3.3 (0.47s)
+Computing version for https://github.com/apple/swift-log.git
+Computed https://github.com/apple/swift-log.git at 1.12.0 (0.47s)
+Computing version for https://github.com/apple/swift-crypto.git
+Computed https://github.com/apple/swift-crypto.git at 4.5.0 (0.47s)
+Computing version for https://github.com/apple/swift-argument-parser.git
+Computed https://github.com/apple/swift-argument-parser.git at 1.4.0 (0.45s)
+Computed https://github.com/huggingface/swift-transformers.git at 1.3.3 (0.00s)
+Computing version for https://github.com/huggingface/swift-huggingface.git
+Computed https://github.com/huggingface/swift-huggingface.git at 0.9.0 (0.38s)
+Computed https://github.com/hummingbird-project/hummingbird.git at 2.23.0 (0.00s)
+Computing version for https://github.com/swiftlang/swift-syntax.git
+Computed https://github.com/swiftlang/swift-syntax.git at 603.0.1 (0.47s)
+Computed https://github.com/apple/swift-argument-parser at 1.4.0 (0.00s)
+Computing version for https://github.com/apple/swift-numerics
+Computed https://github.com/apple/swift-numerics at 1.1.1 (0.35s)
+Computed https://github.com/hummingbird-project/hummingbird-websocket.git at 2.6.0 (0.00s)
+Computed https://github.com/LebJe/TOMLKit.git at 0.6.0 (0.00s)
+Computed https://github.com/jedisct1/swift-sodium.git at 0.10.0 (0.00s)
+Computed https://github.com/mattt/EventSource.git at 1.3.0 (0.00s)
+Computed https://github.com/huggingface/swift-jinja.git at 2.3.5 (0.00s)
+Computed https://github.com/apple/swift-log.git at 1.12.0 (0.00s)
+Computed https://github.com/apple/swift-crypto.git at 4.5.0 (0.00s)
+Computing version for https://github.com/apple/swift-nio-extras.git
+Computed https://github.com/apple/swift-nio-extras.git at 1.34.0 (0.48s)
+Computing version for https://github.com/hummingbird-project/swift-websocket.git
+Computed https://github.com/hummingbird-project/swift-websocket.git at 1.5.0 (0.45s)
+Computing version for https://github.com/swift-server/async-http-client.git
+Computed https://github.com/swift-server/async-http-client.git at 1.33.1 (0.48s)
+Computing version for https://github.com/swift-server/swift-service-lifecycle.git
+Computed https://github.com/swift-server/swift-service-lifecycle.git at 2.11.0 (0.37s)
+Computing version for https://github.com/apple/swift-nio-transport-services.git
+Computed https://github.com/apple/swift-nio-transport-services.git at 1.28.0 (0.36s)
+Computing version for https://github.com/apple/swift-nio-ssl.git
+Computed https://github.com/apple/swift-nio-ssl.git at 2.37.0 (0.47s)
+Computing version for https://github.com/apple/swift-nio-http2.git
+Computed https://github.com/apple/swift-nio-http2.git at 1.43.0 (0.38s)
+Computing version for https://github.com/apple/swift-nio.git
+Computed https://github.com/apple/swift-nio.git at 2.99.0 (0.53s)
+Computing version for https://github.com/apple/swift-metrics.git
+Computed https://github.com/apple/swift-metrics.git at 2.10.1 (0.45s)
+Computing version for https://github.com/apple/swift-http-types.git
+Computed https://github.com/apple/swift-http-types.git at 1.5.1 (0.47s)
+Computing version for https://github.com/apple/swift-distributed-tracing.git
+Computed https://github.com/apple/swift-distributed-tracing.git at 1.4.1 (0.38s)
+Computing version for https://github.com/apple/swift-configuration.git
+Computed https://github.com/apple/swift-configuration.git at 1.2.0 (0.44s)
+Computing version for https://github.com/apple/swift-collections.git
+Computed https://github.com/apple/swift-collections.git at 1.4.1 (0.50s)
+Computing version for https://github.com/apple/swift-atomics.git
+Computed https://github.com/apple/swift-atomics.git at 1.3.0 (0.36s)
+Computing version for https://github.com/apple/swift-async-algorithms.git
+Computed https://github.com/apple/swift-async-algorithms.git at 1.1.3 (0.46s)
+Computing version for https://github.com/ibireme/yyjson.git
+Computed https://github.com/ibireme/yyjson.git at 0.12.0 (0.50s)
+Computing version for https://github.com/apple/swift-asn1.git
+Computed https://github.com/apple/swift-asn1.git at 1.7.0 (0.42s)
+Computing version for https://github.com/apple/swift-certificates.git
+Computed https://github.com/apple/swift-certificates.git at 1.19.1 (0.51s)
+Computing version for https://github.com/apple/swift-algorithms.git
+Computed https://github.com/apple/swift-algorithms.git at 1.2.1 (0.42s)
+Computing version for https://github.com/apple/swift-http-structured-headers.git
+Computed https://github.com/apple/swift-http-structured-headers.git at 1.7.0 (0.35s)
+Computing version for https://github.com/adam-fowler/compress-nio.git
+Computed https://github.com/adam-fowler/compress-nio.git at 1.4.2 (0.43s)
+Computing version for https://github.com/apple/swift-service-context.git
+Computed https://github.com/apple/swift-service-context.git at 1.3.0 (0.37s)
+Computing version for https://github.com/apple/swift-system.git
+Computed https://github.com/apple/swift-system.git at 1.6.4 (0.45s)
+Creating working copy for https://github.com/huggingface/swift-jinja.git
+Working copy of https://github.com/huggingface/swift-jinja.git resolved at 2.3.5
+Creating working copy for https://github.com/apple/swift-async-algorithms.git
+Working copy of https://github.com/apple/swift-async-algorithms.git resolved at 1.1.3
+Creating working copy for https://github.com/apple/swift-algorithms.git
+Working copy of https://github.com/apple/swift-algorithms.git resolved at 1.2.1
+Creating working copy for https://github.com/apple/swift-http-types.git
+Working copy of https://github.com/apple/swift-http-types.git resolved at 1.5.1
+Creating working copy for https://github.com/apple/swift-nio-ssl.git
+Working copy of https://github.com/apple/swift-nio-ssl.git resolved at 2.37.0
+Creating working copy for https://github.com/huggingface/swift-transformers
+Working copy of https://github.com/huggingface/swift-transformers resolved at 1.3.3
+Creating working copy for https://github.com/mattt/EventSource.git
+Working copy of https://github.com/mattt/EventSource.git resolved at 1.3.0
+Creating working copy for https://github.com/jedisct1/swift-sodium.git
+Working copy of https://github.com/jedisct1/swift-sodium.git resolved at 0.10.0
+Creating working copy for https://github.com/LebJe/TOMLKit.git
+Working copy of https://github.com/LebJe/TOMLKit.git resolved at 0.6.0
+Creating working copy for https://github.com/apple/swift-asn1.git
+Working copy of https://github.com/apple/swift-asn1.git resolved at 1.7.0
+Creating working copy for https://github.com/apple/swift-atomics.git
+Working copy of https://github.com/apple/swift-atomics.git resolved at 1.3.0
+Creating working copy for https://github.com/apple/swift-configuration.git
+Working copy of https://github.com/apple/swift-configuration.git resolved at 1.2.0
+Creating working copy for https://github.com/swift-server/async-http-client.git
+Working copy of https://github.com/swift-server/async-http-client.git resolved at 1.33.1
+Creating working copy for https://github.com/apple/swift-nio.git
+Working copy of https://github.com/apple/swift-nio.git resolved at 2.99.0
+Creating working copy for https://github.com/apple/swift-http-structured-headers.git
+Working copy of https://github.com/apple/swift-http-structured-headers.git resolved at 1.7.0
+Creating working copy for https://github.com/apple/swift-numerics
+Working copy of https://github.com/apple/swift-numerics resolved at 1.1.1
+Creating working copy for https://github.com/apple/swift-service-context.git
+Working copy of https://github.com/apple/swift-service-context.git resolved at 1.3.0
+Creating working copy for https://github.com/hummingbird-project/swift-websocket.git
+Working copy of https://github.com/hummingbird-project/swift-websocket.git resolved at 1.5.0
+Creating working copy for https://github.com/apple/swift-metrics.git
+Working copy of https://github.com/apple/swift-metrics.git resolved at 2.10.1
+Creating working copy for https://github.com/apple/swift-nio-http2.git
+Working copy of https://github.com/apple/swift-nio-http2.git resolved at 1.43.0
+Creating working copy for https://github.com/hummingbird-project/hummingbird-websocket.git
+Working copy of https://github.com/hummingbird-project/hummingbird-websocket.git resolved at 2.6.0
+Creating working copy for https://github.com/hummingbird-project/hummingbird.git
+Working copy of https://github.com/hummingbird-project/hummingbird.git resolved at 2.23.0
+Creating working copy for https://github.com/apple/swift-distributed-tracing.git
+Working copy of https://github.com/apple/swift-distributed-tracing.git resolved at 1.4.1
+Creating working copy for https://github.com/apple/swift-collections.git
+Working copy of https://github.com/apple/swift-collections.git resolved at 1.4.1
+Creating working copy for https://github.com/swift-server/swift-service-lifecycle.git
+Working copy of https://github.com/swift-server/swift-service-lifecycle.git resolved at 2.11.0
+Creating working copy for https://github.com/apple/swift-system
+Working copy of https://github.com/apple/swift-system resolved at 1.6.4
+Creating working copy for https://github.com/apple/swift-nio-transport-services.git
+Working copy of https://github.com/apple/swift-nio-transport-services.git resolved at 1.28.0
+Creating working copy for https://github.com/apple/swift-certificates.git
+Working copy of https://github.com/apple/swift-certificates.git resolved at 1.19.1
+Creating working copy for https://github.com/apple/swift-log.git
+Working copy of https://github.com/apple/swift-log.git resolved at 1.12.0
+Creating working copy for https://github.com/adam-fowler/compress-nio.git
+Working copy of https://github.com/adam-fowler/compress-nio.git resolved at 1.4.2
+Creating working copy for https://github.com/swiftlang/swift-syntax.git
+Working copy of https://github.com/swiftlang/swift-syntax.git resolved at 603.0.1
+Creating working copy for https://github.com/huggingface/swift-huggingface.git
+Working copy of https://github.com/huggingface/swift-huggingface.git resolved at 0.9.0
+Creating working copy for https://github.com/ibireme/yyjson.git
+Working copy of https://github.com/ibireme/yyjson.git resolved at 0.12.0
+Creating working copy for https://github.com/apple/swift-argument-parser.git
+Working copy of https://github.com/apple/swift-argument-parser.git resolved at 1.4.0
+Creating working copy for https://github.com/apple/swift-crypto.git
+Working copy of https://github.com/apple/swift-crypto.git resolved at 4.5.0
+Creating working copy for https://github.com/apple/swift-nio-extras.git
+Working copy of https://github.com/apple/swift-nio-extras.git resolved at 1.34.0
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/6] Write sources
+[3/6] Write swift-version--58304C5D6DBC2206.txt
+[5/7] Compiling ArgumentParserToolInfo ToolInfo.swift
+[6/8] Compiling ArgumentParser BashCompletionsGenerator.swift
+[7/9] Compiling encuda encuda-compile.swift
+[7/9] Write Objects.LinkFileList
+[8/9] Linking encuda-tool
+Building for serving...
+[0/307] Compiling CNIOWindows WSAStartup.c
+[1/307] Compiling CNIOWindows shim.c
+[1/307] Compiling CSystem shims.c
+[3/307] Copying t5_tokenizer_config.json
+[4/307] Copying gpt2_tokenizer_config.json
+[4/307] Copying PrivacyInfo.xcprivacy
+[7/307] Copying pagedattention.metal
+[7/307] Copying libsodium.a
+[9/307] Write sources
+[10/307] Compiling CNIOOpenBSD shim.c
+[11/307] Compiling CNIOLinux shim.c
+[12/307] Compiling CNIOWASI CNIOWASI.c
+[13/307] Write sources
+[15/307] Compiling CNIOLinux liburing_shims.c
+[15/307] Write sources
+[96/307] Compiling _NumericsShims _NumericsShims.c
+[97/307] Compiling version.cpp
+[98/307] Write swift-version--58304C5D6DBC2206.txt
+[99/307] Compiling CNIOLLHTTP c_nio_http.c
+[100/307] Compiling _AtomicsShims.c
+[101/309] Compiling CNIOPosix event_loop_id.c
+[102/309] Compiling _SwiftSyntaxCShims PlatformMutex.c
+[103/310] Compiling CNIODarwin shim.c
+[104/310] Compiling CNIOLLHTTP c_nio_api.c
+[106/313] Compiling SwiftSyntax602 Empty.swift
+[107/313] Compiling SwiftSyntax603 Empty.swift
+[108/313] Compiling SwiftSyntax601 Empty.swift
+[109/316] Compiling SwiftSyntax600 Empty.swift
+[110/316] Compiling SwiftSyntax510 Empty.swift
+[111/316] Compiling SwiftSyntax509 Empty.swift
+[112/319] Compiling _NIOBase64 Base64.swift
+[112/319] Compiling CNIOLLHTTP c_nio_llhttp.c
+[113/319] Compiling c-nioatomics.c
+[114/319] Compiling stream.cpp
+[115/322] Compiling c-atomics.c
+[116/323] Compiling utils.cpp
+[117/323] Compiling version.cpp
+[119/323] Compiling ServiceContextModule ServiceContext.swift
+[119/323] Compiling scheduler.cpp
+[121/326] Compiling RealModule AlgebraicField.swift
+[122/329] Compiling _NIODataStructures Heap.swift
+[123/329] Compiling Instrumentation Instrument.swift
+[123/329] Compiling Array.cpp
+[125/331] Compiling DarkbloomFanProtocol FanIPC.swift
+[126/333] Compiling ConcurrencyHelpers Lock.swift
+[127/333] Compiling InternalCollectionsUtilities Debugging.swift
+[128/334] Compiling NIOConcurrencyHelpers NIOAtomic.swift
+[129/335] Compiling ComplexModule Complex+AdditiveArithmetic.swift
+[130/336] Compiling ContainersPreview OutputSpan+Extras.swift
+[131/336] Compiling UnixSignals UnixSignal.swift
+[132/338] Compiling Numerics Numerics.swift
+[133/338] Compiling CoreMetrics Locks.swift
+[134/338] Compiling Tracing InstrumentationSystem+Tracing.swift
+[135/339] Compiling Crypto AES-GCM.swift
+[136/339] Compiling Logging Locks.swift
+[137/339] Compiling Metrics Metrics.swift
+[138/339] Compiling SystemPackage Errno.swift
+[138/339] Compiling no_gguf.cpp
+[139/339] Compiling transforms.cpp
+[140/339] Compiling random.cpp
+[142/339] Compiling EventSource AsyncEventsSequence.swift
+[142/339] Compiling yyjson.c
+[144/340] Compiling OrderedCollections _HashTable+Bucket.swift
+[145/340] Compiling Sodium Aead.swift
+[146/341] Compiling HTTPTypes HTTPField.swift
+[147/341] Compiling DequeModule Deque+Codable.swift
+[147/341] Compiling load.cpp
+[148/341] Compiling graph_utils.cpp
+[149/341] Compiling linalg.cpp
+[150/342] Compiling dtype_utils.cpp
+[151/342] Compiling fft.cpp
+[152/342] Compiling dtype.cpp
+[153/342] Compiling no_ring.cpp
+[154/342] Compiling utils.cpp
+[156/342] Compiling DarkbloomFanCore FanController.swift
+[156/342] Compiling safetensors.cpp
+[157/342] Compiling no_nccl.cpp
+[158/343] Compiling primitives.cpp
+[159/343] Compiling no_mpi.cpp
+[160/343] Compiling device.cpp
+[161/343] Compiling ops.cpp
+[162/343] Compiling distributed.cpp
+[163/343] Compiling fast.cpp
+[164/343] Compiling einsum.cpp
+[165/343] Compiling utils.cpp
+[167/343] Compiling DarkbloomFanService FanDurableFile.swift
+[167/343] Compiling unary.cpp
+[168/343] Compiling softmax.cpp
+[169/343] Compiling ternary.cpp
+[170/343] Compiling slicing.cpp
+[171/343] Compiling sort.cpp
+[172/343] Compiling scan.cpp
+[173/343] Compiling resident.cpp
+[174/343] Compiling compile.cpp
+[175/343] Compiling rope.cpp
+[176/343] Compiling primitives.cpp
+[177/343] Compiling scaled_dot_product_attention.cpp
+[178/343] Compiling primitives.cpp
+[179/343] Compiling metal.cpp
+[180/343] Compiling reduce.cpp
+[181/343] Compiling normalization.cpp
+[182/343] Compiling logsumexp.cpp
+[183/343] Compiling quantized.cpp
+[184/343] Compiling event.cpp
+[185/343] Compiling fence.cpp
+[186/343] Compiling hadamard.cpp
+[187/343] Compiling eval.cpp
+[188/343] Compiling device_info.cpp
+[189/343] Compiling distributed.cpp
+[190/343] Compiling indexing.cpp
+[191/343] Compiling ops.cpp
+[192/343] Compiling jit_kernels.cpp
+[193/343] Compiling matmul.cpp
+[195/343] Compiling Configuration AccessReporter.swift
+[195/343] Compiling custom_kernel.cpp
+[196/343] Compiling slicing.cpp
+[197/343] Compiling copy.cpp
+[198/343] Compiling threefry.cpp
+[199/343] Compiling allocator.cpp
+[200/343] Compiling binary.cpp
+[201/343] Compiling primitives.cpp
+[202/343] Compiling copy.cpp
+[203/343] Compiling no_cuda.cpp
+[204/343] Compiling compiled.cpp
+[205/343] Compiling device.cpp
+[206/343] Compiling conv.cpp
+[207/343] Compiling export.cpp
+[208/343] Compiling softmax.cpp
+[209/343] Compiling svd.cpp
+[210/343] Compiling qrf.cpp
+[211/343] Compiling fft.cpp
+[212/343] Compiling select.cpp
+[213/343] Compiling primitives.cpp
+[214/343] Compiling jit_compiler.cpp
+[215/343] Compiling logsumexp.cpp
+[216/343] Compiling masked_mm.cpp
+[217/343] Compiling luf.cpp
+[218/343] Compiling matmul.cpp
+[219/343] Compiling inverse.cpp
+[220/343] Compiling hadamard.cpp
+[221/343] Compiling encoder.cpp
+[222/343] Compiling eval.cpp
+[223/343] Compiling cblas.cpp
+[224/343] Compiling bnns.cpp
+[225/343] Compiling device_info.cpp
+[226/343] Compiling distributed.cpp
+[227/343] Compiling unary.cpp
+[228/343] Compiling quantized.cpp
+[229/343] Compiling eigh.cpp
+[230/343] Compiling eig.cpp
+[231/343] Compiling slicing.cpp
+[232/343] Compiling cholesky.cpp
+[233/343] Compiling utils.cpp
+[234/343] Compiling reduce.cpp
+[235/343] Compiling arg_reduce.cpp
+[236/343] Compiling load.cpp
+[237/343] Compiling scan.cpp
+[238/343] Compiling utils.cpp
+[239/343] Compiling reduce.cpp
+[240/343] Compiling unary_ops.cpp
+[241/343] Compiling unary.cpp
+[242/343] Compiling ternary_ops.cpp
+[243/343] Compiling ternary.cpp
+[244/343] Compiling steel_gemm_splitk_nax.cpp
+[245/343] Compiling steel_gemm_splitk.cpp
+[246/343] Compiling steel_gemm_segmented_nax.cpp
+[247/343] Compiling steel_gemm_segmented.cpp
+[248/343] Compiling steel_gemm_masked.cpp
+[249/343] Compiling steel_gemm_gather_nax.cpp
+[249/343] Compiling steel_gemm_gather.cpp
+[251/343] Compiling steel_gemm_fused_nax.cpp
+[252/343] Compiling steel_gemm_fused.cpp
+[253/343] Compiling common.cpp
+[254/343] Compiling fft.cpp
+[255/343] Compiling steel_conv_general.cpp
+[255/343] Compiling steel_conv_3d.cpp
+[257/343] Compiling compiled.cpp
+[258/343] Compiling steel_conv.cpp
+[258/343] Compiling steel_attention_nax.cpp
+[258/343] Compiling sort.cpp
+[261/343] Compiling steel_attention.cpp
+[262/343] Compiling softmax.cpp
+[263/343] Compiling scatter.cpp
+[264/343] Compiling reduce_utils.cpp
+[264/343] Compiling scan.cpp
+[266/343] Compiling scatter_axis.cpp
+[267/343] Compiling reduce.cpp
+[268/343] Compiling quantized_nax.cpp
+[269/343] Compiling sort.cpp
+[270/343] Compiling quantized_utils.cpp
+[271/343] Compiling quantized.cpp
+[271/343] Compiling masked_scatter.cpp
+[273/343] Compiling logsumexp.cpp
+[274/343] Compiling hadamard.cpp
+[275/343] Compiling gemm_nax.cpp
+[276/343] Compiling gemv.cpp
+[277/343] Compiling gemv_masked.cpp
+[278/343] Compiling gemm.cpp
+[279/343] Compiling gather_front.cpp
+[280/343] Compiling gather_axis.cpp
+[281/343] Compiling gather.cpp
+[282/343] Compiling fp_quantized.cpp
+[283/343] Compiling fft.cpp
+[284/343] Compiling fp_quantized_nax.cpp
+[285/343] Compiling conv.cpp
+[286/343] Compiling copy.cpp
+[287/343] Compiling binary_two.cpp
+[288/343] Compiling compiled_preamble.cpp
+[289/343] Compiling binary_ops.cpp
+[290/343] Compiling binary.cpp
+[291/343] Compiling arange.cpp
+[292/343] Compiling broadcasting.cpp
+[293/343] Compiling conv.cpp
+[294/343] Compiling jaccl_conditional.cpp
+[296/343] Compiling Jinja AST.swift
+[296/343] Compiling string.cpp
+[297/343] Compiling stream.cpp
+[298/343] Compiling metal_kernel.cpp
+[299/344] Compiling transforms.cpp
+[300/344] Compiling transforms_impl.cpp
+[301/344] Compiling array.cpp
+[302/344] Compiling vector.cpp
+[304/344] Compiling HuggingFace AccessRequest.swift
+[304/344] Compiling compiled_conditional.cpp
+[305/345] Compiling random.cpp
+[306/345] Compiling metal.cpp
+[307/345] Compiling memory.cpp
+[308/345] Compiling linalg.cpp
+[309/345] Compiling map.cpp
+[310/345] Compiling graph_utils.cpp
+[311/345] Compiling error.cpp
+[312/345] Compiling io_types.cpp
+[313/345] Compiling fft.cpp
+[314/345] Compiling io.cpp
+[315/345] Compiling ops.cpp
+[316/345] Compiling export.cpp
+[317/345] Compiling distributed_group.cpp
+[318/345] Compiling fast.cpp
+[319/345] Compiling distributed.cpp
+[320/345] Compiling cuda.cpp
+[321/345] Compiling compile.cpp
+[321/345] Write sources
+[326/346] Compiling device.cpp
+[327/346] Compiling Cmlx.m
+[328/348] Compiling closure.cpp
+[329/348] Compiling Node.cpp
+[330/348] Compiling Date&Time&DateTime.cpp
+[331/348] Compiling Conversion.cpp
+[333/348] Compiling ArgumentParserToolInfo ToolInfo.swift
+[333/349] Compiling format.cc
+[335/349] Compiling ProviderCoreFoundation HarmonySanitization.swift
+[335/349] Compiling Table.cpp
+[336/349] Compiling array.cpp
+[338/350] Compiling Atomics OptionalRawRepresentable.swift
+[339/351] Compiling AsyncAlgorithms AsyncAdjacentPairsSequence.swift
+[340/352] Compiling Hub BinaryDistinct.swift
+[341/353] Compiling ServiceLifecycle AsyncCancelOnGracefulShutdownSequence.swift
+[342/353] Compiling TOMLKit InternalTOMLDecoder.swift
+[342/353] Compiling copy.cpp
+[344/353] Compiling ArgumentParser BashCompletionsGenerator.swift
+[345/353] Compiling Tokenizers BPETokenizer.swift
+[346/353] Compiling NIOCore AddressedEnvelope.swift
+[347/358] Compiling NIOHTTPTypes NIOHTTPTypes.swift
+[348/358] Compiling NIOFoundationEssentialsCompat ByteBuffer-foundation.swift
+[349/358] Compiling Generation Decoders.swift
+[350/359] Compiling Models LanguageModel.swift
+[351/359] Compiling NIOEmbedded AsyncTestingChannel.swift
+[351/359] Compiling indexing.cpp
+[353/359] Compiling NIOPosix BSDSocketAPICommon.swift
+[354/360] Compiling NIO Exports.swift
+[355/363] Compiling NIOFoundationCompat Exports.swift
+[356/363] Compiling NIOTLS ApplicationProtocolNegotiationHandler.swift
+[356/364] Compiling binary.cpp
+[358/365] Compiling NIOTransportServices AcceptHandler.swift
+[359/365] Compiling NIOHTTP1 ByteCollectionUtils.swift
+[360/367] Compiling NIOHTTPTypesHTTP1 HTTP1ToHTTPCodec.swift
+[361/367] Compiling NIOExtras DebugInboundEventsHandler.swift
+[362/368] Compiling HummingbirdCore Deprecations.swift
+[363/369] Compiling MLX ArrayAt.swift
+[364/372] Compiling MLXFast MLXFast.swift
+[365/372] Compiling MLXRandom Random.swift
+[366/372] Compiling Hummingbird Application+ConfigReader.swift
+[367/372] Compiling MLXNN Activations.swift
+/Users/gaj/work/d-inference/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/work/d-inference/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/work/d-inference/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[368/373] Compiling MLXOptimizers Optimizers.swift
+[369/374] Compiling MLXLMCommon DoRA+Layers.swift
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[370/376] Compiling MLXEmbedders EmbedderModelContainer.swift
+[371/376] Compiling SwiftSyntax AbsolutePosition.swift
+[372/379] Compiling SwiftBasicFormat BasicFormat.swift
+[373/379] Compiling SwiftDiagnostics Convenience.swift
+[374/379] Compiling MLXLLM LLMModel.swift
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:758:27: warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 756 | 
+ 757 |     func callAsFunction(_ x: MLXArray, poolCache: PoolingCache?, offset: Int) -> MLXArray {
+ 758 |         let B = x.dim(0), D = x.dim(2)
+     |                           `- warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 759 |         let kv = wkv(x)    // [B, S, out_dim]
+ 760 |         let gate = wgate(x) // [B, S, out_dim]
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1401:9: warning: switch must be exhaustive
+1399 |         // Local scores: [B, H, L, localLen]
+1400 |         let localScores: MLXArray
+1401 |         switch localMask {
+     |         |- warning: switch must be exhaustive
+     |         `- note: add missing case: '.arrays(_)'
+1402 |         case .none, .causal:
+1403 |             localScores = qScaled.matmul(localKV.transposed(0, 1, 3, 2))
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1513:13: warning: variable 'h' was never mutated; consider changing to 'let' constant
+1511 |         }
+1512 | 
+1513 |         var h = hcPost(x: attnOut, residual: residual, post: postAttn, comb: combAttn)
+     |             `- warning: variable 'h' was never mutated; consider changing to 'let' constant
+1514 | 
+1515 |         // FFN sub-block
+[375/380] Compiling MLXVLM MediaProcessing.swift
+[376/380] Compiling SwiftParser Attributes.swift
+[377/382] Compiling SwiftOperators Operator.swift
+[378/382] Compiling SwiftParserDiagnostics DiagnosticExtensions.swift
+[379/383] Compiling SwiftSyntaxBuilder ConvenienceInitializers.swift
+[380/384] Compiling SwiftIfConfig ActiveClauseEvaluator.swift
+[381/385] Compiling SwiftSyntaxMacros AbstractSourceLocation.swift
+[382/386] Compiling SwiftSyntaxMacroExpansion BasicMacroExpansionContext.swift
+[383/387] Compiling SwiftCompilerPluginMessageHandling CompilerPluginMessageHandler.swift
+[384/388] Compiling SwiftCompilerPlugin CompilerPlugin.swift
+[385/389] Compiling MLXHuggingFaceMacros HuggingFaceIntegrationMacros.swift
+[385/389] Write Objects.LinkFileList
+[386/389] Linking MLXHuggingFaceMacros-tool
+[388/390] Compiling MLXHuggingFace Macros.swift
+[389/391] Compiling MLXLMServer MLXServerRunner.swift
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXEmbeddingServerEngine.swift:78:49: note: expanded code originates here
+76 |         try await EmbedderModelFactory.shared.loadContainer(
+77 |             from: #hubDownloader(),
+78 |             using: #huggingFaceTokenizerLoader(),
+   |                    `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+   +--- macro expansion #huggingFaceTokenizerLoader --------------------
+   |10 |             //
+   |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+   |12 |             return #adaptHuggingFaceTokenizer(upstream)
+   |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+   |   +--- macro expansion #adaptHuggingFaceTokenizer -----------------
+   |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+   |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+   |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+   |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+   |   | 9 | 
+   |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+   |   +----------------------------------------------------------------
+   |13 |         }
+   |14 |     }
+   +--------------------------------------------------------------------
+79 |             configuration: configuration
+80 |         )
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:202:79: note: expanded code originates here
+200 |         configuration: ModelConfiguration
+201 |     ) async throws -> ModelContainer {
+202 |         try await #huggingFaceLoadModelContainer(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModelContainer' here
+    +--- macro expansion #huggingFaceLoadModelContainer ----------------
+    |1 | loadModelContainer(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |10 |             //
+    |  |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |12 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |13 |         }
+    |  |14 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+203 |     }
+204 | 
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:211:70: note: expanded code originates here
+209 |         configuration: ModelConfiguration
+210 |     ) async throws -> sending ModelContext {
+211 |         try await #huggingFaceLoadModel(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModel' here
+    +--- macro expansion #huggingFaceLoadModel -------------------------
+    |1 | loadModel(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |10 |             //
+    |  |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |12 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |13 |         }
+    |  |14 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+212 |     }
+213 | }
+[390/392] Compiling ProviderCore APNsBridge.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift:77:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 75 |         throw HardwareError.sysctlFailed(key)
+ 76 |     }
+ 77 |     return String(cString: buffer)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 78 | }
+ 79 | 
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+83 |         // any code path that might have called `Device.setDefault(.cpu)`
+84 |         // earlier in the process (e.g. a stray test fixture).
+85 |         Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+86 |         if Device.defaultDevice().deviceType != .gpu {
+87 |             throw Error.mlxDefaultIsCPU
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:22:45: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+20 |     /// reports a true zero when the cap is already exhausted.
+21 |     public static var measuredLiveKVHeadroomBytes: UInt64 {
+22 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                             |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+   |                                             `- note: use 'Memory.activeMemory' instead
+23 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+24 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:22:84: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+20 |     /// reports a true zero when the cap is already exhausted.
+21 |     public static var measuredLiveKVHeadroomBytes: UInt64 {
+22 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                                                                    |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+   |                                                                                    `- note: use 'Memory.cacheMemory' instead
+23 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+24 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:127:52: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+125 |         // advertises an actively-served model's weights as free); only when fully
+126 |         // idle do we assume idle models can be evicted.
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+    |                                                    |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+    |                                                    `- note: use 'Memory.activeMemory' instead
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:128:50: warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+126 |         // idle do we assume idle models can be evicted.
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+    |                                                  |- warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+    |                                                  `- note: use 'Memory.peakMemory' instead
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+130 |         let mlxUsed = mlxActiveBytes + mlxCacheBytes
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:129:51: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+    |                                                   |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+    |                                                   `- note: use 'Memory.cacheMemory' instead
+130 |         let mlxUsed = mlxActiveBytes + mlxCacheBytes
+131 |         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:843:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+ 841 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+ 842 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 843 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+ 844 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+ 845 |             reserveBytes: reserve,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:844:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+ 842 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 843 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+ 844 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+ 845 |             reserveBytes: reserve,
+ 846 |             outstandingReservationBytes: outstanding)
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:332:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+330 |     var model = [CChar](repeating: 0, count: size)
+331 |     sysctlbyname("hw.model", &model, &size, nil, 0)
+332 |     return String(cString: model)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+333 | }
+334 | 
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:157:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+155 |     // Resolve symlinks
+156 |     guard let resolved = realpath(buffer, nil) else {
+157 |         return String(cString: buffer)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+158 |     }
+159 |     defer { free(resolved) }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift:279:41: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+277 |         }
+278 |         guard let resolved = realpath(buffer, nil) else {
+279 |             return URL(fileURLWithPath: String(cString: buffer))
+    |                                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+280 |         }
+281 |         defer { free(resolved) }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:265:24: warning: no 'async' operations occur within 'await' expression
+263 | 
+264 |     private func runPrefetch(modelId: String, taskId: UUID) async {
+265 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
+    |                        `- warning: no 'async' operations occur within 'await' expression
+266 | 
+267 |         // Short-circuit if already available (loaded or on-disk-and-valid).
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1028:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+1026 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+1027 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1028 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+1029 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+1030 |             reserveBytes: reserve,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1029:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1027 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1028 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+1029 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+1030 |             reserveBytes: reserve,
+1031 |             outstandingReservationBytes: outstanding)
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift:82:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+80 |                 return String(cString: resolved)
+81 |             }
+82 |             return String(cString: buffer)
+   |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+83 |         }
+84 |         return FileManager.default.homeDirectoryForCurrentUser
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[391/393] Compiling ProviderBenchmark ArrivalEngineRunner.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:184:27: warning: no calls to throwing functions occur within 'try' expression
+182 |         )
+183 | 
+184 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
+    |                           `- warning: no calls to throwing functions occur within 'try' expression
+185 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
+186 |         }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:96:21: warning: no calls to throwing functions occur within 'try' expression
+ 94 |         }
+ 95 | 
+ 96 |         let facts = try await container.perform { ctx -> ModelFacts in
+    |                     `- warning: no calls to throwing functions occur within 'try' expression
+ 97 |             let params = ctx.model.parameters().flattened()
+ 98 |             let bytes = params.reduce(0) { $0 + $1.1.nbytes }
+[392/394] Compiling darkbloom AutoUpdateCommand.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/darkbloom/ProviderAppKitHost.swift:68:35: warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+64 |             do {
+65 |                 let command = try Darkbloom.parseAsRoot(args)
+66 |                 if let asyncCommand = command as? AsyncParsableCommand {
+   |                                               `- note: isolated conformance to protocol 'AsyncParsableCommand' can be introduced here
+67 |                     var cmd = asyncCommand
+68 |                     try await cmd.run()
+   |                                   |- warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+   |                                   `- note: sending main actor-isolated 'cmd' to nonisolated instance method 'run()' risks causing data races between nonisolated and main actor-isolated uses
+69 |                 } else {
+70 |                     var cmd = command
+
+[#SendingRisksDataRace]: <https://docs.swift.org/compiler/documentation/diagnostics/sending-risks-data-race>
+[392/394] Write Objects.LinkFileList
+[393/394] Linking darkbloom
+Build of product 'darkbloom' complete! (293.30s)

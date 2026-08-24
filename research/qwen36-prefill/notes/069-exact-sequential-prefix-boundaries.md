@@ -189,3 +189,11 @@ finish-reason parity in all three iterations. Full-prompt B1/B2/B4 hits
 remain 196×/316×/406× by makespan.
 
 Artifact: `artifacts/e37-partial-prefix-8192-3x.json`.
+
+Apple-Silicon validation after the measured patch:
+
+- exact-cache ownership/longest-match tests: 5/5 pass;
+- exact engine full/partial B1/B2/B4 and cancellation: 5/5 pass;
+- provider benchmark/report/schema tests: 9/9 pass;
+- provider usage/wiring tests: 7/7 pass;
+- release build: pass.

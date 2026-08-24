@@ -1,0 +1,26 @@
+Test Suite 'Selected tests' started at 2026-08-24 06:09:04.992.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 06:09:04.993.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 06:09:04.993.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 06:09:04.993.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 prefix cache: usage detail" started.
+◇ Test "injectCachedTokens: splices prompt_tokens_details into a usage frame" started.
+◇ Test "recurrent models accept only the stronger exact-state cache" started.
+◇ Test "injectCachedTokens: non-usage frames and zero hits pass through untouched" started.
+◇ Test "bridge emits content-free frozen replay plan telemetry" started.
+◇ Test "bridge records prefixCacheHitTokens into the per-request signal at the terminal" started.
+◇ Test "injectCachedTokens: merges into an existing prompt_tokens_details object" started.
+◇ Test "native contiguous rate includes fp32 owning-full rows without staging" started.
+✔ Test "native contiguous rate includes fp32 owning-full rows without staging" passed after 0.001 seconds.
+✔ Test "recurrent models accept only the stronger exact-state cache" passed after 0.001 seconds.
+✔ Test "injectCachedTokens: non-usage frames and zero hits pass through untouched" passed after 0.001 seconds.
+✔ Test "bridge records prefixCacheHitTokens into the per-request signal at the terminal" passed after 0.001 seconds.
+✔ Test "bridge emits content-free frozen replay plan telemetry" passed after 0.002 seconds.
+✔ Test "injectCachedTokens: splices prompt_tokens_details into a usage frame" passed after 0.003 seconds.
+✔ Test "injectCachedTokens: merges into an existing prompt_tokens_details object" passed after 0.003 seconds.
+✔ Suite "EngineV2 prefix cache: usage detail" passed after 0.003 seconds.
+✔ Test run with 7 tests in 1 suite passed after 0.003 seconds.

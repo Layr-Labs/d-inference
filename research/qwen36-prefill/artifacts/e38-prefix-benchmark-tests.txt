@@ -1,0 +1,34 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 06:09:03.854.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 06:09:03.854.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 06:09:03.855.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 06:09:03.855.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Qwen exact-prefix benchmark" started.
+◇ Test exactTrackingCacheReportsLongestPartialBoundaryBytes() started.
+◇ Test promptBuilderConstructsRequiredExactTokenBoundaries() started.
+◇ Test trackingCacheReportsOnlyPublishedStateBytes() started.
+◇ Test exactTrackingCacheReportsWholeHybridSnapshotBytes() started.
+◇ Test engineRunnerUsesOneEngineAndPreservesCacheControls() started.
+◇ Test corpusValidationRejectsDuplicatesAndUnknownFields() started.
+◇ Test reportRoundTripsAndKeepsConstructionMissInRates() started.
+◇ Test committedCorpusAndSchemasAreValid() started.
+◇ Test exactReportAcceptsFullAndLongestBlockAlignedPartialHits() started.
+✔ Test promptBuilderConstructsRequiredExactTokenBoundaries() passed after 0.001 seconds.
+✔ Test committedCorpusAndSchemasAreValid() passed after 0.002 seconds.
+✔ Test corpusValidationRejectsDuplicatesAndUnknownFields() passed after 0.003 seconds.
+✔ Test exactReportAcceptsFullAndLongestBlockAlignedPartialHits() passed after 0.003 seconds.
+✔ Test reportRoundTripsAndKeepsConstructionMissInRates() passed after 0.009 seconds.
+✔ Test trackingCacheReportsOnlyPublishedStateBytes() passed after 0.045 seconds.
+✔ Test exactTrackingCacheReportsWholeHybridSnapshotBytes() passed after 0.051 seconds.
+✔ Test exactTrackingCacheReportsLongestPartialBoundaryBytes() passed after 0.051 seconds.
+✔ Test engineRunnerUsesOneEngineAndPreservesCacheControls() passed after 0.065 seconds.
+✔ Suite "Qwen exact-prefix benchmark" passed after 0.066 seconds.
+✔ Test run with 9 tests in 1 suite passed after 0.066 seconds.

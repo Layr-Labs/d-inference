@@ -1,0 +1,24 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 06:07:19.533.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-08-24 06:07:19.533.
+Test Suite 'CBv2ExactPrefixCacheTests' started at 2026-08-24 06:07:19.533.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testKeyBindsExactTokensScopeModelAndPolicy]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testKeyBindsExactTokensScopeModelAndPolicy]' passed (0.047 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLRUEvictionPinsAdoptersAndNeverExceedsHardBudget]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testLRUEvictionPinsAdoptersAndNeverExceedsHardBudget]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRequestCorrelatedReleaseCannotUnpinAnotherAdopter]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRequestCorrelatedReleaseCannotUnpinAnotherAdopter]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRestoredAttentionAndRecurrentStateAreRequestOwned]' started.
+Test Case '-[MLXLMTests.CBv2ExactPrefixCacheTests testRestoredAttentionAndRecurrentStateAreRequestOwned]' passed (0.002 seconds).
+Test Suite 'CBv2ExactPrefixCacheTests' passed at 2026-08-24 06:07:19.588.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.054 (0.055) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-08-24 06:07:19.588.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.054 (0.055) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 06:07:19.588.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.054 (0.055) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

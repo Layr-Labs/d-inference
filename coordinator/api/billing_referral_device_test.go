@@ -279,6 +279,9 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	if e.AmountMicroUSD != expectedPayout {
 		t.Errorf("earning amount = %d, want %d", e.AmountMicroUSD, expectedPayout)
 	}
+	if e.Model != model || e.PublicModel != model {
+		t.Errorf("earning model identity = %q/%q, want %q/%q", e.Model, e.PublicModel, model, model)
+	}
 	if e.PromptTokens != usage.PromptTokens {
 		t.Errorf("earning prompt_tokens = %d, want %d", e.PromptTokens, usage.PromptTokens)
 	}

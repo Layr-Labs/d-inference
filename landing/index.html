@@ -873,7 +873,7 @@
     .calc-select:focus { outline: 2px solid rgba(26, 12, 109, 0.3); outline-offset: 1px; }
 
     /* Read-only model support list */
-    .calc-model-list { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; }
+    .calc-model-list { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; list-style: none; margin: 0; padding: 0; }
     .calc-model-row {
       display: flex; align-items: center; gap: 12px; width: 100%;
       padding: 12px 16px; background: var(--white); text-align: left;
@@ -1407,22 +1407,20 @@ response = client.chat.completions.create(
     <div class="container">
       <div class="rv">
         <div class="sec-label">06 - Pricing</div>
-        <h2>50% lower cost, comparable performance</h2>
-        <p class="sec-desc">Idle Apple Silicon keeps the cost structure simple. Pay per token with no subscription or minimum, with selected model prices set around 50% below typical API-provider rates for comparable models.</p>
+        <h2>Usage-based pricing</h2>
+        <p class="sec-desc">Pay per token with no subscription or minimum. Current model prices load directly from the coordinator.</p>
       </div>
       <div class="rv" style="overflow-x:auto;">
         <table class="ptable">
-          <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Typical API</th><th>vs typical API</th></tr></thead>
+          <thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead>
           <!-- Rows are populated live from the coordinator's public model
-               catalog + pricing on load (see the LIVE MODEL LINEUP script).
-               The static rows below are a fallback if that fetch fails. -->
+               catalog + pricing on load (see the LIVE MODEL LINEUP script). -->
           <tbody id="pricing-rows">
-            <tr><td class="mc">Gemma 4 26B<small>MoE · 128K context</small></td><td class="op">$0.03</td><td class="op">$0.165</td><td class="cp">$0.33</td><td><span class="stag">50% lower</span></td></tr>
-            <tr><td class="mc">GPT-OSS 20B<small>MoE · 128K context</small></td><td class="op">$0.015</td><td class="op">$0.07</td><td class="cp">$0.14</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td colspan="3" role="status">Loading live pricing…</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="pnote">Prices per million tokens. Typical API means published list rates for comparable models from major API providers.</p>
+      <p class="pnote">Prices per million tokens.</p>
     </div>
   </section>
 
@@ -1463,15 +1461,17 @@ response = client.chat.completions.create(
       <!-- Earnings Calculator (logic synced with console-ui/src/app/earn) -->
       <div class="calc-box rv">
         <h3>Earnings estimate</h3>
-        <p class="calc-desc">What your Apple Silicon Mac could earn serving inference on the Darkbloom network.</p>
+        <p class="calc-desc">Estimate a capacity share of trailing settled network work, with power and capped base-reward policy shown separately.</p>
 
-        <!-- Results-first hero: floor→estimate range -->
+        <!-- Results-first hero -->
         <div class="calc-hero">
-          <p class="calc-net-label">Estimated annual earnings</p>
-          <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit"> /yr</span></p>
-          <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <p class="calc-net-label">Estimated annual net range</p>
+            <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit" id="calc-hero-unit" style="display:none;"> /yr</span></p>
+            <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
+          </div>
           <div class="calc-hero-chips">
-            <span class="calc-chip floor" id="calc-chip-floor" style="display:none;"><span class="amt" id="calc-chip-floor-amt">$0/mo</span>&nbsp;base reward for staying online</span>
+            <span class="calc-chip floor" id="calc-chip-floor" style="display:none;"><span class="amt" id="calc-chip-floor-amt">$0/mo</span>&nbsp;base-reward maximum after configured policy caps</span>
             <span class="calc-chip usage" id="calc-chip-usage" style="display:none;"><span id="calc-chip-usage-txt"></span></span>
           </div>
           <div class="calc-nofit" id="calc-nofit" style="display:none;">
@@ -1479,16 +1479,16 @@ response = client.chat.completions.create(
             <a class="btn btn-primary" id="calc-nofit-btn" href="https://console.darkbloom.dev/earn" target="_blank">Notify me when smaller models launch ↗</a>
             <p class="sub">We&rsquo;re working on supporting smaller models. Register on the console and we&rsquo;ll email you when your Mac can start earning.</p>
           </div>
-          <p class="calc-disc-box">This is a projection, not a promise. Usage earnings assume healthy, sustained network demand — live demand fluctuates and can run below this. The base reward requires an attested, healthy machine that stays online ≥90% of each settlement period, and is paid from a fixed monthly pool — an earnings floor while eligible, not a guarantee.</p>
+          <p class="calc-disc-box">This uses a fixed trailing 30-day settled work pool and full-month availability; it is not a promise. Adding capacity reallocates that pool rather than creating demand. The net range starts at zero base reward because five-minute eligibility and fixed-pool allocation remain unknown; the policy-capped memory tier is only an upper bound.</p>
         </div>
 
-        <!-- Inputs: chip + memory only -->
+        <!-- Inputs: exact Mac/chip profile + memory -->
         <div class="csec">
-          <label class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</label>
+          <p class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</p>
           <div class="calc-selects">
             <div>
-              <label class="clabel" for="chip-select">Chip</label>
-              <select id="chip-select" class="calc-select"></select>
+              <label class="clabel" for="hardware-select">Mac model and chip</label>
+              <select id="hardware-select" class="calc-select"></select>
             </div>
             <div>
               <label class="clabel" for="ram-select">Unified memory</label>
@@ -1499,34 +1499,24 @@ response = client.chat.completions.create(
 
         <!-- Read-only model support list -->
         <div class="csec">
-          <label class="clabel">What your Mac can run</label>
-          <p class="calc-hint">Live network catalog. Your earnings estimate uses the best-earning model automatically.</p>
-          <div class="calc-model-list" id="model-list"></div>
+          <h4 class="clabel">What your Mac can run</h4>
+          <p class="calc-hint">Active public models rank by modeled work net after electricity; the range adds zero to the policy-capped base-reward maximum.</p>
+          <ul class="calc-model-list" id="model-list" aria-live="polite"></ul>
         </div>
 
-        <!-- Base rewards accordion (static reference table) -->
+        <!-- Base rewards accordion (policy supplied by the market endpoint) -->
         <details class="calc-acc">
-          <summary>Base rewards (earnings floor)<span class="chev">▾</span></summary>
+          <summary>Base reward policy (eligibility- and pool-capped)<span class="chev">▾</span></summary>
           <div class="calc-acc-body">
-            <p class="calc-acc-intro">On top of what you earn from real inference, attested machines accrue a monthly <strong>base reward</strong> for staying online. It is paid in 5-minute prorated increments, while real usage remains the upside on top.</p>
-            <table class="calc-floor-table">
-              <thead><tr><th>Unified memory</th><th>Per month</th><th>Per year</th></tr></thead>
-              <tbody>
-                <tr><td>512GB</td><td>$40</td><td>$480</td></tr>
-                <tr><td>192GB</td><td>$30</td><td>$360</td></tr>
-                <tr><td>128GB</td><td>$26</td><td>$312</td></tr>
-                <tr><td>96GB</td><td>$22</td><td>$264</td></tr>
-                <tr><td>64GB</td><td>$18</td><td>$216</td></tr>
-                <tr><td>48GB</td><td>$16</td><td>$192</td></tr>
-                <tr><td>32GB</td><td>$12</td><td>$144</td></tr>
-                <tr><td>24GB</td><td>$10</td><td>$120</td></tr>
-                <tr><td>Under 24GB</td><td>—</td><td>—</td></tr>
-              </tbody>
+            <p class="calc-acc-intro" id="calc-base-intro">Loading configured reward policy…</p>
+            <table class="calc-floor-table" id="calc-floor-table" style="display:none;">
+              <thead><tr><th>Unified memory</th><th>Max / month</th><th>Max / year</th></tr></thead>
+              <tbody id="calc-floor-rows"></tbody>
             </table>
             <ul class="calc-caveats">
-              <li>Rewards settle every 5 minutes and require staying online ≥90% of that period.</li>
-              <li>Usage earnings are paid on top of the base reward — you keep 100% of both.</li>
-              <li>Base rewards go to attested, online, healthy machines up to a fixed monthly budget, prorated per settlement period; not a guarantee.</li>
+              <li id="calc-base-eligibility">Eligibility and uptime requirements load with the policy.</li>
+              <li>The estimate shows a zero-to-maximum reward range because eligibility and fleet-pool allocation settle every five minutes.</li>
+              <li id="calc-base-enabled">The program status loads with the policy.</li>
             </ul>
           </div>
         </details>
@@ -1535,16 +1525,18 @@ response = client.chat.completions.create(
         <details class="calc-acc" id="calc-assumptions">
           <summary>How we estimate this<span class="chev">▾</span></summary>
           <div class="calc-acc-body">
-            <p class="calc-acc-intro">The top of the range assumes healthy, sustained demand: your Mac serves requests <strong>60% of the time</strong> it is online, averaging 2.5 concurrent requests while active — not a saturated network (the engine can batch more at peak). Live demand fluctuates and can run below this, which is why we show a range: the base reward is what attested machines accrue for staying online regardless of traffic, and usage earnings grow with demand.</p>
+            <p class="calc-acc-intro">Settled provider payouts form a fixed trailing 30-day pool. Candidate work payout is <strong>P × c/(S+c)</strong>, where P is that pool, S is competing live capacity, and c comes from observed model TPS per memory bandwidth. Adding a candidate reallocates P; it never manufactures demand.</p>
             <div class="calc-breakdown">
-              <div class="bd-usage"><div class="lbl" id="calc-usage-lbl">Usage (at 60% util.)</div><div class="val" id="calc-usage-val">—</div><div class="sub">revenue − electricity</div></div>
-              <div class="bd-floor"><div class="lbl">Base reward</div><div class="val" id="calc-floor-val">—</div><div class="sub" id="calc-floor-sub">memory tier, online ≥90%</div></div>
-              <div class="bd-total"><div class="lbl">Top of range / mo</div><div class="val" id="calc-total-val">—</div><div class="sub">usage + base reward</div></div>
+              <div class="bd-usage"><div class="lbl" id="calc-usage-lbl">Candidate work share</div><div class="val" id="calc-usage-val">—</div><div class="sub">from settled demand</div></div>
+              <div class="bd-floor"><div class="lbl">Base reward maximum</div><div class="val" id="calc-floor-val">—</div><div class="sub" id="calc-floor-sub">eligibility- and pool-capped</div></div>
+              <div class="bd-total"><div class="lbl">Modeled net range / mo</div><div class="val" id="calc-total-val">—</div><div class="sub">work − power, plus 0–max reward</div></div>
             </div>
             <div class="calc-steps" id="calc-steps"></div>
             <ul class="calc-caveats">
-              <li>Base rewards are paid to attested machines online ≥90% of each 5-minute settlement period, up to a fixed monthly budget — not a guarantee.</li>
-              <li>Actual usage depends on network demand, model popularity, your reputation, and how many other providers serve the same model.</li>
+              <li>Full-month availability is fixed. Power includes 720 hours of online idle draw plus allocated workload; every paid token is conservatively treated as decode work and active time is capped at 720 hours.</li>
+              <li>The memory-tier base amount is a policy-capped maximum before five-minute eligibility checks and fixed-pool allocation. The range therefore uses zero as the lower reward bound; no reward is committed or guaranteed.</li>
+              <li id="calc-audit">The endpoint audit reconciles modeled and unattributed settled work.</li>
+              <li>Actual routing also depends on uptime, trust, reputation, latency, and request shape.</li>
             </ul>
           </div>
         </details>
@@ -1579,6 +1571,8 @@ response = client.chat.completions.create(
   </div>
 </footer>
 
+<script src="live-data-core.js"></script>
+<script src="earn-calculator-core.js"></script>
 <script src="earn-calculator.js"></script>
 
 <!-- ============ LIVE NETWORK (/v1/stats) ============ -->
@@ -1588,12 +1582,12 @@ response = client.chat.completions.create(
 <!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
 <!-- Sources the pricing table from the coordinator's public, registry-backed
      catalog (/v1/models/catalog) + platform pricing (/v1/pricing) so the model
-     lineup is never stale. Falls back silently to the static rows on any error. -->
+     lineup is never stale. Missing data is shown explicitly, never fabricated. -->
 <script>
 (function(){
   var API = "https://api.darkbloom.dev";
   var tbody = document.getElementById("pricing-rows");
-  if (!tbody || !window.fetch) return;
+  if (!tbody) return;
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, function(c){
@@ -1601,44 +1595,50 @@ response = client.chat.completions.create(
     });
   }
   var priceFmt = new Intl.NumberFormat(navigator.language || "en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
-  function usd(micro){ return priceFmt.format(Number(micro || 0) / 1e6); }
+  function usd(micro){ return priceFmt.format(micro / 1e6); }
   function subtitle(m){
     var bits = [];
     if (m.architecture) bits.push(m.architecture);
     if (m.max_context_length) bits.push(Math.round(m.max_context_length / 1024) + "K context");
     return bits.join(" \u00b7 ");
   }
+  function renderUnavailable(){
+    tbody.innerHTML = "<tr><td colspan=\"3\" role=\"status\">Live pricing unavailable.</td></tr>";
+  }
+  if (!window.fetch || !window.DarkbloomLiveData) {
+    renderUnavailable();
+    return;
+  }
   function getJSON(path){
-    return fetch(API + path, { headers: { "Accept": "application/json" } })
-      .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error(path + " " + r.status)); });
+    return window.DarkbloomLiveData.fetchJSONWithTimeout(
+      window.fetch.bind(window),
+      API + path,
+      window.DarkbloomLiveData.REQUEST_TIMEOUT_MS
+    );
   }
 
   Promise.all([getJSON("/v1/models/catalog"), getJSON("/v1/pricing")]).then(function(res){
     var models = (res[0] && res[0].models) || [];
     var pricing = res[1] || {};
-    if (!models.length) return; // keep the static fallback rows
+    var resolved = window.DarkbloomLiveData.resolveModelPricing(models, pricing);
+    if (!resolved) {
+      renderUnavailable();
+      return;
+    }
 
-    var priceByModel = {};
-    (pricing.prices || []).forEach(function(p){ priceByModel[p.model] = p; });
-    var fbIn = pricing.fallback_input_price || 0;
-    var fbOut = pricing.fallback_output_price || 0;
+    resolved.sort(function(a, b){ return (a.model.size_gb || 0) - (b.model.size_gb || 0); });
 
-    models.sort(function(a, b){ return (a.size_gb || 0) - (b.size_gb || 0); });
-
-    var rows = models.map(function(m){
-      var p = priceByModel[m.id] || {};
-      var inP = p.input_price != null ? p.input_price : fbIn;
-      var outP = p.output_price != null ? p.output_price : fbOut;
+    var rows = resolved.map(function(entry){
+      var m = entry.model;
       var sub = subtitle(m);
       return "<tr><td class=\"mc\">" + escapeHtml(m.display_name || m.id) +
         (sub ? "<small>" + escapeHtml(sub) + "</small>" : "") + "</td>" +
-        "<td class=\"op\">" + usd(inP) + "</td>" +
-        "<td class=\"op\">" + usd(outP) + "</td>" +
-        "<td class=\"cp\">" + usd(outP * 2) + "</td>" +
-        "<td><span class=\"stag\">50% lower</span></td></tr>";
+        "<td class=\"op\">" + usd(entry.inputPrice) + "</td>" +
+        "<td class=\"op\">" + usd(entry.outputPrice) + "</td></tr>";
     }).join("");
     if (rows) tbody.innerHTML = rows;
-  }).catch(function(){ /* offline / API down — keep the static fallback rows */ });
+    else renderUnavailable();
+  }).catch(renderUnavailable);
 })();
 </script>
 

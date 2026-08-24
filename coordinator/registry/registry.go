@@ -1771,9 +1771,9 @@ func (r *Registry) SetModelAliases(aliases map[string]AliasTarget) {
 // PublicNameForBuild returns the public alias a concrete build is exposed under
 // (the consumer-facing name), or the build id unchanged if it isn't the desired
 // or previous build of any alias. This lets consumer-facing surfaces (e.g. usage
-// history) show the alias while billing/stats/earnings keep storing the concrete
-// build. If several aliases map to the build, the lexicographically-first is
-// returned for stability.
+// history) show the alias while routing and billing retain the concrete build.
+// If several aliases map to the build, the lexicographically-first is returned
+// for stability.
 func (r *Registry) PublicNameForBuild(buildID string) string {
 	if buildID == "" {
 		return buildID
@@ -4822,20 +4822,25 @@ func (r *Registry) Snapshot() FleetSnapshot {
 
 // ModelCapacity describes the live capacity for a single model.
 type ModelCapacity struct {
-	ModelID              string  `json:"id"`
-	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
-	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
-	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
-	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running" or "idle")
-	RunningProviders     int     `json:"running_providers"`      // model loaded with active requests (slot state "running")
-	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
-	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
-	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
-	QueueLimit           int     `json:"queue_limit"`            // max queue depth per model
-	AggregateTPS         float64 `json:"aggregate_tps"`          // sum of effective decode TPS
-	EstimatedTTFTMs      int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
-	TokenBudgetRemaining int64   `json:"token_budget_remaining"` // aggregate free budget across providers
-	TokenBudgetTotal     int64   `json:"token_budget_total"`     // aggregate total budget
+	ModelID                     string  `json:"id"`
+	Ready                       bool    `json:"ready"`                           // at least one routable provider with headroom
+	CanAccept                   bool    `json:"can_accept"`                      // ready AND queue not full
+	EligibleProviders           int     `json:"eligible_providers"`              // routing-eligible, including currently busy providers
+	RoutableProviders           int     `json:"routable_providers"`              // eligible providers with immediate headroom
+	WarmProviders               int     `json:"warm_providers"`                  // model loaded (slot state "running" or "idle")
+	RunningProviders            int     `json:"running_providers"`               // model loaded with active requests (slot state "running")
+	ColdProviders               int     `json:"cold_providers"`                  // model available but not loaded
+	ActiveRequests              int     `json:"active_requests"`                 // in-flight across fleet
+	QueuedRequests              int     `json:"queued_requests"`                 // waiting in coordinator queue
+	QueueLimit                  int     `json:"queue_limit"`                     // max queue depth per model
+	AggregateTPS                float64 `json:"aggregate_tps"`                   // sum of effective decode TPS
+	AggregateMemoryBandwidthGBs float64 `json:"aggregate_memory_bandwidth_gbps"` // sum for the same eligible model-provider pairs
+	BenchmarkTPS                float64 `json:"benchmark_tps"`                   // sum of model-specific observed decode TPS
+	BenchmarkMemoryBandwidthGBs float64 `json:"benchmark_memory_bandwidth_gbps"` // bandwidth paired with BenchmarkTPS
+	ObservedBenchmarkProviders  int     `json:"-"`                               // eligible providers contributing to BenchmarkTPS
+	EstimatedTTFTMs             int64   `json:"estimated_ttft_ms"`               // best-case TTFT from lowest-cost warm provider
+	TokenBudgetRemaining        int64   `json:"token_budget_remaining"`          // aggregate free budget across providers
+	TokenBudgetTotal            int64   `json:"token_budget_total"`              // aggregate total budget
 }
 
 // providerCapSnap is a per-provider snapshot collected under the registry
@@ -4846,6 +4851,9 @@ type providerCapSnap struct {
 	running               bool
 	hasHeadroom           bool // pending < maxConcurrency
 	effectiveTPS          float64
+	memoryBandwidthGBs    float64
+	benchmarkTPS          float64
+	benchmarkBandwidthGBs float64
 	prefillTPS            float64
 	activeRequests        int // numRunning + numWaiting from backend slot, or pendingCount
 	backlogTokens         float64
@@ -4917,7 +4925,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
-			if !r.modelAllowedByCatalogLocked(m) {
+			if !r.providerCanRouteBuildLocked(
+				p, m.ID, r.MinTrustLevel, now, false,
+			) || !r.providerEligibleForTraitsLocked(p, m.ID, RequestTraits{}) {
 				continue
 			}
 			// Use the SAME quality-concurrency-capped headroom the routing/preflight
@@ -4954,6 +4964,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 				model:                 m.ID,
 				hasHeadroom:           hasHeadroom,
 				effectiveTPS:          decodeTPS,
+				memoryBandwidthGBs:    p.Hardware.MemoryBandwidthGBs,
 				prefillTPS:            prefillTPS,
 				activeRequests:        modelPending,
 				pooledBudgetRemaining: pooledRemaining,
@@ -4973,6 +4984,10 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					}
 					if slot.ObservedDecodeTPS > 0 {
 						snap.effectiveTPS = slot.ObservedDecodeTPS
+						if snap.memoryBandwidthGBs > 0 {
+							snap.benchmarkTPS = slot.ObservedDecodeTPS
+							snap.benchmarkBandwidthGBs = snap.memoryBandwidthGBs
+						}
 					}
 					// Prefer the measured per-slot prefill EWMA over the ×12
 					// fallback for the capacity TTFT estimate, mirroring the
@@ -5000,12 +5015,17 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 	// Phase 2: aggregate per-model outside the lock.
 	type modelAgg struct {
+		eligible         int
 		routable         int
 		warm             int
 		running          int
 		cold             int
 		activeRequests   int
 		aggregateTPS     float64
+		aggregateBW      float64
+		benchmarkTPS     float64
+		benchmarkBW      float64
+		benchmarked      int
 		budgetRemaining  int64
 		budgetTotal      int64
 		bestWarmTTFTMs   int64 // -1 = not set
@@ -5019,6 +5039,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a = &modelAgg{bestWarmTTFTMs: -1, bestColdTTFTMs: -1}
 			agg[s.model] = a
 		}
+		a.eligible++
 		if s.warm {
 			a.warm++
 			if s.running {
@@ -5029,6 +5050,14 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 		a.activeRequests += s.activeRequests
 		a.aggregateTPS += s.effectiveTPS
+		if s.memoryBandwidthGBs > 0 {
+			a.aggregateBW += s.memoryBandwidthGBs
+		}
+		a.benchmarkTPS += s.benchmarkTPS
+		a.benchmarkBW += s.benchmarkBandwidthGBs
+		if s.benchmarkTPS > 0 && s.benchmarkBandwidthGBs > 0 {
+			a.benchmarked++
+		}
 		if s.activeTokenBudgetMax > 0 {
 			headroom := s.activeTokenBudgetMax - s.activeTokenBudgetUsed - s.queuedTokenBudget
 			if headroom < 0 {
@@ -5103,20 +5132,25 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 
 		result = append(result, ModelCapacity{
-			ModelID:              model,
-			Ready:                ready,
-			CanAccept:            canAccept,
-			RoutableProviders:    a.routable,
-			WarmProviders:        a.warm,
-			RunningProviders:     a.running,
-			ColdProviders:        a.cold,
-			ActiveRequests:       a.activeRequests,
-			QueuedRequests:       queued,
-			QueueLimit:           queueLimit,
-			AggregateTPS:         a.aggregateTPS,
-			EstimatedTTFTMs:      ttft,
-			TokenBudgetRemaining: a.budgetRemaining,
-			TokenBudgetTotal:     a.budgetTotal,
+			ModelID:                     model,
+			Ready:                       ready,
+			CanAccept:                   canAccept,
+			EligibleProviders:           a.eligible,
+			RoutableProviders:           a.routable,
+			WarmProviders:               a.warm,
+			RunningProviders:            a.running,
+			ColdProviders:               a.cold,
+			ActiveRequests:              a.activeRequests,
+			QueuedRequests:              queued,
+			QueueLimit:                  queueLimit,
+			AggregateTPS:                a.aggregateTPS,
+			AggregateMemoryBandwidthGBs: a.aggregateBW,
+			BenchmarkTPS:                a.benchmarkTPS,
+			BenchmarkMemoryBandwidthGBs: a.benchmarkBW,
+			ObservedBenchmarkProviders:  a.benchmarked,
+			EstimatedTTFTMs:             ttft,
+			TokenBudgetRemaining:        a.budgetRemaining,
+			TokenBudgetTotal:            a.budgetTotal,
 		})
 	}
 	return result

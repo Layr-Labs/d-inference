@@ -243,7 +243,8 @@ func TestCreditProviderAccountAtomic(t *testing.T) {
 				ProviderID:       "prov-1",
 				ProviderKey:      "key-1",
 				JobID:            "job-atomic",
-				Model:            "qwen3.5-9b",
+				Model:            "qwen3.5-9b-build",
+				PublicModel:      "qwen3.5-9b",
 				AmountMicroUSD:   123_000,
 				PromptTokens:     10,
 				CompletionTokens: 20,
@@ -273,6 +274,9 @@ func TestCreditProviderAccountAtomic(t *testing.T) {
 			}
 			if earnings[0].JobID != "job-atomic" {
 				t.Fatalf("earning job_id = %q, want job-atomic", earnings[0].JobID)
+			}
+			if earnings[0].Model != "qwen3.5-9b-build" || earnings[0].PublicModel != "qwen3.5-9b" {
+				t.Fatalf("earning model identity = %q/%q, want concrete/public pair", earnings[0].Model, earnings[0].PublicModel)
 			}
 		})
 	}

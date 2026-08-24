@@ -793,7 +793,8 @@ type ProviderEarning struct {
 	ProviderID       string    `json:"provider_id"`
 	ProviderKey      string    `json:"provider_key"` // X25519 public key (stable hardware ID)
 	JobID            string    `json:"job_id"`
-	Model            string    `json:"model"`
+	Model            string    `json:"model"`        // concrete build used for routing and billing
+	PublicModel      string    `json:"public_model"` // consumer-requested market identity; empty on legacy rows
 	AmountMicroUSD   int64     `json:"amount_micro_usd"`
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`

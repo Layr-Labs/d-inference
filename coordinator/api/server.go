@@ -179,9 +179,13 @@ type Server struct {
 	ledger                        *payments.Ledger
 	billing                       *billing.Service
 	baseRewards                   *baserewards.Engine
+	baseRewardsConfig             BaseRewardsConfig
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
 	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
+	earningsMarketMu              sync.Mutex          // coalesces expensive earnings-market cache misses
+	earningsMarketFailureBody     []byte              // short-lived shared result for a failed cache fill
+	earningsMarketFailureUntil    time.Time           // retry boundary for earningsMarketFailureBody
 	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
 	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
@@ -731,6 +735,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		settlements:          newSettlementHolder(),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
+		baseRewardsConfig:    cfg.BaseRewards,
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:        mediafetch.NewResolver(mediaFetchCfg, logger),
 	}
@@ -1827,6 +1832,7 @@ func (s *Server) routes() {
 	// 5-min/1-min cache.
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
+	s.mux.HandleFunc("GET /v1/earnings/market", s.handleEarningsMarket)
 	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
@@ -2513,10 +2519,11 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // the wildcard applies only to GET; non-GET methods fall through to the
 // credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+	"/v1/earnings/market": true,
+	"/v1/models/catalog":  true,
+	"/v1/pricing":         true,
+	"/v1/stats":           true,
+	"/v1/network/series":  true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

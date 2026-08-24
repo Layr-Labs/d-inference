@@ -626,11 +626,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			provider_key TEXT NOT NULL DEFAULT '',
 			job_id TEXT NOT NULL,
 			model TEXT NOT NULL,
+			public_model TEXT NOT NULL DEFAULT '',
 			amount_micro_usd BIGINT NOT NULL,
 			prompt_tokens INTEGER NOT NULL DEFAULT 0,
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`DO $$ BEGIN ALTER TABLE provider_earnings ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_account ON provider_earnings(account_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_provider ON provider_earnings(provider_key, created_at DESC)`,
 
@@ -1056,6 +1058,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureUsagePublicModelIndex(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderEarningsMarketIndex(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1092,7 +1100,7 @@ func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) erro
 
 	// A leftover *invalid* index from a previously interrupted CONCURRENTLY build
 	// would make CREATE ... IF NOT EXISTS a silent no-op, so drop it first.
-	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+idxName); err != nil {
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
 		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
 	}
 
@@ -1119,6 +1127,99 @@ func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) erro
 	defer conn.Release()
 	mrr := conn.Conn().PgConn().Exec(ctx,
 		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
+	}
+	return nil
+}
+
+// dropInvalidIndexConcurrently removes an interrupted concurrent index build
+// without taking the table-blocking lock of a plain DROP INDEX. Callers use
+// constant internal identifiers and invoke this only after confirming the
+// named index is absent or invalid.
+func (s *PostgresStore) dropInvalidIndexConcurrently(ctx context.Context, idxName string) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+idxName)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("drop concurrently: %w", err)
+	}
+	return nil
+}
+
+// ensureUsagePublicModelIndex supports the unambiguous usage lookup used to
+// attribute settlement rows written before provider_earnings.public_model
+// existed. The partial covering index excludes records that cannot help.
+func (s *PostgresStore) ensureUsagePublicModelIndex(ctx context.Context) error {
+	const idxName = "idx_usage_request_public_model"
+
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT i.indisvalid
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = $1
+		), false)`, idxName).Scan(&valid); err != nil {
+		return fmt.Errorf("store: check %s: %w", idxName, err)
+	}
+	if valid {
+		return nil
+	}
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
+		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
+	}
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn for %s: %w", idxName, err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `
+		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usage_request_public_model
+		ON usage (request_id)
+		INCLUDE (public_model)
+		WHERE request_id <> '' AND public_model <> ''`)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
+	}
+	return nil
+}
+
+// ensureProviderEarningsMarketIndex builds the covering time-leading index used
+// by the bounded earnings-market aggregation. CONCURRENTLY keeps existing
+// settlement writes available while an upgraded database builds it once.
+func (s *PostgresStore) ensureProviderEarningsMarketIndex(ctx context.Context) error {
+	const idxName = "idx_provider_earnings_market_window"
+
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT i.indisvalid
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = $1
+		), false)`, idxName).Scan(&valid); err != nil {
+		return fmt.Errorf("store: check %s: %w", idxName, err)
+	}
+	if valid {
+		return nil
+	}
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
+		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
+	}
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn for %s: %w", idxName, err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `
+		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_provider_earnings_market_window
+		ON provider_earnings (created_at, public_model)
+		INCLUDE (job_id, amount_micro_usd, prompt_tokens, completion_tokens)
+		WHERE model <> '' AND model <> 'base_reward' AND amount_micro_usd > 0`)
 	if _, err := mrr.ReadAll(); err != nil {
 		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
 	}
@@ -4122,11 +4223,11 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, public_model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
-		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
+		earning.Model, earning.PublicModel, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
 	)
 	if err != nil {
@@ -4141,7 +4242,7 @@ func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]Pr
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+		`SELECT id, account_id, provider_id, provider_key, job_id, model, public_model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 		 FROM provider_earnings
 		 WHERE provider_key = $1
 		 ORDER BY created_at DESC
@@ -4157,7 +4258,7 @@ func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]Pr
 	for rows.Next() {
 		var e ProviderEarning
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
-			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
+			&e.Model, &e.PublicModel, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
 			continue
 		}
 		results = append(results, e)
@@ -4174,7 +4275,7 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+		`SELECT id, account_id, provider_id, provider_key, job_id, model, public_model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 		 FROM provider_earnings
 		 WHERE account_id = $1
 		 ORDER BY created_at DESC
@@ -4190,7 +4291,7 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 	for rows.Next() {
 		var e ProviderEarning
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
-			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
+			&e.Model, &e.PublicModel, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
 			continue
 		}
 		results = append(results, e)
@@ -4339,8 +4440,8 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	err := s.pool.QueryRow(ctx, `
 		WITH earning AS (
 			INSERT INTO provider_earnings (
-				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
+				account_id, provider_id, provider_key, job_id, model, public_model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+			) VALUES ($1, $6, $7, $4, $8, $9, $2, $10, $11, COALESCE($5::timestamptz, NOW()))
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
 			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
@@ -4384,8 +4485,9 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 		earning.ProviderID,                   // $6
 		earning.ProviderKey,                  // $7
 		earning.Model,                        // $8
-		earning.PromptTokens,                 // $9
-		earning.CompletionTokens,             // $10
+		earning.PublicModel,                  // $9
+		earning.PromptTokens,                 // $10
+		earning.CompletionTokens,             // $11
 	).Scan(&balanceAfter)
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)

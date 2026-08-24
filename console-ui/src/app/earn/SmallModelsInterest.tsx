@@ -33,13 +33,19 @@ export function SmallModelsInterest({
   const register = () => {
     trackEvent("small_models_interest_registered", {
       source: "earn_page",
-      chip: calc.selectedChip,
+      mac_type: calc.hardware.macType,
+      chip: calc.hardware.chip,
       ram_gb: calc.effectiveRAM,
       authenticated: String(authenticated),
     });
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ chip: calc.selectedChip, ramGB: calc.effectiveRAM, at: Date.now() }),
+      JSON.stringify({
+        macType: calc.hardware.macType,
+        chip: calc.hardware.chip,
+        ramGB: calc.effectiveRAM,
+        at: Date.now(),
+      }),
     );
     setRegistered(true);
     // Sign-in is what actually captures a contactable email.

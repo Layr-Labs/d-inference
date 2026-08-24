@@ -1,0 +1,108 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EARNINGS_MARKET_TIMEOUT_MS,
+  fetchEarningsMarket,
+  parseEarningsMarket,
+} from "@/lib/api/earnings-market";
+
+const INVALID_RESPONSE = "Invalid earnings market response";
+
+function validMarket() {
+  return {
+    window_start: "2026-07-25T12:00:00Z",
+    window_end: "2026-08-24T12:00:00Z",
+    window_days: 30,
+    models: [
+      {
+        id: "model",
+        display_name: "Model",
+        min_ram_gb: 24,
+        size_bytes: 12_000_000_000,
+        size_gb: 12,
+        work_payout_micro_usd: 10_000_000,
+        paid_tokens: 1_000,
+        paid_jobs: 1,
+        aggregate_tps: 100,
+        aggregate_memory_bandwidth_gbps: 400,
+        benchmark_tps: 50,
+        benchmark_memory_bandwidth_gbps: 200,
+        provider_supply: 1,
+        estimate_available: true,
+      },
+    ],
+    audit: {
+      total_settled_work_micro_usd: 12_000_000,
+      modeled_work_micro_usd: 10_000_000,
+      unattributed_work_micro_usd: 2_000_000,
+      total_paid_tokens: 1_200,
+      modeled_paid_tokens: 1_000,
+      unattributed_paid_tokens: 200,
+      total_paid_jobs: 2,
+      modeled_paid_jobs: 1,
+      unattributed_paid_jobs: 1,
+    },
+    base_rewards: {
+      enabled: true,
+      monthly_pool_micro_usd: 9_000_000_000,
+      min_uptime_fraction: 0.9,
+      reduction_k: 0,
+      account_cap_fraction: 0,
+      tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
+    },
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("parseEarningsMarket", () => {
+  it("accepts a reconciled calculator-ready response", () => {
+    expect(parseEarningsMarket(validMarket()).models[0].id).toBe("model");
+  });
+
+  it("rejects an empty model response instead of enabling a fabricated fallback", () => {
+    const payload = validMarket();
+    payload.models = [];
+    expect(() => parseEarningsMarket(payload)).toThrow(INVALID_RESPONSE);
+  });
+
+  it("rejects an unreconciled or internally inconsistent response", () => {
+    const unreconciled = validMarket();
+    unreconciled.audit.modeled_work_micro_usd = 9_000_000;
+    expect(() => parseEarningsMarket(unreconciled)).toThrow(INVALID_RESPONSE);
+
+    const unavailable = validMarket();
+    unavailable.models[0].estimate_available = false;
+    expect(() => parseEarningsMarket(unavailable)).toThrow(INVALID_RESPONSE);
+  });
+
+  it("rejects non-string market timestamps", () => {
+    const payload = validMarket();
+    payload.window_start = 0 as unknown as string;
+    expect(() => parseEarningsMarket(payload)).toThrow(INVALID_RESPONSE);
+  });
+});
+
+describe("fetchEarningsMarket", () => {
+  it("aborts a stalled request instead of loading forever", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }),
+    );
+
+    const rejection = expect(fetchEarningsMarket()).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.advanceTimersByTimeAsync(EARNINGS_MARKET_TIMEOUT_MS);
+    await rejection;
+  });
+});

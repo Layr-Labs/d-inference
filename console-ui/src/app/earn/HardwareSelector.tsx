@@ -9,8 +9,9 @@ const selectClasses =
   "cursor-pointer appearance-none";
 
 /**
- * The calculator's only two inputs: chip + unified memory. Everything else
- * (enclosure, utilization, hours) is fixed or folded into the assumptions.
+ * The calculator's only two inputs: exact Mac/chip profile + unified memory.
+ * Everything else (full-month availability and electricity rate) is fixed and
+ * stated in the assumptions.
  */
 export function HardwareSelector({ calc }: { calc: EarningsCalculator }) {
   return (
@@ -26,20 +27,20 @@ export function HardwareSelector({ calc }: { calc: EarningsCalculator }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label
-            htmlFor="chip-select"
+            htmlFor="hardware-select"
             className="block text-xs font-medium text-text-secondary uppercase tracking-wider mb-2"
           >
-            Chip
+            Mac model and chip
           </label>
           <select
-            id="chip-select"
-            value={calc.selectedChip}
-            onChange={(e) => calc.selectChip(e.target.value)}
+            id="hardware-select"
+            value={calc.selectedHardwareID}
+            onChange={(e) => calc.selectHardware(e.target.value)}
             className={selectClasses}
           >
-            {calc.chipOptions.map((c) => (
-              <option key={c.chip} value={c.chip}>
-                Apple {c.chip}
+            {calc.hardwareOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.macType} · Apple {option.chip}
               </option>
             ))}
           </select>

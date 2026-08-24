@@ -29,6 +29,19 @@ func TestMigrate_NoBootTimeProviderEarningsDedupe(t *testing.T) {
 	}
 }
 
+func TestProviderEarningsIndexRecoveryNeverUsesBlockingDrop(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatalf("read postgres.go: %v", err)
+	}
+	if bytes.Contains(src, []byte("DROP INDEX IF EXISTS")) {
+		t.Fatal("provider earnings index recovery uses table-blocking DROP INDEX")
+	}
+	if !bytes.Contains(src, []byte("DROP INDEX CONCURRENTLY IF EXISTS")) {
+		t.Fatal("provider earnings index recovery must drop interrupted builds concurrently")
+	}
+}
+
 // TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
 // builds a valid partial unique index on provider_earnings(job_id) without a
 // dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent
@@ -82,15 +95,99 @@ func TestProviderEarningsJobIndex_BootSafe(t *testing.T) {
 	}
 }
 
+func TestEarningsMarketIndexesBootSafe(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	indexes := []string{
+		"idx_usage_request_public_model",
+		"idx_provider_earnings_market_window",
+	}
+	for _, name := range indexes {
+		if !postgresIndexValid(t, s, name) {
+			t.Fatalf("%s missing or invalid after startup", name)
+		}
+	}
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("re-running migrate (restart): %v", err)
+	}
+	for _, name := range indexes {
+		if !postgresIndexValid(t, s, name) {
+			t.Fatalf("%s invalid after re-running migrate", name)
+		}
+	}
+}
+
+func TestDropInvalidIndexConcurrently(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	const indexName = "idx_provider_earnings_invalid_recovery_test"
+	t.Cleanup(func() {
+		_ = s.dropInvalidIndexConcurrently(context.Background(), indexName)
+	})
+
+	for i := range 2 {
+		if err := s.RecordProviderEarning(&ProviderEarning{
+			AccountID:      uniqueID("acct"),
+			ProviderID:     "provider",
+			ProviderKey:    uniqueID("key"),
+			JobID:          uniqueID("job"),
+			Model:          "duplicate-model",
+			AmountMicroUSD: int64(1_000 + i),
+		}); err != nil {
+			t.Fatalf("seed duplicate model %d: %v", i, err)
+		}
+	}
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire connection: %v", err)
+	}
+	mrr := conn.Conn().PgConn().Exec(ctx,
+		`CREATE UNIQUE INDEX CONCURRENTLY `+indexName+` ON provider_earnings(model)`)
+	_, createErr := mrr.ReadAll()
+	conn.Release()
+	if createErr == nil {
+		t.Fatal("duplicate data unexpectedly produced a valid unique index")
+	}
+
+	var exists, valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT true, i.indisvalid
+		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = $1`, indexName).Scan(&exists, &valid); err != nil {
+		t.Fatalf("read failed concurrent index: %v", err)
+	}
+	if !exists || valid {
+		t.Fatalf("failed build state = exists:%t valid:%t, want true/false", exists, valid)
+	}
+
+	if err := s.dropInvalidIndexConcurrently(ctx, indexName); err != nil {
+		t.Fatalf("drop invalid index concurrently: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1)`,
+		indexName,
+	).Scan(&exists); err != nil {
+		t.Fatalf("check dropped index: %v", err)
+	}
+	if exists {
+		t.Fatal("invalid index still exists after concurrent recovery")
+	}
+}
+
 func jobIndexValid(t *testing.T, s *PostgresStore) bool {
+	return postgresIndexValid(t, s, "idx_provider_earnings_job")
+}
+
+func postgresIndexValid(t *testing.T, s *PostgresStore, name string) bool {
 	t.Helper()
 	var valid bool
 	if err := s.pool.QueryRow(context.Background(), `
 		SELECT COALESCE((
 			SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE c.relname = 'idx_provider_earnings_job'
-		), false)`).Scan(&valid); err != nil {
-		t.Fatalf("check idx_provider_earnings_job: %v", err)
+			WHERE c.relname = $1
+		), false)`, name).Scan(&valid); err != nil {
+		t.Fatalf("check %s: %v", name, err)
 	}
 	return valid
 }

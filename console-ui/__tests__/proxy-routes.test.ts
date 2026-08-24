@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { EARNINGS_MARKET_TIMEOUT_MS } from "@/lib/api/earnings-market";
 import {
   DEFAULT_COORD,
   makeRequest as req,
@@ -9,6 +10,62 @@ import {
 // Tests for the proxy routes added in the direct-fetch → proxy migration.
 
 const upstream = stubUpstreamFetch();
+const CACHE_CONTROL = "Cache-Control";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("GET /api/earnings/market", () => {
+  it("proxies the public calculator snapshot without credentials", async () => {
+    upstream.fetch.mockResolvedValueOnce(ok({ window_days: 30, models: [] }));
+    const { GET } = await import("@/app/api/earnings/market/route");
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    expect(upstream.fetch).toHaveBeenCalledWith(
+      `${DEFAULT_COORD}/v1/earnings/market`,
+      expect.objectContaining({
+        cache: "no-store",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(res.headers.get(CACHE_CONTROL)).toContain("s-maxage=60");
+  });
+
+  it("never CDN-caches a transient coordinator failure", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "temporarily unavailable" } }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { GET } = await import("@/app/api/earnings/market/route");
+    const res = await GET();
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get(CACHE_CONTROL)).toBe("no-store");
+  });
+
+  it("terminates a stalled coordinator request as unavailable", async () => {
+    vi.useFakeTimers();
+    upstream.fetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted", "AbortError"));
+        });
+      });
+    });
+    const { GET } = await import("@/app/api/earnings/market/route");
+    const pending = GET();
+
+    await vi.advanceTimersByTimeAsync(EARNINGS_MARKET_TIMEOUT_MS);
+    const res = await pending;
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get(CACHE_CONTROL)).toBe("no-store");
+  });
+});
 
 describe("GET /api/me/earnings", () => {
   it("proxies auth to /v1/provider/account-earnings with the limit", async () => {

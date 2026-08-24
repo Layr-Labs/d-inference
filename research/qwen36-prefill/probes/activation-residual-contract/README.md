@@ -69,6 +69,14 @@ darkbloom benchmark \
   --kv-backend contiguous
 ```
 
+The M3 research checkout used for the measured run had already replayed the
+exact-cache patches, so its pre-capture `Qwen35.swift` SHA-256 was
+`6a2c5cceffaca05d4a5f857a1326b795feda645c5c2b1897d522e7538b26a4e2`.
+`patches/078-e50-runtime-capture-m3-6a2c.patch` is the same helper plus a
+zero-context seam pinned to that exact source. Reproduce that overlay with
+`git apply --unidiff-zero`; first verify the source hash above. The ordinary
+patch remains the canonical overlay for the pinned `ab73a82` submodule.
+
 The scheduler performs an uncaptured 128-token warm-up. A nominal 8,192-token
 request has 8,191 measured prefill rows, normally emitted as three 2,048-row
 stripes plus one 2,047-row stripe. Validate and assemble those stripes:

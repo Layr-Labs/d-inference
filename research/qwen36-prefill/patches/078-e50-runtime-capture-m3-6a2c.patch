@@ -1,0 +1,181 @@
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+index 5e5995d..507b7d3 100644
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -634,2 +634,7 @@
+-        let normedOut = norm(out, gate: z)
+-        return outProj(normedOut.reshaped(B, S, -1))
++        let normedOut = norm(out, gate: z)
++        let projectionInput = normedOut.reshaped(B, S, -1)
++        Qwen35E50Capture.recordGDNOutputInput(
++            projectionInput,
++            projection: outProj,
++            modelLayerIndex: modelLayerIndex)
++        return outProj(projectionInput)
+diff --git a/Libraries/MLXLLM/Models/Qwen35E50Capture.swift b/Libraries/MLXLLM/Models/Qwen35E50Capture.swift
+new file mode 100644
+index 0000000..e7e88fd
+--- /dev/null
++++ b/Libraries/MLXLLM/Models/Qwen35E50Capture.swift
+@@ -0,0 +1,161 @@
++// Temporary, default-off research seam for E50 activation-rank capture.
++// This file is archived as a patch only and must not ship in the provider.
++
++import Foundation
++import MLX
++import MLXNN
++
++enum Qwen35E50Capture {
++    private struct Configuration: Sendable {
++        let directory: URL
++        let layer: Int
++        let minimumTokens: Int
++
++        init?() {
++            let environment = ProcessInfo.processInfo.environment
++            guard
++                let rawDirectory = environment["DARKBLOOM_QWEN35_E50_CAPTURE_DIR"],
++                !rawDirectory.isEmpty
++            else { return nil }
++            guard rawDirectory.hasPrefix("/") else {
++                preconditionFailure(
++                    "DARKBLOOM_QWEN35_E50_CAPTURE_DIR must be absolute")
++            }
++            let layer = Int(
++                environment["DARKBLOOM_QWEN35_E50_CAPTURE_LAYER"] ?? "12")
++            let minimumTokens = Int(
++                environment["DARKBLOOM_QWEN35_E50_CAPTURE_MIN_TOKENS"] ?? "512")
++            guard let layer, layer >= 0, let minimumTokens, minimumTokens > 1 else {
++                preconditionFailure("invalid E50 capture layer or minimum token count")
++            }
++            self.directory = URL(fileURLWithPath: rawDirectory, isDirectory: true)
++            self.layer = layer
++            self.minimumTokens = minimumTokens
++        }
++    }
++
++    private static let configuration = Configuration()
++    private static let lock = NSLock()
++    nonisolated(unsafe) private static var nextSequence = 0
++    nonisolated(unsafe) private static var wroteWeight = false
++
++    static func recordGDNOutputInput(
++        _ activation: MLXArray,
++        projection: Linear,
++        modelLayerIndex: Int
++    ) {
++        guard
++            let configuration,
++            modelLayerIndex == configuration.layer,
++            activation.ndim == 3,
++            activation.dim(1) >= configuration.minimumTokens
++        else { return }
++        guard let projection = projection as? QuantizedLinear else {
++            preconditionFailure("E50 capture requires a QuantizedLinear out_proj")
++        }
++
++        lock.lock()
++        defer { lock.unlock() }
++
++        do {
++            try FileManager.default.createDirectory(
++                at: configuration.directory,
++                withIntermediateDirectories: true)
++            if !wroteWeight {
++                try writeWeight(
++                    projection,
++                    activationDType: activation.dtype,
++                    layer: modelLayerIndex,
++                    directory: configuration.directory)
++                wroteWeight = true
++            }
++
++            let sequence = nextSequence
++            nextSequence += 1
++            let rows = activation.dim(0) * activation.dim(1)
++            let width = activation.dim(2)
++            let name = String(format: "activation-%04d-m%d-k%d", sequence, rows, width)
++            let flattened = activation.reshaped(rows, width).asType(.float32)
++            try MLX.save(
++                array: flattened,
++                url: configuration.directory.appending(path: "\(name).npy"))
++            try writeJSON(
++                [
++                    "schema_version": 1,
++                    "mechanism": "e50-activation-subspace-capture",
++                    "model_layer_index": modelLayerIndex,
++                    "projection": "model.layers.\(modelLayerIndex).linear_attn.out_proj",
++                    "source_shape": activation.shape,
++                    "source_dtype": String(describing: activation.dtype),
++                    "export_shape": flattened.shape,
++                    "export_dtype": String(describing: flattened.dtype),
++                    "sequence": sequence,
++                ],
++                to: configuration.directory.appending(path: "\(name).json"))
++            FileHandle.standardError.write(
++                Data(
++                    "[e50-capture] wrote \(name).npy shape=\(flattened.shape)\n".utf8))
++        } catch {
++            preconditionFailure("E50 capture failed: \(error)")
++        }
++    }
++
++    private static func writeWeight(
++        _ projection: QuantizedLinear,
++        activationDType: DType,
++        layer: Int,
++        directory: URL
++    ) throws {
++        let dequantizedWeight = MLX.dequantized(
++            projection.weight,
++            scales: projection.scales,
++            biases: projection.biases,
++            groupSize: projection.groupSize,
++            bits: projection.bits,
++            mode: projection.mode,
++            dtype: activationDType)
++        let weightKByN = dequantizedWeight.swappedAxes(0, 1).asType(.float32)
++        try MLX.save(
++            array: weightKByN,
++            url: directory.appending(path: "weight-dequantized-k-by-n.npy"))
++        try MLX.save(
++            array: projection.weight,
++            url: directory.appending(path: "weight-packed.npy"))
++        try MLX.save(
++            array: projection.scales,
++            url: directory.appending(path: "weight-scales.npy"))
++        if let biases = projection.biases {
++            try MLX.save(
++                array: biases,
++                url: directory.appending(path: "weight-biases.npy"))
++        }
++        try writeJSON(
++            [
++                "schema_version": 1,
++                "mechanism": "e50-activation-subspace-capture",
++                "model_layer_index": layer,
++                "projection": "model.layers.\(layer).linear_attn.out_proj",
++                "packed_shape": projection.weight.shape,
++                "packed_dtype": String(describing: projection.weight.dtype),
++                "scales_shape": projection.scales.shape,
++                "scales_dtype": String(describing: projection.scales.dtype),
++                "has_quantization_biases": projection.biases != nil,
++                "group_size": projection.groupSize,
++                "bits": projection.bits,
++                "mode": String(describing: projection.mode),
++                "dequantized_source_dtype": String(describing: activationDType),
++                "export_shape": weightKByN.shape,
++                "export_dtype": String(describing: weightKByN.dtype),
++                "orientation": "input_width_by_output_width",
++            ],
++            to: directory.appending(path: "weight-manifest.json"))
++        FileHandle.standardError.write(
++            Data("[e50-capture] wrote immutable out_proj weight shape=\(weightKByN.shape)\n".utf8))
++    }
++
++    private static func writeJSON(_ object: [String: Any], to url: URL) throws {
++        let data = try JSONSerialization.data(
++            withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
++        try data.write(to: url, options: .atomic)
++    }
++}

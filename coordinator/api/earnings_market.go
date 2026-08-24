@@ -72,6 +72,16 @@ func (s *Server) handleEarningsMarket(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
+	// Collapse concurrent cache misses into one bounded database aggregation.
+	// Re-check after acquiring the lock because another request may have filled
+	// the cache while this request waited.
+	s.earningsMarketMu.Lock()
+	defer s.earningsMarketMu.Unlock()
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, cached)
+		return
+	}
+
 	windowEnd := time.Now().UTC()
 	windowStart := windowEnd.Add(-earningsMarketWindow)
 
@@ -151,19 +161,33 @@ func buildEarningsMarketResponse(
 	models := make([]earningsMarketModel, len(catalog))
 	for i, entry := range catalog {
 		model := entry.model
-		for _, member := range entry.capacityMembers {
-			if capacity, ok := capacityByModel[member]; ok {
-				model.AggregateTPS += capacity.AggregateTPS
-				model.AggregateMemoryBandwidthGBs += capacity.AggregateMemoryBandwidthGBs
-				model.ProviderSupply += capacity.EligibleProviders
-			}
-		}
-		if capacity, ok := capacityByModel[entry.candidateMember]; ok {
+		if capacity, ok := capacityByModel[entry.capacityMember]; ok {
+			model.AggregateTPS = capacity.AggregateTPS
+			model.AggregateMemoryBandwidthGBs = capacity.AggregateMemoryBandwidthGBs
 			model.BenchmarkTPS = capacity.BenchmarkTPS
 			model.BenchmarkMemoryBandwidthGBs = capacity.BenchmarkMemoryBandwidthGBs
+			model.ProviderSupply = capacity.EligibleProviders
 		}
 		models[i] = model
 		modelIndex[model.ID] = i
+	}
+	// OpenRouter-only aliases are alternate public request identities for an
+	// existing standard alias or concrete catalog model. Fold their settled
+	// payouts into that source market rather than dropping real demand or
+	// advertising duplicate capacity.
+	for _, alias := range aliases {
+		if !alias.Active || !alias.OpenRouterOnly || alias.AliasID == "" || alias.SourceModel == "" {
+			continue
+		}
+		source := alias.SourceModel
+		if openRouterAliasUsesConcreteSource(alias) {
+			if coveringAlias, covered := standardAliasCoveringBuild(aliases, source); covered {
+				source = coveringAlias
+			}
+		}
+		if index, ok := modelIndex[source]; ok {
+			modelIndex[alias.AliasID] = index
+		}
 	}
 
 	var audit earningsMarketAudit

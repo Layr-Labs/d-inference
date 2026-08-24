@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,14 +192,14 @@ func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *tes
 	}
 	aliased := models[aliasID]
 	if aliased.DisplayName != "Public Model" || aliased.MinRAMGB != 32 ||
-		aliased.WorkPayoutMicroUSD != 64_000_000 || aliased.PaidTokens != 704 ||
-		aliased.PaidJobs != 4 {
+		aliased.WorkPayoutMicroUSD != 72_000_000 || aliased.PaidTokens != 792 ||
+		aliased.PaidJobs != 5 {
 		t.Fatalf("aliased model = %+v", aliased)
 	}
-	if aliased.AggregateTPS != 150 || aliased.AggregateMemoryBandwidthGBs != 500 ||
+	if aliased.AggregateTPS != 100 || aliased.AggregateMemoryBandwidthGBs != 400 ||
 		aliased.BenchmarkTPS != 100 || aliased.BenchmarkMemoryBandwidthGBs != 400 ||
-		aliased.ProviderSupply != 2 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
-		t.Fatalf("aliased capacity = %+v, want 150 TPS / 500 GB/s union with desired-only 100 TPS / 400 GB/s benchmark", aliased)
+		aliased.ProviderSupply != 1 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
+		t.Fatalf("aliased capacity = %+v, want desired build only at 100 TPS / 400 GB/s / 1 provider", aliased)
 	}
 	standaloneModel := models[standalone]
 	if standaloneModel.WorkPayoutMicroUSD != 5_000_000 || standaloneModel.PaidTokens != 55 ||
@@ -211,14 +213,14 @@ func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *tes
 
 	wantAudit := earningsMarketAudit{
 		TotalSettledWorkMicroUSD: 84_000_000,
-		ModeledWorkMicroUSD:      69_000_000,
-		UnattributedWorkMicroUSD: 15_000_000,
+		ModeledWorkMicroUSD:      77_000_000,
+		UnattributedWorkMicroUSD: 7_000_000,
 		TotalPaidTokens:          924,
-		ModeledPaidTokens:        759,
-		UnattributedPaidTokens:   165,
+		ModeledPaidTokens:        847,
+		UnattributedPaidTokens:   77,
 		TotalPaidJobs:            7,
-		ModeledPaidJobs:          5,
-		UnattributedPaidJobs:     2,
+		ModeledPaidJobs:          6,
+		UnattributedPaidJobs:     1,
 	}
 	if response.Audit != wantAudit {
 		t.Fatalf("audit = %+v, want %+v", response.Audit, wantAudit)
@@ -286,16 +288,25 @@ func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.
 	}
 }
 
-func TestActiveAliasMembersDeduplicatesDesiredAndFallback(t *testing.T) {
+func TestActiveAliasMemberPrefersDesiredThenPrevious(t *testing.T) {
 	records := map[string]store.ModelRegistryRecord{
-		"shared": {ModelRegistryEntry: store.ModelRegistryEntry{ID: "shared"}},
+		"desired": {ModelRegistryEntry: store.ModelRegistryEntry{ID: "desired"}},
+		"shared":  {ModelRegistryEntry: store.ModelRegistryEntry{ID: "shared"}},
 	}
-	got := activeAliasMembers(store.ModelAlias{
-		DesiredBuild:  "shared",
+	got, ok := activeAliasMember(store.ModelAlias{
+		DesiredBuild:  "desired",
 		PreviousBuild: "shared",
 	}, records)
-	if len(got) != 1 || got[0] != "shared" {
-		t.Fatalf("activeAliasMembers = %v, want [shared]", got)
+	if !ok || got != "desired" {
+		t.Fatalf("activeAliasMember = %q/%t, want desired/true", got, ok)
+	}
+	delete(records, "desired")
+	got, ok = activeAliasMember(store.ModelAlias{
+		DesiredBuild:  "desired",
+		PreviousBuild: "shared",
+	}, records)
+	if !ok || got != "shared" {
+		t.Fatalf("activeAliasMember fallback = %q/%t, want shared/true", got, ok)
 	}
 }
 
@@ -350,6 +361,18 @@ type failingEarningsMarketStore struct {
 	workErr    error
 }
 
+type countingEarningsMarketStore struct {
+	store.Store
+	workCalls atomic.Int32
+	delay     time.Duration
+}
+
+func (s *countingEarningsMarketStore) ModelSettledWorkTotals(since, until time.Time) ([]store.ModelSettledWorkTotal, error) {
+	s.workCalls.Add(1)
+	time.Sleep(s.delay)
+	return s.Store.ModelSettledWorkTotals(since, until)
+}
+
 func (s failingEarningsMarketStore) ListActiveModelRegistryWithError() ([]store.ModelRegistryRecord, error) {
 	if s.activeErr != nil {
 		return nil, s.activeErr
@@ -369,6 +392,59 @@ func (s failingEarningsMarketStore) ModelSettledWorkTotals(since, until time.Tim
 		return nil, s.workErr
 	}
 	return s.Store.ModelSettledWorkTotals(since, until)
+}
+
+func TestEarningsMarketHandlerCoalescesConcurrentCacheMisses(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	base := store.NewMemory(store.Config{})
+	const modelID = "coalesced-market-model"
+	addActiveEarningsModel(t, base, modelID, "Coalesced", 24, 8_000_000_000)
+	registerEarningsCapacity(t, reg, "coalesced-provider", modelID, 400, 100, false)
+	if err := base.RecordProviderEarning(&store.ProviderEarning{
+		JobID:            "coalesced-job",
+		Model:            modelID,
+		PublicModel:      modelID,
+		AmountMicroUSD:   1_000_000,
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		CreatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("RecordProviderEarning: %v", err)
+	}
+	counting := &countingEarningsMarketStore{
+		Store: base,
+		delay: 50 * time.Millisecond,
+	}
+	srv := NewServer(reg, counting, ServerConfig{}, logger)
+
+	const requestCount = 16
+	start := make(chan struct{})
+	statuses := make(chan int, requestCount)
+	var wg sync.WaitGroup
+	for range requestCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodGet, "/v1/earnings/market", nil)
+			recorder := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(recorder, req)
+			statuses <- recorder.Code
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+
+	for status := range statuses {
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+	}
+	if calls := counting.workCalls.Load(); calls != 1 {
+		t.Fatalf("settled-work queries = %d, want 1 for one concurrent cache miss", calls)
+	}
 }
 
 func TestEarningsMarketHandlerReturns500OnStoreFailures(t *testing.T) {

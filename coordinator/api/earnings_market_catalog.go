@@ -10,17 +10,15 @@ import (
 )
 
 type earningsCatalogModel struct {
-	model           earningsMarketModel
-	candidateMember string
-	capacityMembers []string
+	model          earningsMarketModel
+	capacityMember string
 }
 
 // buildEarningsCatalog collapses each active standard alias's full historical
-// lineage into one public calculator row. Desired and previous builds both
-// receive alias traffic, so both contribute competing live capacity. A new
-// provider converges to Desired, so candidate metadata and benchmarking use the
-// first active member only. Historical work is attributed separately by the
-// public identity persisted at settlement.
+// lineage into one public calculator row. Live capacity comes from the first
+// active rollout member (Desired before Previous), matching alias routing and
+// the build a new provider converges to. Historical work is attributed
+// separately by the public identity persisted at settlement.
 func buildEarningsCatalog(
 	records []store.ModelRegistryRecord,
 	aliases []store.ModelAlias,
@@ -64,11 +62,11 @@ func buildEarningsCatalog(
 		}
 		publicAliasIDs[alias.AliasID] = struct{}{}
 
-		capacityMembers := activeAliasMembers(alias, recordsByID)
-		if len(capacityMembers) == 0 {
+		capacityMember, ok := activeAliasMember(alias, recordsByID)
+		if !ok {
 			continue
 		}
-		primary := recordsByID[capacityMembers[0]]
+		primary := recordsByID[capacityMember]
 		displayName := alias.DisplayName
 		if displayName == "" {
 			displayName = primary.DisplayName
@@ -84,8 +82,7 @@ func buildEarningsCatalog(
 				SizeBytes:   primary.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(primary.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			candidateMember: capacityMembers[0],
-			capacityMembers: capacityMembers,
+			capacityMember: capacityMember,
 		})
 	}
 
@@ -112,28 +109,26 @@ func buildEarningsCatalog(
 				SizeBytes:   record.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(record.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			candidateMember: record.ID,
-			capacityMembers: []string{record.ID},
+			capacityMember: record.ID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].model.ID < out[j].model.ID })
 	return out, nil
 }
 
-func activeAliasMembers(
+func activeAliasMember(
 	alias store.ModelAlias,
 	recordsByID map[string]store.ModelRegistryRecord,
-) []string {
-	members := make([]string, 0, 2)
+) (string, bool) {
 	for _, build := range []string{alias.DesiredBuild, alias.PreviousBuild} {
 		if build == "" {
 			continue
 		}
 		if _, active := recordsByID[build]; active {
-			members = append(members, build)
+			return build, true
 		}
 	}
-	return uniqueNonemptyStrings(members)
+	return "", false
 }
 
 func uniqueNonemptyStrings(values []string) []string {

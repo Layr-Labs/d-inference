@@ -1,4 +1,4 @@
-Starting recording with the Power Profiler template. Launching process: sleep. 
+Starting recording with the Power Profiler template. Launching process: sleep.
 Ctrl-C to stop the recording
 Run issues were detected (trace is still ready to be viewed):
 * [Error] The Power Profiler instrument is not supported on macOS. Record on iOS or iPadOS instead.

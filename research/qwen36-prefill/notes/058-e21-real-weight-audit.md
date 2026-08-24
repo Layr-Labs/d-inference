@@ -44,8 +44,10 @@ Only 841 of 138,652,672 aligned BN32×BK8 blocks are wholly zero.
 - exact routed zero/tile removal: **0.6775%** of routed MACs;
 - no duplicate whole experts.
 
-Therefore no exact zero/duplicate/rank transform deletes the ≥39% linear
-work needed by the prior strict-arithmetic program.
+Therefore no audited independent per-projection exact
+zero/duplicate/rank-factor transform deletes the ≥39% linear work needed by
+the prior strict-arithmetic program. Joint cross-projection transforms and
+runtime routing regularity are outside this result, as note 047 records.
 
 This is not a stop under the owner override. Approximate low rank,
 adaptive experts, layer/token deletion, and changed state construction

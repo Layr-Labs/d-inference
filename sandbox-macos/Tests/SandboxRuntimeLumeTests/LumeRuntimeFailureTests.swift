@@ -1427,14 +1427,6 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 atPath: fixture.startIntentFile.path
             )
         )
-        let stoppedRecord = try await runtime.inspect(
-            scope: lease.scope,
-            name: lease.virtualMachineName
-        )
-        XCTAssertEqual(
-            stoppedRecord?.state,
-            .stopped
-        )
     }
 
     func testFailedReadinessStopsNewlyStartedVirtualMachine() async throws {

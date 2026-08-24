@@ -271,12 +271,35 @@ final class MappedTensor: @unchecked Sendable {
 }
 
 func sha256File(_ url: URL) throws -> String {
-    let handle = try FileHandle(forReadingFrom: url)
-    defer { try? handle.close() }
+    let descriptor = open(url.path, O_RDONLY)
+    guard descriptor >= 0 else {
+        throw AuditError.invalid("\(url.path): open failed with errno \(errno)")
+    }
+    defer { close(descriptor) }
 
+    // FileHandle/Data can retain autoreleased NSData chunks until this
+    // command-line process drains its outer pool. Across four 5 GiB shards
+    // that defeats the bounded-memory contract. One fixed POSIX buffer keeps
+    // shard hashing resident memory independent of model size.
+    var buffer = [UInt8](repeating: 0, count: 16 * 1_024 * 1_024)
     var digest = SHA256()
-    while let data = try handle.read(upToCount: 16 * 1_024 * 1_024), !data.isEmpty {
-        digest.update(data: data)
+    while true {
+        let count = buffer.withUnsafeMutableBytes {
+            read(descriptor, $0.baseAddress, $0.count)
+        }
+        if count == 0 { break }
+        if count < 0 {
+            if errno == EINTR { continue }
+            throw AuditError.invalid("\(url.path): read failed with errno \(errno)")
+        }
+        buffer.withUnsafeBytes {
+            digest.update(
+                bufferPointer: UnsafeRawBufferPointer(
+                    start: $0.baseAddress,
+                    count: count
+                )
+            )
+        }
     }
     return digest.finalize().map { String(format: "%02x", $0) }.joined()
 }

@@ -206,7 +206,10 @@ final class SustainedMetalRunner {
         let sampleBuffer = try device.makeCounterSampleBuffer(descriptor: descriptor)
 
         let pass = MTLComputePassDescriptor()
-        let attachment = pass.sampleBufferAttachments[0]
+        guard let attachment = pass.sampleBufferAttachments[0] else {
+            throw ProbeFailure.message(
+                "timestamp counter attachment descriptor unavailable")
+        }
         attachment.sampleBuffer = sampleBuffer
         attachment.startOfEncoderSampleIndex = 0
         attachment.endOfEncoderSampleIndex = 1
@@ -234,8 +237,7 @@ final class SustainedMetalRunner {
             commandBuffer,
             label: "mpp-soak-timestamp-counter")
 
-        guard let data = sampleBuffer.resolveCounterRange(
-            NSRange(location: 0, length: 2))
+        guard let data = sampleBuffer.resolveCounterRange(0..<2)
         else {
             throw ProbeFailure.message("timestamp counter resolution returned nil")
         }

@@ -136,6 +136,7 @@ record_header() {
         "$CANDIDATE_SOURCE" \
         "$KERNEL_SOURCE" \
         "$SCRIPT_DIR/ProbeTypes.swift" \
+        "$SCRIPT_DIR/MetalRunner.swift" \
         "$SCRIPT_DIR/SoakRunner.swift" \
         "$SCRIPT_DIR/SoakMain.swift" \
         "$SCRIPT_DIR/agx_metrics.py" \
@@ -231,6 +232,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 
 xcrun swiftc -O -framework Metal \
     "$SCRIPT_DIR/ProbeTypes.swift" \
+    "$SCRIPT_DIR/MetalRunner.swift" \
     "$SCRIPT_DIR/SoakRunner.swift" \
     "$SCRIPT_DIR/SoakMain.swift" \
     -o "$BINARY" \

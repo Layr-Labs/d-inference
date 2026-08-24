@@ -50,14 +50,14 @@ func certifyExactRankLowerBound(
         columns: tensor.columns
     )
     let exactUpperBound = min(uniqueNonzeroRowCount, uniqueNonzeroColumnCount)
-    guard exactUpperBound >= required else {
+    guard exactUpperBound > 0 else {
         return RankCertificate(
-            status: "upper-bound-below-required",
+            status: "exact-rank",
             prime: nil,
             exactLowerBound: 0,
-            exactUpperBound: exactUpperBound,
+            exactUpperBound: 0,
             requiredToRuleOut39Percent: required,
-            target: required,
+            target: 0,
             attempt: nil,
             selectedRowCount: 0,
             selectedColumnCount: 0,
@@ -68,95 +68,113 @@ func certifyExactRankLowerBound(
         )
     }
 
-    // The extra 64 ranks create margin above the exact 39% cutoff where the
-    // matrix supports it. Sparse layer-0 expert matrices naturally cap this
-    // target at their exact nonzero/unique-row upper bound.
-    let target = min(exactUpperBound, required + 64)
+    // First seek 64 ranks of margin. If that stronger target vanishes in every
+    // labelled field/selection, retry the exact threshold before failing. For
+    // structurally sparse matrices whose upper bound is below the local 39%
+    // cutoff, seek that upper bound: reaching it proves the exact (low) rank
+    // needed by the model-wide weighted bound.
+    let preferredTarget = min(exactUpperBound, required + 64)
+    var targets = [preferredTarget]
+    if exactUpperBound >= required, preferredTarget != required {
+        targets.append(required)
+    }
     let baseSeed = stableSeed("\(tensor.baseName)#\(matrix)")
 
-    for attempt in 0..<4 {
-        let attemptSeed = splitMix64(baseSeed &+ UInt64(attempt))
-        let selectedRows = cyclicSelection(
-            eligible: nonzeroRows,
-            desired: min(exactUpperBound, target + 64),
-            seed: attemptSeed
-        )
-        let selectedColumns = cyclicSelection(
-            eligible: nonzeroColumns,
-            desired: min(uniqueNonzeroColumnCount, target + 64),
-            seed: splitMix64(attemptSeed)
-        )
-        let ternary = buildGF3Rows(
-            tensor: tensor,
-            matrix: matrix,
-            rows: selectedRows,
-            columns: selectedColumns
-        )
-        let result = rankGF3(
-            ones: ternary.ones,
-            twos: ternary.twos,
-            rowCount: selectedRows.count,
-            columnCount: selectedColumns.count,
-            stopAt: target
-        )
-        if result.rank >= target {
-            return makeCertificate(
+    for target in targets {
+        for attempt in 0..<4 {
+            let attemptSeed = splitMix64(
+                baseSeed
+                    &+ (UInt64(target) << 32)
+                    &+ UInt64(attempt)
+            )
+            let selectedRows = cyclicSelection(
+                eligible: nonzeroRows,
+                desired: min(uniqueNonzeroRowCount, target + 64),
+                seed: attemptSeed
+            )
+            let selectedColumns = cyclicSelection(
+                eligible: nonzeroColumns,
+                desired: min(uniqueNonzeroColumnCount, target + 64),
+                seed: splitMix64(attemptSeed)
+            )
+            let ternary = buildGF3Rows(
                 tensor: tensor,
                 matrix: matrix,
-                prime: 3,
-                result: result,
-                selectedRows: selectedRows,
-                selectedColumns: selectedColumns,
-                exactUpperBound: exactUpperBound,
-                required: required,
-                target: target,
-                attempt: attempt
+                rows: selectedRows,
+                columns: selectedColumns
             )
+            let result = rankGF3(
+                ones: ternary.ones,
+                twos: ternary.twos,
+                rowCount: selectedRows.count,
+                columnCount: selectedColumns.count,
+                stopAt: target
+            )
+            if result.rank >= target {
+                return makeCertificate(
+                    tensor: tensor,
+                    matrix: matrix,
+                    prime: 3,
+                    result: result,
+                    selectedRows: selectedRows,
+                    selectedColumns: selectedColumns,
+                    exactUpperBound: exactUpperBound,
+                    required: required,
+                    target: target,
+                    attempt: attempt
+                )
+            }
         }
-    }
 
-    // A rationally nonsingular minor can vanish modulo 3. Modulo 5 is an
-    // independent exact field, not a floating fallback. It is only paid for
-    // when every deterministic GF(3) selection misses the requested bound.
-    for attempt in 0..<2 {
-        let attemptSeed = splitMix64(baseSeed &+ 0x5000 &+ UInt64(attempt))
-        let selectedRows = cyclicSelection(
-            eligible: nonzeroRows,
-            desired: min(exactUpperBound, target + 32),
-            seed: attemptSeed
-        )
-        let selectedColumns = cyclicSelection(
-            eligible: nonzeroColumns,
-            desired: min(uniqueNonzeroColumnCount, target + 32),
-            seed: splitMix64(attemptSeed)
-        )
-        let fieldRows = buildPrimeRows(
-            tensor: tensor,
-            matrix: matrix,
-            rows: selectedRows,
-            columns: selectedColumns,
-            prime: 5
-        )
-        let result = rankSmallPrime(
-            values: fieldRows,
-            rowCount: selectedRows.count,
-            columnCount: selectedColumns.count,
-            prime: 5,
-            stopAt: target
-        )
-        if result.rank >= target {
-            return makeCertificate(
-                tensor: tensor,
-                matrix: matrix,
-                prime: 5,
-                result: result,
-                selectedRows: selectedRows,
-                selectedColumns: selectedColumns,
-                exactUpperBound: exactUpperBound,
-                required: required,
-                target: target,
-                attempt: 4 + attempt
-            )
+        // A rationally nonsingular minor can vanish modulo one prime. GF(5)
+        // and GF(7) are independent exact fields, never floating fallbacks.
+        for prime in [5, 7] {
+            for attempt in 0..<2 {
+                let attemptSeed = splitMix64(
+                    baseSeed
+                        &+ (UInt64(prime) << 48)
+                        &+ (UInt64(target) << 16)
+                        &+ UInt64(attempt)
+                )
+                let selectedRows = cyclicSelection(
+                    eligible: nonzeroRows,
+                    desired: min(uniqueNonzeroRowCount, target + 32),
+                    seed: attemptSeed
+                )
+                let selectedColumns = cyclicSelection(
+                    eligible: nonzeroColumns,
+                    desired: min(uniqueNonzeroColumnCount, target + 32),
+                    seed: splitMix64(attemptSeed)
+                )
+                let fieldRows = buildPrimeRows(
+                    tensor: tensor,
+                    matrix: matrix,
+                    rows: selectedRows,
+                    columns: selectedColumns,
+                    prime: prime
+                )
+                let result = rankSmallPrime(
+                    values: fieldRows,
+                    rowCount: selectedRows.count,
+                    columnCount: selectedColumns.count,
+                    prime: prime,
+                    stopAt: target
+                )
+                if result.rank >= target {
+                    return makeCertificate(
+                        tensor: tensor,
+                        matrix: matrix,
+                        prime: prime,
+                        result: result,
+                        selectedRows: selectedRows,
+                        selectedColumns: selectedColumns,
+                        exactUpperBound: exactUpperBound,
+                        required: required,
+                        target: target,
+                        attempt: 4 + (prime == 5 ? 0 : 2) + attempt
+                    )
+                }
+            }
         }
     }
 
@@ -166,7 +184,7 @@ func certifyExactRankLowerBound(
         exactLowerBound: 0,
         exactUpperBound: exactUpperBound,
         requiredToRuleOut39Percent: required,
-        target: target,
+        target: targets.last!,
         attempt: nil,
         selectedRowCount: 0,
         selectedColumnCount: 0,
@@ -430,6 +448,8 @@ private func rankSmallPrime(
     switch prime {
     case 5:
         inverses = [0, 1, 3, 2, 4]
+    case 7:
+        inverses = [0, 1, 4, 5, 2, 3, 6]
     default:
         preconditionFailure("unsupported small prime")
     }
@@ -498,6 +518,9 @@ func bf16ModPrime(_ bits: UInt16, prime: Int) -> UInt8 {
     case 5:
         let residue = (binaryExponent % 4 + 4) % 4
         powerOfTwo = [1, 2, 4, 3][residue]
+    case 7:
+        let residue = (binaryExponent % 3 + 3) % 3
+        powerOfTwo = [1, 2, 4][residue]
     default:
         preconditionFailure("unsupported certificate prime \(prime)")
     }

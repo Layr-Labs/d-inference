@@ -8,6 +8,7 @@ struct RoutedProjectionEvidence: Sendable {
     let columns: Int
     let zeroRows: [[Bool]]
     let zeroWeightBK8Fragments: [Int]
+    let rankDeletionUpperBounds: [Double]
     let scalesSHA256: String
     let biasesSHA256: String?
 }
@@ -34,6 +35,10 @@ struct RoutedLayerSummary: Sendable {
     let downMACs: Int64
     let removableGateUpMACsByBN32Compaction: Int64
     let removableDownMACsByAlignedBK8DeadActivation: Int64
+    let localRankCutoffFailures: Int
+    let worstTop8RankBaselineMACs: Double
+    let worstTop8RankRemovableMACs: Double
+    let worstTop8RankDeletionUpperBound: Double
 }
 
 struct RoutedModelSummary: Sendable {
@@ -53,6 +58,10 @@ struct RoutedModelSummary: Sendable {
     let routedMACs: Int64
     let removableMACs: Int64
     let removableMACFraction: Double
+    let localRankCutoffFailures: Int
+    let worstCaseRankBaselineMACs: Double
+    let worstCaseRankRemovableMACs: Double
+    let worstCaseRankDeletionUpperBound: Double
 }
 
 final class RoutedTileCollector {
@@ -75,6 +84,9 @@ final class RoutedTileCollector {
             zeroRows: audit.matrices.map(\.zeroRows),
             zeroWeightBK8Fragments: audit.matrices.map {
                 $0.columnBlockZeroCounts[8] ?? 0
+            },
+            rankDeletionUpperBounds: audit.matrices.map {
+                $0.rank.macDeletionUpperBound
             },
             scalesSHA256: audit.scalesSHA256,
             biasesSHA256: audit.biasesSHA256
@@ -118,6 +130,8 @@ final class RoutedTileCollector {
             var upCompacted = 0
             var downDeadBK8 = 0
             var downZeroWeightBK8 = 0
+            var localRankCutoffFailures = 0
+            var perExpertRankBounds: [(baseline: Double, removable: Double)] = []
 
             for expert in gate.zeroRows.indices {
                 let gateMask = gate.zeroRows[expert]
@@ -137,6 +151,22 @@ final class RoutedTileCollector {
                 gateCompacted += gate.rows / 32 - divideRoundUp(gateLive, 32)
                 upCompacted += up.rows / 32 - divideRoundUp(upLive, 32)
                 downZeroWeightBK8 += down.zeroWeightBK8Fragments[expert]
+
+                let projections = [gate, up, down]
+                var expertBaseline = 0.0
+                var expertRemovable = 0.0
+                for projection in projections {
+                    let baseline = Double(projection.rows * projection.columns)
+                    expertBaseline += baseline
+                    expertRemovable +=
+                        baseline * projection.rankDeletionUpperBounds[expert]
+                    if projection.rankDeletionUpperBounds[expert] >= 0.39 {
+                        localRankCutoffFailures += 1
+                    }
+                }
+                perExpertRankBounds.append(
+                    (baseline: expertBaseline, removable: expertRemovable)
+                )
             }
 
             let expertCount = gate.zeroRows.count
@@ -148,6 +178,13 @@ final class RoutedTileCollector {
                 Int64(gateCompacted * 32 * gate.columns)
                 + Int64(upCompacted * 32 * up.columns)
             let removableDown = Int64(downDeadBK8 * 8 * down.rows)
+            let worstTop8 = perExpertRankBounds
+                .sorted {
+                    $0.removable / $0.baseline > $1.removable / $1.baseline
+                }
+                .prefix(min(8, expertCount))
+            let worstTop8Baseline = worstTop8.reduce(0) { $0 + $1.baseline }
+            let worstTop8Removable = worstTop8.reduce(0) { $0 + $1.removable }
             layers.append(
                 RoutedLayerSummary(
                     scope: scope,
@@ -173,7 +210,14 @@ final class RoutedTileCollector {
                     gateUpMACs: gateUpMACs,
                     downMACs: downMACs,
                     removableGateUpMACsByBN32Compaction: removableGateUp,
-                    removableDownMACsByAlignedBK8DeadActivation: removableDown
+                    removableDownMACsByAlignedBK8DeadActivation: removableDown,
+                    localRankCutoffFailures: localRankCutoffFailures,
+                    worstTop8RankBaselineMACs: worstTop8Baseline,
+                    worstTop8RankRemovableMACs: worstTop8Removable,
+                    worstTop8RankDeletionUpperBound:
+                        worstTop8Baseline == 0
+                        ? 0
+                        : worstTop8Removable / worstTop8Baseline
                 )
             )
         }
@@ -187,6 +231,12 @@ final class RoutedTileCollector {
             let removableMACs = selected.reduce(Int64(0)) {
                 $0 + $1.removableGateUpMACsByBN32Compaction
                     + $1.removableDownMACsByAlignedBK8DeadActivation
+            }
+            let rankBaseline = selected.reduce(0) {
+                $0 + $1.worstTop8RankBaselineMACs
+            }
+            let rankRemovable = selected.reduce(0) {
+                $0 + $1.worstTop8RankRemovableMACs
             }
             return RoutedModelSummary(
                 scope: scope,
@@ -225,7 +275,13 @@ final class RoutedTileCollector {
                 routedMACs: routedMACs,
                 removableMACs: removableMACs,
                 removableMACFraction:
-                    routedMACs == 0 ? 0 : Double(removableMACs) / Double(routedMACs)
+                    routedMACs == 0 ? 0 : Double(removableMACs) / Double(routedMACs),
+                localRankCutoffFailures:
+                    selected.reduce(0) { $0 + $1.localRankCutoffFailures },
+                worstCaseRankBaselineMACs: rankBaseline,
+                worstCaseRankRemovableMACs: rankRemovable,
+                worstCaseRankDeletionUpperBound:
+                    rankBaseline == 0 ? 0 : rankRemovable / rankBaseline
             )
         }
         return (layers, models)

@@ -32,8 +32,8 @@ SOURCE_SHA256="$(
         | shasum -a 256 \
         | awk '{print $1}'
 )"
-ROOT_GIT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
-PINNED_MLX_SHA="$(git -C "$ROOT" ls-tree HEAD libs/mlx | awk '{print $3}')"
+ROOT_GIT_SHA="${AUDIT_ROOT_GIT_SHA_OVERRIDE:-$(git -C "$ROOT" rev-parse HEAD)}"
+PINNED_MLX_SHA="${AUDIT_PINNED_MLX_SHA_OVERRIDE:-$(git -C "$ROOT" ls-tree HEAD libs/mlx | awk '{print $3}')}"
 
 xcrun swiftc \
     -O \
@@ -96,7 +96,7 @@ if ! grep -Fq "RUN_VALID=yes" "$OUT_DIR/summary.txt"; then
     echo "fatal: structural audit did not pass its coverage/rank gates" >&2
     exit 1
 fi
-if ! grep -Fq "VERDICT=rank-factor->=39%-deletion-ruled-out" "$OUT_DIR/summary.txt"; then
+if ! grep -Fq "VERDICT=model-wide-rank-factor->=39%-deletion-ruled-out" "$OUT_DIR/summary.txt"; then
     echo "fatal: exact-rank lower-bound verdict is missing" >&2
     exit 1
 fi

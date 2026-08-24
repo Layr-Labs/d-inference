@@ -35,6 +35,10 @@ private struct AggregateSummary {
     var exactRankCount = 0
     var rankGF3Count = 0
     var rankGF5Count = 0
+    var rankGF7Count = 0
+    var uncertifiedMatrixCount = 0
+    var denseLocalRankCutoffFailures = 0
+    var maximumDenseRankDeletionUpperBound = 0.0
     var totalDecodedValues: Int64 = 0
     var totalDecodedZeros: Int64 = 0
     var totalZeroRows: Int64 = 0
@@ -81,6 +85,13 @@ private struct AggregateSummary {
             if matrix.rank.status == "exact-rank" { exactRankCount += 1 }
             if matrix.rank.prime == 3 { rankGF3Count += 1 }
             if matrix.rank.prime == 5 { rankGF5Count += 1 }
+            if matrix.rank.prime == 7 { rankGF7Count += 1 }
+            if
+                matrix.rank.exactLowerBound == 0,
+                matrix.rank.exactUpperBound > 0
+            {
+                uncertifiedMatrixCount += 1
+            }
             let macs = Double(audit.tensor.rows * audit.tensor.columns)
             baselineMACs += macs
             rankBoundRemovableMACs += macs * matrix.rank.macDeletionUpperBound
@@ -88,6 +99,15 @@ private struct AggregateSummary {
                 maximumPerMatrixRankDeletionUpperBound,
                 matrix.rank.macDeletionUpperBound
             )
+            if !audit.tensor.isExpertTensor {
+                maximumDenseRankDeletionUpperBound = max(
+                    maximumDenseRankDeletionUpperBound,
+                    matrix.rank.macDeletionUpperBound
+                )
+                if !matrix.rank.rulesOut39Percent {
+                    denseLocalRankCutoffFailures += 1
+                }
+            }
             if
                 audit.tensor.rows % 32 == 0,
                 audit.tensor.columns % 8 == 0
@@ -244,6 +264,10 @@ private func main() throws {
     else {
         throw AuditError.invalid("routed tile summary did not cover 40 main + 1 MTP layers")
     }
+    let globalRankBoundPasses = rankBoundIsSufficient(
+        aggregate: aggregate,
+        routedModels: routedModels
+    )
     try writeJSON(
         [
             "schema_version": 1,
@@ -281,7 +305,7 @@ private func main() throws {
             "mxfp8": "MLX-E4M3-times-E8M0-to-bfloat16",
         ],
         "rank_contract": [
-            "fields": [3, 5],
+            "fields": [3, 5, 7],
             "mapping": "exact-dyadic-BF16-field-homomorphism",
             "claim": "deterministic-minor-exact-lower-bound",
             "deletion_threshold": 0.39,
@@ -309,12 +333,14 @@ private func main() throws {
 
     let summary = summaryJSON(
         aggregate: aggregate,
-        routedModels: routedModels
+        routedModels: routedModels,
+        globalRankBoundPasses: globalRankBoundPasses
     )
     try writeJSON(summary, to: outputURL.appendingPathComponent("summary.json"))
     let summaryText = summaryText(
         aggregate: aggregate,
-        routedModels: routedModels
+        routedModels: routedModels,
+        globalRankBoundPasses: globalRankBoundPasses
     )
     try Data(summaryText.utf8).write(
         to: outputURL.appendingPathComponent("summary.txt"),
@@ -322,9 +348,9 @@ private func main() throws {
     )
     print(summaryText, terminator: "")
 
-    guard aggregate.rankFailureCount == 0 else {
+    guard globalRankBoundPasses else {
         throw AuditError.invalid(
-            "\(aggregate.rankFailureCount) matrices lack the required exact rank bound"
+            "the conservative dense/routed exact-rank mixture bound does not rule out 39%"
         )
     }
 }
@@ -491,6 +517,11 @@ private func routedLayerJSON(_ layer: RoutedLayerSummary) -> [String: Any] {
             NSNumber(value: layer.removableGateUpMACsByBN32Compaction),
         "removable_down_macs_aligned_bk8_dead_activation":
             NSNumber(value: layer.removableDownMACsByAlignedBK8DeadActivation),
+        "local_rank_cutoff_failures": layer.localRankCutoffFailures,
+        "worst_top8_rank_baseline_macs": layer.worstTop8RankBaselineMACs,
+        "worst_top8_rank_removable_macs": layer.worstTop8RankRemovableMACs,
+        "worst_top8_rank_deletion_upper_bound":
+            layer.worstTop8RankDeletionUpperBound,
     ]
 }
 
@@ -515,16 +546,22 @@ private func routedModelJSON(_ model: RoutedModelSummary) -> [String: Any] {
         "routed_macs": NSNumber(value: model.routedMACs),
         "removable_macs": NSNumber(value: model.removableMACs),
         "removable_mac_fraction": model.removableMACFraction,
+        "local_rank_cutoff_failures": model.localRankCutoffFailures,
+        "worst_case_rank_baseline_macs": model.worstCaseRankBaselineMACs,
+        "worst_case_rank_removable_macs": model.worstCaseRankRemovableMACs,
+        "worst_case_rank_deletion_upper_bound":
+            model.worstCaseRankDeletionUpperBound,
     ]
 }
 
 private func summaryJSON(
     aggregate: AggregateSummary,
-    routedModels: [RoutedModelSummary]
+    routedModels: [RoutedModelSummary],
+    globalRankBoundPasses: Bool
 ) -> [String: Any] {
     [
         "schema_version": 1,
-        "run_valid": aggregate.rankFailureCount == 0,
+        "run_valid": globalRankBoundPasses,
         "coverage": [
             "tensor_count": aggregate.tensorCount,
             "expert_tensor_count": aggregate.expertTensorCount,
@@ -539,6 +576,14 @@ private func summaryJSON(
             "exact_rank_count": aggregate.exactRankCount,
             "gf3_certificate_count": aggregate.rankGF3Count,
             "gf5_certificate_count": aggregate.rankGF5Count,
+            "gf7_certificate_count": aggregate.rankGF7Count,
+            "uncertified_matrix_count": aggregate.uncertifiedMatrixCount,
+            "local_39_percent_pass_count": aggregate.rankPassCount,
+            "local_39_percent_failure_count": aggregate.rankFailureCount,
+            "dense_local_39_percent_failure_count":
+                aggregate.denseLocalRankCutoffFailures,
+            "maximum_dense_deletion_upper_bound":
+                aggregate.maximumDenseRankDeletionUpperBound,
             "maximum_per_matrix_deletion_upper_bound":
                 aggregate.maximumPerMatrixRankDeletionUpperBound,
             "mac_weighted_deletion_upper_bound":
@@ -547,9 +592,9 @@ private func summaryJSON(
                 : aggregate.rankBoundRemovableMACs / aggregate.baselineMACs,
             "threshold_ruled_out": 0.39,
             "claim":
-                aggregate.rankFailureCount == 0
-                ? "every audited matrix has a deterministic exact finite-field minor above the >=39% rank-factor deletion cutoff"
-                : "one or more matrices lack the required exact lower bound",
+                globalRankBoundPasses
+                ? "every dense matrix is locally below 39%, and worst-case top-8 expert selection aggregated across routed layers is below 39%"
+                : "the conservative dense/routed mixture bound does not rule out 39%",
         ],
         "structure": [
             "decoded_values": NSNumber(value: aggregate.totalDecodedValues),
@@ -576,7 +621,8 @@ private func summaryJSON(
 
 private func summaryText(
     aggregate: AggregateSummary,
-    routedModels: [RoutedModelSummary]
+    routedModels: [RoutedModelSummary],
+    globalRankBoundPasses: Bool
 ) -> String {
     let weightedRankBound =
         aggregate.baselineMACs == 0
@@ -584,10 +630,10 @@ private func summaryText(
         : aggregate.rankBoundRemovableMACs / aggregate.baselineMACs
     var lines = [
         "PROBE=qwen36-real-weight-structure-audit",
-        "RUN_VALID=\(aggregate.rankFailureCount == 0 ? "yes" : "no")",
+        "RUN_VALID=\(globalRankBoundPasses ? "yes" : "no")",
         "DECODE_AFFINE=root-pinned-MLX-0a725e30-bfloat16-multiply-then-add",
         "COVERAGE tensors=\(aggregate.tensorCount) expert_tensors=\(aggregate.expertTensorCount) dense_tensors=\(aggregate.denseTensorCount) matrices=\(aggregate.matrixCount) expert_matrices=\(aggregate.expertMatrixCount) dense_matrices=\(aggregate.denseMatrixCount)",
-        "RANK pass=\(aggregate.rankPassCount) fail=\(aggregate.rankFailureCount) exact=\(aggregate.exactRankCount) gf3=\(aggregate.rankGF3Count) gf5=\(aggregate.rankGF5Count) weighted_deletion_upper=\(formatFraction(weightedRankBound)) max_matrix_deletion_upper=\(formatFraction(aggregate.maximumPerMatrixRankDeletionUpperBound)) threshold=0.390000",
+        "RANK local_pass=\(aggregate.rankPassCount) local_fail=\(aggregate.rankFailureCount) uncertified=\(aggregate.uncertifiedMatrixCount) exact=\(aggregate.exactRankCount) gf3=\(aggregate.rankGF3Count) gf5=\(aggregate.rankGF5Count) gf7=\(aggregate.rankGF7Count) weighted_deletion_upper=\(formatFraction(weightedRankBound)) max_dense_deletion_upper=\(formatFraction(aggregate.maximumDenseRankDeletionUpperBound)) max_matrix_deletion_upper=\(formatFraction(aggregate.maximumPerMatrixRankDeletionUpperBound)) threshold=0.390000",
         "STRUCTURE decoded_values=\(aggregate.totalDecodedValues) decoded_zeros=\(aggregate.totalDecodedZeros) zero_rows=\(aggregate.totalZeroRows) zero_columns=\(aggregate.totalZeroColumns) duplicate_rows=\(aggregate.totalDuplicateRows) duplicate_columns=\(aggregate.totalDuplicateColumns) duplicate_groups=\(aggregate.totalDuplicateGroups) duplicate_experts=\(aggregate.totalDuplicateExperts)",
         "GENERIC_TILES bn32_bk8_slots=\(aggregate.totalBN32BK8Blocks) zero_bn32_bk8=\(aggregate.totalZeroBN32BK8Blocks)",
     ]
@@ -602,16 +648,30 @@ private func summaryText(
                 + "/\(model.downBK8FragmentSlots) "
                 + "bk8_zero_weight=\(model.downBK8ZeroWeightColumnFragments)"
                 + "/\(model.downBK8FragmentSlots) "
-                + "removable_routed_mac_fraction=\(formatFraction(model.removableMACFraction))"
+                + "removable_routed_mac_fraction=\(formatFraction(model.removableMACFraction)) "
+                + "local_rank_failures=\(model.localRankCutoffFailures) "
+                + "worst_top8_rank_deletion_upper=\(formatFraction(model.worstCaseRankDeletionUpperBound))"
         )
     }
     lines.append(
-        "VERDICT=\(aggregate.rankFailureCount == 0 ? "rank-factor->=39%-deletion-ruled-out" : "insufficient-rank-certificate") exact_finite_field=true lower_bounds_labelled=true"
+        "VERDICT=\(globalRankBoundPasses ? "model-wide-rank-factor->=39%-deletion-ruled-out" : "insufficient-rank-certificate") exact_finite_field=true lower_bounds_labelled=true local_low_rank_exceptions_disclosed=\(aggregate.rankFailureCount)"
     )
     lines.append(
         "LIMITS=rank-stops-at-required-plus-64-unless-exact-upper-reached;near-rank-not-shippable;real-routing-separate"
     )
     return lines.joined(separator: "\n") + "\n"
+}
+
+private func rankBoundIsSufficient(
+    aggregate: AggregateSummary,
+    routedModels: [RoutedModelSummary]
+) -> Bool {
+    aggregate.uncertifiedMatrixCount == 0
+        && aggregate.denseLocalRankCutoffFailures == 0
+        && aggregate.maximumDenseRankDeletionUpperBound < 0.39
+        && routedModels.allSatisfy {
+            $0.worstCaseRankDeletionUpperBound < 0.39
+        }
 }
 
 private func sparseHistogramJSON(

@@ -178,18 +178,24 @@ new fencing token, then stops and verifies the owned VM before releasing that
 exact token. A missing VM, replaced storage path, stop failure, or ownership
 failure retains the fenced lease for retry or host quarantine, preventing a
 stalled control plane from overbooking a host whose guest may still be running.
+The pinned runtime treats a wedged or ambiguous run-lock probe as `unknown`,
+never `stopped`. Stop succeeds only after acquiring the same `config.json`
+inode's exclusive `flock`; it never replaces that inode to manufacture an
+unlocked path. Reconciliation therefore cannot release capacity based on an
+inconclusive `lsof` result after a controller restart.
 
 ## Pinned Lume substrate
 
 `ThirdParty/lume.lock.json` pins the exact Cua source commit, expected version,
-and the SHA-256 of every Darkbloom patch. Build it without a background service:
+and the ordered SHA-256 list of every Darkbloom patch. Build it without a
+background service:
 
 ```bash
 sandbox-macos/Scripts/build-pinned-lume.sh \
   "$HOME/.local/libexec/darkbloom-sandbox/lume/bin"
 ```
 
-The build verifies and applies the pinned patch before compilation, then writes
+The build verifies and applies every pinned patch before compilation, then writes
 `lume.provenance.json` beside the executable with the source commit, patch
 digests, and post-signing SHA-256 for every runtime file. It signs that canonical
 manifest separately as `io.darkbloom.sandbox.lume.provenance`, binding all

@@ -689,6 +689,57 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
     }
 
+    func testPublicReleaseRetainsCapacityWhenVMLivenessIsUnknown()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            initialState: "unknown",
+            behavior: "stop-liveness-inconclusive"
+        )
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        do {
+            try await runtime.release(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("unknown VM liveness must retain reserved capacity")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .commandFailed(
+                    command: "stop",
+                    exitCode: 70,
+                    stderr: "VM liveness is inconclusive"
+                )
+            )
+        }
+
+        XCTAssertEqual(
+            try arbiter.snapshot().leases.map(\.scope),
+            [lease.scope]
+        )
+        let state = try await runtime.inspect(
+            scope: lease.scope,
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .unknown)
+    }
+
     func testPublicReleaseHoldsFencesThroughCapacityRemoval() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
@@ -2632,9 +2683,11 @@ private struct FakeLumeFixture {
         else {
             throw POSIXError(.EINVAL)
         }
-        object["patches"] = [
-            LumeRuntimeConfiguration.pinnedPatchPath: digest
-        ]
+        guard var patches = object["patches"] as? [String: String] else {
+            throw POSIXError(.EINVAL)
+        }
+        patches[LumeRuntimeConfiguration.pinnedPatchPath] = digest
+        object["patches"] = patches
         let replacement = try JSONSerialization.data(
             withJSONObject: object,
             options: [.sortedKeys]
@@ -2661,10 +2714,7 @@ private struct FakeLumeFixture {
             "commit": LumeRuntimeConfiguration.pinnedCommit,
             "source_path": LumeRuntimeConfiguration.pinnedSourcePath,
             "version": LumeRuntimeConfiguration.pinnedVersion,
-            "patches": [
-                LumeRuntimeConfiguration.pinnedPatchPath:
-                    LumeRuntimeConfiguration.pinnedPatchSHA256
-            ],
+            "patches": LumeRuntimeConfiguration.pinnedPatches,
             "directories": [],
             "files": ["lume": binaryDigest],
         ]

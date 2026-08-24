@@ -4,13 +4,46 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPOSITORY="$(/usr/bin/plutil -extract repository raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-PATCH_RELATIVE_PATH="$(/usr/bin/plutil -extract patches.0.path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-EXPECTED_PATCH_SHA256="$(/usr/bin/plutil -extract patches.0.sha256 raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
-PATCH_FILE="$PACKAGE_DIR/$PATCH_RELATIVE_PATH"
+LOCK_FILE="$PACKAGE_DIR/ThirdParty/lume.lock.json"
+REPOSITORY="$(/usr/bin/plutil -extract repository raw -o - "$LOCK_FILE")"
+COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$LOCK_FILE")"
+SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$LOCK_FILE")"
+EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$LOCK_FILE")"
+PYTHON="$(command -v python3)"
+PATCH_RELATIVE_PATHS=()
+EXPECTED_PATCH_SHA256S=()
+while IFS=$'\t' read -r patch_path patch_sha256; do
+    PATCH_RELATIVE_PATHS+=("$patch_path")
+    EXPECTED_PATCH_SHA256S+=("$patch_sha256")
+done < <("$PYTHON" - "$LOCK_FILE" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    patches = json.load(source).get("patches")
+if not isinstance(patches, list) or not patches:
+    raise SystemExit("Lume pin must contain at least one patch")
+
+seen = set()
+for patch in patches:
+    if not isinstance(patch, dict):
+        raise SystemExit("invalid Lume patch record")
+    path = patch.get("path")
+    digest = patch.get("sha256")
+    if not isinstance(path, str) or not re.fullmatch(
+        r"ThirdParty/lume-patches/[0-9]{4}-[a-z0-9-]+[.]patch",
+        path,
+    ):
+        raise SystemExit("invalid Lume patch path")
+    if path in seen:
+        raise SystemExit("duplicate Lume patch path")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise SystemExit("invalid Lume patch digest")
+    seen.add(path)
+    print(f"{path}\t{digest}")
+PY
+)
 CODESIGN_IDENTITY="${DARKBLOOM_LUME_CODESIGN_IDENTITY:--}"
 PRODUCTION_CODESIGN_IDENTITY="Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
 PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.sandbox.lume" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
@@ -33,13 +66,9 @@ trap cleanup EXIT HUP INT TERM
 
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     || [[ "$SOURCE_PATH" != "libs/lume" ]] \
-    || [[ "$PATCH_RELATIVE_PATH" != "ThirdParty/lume-patches/0001-bound-ssh-command-output.patch" ]] \
-    || [[ ! "$EXPECTED_PATCH_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    || [[ "${#PATCH_RELATIVE_PATHS[@]}" -eq 0 ]] \
+    || [[ "${#PATCH_RELATIVE_PATHS[@]}" -ne "${#EXPECTED_PATCH_SHA256S[@]}" ]]; then
     echo "invalid Lume source pin" >&2
-    exit 1
-fi
-if [[ ! -f "$PATCH_FILE" ]]; then
-    echo "required Lume hardening patch is missing: $PATCH_FILE" >&2
     exit 1
 fi
 if [[ "$CODESIGN_IDENTITY" != "-" ]] \
@@ -47,11 +76,18 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]] \
     echo "refusing unexpected Lume code-signing identity" >&2
     exit 1
 fi
-ACTUAL_PATCH_SHA256="$(/usr/bin/shasum -a 256 "$PATCH_FILE" | /usr/bin/awk '{print $1}')"
-if [[ "$ACTUAL_PATCH_SHA256" != "$EXPECTED_PATCH_SHA256" ]]; then
-    echo "Lume hardening patch digest mismatch" >&2
-    exit 1
-fi
+for index in "${!PATCH_RELATIVE_PATHS[@]}"; do
+    patch_file="$PACKAGE_DIR/${PATCH_RELATIVE_PATHS[$index]}"
+    if [[ ! -f "$patch_file" ]]; then
+        echo "required Lume hardening patch is missing: $patch_file" >&2
+        exit 1
+    fi
+    actual_patch_sha256="$(/usr/bin/shasum -a 256 "$patch_file" | /usr/bin/awk '{print $1}')"
+    if [[ "$actual_patch_sha256" != "${EXPECTED_PATCH_SHA256S[$index]}" ]]; then
+        echo "Lume hardening patch digest mismatch: ${PATCH_RELATIVE_PATHS[$index]}" >&2
+        exit 1
+    fi
+done
 
 if [[ -e "$CHECKOUT" ]] && [[ ! -d "$CHECKOUT/.git" ]]; then
     echo "refusing non-git Lume checkout path: $CHECKOUT" >&2
@@ -92,7 +128,14 @@ STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
 git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \
     | /usr/bin/tar -x -C "$BUILD_ROOT"
-/usr/bin/patch --batch --forward -d "$BUILD_ROOT" -p1 < "$PATCH_FILE"
+for patch_path in "${PATCH_RELATIVE_PATHS[@]}"; do
+    /usr/bin/patch \
+        --batch \
+        --forward \
+        -d "$BUILD_ROOT" \
+        -p1 \
+        < "$PACKAGE_DIR/$patch_path"
+done
 
 SOURCE_ROOT="$BUILD_ROOT/$SOURCE_PATH"
 (
@@ -138,7 +181,6 @@ fi
 
 BINARY_SHA256="$(/usr/bin/shasum -a 256 "$STAGING_DIR/lume" | /usr/bin/awk '{print $1}')"
 PROVENANCE_FILE="$STAGING_DIR/lume.provenance.json"
-PYTHON="$(command -v python3)"
 "$PYTHON" - \
     "$STAGING_DIR" \
     "$PROVENANCE_FILE" \
@@ -146,8 +188,7 @@ PYTHON="$(command -v python3)"
     "$COMMIT" \
     "$SOURCE_PATH" \
     "$EXPECTED_VERSION" \
-    "$PATCH_RELATIVE_PATH" \
-    "$EXPECTED_PATCH_SHA256" <<'PY'
+    "$LOCK_FILE" <<'PY'
 import hashlib
 import json
 import os
@@ -161,9 +202,14 @@ import sys
     commit,
     source_path,
     version,
-    patch_path,
-    patch_sha256,
+    lock_file,
 ) = sys.argv[1:]
+with open(lock_file, encoding="utf-8") as source:
+    patch_records = json.load(source)["patches"]
+patches = {
+    record["path"]: record["sha256"]
+    for record in patch_records
+}
 directories = []
 files = {}
 for root, names, entries in os.walk(install_dir, followlinks=False):
@@ -201,7 +247,7 @@ with open(destination, "x", encoding="utf-8") as output:
             "commit": commit,
             "source_path": source_path,
             "version": version,
-            "patches": {patch_path: patch_sha256},
+            "patches": patches,
             "directories": sorted(directories),
             "files": files,
         },

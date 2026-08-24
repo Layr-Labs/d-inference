@@ -1,0 +1,770 @@
+diff --git a/libs/lume/src/Errors/Errors.swift b/libs/lume/src/Errors/Errors.swift
+index 9ae00684..007f267e 100644
+--- a/libs/lume/src/Errors/Errors.swift
++++ b/libs/lume/src/Errors/Errors.swift
+@@ -176,6 +176,7 @@ enum VMError: Error, LocalizedError {
+     case notInitialized(String)
+     case notRunning(String)
+     case alreadyRunning(String)
++    case livenessInconclusive(String)
+     case installNotStarted(String)
+     case stopTimeout(String)
+     case resizeTooSmall(current: UInt64, requested: UInt64)
+@@ -198,6 +199,9 @@ enum VMError: Error, LocalizedError {
+             return "Virtual machine not running: \(name)"
+         case .alreadyRunning(let name):
+             return "Virtual machine already running: \(name)"
++        case .livenessInconclusive(let name):
++            return
++                "Virtual machine liveness is inconclusive: \(name). Refusing to mutate or release it."
+         case .installNotStarted(let name):
+             return "Virtual machine install not started: \(name)"
+         case .stopTimeout(let name):
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 30ac2e3f..d4505bfb 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -209,7 +209,7 @@ final class LumeController {
+ 
+         // Check if VM is running via SharedVM cache (same-process fast path)
+         let runningVM = SharedVM.shared.getVM(name: vmName)
+-        var isRunning = runningVM != nil
++        var observedStatus = runningVM == nil ? "stopped" : "running"
+ 
+         // Get VNC URL and IP address only if running
+         var vncUrl: String? = nil
+@@ -221,28 +221,32 @@ final class LumeController {
+         // Each marker kind carries its own liveness proof, and a marker that
+         // cannot prove liveness is stale and gets cleaned up.
+         var sessionSuppressesVNCUrl = false
+-        if !isRunning {
++        if observedStatus != "running" {
+             if let session = try? vmDir.loadSession() {
+                 if !session.isVNCEnabled {
+                     sessionSuppressesVNCUrl = true
+-                    // No port to probe: the VM is running only while the PID it
+-                    // recorded is still the live holder of the run lock. The PID
+-                    // alone proves nothing — it can be recycled.
+-                    let live: Bool?
+-                    if let pid = session.pid {
+-                        live = runLockProbe.isLiveLockHolder(
+-                            pid: pid, ofFileAt: vmDir.configPath.path)
+-                    } else {
+-                        live = false
+-                    }
+-                    if live == true {
+-                        isRunning = true
+-                    } else if live == false {
++                    switch runLockProbe.observeLock(
++                        ofFileAt: vmDir.configPath.path
++                    ) {
++                    case .unlocked:
+                         vmDir.clearSession()
++                        observedStatus = "stopped"
+                         Logger.info(
+                             "Cleaned up stale VNC-disabled session marker",
+                             metadata: ["name": vmName])
+-                    } else {
++                    case .heldBy(let processIdentifiers):
++                        if let pid = session.pid,
++                           processIdentifiers.contains(pid)
++                        {
++                            observedStatus = "running"
++                        } else {
++                            observedStatus = "unknown"
++                            Logger.info(
++                                "VM run lock owner does not match its session marker",
++                                metadata: ["name": vmName])
++                        }
++                    case .inconclusive:
++                        observedStatus = "unknown"
+                         Logger.info(
+                             "Could not verify VNC-disabled session marker; preserving it",
+                             metadata: ["name": vmName])
+@@ -251,17 +255,41 @@ final class LumeController {
+                           let port = parseVNCPort(from: url),
+                           NetworkUtils.isLocalPortInUse(port: port) {
+                     // Parse VNC port from URL like "vnc://:password@127.0.0.1:62295"
+-                    isRunning = true
++                    observedStatus = "running"
+                     vncUrl = url
+                 } else {
+-                    // Stale session file - VNC port not in use, clean it up
+-                    vmDir.clearSession()
+-                    Logger.info("Cleaned up stale session file", metadata: ["name": vmName])
++                    switch runLockProbe.observeLock(
++                        ofFileAt: vmDir.configPath.path
++                    ) {
++                    case .unlocked:
++                        vmDir.clearSession()
++                        observedStatus = "stopped"
++                        Logger.info(
++                            "Cleaned up stale session file",
++                            metadata: ["name": vmName])
++                    case .heldBy, .inconclusive:
++                        observedStatus = "unknown"
++                        Logger.info(
++                            "VNC session liveness is inconclusive; preserving marker",
++                            metadata: ["name": vmName])
++                    }
++                }
++            } else {
++                switch runLockProbe.observeLock(
++                    ofFileAt: vmDir.configPath.path
++                ) {
++                case .unlocked:
++                    observedStatus = "stopped"
++                case .heldBy, .inconclusive:
++                    observedStatus = "unknown"
++                    Logger.info(
++                        "VM run lock is not provably idle and has no session marker",
++                        metadata: ["name": vmName])
+                 }
+             }
+         }
+ 
+-        if isRunning {
++        if observedStatus == "running" {
+             // Try to get VNC URL from session file (if not already loaded)
+             if vncUrl == nil && !sessionSuppressesVNCUrl {
+                 let session = try? vmDir.loadSession()
+@@ -284,7 +312,7 @@ final class LumeController {
+ 
+         return vmDir.getDetails(
+             locationName: locationName,
+-            status: isRunning ? "running" : "stopped",
++            status: observedStatus,
+             provisioningOperation: nil,
+             vncUrl: vncUrl,
+             ipAddress: ipAddress,
+diff --git a/libs/lume/src/Utils/RunLockProbe.swift b/libs/lume/src/Utils/RunLockProbe.swift
+index 16373b69..81d3f87c 100644
+--- a/libs/lume/src/Utils/RunLockProbe.swift
++++ b/libs/lume/src/Utils/RunLockProbe.swift
+@@ -1,19 +1,41 @@
+ import Darwin
+ import Foundation
+ 
+-/// Resolves which processes currently hold a VM's `config.json` open.
++enum RunLockObservation: Equatable, Sendable {
++    /// The current `config.json` inode accepted an exclusive non-blocking lock.
++    case unlocked
++    /// The inode is locked and `lsof` identified the processes with it open.
++    case heldBy([pid_t])
++    /// The inode is locked, but its owner could not be identified safely.
++    case inconclusive
++}
++
++/// Resolves the lock state of a VM's `config.json`.
+ ///
+ /// `lume run` keeps that file open under an exclusive `flock` for the entire
+ /// lifetime of a session, so its holder is the authoritative cross-process
+ /// liveness signal. `stop` and `attach` already trust it; VNC-disabled runs
+ /// reuse it because they have no VNC port to probe.
+ protocol RunLockProbe: Sendable {
+-    /// Process identifiers holding the file at `path` open, in `lsof` order.
+-    /// Empty means no process has it open. Nil means the probe was inconclusive.
+-    func lockHolderPIDs(ofFileAt path: String) -> [pid_t]?
++    func observeLock(ofFileAt path: String) -> RunLockObservation
+ }
+ 
+ extension RunLockProbe {
++    /// Process identifiers holding a locked file open, in `lsof` order.
++    ///
++    /// Nil preserves the distinction between an unlocked file and an
++    /// inconclusive locked file for legacy callers that only need an owner.
++    func lockHolderPIDs(ofFileAt path: String) -> [pid_t]? {
++        switch observeLock(ofFileAt: path) {
++        case .unlocked:
++            return []
++        case .heldBy(let processIdentifiers):
++            return processIdentifiers
++        case .inconclusive:
++            return nil
++        }
++    }
++
+     /// The single owning process, matching the "first holder wins" rule that
+     /// `stop` and `attach` have always used.
+     func lockOwnerPID(ofFileAt path: String) -> pid_t? {
+@@ -26,7 +48,14 @@ extension RunLockProbe {
+     /// and had its identifier recycled by something unrelated.
+     func isLiveLockHolder(pid: pid_t, ofFileAt path: String) -> Bool? {
+         guard pid > 0 else { return false }
+-        return lockHolderPIDs(ofFileAt: path)?.contains(pid)
++        switch observeLock(ofFileAt: path) {
++        case .unlocked:
++            return false
++        case .heldBy(let processIdentifiers):
++            return processIdentifiers.contains(pid)
++        case .inconclusive:
++            return nil
++        }
+     }
+ }
+ 
+@@ -53,7 +82,43 @@ struct LsofRunLockProbe: RunLockProbe {
+         self.timeout = timeout
+     }
+ 
+-    func lockHolderPIDs(ofFileAt path: String) -> [pid_t]? {
++    func observeLock(ofFileAt path: String) -> RunLockObservation {
++        let descriptor = Darwin.open(
++            path,
++            O_RDWR | O_CLOEXEC | O_NOFOLLOW
++        )
++        guard descriptor >= 0 else {
++            return .inconclusive
++        }
++        defer { Darwin.close(descriptor) }
++
++        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
++            flock(descriptor, LOCK_UN)
++            return .unlocked
++        }
++        guard errno == EWOULDBLOCK || errno == EAGAIN else {
++            return .inconclusive
++        }
++
++        guard let processIdentifiers = lsofProcessIdentifiers(
++            ofFileAt: path
++        ) else {
++            return .inconclusive
++        }
++        if !processIdentifiers.isEmpty {
++            return .heldBy(processIdentifiers)
++        }
++
++        // The owner may have exited between the failed flock and lsof. Prove
++        // that transition directly against the still-open inode.
++        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
++            flock(descriptor, LOCK_UN)
++            return .unlocked
++        }
++        return .inconclusive
++    }
++
++    private func lsofProcessIdentifiers(ofFileAt path: String) -> [pid_t]? {
+         let process = Process()
+         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+         process.arguments = ["-n", "-P", "-w", "-t", path]
+@@ -98,7 +163,7 @@ struct LsofRunLockProbe: RunLockProbe {
+         guard process.terminationStatus == 0 else {
+             return nil
+         }
+-        return Self.parsePIDs(from: data)
++        return Self.parsePIDs(from: data)?.filter { $0 != getpid() }
+     }
+ 
+     /// Parses `lsof -t` output, which emits one decimal PID per holder.
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index 89970932..c1a5a593 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -233,39 +233,13 @@ class VM {
+                 "path": vmDirContext.dir.configPath.path,
+                 "name": vmDirContext.name,
+             ])
+-        var fileHandle = try FileHandle(forWritingTo: vmDirContext.dir.configPath.url)
+-
+-        if flock(fileHandle.fileDescriptor, LOCK_EX | LOCK_NB) != 0 {
++        let fileHandle = try FileHandle(forWritingTo: vmDirContext.dir.configPath.url)
++        guard flock(fileHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+             try? fileHandle.close()
+             Logger.error(
+                 "VM already running (failed to acquire lock)", metadata: ["name": vmDirContext.name]
+             )
+-
+-            // Try to forcibly clear the lock before giving up
+-            Logger.info("Attempting emergency lock cleanup", metadata: ["name": vmDirContext.name])
+-            unlockConfigFile()
+-
+-            // Try one more time to acquire the lock
+-            if let retryHandle = try? FileHandle(forWritingTo: vmDirContext.dir.configPath.url),
+-                flock(retryHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0
+-            {
+-                Logger.info("Emergency lock cleanup worked", metadata: ["name": vmDirContext.name])
+-                // Continue with a fresh file handle
+-                try? retryHandle.close()
+-                // Get a completely new file handle to be safe
+-                guard let newHandle = try? FileHandle(forWritingTo: vmDirContext.dir.configPath.url)
+-                else {
+-                    throw VMError.internalError("Failed to open file handle after lock cleanup")
+-                }
+-                // Update our main file handle
+-                fileHandle = newHandle
+-            } else {
+-                // If we still can't get the lock, give up
+-                Logger.error(
+-                    "Could not acquire lock even after emergency cleanup",
+-                    metadata: ["name": vmDirContext.name])
+-                throw VMError.alreadyRunning(vmDirContext.name)
+-            }
++            throw VMError.alreadyRunning(vmDirContext.name)
+         }
+         Logger.info("Successfully acquired lock", metadata: ["name": vmDirContext.name])
+         defer {
+@@ -746,11 +720,10 @@ class VM {
+                     "Stopping VM via virtualization service", metadata: ["name": vmDirContext.name])
+                 try await service.stop()
+                 await cleanupSession()
++                try await verifyManagedRunLockReleased()
+                 Logger.info(
+                     "VM stopped successfully via virtualization service",
+                     metadata: ["name": vmDirContext.name])
+-
+-                // VM.run owns the lock and releases it as its lifecycle wait returns.
+                 return
+             } catch let error {
+                 Logger.error(
+@@ -763,208 +736,184 @@ class VM {
+             }
+         }
+ 
+-        // Try to open config file to get file descriptor
+-        Logger.info(
+-            "Attempting to access config file lock",
+-            metadata: [
+-                "path": vmDirContext.dir.configPath.path,
+-                "name": vmDirContext.name,
+-            ])
+-        let fileHandle = try? FileHandle(forReadingFrom: vmDirContext.dir.configPath.url)
+-        guard let fileHandle = fileHandle else {
+-            Logger.info(
+-                "Failed to open config file - VM may not be running",
+-                metadata: ["name": vmDirContext.name])
+-
+-            // Even though we couldn't open the file, try to force unlock anyway
+-            unlockConfigFile()
+-
+-            throw VMError.notRunning(vmDirContext.name)
++        let fileHandle: FileHandle
++        do {
++            fileHandle = try FileHandle(
++                forUpdating: vmDirContext.dir.configPath.url
++            )
++        } catch {
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
+-
+-        // Get the PID of the process holding the lock
+-        Logger.info(
+-            "Finding process holding lock on config file", metadata: ["name": vmDirContext.name])
+-        guard let pid = runLockProbe.lockOwnerPID(ofFileAt: vmDirContext.dir.configPath.path)
+-        else {
++        var ownsProofLock = false
++        defer {
++            if ownsProofLock {
++                flock(fileHandle.fileDescriptor, LOCK_UN)
++            }
+             try? fileHandle.close()
+-            Logger.info(
+-                "Failed to find process holding lock - VM may not be running",
+-                metadata: ["name": vmDirContext.name])
+-
+-            // Even though we couldn't find the process, try to force unlock
+-            unlockConfigFile()
+-
+-            throw VMError.notRunning(vmDirContext.name)
+         }
+ 
+-        Logger.info(
+-            "Found process \(pid) holding lock on config file",
+-            metadata: ["name": vmDirContext.name])
+-
+-        // First try graceful shutdown with SIGINT
+-        if kill(pid, SIGINT) == 0 {
+-            Logger.info("Sent SIGINT to VM process \(pid)", metadata: ["name": vmDirContext.name])
++        let processIdentifier: pid_t
++        switch runLockProbe.observeLock(
++            ofFileAt: vmDirContext.dir.configPath.path
++        ) {
++        case .unlocked:
++            guard tryAcquireProofLock(fileHandle) else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
++            ownsProofLock = true
++            try finishProvenStop(fileHandle)
++            return
++        case .heldBy(let processIdentifiers):
++            processIdentifier = try verifiedRunProcess(
++                among: processIdentifiers
++            )
++        case .inconclusive:
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
+ 
+-        // Wait for process to stop with timeout
+-        var attempts = 0
+-        while attempts < 10 {
+-            Logger.info(
+-                "Waiting for process \(pid) to terminate (attempt \(attempts + 1)/10)",
+-                metadata: ["name": vmDirContext.name])
+-            try await Task.sleep(nanoseconds: 1_000_000_000)
+-
+-            // Check if process still exists
+-            if kill(pid, 0) != 0 {
+-                // Process is gone, do final cleanup
+-                Logger.info("Process \(pid) has terminated", metadata: ["name": vmDirContext.name])
+-                virtualizationService = nil
+-                vncService.stop()
+-                try? fileHandle.close()
+-
+-                // Force unlock the config file
+-                unlockConfigFile()
+-
+-                Logger.info(
+-                    "VM stopped successfully via process termination",
+-                    metadata: ["name": vmDirContext.name])
++        guard runLockStillBelongs(
++            to: processIdentifier
++        ) else {
++            if tryAcquireProofLock(fileHandle) {
++                ownsProofLock = true
++                try finishProvenStop(fileHandle)
+                 return
+             }
+-            attempts += 1
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
++        _ = kill(processIdentifier, SIGINT)
+ 
+-        // If graceful shutdown failed, force kill the process
+-        Logger.info(
+-            "Graceful shutdown failed, forcing termination of process \(pid)",
+-            metadata: ["name": vmDirContext.name])
+-        if kill(pid, SIGKILL) == 0 {
+-            Logger.info("Sent SIGKILL to process \(pid)", metadata: ["name": vmDirContext.name])
+-
+-            // Wait a moment for the process to be fully killed
+-            try await Task.sleep(nanoseconds: 2_000_000_000)
+-
+-            // Do final cleanup
+-            virtualizationService = nil
+-            vncService.stop()
+-            try? fileHandle.close()
+-
+-            // Force unlock the config file
+-            unlockConfigFile()
+-
+-            Logger.info("VM forcefully stopped", metadata: ["name": vmDirContext.name])
++        if try await waitForProofLock(
++            fileHandle,
++            attempts: 10,
++            delay: .seconds(1)
++        ) {
++            ownsProofLock = true
++            try finishProvenStop(fileHandle)
+             return
+         }
+ 
+-        // If we get here, something went very wrong
+-        try? fileHandle.close()
+-        Logger.error(
+-            "Failed to stop VM - could not terminate process \(pid)",
+-            metadata: ["name": vmDirContext.name])
+-
+-        // As a last resort, try to force unlock
+-        unlockConfigFile()
+-
+-        throw VMError.internalError("Failed to stop VM process")
+-    }
+-
+-    // Helper method to forcibly clear any locks on the config file
+-    private func unlockConfigFile() {
+-        Logger.info(
+-            "Forcibly clearing locks on config file",
+-            metadata: [
+-                "path": vmDirContext.dir.configPath.path,
+-                "name": vmDirContext.name,
+-            ])
+-
+-        // First attempt: standard unlock methods
+-        if let fileHandle = try? FileHandle(forWritingTo: vmDirContext.dir.configPath.url) {
+-            // Use F_GETLK and F_SETLK to check and clear locks
+-            var lockInfo = flock()
+-            lockInfo.l_type = Int16(F_UNLCK)
+-            lockInfo.l_whence = Int16(SEEK_SET)
+-            lockInfo.l_start = 0
+-            lockInfo.l_len = 0
+-
+-            // Try to unlock the file using fcntl
+-            _ = fcntl(fileHandle.fileDescriptor, F_SETLK, &lockInfo)
+-
+-            // Also try the regular flock method
+-            flock(fileHandle.fileDescriptor, LOCK_UN)
++        guard runLockStillBelongs(
++            to: processIdentifier
++        ) else {
++            if tryAcquireProofLock(fileHandle) {
++                ownsProofLock = true
++                try finishProvenStop(fileHandle)
++                return
++            }
++            throw VMError.livenessInconclusive(vmDirContext.name)
++        }
++        _ = kill(processIdentifier, SIGKILL)
+ 
+-            try? fileHandle.close()
+-            Logger.info("Standard unlock attempts performed", metadata: ["name": vmDirContext.name])
++        guard try await waitForProofLock(
++            fileHandle,
++            attempts: 20,
++            delay: .milliseconds(100)
++        ) else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
++        ownsProofLock = true
++        try finishProvenStop(fileHandle)
++    }
+ 
+-        // Second attempt: try to acquire and immediately release a fresh lock
+-        if let tempHandle = try? FileHandle(forWritingTo: vmDirContext.dir.configPath.url) {
+-            if flock(tempHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 {
+-                Logger.info(
+-                    "Successfully acquired and released lock to reset state",
+-                    metadata: ["name": vmDirContext.name])
+-                flock(tempHandle.fileDescriptor, LOCK_UN)
+-            } else {
+-                Logger.info(
+-                    "Could not acquire lock for resetting - may still be locked",
+-                    metadata: ["name": vmDirContext.name])
++    private func verifiedRunProcess(
++        among processIdentifiers: [pid_t]
++    ) throws -> pid_t {
++        if let session = try? vmDirContext.dir.loadSession(),
++           !session.isVNCEnabled
++        {
++            guard let processIdentifier = session.pid,
++                  processIdentifiers.contains(processIdentifier)
++            else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
+             }
+-            try? tempHandle.close()
++            return processIdentifier
++        }
++        guard processIdentifiers.count == 1,
++              let processIdentifier = processIdentifiers.first
++        else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
++        return processIdentifier
++    }
+ 
+-        // Third attempt (most aggressive): copy the config file, remove the original, and restore
+-        Logger.info(
+-            "Trying aggressive method: backup and restore config file",
+-            metadata: ["name": vmDirContext.name])
+-        // Only proceed if the config file exists
+-        let fileManager = FileManager.default
+-        let configPath = vmDirContext.dir.configPath.path
+-        let backupPath = configPath + ".backup"
+-
+-        if fileManager.fileExists(atPath: configPath) {
+-            // Create a backup of the config file
+-            if let configData = try? Data(contentsOf: URL(fileURLWithPath: configPath)) {
+-                // Make backup
+-                try? configData.write(to: URL(fileURLWithPath: backupPath))
+-
+-                // Remove the original file to clear all locks
+-                try? fileManager.removeItem(atPath: configPath)
+-                Logger.info(
+-                    "Removed original config file to clear locks",
+-                    metadata: ["name": vmDirContext.name])
++    private func runLockStillBelongs(
++        to processIdentifier: pid_t
++    ) -> Bool {
++        guard case .heldBy(let processIdentifiers) =
++            runLockProbe.observeLock(
++                ofFileAt: vmDirContext.dir.configPath.path
++            )
++        else {
++            return false
++        }
++        return processIdentifiers.contains(processIdentifier)
++    }
+ 
+-                // Wait a moment for OS to fully release resources
+-                Thread.sleep(forTimeInterval: 0.1)
++    private func tryAcquireProofLock(
++        _ fileHandle: FileHandle
++    ) -> Bool {
++        flock(fileHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0
++    }
+ 
+-                // Restore from backup
+-                try? configData.write(to: URL(fileURLWithPath: configPath))
+-                Logger.info(
+-                    "Restored config file from backup", metadata: ["name": vmDirContext.name])
+-            } else {
+-                Logger.error(
+-                    "Could not read config file content for backup",
+-                    metadata: ["name": vmDirContext.name])
++    private func waitForProofLock(
++        _ fileHandle: FileHandle,
++        attempts: Int,
++        delay: Duration
++    ) async throws -> Bool {
++        for attempt in 0..<attempts {
++            if tryAcquireProofLock(fileHandle) {
++                return true
++            }
++            guard errno == EWOULDBLOCK || errno == EAGAIN else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
++            if attempt + 1 < attempts {
++                try await Task.sleep(for: delay)
+             }
+-        } else {
+-            Logger.info(
+-                "Config file does not exist, cannot perform aggressive unlock",
+-                metadata: ["name": vmDirContext.name])
+         }
++        return false
++    }
+ 
+-        // Final check
+-        if let finalHandle = try? FileHandle(forWritingTo: vmDirContext.dir.configPath.url) {
+-            let lockResult = flock(finalHandle.fileDescriptor, LOCK_EX | LOCK_NB)
+-            if lockResult == 0 {
+-                Logger.info(
+-                    "Lock successfully cleared - verified by acquiring test lock",
+-                    metadata: ["name": vmDirContext.name])
+-                flock(finalHandle.fileDescriptor, LOCK_UN)
+-            } else {
+-                Logger.info(
+-                    "Lock still present after all clearing attempts",
+-                    metadata: ["name": vmDirContext.name, "severity": "warning"])
+-            }
+-            try? finalHandle.close()
++    private func finishProvenStop(
++        _ fileHandle: FileHandle
++    ) throws {
++        var descriptorMetadata = stat()
++        var pathMetadata = stat()
++        guard fstat(fileHandle.fileDescriptor, &descriptorMetadata) == 0,
++              lstat(
++                vmDirContext.dir.configPath.path,
++                &pathMetadata
++              ) == 0,
++              descriptorMetadata.st_dev == pathMetadata.st_dev,
++              descriptorMetadata.st_ino == pathMetadata.st_ino
++        else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
+         }
++        vmDirContext.dir.clearSession()
++        virtualizationService = nil
++        vncService.stop()
++    }
++
++    private func verifyManagedRunLockReleased() async throws {
++        let fileHandle: FileHandle
++        do {
++            fileHandle = try FileHandle(
++                forUpdating: vmDirContext.dir.configPath.url
++            )
++        } catch {
++            throw VMError.livenessInconclusive(vmDirContext.name)
++        }
++        defer { try? fileHandle.close() }
++        guard try await waitForProofLock(
++            fileHandle,
++            attempts: 50,
++            delay: .milliseconds(100)
++        ) else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
++        }
++        defer { flock(fileHandle.fileDescriptor, LOCK_UN) }
++        try finishProvenStop(fileHandle)
+     }
+ 
+     // MARK: - Resource Management
+diff --git a/libs/lume/tests/VNCPolicyTests.swift b/libs/lume/tests/VNCPolicyTests.swift
+index e8417060..9b87a3e9 100644
+--- a/libs/lume/tests/VNCPolicyTests.swift
++++ b/libs/lume/tests/VNCPolicyTests.swift
+@@ -32,9 +32,12 @@ private struct StubRunLockProbe: RunLockProbe {
+   let holdersByPath: [String: [pid_t]]
+   var inconclusivePaths: Swift.Set<String> = []
+ 
+-  func lockHolderPIDs(ofFileAt path: String) -> [pid_t]? {
+-    if inconclusivePaths.contains(path) { return nil }
+-    return holdersByPath[path] ?? []
++    func observeLock(ofFileAt path: String) -> RunLockObservation {
++        if inconclusivePaths.contains(path) { return .inconclusive }
++        let processIdentifiers = holdersByPath[path] ?? []
++        return processIdentifiers.isEmpty
++            ? .unlocked
++            : .heldBy(processIdentifiers)
+   }
+ }
+ 
+@@ -368,6 +371,8 @@ func runLockProbeLiveHolderRule() {
+   #expect(probe.isLiveLockHolder(pid: 4242, ofFileAt: "/other/config.json") == false)
+   #expect(probe.lockOwnerPID(ofFileAt: "/vm/config.json") == 4242)
+   #expect(probe.lockOwnerPID(ofFileAt: "/other/config.json") == nil)
++  #expect(probe.observeLock(ofFileAt: "/vm/config.json") == .heldBy([4242]))
++  #expect(probe.observeLock(ofFileAt: "/other/config.json") == .unlocked)
+ }
+ 
+ // MARK: - Cross-process status
+@@ -437,7 +442,7 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+ }
+ 
+ @MainActor
+-@Test("A recycled PID does not make a VNC-disabled VM look running")
++@Test("A mismatched lock owner leaves VNC-disabled VM liveness unknown")
+ func noVNCStatusRejectsRecycledPID() throws {
+   let (storage, vmDir) = try makeStoppedVMLocation(named: "no-vnc-recycled")
+   defer { try? FileManager.default.removeItem(at: storage) }
+@@ -448,12 +453,12 @@ func noVNCStatusRejectsRecycledPID() throws {
+     runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [777]]))
+ 
+   let details = try controller.getDetails(name: "no-vnc-recycled", storage: storage.path)
+-  #expect(details.status == "stopped")
+-  #expect(!vmDir.sessionsPath.exists())
++  #expect(details.status == "unknown")
++  #expect(vmDir.sessionsPath.exists())
+ }
+ 
+ @MainActor
+-@Test("A VNC-disabled marker without a PID is never trusted")
++@Test("A locked VNC-disabled marker without a PID has unknown liveness")
+ func noVNCStatusRejectsMarkerWithoutPID() throws {
+   let (storage, vmDir) = try makeStoppedVMLocation(named: "no-vnc-pidless")
+   defer { try? FileManager.default.removeItem(at: storage) }
+@@ -463,8 +468,8 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
+     runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [4242]]))
+ 
+   let details = try controller.getDetails(name: "no-vnc-pidless", storage: storage.path)
+-  #expect(details.status == "stopped")
+-  #expect(!vmDir.sessionsPath.exists())
++  #expect(details.status == "unknown")
++  #expect(vmDir.sessionsPath.exists())
+ }
+ 
+ @MainActor
+@@ -480,7 +485,7 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+       holdersByPath: [:], inconclusivePaths: [vmDir.configPath.path]))
+ 
+   let details = try controller.getDetails(name: "no-vnc-inconclusive", storage: storage.path)
+-  #expect(details.status == "stopped")
++  #expect(details.status == "unknown")
+   #expect(details.vncUrl == nil)
+   #expect(vmDir.sessionsPath.exists())
+ }
+@@ -490,12 +495,10 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+ func vncEnabledStatusStillUsesPortProbe() throws {
+   let (storage, vmDir) = try makeStoppedVMLocation(named: "vnc-stale")
+   defer { try? FileManager.default.removeItem(at: storage) }
+-  // Port 1 is never bound by a VM, so this marker must read as stale even
+-  // though a process does hold the config file open.
++  // Port 1 is never bound by a VM and the config lock is free.
+   try vmDir.saveSession(VNCSession(url: "vnc://:pass@127.0.0.1:1"))
+ 
+-  let controller = LumeController(
+-    runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [getpid()]]))
++  let controller = LumeController(runLockProbe: StubRunLockProbe(holdersByPath: [:]))
+ 
+   let details = try controller.getDetails(name: "vnc-stale", storage: storage.path)
+   #expect(details.status == "stopped")

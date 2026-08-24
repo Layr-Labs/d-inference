@@ -67,10 +67,7 @@ enum LumeRuntimeProvenanceValidator {
               provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
               provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
               provenance.version == LumeRuntimeConfiguration.pinnedVersion,
-              provenance.patches == [
-                  LumeRuntimeConfiguration.pinnedPatchPath:
-                      LumeRuntimeConfiguration.pinnedPatchSHA256
-              ],
+              provenance.patches == LumeRuntimeConfiguration.pinnedPatches,
               Set(provenance.directories).count == provenance.directories.count,
               provenance.directories.allSatisfy(Self.isSafeRelativePath),
               provenance.files.keys.allSatisfy(Self.isSafeRelativePath),

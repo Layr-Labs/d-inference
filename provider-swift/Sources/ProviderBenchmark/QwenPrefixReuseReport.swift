@@ -38,9 +38,12 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         public let instanceCount: Int
         public let maxConcurrentRequests: Int
         public let kvBackend: BenchmarkKVBackend
+        public let kvBytesCapacity: Int
         public let prefixCacheImplementation: String
+        public let prefixCacheMatchPolicy: String
         public let prefixCacheRequested: Bool
-        public let cacheBlockTokens: Int
+        public let prefixCacheBudgetBytes: Int?
+        public let cacheBlockTokens: Int?
         public let cacheSaltScope: String
         public let capabilitySupported: Bool
         public let capabilityStrategy: String?
@@ -78,8 +81,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         public let replayTokens: Int
         public let reuseStrategy: String?
         public let replayBoundarySplits: Int
-        /// Exact logical `nbytes` of cache state handed to backend adoption,
-        /// after tail-replay slicing. Zero on every non-hit.
+        /// Exact logical `nbytes` of cache state handed to backend adoption.
+        /// For Qwen this is the atomic attention + recurrent snapshot, plus
+        /// frontier logits only on a full-prompt hit. Zero on every non-hit.
         public let stateBytesCloned: Int
     }
 
@@ -128,7 +132,10 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         public let row: Row
         public let donationObserved: Bool
         public let submitToCacheReadyMs: Double?
-        public let terminalToCacheReadyMs: Double?
+        /// Cache publication timestamp minus the construction terminal
+        /// timestamp. Exact-state donation normally publishes before the
+        /// first token, so a healthy value is negative.
+        public let cacheReadyMinusTerminalMs: Double?
         public let cacheBytesAfterReady: Int
     }
 
@@ -225,12 +232,30 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         guard isSHA256(model.artifactSHA256), isSHA256(corpus.sha256) else {
             throw QwenPrefixReportError.invalidDigest
         }
+        let validCacheContract =
+            (engine.prefixCacheImplementation == "PrefixCacheV2"
+                && engine.prefixCacheMatchPolicy == "whole-block-prefix"
+                && (engine.cacheBlockTokens ?? 0) > 0)
+            || (engine.prefixCacheImplementation == "ExactPrefixCacheV2"
+                && engine.prefixCacheMatchPolicy == "longest-exact-block-prefix"
+                && (engine.cacheBlockTokens ?? 0) > 0
+                && (engine.prefixCacheBudgetBytes ?? 0) > 0)
+        let validCapabilityContract =
+            engine.capabilitySupported
+            ? engine.capabilityStrategy != nil
+                && engine.capabilityUnsupportedReason == nil
+            : engine.capabilityStrategy == nil
         guard engine.factory == "EngineV2Factory.makeProductionBuild", // pragma: allowlist secret
               engine.instanceCount == 1,
               engine.maxConcurrentRequests == 4,
+              engine.kvBytesCapacity > 0,
               engine.prefixCacheRequested,
-              engine.cacheBlockTokens > 0,
+              validCacheContract,
+              validCapabilityContract,
               engine.kvBackend.resolved.count == 1,
+              !engine.cacheSaltScope.isEmpty,
+              engine.replayBoundTokens >= 0,
+              engine.warmupPerformed,
               configuration.promptTokens >= 2,
               configuration.decodeTokens >= 2,
               configuration.iterations > 0,
@@ -239,7 +264,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                 == QwenPrefixPromptBuilder.commonPrefixFractions,
               configuration.commonPrefixBatchSize
                 == QwenPrefixPromptBuilder.commonPrefixBatchSize,
-              configuration.donationTimeoutMs > 0
+              configuration.donationTimeoutMs > 0,
+              configuration.generationPolicy
+                == "greedy-fixed-length-no-stop-tokens"
         else {
             throw QwenPrefixReportError.invalidEngineContract
         }
@@ -257,9 +284,28 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         for scenario in scenarios {
             try validate(scenario)
         }
+        let requestIDs = scenarios.flatMap(\.samples).flatMap {
+            $0.coldBaseline.rows.map(\.requestID)
+                + [$0.cacheConstruction.row.requestID]
+                + $0.warm.rows.map(\.requestID)
+        }
+        guard Set(requestIDs).count == requestIDs.count else {
+            throw QwenPrefixReportError.duplicateRequestID
+        }
     }
 
     private func validate(_ scenario: Scenario) throws {
+        let identicalShapes = [
+            "identical-b1": 1,
+            "identical-b2": 2,
+            "identical-b4": 4,
+        ]
+        let commonShapes = [
+            "common-prefix-25": 0.25,
+            "common-prefix-50": 0.50,
+            "common-prefix-75": 0.75,
+            "common-prefix-90": 0.90,
+        ]
         guard [1, 2, 4].contains(scenario.batchSize),
               scenario.samples.count == configuration.iterations,
               scenario.suffixIDs.count == scenario.batchSize,
@@ -271,6 +317,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
         if scenario.kind == QwenPrefixScenarioKind.commonPrefix.rawValue {
             guard scenario.batchSize == configuration.commonPrefixBatchSize,
                   let fraction = scenario.requestedCommonPrefixFraction,
+                  commonShapes[scenario.id] == fraction,
                   configuration.commonPrefixFractions.contains(fraction),
                   let commonTokens = scenario.constructedCommonPrefixTokens,
                   commonTokens == Int(
@@ -283,6 +330,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
             }
         } else {
             guard scenario.kind == QwenPrefixScenarioKind.identical.rawValue,
+                  identicalShapes[scenario.id] == scenario.batchSize,
                   scenario.requestedCommonPrefixFraction == 1,
                   scenario.constructedCommonPrefixTokens == configuration.promptTokens,
                   scenario.constructedCommonPrefixFraction == 1,
@@ -321,6 +369,17 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                     scenario: scenario.id,
                     iteration: sample.iteration)
             }
+            if scenario.kind == QwenPrefixScenarioKind.commonPrefix.rawValue,
+                let commonTokens = scenario.constructedCommonPrefixTokens
+            {
+                guard sample.warm.rows.allSatisfy({
+                    $0.cacheOutcome != "hit" || $0.matchedTokens <= commonTokens
+                }) else {
+                    throw QwenPrefixReportError.invalidSample(
+                        scenario: scenario.id,
+                        iteration: sample.iteration)
+                }
+            }
             let cacheRows = [sample.cacheConstruction.row] + sample.warm.rows
             guard sample.cacheAccountingIncludingConstruction
                     == CacheAccounting(rows: cacheRows),
@@ -334,8 +393,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                     iteration: sample.iteration)
             }
             if sample.cacheConstruction.donationObserved {
-                guard sample.cacheConstruction.submitToCacheReadyMs != nil,
-                      sample.cacheConstruction.terminalToCacheReadyMs != nil,
+                guard sample.cacheConstruction.submitToCacheReadyMs?.isFinite == true,
+                      (sample.cacheConstruction.submitToCacheReadyMs ?? -1) >= 0,
+                      sample.cacheConstruction.cacheReadyMinusTerminalMs?.isFinite == true,
                       sample.cacheConstruction.cacheBytesAfterReady > 0
                 else {
                     throw QwenPrefixReportError.invalidSample(
@@ -344,7 +404,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                 }
             } else {
                 guard sample.cacheConstruction.submitToCacheReadyMs == nil,
-                      sample.cacheConstruction.terminalToCacheReadyMs == nil,
+                      sample.cacheConstruction.cacheReadyMinusTerminalMs == nil,
                       sample.cacheConstruction.cacheBytesAfterReady == 0
                 else {
                     throw QwenPrefixReportError.invalidSample(
@@ -463,6 +523,16 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
             "disabled", "skipped_policy", "miss", "hit",
             "skipped_capacity", "adoption_failed",
         ]
+        let validExactHit =
+            engine.prefixCacheMatchPolicy != "longest-exact-block-prefix"
+            || row.cacheOutcome != "hit"
+            || (row.savedPrefillTokens == row.matchedTokens
+                && row.replayTokens == 0
+                && row.reuseStrategy == "direct")
+        let validMatchAlignment = engine.cacheBlockTokens.map { blockTokens in
+            row.matchedTokens == row.promptTokens
+                || row.matchedTokens % blockTokens == 0
+        } ?? true
         guard row.row >= 0,
               row.promptTokens == configuration.promptTokens,
               row.ttftMs.isFinite,
@@ -478,12 +548,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
               row.finishReason == "length",
               validOutcomes.contains(row.cacheOutcome),
               row.matchedTokens >= 0,
-              row.matchedTokens < row.promptTokens,
-              row.matchedTokens % engine.cacheBlockTokens == 0,
+              row.matchedTokens <= row.promptTokens,
+              validMatchAlignment,
               row.savedPrefillTokens >= 0,
               row.replayTokens >= 0,
               row.replayBoundarySplits >= 0,
               row.stateBytesCloned >= 0,
+              validExactHit,
               (row.cacheOutcome == "hit"
                 ? row.matchedTokens > 0
                     && row.savedPrefillTokens > 0
@@ -542,6 +613,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
     case invalidScenario(String)
     case invalidSample(scenario: String, iteration: Int)
     case invalidRow(scenario: String, iteration: Int, row: Int)
+    case duplicateRequestID
 
     public var description: String {
         switch self {
@@ -565,6 +637,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
         case .invalidRow(let scenario, let iteration, let row):
             return "Qwen prefix report scenario '\(scenario)' iteration \(iteration) "
                 + "row \(row) is inconsistent"
+        case .duplicateRequestID:
+            return "Qwen prefix report reuses a CBv2 request identifier"
         }
     }
 }

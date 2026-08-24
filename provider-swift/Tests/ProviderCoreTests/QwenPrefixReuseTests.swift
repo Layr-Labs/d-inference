@@ -201,6 +201,83 @@ struct QwenPrefixReuseTests {
     }
 
     @Test
+    func exactTrackingCacheReportsWholeHybridSnapshotBytes() async throws {
+        let snapshot = try exactSnapshot(tokenCount: 3)
+        #expect(snapshot.byteCount % snapshot.tokenCount != 0)
+        let cache = QwenExactPrefixTrackingCache(config: .init(
+            modelIdentity: "qwen-exact-test",
+            maxBytes: snapshot.byteCount * 2))
+        let donorID = CBv2RequestID(40)
+        let tokens = [10, 11, 12]
+        cache.donateExact(
+            requestID: donorID,
+            tokens: tokens,
+            snapshot: snapshot,
+            layerKinds: [exactLayerKind],
+            cacheSalt: "scope")
+        #expect(cache.donation(for: donorID) != nil)
+
+        let engine = ExactPrefixScriptedEngine(
+            cache: cache,
+            layerKind: exactLayerKind,
+            recurrentSpec: exactRecurrentSpec)
+        let batch = try await QwenPrefixEngineRunner.run(
+            engine: engine,
+            cache: cache,
+            prompts: [tokens],
+            decodeTokens: 2,
+            requestIDBase: 50,
+            prefixCacheEnabled: true,
+            cacheSalt: "scope")
+
+        let row = try #require(batch.rows.first)
+        #expect(row.usage.prefixCacheOutcome == .hit)
+        #expect(row.usage.prefixCacheMatchedTokens == tokens.count)
+        #expect(row.stateBytesCloned == snapshot.byteCount)
+    }
+
+    @Test
+    func exactTrackingCacheReportsLongestPartialBoundaryBytes() async throws {
+        let at2 = try exactSnapshot(tokenCount: 2, includesFrontier: false)
+        let at4 = try exactSnapshot(tokenCount: 4, includesFrontier: false)
+        let cache = QwenExactPrefixTrackingCache(config: .init(
+            modelIdentity: "qwen-exact-partial-test",
+            blockSize: 2,
+            maxBytes: at2.byteCount + at4.byteCount))
+        let prefix = [10, 11, 12, 13]
+        cache.donateExact(
+            requestID: CBv2RequestID(60),
+            tokens: Array(prefix.prefix(2)),
+            snapshot: at2,
+            layerKinds: [exactLayerKind],
+            cacheSalt: "scope")
+        cache.donateExact(
+            requestID: CBv2RequestID(60),
+            tokens: prefix,
+            snapshot: at4,
+            layerKinds: [exactLayerKind],
+            cacheSalt: "scope")
+
+        let engine = ExactPrefixScriptedEngine(
+            cache: cache,
+            layerKind: exactLayerKind,
+            recurrentSpec: exactRecurrentSpec)
+        let batch = try await QwenPrefixEngineRunner.run(
+            engine: engine,
+            cache: cache,
+            prompts: [prefix + [99]],
+            decodeTokens: 2,
+            requestIDBase: 70,
+            prefixCacheEnabled: true,
+            cacheSalt: "scope")
+
+        let row = try #require(batch.rows.first)
+        #expect(row.usage.prefixCacheOutcome == .hit)
+        #expect(row.usage.prefixCacheMatchedTokens == prefix.count)
+        #expect(row.stateBytesCloned == at4.byteCount)
+    }
+
+    @Test
     func reportRoundTripsAndKeepsConstructionMissInRates() throws {
         let report = makeReport()
         try report.validate()
@@ -241,6 +318,38 @@ struct QwenPrefixReuseTests {
         }
     }
 
+    @Test
+    func exactReportAcceptsFullAndLongestBlockAlignedPartialHits() throws {
+        let report = makeReport(exactCache: true)
+        try report.validate()
+
+        for scenario in report.scenarios {
+            let sample = try #require(scenario.samples.first)
+            let warmRows = sample.warm.rows
+            #expect(sample.equality.allSatisfy { $0.fullTokensEqual })
+            if scenario.kind == "identical" {
+                #expect(warmRows.allSatisfy {
+                    $0.cacheOutcome == "hit"
+                        && $0.matchedTokens == $0.promptTokens
+                        && $0.savedPrefillTokens == $0.promptTokens
+                })
+            } else {
+                let expected = try #require(scenario.constructedCommonPrefixTokens)
+                let expectedMatched = (expected / 256) * 256
+                #expect(warmRows.allSatisfy {
+                    $0.cacheOutcome == "hit"
+                        && $0.matchedTokens == expectedMatched
+                        && $0.savedPrefillTokens == expectedMatched
+                })
+                if (scenario.requestedCommonPrefixFraction ?? 0) >= 0.75 {
+                    #expect(warmRows.allSatisfy {
+                        Double($0.matchedTokens) / Double($0.promptTokens) >= 0.60
+                    })
+                }
+            }
+        }
+    }
+
     private func repositoryRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -261,7 +370,55 @@ struct QwenPrefixReuseTests {
             })
     }
 
-    private func makeReport() -> QwenPrefixReuseReport {
+    private var exactLayerKind: CBv2LayerKind {
+        CBv2LayerKind(
+            attention: .full,
+            headDim: 1,
+            kvHeads: 1,
+            queryHeads: 1)
+    }
+
+    private var exactRecurrentSpec: CBv2RecurrentStateSpec {
+        CBv2RecurrentStateSpec(layers: [
+            CBv2RecurrentLayerStateSpec(
+                modelLayerIndex: 0,
+                convShape: [1, 1, 1],
+                convDType: .float32,
+                ssmShape: [1, 1, 1, 1],
+                ssmDType: .float32)
+        ])
+    }
+
+    private func exactSnapshot(
+        tokenCount: Int,
+        includesFrontier: Bool = true
+    ) throws -> CBv2ExactPrefixSnapshot {
+        let attention = try CBv2ExactAttentionSnapshot(
+            keys: MLXArray.zeros([1, 1, tokenCount, 1]),
+            values: MLXArray.ones([1, 1, tokenCount, 1]),
+            offset: tokenCount,
+            detaching: true)
+        let recurrent = try CBv2RecurrentStateSnapshot(
+            spec: exactRecurrentSpec,
+            layers: [
+                0: CBv2RecurrentLayerState(
+                    conv: MLXArray.zeros([1, 1, 1]),
+                    ssm: MLXArray.ones([1, 1, 1, 1]))
+            ],
+            detaching: true)
+        let snapshot = try CBv2ExactPrefixSnapshot(
+            tokenCount: tokenCount,
+            modelPosition: tokenCount,
+            attention: [attention],
+            recurrentState: recurrent,
+            frontierLogits:
+                includesFrontier ? MLXArray([Float(1), Float(-1)]) : nil,
+            detachingFrontier: true)
+        eval(snapshot.evaluationArrays)
+        return snapshot
+    }
+
+    private func makeReport(exactCache: Bool = false) -> QwenPrefixReuseReport {
         let promptTokens = 1_024
         let decodeTokens = 2
         let shapes: [(String, String, Int, Double)] = [
@@ -278,6 +435,7 @@ struct QwenPrefixReuseTests {
             let matchedTokens = min(
                 commonTokens,
                 ((promptTokens - 1) / 256) * 256)
+            let warmHit = true
             let coldRows = (0 ..< shape.2).map {
                 reportRow(
                     row: $0,
@@ -296,10 +454,23 @@ struct QwenPrefixReuseTests {
                 reportRow(
                     row: $0,
                     requestID: UInt64(3_000 + scenarioIndex * 100 + $0),
-                    outcome: "hit",
-                    matched: matchedTokens,
-                    saved: matchedTokens,
-                    stateBytes: matchedTokens * 16)
+                    outcome: warmHit ? "hit" : "miss",
+                    matched:
+                        warmHit
+                        ? (exactCache && shape.1 == "identical"
+                            ? promptTokens : matchedTokens)
+                        : 0,
+                    saved:
+                        warmHit
+                        ? (exactCache && shape.1 == "identical"
+                            ? promptTokens : matchedTokens)
+                        : 0,
+                    stateBytes:
+                        warmHit
+                        ? (exactCache
+                            ? (shape.1 == "identical" ? promptTokens : matchedTokens) * 16 + 7
+                            : matchedTokens * 16)
+                        : 0)
             }
             let cold = reportBatch(rows: coldRows, enabled: false)
             let warm = reportBatch(rows: warmRows, enabled: true)
@@ -318,7 +489,7 @@ struct QwenPrefixReuseTests {
                     row: construction,
                     donationObserved: true,
                     submitToCacheReadyMs: 12,
-                    terminalToCacheReadyMs: 1,
+                    cacheReadyMinusTerminalMs: -1,
                     cacheBytesAfterReady: commonTokens * 16),
                 warm: warm,
                 cacheAccountingIncludingConstruction: .init(rows: cacheRows),
@@ -380,8 +551,13 @@ struct QwenPrefixReuseTests {
                 kvBackend: BenchmarkKVBackend(
                     selection: "contiguous",
                     resolved: ["contiguous"]),
-                prefixCacheImplementation: "PrefixCacheV2",
+                kvBytesCapacity: 4 * 1024 * 1024 * 1024,
+                prefixCacheImplementation:
+                    exactCache ? "ExactPrefixCacheV2" : "PrefixCacheV2",
+                prefixCacheMatchPolicy:
+                    exactCache ? "longest-exact-block-prefix" : "whole-block-prefix",
                 prefixCacheRequested: true,
+                prefixCacheBudgetBytes: exactCache ? 1_024 * 1_024 * 1_024 : nil,
                 cacheBlockTokens: 256,
                 cacheSaltScope: "unique per scenario iteration",
                 capabilitySupported: true,
@@ -518,6 +694,68 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
                     prefixCacheMatchedTokens: 2,
                     prefixCachePrefillTokensSaved: 2,
                     prefixCacheStrategy: .direct)))
+            continuation.finish()
+        }
+    }
+
+    func cancel(_: CBv2RequestID) {}
+
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(
+            activeRequests: 0,
+            waitingRequests: 0,
+            kvBytesInUse: 0,
+            kvBytesCapacity: 1 << 20,
+            activeTokens: 0)
+    }
+
+    func shutdown() async {}
+}
+
+private final class ExactPrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
+    private let cache: QwenExactPrefixTrackingCache
+    private let layerKind: CBv2LayerKind
+    private let recurrentSpec: CBv2RecurrentStateSpec
+
+    init(
+        cache: QwenExactPrefixTrackingCache,
+        layerKind: CBv2LayerKind,
+        recurrentSpec: CBv2RecurrentStateSpec
+    ) {
+        self.cache = cache
+        self.layerKind = layerKind
+        self.recurrentSpec = recurrentSpec
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let receiptID = request.prefixCacheReceiptID ?? request.id
+        let hit = cache.lookupExact(
+            requestID: receiptID,
+            tokens: request.promptTokens,
+            layerKinds: [layerKind],
+            recurrentStateSpec: recurrentSpec,
+            cacheSalt: request.cacheSalt)
+        if let hit {
+            cache.endAdoption(
+                requestID: receiptID,
+                tokens: request.promptTokens,
+                matched: hit.tokenCount,
+                cacheSalt: request.cacheSalt)
+        }
+        let tokens = [Int(request.id.raw), Int(request.id.raw) + 1]
+        return AsyncStream { continuation in
+            continuation.yield(.delta(text: "", tokens: [tokens[0]], logprobs: nil))
+            continuation.yield(.delta(text: "", tokens: [tokens[1]], logprobs: nil))
+            continuation.yield(.finished(
+                reason: .length,
+                usage: CBv2Usage(
+                    promptTokens: request.promptTokens.count,
+                    completionTokens: tokens.count,
+                    prefixCacheHitTokens: hit?.tokenCount ?? 0,
+                    prefixCacheOutcome: hit == nil ? .miss : .hit,
+                    prefixCacheMatchedTokens: hit?.tokenCount ?? 0,
+                    prefixCachePrefillTokensSaved: hit?.tokenCount ?? 0,
+                    prefixCacheStrategy: hit == nil ? nil : .direct)))
             continuation.finish()
         }
     }

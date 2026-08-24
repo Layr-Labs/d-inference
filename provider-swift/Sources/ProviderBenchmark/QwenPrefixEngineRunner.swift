@@ -29,7 +29,7 @@ struct QwenPrefixEngineBatch: Sendable {
 enum QwenPrefixEngineRunner {
     static func run<Engine: CBv2Engine>(
         engine: Engine,
-        cache: QwenPrefixTrackingCache,
+        cache: any QwenPrefixBenchmarkCache,
         prompts: [[Int]],
         decodeTokens: Int,
         requestIDBase: UInt64,
@@ -103,7 +103,7 @@ enum QwenPrefixEngineRunner {
 
     private static func consume<Engine: CBv2Engine>(
         engine: Engine,
-        cache: QwenPrefixTrackingCache,
+        cache: any QwenPrefixBenchmarkCache,
         row: Int,
         requestID: CBv2RequestID,
         prompt: [Int],
@@ -220,11 +220,11 @@ enum QwenPrefixEngineRunner {
         return CBv2RequestID(result)
     }
 
-    /// PrefixCacheV2 exposes the whole matched snapshot. Tail-replay plans
-    /// slice full-attention state down to the saved-token frontier before
-    /// backend adoption; direct and frozen-full plans adopt through the whole
-    /// match. Convert the correlated lookup bytes to that exact logical
-    /// adoption size instead of reporting the larger staging view.
+    /// Convert the request-correlated lookup size to the state handed to
+    /// backend adoption. Exact-state direct hits adopt the whole atomic
+    /// snapshot, including non-token-linear recurrent state and, only for a
+    /// full-prompt hit, frontier logits. Historical tail replay slices
+    /// token-linear full-attention arrays to the saved-token frontier.
     private static func adoptedStateBytes(
         usage: CBv2Usage,
         lookupBytes: Int,
@@ -240,24 +240,30 @@ enum QwenPrefixEngineRunner {
         guard matched > 0,
               saved > 0,
               lookupBytes > 0,
-              lookupBytes % matched == 0,
               let strategy = usage.prefixCacheStrategy
         else {
             throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
         }
-        let adoptedTokens: Int
         switch strategy {
         case .direct, .frozenFullReplay:
-            adoptedTokens = matched
+            // Direct exact-state Qwen hits include fixed recurrent state and
+            // may include frontier logits, so bytes are not generally
+            // divisible by the matched length. Adopt the complete snapshot.
+            return lookupBytes
         case .tailReplay:
-            adoptedTokens = saved
+            // The historical KV-only cache exposes token-linear full-
+            // attention arrays. Tail replay slices those arrays to the saved
+            // frontier before adoption.
+            guard lookupBytes % matched == 0 else {
+                throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
+            }
+            let (bytes, overflow) = (lookupBytes / matched)
+                .multipliedReportingOverflow(by: saved)
+            guard !overflow, bytes > 0 else {
+                throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
+            }
+            return bytes
         }
-        let (bytes, overflow) = (lookupBytes / matched)
-            .multipliedReportingOverflow(by: adoptedTokens)
-        guard !overflow, bytes > 0 else {
-            throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
-        }
-        return bytes
     }
 
     private static func describe(_ reason: CBv2FinishReason) -> String {

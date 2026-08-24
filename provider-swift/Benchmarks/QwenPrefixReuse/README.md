@@ -5,7 +5,7 @@ corpus. It loads one checkpoint once and constructs exactly one engine through
 `EngineV2Factory.makeProductionBuild`. <!-- pragma: allowlist secret --> Every scenario and phase runs through
 that engine.
 
-For each iteration the harness evicts the in-memory reference cache, then runs:
+For each iteration the harness evicts its in-memory exact-state cache, then runs:
 
 1. a cache-disabled cold batch;
 2. one cache-enabled construction request against the empty scenario scope;
@@ -15,6 +15,12 @@ The report keeps the construction request and its compulsory miss separate from
 the warm makespan, while also publishing a construction-inclusive hit/miss
 denominator. Unsupported, policy-skipped, capacity-skipped, and adoption-failed
 outcomes remain in the JSON; they are never rewritten as hits.
+
+The benchmark injects `ExactPrefixCacheV2` only into this opt-in engine. It
+carves one fifth of the unified request-state grant for block-aligned exact
+boundaries and gives the remaining four fifths to the four live engine rows;
+cache RAM is not silently added on top of the serving grant. Existing serving
+and quality defaults remain unchanged.
 
 Scenarios:
 
@@ -26,6 +32,13 @@ The prose corpus is human-reviewable, but overlap is constructed after
 checkpoint tokenization. This avoids treating character overlap as token
 overlap. Greedy, fixed-length cold and warm outputs are compared by first token
 and full raw token sequence.
+
+Cold construction snapshots K/V, all recurrent state, and scalar position at
+each 256-token boundary. Warm requests choose the longest exact boundary and
+run only their distinct suffix normally. Full-prompt hits also restore cached
+frontier logits; partial hits never do. The 25/50/75/90-percent rows therefore
+measure durable sequential-prefix reuse directly, including the rounded-down
+block boundary observed in each row.
 
 Files:
 
@@ -51,4 +64,5 @@ swift build -c release
 
 A successful command means the measurement completed and validated, not that
 every warm request hit. Read `capabilitySupported`, row-level `cacheOutcome`,
-and `cacheAccountingIncludingConstruction` before interpreting speedups.
+`prefixCacheMatchPolicy`, and `cacheAccountingIncludingConstruction` before
+interpreting speedups.

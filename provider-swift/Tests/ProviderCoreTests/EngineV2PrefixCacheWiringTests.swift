@@ -100,6 +100,26 @@ struct EngineV2PrefixCacheUsageTests {
         ) == Int.max)
     }
 
+    @Test("recurrent models accept only the stronger exact-state cache")
+    func recurrentCachePairing() {
+        var recurrent = CBv2ModelCapabilities.initialRecurrentTarget
+        recurrent.supportsExactStatePrefixReuse = true
+        let exact = ExactPrefixCacheV2(
+            config: .init(modelIdentity: "qwen-test", maxBytes: 0))
+        let legacy = PrefixCacheV2()
+
+        #expect(EngineV2Factory.prefixCacheIsSupported(
+            capabilities: recurrent, prefixCache: exact))
+        #expect(!EngineV2Factory.prefixCacheIsSupported(
+            capabilities: recurrent, prefixCache: legacy))
+        #expect(!EngineV2Factory.prefixCacheIsSupported(
+            capabilities: recurrent, prefixCache: nil))
+        #expect(EngineV2Factory.prefixCacheIsSupported(
+            capabilities: .attentionOnly, prefixCache: legacy))
+        #expect(!EngineV2Factory.prefixCacheIsSupported(
+            capabilities: .attentionOnly, prefixCache: exact))
+    }
+
     @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")
     func usageSignalRecords() async throws {
         let engine = PrefixScriptedEngine(events: [

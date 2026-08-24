@@ -17,6 +17,7 @@ public enum QwenPrefixReuseBenchmark {
 
     private static let warmupRequestID: UInt64 = 0x5158_0000
     private static let measuredRequestIDBase: UInt64 = 0x5158_1000
+    private static let exactCacheBudgetDivisor = 5
 
     private struct ModelDescriptor: Sendable {
         let modelType: String
@@ -74,6 +75,7 @@ public enum QwenPrefixReuseBenchmark {
         let modelDirectory = modelDirectory.resolvingSymlinksInPath().standardizedFileURL
         let corpus = try QwenPrefixCorpusLoader.load(from: corpusURL)
         let policyEnvironment = QwenQualityCorpusBenchmark.capturedPolicyEnvironment()
+        let processEnvironment = ProcessInfo.processInfo.environment
 
         log("hashing fixed model artifact \(modelID)")
         guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
@@ -130,20 +132,33 @@ public enum QwenPrefixReuseBenchmark {
                 maximumContextTokens: sizing.maxContextLength)
         }
 
-        let kvCapacity = Int(min(
+        let totalStateCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
                 physicalBytes: ProcessInfo.processInfo.physicalMemory,
                 residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
+        let exactCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
+        let kvCapacity = totalStateCapacity - exactCacheBudget
         let blockSize = CBv2BlockHasher.defaultBlockSize
-        let cache = QwenPrefixTrackingCache(config: .init(
-            blockSize: blockSize,
-            promptContractID: "qwen-prefix-benchmark:\(artifactSHA256)",
-            scopeID: "benchmark-default-unused",
-            maxBytes: nil,
-            materializeOnDonate: true))
-        let processEnvironment = ProcessInfo.processInfo.environment
+        guard kvCapacity > 0, exactCacheBudget > 0 else {
+            throw QwenPrefixBenchmarkError.insufficientStateBudget(
+                totalBytes: totalStateCapacity)
+        }
+        let policyIdentity = policyEnvironment
+            .sorted(by: { $0.key < $1.key })
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ";")
+        let cache: any QwenPrefixBenchmarkCache = QwenExactPrefixTrackingCache(
+            config: .init(
+                modelIdentity: "qwen-prefix-benchmark:\(artifactSHA256)",
+                policyIdentity:
+                    "qwen-prefix-benchmark-v2;kv=\(kvBackend.rawValue);"
+                        + "block=\(blockSize);"
+                        + (policyIdentity.isEmpty ? "strict-default" : policyIdentity),
+                scopeID: "benchmark-default-unused",
+                blockSize: blockSize,
+                maxBytes: exactCacheBudget))
         let components = try await container.perform { context -> EngineComponents in
             let scenarios = try QwenPrefixPromptBuilder.prepare(
                 corpus: corpus.corpus,
@@ -248,9 +263,12 @@ public enum QwenPrefixReuseBenchmark {
                 kvBackend: BenchmarkKVBackend(
                     selection: kvBackend.rawValue,
                     resolved: [components.resolvedKVBackend]),
-                prefixCacheImplementation: "PrefixCacheV2",
+                kvBytesCapacity: kvCapacity,
+                prefixCacheImplementation: cache.implementationName,
+                prefixCacheMatchPolicy: cache.matchPolicy,
                 prefixCacheRequested: true,
-                cacheBlockTokens: blockSize,
+                prefixCacheBudgetBytes: cache.cacheBudgetBytes,
+                cacheBlockTokens: cache.cacheBlockTokens,
                 cacheSaltScope: "unique per scenario iteration",
                 capabilitySupported: components.capabilitySupported,
                 capabilityStrategy: components.capabilityStrategy,
@@ -274,7 +292,7 @@ public enum QwenPrefixReuseBenchmark {
 
     private static func measureAll(
         engine: any CBv2Engine,
-        cache: QwenPrefixTrackingCache,
+        cache: any QwenPrefixBenchmarkCache,
         scenarios: [QwenPrefixPreparedScenario],
         iterations: Int,
         decodeTokens: Int,
@@ -316,7 +334,7 @@ public enum QwenPrefixReuseBenchmark {
                     prefixCacheEnabled: true,
                     cacheSalt: salt)
                 let constructionRow = construction.rows[0]
-                let donation: QwenPrefixTrackingCache.DonationObservation?
+                let donation: QwenPrefixDonationObservation?
                 if capabilitySupported {
                     donation = await cache.waitForDonation(
                         requestID: constructionRow.requestID,
@@ -342,7 +360,10 @@ public enum QwenPrefixReuseBenchmark {
                     cacheSalt: warmSalt)
                 if capabilitySupported {
                     await cache.waitForDonations(
-                        requestIDs: warm.rows.map(\.requestID),
+                        requestIDs: warm.rows.compactMap {
+                            cache.shouldAwaitDonation(after: $0.usage.prefixCacheOutcome)
+                                ? $0.requestID : nil
+                        },
                         timeout: timeout)
                 }
 
@@ -367,7 +388,7 @@ public enum QwenPrefixReuseBenchmark {
         iteration: Int,
         cold: QwenPrefixEngineBatch,
         construction: QwenPrefixEngineRow,
-        donation: QwenPrefixTrackingCache.DonationObservation?,
+        donation: QwenPrefixDonationObservation?,
         warm: QwenPrefixEngineBatch
     ) -> QwenPrefixReuseReport.Sample {
         let coldReport = batchReport(cold, prefixCacheEnabled: false)
@@ -383,8 +404,8 @@ public enum QwenPrefixReuseBenchmark {
         let submitToReady = donation.map {
             milliseconds(from: construction.submittedAtNs, to: $0.publishedAtNs)
         }
-        let terminalToReady = donation.map {
-            milliseconds(from: construction.completedAtNs, to: $0.publishedAtNs)
+        let readyMinusTerminal = donation.map {
+            signedMilliseconds(from: construction.completedAtNs, to: $0.publishedAtNs)
         }
         let cacheRows = [constructionReport] + warmReport.rows
         return QwenPrefixReuseReport.Sample(
@@ -394,7 +415,7 @@ public enum QwenPrefixReuseBenchmark {
                 row: constructionReport,
                 donationObserved: donation != nil,
                 submitToCacheReadyMs: submitToReady,
-                terminalToCacheReadyMs: terminalToReady,
+                cacheReadyMinusTerminalMs: readyMinusTerminal,
                 cacheBytesAfterReady: donation?.cacheBytesAfterPublish ?? 0),
             warm: warmReport,
             cacheAccountingIncludingConstruction: .init(rows: cacheRows),
@@ -525,6 +546,12 @@ public enum QwenPrefixReuseBenchmark {
         return Double(end - start) / 1_000_000
     }
 
+    private static func signedMilliseconds(from start: UInt64, to end: UInt64) -> Double {
+        end >= start
+            ? Double(end - start) / 1_000_000
+            : -Double(start - end) / 1_000_000
+    }
+
     private static func median(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
@@ -577,6 +604,7 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible 
     case modelFingerprintUnavailable
     case modelArtifactChangedDuringRun
     case requestIDOverflow
+    case insufficientStateBudget(totalBytes: Int)
     case cacheDidNotEvict(Int)
     case missingScenario(String)
 
@@ -606,6 +634,9 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible 
             return "Qwen prefix benchmark model artifact changed during the run"
         case .requestIDOverflow:
             return "Qwen prefix benchmark exhausted the CBv2 request-id space"
+        case .insufficientStateBudget(let totalBytes):
+            return "Qwen prefix benchmark cannot split its \(totalBytes)-byte "
+                + "state grant between one exact cache entry and four live rows"
         case .cacheDidNotEvict(let bytes):
             return "Qwen prefix benchmark cache retained \(bytes) bytes after full eviction"
         case .missingScenario(let id):

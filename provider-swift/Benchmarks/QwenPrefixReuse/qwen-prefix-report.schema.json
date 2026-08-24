@@ -94,9 +94,10 @@
         "instanceCount",
         "maxConcurrentRequests",
         "kvBackend",
+        "kvBytesCapacity",
         "prefixCacheImplementation",
+        "prefixCacheMatchPolicy",
         "prefixCacheRequested",
-        "cacheBlockTokens",
         "cacheSaltScope",
         "capabilitySupported",
         "replayBoundTokens",
@@ -110,8 +111,15 @@
         "instanceCount": {"const": 1},
         "maxConcurrentRequests": {"const": 4},
         "kvBackend": {"$ref": "#/$defs/kvBackend"},
-        "prefixCacheImplementation": {"const": "PrefixCacheV2"},
+        "kvBytesCapacity": {"type": "integer", "minimum": 1},
+        "prefixCacheImplementation": {
+          "enum": ["PrefixCacheV2", "ExactPrefixCacheV2"]
+        },
+        "prefixCacheMatchPolicy": {
+          "enum": ["whole-block-prefix", "longest-exact-block-prefix"]
+        },
         "prefixCacheRequested": {"const": true},
+        "prefixCacheBudgetBytes": {"type": "integer", "minimum": 1},
         "cacheBlockTokens": {"type": "integer", "minimum": 1},
         "cacheSaltScope": {"type": "string", "minLength": 1},
         "capabilitySupported": {"type": "boolean"},
@@ -125,7 +133,35 @@
           "type": "object",
           "additionalProperties": {"type": "string"}
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "prefixCacheImplementation": {"const": "PrefixCacheV2"}
+            }
+          },
+          "then": {
+            "required": ["cacheBlockTokens"],
+            "properties": {
+              "prefixCacheMatchPolicy": {"const": "whole-block-prefix"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "prefixCacheImplementation": {"const": "ExactPrefixCacheV2"}
+            }
+          },
+          "then": {
+            "required": ["prefixCacheBudgetBytes", "cacheBlockTokens"],
+            "properties": {
+              "prefixCacheMatchPolicy": {"const": "longest-exact-block-prefix"}
+            }
+          }
+        }
+      ]
     },
     "kvBackend": {
       "type": "object",
@@ -294,7 +330,7 @@
         "row": {"$ref": "#/$defs/row"},
         "donationObserved": {"type": "boolean"},
         "submitToCacheReadyMs": {"type": "number", "minimum": 0},
-        "terminalToCacheReadyMs": {"type": "number", "minimum": 0},
+        "cacheReadyMinusTerminalMs": {"type": "number"},
         "cacheBytesAfterReady": {"type": "integer", "minimum": 0}
       }
     },

@@ -21,6 +21,8 @@ const MACBOOK_PRO = "MacBook Pro";
 const MAC_MINI = "Mac Mini";
 const MAC_STUDIO = "Mac Studio";
 const MAC_PRO = "Mac Pro";
+const M4_MAX_14_CORE = "M4 Max (14-core CPU)";
+const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
 
 export const MAC_CONFIGS: MacConfig[] = [
   { macType: MACBOOK_AIR, chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 8, inferWatts: 12 },
@@ -37,8 +39,8 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MACBOOK_PRO, chip: "M3 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
   { macType: MACBOOK_PRO, chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
-  { macType: MACBOOK_PRO, chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 20, inferWatts: 50 },
-  { macType: MACBOOK_PRO, chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: M4_MAX_14_CORE, ramOptions: [36], bandwidthGBs: 410, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: M4_MAX_16_CORE, ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
   { macType: MACBOOK_PRO, chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M5 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
   { macType: MACBOOK_PRO, chip: "M5 Max (32-core GPU)", ramOptions: [36], bandwidthGBs: 460, idleWatts: 20, inferWatts: 50 },
@@ -53,8 +55,8 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MAC_STUDIO, chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
   { macType: MAC_STUDIO, chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
   { macType: MAC_STUDIO, chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
-  { macType: MAC_STUDIO, chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 25, inferWatts: 65 },
-  { macType: MAC_STUDIO, chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
+  { macType: MAC_STUDIO, chip: M4_MAX_14_CORE, ramOptions: [36], bandwidthGBs: 410, idleWatts: 25, inferWatts: 65 },
+  { macType: MAC_STUDIO, chip: M4_MAX_16_CORE, ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
   { macType: MAC_PRO, chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
 ];
 
@@ -62,7 +64,7 @@ const CHIP_ORDER = [
   "M1", "M1 Pro", "M1 Max", "M1 Ultra",
   "M2", "M2 Pro", "M2 Max", "M2 Ultra",
   "M3", "M3 Pro", "M3 Max (14-core CPU)", "M3 Max (16-core CPU)", "M3 Ultra",
-  "M4", "M4 Pro", "M4 Max (14-core CPU)", "M4 Max (16-core CPU)",
+  "M4", "M4 Pro", M4_MAX_14_CORE, M4_MAX_16_CORE,
   "M5", "M5 Pro", "M5 Max (32-core GPU)", "M5 Max (40-core GPU)",
 ];
 
@@ -87,7 +89,7 @@ export function buildHardwareOptions(configs: MacConfig[] = MAC_CONFIGS): Hardwa
 }
 
 export const HARDWARE_OPTIONS = buildHardwareOptions();
-export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:M4 Max (16-core CPU)`;
+export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:${M4_MAX_16_CORE}`;
 export const DEFAULT_ELEC_COST_PER_KWH = 0.15;
 export const MONTH_HOURS = 30 * 24;
 

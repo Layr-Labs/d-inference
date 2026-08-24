@@ -10,6 +10,8 @@ import {
 } from "@/app/earn/calc";
 
 const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
+const MACBOOK_PRO = "MacBook Pro";
+const MAC_STUDIO = "Mac Studio";
 
 const apiMocks = vi.hoisted(() => ({
   fetchEarningsMarket: vi.fn(),
@@ -135,7 +137,7 @@ describe("market-conserving earnings math", () => {
 
   it("bounds the reported M4 Max case to the realized per-provider run rate", () => {
     const hardware = HARDWARE_OPTIONS.find(
-      (option) => option.macType === "MacBook Pro" && option.chip === M4_MAX_16_CORE,
+      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX_16_CORE,
     )!;
     const candidateTPS = 0.25 * hardware.bandwidthGBs;
     const model = {
@@ -169,7 +171,7 @@ describe("market-conserving earnings math", () => {
 
   it("charges full-month idle power plus realized allocated workload", () => {
     const hardware = HARDWARE_OPTIONS.find(
-      (option) => option.macType === "MacBook Pro" && option.chip === M4_MAX_16_CORE,
+      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX_16_CORE,
     )!;
     const estimate = calculateModelEstimate(
       marketFixture.models[0],
@@ -220,11 +222,11 @@ describe("market-conserving earnings math", () => {
 
   it("keeps form-factor-specific power profiles separate", () => {
     const m4Max = HARDWARE_OPTIONS.filter((option) => option.chip === M4_MAX_16_CORE);
-    const macBook = m4Max.find((option) => option.macType === "MacBook Pro");
-    const studio = m4Max.find((option) => option.macType === "Mac Studio");
+    const macBook = m4Max.find((option) => option.macType === MACBOOK_PRO);
+    const studio = m4Max.find((option) => option.macType === MAC_STUDIO);
 
-    expect(macBook?.id).toBe(`MacBook Pro:${M4_MAX_16_CORE}`);
-    expect(studio?.id).toBe(`Mac Studio:${M4_MAX_16_CORE}`);
+    expect(macBook?.id).toBe(`${MACBOOK_PRO}:${M4_MAX_16_CORE}`);
+    expect(studio?.id).toBe(`${MAC_STUDIO}:${M4_MAX_16_CORE}`);
     expect(macBook?.idleWatts).toBe(20);
     expect(studio?.idleWatts).toBe(25);
   });
@@ -233,27 +235,27 @@ describe("market-conserving earnings math", () => {
     const profile = (macType: string, chip: string) =>
       HARDWARE_OPTIONS.find((option) => option.macType === macType && option.chip === chip);
 
-    expect(profile("MacBook Pro", "M3 Max (14-core CPU)")).toMatchObject({
+    expect(profile(MACBOOK_PRO, "M3 Max (14-core CPU)")).toMatchObject({
       ramOptions: [36, 96],
       bandwidthGBs: 300,
     });
-    expect(profile("MacBook Pro", "M4 Max (14-core CPU)")).toMatchObject({
+    expect(profile(MACBOOK_PRO, "M4 Max (14-core CPU)")).toMatchObject({
       ramOptions: [36],
       bandwidthGBs: 410,
     });
-    expect(profile("MacBook Pro", "M5 Max (32-core GPU)")).toMatchObject({
+    expect(profile(MACBOOK_PRO, "M5 Max (32-core GPU)")).toMatchObject({
       ramOptions: [36],
       bandwidthGBs: 460,
     });
-    expect(profile("MacBook Pro", "M5 Max (40-core GPU)")).toMatchObject({
+    expect(profile(MACBOOK_PRO, "M5 Max (40-core GPU)")).toMatchObject({
       ramOptions: [48, 64, 128],
       bandwidthGBs: 614,
     });
-    expect(profile("MacBook Pro", "M5 Pro")).toMatchObject({
+    expect(profile(MACBOOK_PRO, "M5 Pro")).toMatchObject({
       ramOptions: [24, 48, 64],
       bandwidthGBs: 307,
     });
-    expect(profile("Mac Studio", "M5 Max (40-core GPU)")).toBeUndefined();
+    expect(profile(MAC_STUDIO, "M5 Max (40-core GPU)")).toBeUndefined();
     expect(profile("Mac Pro", "M3 Ultra")).toBeUndefined();
   });
 });

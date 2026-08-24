@@ -15,6 +15,15 @@ export function BaseRewardsPanel({
     ? [...policy.tiers].sort((a, b) => b.min_ram_gb - a.min_ram_gb)
     : [];
   const minimumTierGB = tiers.at(-1)?.min_ram_gb ?? 0;
+  let programStatus =
+    "The program is currently disabled; the policy table does not create a payout.";
+  if (policy?.enabled) {
+    const accountCap =
+      policy.account_cap_fraction > 0
+        ? `, plus a ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
+        : "";
+    programStatus = `The program is enabled; each amount remains subject to eligibility and the fleet-wide pool cap${accountCap}.`;
+  }
 
   return (
     <details className="group rounded-xl bg-bg-secondary mb-6 open:pb-2">
@@ -99,15 +108,7 @@ export function BaseRewardsPanel({
               </div>
               <div className="flex items-start gap-2 text-xs text-text-secondary">
                 <Info size={13} className="shrink-0 mt-0.5" />
-                <span>
-                  {policy.enabled
-                    ? `The program is enabled; each amount remains subject to eligibility and the fleet-wide pool cap${
-                        policy.account_cap_fraction > 0
-                          ? `, plus a ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
-                          : ""
-                      }.`
-                    : "The program is currently disabled; the policy table does not create a payout."}
-                </span>
+                <span>{programStatus}</span>
               </div>
             </div>
           </>

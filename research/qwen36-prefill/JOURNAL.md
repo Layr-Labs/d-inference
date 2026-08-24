@@ -210,3 +210,11 @@ The 2.5× target at the same exact operation count would need ~27 TFLOPS,
 over 2× the measured monolithic M3 roof. Remaining BM/BN/BK experiments
 can recover single-digit/low-teens efficiency; they cannot close 2.5×.
 
+## 2026-08-24T06:07Z — E4 FP16 lane dead
+
+Repeated the exact expert and monolithic roofs with FP16. Gate W4 moved
+10.89 → 11.23 TFLOPS (1.03×), down 10.16 → 10.78 (1.06×); dense gather
+and monolithic GEMM were flat. M3 exposes no 2× FP16 path to these
+Steel kernels. An invasive dtype change is dead before full-model
+checksum risk. See `notes/029`.
+

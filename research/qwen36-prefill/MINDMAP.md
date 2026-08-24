@@ -107,5 +107,8 @@ by only 1.13×. A dense expert cache and dequantization deletion are dead;
 the exact arithmetic roof itself is below the 2.5× requirement
 (`notes/028`).
 
+E4 found FP16 is only 1.03–1.06× on W4 and flat on dense/monolithic
+kernels (`notes/029`): no hidden half-precision 2× lane.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

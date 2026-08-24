@@ -26,6 +26,9 @@ e3-monolithic-gate	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift
 e3-w4-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	w4-sorted-gather	2048	1	tflops	10.22	TFLOPS	1.00	roof	exact serving M=16384 K512 N2048
 e3-bf16-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-sorted-gather	2048	1	tflops	8.37	TFLOPS	0.819x	no	dense cache regresses
 e3-monolithic-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E3-dense-roof	bf16-single-matrix	2048	1	tflops	11.60	TFLOPS	1.135x	roof	illegal MoE semantics; arithmetic upper bound
+e4-fp16-w4-gate	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-w4-gather	2048	1	tflops	11.23	TFLOPS	1.03x	no	no 2x FP16 lane
+e4-fp16-w4-down	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-w4-gather	2048	1	tflops	10.78	TFLOPS	1.06x	no	no 2x FP16 lane
+e4-fp16-monolithic-gate	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-single-matrix	2048	1	tflops	12.29	TFLOPS	1.00x	roof	flat vs BF16 illegal roof
 
 
 

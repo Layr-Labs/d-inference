@@ -1,0 +1,29 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-23 23:07:00.896.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-23 23:07:00.896.
+Test Suite 'QwenExpertDenseReferencePerfTests' started at 2026-08-23 23:07:00.896.
+Test Case '-[MLXTests.QwenExpertDenseReferencePerfTests testDenseBF16UpperBoundAtServingAssignmentCount]' started.
+[qwen-expert-dense-reference] gate_up_fused T2048 bf16 route=w4 median=6.3125ms p10=6.3029 p90=6.3340 tflops=10.89
+[qwen-expert-dense-reference] gate_up_fused T2048 bf16 route=bf16 median=6.3040ms p10=6.2780 p90=6.4009 tflops=10.90
+[qwen-expert-dense-reference] gate_up_fused T2048 bf16 route=bf16-monolithic-roof median=5.5887ms p10=5.5747 p90=5.7026 tflops=12.30
+[qwen-expert-dense-reference] down T2048 bf16 route=w4 median=3.3834ms p10=3.3628 p90=3.4442 tflops=10.16
+[qwen-expert-dense-reference] down T2048 bf16 route=bf16 median=4.1052ms p10=4.0851 p90=4.1193 tflops=8.37
+[qwen-expert-dense-reference] down T2048 bf16 route=bf16-monolithic-roof median=2.9487ms p10=2.9089 p90=2.9835 tflops=11.65
+[qwen-expert-dense-reference] gate_up_fused T2048 fp16 route=w4 median=6.1215ms p10=6.0608 p90=6.2654 tflops=11.23
+[qwen-expert-dense-reference] gate_up_fused T2048 fp16 route=bf16 median=6.3277ms p10=6.2489 p90=6.4119 tflops=10.86
+[qwen-expert-dense-reference] gate_up_fused T2048 fp16 route=bf16-monolithic-roof median=5.5934ms p10=5.5671 p90=5.6035 tflops=12.29
+[qwen-expert-dense-reference] down T2048 fp16 route=w4 median=3.1879ms p10=3.1505 p90=3.2265 tflops=10.78
+[qwen-expert-dense-reference] down T2048 fp16 route=bf16 median=4.1074ms p10=4.0764 p90=4.1534 tflops=8.37
+[qwen-expert-dense-reference] down T2048 fp16 route=bf16-monolithic-roof median=2.9659ms p10=2.9348 p90=3.0395 tflops=11.59
+Test Case '-[MLXTests.QwenExpertDenseReferencePerfTests testDenseBF16UpperBoundAtServingAssignmentCount]' passed (2.296 seconds).
+Test Suite 'QwenExpertDenseReferencePerfTests' passed at 2026-08-23 23:07:03.192.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.296 (2.296) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-23 23:07:03.192.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.296 (2.296) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:07:03.192.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.296 (2.296) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -1,7 +1,8 @@
 # 050 — Reverse Qwen 3.6 prefill from the state that must survive
 
 Status: **dependency trace complete; ceilings quantified; five experiments
-pre-registered; one default-off routing seam captured in patch 052**
+pre-registered; default-off artifact-eight implementation preserved in patches
+052–055; Mac performance and quality gates pending**
 
 Scope: Qwen 3.6 35B-A3B **TEXT** prefill through ContinuousBatchingV2 on the
 M3 Max. Checkpoint weight bytes are fixed. Execution precision, routing,

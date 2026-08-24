@@ -6,7 +6,7 @@ continuation parity**
 This review compares:
 
 - native baseline: `artifacts/e30-quality-baseline-128.json`;
-- canonical candidate: `artifacts/e47-quality-canonical-128.json`;
+- canonical candidate: `artifacts/e47-quality-canonical-128.json.gz`;
 - committed corpus:
   `provider-swift/Benchmarks/QualityCorpus/qwen-quality-v1.json`.
 

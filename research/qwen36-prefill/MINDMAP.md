@@ -204,6 +204,8 @@ distinct suffixes. The final canonical exact-cache profile gives native-relative
 B4×8K prefill speedups of **2.629×** at 75% and **5.076×** at 87.5%, with
 100% 64-token equality over three iterations. Cache-free paths are unchanged;
 opt-in exact-cache cold misses pay the canonical 256-token/unpacked cost.
+E47 blind quality retains **99.56%** of native with 11/12 identical
+continuations and no candidate-only fatal failure (`notes/074`).
 
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

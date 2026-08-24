@@ -39,6 +39,7 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | Cold fork semantics | INCOMPLETE | Candidate timing includes leader/fork work and cache rows are misses, but the report has no fork activity counters and omits both fork activation flags. |
 | Exact state | PASS by code/tests | Atomic snapshots contain all owning full-attention K/V, every GDN conv tail/FP32 SSM state, scalar position, and frontier logits only at a full prompt. |
 | First/full token parity | PASS after E46 | Canonical block-sized singleton prefill restores 100% first-token and complete 64-token equality for every B1/B2/B4 full/partial cell. |
+| Canonical/native semantic quality | PASS after E47 | Blind 128-token corpus: 11/12 continuations identical; canonical retains 224/225 adjusted points (99.56%) with zero candidate-only fatal failures. |
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
 | Code/run provenance | PARTIAL after E41 | Sidecar binds the exact root commit, nested base/tree and patch hashes, binary/metallib/model/corpus hashes, OS and Swift; power posture is post-run, and older reports retain schema drift. |
@@ -111,6 +112,9 @@ Completed after the initial verdict:
   E45 proves causality; E46 runs the clean canonical profile for three
   iterations and restores 100% complete 64-token parity while retaining
   2.629×/5.076× native-relative first-token speed at 75%/87.5%.
+- E47 blind-scores the intentional canonical/native numerical change:
+  99.56% relative quality, 11/12 exact continuations, and zero
+  candidate-only fatal failures.
 
 Still open:
 

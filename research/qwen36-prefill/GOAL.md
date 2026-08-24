@@ -102,6 +102,13 @@ full 64-token equality in every B1/B2/B4 full/partial cell. Against the locked
 native baseline, B4 75%/87.5% remain above target at **2.629×/5.076×** prefill
 speed; full B1/B2/B4 hits are **338×/531×/697×**.
 
+E47 then compares the intentional canonical numerical policy with native
+inference on the fixed blind 128-token quality corpus. Eleven of twelve
+continuations are identical; the sole divergence is accurate but less
+progressed. The canonical arm retains **99.56%** of the native rubric score
+with zero candidate-only fatal failures, so the named opt-in policy passes
+the preregistered semantic quality gate.
+
 Cache construction is reported separately and costs ~8 s at 8K when all
 32 exact boundaries are materialized; the stated reuse speedups are warm
 or live-fork makespans, not construction-inclusive single-hit claims.

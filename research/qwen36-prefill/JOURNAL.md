@@ -694,3 +694,16 @@ Against the locked native baseline:
 Cache-free engines are unchanged. Exact-cache cold misses use canonical
 256-token unpacked prefill and are slower; the feature remains explicit
 opt-in for reuse-heavy workloads.
+
+## 2026-08-24T18:37Z — E47 canonical/native quality passes
+
+Blind 128-token scoring against the fixed native baseline:
+
+- 11/12 continuations identical;
+- 93.42% token-position agreement;
+- canonical 224/300 versus native 225/300 (**99.56%**);
+- zero candidate-only fatal failures.
+
+The sole divergent expedition continuation is accurate, coherent, and
+less progressed at the forced cutoff. The canonical exact-cache policy
+passes the semantic quality gate as an explicit opt-in. See `notes/074`.

@@ -410,6 +410,12 @@ Artifacts:
 - `artifacts/e46-canonical-2gib-decode64-3x.json.gz`
 - `artifacts/e46-canonical-2gib-decode64-3x.provenance.json`
 
+E47 independently quality-gates the intentional canonical/native numerical
+change on the fixed 128-token corpus. Eleven of twelve continuations are
+identical; the divergent expedition response remains accurate and coherent.
+Blind scoring is 224/300 versus native 225/300 (**99.56%**) with zero
+candidate-only fatal failures. See note 074.
+
 Those tests ran in the patched nested worktree. They do not prove that an
 ordinary recursive checkout works; the gitlink still points at the unpatched
 base above.

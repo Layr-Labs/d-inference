@@ -1,0 +1,6 @@
+command=swift build -c release --product darkbloom
+exit_code=0
+linked_product=darkbloom
+swift_reported_elapsed_seconds=117.43
+process_real_seconds=118.35
+binary_version=0.8.10

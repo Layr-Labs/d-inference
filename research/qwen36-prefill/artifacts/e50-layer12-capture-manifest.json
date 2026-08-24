@@ -1,0 +1,172 @@
+{
+  "activation": {
+    "assembled": {
+      "bytes": 134217856,
+      "path": "activation-8k.npy",
+      "sha256": "2c97896d3a67e1b001bafb23d6296224770c47a9f517612b3365956b8d13a0f9"
+    },
+    "chunk_count": 4,
+    "chunks": [
+      {
+        "bytes": 33554522,
+        "path": "activation-0000-m2048-k4096.npy",
+        "sequence": 0,
+        "sha256": "85e79b2c3eedc7d859f37abf12e3fa44b11fae01b919a301c7aec144d24acdbc",
+        "source_shape": [
+          1,
+          2048,
+          4096
+        ]
+      },
+      {
+        "bytes": 33554522,
+        "path": "activation-0001-m2048-k4096.npy",
+        "sequence": 1,
+        "sha256": "c245353a213cf3374f457c95e5c607a69e149cc7527d8c2f76504a50f391c03d",
+        "source_shape": [
+          1,
+          2048,
+          4096
+        ]
+      },
+      {
+        "bytes": 33554522,
+        "path": "activation-0002-m2048-k4096.npy",
+        "sequence": 2,
+        "sha256": "a04df7db6a0dab0f9b20c74f32961a2f0144ee0f7eb4e190b80d1ea93c6dd91e",
+        "source_shape": [
+          1,
+          2048,
+          4096
+        ]
+      },
+      {
+        "bytes": 33554522,
+        "path": "activation-0003-m2048-k4096.npy",
+        "sequence": 3,
+        "sha256": "80d41ffa4d4bfc9d0f2eb9fda3fcf59a218e52953a825bea0e51c4ccc11d384d",
+        "source_shape": [
+          1,
+          2048,
+          4096
+        ]
+      }
+    ],
+    "dtype": "float32",
+    "shape": [
+      8192,
+      4096
+    ]
+  },
+  "captured_files": [
+    {
+      "bytes": 338,
+      "path": "activation-0000-m2048-k4096.json",
+      "sha256": "5f3e6ca4d928782f2d95ef7deeda00b56be71dd75cced9bb8473a8ef448672e9"
+    },
+    {
+      "bytes": 33554522,
+      "path": "activation-0000-m2048-k4096.npy",
+      "sha256": "85e79b2c3eedc7d859f37abf12e3fa44b11fae01b919a301c7aec144d24acdbc"
+    },
+    {
+      "bytes": 338,
+      "path": "activation-0001-m2048-k4096.json",
+      "sha256": "0e2ca91a17de1add50399d2b284fa06e76cc6d169cfda30d608ea52efed749b5"
+    },
+    {
+      "bytes": 33554522,
+      "path": "activation-0001-m2048-k4096.npy",
+      "sha256": "c245353a213cf3374f457c95e5c607a69e149cc7527d8c2f76504a50f391c03d"
+    },
+    {
+      "bytes": 338,
+      "path": "activation-0002-m2048-k4096.json",
+      "sha256": "2ece78f4828346bceb36e967d7961dc6b8f3caf3b721fc1a1b8261c5590c74cc"
+    },
+    {
+      "bytes": 33554522,
+      "path": "activation-0002-m2048-k4096.npy",
+      "sha256": "a04df7db6a0dab0f9b20c74f32961a2f0144ee0f7eb4e190b80d1ea93c6dd91e"
+    },
+    {
+      "bytes": 338,
+      "path": "activation-0003-m2048-k4096.json",
+      "sha256": "2dd45b37a5578403f75a90e82b93fcf1b54b280fcead66f5c69f3e68aea439ae"
+    },
+    {
+      "bytes": 33554522,
+      "path": "activation-0003-m2048-k4096.npy",
+      "sha256": "80d41ffa4d4bfc9d0f2eb9fda3fcf59a218e52953a825bea0e51c4ccc11d384d"
+    },
+    {
+      "bytes": 262230,
+      "path": "weight-biases.npy",
+      "sha256": "8d883101d2316ddc476186b6e6cb7682da6063326b64fae5aae24d27ebf23257"
+    },
+    {
+      "bytes": 33554520,
+      "path": "weight-dequantized-k-by-n.npy",
+      "sha256": "64ed7e90c0c273d9ed6a983340eb099f70021cdeef842c5e74cf434337463428"
+    },
+    {
+      "bytes": 568,
+      "path": "weight-manifest.json",
+      "sha256": "617479e4bcd545d7e9573af6049bdd16daa75a17a9c7b638a69f75937f2c3342"
+    },
+    {
+      "bytes": 4194392,
+      "path": "weight-packed.npy",
+      "sha256": "7a7cca1e0872d4ec9edd13a17bcc93c8681b4d7ce35541dcbb05b109c76f4a52"
+    },
+    {
+      "bytes": 262230,
+      "path": "weight-scales.npy",
+      "sha256": "af171ec3364a18ab5edc0621c7b037c2fad00b2afa9c046030f4c6cbe2245d17"
+    }
+  ],
+  "mechanism": "e50-activation-subspace-capture",
+  "projection": "model.layers.12.linear_attn.out_proj",
+  "provenance": "root=4af67877;mlx-source=6a2c5cce;patch=c196ad2bc0da76cd20e8f9d15cd3ddf609190e98705e46d424ca3523d220ba7f;topk4",
+  "schema_version": 1,
+  "weight": {
+    "dequantized": {
+      "bytes": 33554520,
+      "path": "weight-dequantized-k-by-n.npy",
+      "sha256": "64ed7e90c0c273d9ed6a983340eb099f70021cdeef842c5e74cf434337463428"
+    },
+    "dtype": "float32",
+    "manifest": {
+      "bits": 4,
+      "dequantized_source_dtype": "bfloat16",
+      "export_dtype": "float32",
+      "export_shape": [
+        4096,
+        2048
+      ],
+      "group_size": 64,
+      "has_quantization_biases": true,
+      "mechanism": "e50-activation-subspace-capture",
+      "mode": "affine",
+      "model_layer_index": 12,
+      "orientation": "input_width_by_output_width",
+      "packed_dtype": "uint32",
+      "packed_shape": [
+        2048,
+        512
+      ],
+      "projection": "model.layers.12.linear_attn.out_proj",
+      "scales_dtype": "bfloat16",
+      "scales_shape": [
+        2048,
+        64
+      ],
+      "schema_version": 1
+    },
+    "orientation": "input_width_by_output_width",
+    "shape": [
+      4096,
+      2048
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+ProductName:		macOS
+ProductVersion:		26.4
+BuildVersion:		25E246
+Hardware:
+
+    Hardware Overview:
+
+      Model Name: MacBook Pro
+      Model Identifier: Mac15,9
+      Model Number: Z1CM000M7LL/A
+      Chip: Apple M3 Max
+      Total Number of Cores: 16 (12 Performance and 4 Efficiency)
+      Memory: 128 GB
+      System Firmware Version: 18000.101.7
+      OS Loader Version: 18000.101.7
+
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	98%; charging; 0:15 remaining present: true
+ powermode            2

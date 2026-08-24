@@ -1,0 +1,15 @@
+85e79b2c3eedc7d859f37abf12e3fa44b11fae01b919a301c7aec144d24acdbc  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0000-m2048-k4096.npy
+c245353a213cf3374f457c95e5c607a69e149cc7527d8c2f76504a50f391c03d  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0001-m2048-k4096.npy
+a04df7db6a0dab0f9b20c74f32961a2f0144ee0f7eb4e190b80d1ea93c6dd91e  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0002-m2048-k4096.npy
+80d41ffa4d4bfc9d0f2eb9fda3fcf59a218e52953a825bea0e51c4ccc11d384d  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0003-m2048-k4096.npy
+2c97896d3a67e1b001bafb23d6296224770c47a9f517612b3365956b8d13a0f9  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-8k.npy
+8d883101d2316ddc476186b6e6cb7682da6063326b64fae5aae24d27ebf23257  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/weight-biases.npy
+64ed7e90c0c273d9ed6a983340eb099f70021cdeef842c5e74cf434337463428  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/weight-dequantized-k-by-n.npy
+7a7cca1e0872d4ec9edd13a17bcc93c8681b4d7ce35541dcbb05b109c76f4a52  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/weight-packed.npy
+af171ec3364a18ab5edc0621c7b037c2fad00b2afa9c046030f4c6cbe2245d17  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/weight-scales.npy
+5f3e6ca4d928782f2d95ef7deeda00b56be71dd75cced9bb8473a8ef448672e9  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0000-m2048-k4096.json
+0e2ca91a17de1add50399d2b284fa06e76cc6d169cfda30d608ea52efed749b5  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0001-m2048-k4096.json
+2ece78f4828346bceb36e967d7961dc6b8f3caf3b721fc1a1b8261c5590c74cc  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0002-m2048-k4096.json
+2dd45b37a5578403f75a90e82b93fcf1b54b280fcead66f5c69f3e68aea439ae  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/activation-0003-m2048-k4096.json
+c4203f4d378048b477e505d7c7e3989050e696c86778087df2cdff6e9899e9b4  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/capture-manifest.json
+617479e4bcd545d7e9573af6049bdd16daa75a17a9c7b638a69f75937f2c3342  /Users/gaj/work/qwen36-prefill/results/e50-layer12-gdn-out-20260824T2032Z/capture/weight-manifest.json

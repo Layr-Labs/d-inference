@@ -1,0 +1,40 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 1,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--qwen3.6-35b-a3b-vl-mtp-mxfp8\/snapshots\/local",
+  "promptLengths" : [
+    8192
+  ],
+  "samples" : [
+    {
+      "firstTokenChecksum" : "f88780cce381ff53",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.539113005127579,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "f88780cce381ff53",
+      "ttftMs" : 4415.8746249999995
+    }
+  ],
+  "schemaVersion" : 5,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

@@ -1,7 +1,7 @@
 # 078 — E50 cohort activation subspace contraction with sentinel repair
 
-Status: **new fixed-weight cold-prefill experiment preregistered; offline probe
-implemented; no Mac or model-quality result**
+Status: **KILLED at the real-activation M1 screen. The preregistered spec is
+retained here; M3 capture and rejection evidence are in note 079.**
 
 ## Verdict
 

@@ -446,6 +446,8 @@ private func rankSmallPrime(
     var row = [UInt8](repeating: 0, count: columnCount)
     let inverses: [UInt8]
     switch prime {
+    case 3:
+        inverses = [0, 1, 2]
     case 5:
         inverses = [0, 1, 3, 2, 4]
     case 7:
@@ -590,5 +592,92 @@ func runExactRankSelfTests() throws {
     )
     guard gf3.rank == 2, gf5.rank == 3 else {
         throw AuditError.invalid("finite-field elimination self-test failed")
+    }
+
+    // Cross-check the packed GF(3) elimination and its reported certificate
+    // minor against the independent scalar small-prime implementation. Shapes
+    // crossing a 64-bit plane boundary exercise the packed tail logic too.
+    let shapes = [
+        (rows: 1, columns: 1),
+        (rows: 3, columns: 5),
+        (rows: 5, columns: 3),
+        (rows: 8, columns: 8),
+        (rows: 7, columns: 65),
+        (rows: 65, columns: 7),
+        (rows: 33, columns: 70),
+        (rows: 70, columns: 33),
+    ]
+    var state: UInt64 = 0xd1b5_4a32_d192_ed03
+    for shape in shapes {
+        for _ in 0..<8 {
+            let words = (shape.columns + 63) / 64
+            var values = [UInt8](
+                repeating: 0,
+                count: shape.rows * shape.columns
+            )
+            var packedOnes = [UInt64](repeating: 0, count: shape.rows * words)
+            var packedTwos = [UInt64](repeating: 0, count: shape.rows * words)
+            for row in 0..<shape.rows {
+                for column in 0..<shape.columns {
+                    state = state &* 6_364_136_223_846_793_005 &+ 1
+                    let value = UInt8((state >> 32) % 3)
+                    values[row * shape.columns + column] = value
+                    let word = row * words + column / 64
+                    let bit = UInt64(1) << UInt64(column & 63)
+                    if value == 1 {
+                        packedOnes[word] |= bit
+                    } else if value == 2 {
+                        packedTwos[word] |= bit
+                    }
+                }
+            }
+
+            let stopAt = min(shape.rows, shape.columns)
+            let packed = rankGF3(
+                ones: packedOnes,
+                twos: packedTwos,
+                rowCount: shape.rows,
+                columnCount: shape.columns,
+                stopAt: stopAt
+            )
+            let scalar = rankSmallPrime(
+                values: values,
+                rowCount: shape.rows,
+                columnCount: shape.columns,
+                prime: 3,
+                stopAt: stopAt
+            )
+            guard packed.rank == scalar.rank else {
+                throw AuditError.invalid(
+                    "packed/scalar GF(3) rank self-test failed for "
+                        + "\(shape.rows)x\(shape.columns): "
+                        + "\(packed.rank) != \(scalar.rank)"
+                )
+            }
+
+            let rank = packed.rank
+            var minor = [UInt8](repeating: 0, count: rank * rank)
+            for localRow in 0..<rank {
+                let sourceRow = packed.pivotSourceRows[localRow]
+                for localColumn in 0..<rank {
+                    let sourceColumn = packed.pivotColumns[localColumn]
+                    minor[localRow * rank + localColumn] =
+                        values[sourceRow * shape.columns + sourceColumn]
+                }
+            }
+            let minorRank = rankSmallPrime(
+                values: minor,
+                rowCount: rank,
+                columnCount: rank,
+                prime: 3,
+                stopAt: rank
+            ).rank
+            guard minorRank == rank else {
+                throw AuditError.invalid(
+                    "GF(3) certificate minor self-test failed for "
+                        + "\(shape.rows)x\(shape.columns): \(minorRank) != \(rank)"
+                )
+            }
+        }
     }
 }

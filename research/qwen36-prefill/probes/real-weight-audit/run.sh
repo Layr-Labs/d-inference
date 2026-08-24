@@ -57,14 +57,14 @@ xcrun swiftc \
     echo "PINNED_MLX_GITLINK=$PINNED_MLX_SHA"
     echo "SOURCE_SET_SHA256=$SOURCE_SHA256"
     echo "SNAPSHOT=$SNAPSHOT"
-    echo "STREAMING_CONTRACT=one-tensor-mmap-at-a-time;no-MLX-model-load;no-mocks"
+    echo "STREAMING_CONTRACT=one-tensor-mmap-at-a-time-fixed-16MiB-shard-hash-buffer-no-MLX-model-load-no-mocks"
 } >"$OUT_DIR/run-header.txt"
 
 set +e
 AUDIT_SOURCE_SHA256="$SOURCE_SHA256" \
 AUDIT_ROOT_GIT_SHA="$ROOT_GIT_SHA" \
 AUDIT_PINNED_MLX_SHA="$PINNED_MLX_SHA" \
-    /usr/bin/time -l \
+    /usr/bin/time -l -o "$OUT_DIR/resource-usage.txt" \
     "$BUILD_DIR/real-weight-audit" "$SNAPSHOT" "$OUT_DIR" \
     >"$OUT_DIR/probe.txt" 2>"$OUT_DIR/probe-stderr.txt"
 PROBE_STATUS=$?
@@ -84,7 +84,7 @@ set -e
     fi
     echo "SUMMARY_END"
     echo "RESOURCE_USAGE_BEGIN"
-    sed -n '1,240p' "$OUT_DIR/probe-stderr.txt"
+    sed -n '1,240p' "$OUT_DIR/resource-usage.txt"
     echo "RESOURCE_USAGE_END"
 } >"$OUT_DIR/result.txt"
 
@@ -110,7 +110,14 @@ tar -czf "$OUT_DIR/raw-results.tar.gz" \
     matrices.jsonl \
     routed-tiles.json \
     summary.json \
-    progress.log
+    summary.txt \
+    progress.log \
+    probe.txt \
+    probe-stderr.txt \
+    resource-usage.txt \
+    run-header.txt \
+    self-test.txt \
+    result.txt
 shasum -a 256 \
     "$OUT_DIR/raw-results.tar.gz" \
     "$OUT_DIR/result.txt" \

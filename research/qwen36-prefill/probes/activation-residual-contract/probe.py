@@ -19,7 +19,11 @@ from typing import Any
 
 import numpy as np
 
-from budget import b4_8k_composition, dense_budget
+from budget import (
+    b4_8k_composition,
+    dense_budget,
+    preregistered_b4_schedule,
+)
 
 
 SCREEN_THRESHOLDS = {
@@ -385,6 +389,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         },
         "arithmetic": arithmetic.as_dict(),
         "uniform_model_composition": composition.as_dict(),
+        "preregistered_model_schedule": preregistered_b4_schedule(),
         "screen": screen(
             candidate_mac_fraction=arithmetic.candidate_fraction,
             metrics=metrics,

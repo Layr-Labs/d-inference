@@ -234,3 +234,145 @@ def b4_8k_composition(
         native_speedup=speedup,
         maximum_linear_fraction=maximum_linear_fraction,
     )
+
+
+def preregistered_b4_schedule() -> dict[str, object]:
+    """Return the machine-readable E50 B=4 x 2K projection schedule.
+
+    The flattened dense cohort has 8,192 rows. Top-k4 produces 32,768 routed
+    assignments. Per-family work uses two FLOPs per MAC, matching note 026.
+    """
+
+    dense_rows = 4 * 2048
+    routed_assignments = dense_rows * 4
+    experts = 256
+
+    entries: list[tuple[str, float, ContractionBudget | None]] = [
+        (
+            "gdn_input",
+            30 * 2 * 2048 * 12352 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=2048,
+                output_width=12352,
+                rank=128,
+                sentinel_columns=32,
+                repair_rows=math.ceil(dense_rows * 0.12),
+            ),
+        ),
+        (
+            "gdn_output",
+            30 * 2 * 4096 * 2048 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=4096,
+                output_width=2048,
+                rank=64,
+                sentinel_columns=16,
+                repair_rows=math.ceil(dense_rows * 0.12),
+            ),
+        ),
+        (
+            "attention_input",
+            10 * 2 * 2048 * 9216 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=2048,
+                output_width=9216,
+                rank=128,
+                sentinel_columns=32,
+                repair_rows=math.ceil(dense_rows * 0.12),
+            ),
+        ),
+        (
+            "attention_output",
+            10 * 2 * 4096 * 2048 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=4096,
+                output_width=2048,
+                rank=64,
+                sentinel_columns=16,
+                repair_rows=math.ceil(dense_rows * 0.12),
+            ),
+        ),
+        (
+            "routed_gate_up",
+            40 * 2 * 4 * 2048 * 1024 / 1e9,
+            expert_budget(
+                assignments=routed_assignments,
+                experts=experts,
+                input_width=2048,
+                output_width=1024,
+                rank=16,
+                sentinel_columns=8,
+                repair_assignments=math.ceil(routed_assignments * 0.10),
+            ),
+        ),
+        (
+            "routed_down",
+            40 * 2 * 4 * 512 * 2048 / 1e9,
+            expert_budget(
+                assignments=routed_assignments,
+                experts=experts,
+                input_width=512,
+                output_width=2048,
+                rank=16,
+                sentinel_columns=8,
+                repair_assignments=math.ceil(routed_assignments * 0.10),
+            ),
+        ),
+        (
+            "shared_gate_up",
+            40 * 2 * 2 * 2048 * 512 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=2048,
+                output_width=1024,
+                rank=32,
+                sentinel_columns=8,
+                repair_rows=math.ceil(dense_rows * 0.10),
+            ),
+        ),
+        (
+            "shared_down",
+            40 * 2 * 512 * 2048 / 1e9,
+            dense_budget(
+                rows=dense_rows,
+                input_width=512,
+                output_width=2048,
+                rank=32,
+                sentinel_columns=8,
+                repair_rows=math.ceil(dense_rows * 0.10),
+            ),
+        ),
+        ("shared_scalar_gates", 40 * 2 * 2048 / 1e9, None),
+        ("routers", 40 * 2 * 2048 * 256 / 1e9, None),
+    ]
+
+    components: dict[str, object] = {}
+    total_work = 0.0
+    candidate_work = 0.0
+    for name, work, projection in entries:
+        fraction = 1.0 if projection is None else projection.candidate_fraction
+        total_work += work
+        candidate_work += work * fraction
+        components[name] = {
+            "topk4_gflop_per_token": work,
+            "candidate_fraction": fraction,
+            "candidate_gflop_per_token": work * fraction,
+            "projection_budget": None if projection is None else projection.as_dict(),
+        }
+
+    if not math.isclose(
+        total_work, TOPK4_LINEAR_GFLOP_PER_TOKEN, rel_tol=0, abs_tol=1e-12
+    ):
+        raise AssertionError("preregistered schedule does not cover top-k4 linears")
+    effective_fraction = candidate_work / total_work
+    return {
+        "topk4_linear_gflop_per_token": total_work,
+        "candidate_linear_gflop_per_token": candidate_work,
+        "effective_linear_fraction": effective_fraction,
+        "composition": b4_8k_composition(effective_fraction).as_dict(),
+        "components": components,
+    }

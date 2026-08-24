@@ -71,7 +71,9 @@ The reported MAC fraction charges:
 - repaired-input reconstruction and exact residual weight products.
 
 The `uniform_model_composition` field applies that one projection fraction to
-all top-k4 linears only as a roof diagnostic. A real decision requires a
-MAC-weighted manifest across every projection class, including routed experts,
-plus measured M3 wall time. The full experiment and continuation gate are in
+all top-k4 linears only as a roof diagnostic.
+`preregistered_model_schedule` separately emits the complete machine-readable
+shape ledger from note 078, including all-expert basis cost and strict routers.
+A real decision still requires captured per-family numerics and measured M3
+wall time. The full experiment and continuation gate are in
 `notes/078-activation-subspace-residual-prefill.md`.

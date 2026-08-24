@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,6 +214,94 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 	}
 	if tokenResp["account_id"] != "acct-1" {
 		t.Errorf("account_id = %q, want acct-1", tokenResp["account_id"])
+	}
+}
+
+func TestDeviceTokenHTTPConcurrentPollAndReplayIssueOnce(t *testing.T) {
+	srv, st := deviceTestServer()
+	const (
+		deviceCode = "concurrent-device-code"
+		userCode   = "RACE-TEST"
+		accountID  = "acct-concurrent-device"
+		polls      = 16
+	)
+	if err := st.CreateDeviceCode(&store.DeviceCode{
+		DeviceCode: deviceCode,
+		UserCode:   userCode,
+		Status:     "pending",
+		ExpiresAt:  time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApproveDeviceCode(deviceCode, accountID); err != nil {
+		t.Fatal(err)
+	}
+
+	poll := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/v1/device/token",
+			strings.NewReader(`{"device_code":"`+deviceCode+`"}`),
+		)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	responses := make([]*httptest.ResponseRecorder, polls)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range polls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			responses[i] = poll()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	authorized := 0
+	var issuedToken string
+	for i, rec := range responses {
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("response %d is not JSON: %v: %s", i, err, rec.Body.String())
+		}
+		if rec.Code == http.StatusOK && payload["status"] == "authorized" {
+			authorized++
+			issuedToken, _ = payload["token"].(string)
+			continue
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("losing poll %d status = %d, want 404: %s", i, rec.Code, rec.Body.String())
+		}
+		if _, leaked := payload["token"]; leaked {
+			t.Errorf("losing poll %d returned a token: %s", i, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "invalid_grant") {
+			t.Errorf("losing poll %d did not return invalid_grant: %s", i, rec.Body.String())
+		}
+	}
+	if authorized != 1 {
+		t.Fatalf("authorized responses = %d, want 1", authorized)
+	}
+	if issuedToken == "" {
+		t.Fatal("authorized response omitted provider token")
+	}
+	if token, err := st.GetProviderToken(issuedToken); err != nil {
+		t.Fatalf("issued token does not authenticate: %v", err)
+	} else if token.AccountID != accountID {
+		t.Fatalf("issued token account = %q, want %q", token.AccountID, accountID)
+	}
+
+	replay := poll()
+	if replay.Code != http.StatusNotFound || !strings.Contains(replay.Body.String(), "invalid_grant") {
+		t.Fatalf("replay status/body = %d %s, want 404 invalid_grant", replay.Code, replay.Body.String())
+	}
+	if strings.Contains(replay.Body.String(), `"token"`) {
+		t.Fatalf("replay returned a token: %s", replay.Body.String())
 	}
 }
 

@@ -2464,6 +2464,49 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *MemoryStore) ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dc, ok := s.deviceCodesByCode[deviceCode]
+	if !ok {
+		return nil, fmt.Errorf("device grant: %w", ErrNotFound)
+	}
+	if time.Now().After(dc.ExpiresAt) {
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceCodeExpired)
+	}
+	switch dc.Status {
+	case "pending":
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceAuthorizationPending)
+	case "approved":
+		// Continue below.
+	default:
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceGrantConsumed)
+	}
+	if dc.AccountID == "" {
+		return nil, errors.New("approved device grant has no account")
+	}
+	if tokenHash == "" {
+		return nil, errors.New("provider token hash is required")
+	}
+	if _, exists := s.providerTokens[tokenHash]; exists {
+		return nil, errors.New("provider token already exists")
+	}
+
+	pt := &ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: dc.AccountID,
+		Label:     "device-" + dc.UserCode,
+		Active:    true,
+		CreatedAt: time.Now(),
+	}
+	s.providerTokens[tokenHash] = pt
+	dc.Status = "consumed"
+
+	copy := *pt
+	return &copy, nil
+}
+
 func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

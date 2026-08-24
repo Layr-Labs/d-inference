@@ -460,6 +460,13 @@ type DeviceAuthStore interface {
 	// ApproveDeviceCode links a device code to an account, marking it approved.
 	ApproveDeviceCode(deviceCode, accountID string) error
 
+	// ConsumeDeviceGrant atomically changes one approved device code to consumed
+	// and stores exactly one long-lived provider token linked to the approving
+	// account. tokenHash is the SHA-256 hash of the raw token retained by the
+	// caller. Pending, expired, consumed, and missing grants return the stable
+	// sentinel errors declared in interface.go.
+	ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error)
+
 	// DeleteExpiredDeviceCodes removes device codes that have passed their expiry.
 	DeleteExpiredDeviceCodes() error
 

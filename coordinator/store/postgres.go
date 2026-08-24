@@ -3977,6 +3977,87 @@ func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *PostgresStore) ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin device grant exchange: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		userCode  string
+		accountID string
+		status    string
+		expired   bool
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT user_code, account_id, status, expires_at <= NOW()
+		   FROM device_codes
+		  WHERE device_code = $1
+		  FOR UPDATE`,
+		deviceCode,
+	).Scan(&userCode, &accountID, &status, &expired)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: device grant: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: lock device grant: %w", err)
+	}
+	if expired {
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceCodeExpired)
+	}
+	switch status {
+	case "pending":
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceAuthorizationPending)
+	case "approved":
+		// Continue below.
+	default:
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceGrantConsumed)
+	}
+	if accountID == "" {
+		return nil, errors.New("store: approved device grant has no account")
+	}
+	if tokenHash == "" {
+		return nil, errors.New("store: provider token hash is required")
+	}
+
+	pt := &ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Label:     "device-" + userCode,
+		Active:    true,
+	}
+	err = tx.QueryRow(ctx,
+		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
+		 VALUES ($1, $2, $3, TRUE)
+		 RETURNING created_at`,
+		pt.TokenHash, pt.AccountID, pt.Label,
+	).Scan(&pt.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: issue provider token: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE device_codes
+		    SET status = 'consumed'
+		  WHERE device_code = $1 AND status = 'approved'`,
+		deviceCode,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: consume device grant: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil, errors.New("store: approved device grant changed while locked")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit device grant exchange: %w", err)
+	}
+	return pt, nil
+}
+
 func (s *PostgresStore) DeleteExpiredDeviceCodes() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

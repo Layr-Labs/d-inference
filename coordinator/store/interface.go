@@ -30,6 +30,14 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+// Device-code exchange errors are stable contract values so the HTTP layer can
+// preserve RFC 8628 responses without inferring grant state from error text.
+var (
+	ErrDeviceAuthorizationPending = errors.New("device authorization pending")
+	ErrDeviceCodeExpired          = errors.New("device code expired")
+	ErrDeviceGrantConsumed        = errors.New("device grant already consumed")
+)
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -752,7 +760,7 @@ type DeviceCode struct {
 	DeviceCode string    `json:"device_code"` // opaque code for polling (secret, sent only to device)
 	UserCode   string    `json:"user_code"`   // short human-readable code (e.g. "ABCD-1234")
 	AccountID  string    `json:"account_id"`  // set when user approves (empty while pending)
-	Status     string    `json:"status"`      // "pending", "approved", "expired"
+	Status     string    `json:"status"`      // "pending", "approved", "consumed", "expired"
 	ExpiresAt  time.Time `json:"expires_at"`
 	CreatedAt  time.Time `json:"created_at"`
 }

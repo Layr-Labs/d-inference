@@ -144,7 +144,7 @@ index 60e37e2..d62c9e6 100644
          let unclamped = proposed
          var proposed = prefixReusePlan?.clampedChunk(start: start, proposed: proposed) ?? proposed
 diff --git a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
-index 47353c2..8c52a9b 100644
+index 47353c2..e1dfed1 100644
 --- a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
 +++ b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
 @@ -7,7 +7,9 @@ import XCTest
@@ -433,3 +433,30 @@ index 47353c2..8c52a9b 100644
      func testCancellingOneAdopterCannotPoisonTheCachedBoundary() async throws {
          let stack = makeStack()
          let donor = await cbv2SchedCollect(
+@@ -268,6 +461,7 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+                     try stack.engine.submit(request(
+                         id: UInt64(width * 1_000 + 10 + row),
+                         promptTokens: candidate,
++                        maxTokens: 64,
+                         prefixCacheEnabled: false))))
+             }
+ 
+@@ -275,7 +469,8 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+             let streams = try warmPrompts.enumerated().map { row, candidate in
+                 try stack.engine.submit(request(
+                     id: UInt64(width * 1_000 + 100 + row),
+-                    promptTokens: candidate))
++                    promptTokens: candidate,
++                    maxTokens: 64))
+             }
+             var warm: [CBv2SchedCollected] = []
+             for stream in streams {
+@@ -288,6 +483,8 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+                 "B\(width) partial hits must run the uncached suffix")
+             for row in 0 ..< width {
+                 XCTAssertEqual(warm[row].finishReason, .length, "B\(width) row \(row)")
++                XCTAssertEqual(controls[row].tokens.count, 64, "B\(width) control \(row)")
++                XCTAssertEqual(warm[row].tokens.count, 64, "B\(width) warm \(row)")
+                 XCTAssertEqual(
+                     warm[row].tokens, controls[row].tokens,
+                     "B\(width) row \(row) suffix/decode diverged from its cold control")

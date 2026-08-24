@@ -164,8 +164,12 @@ INSTALL_PARENT="$(cd "$INSTALL_PARENT" && pwd -P)"
 INSTALL_DIR="$INSTALL_PARENT/$(basename "$INSTALL_DIR")"
 "$PYTHON" "$PUBLICATION_HELPER" require-absent "$INSTALL_PARENT" "$INSTALL_DIR"
 STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
-/bin/chmod 0700 "$STAGING_DIR"
-STAGING_ID="$("$PYTHON" "$PUBLICATION_HELPER" identity "$INSTALL_PARENT" "$STAGING_DIR")"
+STAGING_ID="$(
+    "$PYTHON" "$PUBLICATION_HELPER" \
+        initialize-staging \
+        "$INSTALL_PARENT" \
+        "$STAGING_DIR"
+)"
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
 git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \

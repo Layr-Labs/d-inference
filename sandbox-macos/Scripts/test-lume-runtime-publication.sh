@@ -9,6 +9,7 @@ CLEANUP_HELPER="$SCRIPT_DIR/remove-sealed-lume-staging.sh"
 TEST_ROOT=""
 TEST_COUNT=0
 STAGING_DIR=""
+STAGING_ID=""
 
 fail() {
     echo "Lume publication contract failure: $*" >&2
@@ -43,6 +44,18 @@ create_staging() {
     parent="$1"
     version="$2"
     STAGING_DIR="$(mktemp -d "$parent/.darkbloom-lume-install.XXXXXX")"
+    if [[ "${EXPECT_STAGING_ACL:-0}" == "1" ]]; then
+        has_acl "$STAGING_DIR" || fail "staging root did not inherit the fixture ACL"
+    fi
+    STAGING_ID="$(
+        "$PYTHON" "$PUBLICATION_HELPER" \
+            initialize-staging \
+            "$parent" \
+            "$STAGING_DIR"
+    )"
+    if [[ "$(uname -s)" == "Darwin" ]] && has_acl "$STAGING_DIR"; then
+        fail "initialized staging root retained an inherited ACL"
+    fi
     /bin/mkdir -p "$STAGING_DIR/lume_lume.bundle/nested"
     printf '%s\n' \
         '#!/bin/bash' \
@@ -50,7 +63,6 @@ create_staging() {
         > "$STAGING_DIR/lume"
     printf '%s\n' '{"schema_version":3}' > "$STAGING_DIR/lume.provenance.json"
     printf '%s\n' "$version" > "$STAGING_DIR/lume_lume.bundle/nested/resource.txt"
-    /bin/chmod 0700 "$STAGING_DIR"
     /bin/chmod 0700 "$STAGING_DIR/lume"
 }
 
@@ -89,7 +101,7 @@ TEST_ROOT="$(cd "$TEST_ROOT" && pwd -P)"
 # sealed. Publication atomically renames it and only then seals the final root.
 create_staging "$TEST_ROOT" "dummy-lume 1.0"
 first_staging="$STAGING_DIR"
-first_identity="$(staging_identity "$TEST_ROOT" "$first_staging")"
+first_identity="$STAGING_ID"
 seal_staging "$TEST_ROOT" "$first_staging" "$first_identity"
 [[ "$(mode_of "$first_staging")" == "0700" ]] \
     || fail "staging envelope was sealed before publication"
@@ -121,7 +133,7 @@ pass "sealed-tree"
 # or nesting under the already-published tree.
 create_staging "$TEST_ROOT" "replacement"
 replacement_staging="$STAGING_DIR"
-replacement_identity="$(staging_identity "$TEST_ROOT" "$replacement_staging")"
+replacement_identity="$STAGING_ID"
 seal_staging "$TEST_ROOT" "$replacement_staging" "$replacement_identity"
 if "$PYTHON" "$PUBLICATION_HELPER" \
     publish \
@@ -141,12 +153,46 @@ DARKBLOOM_LUME_PYTHON="$PYTHON" \
     "$replacement_identity"
 pass "no-overwrite"
 
+# Seal must reject a hardlinked file before changing that external inode.
+create_staging "$TEST_ROOT" "hardlink"
+hardlink_staging="$STAGING_DIR"
+hardlink_identity="$STAGING_ID"
+hardlink_external="$TEST_ROOT/hardlink-external"
+printf '%s\n' "external-content" > "$hardlink_external"
+/bin/chmod 0640 "$hardlink_external"
+hardlink_acl_before=""
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    /bin/chmod +a "user:$(/usr/bin/id -un) allow readattr,readextattr,readsecurity" \
+        "$hardlink_external"
+    hardlink_acl_before="$(acl_snapshot "$hardlink_external")"
+fi
+/bin/ln "$hardlink_external" "$hardlink_staging/0-hardlink"
+if seal_staging "$TEST_ROOT" "$hardlink_staging" "$hardlink_identity" \
+    >/dev/null 2>&1; then
+    fail "seal accepted a hardlinked runtime file"
+fi
+[[ "$(mode_of "$hardlink_external")" == "0640" ]] \
+    || fail "hardlink rejection changed the external inode mode"
+[[ "$(<"$hardlink_external")" == "external-content" ]] \
+    || fail "hardlink rejection changed the external inode content"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    [[ "$(acl_snapshot "$hardlink_external")" == "$hardlink_acl_before" ]] \
+        || fail "hardlink rejection changed the external inode ACL"
+fi
+DARKBLOOM_LUME_PYTHON="$PYTHON" \
+    /bin/bash "$CLEANUP_HELPER" \
+    "$TEST_ROOT" \
+    "$hardlink_staging" \
+    "$hardlink_identity"
+/bin/rm -f -- "$hardlink_external"
+pass "hardlink-rejection"
+
 # An error after the atomic rename leaves a private, writable, therefore
 # unusable destination for inspection. Cleanup of the vanished staging name
 # must not infer authority to remove that destination.
 create_staging "$TEST_ROOT" "ambiguous"
 ambiguous_staging="$STAGING_DIR"
-ambiguous_identity="$(staging_identity "$TEST_ROOT" "$ambiguous_staging")"
+ambiguous_identity="$STAGING_ID"
 seal_staging "$TEST_ROOT" "$ambiguous_staging" "$ambiguous_identity"
 ambiguous_destination="$TEST_ROOT/ambiguous-lume"
 ambiguous_log="$TEST_ROOT/ambiguous.log"
@@ -186,7 +232,7 @@ pass "post-publication-retention"
 parent_mode_before="$(mode_of "$TEST_ROOT")"
 create_staging "$TEST_ROOT" "cleanup"
 cleanup_staging="$STAGING_DIR"
-cleanup_identity="$(staging_identity "$TEST_ROOT" "$cleanup_staging")"
+cleanup_identity="$STAGING_ID"
 seal_staging "$TEST_ROOT" "$cleanup_staging" "$cleanup_identity"
 DARKBLOOM_LUME_PYTHON="$PYTHON" \
     /bin/bash "$CLEANUP_HELPER" \
@@ -197,6 +243,66 @@ DARKBLOOM_LUME_PYTHON="$PYTHON" \
     || fail "sealed staging cleanup left the tree behind"
 [[ "$(mode_of "$TEST_ROOT")" == "$parent_mode_before" ]] \
     || fail "staging cleanup changed the parent mode"
+
+# Swap the emptied expected root out of the namespace immediately before the
+# final binding check. Cleanup must report ambiguity and retain both inodes.
+create_staging "$TEST_ROOT" "cleanup-race"
+cleanup_race_staging="$STAGING_DIR"
+cleanup_race_identity="$STAGING_ID"
+seal_staging "$TEST_ROOT" "$cleanup_race_staging" "$cleanup_race_identity"
+cleanup_race_moved="$TEST_ROOT/.darkbloom-lume-install.moved"
+cleanup_race_report="$(
+    "$PYTHON" - \
+        "$PUBLICATION_HELPER" \
+        "$TEST_ROOT" \
+        "$cleanup_race_staging" \
+        "$cleanup_race_identity" \
+        "$cleanup_race_moved" <<'PY'
+import argparse
+import importlib.util
+import os
+import sys
+
+helper, parent, staging, identity, moved = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("lume_runtime_publication", helper)
+publication = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = publication
+spec.loader.exec_module(publication)
+remove_contents = publication.remove_tree_contents
+replacement_identity = None
+
+def swap_after_empty(descriptor):
+    global replacement_identity
+    publication.remove_tree_contents = remove_contents
+    remove_contents(descriptor)
+    os.rename(staging, moved)
+    os.mkdir(staging, 0o700)
+    replacement_identity = publication.FileIdentity.from_stat(os.lstat(staging))
+
+publication.remove_tree_contents = swap_after_empty
+arguments = argparse.Namespace(parent=parent, tree=staging, identity=identity)
+try:
+    publication.command_cleanup(arguments)
+except publication.PublicationError as error:
+    report = str(error)
+    if "namespace became ambiguous" not in report:
+        raise
+else:
+    raise SystemExit("cleanup accepted a replaced staging namespace")
+
+if publication.FileIdentity.from_stat(os.lstat(staging)) != replacement_identity:
+    raise SystemExit("cleanup deleted or replaced the empty replacement")
+if str(publication.FileIdentity.from_stat(os.lstat(moved))) != identity:
+    raise SystemExit("cleanup lost the expected staging inode")
+if os.listdir(staging) or os.listdir(moved):
+    raise SystemExit("cleanup race fixture roots are not empty")
+print(report)
+PY
+)"
+[[ "$cleanup_race_report" == *"namespace became ambiguous"* ]] \
+    || fail "cleanup replacement ambiguity was not reported"
+/bin/rmdir "$cleanup_race_staging" "$cleanup_race_moved"
+pass "cleanup-replacement"
 
 symlink_target="$TEST_ROOT/symlink-target"
 /bin/mkdir "$symlink_target"
@@ -242,10 +348,12 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     acl_parent_mode="$(mode_of "$acl_parent")"
     acl_parent_before="$(acl_snapshot "$acl_parent")"
 
-    create_staging "$acl_parent" "acl"
+    EXPECT_STAGING_ACL=1 create_staging "$acl_parent" "acl"
     acl_staging="$STAGING_DIR"
-    has_acl "$acl_staging" || fail "ACL fixture did not inherit an ACL"
-    acl_identity="$(staging_identity "$acl_parent" "$acl_staging")"
+    if has_acl "$acl_staging"; then
+        fail "staging initialization did not clear the inherited root ACL"
+    fi
+    acl_identity="$STAGING_ID"
     seal_staging "$acl_parent" "$acl_staging" "$acl_identity"
     acl_destination="$acl_parent/darkbloom-pinned-lume"
     "$PYTHON" "$PUBLICATION_HELPER" \
@@ -264,9 +372,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     [[ "$(acl_snapshot "$acl_parent")" == "$acl_parent_before" ]] \
         || fail "caller-owned parent ACL changed during publication"
 
-    create_staging "$acl_parent" "acl-cleanup"
+    EXPECT_STAGING_ACL=1 create_staging "$acl_parent" "acl-cleanup"
     acl_cleanup_staging="$STAGING_DIR"
-    acl_cleanup_identity="$(staging_identity "$acl_parent" "$acl_cleanup_staging")"
+    acl_cleanup_identity="$STAGING_ID"
     seal_staging "$acl_parent" "$acl_cleanup_staging" "$acl_cleanup_identity"
     /bin/chmod +a "user:$(/usr/bin/id -un) allow readattr,readextattr,readsecurity" \
         "$acl_cleanup_staging"
@@ -281,15 +389,54 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     [[ "$(acl_snapshot "$acl_parent")" == "$acl_parent_before" ]] \
         || fail "caller-owned parent ACL changed during cleanup"
 
+    # ACL-bearing descendants are rejected in place, not recursively repaired.
+    EXPECT_STAGING_ACL=1 create_staging "$acl_parent" "descendant-acl"
+    descendant_acl_staging="$STAGING_DIR"
+    descendant_acl_identity="$STAGING_ID"
+    descendant_acl_file="$descendant_acl_staging/lume_lume.bundle/nested/resource.txt"
+    descendant_content_before="$(<"$descendant_acl_file")"
+    /bin/chmod +a "user:$(/usr/bin/id -un) allow readattr,readextattr,readsecurity" \
+        "$descendant_acl_file"
+    descendant_mode_before="$(mode_of "$descendant_acl_file")"
+    descendant_acl_before="$(acl_snapshot "$descendant_acl_file")"
+    if seal_staging \
+        "$acl_parent" \
+        "$descendant_acl_staging" \
+        "$descendant_acl_identity" >/dev/null 2>&1; then
+        fail "seal accepted an ACL-bearing descendant"
+    fi
+    [[ "$(mode_of "$descendant_acl_file")" == "$descendant_mode_before" ]] \
+        || fail "ACL rejection changed the descendant mode"
+    [[ "$(<"$descendant_acl_file")" == "$descendant_content_before" ]] \
+        || fail "ACL rejection changed the descendant content"
+    [[ "$(acl_snapshot "$descendant_acl_file")" == "$descendant_acl_before" ]] \
+        || fail "ACL rejection changed the descendant ACL"
+    [[ "$(mode_of "$acl_parent")" == "$acl_parent_mode" ]] \
+        || fail "descendant ACL rejection changed the parent mode"
+    [[ "$(acl_snapshot "$acl_parent")" == "$acl_parent_before" ]] \
+        || fail "descendant ACL rejection changed the parent ACL"
+    DARKBLOOM_LUME_PYTHON="$PYTHON" \
+        /bin/bash "$CLEANUP_HELPER" \
+        "$acl_parent" \
+        "$descendant_acl_staging" \
+        "$descendant_acl_identity"
+    pass "descendant-acl-rejection"
+
     /bin/chmod -RN "$acl_parent"
     /bin/chmod -R u+rwX "$acl_parent"
     /bin/rm -rf -- "$acl_parent"
     pass "acl-isolation"
 else
+    echo "lume_publication_contract_skip=descendant-acl-rejection:requires-macos"
     echo "lume_publication_contract_skip=acl-isolation:requires-macos"
 fi
 
-if [[ "$TEST_COUNT" -lt 5 ]]; then
-    fail "publication contract executed only $TEST_COUNT tests"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    EXPECTED_TEST_COUNT=9
+else
+    EXPECTED_TEST_COUNT=7
+fi
+if [[ "$TEST_COUNT" -ne "$EXPECTED_TEST_COUNT" ]]; then
+    fail "publication contract executed $TEST_COUNT tests; expected $EXPECTED_TEST_COUNT"
 fi
 echo "lume_publication_contract_tests=$TEST_COUNT"

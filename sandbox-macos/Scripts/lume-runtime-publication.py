@@ -11,7 +11,6 @@ import os
 import platform
 import re
 import stat
-import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,6 +24,8 @@ PUBLISHED_FILE_MODE = 0o444
 PUBLISHED_EXECUTABLE_MODE = 0o555
 RENAME_EXCL = 0x00000004
 RENAME_NOREPLACE = 0x00000001
+ACL_TYPE_EXTENDED = 0x00000100
+ACL_FIRST_ENTRY = 0
 
 
 class PublicationError(RuntimeError):
@@ -196,106 +197,92 @@ def require_owned_entry(metadata: os.stat_result, relative: str) -> None:
         fail(f"Lume runtime entry is not owned by the current user: {relative}")
 
 
-def acl_is_present(path: str) -> bool:
+def descriptor_has_acl(descriptor: int) -> bool:
     if platform.system() != "Darwin":
         return False
-    result = subprocess.run(
-        ["/bin/ls", "-lde", path],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if result.returncode != 0 or not result.stdout:
-        fail(f"could not inspect the Lume runtime ACL: {path}")
-    mode_field = result.stdout.splitlines()[0].split(maxsplit=1)[0]
-    return mode_field.endswith("+")
+    libc = ctypes.CDLL(None, use_errno=True)
+    get_acl = libc.acl_get_fd_np
+    get_acl.argtypes = [ctypes.c_int, ctypes.c_int]
+    get_acl.restype = ctypes.c_void_p
+    get_entry = libc.acl_get_entry
+    get_entry.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    get_entry.restype = ctypes.c_int
+    free_acl = libc.acl_free
+    free_acl.argtypes = [ctypes.c_void_p]
+    free_acl.restype = ctypes.c_int
+
+    ctypes.set_errno(0)
+    acl = get_acl(descriptor, ACL_TYPE_EXTENDED)
+    if not acl:
+        error_number = ctypes.get_errno()
+        if error_number == errno.ENOENT:
+            return False
+        raise OSError(error_number, os.strerror(error_number))
+    entry = ctypes.c_void_p()
+    ctypes.set_errno(0)
+    result = get_entry(acl, ACL_FIRST_ENTRY, ctypes.byref(entry))
+    entry_error = ctypes.get_errno()
+    ctypes.set_errno(0)
+    free_result = free_acl(acl)
+    free_error = ctypes.get_errno()
+    if free_result != 0:
+        raise OSError(free_error, os.strerror(free_error))
+    if result < 0:
+        if entry_error == errno.EINVAL:
+            return False
+        raise OSError(entry_error, os.strerror(entry_error))
+    return True
 
 
-def clear_tree_acls(path: str) -> None:
+def require_no_acl(descriptor: int, relative: str) -> None:
+    try:
+        has_acl = descriptor_has_acl(descriptor)
+    except OSError as error:
+        raise PublicationError(
+            f"could not inspect the Lume runtime ACL: {relative}"
+        ) from error
+    if has_acl:
+        fail(f"Lume runtime entry retains an ACL: {relative}")
+
+
+def clear_descriptor_acl(descriptor: int) -> None:
     if platform.system() != "Darwin":
         return
-    result = subprocess.run(
-        ["/bin/chmod", "-RN", path],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip()
-        fail(f"could not clear Lume runtime ACLs: {detail or path}")
-
-
-def walk_and_seal(
-    descriptor: int,
-    root_path: str,
-    relative: str = "",
-) -> tuple[set[str], set[str]]:
-    directories: set[str] = set()
-    files: set[str] = set()
-    for entry in sorted_entries(descriptor):
-        require_safe_name(entry.name)
-        child_relative = relative_child(relative, entry.name)
-        metadata = entry.stat(follow_symlinks=False)
-        require_owned_entry(metadata, child_relative)
-        child_path = os.path.join(root_path, child_relative)
-        if stat.S_ISDIR(metadata.st_mode):
-            child_fd = os.open(entry.name, directory_open_flags(), dir_fd=descriptor)
-            try:
-                opened = os.fstat(child_fd)
-                if FileIdentity.from_stat(opened) != FileIdentity.from_stat(metadata):
-                    fail(f"Lume runtime directory changed while sealing: {child_relative}")
-                child_directories, child_files = walk_and_seal(
-                    child_fd,
-                    root_path,
-                    child_relative,
-                )
-                os.fchmod(child_fd, PUBLISHED_DIRECTORY_MODE)
-            finally:
-                os.close(child_fd)
-            directories.add(child_relative)
-            directories.update(child_directories)
-            files.update(child_files)
-            continue
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            fail(f"Lume runtime tree contains an unsupported entry: {child_relative}")
-        child_fd = os.open(entry.name, regular_open_flags(), dir_fd=descriptor)
-        try:
-            opened = os.fstat(child_fd)
-            if FileIdentity.from_stat(opened) != FileIdentity.from_stat(metadata):
-                fail(f"Lume runtime file changed while sealing: {child_relative}")
-            mode = (
-                PUBLISHED_EXECUTABLE_MODE
-                if child_relative == "lume"
-                else PUBLISHED_FILE_MODE
+    libc = ctypes.CDLL(None, use_errno=True)
+    delete_acl = libc.acl_delete_fd_np
+    delete_acl.argtypes = [ctypes.c_int, ctypes.c_int]
+    delete_acl.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if delete_acl(descriptor, ACL_TYPE_EXTENDED) != 0:
+        error_number = ctypes.get_errno()
+        if error_number != errno.ENOENT:
+            raise PublicationError("could not clear the staging root ACL") from OSError(
+                error_number, os.strerror(error_number)
             )
-            os.fchmod(child_fd, mode)
-        finally:
-            os.close(child_fd)
-        files.add(child_relative)
-        if acl_is_present(child_path):
-            fail(f"Lume runtime file retains an ACL after sealing: {child_relative}")
-    return directories, files
+    require_no_acl(descriptor, ".")
 
 
-def verify_tree(
+def require_regular_single_link(metadata: os.stat_result, relative: str) -> None:
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        fail(f"Lume runtime tree contains an unsupported entry: {relative}")
+
+
+def inspect_tree(
     descriptor: int,
-    root_path: str,
     expected_root_mode: int,
+    *,
+    seal: bool,
     relative: str = "",
 ) -> tuple[set[str], set[str]]:
     root_metadata = os.fstat(descriptor)
     require_owned_directory(root_metadata, "Lume runtime directory")
-    expected_mode = expected_root_mode if not relative else PUBLISHED_DIRECTORY_MODE
-    if stat.S_IMODE(root_metadata.st_mode) != expected_mode:
+    if not seal and stat.S_IMODE(root_metadata.st_mode) != expected_root_mode:
         fail(
             "Lume runtime directory has unexpected mode "
             f"{stat.S_IMODE(root_metadata.st_mode):04o}: {relative or '.'}"
         )
-    current_path = root_path if not relative else os.path.join(root_path, relative)
-    if acl_is_present(current_path):
-        fail(f"Lume runtime directory retains an ACL: {relative or '.'}")
+    require_no_acl(descriptor, relative or ".")
+    action = "sealing" if seal else "verifying"
 
     directories: set[str] = set()
     files: set[str] = set()
@@ -309,33 +296,45 @@ def verify_tree(
             try:
                 opened = os.fstat(child_fd)
                 if FileIdentity.from_stat(opened) != FileIdentity.from_stat(metadata):
-                    fail(f"Lume runtime directory changed while verifying: {child_relative}")
-                child_directories, child_files = verify_tree(
+                    fail(f"Lume runtime directory changed while {action}: {child_relative}")
+                require_owned_entry(opened, child_relative)
+                child_directories, child_files = inspect_tree(
                     child_fd,
-                    root_path,
                     PUBLISHED_DIRECTORY_MODE,
-                    child_relative,
+                    seal=seal,
+                    relative=child_relative,
                 )
+                if seal:
+                    os.fchmod(child_fd, PUBLISHED_DIRECTORY_MODE)
             finally:
                 os.close(child_fd)
             directories.add(child_relative)
             directories.update(child_directories)
             files.update(child_files)
             continue
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            fail(f"Lume runtime tree contains an unsupported entry: {child_relative}")
-        expected_mode = (
-            PUBLISHED_EXECUTABLE_MODE
-            if child_relative == "lume"
-            else PUBLISHED_FILE_MODE
-        )
-        if stat.S_IMODE(metadata.st_mode) != expected_mode:
-            fail(
-                "Lume runtime file has unexpected mode "
-                f"{stat.S_IMODE(metadata.st_mode):04o}: {child_relative}"
+        require_regular_single_link(metadata, child_relative)
+        child_fd = os.open(entry.name, regular_open_flags(), dir_fd=descriptor)
+        try:
+            opened = os.fstat(child_fd)
+            if FileIdentity.from_stat(opened) != FileIdentity.from_stat(metadata):
+                fail(f"Lume runtime file changed while {action}: {child_relative}")
+            require_owned_entry(opened, child_relative)
+            require_regular_single_link(opened, child_relative)
+            require_no_acl(child_fd, child_relative)
+            expected_mode = (
+                PUBLISHED_EXECUTABLE_MODE
+                if child_relative == "lume"
+                else PUBLISHED_FILE_MODE
             )
-        if acl_is_present(os.path.join(root_path, child_relative)):
-            fail(f"Lume runtime file retains an ACL: {child_relative}")
+            if seal:
+                os.fchmod(child_fd, expected_mode)
+            elif stat.S_IMODE(opened.st_mode) != expected_mode:
+                fail(
+                    "Lume runtime file has unexpected mode "
+                    f"{stat.S_IMODE(opened.st_mode):04o}: {child_relative}"
+                )
+        finally:
+            os.close(child_fd)
         files.add(child_relative)
 
     return directories, files
@@ -350,6 +349,12 @@ def require_complete_tree(directories: set[str], files: set[str]) -> None:
         fail("Lume runtime tree is missing its resource bundle")
 
 
+def require_tree_binding(tree: OpenTree, action: str) -> None:
+    metadata = stat_child(tree.parent_fd, tree.tree_name)
+    if metadata is None or FileIdentity.from_stat(metadata) != tree.identity:
+        fail(f"Lume runtime tree changed while {action}: {tree.tree_path}")
+
+
 def command_identity(arguments: argparse.Namespace) -> None:
     with open_tree(
         arguments.parent,
@@ -357,6 +362,21 @@ def command_identity(arguments: argparse.Namespace) -> None:
         expected_identity=None,
         require_staging=True,
     ) as tree:
+        print(tree.identity)
+
+
+def command_initialize_staging(arguments: argparse.Namespace) -> None:
+    with open_tree(
+        arguments.parent,
+        arguments.tree,
+        expected_identity=None,
+        require_staging=True,
+    ) as tree:
+        if sorted_entries(tree.tree_fd):
+            fail("Lume staging root must be empty during initialization")
+        clear_descriptor_acl(tree.tree_fd)
+        os.fchmod(tree.tree_fd, STAGING_ROOT_MODE)
+        require_tree_binding(tree, "initializing")
         print(tree.identity)
 
 
@@ -386,14 +406,17 @@ def command_seal_staging(arguments: argparse.Namespace) -> None:
         expected_identity=expected_identity,
         require_staging=True,
     ) as tree:
-        clear_tree_acls(tree.tree_path)
-        directories, files = walk_and_seal(tree.tree_fd, tree.tree_path)
+        directories, files = inspect_tree(
+            tree.tree_fd,
+            STAGING_ROOT_MODE,
+            seal=True,
+        )
         os.fchmod(tree.tree_fd, STAGING_ROOT_MODE)
         require_complete_tree(directories, files)
-        verified_directories, verified_files = verify_tree(
+        verified_directories, verified_files = inspect_tree(
             tree.tree_fd,
-            tree.tree_path,
             STAGING_ROOT_MODE,
+            seal=False,
         )
         require_complete_tree(verified_directories, verified_files)
 
@@ -473,15 +496,12 @@ def command_publish(arguments: argparse.Namespace) -> None:
             expected_identity=expected_identity,
             require_staging=True,
         ) as tree:
-            directories, files = verify_tree(
+            directories, files = inspect_tree(
                 tree.tree_fd,
-                tree.tree_path,
                 STAGING_ROOT_MODE,
+                seal=False,
             )
             require_complete_tree(directories, files)
-            if stat_child(tree.parent_fd, destination_name) is not None:
-                fail(f"Lume install destination already exists: {arguments.destination}")
-
             exclusive_rename(tree.parent_fd, tree.tree_name, destination_name)
             committed = True
 
@@ -495,10 +515,10 @@ def command_publish(arguments: argparse.Namespace) -> None:
                 fail("published Lume destination has the wrong identity")
             os.fchmod(tree.tree_fd, PUBLISHED_DIRECTORY_MODE)
 
-            directories, files = verify_tree(
+            directories, files = inspect_tree(
                 tree.tree_fd,
-                arguments.destination,
                 PUBLISHED_DIRECTORY_MODE,
+                seal=False,
             )
             require_complete_tree(directories, files)
     except Exception as error:
@@ -518,10 +538,10 @@ def command_verify(arguments: argparse.Namespace) -> None:
         expected_identity=expected_identity,
         require_staging=False,
     ) as tree:
-        directories, files = verify_tree(
+        directories, files = inspect_tree(
             tree.tree_fd,
-            tree.tree_path,
             PUBLISHED_DIRECTORY_MODE,
+            seal=False,
         )
         require_complete_tree(directories, files)
 
@@ -540,6 +560,11 @@ def remove_tree_contents(descriptor: int) -> None:
                 remove_tree_contents(child_fd)
             finally:
                 os.close(child_fd)
+            rebound = stat_child(descriptor, entry.name)
+            if rebound is None or FileIdentity.from_stat(rebound) != FileIdentity.from_stat(
+                metadata
+            ):
+                fail(f"Lume staging directory changed before removal: {entry.name}")
             os.rmdir(entry.name, dir_fd=descriptor)
             continue
         os.unlink(entry.name, dir_fd=descriptor)
@@ -564,10 +589,13 @@ def command_cleanup(arguments: argparse.Namespace) -> None:
         if FileIdentity.from_stat(opened) != expected_identity:
             fail(f"Lume staging tree changed during cleanup: {arguments.tree}")
 
-        clear_tree_acls(arguments.tree)
         remove_tree_contents(tree_fd)
-        os.close(tree_fd)
-        tree_fd = -1
+        rebound = stat_child(parent_fd, tree_name)
+        if rebound is None or FileIdentity.from_stat(rebound) != expected_identity:
+            fail(
+                "Lume staging namespace became ambiguous during cleanup; "
+                f"emptied expected root retained: {arguments.tree}"
+            )
         os.rmdir(tree_name, dir_fd=parent_fd)
     finally:
         if tree_fd >= 0:
@@ -583,6 +611,11 @@ def parser() -> argparse.ArgumentParser:
     identity.add_argument("parent")
     identity.add_argument("tree")
     identity.set_defaults(handler=command_identity)
+
+    initialize_staging = commands.add_parser("initialize-staging")
+    initialize_staging.add_argument("parent")
+    initialize_staging.add_argument("tree")
+    initialize_staging.set_defaults(handler=command_initialize_staging)
 
     require_absent = commands.add_parser("require-absent")
     require_absent.add_argument("parent")

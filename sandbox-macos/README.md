@@ -255,14 +255,18 @@ resource bytes to the release identity instead of trusting a self-authenticated
 digest list. Production validation requires Apple-designated requirements for
 both the executable and manifest under team `SLDQ2GJ6TL`; the
 `--development-ad-hoc-lume` daemon flag is an explicit local-only bypass.
-Publication seals every staging descendant beside the destination while keeping
-the private staging envelope at `0700`. Darwin permits filesystem-specific
-`EACCES` when renaming a write-disabled directory, so publication uses
-fd-relative `renameatx_np(RENAME_EXCL)` before sealing the final root to `0555`.
-The destination is never replaced, and the executable is first launched from
-its stable final path. A post-rename failure retains and reports the ambiguous
-destination; identity-bound cleanup changes only the owned staging inode and
-never edits caller-owned parent ACLs or modes.
+Publication first clears an inherited ACL, through its descriptor, from only
+the newly created empty staging envelope. Sealing rejects ACL-bearing
+descendants and multi-link regular files before mutating those inodes; it never
+recursively repairs ACLs. The private staging envelope stays at `0700`. Darwin
+permits filesystem-specific `EACCES` when renaming a write-disabled directory,
+so publication uses fd-relative `renameatx_np(RENAME_EXCL)` before sealing the
+final root to `0555`. The destination is never replaced, and the executable is
+first launched from its stable final path. A post-rename failure retains and
+reports the ambiguous destination. Cleanup keeps the expected staging
+descriptor open while emptying it, revalidates its parent binding before root
+removal, and fails without deleting a replacement if that binding changed.
+Neither initialization nor cleanup edits caller-owned parent ACLs or modes.
 Before executing Lume, the adapter requires the complete immutable directory
 tree and provenance to match the audited lock; it rejects added, removed,
 replaced, or modified runtime entries. The production installation must be

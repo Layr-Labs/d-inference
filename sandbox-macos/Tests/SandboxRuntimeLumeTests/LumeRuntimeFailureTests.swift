@@ -389,7 +389,8 @@ final class LumeRuntimeFailureTests: XCTestCase {
         }
         try fixture.allowListToContinue()
 
-        XCTAssertNotNil(try await inspection.value)
+        let inspected = try await inspection.value
+        XCTAssertNotNil(inspected)
         try await runtime.release(
             scope: lease.scope,
             name: lease.virtualMachineName

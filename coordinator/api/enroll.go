@@ -52,19 +52,34 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
 
-	// CMS-sign the profile so macOS shows it as signed at install time. Signing is
-	// install-time trust only (does not affect the SCEP/MDM chain inside). If
-	// no signer is configured or signing fails, serve unsigned so enrollment is
-	// never blocked — but make the failure loud (error log + metric).
+	// CMS-sign the profile so macOS can verify its provenance at install time.
+	// Signing remains separate from the SCEP/MDM attestation chain inside. The
+	// unsigned fallback is available only when startup explicitly configured it
+	// for development/tests; required deployments fail closed here as a runtime
+	// backstop if the signer is absent or fails.
 	switch {
 	case s.profileSigner == nil:
+		if s.profileSigningRequired {
+			s.logger.Error("required profile signer is unavailable", "serial_number", req.SerialNumber)
+			s.ddIncr("enroll.profile_sign_required_missing", nil)
+			writeJSON(w, http.StatusServiceUnavailable,
+				errorResponse("server_error", "enrollment profile signing is unavailable"))
+			return
+		}
 		s.ddIncr("enroll.profile_unsigned", nil)
 	default:
 		signed, err := s.profileSigner.Sign(body)
 		if err != nil {
+			s.ddIncr("enroll.profile_sign_error", nil)
+			if s.profileSigningRequired {
+				s.logger.Error("required profile signing failed",
+					"serial_number", req.SerialNumber, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable,
+					errorResponse("server_error", "enrollment profile signing is unavailable"))
+				return
+			}
 			s.logger.Error("profile signing failed — serving unsigned profile",
 				"serial_number", req.SerialNumber, "error", err)
-			s.ddIncr("enroll.profile_sign_error", nil)
 		} else {
 			body = signed
 			s.ddIncr("enroll.profile_signed", nil)

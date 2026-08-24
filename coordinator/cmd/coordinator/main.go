@@ -64,6 +64,11 @@ import (
 // EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
 const defaultPrefillKeepaliveInterval = 5 * time.Second
 
+func profileSigningRequiredForTrust(minTrust registry.TrustLevel, allowUnsignedValue string) bool {
+	allowUnsigned := strings.EqualFold(strings.TrimSpace(allowUnsignedValue), "true")
+	return minTrust == registry.TrustHardware && !allowUnsigned
+}
+
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -763,13 +768,25 @@ func main() {
 		logger.Info("MDM verification enabled", "url", mdmCfg.URL)
 	}
 
-	// Optional profile signing: when a code-signing identity (e.g. Developer ID
-	// Application .p12) is supplied via PROFILE_SIGNING_P12_B64/_PATH (+ _PASSWORD),
-	// CMS-sign the /v1/enroll .mobileconfig. Misconfig degrades to unsigned.
-	if signer := profilesign.LoadFromEnv(logger); signer != nil {
+	// Hardware-trust enrollment profiles must have authenticated provenance in
+	// live deployments. Local development/tests can opt into the historical unsigned
+	// profile path explicitly; lower trust modes do not rely on MDM enrollment.
+	allowUnsignedValue := os.Getenv(profilesign.AllowUnsignedProfilesEnv)
+	allowUnsignedProfiles := strings.EqualFold(strings.TrimSpace(allowUnsignedValue), "true")
+	profileSigningRequired := profileSigningRequiredForTrust(reg.MinTrustLevel, allowUnsignedValue)
+	signer, err := profilesign.LoadFromEnv(logger, profileSigningRequired)
+	if err != nil {
+		logger.Error("profile signing configuration invalid", "required", profileSigningRequired, "error", err)
+		os.Exit(1)
+	}
+	srv.SetProfileSigningRequired(profileSigningRequired)
+	if signer != nil {
 		srv.SetProfileSigner(signer)
+	} else if allowUnsignedProfiles {
+		logger.Warn("configuration-profile signing explicitly disabled for development/testing",
+			"environment", profilesign.AllowUnsignedProfilesEnv)
 	} else {
-		logger.Info("configuration-profile signing not configured — serving unsigned enrollment profiles")
+		logger.Info("configuration-profile signing not configured; unsigned enrollment allowed because hardware trust is not required")
 	}
 
 	// Optional APNs code-identity attestation (v0.6.0). When the APNs auth key

@@ -32,6 +32,7 @@ EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
+EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES=true
 EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
 EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
 EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)

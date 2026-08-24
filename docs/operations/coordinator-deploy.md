@@ -650,7 +650,8 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_RELEASE_KEY` | Admin / CI release auth |
 | `EIGENINFERENCE_PRIVY_*` | Consumer JWT auth |
 | `MICROMDM_API_KEY` = `EIGENINFERENCE_MDM_API_KEY` | Must be byte-identical or MDM lookups fail |
-| `MDM_PUSH_P12_B64`, `PROFILE_SIGNING_P12_*` | Apple MDM push + profile signing |
+| `MDM_PUSH_P12_B64`, `PROFILE_SIGNING_P12_*` | Apple MDM push + profile signing; a hardware-trust coordinator refuses startup if the profile identity is missing, malformed, or expired |
+| `EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES` | Development/test escape hatch only; must remain unset or `false` in prod |
 | `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | Optional; unset logs a startup warning (webhook then relies on the CommandUUID gate alone) |
 | `MNEMONIC` | X25519 key derivation (legacy name) |
 | `EIGENINFERENCE_TTFT_HARD_REJECT`, `_TTFT_LIVE_DEADLINE_BASE_MS`, `_TTFT_CALIBRATION`, `_TTFT_TERMINAL_REJECT` | TTFT gate + calibration + ladder termination |

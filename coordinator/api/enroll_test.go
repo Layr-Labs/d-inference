@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -21,6 +22,12 @@ import (
 	"github.com/smallstep/pkcs7"
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
+
+type failingEnrollmentProfileSigner struct{}
+
+func (failingEnrollmentProfileSigner) Sign([]byte) ([]byte, error) {
+	return nil, errors.New("signer unavailable")
+}
 
 func TestGenerateCombinedProfile(t *testing.T) {
 	serial := "ABCD1234EFGH"
@@ -205,6 +212,7 @@ func newTestProfileSigner(t *testing.T) *profilesign.Signer {
 func TestHandleEnrollSigned(t *testing.T) {
 	srv := enrollTestServer(t)
 	srv.SetProfileSigner(newTestProfileSigner(t))
+	srv.SetProfileSigningRequired(true)
 
 	body := `{"serial_number": "ABCD1234EFGH"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
@@ -272,6 +280,58 @@ func TestHandleEnrollUnsignedFallback(t *testing.T) {
 	}
 	if !strings.HasPrefix(w.Body.String(), `<?xml version="1.0"`) {
 		t.Error("expected raw XML plist when no signer configured")
+	}
+}
+
+func TestHandleEnrollRequiredSigningFailsClosed(t *testing.T) {
+	for name, signer := range map[string]enrollmentProfileSigner{
+		"missing signer": nil,
+		"signing error":  failingEnrollmentProfileSigner{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := enrollTestServer(t)
+			srv.profileSigner = signer
+			srv.SetProfileSigningRequired(true)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/enroll",
+				strings.NewReader(`{"serial_number":"ABCD1234EFGH"}`),
+			)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "<?xml") {
+				t.Fatalf("required-signing failure leaked an unsigned profile: %s", rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); got == "application/x-apple-aspen-config" {
+				t.Fatalf("required-signing failure used mobileconfig content type")
+			}
+		})
+	}
+}
+
+func TestHandleEnrollOptionalSigningErrorFallsBackUnsigned(t *testing.T) {
+	srv := enrollTestServer(t)
+	srv.profileSigner = failingEnrollmentProfileSigner{}
+	srv.SetProfileSigningRequired(false)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/enroll",
+		strings.NewReader(`{"serial_number":"ABCD1234EFGH"}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.HasPrefix(rec.Body.String(), `<?xml version="1.0"`) {
+		t.Fatalf("optional fallback did not serve unsigned plist")
 	}
 }
 

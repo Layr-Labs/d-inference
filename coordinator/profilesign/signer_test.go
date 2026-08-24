@@ -204,6 +204,9 @@ func TestSignerExpired(t *testing.T) {
 	if !signer.Expired(now) {
 		t.Error("expected expired cert to report Expired() == true")
 	}
+	if _, err := signer.Sign([]byte("<plist/>")); err == nil {
+		t.Error("expected Sign to reject an identity that expired after startup")
+	}
 }
 
 func TestNewSignerWrongPassword(t *testing.T) {
@@ -214,9 +217,9 @@ func TestNewSignerWrongPassword(t *testing.T) {
 	}
 }
 
-// TestLoadFromEnvExpiredCertDisablesSigning is a regression for the P2 finding:
-// an expired/not-yet-valid signing cert must degrade to unsigned (nil signer)
-// rather than stamping an untrusted CMS signature.
+// TestLoadFromEnvExpiredCertDisablesOptionalSigning verifies the explicit
+// dev/test path still degrades to unsigned rather than stamping an untrusted
+// CMS signature.
 func TestLoadFromEnvExpiredCertDisablesSigning(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	now := time.Now()
@@ -226,7 +229,11 @@ func TestLoadFromEnvExpiredCertDisablesSigning(t *testing.T) {
 	t.Setenv("PROFILE_SIGNING_P12_B64", base64.StdEncoding.EncodeToString(p12))
 	t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
 
-	if s := LoadFromEnv(logger); s != nil {
+	s, err := LoadFromEnv(logger, false)
+	if err != nil {
+		t.Fatalf("optional signing returned an error: %v", err)
+	}
+	if s != nil {
 		t.Error("expected nil signer (degrade to unsigned) for an expired signing certificate")
 	}
 }
@@ -239,7 +246,11 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Setenv("PROFILE_SIGNING_P12_B64", "")
 		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
 		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", "")
-		if s := LoadFromEnv(logger); s != nil {
+		s, err := LoadFromEnv(logger, false)
+		if err != nil {
+			t.Fatalf("LoadFromEnv: %v", err)
+		}
+		if s != nil {
 			t.Error("expected nil signer when unconfigured")
 		}
 	})
@@ -251,7 +262,10 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
 		t.Setenv("PROFILE_SIGNING_P12_B64", base64.StdEncoding.EncodeToString(p12))
 		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
-		s := LoadFromEnv(logger)
+		s, err := LoadFromEnv(logger, false)
+		if err != nil {
+			t.Fatalf("LoadFromEnv: %v", err)
+		}
 		if s == nil {
 			t.Fatal("expected signer from base64 env")
 		}
@@ -264,7 +278,11 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
 		t.Setenv("PROFILE_SIGNING_P12_B64", base64.RawURLEncoding.EncodeToString(p12))
 		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
-		if s := LoadFromEnv(logger); s == nil {
+		s, err := LoadFromEnv(logger, false)
+		if err != nil {
+			t.Fatalf("LoadFromEnv: %v", err)
+		}
+		if s == nil {
 			t.Fatal("expected signer from URL-safe base64 env")
 		}
 	})
@@ -278,7 +296,11 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Setenv("PROFILE_SIGNING_P12_B64", "")
 		t.Setenv("PROFILE_SIGNING_P12_PATH", p12Path)
 		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
-		if s := LoadFromEnv(logger); s == nil {
+		s, err := LoadFromEnv(logger, false)
+		if err != nil {
+			t.Fatalf("LoadFromEnv: %v", err)
+		}
+		if s == nil {
 			t.Fatal("expected signer from path env")
 		}
 	})
@@ -286,8 +308,59 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Run("bad_base64", func(t *testing.T) {
 		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
 		t.Setenv("PROFILE_SIGNING_P12_B64", "!!!not base64!!!")
-		if s := LoadFromEnv(logger); s != nil {
+		s, err := LoadFromEnv(logger, false)
+		if err != nil {
+			t.Fatalf("optional invalid signing material returned an error: %v", err)
+		}
+		if s != nil {
 			t.Error("expected nil signer for invalid base64")
+		}
+	})
+}
+
+func TestLoadFromEnvRequiredFailsClosed(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	t.Run("missing identity", func(t *testing.T) {
+		t.Setenv("PROFILE_SIGNING_P12_B64", "")
+		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
+		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", "")
+		if signer, err := LoadFromEnv(logger, true); err == nil || signer != nil {
+			t.Fatalf("LoadFromEnv(required) = (%v, %v), want nil signer and error", signer, err)
+		}
+	})
+
+	t.Run("malformed identity", func(t *testing.T) {
+		t.Setenv("PROFILE_SIGNING_P12_B64", "not-base64!")
+		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
+		if signer, err := LoadFromEnv(logger, true); err == nil || signer != nil {
+			t.Fatalf("LoadFromEnv(required) = (%v, %v), want nil signer and error", signer, err)
+		}
+	})
+
+	t.Run("expired identity", func(t *testing.T) {
+		now := time.Now()
+		p12, password := makeTestP12(t, "Expired Required Signer", "Darkbloom", now.Add(-48*time.Hour), now.Add(-time.Hour))
+		t.Setenv("PROFILE_SIGNING_P12_B64", base64.StdEncoding.EncodeToString(p12))
+		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
+		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
+		if signer, err := LoadFromEnv(logger, true); err == nil || signer != nil {
+			t.Fatalf("LoadFromEnv(required) = (%v, %v), want nil signer and error", signer, err)
+		}
+	})
+
+	t.Run("valid identity", func(t *testing.T) {
+		now := time.Now()
+		p12, password := makeTestP12(t, "Required Signer", "Darkbloom", now.Add(-time.Hour), now.Add(time.Hour))
+		t.Setenv("PROFILE_SIGNING_P12_B64", base64.StdEncoding.EncodeToString(p12))
+		t.Setenv("PROFILE_SIGNING_P12_PATH", "")
+		t.Setenv("PROFILE_SIGNING_P12_PASSWORD", password)
+		signer, err := LoadFromEnv(logger, true)
+		if err != nil {
+			t.Fatalf("LoadFromEnv(required): %v", err)
+		}
+		if signer == nil {
+			t.Fatal("required valid identity returned nil signer")
 		}
 	})
 }

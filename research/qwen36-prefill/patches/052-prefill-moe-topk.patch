@@ -1,0 +1,296 @@
+diff --git a/Libraries/MLXLLM/Models/Qwen35PrefillMoERoutingPolicy.swift b/Libraries/MLXLLM/Models/Qwen35PrefillMoERoutingPolicy.swift
+new file mode 100644
+--- /dev/null
++++ b/Libraries/MLXLLM/Models/Qwen35PrefillMoERoutingPolicy.swift
+@@ -0,0 +1,114 @@
++import Foundation
++
++/// Default-off research policy for reducing Qwen3.5 routed-expert work during
++/// multi-token prompt forwards. Decode-shaped calls and unlabelled MoE blocks
++/// always retain the checkpoint's configured top-k.
++public struct Qwen35PrefillMoERoutingPolicy: Equatable, Sendable {
++    public static let topKEnvironmentKey = "DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K"
++    public static let fullLayersEnvironmentKey =
++        "DARKBLOOM_QWEN35_PREFILL_MOE_FULL_LAYERS"
++
++    public static let disabled = Qwen35PrefillMoERoutingPolicy()
++
++    public let reducedTopK: Int?
++    public let fullTopKLayers: Set<Int>
++
++    public init(
++        reducedTopK: Int? = nil,
++        fullTopKLayers: Set<Int> = []
++    ) {
++        self.reducedTopK = reducedTopK
++        self.fullTopKLayers = fullTopKLayers
++    }
++
++    /// Resolve the process-start experiment knobs. Any malformed or
++    /// non-reducing setting fails closed to the checkpoint's original policy.
++    public static func fromEnvironment(
++        _ environment: [String: String] = ProcessInfo.processInfo.environment,
++        modelTopK: Int,
++        layerCount: Int
++    ) -> Qwen35PrefillMoERoutingPolicy {
++        guard
++            modelTopK > 1,
++            layerCount > 0,
++            let rawTopK = environment[topKEnvironmentKey],
++            let reducedTopK = Int(rawTopK.trimmingCharacters(in: .whitespaces)),
++            reducedTopK > 0,
++            reducedTopK < modelTopK
++        else {
++            return .disabled
++        }
++
++        let rawLayers = environment[fullLayersEnvironmentKey] ?? ""
++        guard let fullLayers = parseLayerSet(rawLayers, layerCount: layerCount) else {
++            return .disabled
++        }
++        return Qwen35PrefillMoERoutingPolicy(
++            reducedTopK: reducedTopK,
++            fullTopKLayers: fullLayers)
++    }
++
++    /// The expert count for one MoE invocation.
++    ///
++    /// `sequenceLength == 1` covers ordinary and continuously-batched decode.
++    /// A missing layer index covers MTP and any standalone block construction;
++    /// neither is changed by this prefill-only experiment.
++    public func routedTopK(
++        layerIndex: Int?,
++        sequenceLength: Int,
++        modelTopK: Int
++    ) -> Int {
++        guard
++            let reducedTopK,
++            let layerIndex,
++            sequenceLength > 1,
++            !fullTopKLayers.contains(layerIndex)
++        else {
++            return modelTopK
++        }
++        return min(reducedTopK, modelTopK)
++    }
++
++    public var descriptor: String {
++        guard let reducedTopK else { return "disabled" }
++        let layers = fullTopKLayers.sorted().map(String.init).joined(separator: ",")
++        return "top_k=\(reducedTopK);full_layers=\(layers)"
++    }
++
++    private static func parseLayerSet(
++        _ raw: String,
++        layerCount: Int
++    ) -> Set<Int>? {
++        let value = raw.trimmingCharacters(in: .whitespaces)
++        guard !value.isEmpty else { return [] }
++
++        var result: Set<Int> = []
++        for part in value.split(separator: ",", omittingEmptySubsequences: false) {
++            let term = part.trimmingCharacters(in: .whitespaces)
++            guard !term.isEmpty else { return nil }
++
++            let bounds = term.split(separator: "-", omittingEmptySubsequences: false)
++            switch bounds.count {
++            case 1:
++                guard let layer = Int(bounds[0]), (0 ..< layerCount).contains(layer) else {
++                    return nil
++                }
++                result.insert(layer)
++            case 2:
++                guard
++                    let lower = Int(bounds[0]),
++                    let upper = Int(bounds[1]),
++                    lower <= upper,
++                    lower >= 0,
++                    upper < layerCount
++                else {
++                    return nil
++                }
++                result.formUnion(lower ... upper)
++            default:
++                return nil
++            }
++        }
++        return result
++    }
++}
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -1096,6 +1096,8 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
+     let normTopkProb: Bool
+     let numExperts: Int
+     let topK: Int
++    let layerIndex: Int?
++    let prefillRoutingPolicy: Qwen35PrefillMoERoutingPolicy
+ 
+     @ModuleInfo(key: "gate") var gate: Linear
+     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
+@@ -1109,10 +1111,17 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
+     ///   The inline MTP head passes false: its weights load through
+     ///   `Qwen35InlineMTPAssistant` whose per-path quantization table is
+     ///   keyed on the split `gate_proj`/`up_proj` module paths.
+-    init(_ args: Qwen35TextConfiguration, fuseGateUp: Bool = true) {
++    init(
++        _ args: Qwen35TextConfiguration,
++        fuseGateUp: Bool = true,
++        layerIndex: Int? = nil,
++        prefillRoutingPolicy: Qwen35PrefillMoERoutingPolicy = .disabled
++    ) {
+         self.normTopkProb = args.normTopkProb
+         self.numExperts = args.numExperts
+         self.topK = args.numExpertsPerTok
++        self.layerIndex = layerIndex
++        self.prefillRoutingPolicy = prefillRoutingPolicy
+ 
+         _gate.wrappedValue = Linear(args.hiddenSize, args.numExperts, bias: false)
+         _switchMLP.wrappedValue = SwitchGLU(
+@@ -1133,7 +1142,13 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
+         var gates = gate(x)
+         gates = MLX.softmax(gates, axis: -1, precise: true)
+ 
+-        let k = topK
++        // The default policy returns the checkpoint's top-k. An explicitly
++        // enabled experiment may reduce only multi-token trunk calls; T=1
++        // decode and MTP blocks remain on the original top-k.
++        let k = prefillRoutingPolicy.routedTopK(
++            layerIndex: layerIndex,
++            sequenceLength: x.dim(-2),
++            modelTopK: topK)
+         let kth = gates.dim(-1) - k
+         let inds = MLX.argPartition(gates, kth: kth, axis: -1)[.ellipsis, (kth)...]
+         var scores = MLX.takeAlong(gates, inds, axis: -1)
+@@ -1164,7 +1179,11 @@ final class Qwen35DecoderLayer: Module {
+ 
+     @ModuleInfo(key: "mlp") var mlp: Module
+ 
+-    init(_ args: Qwen35TextConfiguration, layerIdx: Int) {
++    init(
++        _ args: Qwen35TextConfiguration,
++        layerIdx: Int,
++        prefillMoERoutingPolicy: Qwen35PrefillMoERoutingPolicy = .disabled
++    ) {
+         self.isLinear = (layerIdx + 1) % args.fullAttentionInterval != 0
+ 
+         if isLinear {
+@@ -1174,7 +1193,10 @@ final class Qwen35DecoderLayer: Module {
+         }
+ 
+         if args.numExperts > 0 {
+-            _mlp.wrappedValue = Qwen35SparseMoeBlock(args)
++            _mlp.wrappedValue = Qwen35SparseMoeBlock(
++                args,
++                layerIndex: layerIdx,
++                prefillRoutingPolicy: prefillMoERoutingPolicy)
+         } else {
+             _mlp.wrappedValue = Qwen3NextMLP(
+                 dimensions: args.hiddenSize,
+@@ -1268,8 +1290,14 @@ public class Qwen35TextModelInner: Module {
+             dimensions: args.hiddenSize
+         )
+ 
++        let prefillMoERoutingPolicy = Qwen35PrefillMoERoutingPolicy.fromEnvironment(
++            modelTopK: args.numExpertsPerTok,
++            layerCount: args.hiddenLayers)
+         self.layers = (0 ..< args.hiddenLayers).map { layerIdx in
+-            Qwen35DecoderLayer(args, layerIdx: layerIdx)
++            Qwen35DecoderLayer(
++                args,
++                layerIdx: layerIdx,
++                prefillMoERoutingPolicy: prefillMoERoutingPolicy)
+         }
+ 
+         self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+diff --git a/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift b/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift
+new file mode 100644
+--- /dev/null
++++ b/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift
+@@ -0,0 +1,85 @@
++import Testing
++
++@testable import MLXLLM
++
++struct Qwen35PrefillMoERoutingPolicyTests {
++    @Test func absentKnobPreservesCheckpointRouting() {
++        let policy = Qwen35PrefillMoERoutingPolicy.fromEnvironment(
++            [:], modelTopK: 8, layerCount: 40)
++
++        #expect(policy == .disabled)
++        #expect(
++            policy.routedTopK(layerIndex: 0, sequenceLength: 2_048, modelTopK: 8)
++                == 8)
++        #expect(policy.descriptor == "disabled")
++    }
++
++    @Test func topFourAppliesOnlyToSelectedPrefillLayers() {
++        let policy = Qwen35PrefillMoERoutingPolicy.fromEnvironment(
++            [
++                Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "4",
++                Qwen35PrefillMoERoutingPolicy.fullLayersEnvironmentKey:
++                    "0, 3-5, 39",
++            ],
++            modelTopK: 8,
++            layerCount: 40)
++
++        #expect(policy.reducedTopK == 4)
++        #expect(policy.fullTopKLayers == Set([0, 3, 4, 5, 39]))
++        #expect(
++            policy.routedTopK(layerIndex: 1, sequenceLength: 512, modelTopK: 8)
++                == 4)
++        #expect(
++            policy.routedTopK(layerIndex: 3, sequenceLength: 512, modelTopK: 8)
++                == 8)
++        #expect(
++            policy.routedTopK(layerIndex: 39, sequenceLength: 512, modelTopK: 8)
++                == 8)
++    }
++
++    @Test func topTwoNeverChangesDecodeOrUnlabelledBlocks() {
++        let policy = Qwen35PrefillMoERoutingPolicy.fromEnvironment(
++            [Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "2"],
++            modelTopK: 8,
++            layerCount: 40)
++
++        #expect(
++            policy.routedTopK(layerIndex: 12, sequenceLength: 2_048, modelTopK: 8)
++                == 2)
++        #expect(
++            policy.routedTopK(layerIndex: 12, sequenceLength: 1, modelTopK: 8)
++                == 8)
++        #expect(
++            policy.routedTopK(layerIndex: nil, sequenceLength: 2_048, modelTopK: 8)
++                == 8)
++    }
++
++    @Test func malformedSettingsFailClosedAsOnePolicy() {
++        let invalidEnvironments: [[String: String]] = [
++            [Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "0"],
++            [Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "8"],
++            [Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "four"],
++            [
++                Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "4",
++                Qwen35PrefillMoERoutingPolicy.fullLayersEnvironmentKey: "3-",
++            ],
++            [
++                Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "4",
++                Qwen35PrefillMoERoutingPolicy.fullLayersEnvironmentKey: "40",
++            ],
++            [
++                Qwen35PrefillMoERoutingPolicy.topKEnvironmentKey: "4",
++                Qwen35PrefillMoERoutingPolicy.fullLayersEnvironmentKey: "5-3",
++            ],
++        ]
++
++        for environment in invalidEnvironments {
++            let policy = Qwen35PrefillMoERoutingPolicy.fromEnvironment(
++                environment, modelTopK: 8, layerCount: 40)
++            #expect(policy == .disabled)
++            #expect(
++                policy.routedTopK(
++                    layerIndex: 1, sequenceLength: 2_048, modelTopK: 8) == 8)
++        }
++    }
++}

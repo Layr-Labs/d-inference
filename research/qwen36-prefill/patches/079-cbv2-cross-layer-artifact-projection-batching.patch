@@ -1,7 +1,7 @@
 From 2f67b8bcebaba60ad2625bbd4387b326c889363a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:53:03 +0000
-Subject: [PATCH] Batch Qwen artifact projections across layers
+Subject: [PATCH 1/2] Batch Qwen artifact projections across layers
 
 ---
  Libraries/MLXLLM/Models/Qwen35.swift          | 378 +++++++++++-
@@ -1716,6 +1716,414 @@ index 0000000..799243d
 +        return close.item(Bool.self)
 +    }
 +}
+-- 
+2.43.0
+
+
+From 785c1c21217bd3c2e296b8de4ee6d503d08f22f2 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 21:59:24 +0000
+Subject: [PATCH 2/2] Format Qwen artifact projection batching sources
+
+---
+ .../Qwen35ArtifactProjectionBatch.swift       |  84 +++++----
+ .../Qwen35ArtifactProjectionBatchTests.swift  | 164 ++++++++++--------
+ 2 files changed, 140 insertions(+), 108 deletions(-)
+
+diff --git a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+index 631518b..3e56d70 100644
+--- a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
++++ b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+@@ -168,12 +168,13 @@ final class Qwen35ArtifactProjectionWeightBank {
+                 groupSize: groupSize,
+                 bits: bits,
+                 mode: mode,
+-                sortedIndices: true)
+-                .reshaped(
+-                    modelLayerIndices.count,
+-                    batchSize,
+-                    tokenCount,
+-                    outputDimensions)
++                sortedIndices: true
++            )
++            .reshaped(
++                modelLayerIndices.count,
++                batchSize,
++                tokenCount,
++                outputDimensions)
+ 
+             return modelLayerIndices.indices.map { ordinal in
+                 projected[
+@@ -223,30 +224,34 @@ final class Qwen35ArtifactProjectionWeightBank {
+                 guard let linear = entry.element.linearAttn else { return nil }
+                 return (entry.offset, linear)
+             }
+-        let attentionSources: [
+-            (modelLayerIndex: Int, layer: Qwen35Attention)
+-        ] = indexed.compactMap { entry in
++        let attentionSources: [(modelLayerIndex: Int, layer: Qwen35Attention)] = indexed.compactMap
++        { entry in
+             guard let attention = entry.element.selfAttn else { return nil }
+             return (entry.offset, attention)
+         }
+         guard
+             !gdnSources.isEmpty,
+             !attentionSources.isEmpty,
+-            let gdnQKV = QuantizedFamily(gdnSources.map {
+-                ($0.modelLayerIndex, $0.layer.inProjQKV)
+-            }),
+-            let gdnA = QuantizedFamily(gdnSources.map {
+-                ($0.modelLayerIndex, $0.layer.inProjA)
+-            }),
+-            let gdnB = QuantizedFamily(gdnSources.map {
+-                ($0.modelLayerIndex, $0.layer.inProjB)
+-            }),
+-            let attentionK = QuantizedFamily(attentionSources.map {
+-                ($0.modelLayerIndex, $0.layer.kProj)
+-            }),
+-            let attentionV = QuantizedFamily(attentionSources.map {
+-                ($0.modelLayerIndex, $0.layer.vProj)
+-            }),
++            let gdnQKV = QuantizedFamily(
++                gdnSources.map {
++                    ($0.modelLayerIndex, $0.layer.inProjQKV)
++                }),
++            let gdnA = QuantizedFamily(
++                gdnSources.map {
++                    ($0.modelLayerIndex, $0.layer.inProjA)
++                }),
++            let gdnB = QuantizedFamily(
++                gdnSources.map {
++                    ($0.modelLayerIndex, $0.layer.inProjB)
++                }),
++            let attentionK = QuantizedFamily(
++                attentionSources.map {
++                    ($0.modelLayerIndex, $0.layer.kProj)
++                }),
++            let attentionV = QuantizedFamily(
++                attentionSources.map {
++                    ($0.modelLayerIndex, $0.layer.vProj)
++                }),
+             gdnQKV.modelLayerIndices == gdnA.modelLayerIndices,
+             gdnQKV.modelLayerIndices == gdnB.modelLayerIndices,
+             attentionK.modelLayerIndices == attentionV.modelLayerIndices,
+@@ -260,8 +265,9 @@ final class Qwen35ArtifactProjectionWeightBank {
+ 
+         var stackedBytes = 0
+         for family in [gdnQKV, gdnA, gdnB, attentionK, attentionV] {
+-            guard let next = Self.checkedAdd(
+-                stackedBytes, family.stackedByteCount)
++            guard
++                let next = Self.checkedAdd(
++                    stackedBytes, family.stackedByteCount)
+             else {
+                 return nil
+             }
+@@ -314,21 +320,25 @@ final class Qwen35ArtifactProjectionWeightBank {
+         for modelLayerIndex in candidateLayerIndices {
+             let outputDimensions: Int
+             if gdnLayerIndices.contains(modelLayerIndex) {
+-                guard let sum = Self.checkedSum([
+-                    gdnQKV.inputDimensions,
+-                    gdnQKV.outputDimensions,
+-                    gdnA.outputDimensions,
+-                    gdnB.outputDimensions,
+-                ]) else {
++                guard
++                    let sum = Self.checkedSum([
++                        gdnQKV.inputDimensions,
++                        gdnQKV.outputDimensions,
++                        gdnA.outputDimensions,
++                        gdnB.outputDimensions,
++                    ])
++                else {
+                     return nil
+                 }
+                 outputDimensions = sum
+             } else if attentionLayerIndices.contains(modelLayerIndex) {
+-                guard let sum = Self.checkedSum([
+-                    attentionK.inputDimensions,
+-                    attentionK.outputDimensions,
+-                    attentionV.outputDimensions,
+-                ]) else {
++                guard
++                    let sum = Self.checkedSum([
++                        attentionK.inputDimensions,
++                        attentionK.outputDimensions,
++                        attentionV.outputDimensions,
++                    ])
++                else {
+                     return nil
+                 }
+                 outputDimensions = sum
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+index 799243d..8459335 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+@@ -68,7 +68,7 @@ struct Qwen35ArtifactProjectionBatchTests {
+         #expect(
+             b1
+                 < Qwen35ArtifactProjectionBatchPolicy
+-                    .defaultMaximumTransientMiB * 1_024 * 1_024)
++                .defaultMaximumTransientMiB * 1_024 * 1_024)
+ 
+         let b4 = try #require(
+             Qwen35ArtifactProjectionWeightBank.estimatedTransientBytes(
+@@ -85,7 +85,7 @@ struct Qwen35ArtifactProjectionBatchTests {
+         #expect(
+             b4
+                 > Qwen35ArtifactProjectionBatchPolicy
+-                    .defaultMaximumTransientMiB * 1_024 * 1_024)
++                .defaultMaximumTransientMiB * 1_024 * 1_024)
+     }
+ 
+     @Test func gatheredQuantizedFamiliesMatchSequentialProjectionsAndDoNotReplaceWeights()
+@@ -95,18 +95,20 @@ struct Qwen35ArtifactProjectionBatchTests {
+         MLXRandom.seed(0xB4_71)
+         let layers = makeQuantizedLayers(config)
+         let parametersBefore = parameterIdentity(layers)
+-        let bank = try #require(Qwen35ArtifactProjectionWeightBank(
+-            layers: layers,
+-            maximumStackedWeightBytes:
+-                Qwen35ArtifactProjectionBatchPolicy
+-                .maximumStackedWeightBytes))
++        let bank = try #require(
++            Qwen35ArtifactProjectionWeightBank(
++                layers: layers,
++                maximumStackedWeightBytes:
++                    Qwen35ArtifactProjectionBatchPolicy
++                    .maximumStackedWeightBytes))
+         #expect(bank.stackedWeightBytes > 0)
+ 
+         let history = MLXRandom.normal([2, 5, config.hiddenSize])
+-        let prepared = try #require(bank.prepare(
+-            hiddenHistory: history,
+-            candidateLayerIndices: Array(layers.indices),
+-            maximumTransientBytes: 192 * 1_024 * 1_024))
++        let prepared = try #require(
++            bank.prepare(
++                hiddenHistory: history,
++                candidateLayerIndices: Array(layers.indices),
++                maximumTransientBytes: 192 * 1_024 * 1_024))
+ 
+         var roots: [MLXArray] = []
+         for (modelLayerIndex, layer) in layers.enumerated() {
+@@ -121,7 +123,8 @@ struct Qwen35ArtifactProjectionBatchTests {
+                 let expected = (
+                     qkv: gdn.inProjQKV(normalized),
+                     a: gdn.inProjA(normalized),
+-                    b: gdn.inProjB(normalized))
++                    b: gdn.inProjB(normalized)
++                )
+                 roots += [
+                     actual.qkv, actual.a, actual.b,
+                     expected.qkv, expected.a, expected.b,
+@@ -133,7 +136,8 @@ struct Qwen35ArtifactProjectionBatchTests {
+                 }
+                 let expected = (
+                     keys: attention.kProj(normalized),
+-                    values: attention.vProj(normalized))
++                    values: attention.vProj(normalized)
++                )
+                 roots += [
+                     actual.keys, actual.values,
+                     expected.keys, expected.values,
+@@ -154,10 +158,12 @@ struct Qwen35ArtifactProjectionBatchTests {
+                 #expect(artifactClose(actual.b, gdn.inProjB(normalized)))
+             case .attention(let actual):
+                 let attention = try #require(layer.selfAttn)
+-                #expect(artifactClose(
+-                    actual.keys, attention.kProj(normalized)))
+-                #expect(artifactClose(
+-                    actual.values, attention.vProj(normalized)))
++                #expect(
++                    artifactClose(
++                        actual.keys, attention.kProj(normalized)))
++                #expect(
++                    artifactClose(
++                        actual.values, attention.vProj(normalized)))
+             }
+         }
+ 
+@@ -177,11 +183,12 @@ struct Qwen35ArtifactProjectionBatchTests {
+         let config = try TinyArtifactQwen.configuration()
+         MLXRandom.seed(UInt64(0xB4_80 + batchSize))
+         let layers = makeQuantizedLayers(config)
+-        let bank = try #require(Qwen35ArtifactProjectionWeightBank(
+-            layers: layers,
+-            maximumStackedWeightBytes:
+-                Qwen35ArtifactProjectionBatchPolicy
+-                .maximumStackedWeightBytes))
++        let bank = try #require(
++            Qwen35ArtifactProjectionWeightBank(
++                layers: layers,
++                maximumStackedWeightBytes:
++                    Qwen35ArtifactProjectionBatchPolicy
++                    .maximumStackedWeightBytes))
+         let skippedLayers = [4, 5, 6, 7]
+         let recurrentLayers = [4, 5, 6]
+         let promptLength = 6
+@@ -247,16 +254,19 @@ struct Qwen35ArtifactProjectionBatchTests {
+             [candidateBoundary.hidden, referenceBoundary.hidden]
+                 + candidateBoundary.roots
+                 + referenceBoundary.roots)
+-        #expect(artifactClose(
+-            candidateBoundary.hidden, referenceBoundary.hidden))
++        #expect(
++            artifactClose(
++                candidateBoundary.hidden, referenceBoundary.hidden))
+         #expect(candidate.cache.offset == promptLength)
+         #expect(reference.cache.offset == promptLength)
+-        #expect(candidate.rows.allSatisfy {
+-            $0.absoluteOffset == promptLength
+-        })
+-        #expect(reference.rows.allSatisfy {
+-            $0.absoluteOffset == promptLength
+-        })
++        #expect(
++            candidate.rows.allSatisfy {
++                $0.absoluteOffset == promptLength
++            })
++        #expect(
++            reference.rows.allSatisfy {
++                $0.absoluteOffset == promptLength
++            })
+ 
+         let cancelledIndex = batchSize / 2
+         for row in 0 ..< batchSize {
+@@ -285,18 +295,22 @@ struct Qwen35ArtifactProjectionBatchTests {
+                 #expect(artifactClose(candidateSSM, referenceSSM))
+ 
+                 if row == cancelledIndex {
+-                    #expect(TinyArtifactQwen.identical(
+-                        candidateConv,
+-                        beforeCandidate[row][ordinal].conv))
+-                    #expect(TinyArtifactQwen.identical(
+-                        candidateSSM,
+-                        beforeCandidate[row][ordinal].ssm))
+-                    #expect(TinyArtifactQwen.identical(
+-                        referenceConv,
+-                        beforeReference[row][ordinal].conv))
+-                    #expect(TinyArtifactQwen.identical(
+-                        referenceSSM,
+-                        beforeReference[row][ordinal].ssm))
++                    #expect(
++                        TinyArtifactQwen.identical(
++                            candidateConv,
++                            beforeCandidate[row][ordinal].conv))
++                    #expect(
++                        TinyArtifactQwen.identical(
++                            candidateSSM,
++                            beforeCandidate[row][ordinal].ssm))
++                    #expect(
++                        TinyArtifactQwen.identical(
++                            referenceConv,
++                            beforeReference[row][ordinal].conv))
++                    #expect(
++                        TinyArtifactQwen.identical(
++                            referenceSSM,
++                            beforeReference[row][ordinal].ssm))
+                 }
+             }
+         }
+@@ -382,23 +396,26 @@ struct Qwen35ArtifactProjectionBatchTests {
+         roots: [MLXArray]
+     ) {
+         let transactions = try fixture.recurrent.map { try $0.bind() }
+-        let prepared = usesProjectionBatch
+-            ? try #require(bank.prepare(
+-                hiddenHistory: hidden,
+-                candidateLayerIndices: layerIndices,
+-                maximumTransientBytes: 192 * 1_024 * 1_024))
++        let prepared =
++            usesProjectionBatch
++            ? try #require(
++                bank.prepare(
++                    hiddenHistory: hidden,
++                    candidateLayerIndices: layerIndices,
++                    maximumTransientBytes: 192 * 1_024 * 1_024))
+             : nil
+         var current = hidden
+         for modelLayerIndex in layerIndices {
+             let layer = layers[modelLayerIndex]
+-            current = try #require(layer.cbv2PrefillArtifactOnly(
+-                current,
+-                modelLayerIndex: modelLayerIndex,
+-                attentionCache: layer.isLinear ? nil : fixture.cache,
+-                recurrentState: transactions,
+-                positionIds: nil,
+-                artifactProjection:
+-                    prepared?.projections[modelLayerIndex]))
++            current = try #require(
++                layer.cbv2PrefillArtifactOnly(
++                    current,
++                    modelLayerIndex: modelLayerIndex,
++                    attentionCache: layer.isLinear ? nil : fixture.cache,
++                    recurrentState: transactions,
++                    positionIds: nil,
++                    artifactProjection:
++                        prepared?.projections[modelLayerIndex]))
+         }
+         let roots = try transactions.flatMap { try $0.evaluate() }
+         eval([current] + roots + fixture.cache.innerState())
+@@ -420,12 +437,14 @@ struct Qwen35ArtifactProjectionBatchTests {
+     ) {
+         let historyCount = hidden.dim(1) - frontierTokenCount
+         let transactions = try fixture.recurrent.map { try $0.bind() }
+-        let prepared = usesProjectionBatch
+-            ? try #require(bank.prepare(
+-                hiddenHistory: hidden[
+-                    0..., 0 ..< historyCount, 0...],
+-                candidateLayerIndices: layerIndices,
+-                maximumTransientBytes: 192 * 1_024 * 1_024))
++        let prepared =
++            usesProjectionBatch
++            ? try #require(
++                bank.prepare(
++                    hiddenHistory: hidden[
++                        0..., 0 ..< historyCount, 0...],
++                    candidateLayerIndices: layerIndices,
++                    maximumTransientBytes: 192 * 1_024 * 1_024))
+             : nil
+         var current = hidden
+         for modelLayerIndex in layerIndices {
+@@ -459,10 +478,12 @@ struct Qwen35ArtifactProjectionBatchTests {
+                 let conv = try #require(layerState.conv)
+                 let ssm = try #require(layerState.ssm)
+                 return RecurrentSnapshot(
+-                    conv: conv + MLXArray.zeros(
+-                        conv.shape, dtype: conv.dtype),
+-                    ssm: ssm + MLXArray.zeros(
+-                        ssm.shape, dtype: ssm.dtype))
++                    conv: conv
++                        + MLXArray.zeros(
++                            conv.shape, dtype: conv.dtype),
++                    ssm: ssm
++                        + MLXArray.zeros(
++                            ssm.shape, dtype: ssm.dtype))
+             }
+         }
+         eval(result.flatMap { $0 }.flatMap { [$0.conv, $0.ssm] })
+@@ -497,12 +518,13 @@ struct Qwen35ArtifactProjectionBatchTests {
+     private func parameterIdentity(
+         _ layers: [Qwen35DecoderLayer]
+     ) -> [String: MLXArray] {
+-        Dictionary(uniqueKeysWithValues: layers.enumerated().flatMap {
+-            ordinal, layer in
+-            layer.parameters().flattened().map {
+-                ("\(ordinal).\($0.0)", $0.1)
+-            }
+-        })
++        Dictionary(
++            uniqueKeysWithValues: layers.enumerated().flatMap {
++                ordinal, layer in
++                layer.parameters().flattened().map {
++                    ("\(ordinal).\($0.0)", $0.1)
++                }
++            })
+     }
+ 
+     private func artifactClose(
 -- 
 2.43.0
 

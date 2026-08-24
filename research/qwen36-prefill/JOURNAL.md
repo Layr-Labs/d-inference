@@ -337,3 +337,17 @@ the M3 fallback, not because MPP arithmetic is inherently incompatible.
 Candidate A reopens only through supported cooperative load/store.
 Timing is next; no serving integration yet. See `notes/042`.
 
+## 2026-08-24T07:19Z — E13 supported MPP throughput is below gate
+
+The standalone static-K16 MPP path retained one FP32 cooperative
+accumulator across K and matched the actual Steel/simdgroup FP32 control
+bit-for-bit on all 37,289,984 outputs across eight M=2048 K/N shapes.
+
+Under AC/High Power, 16 GPU-complete ABBA samples per arm/cell gave
+12.6478 weighted useful GPU TFLOP/s for MPP versus 11.0401 for Steel
+(1.1456×). The primary K2048×N1024 cell reached 12.5791 TFLOP/s.
+
+This is far below the preregistered 22 TFLOP/s continuation gate.
+Candidate A is correct but dead on this M3 schedule; no dequant/gather
+or serving integration. See `notes/043` and the complete raw artifact.
+

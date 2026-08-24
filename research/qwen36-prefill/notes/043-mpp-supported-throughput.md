@@ -1,6 +1,7 @@
 # 043 — Supported Metal 4 MPP BF16→FP32 throughput gate
 
-Status: **implemented; M3 measurement pending**
+Status: **complete — correct, but 12.65 weighted TFLOP/s misses the 22
+continuation gate**
 
 ## Question
 
@@ -121,3 +122,78 @@ rates, and the final decision.
 - CPU wall is a required cross-check, but the threshold is applied to
   command-buffer GPU time;
 - no serving integration is part of this experiment regardless of result.
+
+## M3 result
+
+The probe compiled and completed on the preregistered host:
+
+```text
+Apple M3 Max, Mac15,9
+macOS 26.4 (25E246)
+Xcode 26.5 (17F42), Apple metal 32023.883
+AC Power, powermode=2 before and after
+no thermal or performance warning
+```
+
+All eight full shapes were FP32 bit-identical to Steel. Across 37,289,984
+output elements:
+
+```text
+fp32_changed=0
+bf16_changed=0
+max_abs=0
+qmm_1e-3=pass
+nonfinite=0
+```
+
+Correctness finished before the first warmup. Every cell then recorded six
+GPU-complete warmups per arm and 16 GPU-complete measured samples per arm in
+ABBA order.
+
+Command-buffer GPU medians:
+
+| Shape (M=2048) | MPP ms | MPP TFLOP/s | Steel ms | Steel TFLOP/s | MPP/Steel |
+|---|---:|---:|---:|---:|---:|
+| K2048 N8192 | 5.375229 | 12.7845 | 7.088813 | 9.6941 | 1.3188× |
+| K2048 N4096 | 2.630396 | 13.0626 | 2.891187 | 11.8843 | 1.0991× |
+| K2048 N32 | 0.068708 | 3.9069 | 0.110354 | 2.4325 | 1.6061× |
+| K4096 N2048 | 2.676583 | 12.8372 | 2.880667 | 11.9277 | 1.0762× |
+| K2048 N512 | 0.352812 | 12.1735 | 0.382354 | 11.2330 | 1.0837× |
+| K512 N2048 | 0.339375 | 12.6555 | 0.362375 | 11.8523 | 1.0678× |
+| K2048 N256 | 0.200458 | 10.7129 | 0.215479 | 9.9661 | 1.0749× |
+| **K2048 N1024 primary** | **0.682875** | **12.5791** | **0.733042** | **11.7182** | **1.0735×** |
+
+The real-model-work harmonic result is:
+
+| Arm | GPU TFLOP/s | CPU-wall TFLOP/s |
+|---|---:|---:|
+| supported MPP K16 | **12.6478** | 9.8720 |
+| Steel FP32 | **11.0401** | 8.8513 |
+
+MPP is 1.1456× Steel by the weighted GPU metric. The favorable N8192 cell is
+not representative of the narrower mix, and even it reaches only 12.78
+TFLOP/s. The complete artifact, including all 256 measured samples and raw
+command-buffer timestamps, is
+`artifacts/mpp-supported-throughput-m3.txt`.
+
+Captured source hashes:
+
+```text
+kernel.metal       6abeb91ef028e078f28a41693bb53eef115127f7dd098193688cdfc4e86c68dc
+ProbeTypes.swift   636a598b5ba06ff8019885e5bd0ac0193efa5468d32f778d36e183f139052253
+MetalRunner.swift  6135bafe0badbb3d8eed7b227e144caee15eb14021e208dab823646f5bd1e9a7
+main.swift         88fa2db7b0c6091ad1589eeccd4c3bdd45c79c2e4a927c20a5d30ea96bb1f128
+run.sh             ce1119dc38f897b0ac128a59919a5842416b5fc4108b4311c62ac3eb49f44c0f
+```
+
+## Decision
+
+Candidate A is numerically legal through supported cooperative-tensor
+load/store, but it misses the preregistered continuation threshold by 9.35
+TFLOP/s (42.5%). Stop this same-quality MPP line on M3. Do not build the
+dequant/gather path or wire serving from this result.
+
+This is a measured implementation ceiling for the tested M16×N32 static-K16
+schedule, not a theorem about every possible MPP tile or a future Apple
+generation. It is nevertheless the requested ratchet: this schedule cannot
+provide the arithmetic rate required by the current 2.5× program.

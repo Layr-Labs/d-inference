@@ -1,0 +1,122 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--qwen3.6-35b-a3b-vl-mtp-mxfp8\/snapshots\/local",
+  "promptLengths" : [
+    512,
+    2048,
+    8192
+  ],
+  "samples" : [
+    {
+      "firstTokenChecksum" : "c7c8b7131947c1c6",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.6983667651663406,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "c7c8b7131947c1c6",
+      "ttftMs" : 356.86541700000004
+    },
+    {
+      "firstTokenChecksum" : "fa233293b40cf4b1",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.6970737103718199,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "fa233293b40cf4b1",
+      "ttftMs" : 356.204666
+    },
+    {
+      "firstTokenChecksum" : "7f4a9043f8993e1f",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.6964337886497064,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "7f4a9043f8993e1f",
+      "ttftMs" : 355.877666
+    },
+    {
+      "firstTokenChecksum" : "b4128590c4db1938",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.5982993605276014,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "b4128590c4db1938",
+      "ttftMs" : 1224.718791
+    },
+    {
+      "firstTokenChecksum" : "2994d27194aaaa24",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.5981552677088421,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "2994d27194aaaa24",
+      "ttftMs" : 1224.4238329999998
+    },
+    {
+      "firstTokenChecksum" : "05b84d4d48e81828",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.5986355437225208,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "05b84d4d48e81828",
+      "ttftMs" : 1225.406958
+    },
+    {
+      "firstTokenChecksum" : "f88780cce381ff53",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.6448234443901844,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "f88780cce381ff53",
+      "ttftMs" : 5281.748833
+    },
+    {
+      "firstTokenChecksum" : "bc4442684b091ab0",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.6465116133561225,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "bc4442684b091ab0",
+      "ttftMs" : 5295.576625
+    },
+    {
+      "firstTokenChecksum" : "ff9c08acdc7ed934",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.6471498189476255,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "ff9c08acdc7ed934",
+      "ttftMs" : 5300.804167
+    }
+  ],
+  "schemaVersion" : 5,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

@@ -130,5 +130,8 @@ Primary denominator is now real (`notes/037`): B=4×8K = 1,557.4 tok/s
 / 21.0375 s, so 2.5× requires 3,893.5 tok/s / 8.4150 s. B=2×8K =
 1,500.7 tok/s / 10.9165 s.
 
+The complete one-binary B=1/2/4 × 512/2K/8K matrix is locked in
+`notes/038`; no remaining experiment may use an extrapolated denominator.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

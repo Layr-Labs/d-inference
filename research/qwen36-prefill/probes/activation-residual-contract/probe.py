@@ -159,15 +159,15 @@ def output_metrics(
     weights: np.ndarray,
     basis_rows: np.ndarray,
     basis_coefficients: np.ndarray,
+    basis_output: np.ndarray,
     repair_indices: np.ndarray,
     chunk_rows: int,
-) -> tuple[dict[str, float], np.ndarray]:
+) -> tuple[dict[str, float], np.ndarray, dict[str, float]]:
     rows = activations.shape[0]
     if chunk_rows <= 0:
         raise ValueError("chunk_rows must be positive")
     repair_mask = np.zeros(rows, dtype=np.bool_)
     repair_mask[repair_indices] = True
-    basis_output = np.asarray(basis_coefficients @ weights, dtype=np.float32)
 
     before_relative = np.empty(rows, dtype=np.float64)
     after_relative = np.empty(rows, dtype=np.float64)
@@ -175,21 +175,33 @@ def output_metrics(
     squared_error = 0.0
     squared_reference = 0.0
     max_absolute_error = 0.0
+    reference_seconds = 0.0
+    candidate_seconds = 0.0
+    scoring_seconds = 0.0
 
     for start in range(0, rows, chunk_rows):
         end = min(rows, start + chunk_rows)
         x = np.asarray(activations[start:end], dtype=np.float32)
         q = basis_rows[start:end]
+        operation_started = time.perf_counter()
         reference = np.asarray(x @ weights, dtype=np.float32)
+        reference_seconds += time.perf_counter() - operation_started
+        operation_started = time.perf_counter()
         candidate = np.asarray(q @ basis_output, dtype=np.float32)
+        candidate_seconds += time.perf_counter() - operation_started
+        scoring_started = time.perf_counter()
         before_relative[start:end] = relative_l2_rows(reference, candidate)
+        scoring_seconds += time.perf_counter() - scoring_started
 
         local_repairs = np.flatnonzero(repair_mask[start:end])
         if local_repairs.size:
+            operation_started = time.perf_counter()
             reconstructed_input = q[local_repairs] @ basis_coefficients
             residual = x[local_repairs] - reconstructed_input
             candidate[local_repairs] += residual @ weights
+            candidate_seconds += time.perf_counter() - operation_started
 
+        scoring_started = time.perf_counter()
         difference = np.asarray(reference - candidate, dtype=np.float64)
         squared_error += float(np.sum(difference * difference))
         reference64 = np.asarray(reference, dtype=np.float64)
@@ -199,6 +211,7 @@ def output_metrics(
         )
         after_relative[start:end] = relative_l2_rows(reference, candidate)
         after_cosine[start:end] = cosine_rows(reference, candidate)
+        scoring_seconds += time.perf_counter() - scoring_started
 
     metrics = {
         "nrmse": math.sqrt(squared_error / max(squared_reference, 1e-24)),
@@ -210,7 +223,15 @@ def output_metrics(
         "mean_row_cosine": float(np.mean(after_cosine)),
         "max_absolute_error": max_absolute_error,
     }
-    return metrics, before_relative
+    return (
+        metrics,
+        before_relative,
+        {
+            "reference_projection_seconds": reference_seconds,
+            "candidate_reconstruct_repair_seconds": candidate_seconds,
+            "scoring_seconds": scoring_seconds,
+        },
+    )
 
 
 def sentinel_recall(
@@ -322,21 +343,28 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
     if arguments.repair_fraction > 0 and arguments.sentinels == 0:
         raise ValueError("sentinels are required when repair is enabled")
 
+    basis_started = time.perf_counter()
     basis_rows, basis_coefficients = orthonormal_activation_basis(
         activations,
         rank=arguments.rank,
         power_iterations=arguments.power_iterations,
         seed=arguments.seed,
     )
+    basis_seconds = time.perf_counter() - basis_started
+    operation_started = time.perf_counter()
+    basis_output = np.asarray(basis_coefficients @ weights, dtype=np.float32)
+    basis_weight_seconds = time.perf_counter() - operation_started
+
     sentinel_indices = choose_sentinels(
         output_width, arguments.sentinels, arguments.seed + 1
     )
+    operation_started = time.perf_counter()
     if sentinel_indices.size:
         sentinel_reference = np.asarray(
             activations @ weights[:, sentinel_indices], dtype=np.float32
         )
         sentinel_candidate = np.asarray(
-            basis_rows @ (basis_coefficients @ weights[:, sentinel_indices]),
+            basis_rows @ basis_output[:, sentinel_indices],
             dtype=np.float32,
         )
         sentinel_scores = relative_l2_rows(
@@ -344,13 +372,17 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         )
     else:
         sentinel_scores = np.zeros(rows, dtype=np.float64)
+    sentinel_seconds = time.perf_counter() - operation_started
+    selection_started = time.perf_counter()
     repairs = choose_repairs(sentinel_scores, arguments.repair_fraction)
+    selection_seconds = time.perf_counter() - selection_started
 
-    metrics, oracle_scores = output_metrics(
+    metrics, oracle_scores, measured_wall = output_metrics(
         activations=activations,
         weights=weights,
         basis_rows=basis_rows,
         basis_coefficients=basis_coefficients,
+        basis_output=basis_output,
         repair_indices=repairs,
         chunk_rows=arguments.chunk_rows,
     )
@@ -365,6 +397,14 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         power_iterations=arguments.power_iterations,
     )
     composition = b4_8k_composition(arithmetic.candidate_fraction)
+    inclusive_candidate_seconds = (
+        basis_seconds
+        + basis_weight_seconds
+        + sentinel_seconds
+        + selection_seconds
+        + measured_wall["candidate_reconstruct_repair_seconds"]
+    )
+    reference_seconds = measured_wall["reference_projection_seconds"]
 
     return {
         "schema_version": 1,
@@ -395,6 +435,24 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             metrics=metrics,
             repair_recall=repair_recall,
         ),
+        "wall": {
+            "basis_seconds": basis_seconds,
+            "basis_weight_projection_seconds": basis_weight_seconds,
+            "sentinel_and_score_seconds": sentinel_seconds,
+            "repair_selection_seconds": selection_seconds,
+            **measured_wall,
+            "inclusive_candidate_seconds": inclusive_candidate_seconds,
+            "candidate_to_reference_ratio": (
+                inclusive_candidate_seconds / reference_seconds
+                if reference_seconds > 0
+                else None
+            ),
+            "scope": (
+                "NumPy/CPU process wall; includes candidate basis, sentinel, "
+                "selection, reconstruction, and repair; excludes full-output "
+                "oracle scoring from the candidate"
+            ),
+        },
         "probe_wall_seconds": time.perf_counter() - started,
     }
 

@@ -104,11 +104,13 @@ class NumericalProbeTests(unittest.TestCase):
         q, coefficients = probe.orthonormal_activation_basis(
             activations, rank=4, power_iterations=0, seed=11
         )
-        metrics, _ = probe.output_metrics(
+        basis_output = np.asarray(coefficients @ weights, dtype=np.float32)
+        metrics, _, wall = probe.output_metrics(
             activations=activations,
             weights=weights,
             basis_rows=q,
             basis_coefficients=coefficients,
+            basis_output=basis_output,
             repair_indices=np.empty(0, dtype=np.int64),
             chunk_rows=17,
         )
@@ -116,6 +118,8 @@ class NumericalProbeTests(unittest.TestCase):
         self.assertLess(metrics["nrmse"], 2e-6)
         self.assertLess(metrics["p99_row_relative_l2"], 3e-6)
         self.assertGreater(metrics["p01_row_cosine"], 0.999999)
+        self.assertGreaterEqual(wall["reference_projection_seconds"], 0)
+        self.assertGreaterEqual(wall["candidate_reconstruct_repair_seconds"], 0)
 
     def test_full_residual_repair_recovers_all_rows(self) -> None:
         activations, weights = probe.synthetic_matrices(
@@ -130,11 +134,13 @@ class NumericalProbeTests(unittest.TestCase):
             activations, rank=2, power_iterations=0, seed=17
         )
         repairs = np.arange(activations.shape[0], dtype=np.int64)
-        metrics, before = probe.output_metrics(
+        basis_output = np.asarray(coefficients @ weights, dtype=np.float32)
+        metrics, before, _ = probe.output_metrics(
             activations=activations,
             weights=weights,
             basis_rows=q,
             basis_coefficients=coefficients,
+            basis_output=basis_output,
             repair_indices=repairs,
             chunk_rows=19,
         )

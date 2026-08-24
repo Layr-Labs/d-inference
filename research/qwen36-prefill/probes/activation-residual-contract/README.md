@@ -34,7 +34,7 @@ python3 probe.py \
   --sentinels 16 \
   --repair-fraction 0 \
   --output /tmp/activation-contract-synthetic.json
-python3 -m unittest -v test_probe.py
+python3 -m unittest -v test_*.py
 ```
 
 The synthetic arm validates the implementation and arithmetic only. It is not
@@ -42,24 +42,75 @@ evidence that Qwen activations are low rank.
 
 ## Captured projection
 
-Export one prefill activation as a floating `.npy` matrix in `[M,K]` order and
-the corresponding **dequantized checkpoint values** as `[K,N]`. Record the
-checkpoint hash, layer, projection path, batch, prompt length, chunk geometry,
-and export dtype alongside the files. Then run:
+`patches/078-e50-runtime-capture.patch` is a temporary, default-off seam against
+the pinned `mlx-swift-lm` commit `ab73a82`. It intercepts only the CBv2 input to
+`model.layers.12.linear_attn.out_proj`, and only when
+`DARKBLOOM_QWEN35_E50_CAPTURE_DIR` is set. It exports each wide prefill stripe
+as float32 `[M,K]`, the packed immutable weight/scales/biases, and the exact
+runtime-dtype dequantized weight as float32 `[K,N]`. The float32 conversion is
+lossless for the runtime BF16 values.
+
+Apply it only in a disposable model-library checkout:
+
+```bash
+git -C libs/mlx-swift-lm apply --check \
+  research/qwen36-prefill/patches/078-e50-runtime-capture.patch
+git -C libs/mlx-swift-lm apply \
+  research/qwen36-prefill/patches/078-e50-runtime-capture.patch
+export DARKBLOOM_QWEN35_E50_CAPTURE_DIR=/absolute/path/e50-layer12-gdn-out
+export DARKBLOOM_QWEN35_E50_CAPTURE_LAYER=12
+export DARKBLOOM_QWEN35_E50_CAPTURE_MIN_TOKENS=512
+darkbloom benchmark \
+  --config /path/config.toml \
+  --model qwen3.6-35b-a3b-vl-mtp-mxfp8 \
+  --scheduler-prefill \
+  --prefill-lengths 8192 \
+  --prefill-iterations 1 \
+  --kv-backend contiguous
+```
+
+The scheduler performs an uncaptured 128-token warm-up. A nominal 8,192-token
+request has 8,191 measured prefill rows, normally emitted as three 2,048-row
+stripes plus one 2,047-row stripe. Validate and assemble those stripes:
+
+```bash
+python3 assemble_capture.py \
+  --capture-directory /absolute/path/e50-layer12-gdn-out \
+  --output /absolute/path/e50-layer12-gdn-out/activation-8k.npy \
+  --manifest /absolute/path/e50-layer12-gdn-out/capture-manifest.json \
+  --expected-rows 8191 \
+  --expected-input-width 4096 \
+  --expected-output-width 2048 \
+  --provenance root-commit,submodule-commit,patch-sha256
+```
+
+Run the preregistered `r=64,h=16,p=12%` cell directly:
 
 ```bash
 python3 probe.py \
-  --activations /path/layer-12-post-attn.npy \
-  --weights /path/layer-12-gdn-out-weight-k-by-n.npy \
+  --activations /absolute/path/e50-layer12-gdn-out/activation-8k.npy \
+  --weights /absolute/path/e50-layer12-gdn-out/weight-dequantized-k-by-n.npy \
   --rank 64 \
   --sentinels 16 \
   --repair-fraction 0.12 \
   --power-iterations 0 \
-  --output /path/layer-12-gdn-out-r64-p12.json
+  --output /absolute/path/e50-layer12-gdn-out/r64-p12.json
 ```
 
-Input files are SHA-256 hashed by default. `--skip-input-hashes` is for
-iteration only and is not acceptable for an archived result.
+Or run the frozen local neighborhood (`r=32,48,64,80,96`;
+`p=8,10,12,15%`; `h=16`) and archive every cell:
+
+```bash
+python3 sweep.py \
+  --activations /absolute/path/e50-layer12-gdn-out/activation-8k.npy \
+  --weights /absolute/path/e50-layer12-gdn-out/weight-dequantized-k-by-n.npy \
+  --output-directory /absolute/path/e50-layer12-gdn-out/sweep
+```
+
+`capture-manifest.json` hashes every raw capture, immutable quantization tensor,
+dequantized weight, and assembled activation. The sweep skips redundant
+per-cell rehashing and points back to that manifest. A standalone `probe.py`
+run hashes both inputs by default.
 
 The reported MAC fraction charges:
 
@@ -69,6 +120,12 @@ The reported MAC fraction charges:
 - dense output reconstruction;
 - exact sentinel columns;
 - repaired-input reconstruction and exact residual weight products.
+
+The `wall` object separates NumPy/CPU candidate operations from the full-output
+oracle projection and scoring. `inclusive_candidate_seconds` includes range
+construction, QR/basis coefficients, basis-through-weight, sentinel projection
+and scoring, repair selection, output reconstruction, and residual repair. This
+is an inclusive offline implementation measurement, not an MLX/Metal M2 result.
 
 The `uniform_model_composition` field applies that one projection fraction to
 all top-k4 linears only as a roof diagnostic.

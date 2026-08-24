@@ -1068,7 +1068,7 @@ index e74c209..61e9e9a 100644
          defer { lock.unlock() }
 diff --git a/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
 new file mode 100644
-index 0000000..8d72846
+index 0000000..ec9d27e
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
 @@ -0,0 +1,248 @@
@@ -1289,7 +1289,7 @@ index 0000000..8d72846
 +                harness.engine.promptForkActivity().cohortsFormed == 1
 +            }
 +            if formed { return true }
-+            guard gate.entered.wait(timeout: .now() + 1) == .success else {
++            guard await gate.waitUntilEntered() else {
 +                continue
 +            }
 +            if harness.engine.promptForkActivity().cohortsFormed == 1 {
@@ -1475,10 +1475,10 @@ index 0000000..adf892b
 +}
 diff --git a/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
 new file mode 100644
-index 0000000..c1634be
+index 0000000..41e29fa
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,227 @@
 +import Foundation
 +import MLX
 +
@@ -1502,6 +1502,13 @@ index 0000000..c1634be
 +    /// Release one blocked forward while keeping the next forward gated.
 +    func advance() {
 +        release.signal()
++    }
++
++    func waitUntilEntered(timeoutSeconds: TimeInterval = 1) async -> Bool {
++        let entered = entered
++        return await Task.detached {
++            entered.wait(timeout: .now() + timeoutSeconds) == .success
++        }.value
 +    }
 +
 +    /// Release the current forward and leave all later forwards unblocked.

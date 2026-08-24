@@ -374,79 +374,124 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertTrue(try reduced.snapshot().leases.isEmpty)
     }
 
-    func testConcurrentUninitializedArbitersConvergeOnReducedPolicy()
+    func testConcurrentUninitializedArbitersSerializePolicyAdoption()
         async throws
     {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let broad = try makeArbiter(
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let publication = OneShotBlockingDirectorySynchronization()
+        let contention = LeaseOperationLockContentionProbe()
+        defer { publication.resume() }
+        let broad = try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
-            maximumCPUCount: 8
+            policy: makePolicy(maximumCPUCount: 8),
+            currentDate: { now },
+            availableStorageBytes: { UInt64.max },
+            directorySynchronizationError: {
+                publication.synchronizationError(for: $0)
+            }
         )
-        let reduced = try makeArbiter(
+        let reduced = try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
-            maximumCPUCount: 4
+            policy: makePolicy(maximumCPUCount: 4),
+            currentDate: { now },
+            availableStorageBytes: { UInt64.max },
+            leaseOperationLockContentionObserver: {
+                contention.observe(lockName: $0)
+            }
         )
+        let broadInitialization = Task.detached {
+            policyInitializationOutcome(broad)
+        }
+        guard publication.waitUntilBlocked() else {
+            publication.resume()
+            _ = await broadInitialization.value
+            return XCTFail(
+                "broad initialization did not reach its publication barrier"
+            )
+        }
 
-        async let broadOutcome = policyInitializationOutcome(broad)
-        async let reducedOutcome = policyInitializationOutcome(reduced)
-        let broadResult = await broadOutcome
-        let reducedResult = await reducedOutcome
+        let reducedInitialization = Task.detached {
+            policyInitializationOutcome(reduced)
+        }
+        guard contention.waitUntilObserved() else {
+            publication.resume()
+            let broadResult = await broadInitialization.value
+            let reducedResult = await reducedInitialization.value
+            return XCTFail(
+                "reduced initialization never contended with broad adoption: "
+                    + "\(broadResult), \(reducedResult)"
+            )
+        }
+        XCTAssertEqual(contention.firstObservedLock, "lease-slot-0.lock")
+        publication.resume()
 
+        let broadResult = await broadInitialization.value
+        let reducedResult = await reducedInitialization.value
+
+        XCTAssertEqual(broadResult, .initialized)
         XCTAssertEqual(reducedResult, .initialized)
-        XCTAssertTrue(
-            broadResult == .initialized
-                || broadResult == .rejected(
-                    .policyWideningRequiresExplicitAdoption
-                ),
-            "\(broadResult)"
-        )
         let snapshot = try reduced.snapshot()
         XCTAssertEqual(snapshot.effectivePolicy.maximumReservedCPUCount, 4)
         XCTAssertEqual(snapshot.mode, .draining)
     }
 
-    func testConcurrentInitializedArbitersCannotRestoreStalePolicy()
+    func testReservationRevalidatesReducedPolicyAfterStalePreview()
         async throws
     {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let original = try makeArbiter(
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let storage = OneShotBlockingStorageAvailability(UInt64.max)
+        let stale = try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
-            maximumCPUCount: 8
+            policy: makePolicy(maximumCPUCount: 8),
+            currentDate: { now },
+            availableStorageBytes: { storage.available() }
         )
-        try initializeDedicated(original)
-        let stale = try makeArbiter(
-            stateDirectory: stateDirectory,
-            maximumCPUCount: 8
-        )
-
-        async let staleOutcome = policyInitializationOutcome(stale)
-        let reducedPolicy = try SandboxCapacityPolicy(
-            maximumReservedCPUCount: 4,
-            maximumReservedMemoryBytes:
-                16 * SandboxResourcePolicy.gibibyte,
-            maximumReservedGrowthBytes:
-                300 * SandboxResourcePolicy.gibibyte,
-            storageHeadroomBytes:
-                20 * SandboxResourcePolicy.gibibyte
-        )
-        async let reducedOutcome = policyAdoptionOutcome(
-            stateDirectory: stateDirectory,
-            policy: reducedPolicy
-        )
-        let staleResult = await staleOutcome
-        let reducedResult = await reducedOutcome
-
-        XCTAssertEqual(reducedResult, .initialized)
-        XCTAssertTrue(
-            staleResult == .initialized
-                || staleResult == .rejected(
-                    .policyWideningRequiresExplicitAdoption
+        try initializeDedicated(stale)
+        storage.arm()
+        defer { storage.resume() }
+        let reservation = Task.detached {
+            try stale.reserve(
+                sandboxID: SandboxID(),
+                generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+                virtualMachineName: "sandbox-policy-adoption-race",
+                resources: try SandboxResourceSpecification(
+                    cpuCount: 8,
+                    memoryBytes: 8 * SandboxResourcePolicy.gibibyte,
+                    workspaceBytes: 25 * SandboxResourcePolicy.gibibyte,
+                    commandTimeoutSeconds: 900
                 ),
-            "\(staleResult)"
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+        guard storage.waitUntilBlocked() else {
+            storage.resume()
+            _ = try? await reservation.value
+            return XCTFail(
+                "stale reservation did not reach its preview storage probe"
+            )
+        }
+
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
         )
-        let snapshot = try original.snapshot()
+        let adopted = try reduced.snapshot()
+        XCTAssertEqual(adopted.effectivePolicy.maximumReservedCPUCount, 4)
+        XCTAssertEqual(adopted.mode, .sandboxDedicated)
+        XCTAssertTrue(adopted.leases.isEmpty)
+        storage.resume()
+
+        do {
+            _ = try await reservation.value
+            XCTFail("stale broad-policy reservation must be rejected")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .capacityExhausted)
+        }
+        let snapshot = try reduced.snapshot()
         XCTAssertEqual(snapshot.effectivePolicy.maximumReservedCPUCount, 4)
         XCTAssertEqual(snapshot.mode, .sandboxDedicated)
         XCTAssertTrue(snapshot.leases.isEmpty)
@@ -475,10 +520,9 @@ final class HostCapacityArbiterTests: XCTestCase {
                 virtualMachineName: lease.virtualMachineName,
                 operation: .start
             )
-        let status = RenewalStatus()
+        let contention = LeaseOperationLockContentionProbe()
         let reduction = Task.detached {
-            await status.markStarted()
-            let arbiter = try SandboxHostCapacityArbiter(
+            try SandboxHostCapacityArbiter(
                 stateDirectory: stateDirectory,
                 policy: SandboxCapacityPolicy(
                     maximumReservedCPUCount: 2,
@@ -490,20 +534,25 @@ final class HostCapacityArbiterTests: XCTestCase {
                         20 * SandboxResourcePolicy.gibibyte
                 ),
                 currentDate: { clock.now() },
-                availableStorageBytes: { UInt64.max }
+                availableStorageBytes: { UInt64.max },
+                leaseOperationLockContentionObserver: {
+                    contention.observe(lockName: $0)
+                }
             )
-            await status.markCompleted()
-            return arbiter
         }
 
-        while !(await status.started) {
-            try await Task.sleep(for: .milliseconds(10))
+        guard contention.waitUntilObserved() else {
+            authorization = nil
+            _ = try? await reduction.value
+            return XCTFail(
+                "policy adoption never encountered the held lease-mutation lock"
+            )
         }
-        try await Task.sleep(for: .milliseconds(100))
-        let completedWhileAuthorized = await status.completed
-        XCTAssertFalse(
-            completedWhileAuthorized,
-            "policy fencing must wait until the active mutation releases its lease lock"
+        XCTAssertEqual(
+            contention.firstObservedLock,
+            SandboxCapacityStateStore.leaseOperationLockName(
+                for: lease.scope.sandboxID
+            )
         )
         XCTAssertEqual(try original.snapshot().mode, .sandboxDedicated)
         XCTAssertNotNil(authorization)
@@ -1855,24 +1904,106 @@ private func policyInitializationOutcome(
     }
 }
 
-private func policyAdoptionOutcome(
-    stateDirectory: URL,
-    policy: SandboxCapacityPolicy
-) -> PolicyInitializationOutcome {
-    do {
-        _ = try SandboxHostCapacityArbiter(
-            stateDirectory: stateDirectory,
-            policy: policy,
-            currentDate: {
-                Date(timeIntervalSince1970: 2_000_000_000)
-            },
-            availableStorageBytes: { UInt64.max }
-        )
-        return .initialized
-    } catch let error as SandboxCapacityError {
-        return .rejected(error)
-    } catch {
-        return .unexpected(String(describing: error))
+private final class OneShotBlockingDirectorySynchronization:
+    @unchecked Sendable
+{
+    private let stateLock = NSLock()
+    private let blocked = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+    private var hasBlocked = false
+
+    func synchronizationError(for descriptor: Int32) -> Int32? {
+        stateLock.lock()
+        let shouldBlock = !hasBlocked
+        hasBlocked = true
+        stateLock.unlock()
+        if shouldBlock {
+            blocked.signal()
+            proceed.wait()
+        }
+        while fsync(descriptor) != 0 {
+            guard errno == EINTR else {
+                return errno
+            }
+        }
+        return nil
+    }
+
+    func waitUntilBlocked() -> Bool {
+        blocked.wait(timeout: .now() + 5) == .success
+    }
+
+    func resume() {
+        proceed.signal()
+    }
+}
+
+private final class OneShotBlockingStorageAvailability: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private let blocked = DispatchSemaphore(value: 0)
+    private let proceed = DispatchSemaphore(value: 0)
+    private let value: UInt64
+    private var armed = false
+    private var hasBlocked = false
+
+    init(_ value: UInt64) {
+        self.value = value
+    }
+
+    func arm() {
+        stateLock.lock()
+        armed = true
+        stateLock.unlock()
+    }
+
+    func available() -> UInt64 {
+        stateLock.lock()
+        let shouldBlock = armed && !hasBlocked
+        if shouldBlock {
+            hasBlocked = true
+        }
+        stateLock.unlock()
+        if shouldBlock {
+            blocked.signal()
+            proceed.wait()
+        }
+        return value
+    }
+
+    func waitUntilBlocked() -> Bool {
+        blocked.wait(timeout: .now() + 5) == .success
+    }
+
+    func resume() {
+        proceed.signal()
+    }
+}
+
+private final class LeaseOperationLockContentionProbe: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private let observed = DispatchSemaphore(value: 0)
+    private var observedLock: String?
+
+    var firstObservedLock: String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return observedLock
+    }
+
+    func observe(lockName: String) {
+        stateLock.lock()
+        let isFirstObservation = observedLock == nil
+        if isFirstObservation {
+            observedLock = lockName
+        }
+        stateLock.unlock()
+        if isFirstObservation {
+            observed.signal()
+        }
+    }
+
+    func waitUntilObserved() -> Bool {
+        observed.wait(timeout: .now() + 5) == .success
     }
 }
 

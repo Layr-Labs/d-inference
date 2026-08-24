@@ -169,17 +169,23 @@ struct SandboxCapacityStateStore: Sendable {
     private let storageIdentity: SandboxStorageVolumeIdentity
     private let directorySynchronizationError:
         @Sendable (Int32) -> Int32?
+    private let leaseOperationLockContentionObserver:
+        (@Sendable (String) -> Void)?
 
     init(
         stateDirectory: URL,
-        storageIdentity: SandboxStorageVolumeIdentity
+        storageIdentity: SandboxStorageVolumeIdentity,
+        leaseOperationLockContentionObserver:
+            (@Sendable (String) -> Void)? = nil
     ) throws {
         try self.init(
             stateDirectory: stateDirectory,
             storageIdentity: storageIdentity,
             directorySynchronizationError: { descriptor in
                 Self.systemSynchronizationError(descriptor)
-            }
+            },
+            leaseOperationLockContentionObserver:
+                leaseOperationLockContentionObserver
         )
     }
 
@@ -187,7 +193,9 @@ struct SandboxCapacityStateStore: Sendable {
         stateDirectory: URL,
         storageIdentity: SandboxStorageVolumeIdentity,
         directorySynchronizationError:
-            @escaping @Sendable (Int32) -> Int32?
+            @escaping @Sendable (Int32) -> Int32?,
+        leaseOperationLockContentionObserver:
+            (@Sendable (String) -> Void)? = nil
     ) throws {
         guard stateDirectory.isFileURL,
               stateDirectory.baseURL == nil,
@@ -198,6 +206,8 @@ struct SandboxCapacityStateStore: Sendable {
         self.stateDirectory = stateDirectory.standardizedFileURL
         self.storageIdentity = storageIdentity
         self.directorySynchronizationError = directorySynchronizationError
+        self.leaseOperationLockContentionObserver =
+            leaseOperationLockContentionObserver
     }
 
     /// The caller must hold every lease-operation slot lock in ascending order.
@@ -284,14 +294,38 @@ struct SandboxCapacityStateStore: Sendable {
         )
         let lockDescriptor = openedLock.descriptor
         do {
-            let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
-            while flock(lockDescriptor, lockOperation) != 0 {
-                let code = errno
-                if !wait && (code == EWOULDBLOCK || code == EAGAIN) {
-                    throw SandboxCapacityError.leaseOperationInProgress
+            if wait, let observer = leaseOperationLockContentionObserver {
+                var acquired = false
+                while !acquired {
+                    if flock(lockDescriptor, LOCK_EX | LOCK_NB) == 0 {
+                        acquired = true
+                        continue
+                    }
+                    let code = errno
+                    if code == EINTR {
+                        continue
+                    }
+                    guard code == EWOULDBLOCK || code == EAGAIN else {
+                        throw SandboxCapacityError.io(code)
+                    }
+                    observer(lockName)
+                    while flock(lockDescriptor, LOCK_EX) != 0 {
+                        guard errno == EINTR else {
+                            throw SandboxCapacityError.io(errno)
+                        }
+                    }
+                    acquired = true
                 }
-                guard code == EINTR else {
-                    throw SandboxCapacityError.io(code)
+            } else {
+                let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
+                while flock(lockDescriptor, lockOperation) != 0 {
+                    let code = errno
+                    if !wait && (code == EWOULDBLOCK || code == EAGAIN) {
+                        throw SandboxCapacityError.leaseOperationInProgress
+                    }
+                    guard code == EINTR else {
+                        throw SandboxCapacityError.io(code)
+                    }
                 }
             }
             if openedLock.created {

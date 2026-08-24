@@ -40,7 +40,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
         storageIdentity: SandboxStorageVolumeIdentity? = nil,
         currentDate: @escaping @Sendable () -> Date,
         availableStorageBytes:
-            @escaping @Sendable () throws -> UInt64
+            @escaping @Sendable () throws -> UInt64,
+        leaseOperationLockContentionObserver:
+            (@Sendable (String) -> Void)? = nil
     ) throws {
         let identity = storageIdentity ?? SandboxStorageVolumeIdentity(
             canonicalPath: stateDirectory.standardizedFileURL.path
@@ -50,7 +52,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
         let store = try SandboxCapacityStateStore(
             stateDirectory: stateDirectory,
-            storageIdentity: identity
+            storageIdentity: identity,
+            leaseOperationLockContentionObserver:
+                leaseOperationLockContentionObserver
         )
         try SandboxCapacityPolicyReconciler.adoptExistingPolicy(
             store: store,
@@ -76,7 +80,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
         availableStorageBytes:
             @escaping @Sendable () throws -> UInt64,
         directorySynchronizationError:
-            @escaping @Sendable (Int32) -> Int32?
+            @escaping @Sendable (Int32) -> Int32?,
+        leaseOperationLockContentionObserver:
+            (@Sendable (String) -> Void)? = nil
     ) throws {
         let identity = storageIdentity ?? SandboxStorageVolumeIdentity(
             canonicalPath: stateDirectory.standardizedFileURL.path
@@ -87,7 +93,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
         let store = try SandboxCapacityStateStore(
             stateDirectory: stateDirectory,
             storageIdentity: identity,
-            directorySynchronizationError: directorySynchronizationError
+            directorySynchronizationError: directorySynchronizationError,
+            leaseOperationLockContentionObserver:
+                leaseOperationLockContentionObserver
         )
         try SandboxCapacityPolicyReconciler.adoptExistingPolicy(
             store: store,

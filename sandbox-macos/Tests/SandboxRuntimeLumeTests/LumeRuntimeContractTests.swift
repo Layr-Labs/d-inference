@@ -31,6 +31,10 @@ final class LumeRuntimeContractTests: XCTestCase {
                     path: LumeRuntimeConfiguration.pinnedLivenessPatchPath,
                     sha256: LumeRuntimeConfiguration.pinnedLivenessPatchSHA256
                 ),
+                LumePatch(
+                    path: LumeRuntimeConfiguration.pinnedRunLockIdentityPatchPath,
+                    sha256: LumeRuntimeConfiguration.pinnedRunLockIdentityPatchSHA256
+                ),
             ]
         )
         XCTAssertEqual(lock.license, "MIT")

@@ -11,6 +11,10 @@
     {
       "path": "ThirdParty/lume-patches/0002-fail-closed-run-lock-liveness.patch",
       "sha256": "135c94920e4a773b13f1e057e0198a82ffa2d8b1cced0cd23782da84a3ba788a"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0003-bind-run-lock-identity.patch",
+      "sha256": "8da944a57941cc0c0f3889caffac1cd6b99e2a880a64d4d1200bc0102059a856"
     }
   ],
   "license": "MIT",

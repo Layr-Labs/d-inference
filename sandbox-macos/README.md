@@ -179,10 +179,16 @@ exact token. A missing VM, replaced storage path, stop failure, or ownership
 failure retains the fenced lease for retry or host quarantine, preventing a
 stalled control plane from overbooking a host whose guest may still be running.
 The pinned runtime treats a wedged or ambiguous run-lock probe as `unknown`,
-never `stopped`. Stop succeeds only after acquiring the same `config.json`
-inode's exclusive `flock`; it never replaces that inode to manufacture an
-unlocked path. Reconciliation therefore cannot release capacity based on an
-inconclusive `lsof` result after a controller restart.
+never `stopped`. Each active-session marker durably binds the exact
+`config.json` and `.run-owner.lock` device/inode pair to the owning process's
+kernel-reported birth time before virtualization starts. Post-restart status
+and stop discover the POSIX lock owner through `F_GETLK`, then require the
+marker, both path identities, the owner PID, and its birth time to agree before
+signaling. Legacy markers, replaced inodes, reused PIDs, missing owner locks,
+and ambiguous probes all fail closed without deleting the marker or releasing
+capacity. Stop completes only after acquiring the original run locks; it never
+uses `lsof` opener lists or replaces `config.json` to manufacture an unlocked
+path.
 
 ## Pinned Lume substrate
 

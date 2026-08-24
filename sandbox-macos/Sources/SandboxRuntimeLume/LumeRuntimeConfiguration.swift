@@ -24,9 +24,14 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0002-fail-closed-run-lock-liveness.patch"
     public static let pinnedLivenessPatchSHA256 =
         "135c94920e4a773b13f1e057e0198a82ffa2d8b1cced0cd23782da84a3ba788a"
+    public static let pinnedRunLockIdentityPatchPath =
+        "ThirdParty/lume-patches/0003-bind-run-lock-identity.patch"
+    public static let pinnedRunLockIdentityPatchSHA256 =
+        "8da944a57941cc0c0f3889caffac1cd6b99e2a880a64d4d1200bc0102059a856"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
+        pinnedRunLockIdentityPatchPath: pinnedRunLockIdentityPatchSHA256,
     ]
 
     public let executable: URL

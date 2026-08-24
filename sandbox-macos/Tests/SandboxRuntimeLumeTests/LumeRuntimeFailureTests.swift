@@ -155,6 +155,9 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 storageHeadroomBytes:
                     20 * SandboxResourcePolicy.gibibyte
             ),
+            storageIdentity: try SandboxStorageVolumeInspector().inspect(
+                path: fixture.storage
+            ).identity,
             currentDate: { clock.now() },
             availableStorageBytes: { UInt64.max }
         )
@@ -169,7 +172,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             expiresAt: now.addingTimeInterval(120)
         )
         try fixture.bindOwnership(to: lease.scope)
-        let runtime = LumeLeaseFencedVirtualMachineRuntime(
+        let runtime = try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: fixture.executable,
                 storageDirectory: fixture.storage,
@@ -268,6 +271,9 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 storageHeadroomBytes:
                     20 * SandboxResourcePolicy.gibibyte
             ),
+            storageIdentity: try SandboxStorageVolumeInspector().inspect(
+                path: fixture.storage
+            ).identity,
             currentDate: { clock.now() },
             availableStorageBytes: { UInt64.max }
         )
@@ -281,7 +287,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             expiresAt: now.addingTimeInterval(120)
         )
         try fixture.bindOwnership(to: lease.scope)
-        let runtime = LumeLeaseFencedVirtualMachineRuntime(
+        let runtime = try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: fixture.executable,
                 storageDirectory: fixture.storage,
@@ -541,6 +547,35 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(retryResults.isEmpty)
     }
 
+    func testPublicReleaseStopsVirtualMachineBeforeReleasingCapacity()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        try await runtime.release(
+            scope: lease.scope,
+            name: fixture.virtualMachineName
+        )
+
+        try await fixture.waitForState("stopped")
+        XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+    }
+
     func testExpiredLeaseReconciliationRetainsLeaseOnOwnershipFailure()
         async throws
     {
@@ -581,6 +616,142 @@ final class LumeRuntimeFailureTests: XCTestCase {
             lease.scope.fencingToken
         )
         try await fixture.waitForState("running")
+    }
+
+    func testExpiredLeaseReconciliationRetainsMissingVirtualMachine()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        clock.set(lease.expiresAt)
+
+        let results = try await runtime.reconcileExpiredLeases()
+
+        XCTAssertEqual(results.count, 1)
+        guard case .retained(let detail) = results[0].outcome else {
+            return XCTFail("missing VM must retain its capacity lease")
+        }
+        XCTAssertTrue(detail.contains("refusing to release capacity"))
+        XCTAssertEqual(try arbiter.snapshot().leases, [results[0].lease])
+    }
+
+    func testFencedRuntimeRejectsDifferentStorageVolume() throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let arbiter = try fixture.makeCapacityArbiter(
+            clock: LumeTestWallClock(
+                Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        )
+        let otherStorage = fixture.directory.appendingPathComponent(
+            "other-storage",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: otherStorage,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        XCTAssertThrowsError(
+            try LumeLeaseFencedVirtualMachineRuntime(
+                configuration: LumeRuntimeConfiguration(
+                    executable: fixture.executable,
+                    storageDirectory: otherStorage,
+                    commandTimeoutSeconds: 5,
+                    createTimeoutSeconds: 5,
+                    trustPolicy: .developmentAdHoc
+                ),
+                capacityArbiter: arbiter
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxCapacityError,
+                .storageIdentityMismatch
+            )
+        }
+    }
+
+    func testFencedRuntimeRejectsReplacedStorageDirectory() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let displaced = fixture.directory.appendingPathComponent(
+            "storage-displaced",
+            isDirectory: true
+        )
+        try FileManager.default.moveItem(at: fixture.storage, to: displaced)
+        try FileManager.default.createDirectory(
+            at: fixture.storage,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        do {
+            try await runtime.start(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("replaced runtime storage must fail closed")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .storageIdentityMismatch)
+        }
+    }
+
+    func testRejectedLeaseNameDoesNotCreateVirtualMachineLock() async throws {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let rejectedName = "sandbox-unowned"
+
+        do {
+            try await runtime.start(scope: lease.scope, name: rejectedName)
+            XCTFail("lease must not authorize another VM")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseVirtualMachineMismatch)
+        }
+        let lockURL = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        ).locksDirectory.appendingPathComponent("\(rejectedName).lock")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL.path))
     }
 
     func testRejectsProvenanceWithUnpinnedPatchDigest() async throws {
@@ -2071,6 +2242,9 @@ private struct FakeLumeFixture {
         availableStorageBytes:
             @escaping @Sendable () throws -> UInt64 = { UInt64.max }
     ) throws -> SandboxHostCapacityArbiter {
+        let storageIdentity = try SandboxStorageVolumeInspector().inspect(
+            path: storage
+        ).identity
         let arbiter = try SandboxHostCapacityArbiter(
             stateDirectory: directory.appendingPathComponent(
                 "capacity",
@@ -2085,6 +2259,7 @@ private struct FakeLumeFixture {
                 storageHeadroomBytes:
                     20 * SandboxResourcePolicy.gibibyte
             ),
+            storageIdentity: storageIdentity,
             currentDate: { clock.now() },
             availableStorageBytes: availableStorageBytes
         )
@@ -2096,7 +2271,7 @@ private struct FakeLumeFixture {
     func makeLeaseFencedRuntime(
         capacityArbiter: SandboxHostCapacityArbiter
     ) throws -> LumeLeaseFencedVirtualMachineRuntime {
-        LumeLeaseFencedVirtualMachineRuntime(
+        try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: executable,
                 storageDirectory: storage,

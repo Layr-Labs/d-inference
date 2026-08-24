@@ -9,7 +9,10 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
     public init(
         configuration: LumeRuntimeConfiguration,
         capacityArbiter: SandboxHostCapacityArbiter
-    ) {
+    ) throws {
+        try capacityArbiter.requireStorageDirectory(
+            configuration.storageDirectory
+        )
         self.capacityArbiter = capacityArbiter
         self.runtime = LumeVirtualMachineRuntime(
             configuration: configuration,
@@ -57,6 +60,14 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         name: String
     ) async throws {
         try await runtime.delete(name: name, scope: scope)
+    }
+
+    public func release(
+        scope: SandboxOperationScope,
+        name: String
+    ) async throws {
+        try await runtime.stop(name: name, scope: scope)
+        try capacityArbiter.release(scope: scope)
     }
 
     public func reconcileExpiredLeases() async throws

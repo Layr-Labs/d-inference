@@ -10,6 +10,11 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try preauthorize(
+            scope: scope,
+            operation: .inspect,
+            virtualMachineName: name
+        )
         let operationLock = try beginOperation("inspect", name: name)
         defer {
             endOperation(name: name)
@@ -57,6 +62,16 @@ extension LumeVirtualMachineRuntime {
         _ specification: SandboxVirtualMachineSpecification,
         scope: SandboxOperationScope?
     ) async throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(specification.name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        try preauthorize(
+            scope: scope,
+            operation: .create,
+            virtualMachineName: specification.name,
+            resources: specification.resources,
+            bootDiskBytes: specification.diskBytes
+        )
         let operationLock = try beginOperation(
             "create",
             name: specification.name
@@ -100,6 +115,14 @@ extension LumeVirtualMachineRuntime {
             guard template != specification.name else {
                 throw SandboxRuntimeError.invalidImageReference
             }
+            guard try await inspect(name: template) != nil else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            _ = try LumeVirtualMachineOwnership.requireOwned(
+                name: template,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
             sourceOperationLock = try beginOperation(
                 "clone-source",
                 name: template
@@ -225,6 +248,11 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try preauthorize(
+            scope: scope,
+            operation: .start,
+            virtualMachineName: name
+        )
         let operationLock = try beginOperation("start", name: name)
         defer {
             endOperation(name: name)
@@ -325,6 +353,11 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try preauthorize(
+            scope: scope,
+            operation: .stop,
+            virtualMachineName: name
+        )
         let operationLock = try beginOperation("stop", name: name)
         defer {
             endOperation(name: name)
@@ -353,6 +386,11 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try preauthorize(
+            scope: scope,
+            operation: .delete,
+            virtualMachineName: name
+        )
         let operationLock = try beginOperation("delete", name: name)
         defer {
             endOperation(name: name)
@@ -475,6 +513,11 @@ extension LumeVirtualMachineRuntime {
             if let process = runningProcesses.removeValue(forKey: name) {
                 _ = await process.stop()
             }
+            guard owner == .baseTemplate else {
+                throw SandboxRuntimeError.unsupported(
+                    "leased VM \(name) is missing; refusing to release capacity"
+                )
+            }
             return
         }
         _ = try LumeVirtualMachineOwnership.requireOwned(
@@ -486,6 +529,11 @@ extension LumeVirtualMachineRuntime {
             if let process = runningProcesses.removeValue(forKey: name) {
                 _ = await process.stop()
             }
+            _ = try LumeVirtualMachineOwnership.requireOwned(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
             return
         }
         _ = try await run(
@@ -493,13 +541,24 @@ extension LumeVirtualMachineRuntime {
             timeoutSeconds: configuration.commandTimeoutSeconds,
             operation: "stop"
         )
-        try await waitForStoppedOrAbsent(
+        try await waitForState(
             name: name,
+            expected: .stopped,
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
         if let process = runningProcesses.removeValue(forKey: name) {
             _ = await process.stop()
         }
+        guard try await inspect(name: name)?.state == .stopped else {
+            throw SandboxRuntimeError.malformedOutput(
+                "Lume stop completed without a stopped VM record"
+            )
+        }
+        _ = try LumeVirtualMachineOwnership.requireOwned(
+            name: name,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
     }
 
     private func waitForState(

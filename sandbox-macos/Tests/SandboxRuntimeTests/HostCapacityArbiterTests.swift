@@ -207,6 +207,71 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testPersistedStorageIdentityRejectsAnotherRuntimeVolume() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        _ = try arbiter.initialize()
+        let differentIdentity = SandboxStorageVolumeIdentity(
+            canonicalPath: "/private/var/db/darkbloom/other-storage",
+            device: 99,
+            inode: 101
+        )
+        let reopened = try SandboxHostCapacityArbiter(
+            stateDirectory: stateDirectory,
+            policy: SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
+            ),
+            storageIdentity: differentIdentity,
+            currentDate: { Date(timeIntervalSince1970: 2_000_000_000) },
+            availableStorageBytes: { UInt64.max }
+        )
+
+        assertCapacityError(.storageIdentityMismatch) {
+            _ = try reopened.snapshot()
+        }
+    }
+
+    func testRejectedIdentifiersDoNotCreateDurableLeaseLocks() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        _ = try arbiter.initialize()
+        let rejectedID = SandboxID()
+        let scope = SandboxOperationScope(
+            sandboxID: rejectedID,
+            generation: try generation(1),
+            fencingToken: try fencingToken(1)
+        )
+
+        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+            _ = try arbiter.reserve(
+                sandboxID: rejectedID,
+                generation: scope.generation,
+                virtualMachineName: "sandbox-rejected",
+                resources: try makeResources(),
+                expiresAt: Date(timeIntervalSince1970: 2_000_000_120)
+            )
+        }
+        assertCapacityError(.leaseNotFound) {
+            _ = try arbiter.renew(
+                scope: scope,
+                expiresAt: Date(timeIntervalSince1970: 2_000_000_120)
+            )
+        }
+
+        let lockFiles = try FileManager.default.contentsOfDirectory(
+            atPath: stateDirectory.path
+        ).filter { $0.hasPrefix("lease-slot-") }
+        XCTAssertTrue(lockFiles.isEmpty)
+    }
+
     func testFencingRejectsStaleCommandsAndSurvivesRestart() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -890,7 +955,9 @@ final class HostCapacityArbiterTests: XCTestCase {
             resources: try makeResources(),
             expiresAt: now.addingTimeInterval(120)
         )
-        let lockName = "lease-\(sandboxID.description).lock"
+        let lockName = SandboxCapacityStateStore.leaseOperationLockName(
+            for: sandboxID
+        )
         try FileManager.default.linkItem(
             at: stateDirectory.appendingPathComponent(lockName),
             to: root.appendingPathComponent("\(lockName).alias")
@@ -939,17 +1006,15 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
-    func testMigratesLegacyActiveLeaseGenerationHistory() throws {
+    func testRejectsLegacyActiveStateWithoutCompleteGenerationHistory() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
         try initializeDedicated(arbiter)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
-        let sandboxID = SandboxID()
-        let generation = try generation(3)
-        let lease = try arbiter.reserve(
-            sandboxID: sandboxID,
-            generation: generation,
+        _ = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(3),
             virtualMachineName: "sandbox-legacy-generation",
             resources: try makeResources(),
             expiresAt: now.addingTimeInterval(120)
@@ -978,32 +1043,9 @@ final class HostCapacityArbiterTests: XCTestCase {
             ofItemAtPath: stateURL.path
         )
 
-        let migrated = try makeArbiter(stateDirectory: stateDirectory)
-        let migratedLease = try XCTUnwrap(
-            migrated.snapshot().leases.first
-        )
-        XCTAssertEqual(migratedLease.scope, lease.scope)
-        XCTAssertEqual(
-            migratedLease.workspaceBytes,
-            SandboxResourcePolicy.alpha.workspaceBytes.upperBound
-        )
-        XCTAssertEqual(
-            migratedLease.reservedGrowthBytes,
-            151 * SandboxResourcePolicy.gibibyte
-        )
-        try migrated.release(scope: lease.scope)
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
-        assertCapacityError(.staleSandboxGeneration(
-            highest: generation,
-            requested: generation
-        )) {
-            _ = try reopened.reserve(
-                sandboxID: sandboxID,
-                generation: generation,
-                virtualMachineName: "sandbox-legacy-replay",
-                resources: try makeResources(),
-                expiresAt: now.addingTimeInterval(120)
-            )
+        assertCapacityError(.corruptState) {
+            _ = try reopened.snapshot()
         }
     }
 
@@ -1051,7 +1093,8 @@ final class HostCapacityArbiterTests: XCTestCase {
                     sandboxID: SandboxID(),
                     generation: firstGeneration
                 )
-            }
+            },
+            storageIdentity: testStorageIdentity(for: stateDirectory)
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -1111,6 +1154,17 @@ final class HostCapacityArbiterTests: XCTestCase {
             memoryBytes: memoryGiB * SandboxResourcePolicy.gibibyte,
             workspaceBytes: workspaceGiB * SandboxResourcePolicy.gibibyte,
             commandTimeoutSeconds: 900
+        )
+    }
+
+    private func testStorageIdentity(
+        for stateDirectory: URL
+    ) -> SandboxStorageVolumeIdentity {
+        SandboxStorageVolumeIdentity(
+            canonicalPath: stateDirectory.standardizedFileURL.path
+                + "/test-storage",
+            device: 0,
+            inode: 0
         )
     }
 

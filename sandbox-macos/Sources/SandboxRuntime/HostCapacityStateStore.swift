@@ -8,7 +8,7 @@ struct SandboxGenerationHighWatermark: Codable, Equatable {
 }
 
 struct SandboxCapacityState: Codable, Equatable {
-    static let schemaVersion: UInt16 = 2
+    static let schemaVersion: UInt16 = 3
     static let maximumGenerationHighWatermarks = 4_096
 
     let schemaVersion: UInt16
@@ -16,19 +16,22 @@ struct SandboxCapacityState: Codable, Equatable {
     var nextFencingToken: UInt64
     var leases: [SandboxCapacityLease]
     var generationHighWatermarks: [SandboxGenerationHighWatermark]
+    let storageIdentity: SandboxStorageVolumeIdentity
 
     init(
         schemaVersion: UInt16 = Self.schemaVersion,
         mode: SandboxHostMode,
         nextFencingToken: UInt64,
         leases: [SandboxCapacityLease],
-        generationHighWatermarks: [SandboxGenerationHighWatermark] = []
+        generationHighWatermarks: [SandboxGenerationHighWatermark] = [],
+        storageIdentity: SandboxStorageVolumeIdentity
     ) {
         self.schemaVersion = schemaVersion
         self.mode = mode
         self.nextFencingToken = nextFencingToken
         self.leases = leases
         self.generationHighWatermarks = generationHighWatermarks
+        self.storageIdentity = storageIdentity
     }
 
     init(from decoder: Decoder) throws {
@@ -37,9 +40,7 @@ struct SandboxCapacityState: Codable, Equatable {
             UInt16.self,
             forKey: .schemaVersion
         )
-        guard storedSchemaVersion == 1
-                || storedSchemaVersion == Self.schemaVersion
-        else {
+        guard storedSchemaVersion == Self.schemaVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
                 in: container,
@@ -56,27 +57,14 @@ struct SandboxCapacityState: Codable, Equatable {
             forKey: .leases
         )
         schemaVersion = Self.schemaVersion
-        if storedSchemaVersion == Self.schemaVersion {
-            generationHighWatermarks = try container.decode(
-                [SandboxGenerationHighWatermark].self,
-                forKey: .generationHighWatermarks
-            )
-        } else {
-            guard !leases.isEmpty else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .leases,
-                    in: container,
-                    debugDescription:
-                        "legacy empty capacity state has no recoverable generation history"
-                )
-            }
-            generationHighWatermarks = leases.map {
-                SandboxGenerationHighWatermark(
-                    sandboxID: $0.scope.sandboxID,
-                    generation: $0.scope.generation
-                )
-            }
-        }
+        generationHighWatermarks = try container.decode(
+            [SandboxGenerationHighWatermark].self,
+            forKey: .generationHighWatermarks
+        )
+        storageIdentity = try container.decode(
+            SandboxStorageVolumeIdentity.self,
+            forKey: .storageIdentity
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -91,6 +79,7 @@ struct SandboxCapacityState: Codable, Equatable {
             },
             forKey: .generationHighWatermarks
         )
+        try container.encode(storageIdentity, forKey: .storageIdentity)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -99,20 +88,27 @@ struct SandboxCapacityState: Codable, Equatable {
         case nextFencingToken
         case leases
         case generationHighWatermarks
+        case storageIdentity
     }
 }
 
 struct SandboxCapacityStateStore: Sendable {
     private static let stateFileName = "capacity.json"
     private static let maximumStateBytes = 1_048_576
+    private static let leaseOperationLockSlotCount: UInt64 = 64
 
     private let stateDirectory: URL
+    private let storageIdentity: SandboxStorageVolumeIdentity
     private let directorySynchronizationError:
         @Sendable (Int32) -> Int32?
 
-    init(stateDirectory: URL) throws {
+    init(
+        stateDirectory: URL,
+        storageIdentity: SandboxStorageVolumeIdentity
+    ) throws {
         try self.init(
             stateDirectory: stateDirectory,
+            storageIdentity: storageIdentity,
             directorySynchronizationError: { descriptor in
                 Self.systemSynchronizationError(descriptor)
             }
@@ -121,6 +117,7 @@ struct SandboxCapacityStateStore: Sendable {
 
     init(
         stateDirectory: URL,
+        storageIdentity: SandboxStorageVolumeIdentity,
         directorySynchronizationError:
             @escaping @Sendable (Int32) -> Int32?
     ) throws {
@@ -131,6 +128,7 @@ struct SandboxCapacityStateStore: Sendable {
             throw SandboxCapacityError.unsafeStatePath
         }
         self.stateDirectory = stateDirectory.standardizedFileURL
+        self.storageIdentity = storageIdentity
         self.directorySynchronizationError = directorySynchronizationError
     }
 
@@ -157,7 +155,7 @@ struct SandboxCapacityStateStore: Sendable {
     ) throws -> SandboxLeaseOperationLock {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
-        let lockName = "lease-\(sandboxID.description).lock"
+        let lockName = Self.leaseOperationLockName(for: sandboxID)
         let openedLock = try Self.openLockFile(
             named: lockName,
             in: directoryDescriptor
@@ -194,6 +192,17 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
+    package static func leaseOperationLockName(
+        for sandboxID: SandboxID
+    ) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in sandboxID.description.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "lease-slot-\(hash % leaseOperationLockSlotCount).lock"
+    }
+
     func update<T>(
         _ operation: (inout SandboxCapacityState) throws -> T
     ) throws -> T {
@@ -201,7 +210,7 @@ struct SandboxCapacityStateStore: Sendable {
             var state = try readState(from: directoryDescriptor)
             let original = state
             let result = try operation(&state)
-            try Self.validate(state)
+            try validate(state)
             if state != original {
                 try writeState(state, to: directoryDescriptor)
             }
@@ -268,7 +277,7 @@ struct SandboxCapacityStateStore: Sendable {
         } catch {
             throw SandboxCapacityError.corruptState
         }
-        try Self.validate(state)
+        try validate(state)
         return state
     }
 
@@ -276,7 +285,7 @@ struct SandboxCapacityStateStore: Sendable {
         _ state: SandboxCapacityState,
         to directoryDescriptor: Int32
     ) throws {
-        try Self.validate(state)
+        try validate(state)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -419,6 +428,13 @@ struct SandboxCapacityStateStore: Sendable {
             generations[$0.scope.sandboxID] == $0.scope.generation
         }) else {
             throw SandboxCapacityError.corruptState
+        }
+    }
+
+    private func validate(_ state: SandboxCapacityState) throws {
+        try Self.validate(state)
+        guard state.storageIdentity == storageIdentity else {
+            throw SandboxCapacityError.storageIdentityMismatch
         }
     }
 

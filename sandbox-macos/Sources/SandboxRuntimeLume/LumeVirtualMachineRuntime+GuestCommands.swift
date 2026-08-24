@@ -29,6 +29,11 @@ extension LumeVirtualMachineRuntime {
                 "guest commands are disabled until the signed guest-control agent is available"
             )
         }
+        try preauthorize(
+            scope: scope,
+            operation: .execute,
+            virtualMachineName: name
+        )
         let operationLock = try beginOperation("execute", name: name)
         defer {
             endOperation(name: name)

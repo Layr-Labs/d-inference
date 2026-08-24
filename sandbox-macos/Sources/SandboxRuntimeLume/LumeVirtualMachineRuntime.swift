@@ -99,6 +99,9 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
         bootDiskBytes: UInt64? = nil
     ) throws -> SandboxLeaseMutationAuthorization? {
         if let capacityArbiter {
+            try capacityArbiter.requireStorageDirectory(
+                configuration.storageDirectory
+            )
             guard let scope else {
                 throw SandboxRuntimeError.unsupported(
                     "lease-fenced Lume operation requires an operation scope"
@@ -125,6 +128,38 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
             )
         }
         return nil
+    }
+
+    func preauthorize(
+        scope: SandboxOperationScope?,
+        operation: SandboxLeaseOperation,
+        virtualMachineName: String,
+        resources: SandboxResourceSpecification? = nil,
+        bootDiskBytes: UInt64? = nil
+    ) throws {
+        if let capacityArbiter {
+            try capacityArbiter.requireStorageDirectory(
+                configuration.storageDirectory
+            )
+            guard let scope else {
+                throw SandboxRuntimeError.unsupported(
+                    "lease-fenced Lume operation requires an operation scope"
+                )
+            }
+            _ = try capacityArbiter.authorize(
+                scope: scope,
+                virtualMachineName: virtualMachineName,
+                operation: operation,
+                resources: resources,
+                bootDiskBytes: bootDiskBytes
+            )
+            return
+        }
+        if scope != nil {
+            throw SandboxRuntimeError.unsupported(
+                "unfenced Lume runtime cannot accept an operation scope"
+            )
+        }
     }
 
     func storageArguments(_ arguments: [String]) -> [String] {

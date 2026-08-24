@@ -242,6 +242,7 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
     case leaseResourceMismatch
     case insufficientHostStorage(needed: UInt64, available: UInt64)
     case storageInspectionFailed
+    case storageIdentityMismatch
     case fencingTokenExhausted
     case unsafeStatePath
     case publicationUncertain(Int32)
@@ -293,6 +294,8 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "sandbox host storage requires \(needed) available bytes; found \(available)"
         case .storageInspectionFailed:
             return "sandbox host storage availability could not be inspected"
+        case .storageIdentityMismatch:
+            return "sandbox runtime storage does not match the bound capacity volume"
         case .fencingTokenExhausted:
             return "sandbox capacity fencing-token space is exhausted"
         case .unsafeStatePath:

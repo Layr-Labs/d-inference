@@ -392,7 +392,7 @@ package enum SandboxAuthorityFileSystem {
             && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
     }
 
-    private static func canonicalPath(for url: URL) -> String? {
+    package static func canonicalPath(for url: URL) -> String? {
         guard url.isFileURL,
               url.baseURL == nil,
               url.path.hasPrefix("/"),

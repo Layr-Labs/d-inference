@@ -23,7 +23,7 @@ enum ReconcileExpiredCommand {
             storageDirectory: options.storageDirectory,
             policy: policy
         )
-        let runtime = LumeLeaseFencedVirtualMachineRuntime(
+        let runtime = try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: options.lumeExecutable,
                 storageDirectory: options.storageDirectory,

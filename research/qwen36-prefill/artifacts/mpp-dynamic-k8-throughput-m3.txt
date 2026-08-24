@@ -1,0 +1,879 @@
+PROBE=mpp-dynamic-k8-throughput
+DATE_UTC=2026-08-24T07:30:54Z
+HOST=gaj’s MacBook Pro
+HW_MODEL=Mac15,9
+OS=26.4
+XCODE=Xcode 26.5;Build version 17F42;
+SWIFT=Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101);Target: arm64-apple-macosx26.0;
+METAL=Apple metal version 32023.883 (metalfe-32023.883);Target: air64-apple-darwin25.4.0;Thread model: posix;InstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin;
+POWER_SOURCE_BEFORE=Now drawing from 'AC Power'
+POWER_MODE_AC_BEFORE=2
+THERMAL_BEFORE=Note: No thermal warning level has been recorded;Note: No performance warning level has been recorded;Note: No CPU power status has been recorded;
+SOURCE_SHA256=38c747ced4694800008ee5b75b28f5351da928e6fc9434acf19f904ae8d29557  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/kernel.metal;9eaa36b6618ba9d8fef1c4824047e3c27b89753ad72cb1661db5a0b2d32dacec  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/Types.swift;7a6ff2c14894ad59d018d0727c964840c7d63add81ce0021c81adbbc1753ba90  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/Inputs.swift;56384c9d75c9904c4e40417a61c3a8f7a467ba6f8814a5b562298e6b6a3e55b7  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/Runner.swift;d155254d5008370e6ce4adee5004f225da9ae2dfb8b9988abb859f2a667c4081  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/main.swift;be13f36bdc47e389f497fc1370481d629781e21e4b486e1788598592ac6d1216  /Users/gaj/work/mpp-dynamic-k8-benchmark-1cb9/run.sh;
+PROBE_EXIT=0
+DEVICE=Apple M3 Max
+OS=Version 26.4 (Build 25E246)
+CONFIG warmups=5 samples=21 repeats_per_sample=2 input=bf16 output=fp32 accumulation=explicit-fp32 relaxed_precision=false gpu_timestamps=true cpu_wall=true
+LEDGER cells=9 coverage=qwen-all-linear-except-scalar-gate omitted_scalar_gate_fraction=0.000034
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=qmm-scale variant=mpp-static-k16 fp32_changed=81/4096 bf16_changed=0/4096 max_abs=4.57763672e-05 max_ulp=8 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=d4cd06dd8c26cace actual_hash=55793202b6909100
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=72/4096 bf16_changed=0/4096 max_abs=3.05175781e-05 max_ulp=8 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=d4cd06dd8c26cace actual_hash=cfcea6cad1996484
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=mixed-exponent variant=mpp-static-k16 fp32_changed=3730/4096 bf16_changed=1/4096 max_abs=0.09375 max_ulp=6008 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8ff0a2b7298f53e2 actual_hash=faf1fc97442122a2
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=mixed-exponent variant=mpp-dynamic-k8 fp32_changed=3721/4096 bf16_changed=1/4096 max_abs=0.109375 max_ulp=3841 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8ff0a2b7298f53e2 actual_hash=b2b0b945080dae89
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=cancellation variant=mpp-static-k16 fp32_changed=0/4096 bf16_changed=0/4096 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8a118d446c9b3325 actual_hash=8a118d446c9b3325
+CORRECTNESS scope=adversary cell=adversary-k512 fixture=cancellation variant=mpp-dynamic-k8 fp32_changed=0/4096 bf16_changed=0/4096 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8a118d446c9b3325 actual_hash=8a118d446c9b3325
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=qmm-scale variant=mpp-static-k16 fp32_changed=1352/4096 bf16_changed=0/4096 max_abs=0.000274658203 max_ulp=2048 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8f46b722da57e179 actual_hash=8296ef43fad7c9a5
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=1081/4096 bf16_changed=0/4096 max_abs=0.000244140625 max_ulp=1024 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=8f46b722da57e179 actual_hash=dd204919e7390610
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=mixed-exponent variant=mpp-static-k16 fp32_changed=3892/4096 bf16_changed=1/4096 max_abs=0.359375 max_ulp=29864 qmm_1e-3=fail qwen_existing=pass nonfinite=0 reference_hash=caf777d046b2c910 actual_hash=68afdbb4686711dd
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=mixed-exponent variant=mpp-dynamic-k8 fp32_changed=3900/4096 bf16_changed=1/4096 max_abs=0.375 max_ulp=33400 qmm_1e-3=fail qwen_existing=pass nonfinite=0 reference_hash=caf777d046b2c910 actual_hash=ced7a15883a5f4bd
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=cancellation variant=mpp-static-k16 fp32_changed=0/4096 bf16_changed=0/4096 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=e7b69cb58793c325 actual_hash=e7b69cb58793c325
+CORRECTNESS scope=adversary cell=adversary-k2048 fixture=cancellation variant=mpp-dynamic-k8 fp32_changed=0/4096 bf16_changed=0/4096 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=e7b69cb58793c325 actual_hash=e7b69cb58793c325
+CORRECTNESS_GATE scope=adversary variant=mpp-static-k16 status=fail
+CORRECTNESS_GATE scope=adversary variant=mpp-dynamic-k8 status=fail
+TIMING=run validity=invalid-upper-bound reason=dynamic-k8-adversary-correctness
+CELL name=gdn-attention-input M=8192 N=8192 K=2048 tile=M16xN32 reduction_k=8/16 flops=274877906944 model_dispatches=40
+CORRECTNESS scope=full cell=gdn-attention-input fixture=qmm-scale variant=mpp-static-k16 fp32_changed=21917934/67108864 bf16_changed=2407/67108864 max_abs=0.000793457031 max_ulp=931135488 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=f7bfc071f0544858 actual_hash=3f0ba5c05566de28
+CORRECTNESS scope=full cell=gdn-attention-input fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=17314215/67108864 bf16_changed=1851/67108864 max_abs=0.000732421875 max_ulp=922746881 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=f7bfc071f0544858 actual_hash=3dfc4c0897bbff32
+CORRECTNESS_GATE scope=full cell=gdn-attention-input variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=gdn-attention-input variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=gdn-attention-input per_variant=5 dispatches_per_warmup=2
+ORDER cell=gdn-attention-input sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=1/21 gpu_ms=22.725646 cpu_ms=23.452813 gpu_tflops=12.0955
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=1/21 gpu_ms=23.011604 cpu_ms=23.123812 gpu_tflops=11.9452
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=1/21 gpu_ms=86.824042 cpu_ms=86.940896 gpu_tflops=3.1659
+ORDER cell=gdn-attention-input sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=2/21 gpu_ms=86.681875 cpu_ms=87.064667 gpu_tflops=3.1711
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=2/21 gpu_ms=22.758125 cpu_ms=22.892375 gpu_tflops=12.0782
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=2/21 gpu_ms=22.921750 cpu_ms=23.042938 gpu_tflops=11.9920
+ORDER cell=gdn-attention-input sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=3/21 gpu_ms=22.710917 cpu_ms=22.839042 gpu_tflops=12.1033
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=3/21 gpu_ms=87.073083 cpu_ms=87.197438 gpu_tflops=3.1569
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=3/21 gpu_ms=22.845438 cpu_ms=23.030229 gpu_tflops=12.0321
+ORDER cell=gdn-attention-input sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=4/21 gpu_ms=22.750938 cpu_ms=23.188416 gpu_tflops=12.0820
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=4/21 gpu_ms=22.749813 cpu_ms=22.862396 gpu_tflops=12.0826
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=4/21 gpu_ms=87.033813 cpu_ms=87.169250 gpu_tflops=3.1583
+ORDER cell=gdn-attention-input sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=5/21 gpu_ms=86.853750 cpu_ms=87.515041 gpu_tflops=3.1648
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=5/21 gpu_ms=22.697187 cpu_ms=22.829292 gpu_tflops=12.1107
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=5/21 gpu_ms=22.853792 cpu_ms=22.988813 gpu_tflops=12.0277
+ORDER cell=gdn-attention-input sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=6/21 gpu_ms=23.011875 cpu_ms=23.141520 gpu_tflops=11.9450
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=6/21 gpu_ms=86.452625 cpu_ms=86.594145 gpu_tflops=3.1795
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=6/21 gpu_ms=22.884292 cpu_ms=23.009000 gpu_tflops=12.0116
+ORDER cell=gdn-attention-input sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=7/21 gpu_ms=22.791750 cpu_ms=22.933854 gpu_tflops=12.0604
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=7/21 gpu_ms=22.848354 cpu_ms=22.977875 gpu_tflops=12.0305
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=7/21 gpu_ms=87.315396 cpu_ms=87.429104 gpu_tflops=3.1481
+ORDER cell=gdn-attention-input sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=8/21 gpu_ms=86.959396 cpu_ms=87.091021 gpu_tflops=3.1610
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=8/21 gpu_ms=22.768146 cpu_ms=22.897437 gpu_tflops=12.0729
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=8/21 gpu_ms=23.013958 cpu_ms=23.181146 gpu_tflops=11.9440
+ORDER cell=gdn-attention-input sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=9/21 gpu_ms=22.922125 cpu_ms=23.108313 gpu_tflops=11.9918
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=9/21 gpu_ms=86.976604 cpu_ms=87.109562 gpu_tflops=3.1604
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=9/21 gpu_ms=22.974500 cpu_ms=23.120916 gpu_tflops=11.9645
+ORDER cell=gdn-attention-input sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=10/21 gpu_ms=22.699646 cpu_ms=22.835208 gpu_tflops=12.1093
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=10/21 gpu_ms=22.902500 cpu_ms=23.041062 gpu_tflops=12.0021
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=10/21 gpu_ms=86.585979 cpu_ms=86.710146 gpu_tflops=3.1746
+ORDER cell=gdn-attention-input sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=11/21 gpu_ms=87.522146 cpu_ms=87.643208 gpu_tflops=3.1407
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=11/21 gpu_ms=22.745625 cpu_ms=22.874312 gpu_tflops=12.0849
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=11/21 gpu_ms=22.919729 cpu_ms=23.051229 gpu_tflops=11.9931
+ORDER cell=gdn-attention-input sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=12/21 gpu_ms=23.047729 cpu_ms=23.194562 gpu_tflops=11.9265
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=12/21 gpu_ms=87.026854 cpu_ms=87.178104 gpu_tflops=3.1585
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=12/21 gpu_ms=22.715875 cpu_ms=22.837750 gpu_tflops=12.1007
+ORDER cell=gdn-attention-input sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=13/21 gpu_ms=23.246000 cpu_ms=23.402000 gpu_tflops=11.8247
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=13/21 gpu_ms=22.788812 cpu_ms=22.931042 gpu_tflops=12.0620
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=13/21 gpu_ms=86.610771 cpu_ms=86.743604 gpu_tflops=3.1737
+ORDER cell=gdn-attention-input sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=14/21 gpu_ms=86.764229 cpu_ms=86.870771 gpu_tflops=3.1681
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=14/21 gpu_ms=22.824104 cpu_ms=22.979750 gpu_tflops=12.0433
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=14/21 gpu_ms=22.592063 cpu_ms=22.746646 gpu_tflops=12.1670
+ORDER cell=gdn-attention-input sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=15/21 gpu_ms=22.736667 cpu_ms=23.681271 gpu_tflops=12.0896
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=15/21 gpu_ms=86.991250 cpu_ms=87.099812 gpu_tflops=3.1598
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=15/21 gpu_ms=22.794375 cpu_ms=23.169208 gpu_tflops=12.0590
+ORDER cell=gdn-attention-input sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=16/21 gpu_ms=22.931229 cpu_ms=23.167938 gpu_tflops=11.9871
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=16/21 gpu_ms=22.874458 cpu_ms=22.997584 gpu_tflops=12.0168
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=16/21 gpu_ms=87.283187 cpu_ms=87.413188 gpu_tflops=3.1493
+ORDER cell=gdn-attention-input sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=17/21 gpu_ms=87.109813 cpu_ms=87.236812 gpu_tflops=3.1555
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=17/21 gpu_ms=22.851167 cpu_ms=22.986375 gpu_tflops=12.0291
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=17/21 gpu_ms=23.132375 cpu_ms=23.258063 gpu_tflops=11.8828
+ORDER cell=gdn-attention-input sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=18/21 gpu_ms=22.722562 cpu_ms=22.848229 gpu_tflops=12.0971
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=18/21 gpu_ms=87.049125 cpu_ms=87.153209 gpu_tflops=3.1577
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=18/21 gpu_ms=22.733396 cpu_ms=22.868792 gpu_tflops=12.0914
+ORDER cell=gdn-attention-input sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=19/21 gpu_ms=22.984438 cpu_ms=23.118979 gpu_tflops=11.9593
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=19/21 gpu_ms=22.771917 cpu_ms=22.892937 gpu_tflops=12.0709
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=19/21 gpu_ms=87.191542 cpu_ms=87.311354 gpu_tflops=3.1526
+ORDER cell=gdn-attention-input sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=20/21 gpu_ms=87.098125 cpu_ms=87.263479 gpu_tflops=3.1560
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=20/21 gpu_ms=22.714833 cpu_ms=22.858729 gpu_tflops=12.1013
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=20/21 gpu_ms=22.823062 cpu_ms=22.946292 gpu_tflops=12.0439
+ORDER cell=gdn-attention-input sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-input variant=mpp-static-k16 index=21/21 gpu_ms=22.938396 cpu_ms=23.065479 gpu_tflops=11.9833
+SAMPLE cell=gdn-attention-input variant=mpp-dynamic-k8 index=21/21 gpu_ms=86.374750 cpu_ms=86.504791 gpu_tflops=3.1824
+SAMPLE cell=gdn-attention-input variant=steel-k8 index=21/21 gpu_ms=22.653271 cpu_ms=22.799750 gpu_tflops=12.1341
+SUMMARY cell=gdn-attention-input variant=steel-k8 samples=21 gpu_min_ms=22.653271 gpu_p10_ms=22.699646 gpu_median_ms=22.768146 gpu_p90_ms=22.974500 gpu_max_ms=23.246000 cpu_median_ms=22.979750 gpu_median_tflops=12.0729 gpu_best_sample_tflops=12.1341
+SUMMARY cell=gdn-attention-input variant=mpp-static-k16 samples=21 gpu_min_ms=22.592063 gpu_p10_ms=22.722562 gpu_median_ms=22.874458 gpu_p90_ms=23.013958 gpu_max_ms=23.132375 cpu_median_ms=23.041062 gpu_median_tflops=12.0168 gpu_best_sample_tflops=12.1670
+SUMMARY cell=gdn-attention-input variant=mpp-dynamic-k8 samples=21 gpu_min_ms=86.374750 gpu_p10_ms=86.585979 gpu_median_ms=86.991250 gpu_p90_ms=87.283187 gpu_max_ms=87.522146 cpu_median_ms=87.153209 gpu_median_tflops=3.1598 gpu_best_sample_tflops=3.1824
+CELL name=gdn-wide M=8192 N=4096 K=2048 tile=M16xN32 reduction_k=8/16 flops=137438953472 model_dispatches=30
+CORRECTNESS scope=full cell=gdn-wide fixture=qmm-scale variant=mpp-static-k16 fp32_changed=10941900/33554432 bf16_changed=1174/33554432 max_abs=0.000671386719 max_ulp=4194304 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=4923721fbc428b8a actual_hash=1caebca26bc76455
+CORRECTNESS scope=full cell=gdn-wide fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=8644895/33554432 bf16_changed=917/33554432 max_abs=0.000793457031 max_ulp=4194304 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=4923721fbc428b8a actual_hash=7e49b9970dcce3b2
+CORRECTNESS_GATE scope=full cell=gdn-wide variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=gdn-wide variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=gdn-wide per_variant=5 dispatches_per_warmup=2
+ORDER cell=gdn-wide sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=1/21 gpu_ms=11.497333 cpu_ms=11.631771 gpu_tflops=11.9540
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=1/21 gpu_ms=11.595437 cpu_ms=11.725500 gpu_tflops=11.8528
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=1/21 gpu_ms=43.325083 cpu_ms=43.460459 gpu_tflops=3.1723
+ORDER cell=gdn-wide sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=2/21 gpu_ms=43.177688 cpu_ms=43.320355 gpu_tflops=3.1831
+SAMPLE cell=gdn-wide variant=steel-k8 index=2/21 gpu_ms=11.391500 cpu_ms=11.523959 gpu_tflops=12.0650
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=2/21 gpu_ms=11.411250 cpu_ms=11.541438 gpu_tflops=12.0442
+ORDER cell=gdn-wide sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=3/21 gpu_ms=11.238063 cpu_ms=11.353063 gpu_tflops=12.2298
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=3/21 gpu_ms=43.786937 cpu_ms=43.920583 gpu_tflops=3.1388
+SAMPLE cell=gdn-wide variant=steel-k8 index=3/21 gpu_ms=11.280312 cpu_ms=11.412521 gpu_tflops=12.1840
+ORDER cell=gdn-wide sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=4/21 gpu_ms=11.538125 cpu_ms=11.661062 gpu_tflops=11.9117
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=4/21 gpu_ms=11.408375 cpu_ms=11.531729 gpu_tflops=12.0472
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=4/21 gpu_ms=43.317229 cpu_ms=43.442417 gpu_tflops=3.1728
+ORDER cell=gdn-wide sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=5/21 gpu_ms=43.428021 cpu_ms=43.543500 gpu_tflops=3.1648
+SAMPLE cell=gdn-wide variant=steel-k8 index=5/21 gpu_ms=11.210188 cpu_ms=11.594667 gpu_tflops=12.2602
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=5/21 gpu_ms=11.379417 cpu_ms=11.777688 gpu_tflops=12.0779
+ORDER cell=gdn-wide sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=6/21 gpu_ms=11.200083 cpu_ms=11.474709 gpu_tflops=12.2712
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=6/21 gpu_ms=43.815875 cpu_ms=43.933667 gpu_tflops=3.1367
+SAMPLE cell=gdn-wide variant=steel-k8 index=6/21 gpu_ms=11.233229 cpu_ms=11.463854 gpu_tflops=12.2350
+ORDER cell=gdn-wide sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=7/21 gpu_ms=11.298583 cpu_ms=11.789708 gpu_tflops=12.1643
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=7/21 gpu_ms=11.507250 cpu_ms=11.634625 gpu_tflops=11.9437
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=7/21 gpu_ms=43.398562 cpu_ms=43.727708 gpu_tflops=3.1669
+ORDER cell=gdn-wide sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=8/21 gpu_ms=43.502813 cpu_ms=43.760354 gpu_tflops=3.1593
+SAMPLE cell=gdn-wide variant=steel-k8 index=8/21 gpu_ms=11.370812 cpu_ms=11.498667 gpu_tflops=12.0870
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=8/21 gpu_ms=11.406750 cpu_ms=11.541625 gpu_tflops=12.0489
+ORDER cell=gdn-wide sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=9/21 gpu_ms=11.270021 cpu_ms=11.406667 gpu_tflops=12.1951
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=9/21 gpu_ms=43.472938 cpu_ms=43.603375 gpu_tflops=3.1615
+SAMPLE cell=gdn-wide variant=steel-k8 index=9/21 gpu_ms=11.284667 cpu_ms=11.418480 gpu_tflops=12.1793
+ORDER cell=gdn-wide sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=10/21 gpu_ms=11.524896 cpu_ms=11.757646 gpu_tflops=11.9254
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=10/21 gpu_ms=11.278188 cpu_ms=11.419646 gpu_tflops=12.1863
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=10/21 gpu_ms=43.220312 cpu_ms=43.453896 gpu_tflops=3.1800
+ORDER cell=gdn-wide sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=11/21 gpu_ms=43.393375 cpu_ms=43.598604 gpu_tflops=3.1673
+SAMPLE cell=gdn-wide variant=steel-k8 index=11/21 gpu_ms=11.363958 cpu_ms=11.496583 gpu_tflops=12.0943
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=11/21 gpu_ms=11.491875 cpu_ms=11.645062 gpu_tflops=11.9597
+ORDER cell=gdn-wide sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=12/21 gpu_ms=11.240604 cpu_ms=11.369687 gpu_tflops=12.2270
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=12/21 gpu_ms=43.787750 cpu_ms=43.985084 gpu_tflops=3.1388
+SAMPLE cell=gdn-wide variant=steel-k8 index=12/21 gpu_ms=11.445062 cpu_ms=11.649396 gpu_tflops=12.0086
+ORDER cell=gdn-wide sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=13/21 gpu_ms=11.394625 cpu_ms=11.528375 gpu_tflops=12.0617
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=13/21 gpu_ms=11.412708 cpu_ms=11.553000 gpu_tflops=12.0426
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=13/21 gpu_ms=43.338062 cpu_ms=43.607292 gpu_tflops=3.1713
+ORDER cell=gdn-wide sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=14/21 gpu_ms=43.360000 cpu_ms=43.509333 gpu_tflops=3.1697
+SAMPLE cell=gdn-wide variant=steel-k8 index=14/21 gpu_ms=11.464333 cpu_ms=11.603020 gpu_tflops=11.9884
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=14/21 gpu_ms=11.535187 cpu_ms=11.748313 gpu_tflops=11.9148
+ORDER cell=gdn-wide sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=15/21 gpu_ms=11.357375 cpu_ms=11.484042 gpu_tflops=12.1013
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=15/21 gpu_ms=43.480333 cpu_ms=43.632021 gpu_tflops=3.1609
+SAMPLE cell=gdn-wide variant=steel-k8 index=15/21 gpu_ms=11.394937 cpu_ms=11.532604 gpu_tflops=12.0614
+ORDER cell=gdn-wide sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=16/21 gpu_ms=11.430750 cpu_ms=11.551000 gpu_tflops=12.0236
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=16/21 gpu_ms=11.407563 cpu_ms=11.523312 gpu_tflops=12.0481
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=16/21 gpu_ms=43.345500 cpu_ms=43.472541 gpu_tflops=3.1708
+ORDER cell=gdn-wide sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=17/21 gpu_ms=43.091625 cpu_ms=43.258792 gpu_tflops=3.1895
+SAMPLE cell=gdn-wide variant=steel-k8 index=17/21 gpu_ms=11.365229 cpu_ms=11.510646 gpu_tflops=12.0929
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=17/21 gpu_ms=11.420875 cpu_ms=11.551875 gpu_tflops=12.0340
+ORDER cell=gdn-wide sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=18/21 gpu_ms=11.313562 cpu_ms=11.442021 gpu_tflops=12.1482
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=18/21 gpu_ms=43.695229 cpu_ms=43.922041 gpu_tflops=3.1454
+SAMPLE cell=gdn-wide variant=steel-k8 index=18/21 gpu_ms=11.376500 cpu_ms=11.504500 gpu_tflops=12.0810
+ORDER cell=gdn-wide sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-wide variant=steel-k8 index=19/21 gpu_ms=11.400854 cpu_ms=11.538771 gpu_tflops=12.0551
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=19/21 gpu_ms=11.478375 cpu_ms=11.625187 gpu_tflops=11.9737
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=19/21 gpu_ms=43.526792 cpu_ms=43.650687 gpu_tflops=3.1576
+ORDER cell=gdn-wide sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=20/21 gpu_ms=43.456771 cpu_ms=43.557125 gpu_tflops=3.1627
+SAMPLE cell=gdn-wide variant=steel-k8 index=20/21 gpu_ms=11.305104 cpu_ms=11.437292 gpu_tflops=12.1572
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=20/21 gpu_ms=11.474292 cpu_ms=11.610855 gpu_tflops=11.9780
+ORDER cell=gdn-wide sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-wide variant=mpp-static-k16 index=21/21 gpu_ms=11.304875 cpu_ms=11.432521 gpu_tflops=12.1575
+SAMPLE cell=gdn-wide variant=mpp-dynamic-k8 index=21/21 gpu_ms=43.763063 cpu_ms=43.888979 gpu_tflops=3.1405
+SAMPLE cell=gdn-wide variant=steel-k8 index=21/21 gpu_ms=11.390500 cpu_ms=11.514021 gpu_tflops=12.0661
+SUMMARY cell=gdn-wide variant=steel-k8 samples=21 gpu_min_ms=11.210188 gpu_p10_ms=11.280312 gpu_median_ms=11.390500 gpu_p90_ms=11.497333 gpu_max_ms=11.538125 cpu_median_ms=11.528375 gpu_median_tflops=12.0661 gpu_best_sample_tflops=12.2602
+SUMMARY cell=gdn-wide variant=mpp-static-k16 samples=21 gpu_min_ms=11.200083 gpu_p10_ms=11.240604 gpu_median_ms=11.407563 gpu_p90_ms=11.507250 gpu_max_ms=11.595437 cpu_median_ms=11.541438 gpu_median_tflops=12.0481 gpu_best_sample_tflops=12.2712
+SUMMARY cell=gdn-wide variant=mpp-dynamic-k8 samples=21 gpu_min_ms=43.091625 gpu_p10_ms=43.220312 gpu_median_ms=43.428021 gpu_p90_ms=43.786937 gpu_max_ms=43.815875 cpu_median_ms=43.603375 gpu_median_tflops=3.1648 gpu_best_sample_tflops=3.1895
+CELL name=gdn-attention-output M=8192 N=2048 K=4096 tile=M16xN32 reduction_k=8/16 flops=137438953472 model_dispatches=40
+CORRECTNESS scope=full cell=gdn-attention-output fixture=qmm-scale variant=mpp-static-k16 fp32_changed=10218028/16777216 bf16_changed=1976/16777216 max_abs=0.00183105469 max_ulp=10485760 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=b41c903907ff04ac actual_hash=95e9545760a68649
+CORRECTNESS scope=full cell=gdn-attention-output fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=8850511/16777216 bf16_changed=1604/16777216 max_abs=0.00183105469 max_ulp=7340032 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=b41c903907ff04ac actual_hash=011ce82e984e4321
+CORRECTNESS_GATE scope=full cell=gdn-attention-output variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=gdn-attention-output variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=gdn-attention-output per_variant=5 dispatches_per_warmup=2
+ORDER cell=gdn-attention-output sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=1/21 gpu_ms=11.275500 cpu_ms=11.421333 gpu_tflops=12.1892
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=1/21 gpu_ms=11.601562 cpu_ms=11.732812 gpu_tflops=11.8466
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=1/21 gpu_ms=43.711937 cpu_ms=43.846792 gpu_tflops=3.1442
+ORDER cell=gdn-attention-output sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=2/21 gpu_ms=43.897625 cpu_ms=44.022062 gpu_tflops=3.1309
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=2/21 gpu_ms=11.397375 cpu_ms=11.527188 gpu_tflops=12.0588
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=2/21 gpu_ms=11.706375 cpu_ms=11.817666 gpu_tflops=11.7405
+ORDER cell=gdn-attention-output sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=3/21 gpu_ms=11.307604 cpu_ms=11.417771 gpu_tflops=12.1546
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=3/21 gpu_ms=43.886688 cpu_ms=44.001688 gpu_tflops=3.1317
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=3/21 gpu_ms=11.301937 cpu_ms=11.429125 gpu_tflops=12.1607
+ORDER cell=gdn-attention-output sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=4/21 gpu_ms=11.381438 cpu_ms=11.521625 gpu_tflops=12.0757
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=4/21 gpu_ms=11.612104 cpu_ms=11.740666 gpu_tflops=11.8358
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=4/21 gpu_ms=43.982625 cpu_ms=44.116500 gpu_tflops=3.1248
+ORDER cell=gdn-attention-output sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=5/21 gpu_ms=43.654833 cpu_ms=43.769917 gpu_tflops=3.1483
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=5/21 gpu_ms=11.475500 cpu_ms=11.629667 gpu_tflops=11.9767
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=5/21 gpu_ms=11.526542 cpu_ms=11.660979 gpu_tflops=11.9237
+ORDER cell=gdn-attention-output sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=6/21 gpu_ms=11.391229 cpu_ms=11.498437 gpu_tflops=12.0653
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=6/21 gpu_ms=44.099542 cpu_ms=44.224833 gpu_tflops=3.1166
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=6/21 gpu_ms=11.365375 cpu_ms=11.497896 gpu_tflops=12.0928
+ORDER cell=gdn-attention-output sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=7/21 gpu_ms=11.521562 cpu_ms=11.788854 gpu_tflops=11.9288
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=7/21 gpu_ms=11.443125 cpu_ms=11.935291 gpu_tflops=12.0106
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=7/21 gpu_ms=43.598625 cpu_ms=43.723375 gpu_tflops=3.1524
+ORDER cell=gdn-attention-output sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=8/21 gpu_ms=43.292500 cpu_ms=43.547250 gpu_tflops=3.1747
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=8/21 gpu_ms=11.207563 cpu_ms=11.345458 gpu_tflops=12.2631
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=8/21 gpu_ms=11.562208 cpu_ms=11.695438 gpu_tflops=11.8869
+ORDER cell=gdn-attention-output sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=9/21 gpu_ms=11.583500 cpu_ms=11.715625 gpu_tflops=11.8651
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=9/21 gpu_ms=43.563062 cpu_ms=43.686104 gpu_tflops=3.1549
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=9/21 gpu_ms=11.555833 cpu_ms=11.676813 gpu_tflops=11.8935
+ORDER cell=gdn-attention-output sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=10/21 gpu_ms=11.746500 cpu_ms=11.870604 gpu_tflops=11.7004
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=10/21 gpu_ms=11.389646 cpu_ms=11.504646 gpu_tflops=12.0670
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=10/21 gpu_ms=43.723833 cpu_ms=43.858230 gpu_tflops=3.1433
+ORDER cell=gdn-attention-output sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=11/21 gpu_ms=43.988750 cpu_ms=44.257354 gpu_tflops=3.1244
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=11/21 gpu_ms=11.227792 cpu_ms=11.347520 gpu_tflops=12.2410
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=11/21 gpu_ms=11.590625 cpu_ms=11.690479 gpu_tflops=11.8578
+ORDER cell=gdn-attention-output sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=12/21 gpu_ms=11.424563 cpu_ms=11.606750 gpu_tflops=12.0301
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=12/21 gpu_ms=43.766000 cpu_ms=43.882271 gpu_tflops=3.1403
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=12/21 gpu_ms=11.389396 cpu_ms=11.526771 gpu_tflops=12.0673
+ORDER cell=gdn-attention-output sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=13/21 gpu_ms=11.545729 cpu_ms=11.656146 gpu_tflops=11.9039
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=13/21 gpu_ms=11.361062 cpu_ms=11.473187 gpu_tflops=12.0974
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=13/21 gpu_ms=44.172646 cpu_ms=44.294688 gpu_tflops=3.1114
+ORDER cell=gdn-attention-output sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=14/21 gpu_ms=43.621188 cpu_ms=43.740541 gpu_tflops=3.1507
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=14/21 gpu_ms=11.459438 cpu_ms=11.584145 gpu_tflops=11.9935
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=14/21 gpu_ms=11.716000 cpu_ms=11.855208 gpu_tflops=11.7309
+ORDER cell=gdn-attention-output sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=15/21 gpu_ms=11.412854 cpu_ms=11.544208 gpu_tflops=12.0425
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=15/21 gpu_ms=43.700042 cpu_ms=43.821625 gpu_tflops=3.1451
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=15/21 gpu_ms=11.211000 cpu_ms=11.339980 gpu_tflops=12.2593
+ORDER cell=gdn-attention-output sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=16/21 gpu_ms=11.559875 cpu_ms=11.712896 gpu_tflops=11.8893
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=16/21 gpu_ms=11.374146 cpu_ms=11.516875 gpu_tflops=12.0835
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=16/21 gpu_ms=43.671521 cpu_ms=43.790083 gpu_tflops=3.1471
+ORDER cell=gdn-attention-output sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=17/21 gpu_ms=43.824229 cpu_ms=44.037062 gpu_tflops=3.1361
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=17/21 gpu_ms=11.308563 cpu_ms=11.444688 gpu_tflops=12.1535
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=17/21 gpu_ms=11.663229 cpu_ms=11.784458 gpu_tflops=11.7840
+ORDER cell=gdn-attention-output sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=18/21 gpu_ms=11.400396 cpu_ms=11.526354 gpu_tflops=12.0556
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=18/21 gpu_ms=43.862396 cpu_ms=43.977354 gpu_tflops=3.1334
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=18/21 gpu_ms=11.459438 cpu_ms=11.593750 gpu_tflops=11.9935
+ORDER cell=gdn-attention-output sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=19/21 gpu_ms=11.497583 cpu_ms=11.628104 gpu_tflops=11.9537
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=19/21 gpu_ms=11.269813 cpu_ms=11.480771 gpu_tflops=12.1953
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=19/21 gpu_ms=43.872250 cpu_ms=44.309604 gpu_tflops=3.1327
+ORDER cell=gdn-attention-output sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=20/21 gpu_ms=43.799625 cpu_ms=43.913354 gpu_tflops=3.1379
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=20/21 gpu_ms=11.330750 cpu_ms=11.549855 gpu_tflops=12.1297
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=20/21 gpu_ms=11.423750 cpu_ms=11.901687 gpu_tflops=12.0310
+ORDER cell=gdn-attention-output sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-attention-output variant=mpp-static-k16 index=21/21 gpu_ms=11.506479 cpu_ms=11.722480 gpu_tflops=11.9445
+SAMPLE cell=gdn-attention-output variant=mpp-dynamic-k8 index=21/21 gpu_ms=43.633625 cpu_ms=43.825708 gpu_tflops=3.1498
+SAMPLE cell=gdn-attention-output variant=steel-k8 index=21/21 gpu_ms=11.181625 cpu_ms=11.390895 gpu_tflops=12.2915
+SUMMARY cell=gdn-attention-output variant=steel-k8 samples=21 gpu_min_ms=11.181625 gpu_p10_ms=11.211000 gpu_median_ms=11.389396 gpu_p90_ms=11.555833 gpu_max_ms=11.746500 cpu_median_ms=11.527188 gpu_median_tflops=12.0673 gpu_best_sample_tflops=12.2915
+SUMMARY cell=gdn-attention-output variant=mpp-static-k16 samples=21 gpu_min_ms=11.269813 gpu_p10_ms=11.361062 gpu_median_ms=11.443125 gpu_p90_ms=11.663229 gpu_max_ms=11.716000 cpu_median_ms=11.690479 gpu_median_tflops=12.0106 gpu_best_sample_tflops=12.1953
+SUMMARY cell=gdn-attention-output variant=mpp-dynamic-k8 samples=21 gpu_min_ms=43.292500 gpu_p10_ms=43.598625 gpu_median_ms=43.766000 gpu_p90_ms=43.988750 gpu_max_ms=44.172646 cpu_median_ms=43.882271 gpu_median_tflops=3.1403 gpu_best_sample_tflops=3.1747
+CELL name=attention-kv-shared-up M=8192 N=512 K=2048 tile=M16xN32 reduction_k=8/16 flops=17179869184 model_dispatches=100
+CORRECTNESS scope=full cell=attention-kv-shared-up fixture=qmm-scale variant=mpp-static-k16 fp32_changed=1373490/4194304 bf16_changed=160/4194304 max_abs=0.000610351562 max_ulp=786432 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=436b223d06f43c51 actual_hash=b32855b0f086228a
+CORRECTNESS scope=full cell=attention-kv-shared-up fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=1087063/4194304 bf16_changed=118/4194304 max_abs=0.000671386719 max_ulp=524288 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=436b223d06f43c51 actual_hash=a9bfa4625231cf1a
+CORRECTNESS_GATE scope=full cell=attention-kv-shared-up variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=attention-kv-shared-up variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=attention-kv-shared-up per_variant=5 dispatches_per_warmup=2
+ORDER cell=attention-kv-shared-up sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=1/21 gpu_ms=1.459354 cpu_ms=1.599938 gpu_tflops=11.7722
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=1/21 gpu_ms=1.423458 cpu_ms=1.548792 gpu_tflops=12.0691
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=1/21 gpu_ms=5.706083 cpu_ms=5.832584 gpu_tflops=3.0108
+ORDER cell=attention-kv-shared-up sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=2/21 gpu_ms=5.485521 cpu_ms=5.610042 gpu_tflops=3.1319
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=2/21 gpu_ms=1.551625 cpu_ms=1.678333 gpu_tflops=11.0722
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=2/21 gpu_ms=1.424708 cpu_ms=1.548355 gpu_tflops=12.0585
+ORDER cell=attention-kv-shared-up sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=3/21 gpu_ms=1.422563 cpu_ms=1.532833 gpu_tflops=12.0767
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=3/21 gpu_ms=5.486875 cpu_ms=5.753979 gpu_tflops=3.1311
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=3/21 gpu_ms=1.557333 cpu_ms=1.749041 gpu_tflops=11.0316
+ORDER cell=attention-kv-shared-up sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=4/21 gpu_ms=1.476812 cpu_ms=1.665396 gpu_tflops=11.6331
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=4/21 gpu_ms=1.423375 cpu_ms=1.544584 gpu_tflops=12.0698
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=4/21 gpu_ms=5.393500 cpu_ms=5.517000 gpu_tflops=3.1853
+ORDER cell=attention-kv-shared-up sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=5/21 gpu_ms=5.534500 cpu_ms=5.662875 gpu_tflops=3.1041
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=5/21 gpu_ms=1.473813 cpu_ms=1.789104 gpu_tflops=11.6568
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=5/21 gpu_ms=1.431938 cpu_ms=1.617333 gpu_tflops=11.9976
+ORDER cell=attention-kv-shared-up sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=6/21 gpu_ms=1.422542 cpu_ms=1.553917 gpu_tflops=12.0769
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=6/21 gpu_ms=5.489542 cpu_ms=5.623458 gpu_tflops=3.1296
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=6/21 gpu_ms=1.462688 cpu_ms=1.607021 gpu_tflops=11.7454
+ORDER cell=attention-kv-shared-up sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=7/21 gpu_ms=1.468125 cpu_ms=1.596771 gpu_tflops=11.7019
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=7/21 gpu_ms=1.492125 cpu_ms=1.610396 gpu_tflops=11.5137
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=7/21 gpu_ms=5.508646 cpu_ms=5.614646 gpu_tflops=3.1187
+ORDER cell=attention-kv-shared-up sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=8/21 gpu_ms=5.524667 cpu_ms=5.725812 gpu_tflops=3.1097
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=8/21 gpu_ms=1.466812 cpu_ms=1.610375 gpu_tflops=11.7124
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=8/21 gpu_ms=1.422521 cpu_ms=1.555166 gpu_tflops=12.0771
+ORDER cell=attention-kv-shared-up sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=9/21 gpu_ms=1.423187 cpu_ms=1.553937 gpu_tflops=12.0714
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=9/21 gpu_ms=5.694521 cpu_ms=5.816854 gpu_tflops=3.0169
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=9/21 gpu_ms=1.466896 cpu_ms=1.596354 gpu_tflops=11.7117
+ORDER cell=attention-kv-shared-up sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=10/21 gpu_ms=1.495229 cpu_ms=1.654688 gpu_tflops=11.4898
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=10/21 gpu_ms=1.482562 cpu_ms=1.614229 gpu_tflops=11.5880
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=10/21 gpu_ms=5.392750 cpu_ms=5.530875 gpu_tflops=3.1857
+ORDER cell=attention-kv-shared-up sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=11/21 gpu_ms=5.668917 cpu_ms=5.823854 gpu_tflops=3.0305
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=11/21 gpu_ms=1.469375 cpu_ms=1.607250 gpu_tflops=11.6920
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=11/21 gpu_ms=1.433688 cpu_ms=1.544833 gpu_tflops=11.9830
+ORDER cell=attention-kv-shared-up sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=12/21 gpu_ms=1.425917 cpu_ms=1.567417 gpu_tflops=12.0483
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=12/21 gpu_ms=5.417958 cpu_ms=5.572000 gpu_tflops=3.1709
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=12/21 gpu_ms=1.464333 cpu_ms=1.595063 gpu_tflops=11.7322
+ORDER cell=attention-kv-shared-up sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=13/21 gpu_ms=1.657875 cpu_ms=1.761000 gpu_tflops=10.3626
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=13/21 gpu_ms=1.421896 cpu_ms=1.542938 gpu_tflops=12.0824
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=13/21 gpu_ms=5.510917 cpu_ms=5.745458 gpu_tflops=3.1174
+ORDER cell=attention-kv-shared-up sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=14/21 gpu_ms=5.392875 cpu_ms=5.523604 gpu_tflops=3.1857
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=14/21 gpu_ms=1.467479 cpu_ms=1.607063 gpu_tflops=11.7071
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=14/21 gpu_ms=1.560521 cpu_ms=1.676937 gpu_tflops=11.0091
+ORDER cell=attention-kv-shared-up sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=15/21 gpu_ms=1.424604 cpu_ms=1.557146 gpu_tflops=12.0594
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=15/21 gpu_ms=5.530937 cpu_ms=5.691230 gpu_tflops=3.1061
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=15/21 gpu_ms=1.471542 cpu_ms=1.635125 gpu_tflops=11.6747
+ORDER cell=attention-kv-shared-up sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=16/21 gpu_ms=1.462750 cpu_ms=1.590791 gpu_tflops=11.7449
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=16/21 gpu_ms=1.423083 cpu_ms=1.568854 gpu_tflops=12.0723
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=16/21 gpu_ms=5.685167 cpu_ms=5.805479 gpu_tflops=3.0219
+ORDER cell=attention-kv-shared-up sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=17/21 gpu_ms=5.512375 cpu_ms=5.625500 gpu_tflops=3.1166
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=17/21 gpu_ms=1.553792 cpu_ms=1.676083 gpu_tflops=11.0567
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=17/21 gpu_ms=1.424000 cpu_ms=1.555166 gpu_tflops=12.0645
+ORDER cell=attention-kv-shared-up sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=18/21 gpu_ms=1.465208 cpu_ms=1.645709 gpu_tflops=11.7252
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=18/21 gpu_ms=5.487729 cpu_ms=5.651770 gpu_tflops=3.1306
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=18/21 gpu_ms=1.557437 cpu_ms=1.727625 gpu_tflops=11.0309
+ORDER cell=attention-kv-shared-up sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=19/21 gpu_ms=1.467354 cpu_ms=1.612354 gpu_tflops=11.7081
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=19/21 gpu_ms=1.432333 cpu_ms=1.557041 gpu_tflops=11.9943
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=19/21 gpu_ms=5.600042 cpu_ms=5.718312 gpu_tflops=3.0678
+ORDER cell=attention-kv-shared-up sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=20/21 gpu_ms=5.432562 cpu_ms=5.702667 gpu_tflops=3.1624
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=20/21 gpu_ms=1.468000 cpu_ms=1.617146 gpu_tflops=11.7029
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=20/21 gpu_ms=1.444083 cpu_ms=1.610333 gpu_tflops=11.8967
+ORDER cell=attention-kv-shared-up sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=attention-kv-shared-up variant=mpp-static-k16 index=21/21 gpu_ms=1.422500 cpu_ms=1.548188 gpu_tflops=12.0772
+SAMPLE cell=attention-kv-shared-up variant=mpp-dynamic-k8 index=21/21 gpu_ms=5.616104 cpu_ms=5.747000 gpu_tflops=3.0590
+SAMPLE cell=attention-kv-shared-up variant=steel-k8 index=21/21 gpu_ms=1.465125 cpu_ms=1.598917 gpu_tflops=11.7259
+SUMMARY cell=attention-kv-shared-up variant=steel-k8 samples=21 gpu_min_ms=1.459354 gpu_p10_ms=1.462750 gpu_median_ms=1.468125 gpu_p90_ms=1.557333 gpu_max_ms=1.657875 cpu_median_ms=1.612354 gpu_median_tflops=11.7019 gpu_best_sample_tflops=11.7722
+SUMMARY cell=attention-kv-shared-up variant=mpp-static-k16 samples=21 gpu_min_ms=1.421896 gpu_p10_ms=1.422521 gpu_median_ms=1.424604 gpu_p90_ms=1.482562 gpu_max_ms=1.560521 cpu_median_ms=1.555166 gpu_median_tflops=12.0594 gpu_best_sample_tflops=12.0824
+SUMMARY cell=attention-kv-shared-up variant=mpp-dynamic-k8 samples=21 gpu_min_ms=5.392750 gpu_p10_ms=5.393500 gpu_median_ms=5.510917 gpu_p90_ms=5.685167 gpu_max_ms=5.706083 cpu_median_ms=5.691230 gpu_median_tflops=3.1174 gpu_best_sample_tflops=3.1857
+CELL name=router M=8192 N=256 K=2048 tile=M16xN32 reduction_k=8/16 flops=8589934592 model_dispatches=40
+CORRECTNESS scope=full cell=router fixture=qmm-scale variant=mpp-static-k16 fp32_changed=683640/2097152 bf16_changed=79/2097152 max_abs=0.000518798828 max_ulp=1048576 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=735f557538374e08 actual_hash=70c33f33103c80ca
+CORRECTNESS scope=full cell=router fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=540106/2097152 bf16_changed=65/2097152 max_abs=0.000549316406 max_ulp=1572864 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=735f557538374e08 actual_hash=48ed8e81407d4285
+CORRECTNESS_GATE scope=full cell=router variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=router variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=router per_variant=5 dispatches_per_warmup=2
+ORDER cell=router sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=1/21 gpu_ms=0.770771 cpu_ms=0.881084 gpu_tflops=11.1446
+SAMPLE cell=router variant=mpp-static-k16 index=1/21 gpu_ms=0.729875 cpu_ms=0.859916 gpu_tflops=11.7690
+SAMPLE cell=router variant=mpp-dynamic-k8 index=1/21 gpu_ms=2.756979 cpu_ms=2.875938 gpu_tflops=3.1157
+ORDER cell=router sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=2/21 gpu_ms=2.851625 cpu_ms=2.972021 gpu_tflops=3.0123
+SAMPLE cell=router variant=steel-k8 index=2/21 gpu_ms=0.754271 cpu_ms=0.880667 gpu_tflops=11.3884
+SAMPLE cell=router variant=mpp-static-k16 index=2/21 gpu_ms=0.729354 cpu_ms=0.845271 gpu_tflops=11.7775
+ORDER cell=router sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=3/21 gpu_ms=0.737250 cpu_ms=0.858250 gpu_tflops=11.6513
+SAMPLE cell=router variant=mpp-dynamic-k8 index=3/21 gpu_ms=2.751563 cpu_ms=2.878792 gpu_tflops=3.1218
+SAMPLE cell=router variant=steel-k8 index=3/21 gpu_ms=0.957917 cpu_ms=1.073125 gpu_tflops=8.9673
+ORDER cell=router sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=4/21 gpu_ms=0.750333 cpu_ms=0.877042 gpu_tflops=11.4482
+SAMPLE cell=router variant=mpp-static-k16 index=4/21 gpu_ms=0.730292 cpu_ms=0.849083 gpu_tflops=11.7623
+SAMPLE cell=router variant=mpp-dynamic-k8 index=4/21 gpu_ms=2.847146 cpu_ms=2.971271 gpu_tflops=3.0170
+ORDER cell=router sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=5/21 gpu_ms=2.759000 cpu_ms=2.900146 gpu_tflops=3.1134
+SAMPLE cell=router variant=steel-k8 index=5/21 gpu_ms=0.750354 cpu_ms=0.914312 gpu_tflops=11.4478
+SAMPLE cell=router variant=mpp-static-k16 index=5/21 gpu_ms=0.730250 cpu_ms=0.861459 gpu_tflops=11.7630
+ORDER cell=router sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=6/21 gpu_ms=0.729021 cpu_ms=0.853979 gpu_tflops=11.7828
+SAMPLE cell=router variant=mpp-dynamic-k8 index=6/21 gpu_ms=2.753687 cpu_ms=2.871229 gpu_tflops=3.1194
+SAMPLE cell=router variant=steel-k8 index=6/21 gpu_ms=0.757604 cpu_ms=0.884312 gpu_tflops=11.3383
+ORDER cell=router sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=7/21 gpu_ms=0.742729 cpu_ms=0.866250 gpu_tflops=11.5654
+SAMPLE cell=router variant=mpp-static-k16 index=7/21 gpu_ms=0.729875 cpu_ms=0.882062 gpu_tflops=11.7690
+SAMPLE cell=router variant=mpp-dynamic-k8 index=7/21 gpu_ms=2.755833 cpu_ms=3.623458 gpu_tflops=3.1170
+ORDER cell=router sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=8/21 gpu_ms=2.754396 cpu_ms=2.892708 gpu_tflops=3.1186
+SAMPLE cell=router variant=steel-k8 index=8/21 gpu_ms=0.751729 cpu_ms=0.873646 gpu_tflops=11.4269
+SAMPLE cell=router variant=mpp-static-k16 index=8/21 gpu_ms=0.749792 cpu_ms=0.866146 gpu_tflops=11.4564
+ORDER cell=router sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=9/21 gpu_ms=0.781125 cpu_ms=0.902750 gpu_tflops=10.9969
+SAMPLE cell=router variant=mpp-dynamic-k8 index=9/21 gpu_ms=2.751375 cpu_ms=2.933771 gpu_tflops=3.1221
+SAMPLE cell=router variant=steel-k8 index=9/21 gpu_ms=0.750854 cpu_ms=0.873271 gpu_tflops=11.4402
+ORDER cell=router sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=10/21 gpu_ms=0.752687 cpu_ms=0.868708 gpu_tflops=11.4124
+SAMPLE cell=router variant=mpp-static-k16 index=10/21 gpu_ms=0.731604 cpu_ms=0.874979 gpu_tflops=11.7412
+SAMPLE cell=router variant=mpp-dynamic-k8 index=10/21 gpu_ms=2.756000 cpu_ms=2.877958 gpu_tflops=3.1168
+ORDER cell=router sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=11/21 gpu_ms=2.754979 cpu_ms=3.077521 gpu_tflops=3.1180
+SAMPLE cell=router variant=steel-k8 index=11/21 gpu_ms=0.753938 cpu_ms=0.887667 gpu_tflops=11.3934
+SAMPLE cell=router variant=mpp-static-k16 index=11/21 gpu_ms=0.736646 cpu_ms=0.859396 gpu_tflops=11.6609
+ORDER cell=router sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=12/21 gpu_ms=0.730542 cpu_ms=0.851396 gpu_tflops=11.7583
+SAMPLE cell=router variant=mpp-dynamic-k8 index=12/21 gpu_ms=2.849729 cpu_ms=2.979855 gpu_tflops=3.0143
+SAMPLE cell=router variant=steel-k8 index=12/21 gpu_ms=0.753479 cpu_ms=0.876146 gpu_tflops=11.4004
+ORDER cell=router sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=13/21 gpu_ms=0.738188 cpu_ms=0.869271 gpu_tflops=11.6365
+SAMPLE cell=router variant=mpp-static-k16 index=13/21 gpu_ms=0.736813 cpu_ms=0.851333 gpu_tflops=11.6582
+SAMPLE cell=router variant=mpp-dynamic-k8 index=13/21 gpu_ms=2.756375 cpu_ms=2.879688 gpu_tflops=3.1164
+ORDER cell=router sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=14/21 gpu_ms=3.083250 cpu_ms=3.207292 gpu_tflops=2.7860
+SAMPLE cell=router variant=steel-k8 index=14/21 gpu_ms=0.745250 cpu_ms=0.876459 gpu_tflops=11.5262
+SAMPLE cell=router variant=mpp-static-k16 index=14/21 gpu_ms=0.768687 cpu_ms=0.936896 gpu_tflops=11.1748
+ORDER cell=router sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=15/21 gpu_ms=0.730771 cpu_ms=0.864209 gpu_tflops=11.7546
+SAMPLE cell=router variant=mpp-dynamic-k8 index=15/21 gpu_ms=2.753771 cpu_ms=2.876771 gpu_tflops=3.1193
+SAMPLE cell=router variant=steel-k8 index=15/21 gpu_ms=0.761958 cpu_ms=0.877834 gpu_tflops=11.2735
+ORDER cell=router sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=16/21 gpu_ms=0.805042 cpu_ms=0.909000 gpu_tflops=10.6702
+SAMPLE cell=router variant=mpp-static-k16 index=16/21 gpu_ms=0.729750 cpu_ms=0.850750 gpu_tflops=11.7711
+SAMPLE cell=router variant=mpp-dynamic-k8 index=16/21 gpu_ms=2.796188 cpu_ms=2.918875 gpu_tflops=3.0720
+ORDER cell=router sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=17/21 gpu_ms=2.754875 cpu_ms=2.883208 gpu_tflops=3.1181
+SAMPLE cell=router variant=steel-k8 index=17/21 gpu_ms=0.761333 cpu_ms=0.904791 gpu_tflops=11.2828
+SAMPLE cell=router variant=mpp-static-k16 index=17/21 gpu_ms=0.731854 cpu_ms=1.308917 gpu_tflops=11.7372
+ORDER cell=router sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=18/21 gpu_ms=0.729917 cpu_ms=0.848604 gpu_tflops=11.7684
+SAMPLE cell=router variant=mpp-dynamic-k8 index=18/21 gpu_ms=2.847000 cpu_ms=2.974146 gpu_tflops=3.0172
+SAMPLE cell=router variant=steel-k8 index=18/21 gpu_ms=0.745438 cpu_ms=0.870750 gpu_tflops=11.5233
+ORDER cell=router sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=router variant=steel-k8 index=19/21 gpu_ms=0.741396 cpu_ms=0.864500 gpu_tflops=11.5862
+SAMPLE cell=router variant=mpp-static-k16 index=19/21 gpu_ms=0.811687 cpu_ms=0.915375 gpu_tflops=10.5828
+SAMPLE cell=router variant=mpp-dynamic-k8 index=19/21 gpu_ms=2.854250 cpu_ms=2.970959 gpu_tflops=3.0095
+ORDER cell=router sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=router variant=mpp-dynamic-k8 index=20/21 gpu_ms=2.756000 cpu_ms=2.874312 gpu_tflops=3.1168
+SAMPLE cell=router variant=steel-k8 index=20/21 gpu_ms=0.747208 cpu_ms=0.879084 gpu_tflops=11.4960
+SAMPLE cell=router variant=mpp-static-k16 index=20/21 gpu_ms=0.729625 cpu_ms=0.856958 gpu_tflops=11.7731
+ORDER cell=router sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=router variant=mpp-static-k16 index=21/21 gpu_ms=0.730104 cpu_ms=0.845458 gpu_tflops=11.7654
+SAMPLE cell=router variant=mpp-dynamic-k8 index=21/21 gpu_ms=2.865938 cpu_ms=3.009083 gpu_tflops=2.9973
+SAMPLE cell=router variant=steel-k8 index=21/21 gpu_ms=0.832458 cpu_ms=0.956125 gpu_tflops=10.3188
+SUMMARY cell=router variant=steel-k8 samples=21 gpu_min_ms=0.738188 gpu_p10_ms=0.742729 gpu_median_ms=0.752687 gpu_p90_ms=0.805042 gpu_max_ms=0.957917 cpu_median_ms=0.877834 gpu_median_tflops=11.4124 gpu_best_sample_tflops=11.6365
+SUMMARY cell=router variant=mpp-static-k16 samples=21 gpu_min_ms=0.729021 gpu_p10_ms=0.729625 gpu_median_ms=0.730542 gpu_p90_ms=0.768687 gpu_max_ms=0.811687 cpu_median_ms=0.859396 gpu_median_tflops=11.7583 gpu_best_sample_tflops=11.7828
+SUMMARY cell=router variant=mpp-dynamic-k8 samples=21 gpu_min_ms=2.751375 gpu_p10_ms=2.753687 gpu_median_ms=2.756375 gpu_p90_ms=2.854250 gpu_max_ms=3.083250 cpu_median_ms=2.918875 gpu_median_tflops=3.1164 gpu_best_sample_tflops=3.1221
+CELL name=gdn-small M=8192 N=32 K=2048 tile=M16xN32 reduction_k=8/16 flops=1073741824 model_dispatches=60
+CORRECTNESS scope=full cell=gdn-small fixture=qmm-scale variant=mpp-static-k16 fp32_changed=85183/262144 bf16_changed=9/262144 max_abs=0.000396728516 max_ulp=65536 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=2f1ad12734c78d4f actual_hash=9f5955859edf3fcd
+CORRECTNESS scope=full cell=gdn-small fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=67167/262144 bf16_changed=9/262144 max_abs=0.00048828125 max_ulp=16384 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=2f1ad12734c78d4f actual_hash=855b0471ec7c9d4e
+CORRECTNESS_GATE scope=full cell=gdn-small variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=gdn-small variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=gdn-small per_variant=5 dispatches_per_warmup=2
+ORDER cell=gdn-small sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=1/21 gpu_ms=0.147813 cpu_ms=0.258416 gpu_tflops=7.2642
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=1/21 gpu_ms=0.127750 cpu_ms=0.224438 gpu_tflops=8.4050
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=1/21 gpu_ms=0.442562 cpu_ms=0.571416 gpu_tflops=2.4262
+ORDER cell=gdn-small sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=2/21 gpu_ms=0.439812 cpu_ms=0.549666 gpu_tflops=2.4414
+SAMPLE cell=gdn-small variant=steel-k8 index=2/21 gpu_ms=0.147146 cpu_ms=0.246625 gpu_tflops=7.2971
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=2/21 gpu_ms=0.127000 cpu_ms=0.221000 gpu_tflops=8.4547
+ORDER cell=gdn-small sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=3/21 gpu_ms=0.126208 cpu_ms=0.217771 gpu_tflops=8.5077
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=3/21 gpu_ms=0.445750 cpu_ms=0.549021 gpu_tflops=2.4088
+SAMPLE cell=gdn-small variant=steel-k8 index=3/21 gpu_ms=0.148167 cpu_ms=0.248645 gpu_tflops=7.2469
+ORDER cell=gdn-small sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=4/21 gpu_ms=0.150437 cpu_ms=0.243521 gpu_tflops=7.1375
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=4/21 gpu_ms=0.126000 cpu_ms=0.221146 gpu_tflops=8.5218
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=4/21 gpu_ms=0.445500 cpu_ms=0.549083 gpu_tflops=2.4102
+ORDER cell=gdn-small sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=5/21 gpu_ms=0.443687 cpu_ms=0.552208 gpu_tflops=2.4200
+SAMPLE cell=gdn-small variant=steel-k8 index=5/21 gpu_ms=0.149063 cpu_ms=0.254833 gpu_tflops=7.2033
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=5/21 gpu_ms=0.157708 cpu_ms=0.426063 gpu_tflops=6.8084
+ORDER cell=gdn-small sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=6/21 gpu_ms=0.129521 cpu_ms=0.600646 gpu_tflops=8.2901
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=6/21 gpu_ms=0.441875 cpu_ms=0.550625 gpu_tflops=2.4300
+SAMPLE cell=gdn-small variant=steel-k8 index=6/21 gpu_ms=0.150750 cpu_ms=0.242729 gpu_tflops=7.1227
+ORDER cell=gdn-small sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=7/21 gpu_ms=0.152125 cpu_ms=0.291708 gpu_tflops=7.0583
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=7/21 gpu_ms=0.125063 cpu_ms=0.230792 gpu_tflops=8.5856
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=7/21 gpu_ms=0.440396 cpu_ms=0.543021 gpu_tflops=2.4381
+ORDER cell=gdn-small sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=8/21 gpu_ms=0.463000 cpu_ms=0.574083 gpu_tflops=2.3191
+SAMPLE cell=gdn-small variant=steel-k8 index=8/21 gpu_ms=0.150354 cpu_ms=0.270209 gpu_tflops=7.1414
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=8/21 gpu_ms=0.126958 cpu_ms=0.260854 gpu_tflops=8.4574
+ORDER cell=gdn-small sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=9/21 gpu_ms=0.128188 cpu_ms=0.240834 gpu_tflops=8.3763
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=9/21 gpu_ms=0.445313 cpu_ms=0.556125 gpu_tflops=2.4112
+SAMPLE cell=gdn-small variant=steel-k8 index=9/21 gpu_ms=0.151312 cpu_ms=0.269709 gpu_tflops=7.0962
+ORDER cell=gdn-small sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=10/21 gpu_ms=0.152125 cpu_ms=0.246688 gpu_tflops=7.0583
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=10/21 gpu_ms=0.126563 cpu_ms=0.251000 gpu_tflops=8.4839
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=10/21 gpu_ms=0.441271 cpu_ms=0.580729 gpu_tflops=2.4333
+ORDER cell=gdn-small sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=11/21 gpu_ms=0.441375 cpu_ms=0.558083 gpu_tflops=2.4327
+SAMPLE cell=gdn-small variant=steel-k8 index=11/21 gpu_ms=0.151250 cpu_ms=0.250500 gpu_tflops=7.0991
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=11/21 gpu_ms=0.126375 cpu_ms=0.214500 gpu_tflops=8.4965
+ORDER cell=gdn-small sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=12/21 gpu_ms=0.128188 cpu_ms=0.223250 gpu_tflops=8.3763
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=12/21 gpu_ms=0.439687 cpu_ms=0.568833 gpu_tflops=2.4421
+SAMPLE cell=gdn-small variant=steel-k8 index=12/21 gpu_ms=0.150208 cpu_ms=0.262709 gpu_tflops=7.1484
+ORDER cell=gdn-small sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=13/21 gpu_ms=0.152146 cpu_ms=0.270292 gpu_tflops=7.0573
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=13/21 gpu_ms=0.127167 cpu_ms=0.269479 gpu_tflops=8.4436
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=13/21 gpu_ms=0.483292 cpu_ms=0.624521 gpu_tflops=2.2217
+ORDER cell=gdn-small sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=14/21 gpu_ms=0.444125 cpu_ms=0.592958 gpu_tflops=2.4177
+SAMPLE cell=gdn-small variant=steel-k8 index=14/21 gpu_ms=0.151938 cpu_ms=0.266146 gpu_tflops=7.0670
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=14/21 gpu_ms=0.127000 cpu_ms=0.223042 gpu_tflops=8.4547
+ORDER cell=gdn-small sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=15/21 gpu_ms=0.128208 cpu_ms=0.223708 gpu_tflops=8.3750
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=15/21 gpu_ms=0.436521 cpu_ms=0.537667 gpu_tflops=2.4598
+SAMPLE cell=gdn-small variant=steel-k8 index=15/21 gpu_ms=0.149146 cpu_ms=0.238750 gpu_tflops=7.1993
+ORDER cell=gdn-small sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=16/21 gpu_ms=0.156292 cpu_ms=0.273750 gpu_tflops=6.8701
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=16/21 gpu_ms=0.126188 cpu_ms=0.219542 gpu_tflops=8.5091
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=16/21 gpu_ms=0.469729 cpu_ms=0.640771 gpu_tflops=2.2859
+ORDER cell=gdn-small sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=17/21 gpu_ms=0.445354 cpu_ms=0.888354 gpu_tflops=2.4110
+SAMPLE cell=gdn-small variant=steel-k8 index=17/21 gpu_ms=0.150500 cpu_ms=0.251208 gpu_tflops=7.1345
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=17/21 gpu_ms=0.128625 cpu_ms=0.215146 gpu_tflops=8.3478
+ORDER cell=gdn-small sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=18/21 gpu_ms=0.126833 cpu_ms=0.210563 gpu_tflops=8.4658
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=18/21 gpu_ms=0.442354 cpu_ms=0.537500 gpu_tflops=2.4273
+SAMPLE cell=gdn-small variant=steel-k8 index=18/21 gpu_ms=0.151937 cpu_ms=0.244854 gpu_tflops=7.0670
+ORDER cell=gdn-small sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=gdn-small variant=steel-k8 index=19/21 gpu_ms=0.151958 cpu_ms=0.234563 gpu_tflops=7.0660
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=19/21 gpu_ms=0.128042 cpu_ms=0.211834 gpu_tflops=8.3859
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=19/21 gpu_ms=0.438500 cpu_ms=0.532458 gpu_tflops=2.4487
+ORDER cell=gdn-small sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=20/21 gpu_ms=0.439063 cpu_ms=0.543104 gpu_tflops=2.4455
+SAMPLE cell=gdn-small variant=steel-k8 index=20/21 gpu_ms=0.149750 cpu_ms=0.340938 gpu_tflops=7.1702
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=20/21 gpu_ms=0.128250 cpu_ms=0.228209 gpu_tflops=8.3723
+ORDER cell=gdn-small sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=gdn-small variant=mpp-static-k16 index=21/21 gpu_ms=0.127521 cpu_ms=0.217500 gpu_tflops=8.4201
+SAMPLE cell=gdn-small variant=mpp-dynamic-k8 index=21/21 gpu_ms=0.442063 cpu_ms=0.540500 gpu_tflops=2.4289
+SAMPLE cell=gdn-small variant=steel-k8 index=21/21 gpu_ms=0.150521 cpu_ms=0.253292 gpu_tflops=7.1335
+SUMMARY cell=gdn-small variant=steel-k8 samples=21 gpu_min_ms=0.147146 gpu_p10_ms=0.148167 gpu_median_ms=0.150521 gpu_p90_ms=0.152125 gpu_max_ms=0.156292 cpu_median_ms=0.253292 gpu_median_tflops=7.1335 gpu_best_sample_tflops=7.2971
+SUMMARY cell=gdn-small variant=mpp-static-k16 samples=21 gpu_min_ms=0.125063 gpu_p10_ms=0.126188 gpu_median_ms=0.127167 gpu_p90_ms=0.128625 gpu_max_ms=0.157708 cpu_median_ms=0.223250 gpu_median_tflops=8.4436 gpu_best_sample_tflops=8.5856
+SUMMARY cell=gdn-small variant=mpp-dynamic-k8 samples=21 gpu_min_ms=0.436521 gpu_p10_ms=0.439063 gpu_median_ms=0.442354 gpu_p90_ms=0.463000 gpu_max_ms=0.483292 cpu_median_ms=0.552208 gpu_median_tflops=2.4273 gpu_best_sample_tflops=2.4598
+CELL name=shared-down M=8192 N=2048 K=512 tile=M16xN32 reduction_k=8/16 flops=17179869184 model_dispatches=40
+CORRECTNESS scope=full cell=shared-down fixture=qmm-scale variant=mpp-static-k16 fp32_changed=363288/16777216 bf16_changed=13/16777216 max_abs=9.15527344e-05 max_ulp=2048 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=97943a54621605d7 actual_hash=ba137e3606a9a565
+CORRECTNESS scope=full cell=shared-down fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=253893/16777216 bf16_changed=9/16777216 max_abs=9.15527344e-05 max_ulp=2048 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=97943a54621605d7 actual_hash=4fcd54f3990b60ce
+CORRECTNESS_GATE scope=full cell=shared-down variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=shared-down variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=shared-down per_variant=5 dispatches_per_warmup=2
+ORDER cell=shared-down sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=1/21 gpu_ms=1.393875 cpu_ms=1.532563 gpu_tflops=12.3253
+SAMPLE cell=shared-down variant=mpp-static-k16 index=1/21 gpu_ms=1.560312 cpu_ms=1.699042 gpu_tflops=11.0105
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=1/21 gpu_ms=5.346979 cpu_ms=5.506062 gpu_tflops=3.2130
+ORDER cell=shared-down sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=2/21 gpu_ms=5.476000 cpu_ms=5.681604 gpu_tflops=3.1373
+SAMPLE cell=shared-down variant=steel-k8 index=2/21 gpu_ms=1.403812 cpu_ms=1.517980 gpu_tflops=12.2380
+SAMPLE cell=shared-down variant=mpp-static-k16 index=2/21 gpu_ms=1.403563 cpu_ms=1.521750 gpu_tflops=12.2402
+ORDER cell=shared-down sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=3/21 gpu_ms=1.405438 cpu_ms=1.515708 gpu_tflops=12.2239
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=3/21 gpu_ms=5.513187 cpu_ms=5.657438 gpu_tflops=3.1161
+SAMPLE cell=shared-down variant=steel-k8 index=3/21 gpu_ms=1.400312 cpu_ms=1.513229 gpu_tflops=12.2686
+ORDER cell=shared-down sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=4/21 gpu_ms=1.397875 cpu_ms=1.514063 gpu_tflops=12.2900
+SAMPLE cell=shared-down variant=mpp-static-k16 index=4/21 gpu_ms=1.404146 cpu_ms=1.524709 gpu_tflops=12.2351
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=4/21 gpu_ms=5.582938 cpu_ms=5.709187 gpu_tflops=3.0772
+ORDER cell=shared-down sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=5/21 gpu_ms=5.418313 cpu_ms=5.543896 gpu_tflops=3.1707
+SAMPLE cell=shared-down variant=steel-k8 index=5/21 gpu_ms=1.398625 cpu_ms=1.513980 gpu_tflops=12.2834
+SAMPLE cell=shared-down variant=mpp-static-k16 index=5/21 gpu_ms=1.401396 cpu_ms=1.579667 gpu_tflops=12.2591
+ORDER cell=shared-down sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=6/21 gpu_ms=1.401333 cpu_ms=1.523125 gpu_tflops=12.2597
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=6/21 gpu_ms=5.549563 cpu_ms=5.661083 gpu_tflops=3.0957
+SAMPLE cell=shared-down variant=steel-k8 index=6/21 gpu_ms=1.440083 cpu_ms=1.548000 gpu_tflops=11.9298
+ORDER cell=shared-down sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=7/21 gpu_ms=1.496604 cpu_ms=1.607771 gpu_tflops=11.4792
+SAMPLE cell=shared-down variant=mpp-static-k16 index=7/21 gpu_ms=1.439042 cpu_ms=1.738813 gpu_tflops=11.9384
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=7/21 gpu_ms=5.328687 cpu_ms=5.444438 gpu_tflops=3.2240
+ORDER cell=shared-down sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=8/21 gpu_ms=5.493250 cpu_ms=5.618271 gpu_tflops=3.1275
+SAMPLE cell=shared-down variant=steel-k8 index=8/21 gpu_ms=1.394208 cpu_ms=1.521062 gpu_tflops=12.3223
+SAMPLE cell=shared-down variant=mpp-static-k16 index=8/21 gpu_ms=1.537771 cpu_ms=1.657166 gpu_tflops=11.1719
+ORDER cell=shared-down sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=9/21 gpu_ms=1.489042 cpu_ms=1.630187 gpu_tflops=11.5375
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=9/21 gpu_ms=5.364125 cpu_ms=5.485729 gpu_tflops=3.2027
+SAMPLE cell=shared-down variant=steel-k8 index=9/21 gpu_ms=1.394479 cpu_ms=1.495979 gpu_tflops=12.3199
+ORDER cell=shared-down sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=10/21 gpu_ms=1.573563 cpu_ms=1.689479 gpu_tflops=10.9178
+SAMPLE cell=shared-down variant=mpp-static-k16 index=10/21 gpu_ms=1.403250 cpu_ms=1.542437 gpu_tflops=12.2429
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=10/21 gpu_ms=5.474875 cpu_ms=5.595667 gpu_tflops=3.1379
+ORDER cell=shared-down sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=11/21 gpu_ms=5.324687 cpu_ms=5.423687 gpu_tflops=3.2265
+SAMPLE cell=shared-down variant=steel-k8 index=11/21 gpu_ms=1.392708 cpu_ms=1.510083 gpu_tflops=12.3356
+SAMPLE cell=shared-down variant=mpp-static-k16 index=11/21 gpu_ms=1.401750 cpu_ms=1.515208 gpu_tflops=12.2560
+ORDER cell=shared-down sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=12/21 gpu_ms=1.403542 cpu_ms=2.148541 gpu_tflops=12.2404
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=12/21 gpu_ms=5.412188 cpu_ms=5.526084 gpu_tflops=3.1743
+SAMPLE cell=shared-down variant=steel-k8 index=12/21 gpu_ms=1.449000 cpu_ms=1.568105 gpu_tflops=11.8564
+ORDER cell=shared-down sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=13/21 gpu_ms=1.396896 cpu_ms=1.525229 gpu_tflops=12.2986
+SAMPLE cell=shared-down variant=mpp-static-k16 index=13/21 gpu_ms=1.402771 cpu_ms=1.520771 gpu_tflops=12.2471
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=13/21 gpu_ms=5.513625 cpu_ms=5.697938 gpu_tflops=3.1159
+ORDER cell=shared-down sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=14/21 gpu_ms=5.412063 cpu_ms=5.543563 gpu_tflops=3.1744
+SAMPLE cell=shared-down variant=steel-k8 index=14/21 gpu_ms=1.485750 cpu_ms=1.614562 gpu_tflops=11.5631
+SAMPLE cell=shared-down variant=mpp-static-k16 index=14/21 gpu_ms=1.404167 cpu_ms=1.533062 gpu_tflops=12.2349
+ORDER cell=shared-down sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=15/21 gpu_ms=1.402854 cpu_ms=1.525146 gpu_tflops=12.2464
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=15/21 gpu_ms=5.450437 cpu_ms=5.715916 gpu_tflops=3.1520
+SAMPLE cell=shared-down variant=steel-k8 index=15/21 gpu_ms=1.400875 cpu_ms=1.620479 gpu_tflops=12.2637
+ORDER cell=shared-down sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=16/21 gpu_ms=1.396958 cpu_ms=1.518021 gpu_tflops=12.2981
+SAMPLE cell=shared-down variant=mpp-static-k16 index=16/21 gpu_ms=1.404813 cpu_ms=1.541354 gpu_tflops=12.2293
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=16/21 gpu_ms=5.507396 cpu_ms=5.688646 gpu_tflops=3.1194
+ORDER cell=shared-down sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=17/21 gpu_ms=5.322208 cpu_ms=5.434541 gpu_tflops=3.2280
+SAMPLE cell=shared-down variant=steel-k8 index=17/21 gpu_ms=1.574271 cpu_ms=1.695208 gpu_tflops=10.9129
+SAMPLE cell=shared-down variant=mpp-static-k16 index=17/21 gpu_ms=1.401854 cpu_ms=1.519583 gpu_tflops=12.2551
+ORDER cell=shared-down sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=18/21 gpu_ms=1.403625 cpu_ms=1.530917 gpu_tflops=12.2396
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=18/21 gpu_ms=5.438563 cpu_ms=5.571729 gpu_tflops=3.1589
+SAMPLE cell=shared-down variant=steel-k8 index=18/21 gpu_ms=1.399187 cpu_ms=1.522312 gpu_tflops=12.2785
+ORDER cell=shared-down sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=shared-down variant=steel-k8 index=19/21 gpu_ms=1.398146 cpu_ms=1.501021 gpu_tflops=12.2876
+SAMPLE cell=shared-down variant=mpp-static-k16 index=19/21 gpu_ms=1.402875 cpu_ms=1.515562 gpu_tflops=12.2462
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=19/21 gpu_ms=5.489750 cpu_ms=5.623000 gpu_tflops=3.1294
+ORDER cell=shared-down sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=20/21 gpu_ms=5.539000 cpu_ms=5.670083 gpu_tflops=3.1016
+SAMPLE cell=shared-down variant=steel-k8 index=20/21 gpu_ms=1.399562 cpu_ms=1.531667 gpu_tflops=12.2752
+SAMPLE cell=shared-down variant=mpp-static-k16 index=20/21 gpu_ms=1.402000 cpu_ms=1.514875 gpu_tflops=12.2538
+ORDER cell=shared-down sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=shared-down variant=mpp-static-k16 index=21/21 gpu_ms=1.401687 cpu_ms=1.521041 gpu_tflops=12.2566
+SAMPLE cell=shared-down variant=mpp-dynamic-k8 index=21/21 gpu_ms=5.516250 cpu_ms=5.630730 gpu_tflops=3.1144
+SAMPLE cell=shared-down variant=steel-k8 index=21/21 gpu_ms=1.395250 cpu_ms=1.514291 gpu_tflops=12.3131
+SUMMARY cell=shared-down variant=steel-k8 samples=21 gpu_min_ms=1.392708 gpu_p10_ms=1.394208 gpu_median_ms=1.399187 gpu_p90_ms=1.496604 gpu_max_ms=1.574271 cpu_median_ms=1.522312 gpu_median_tflops=12.2785 gpu_best_sample_tflops=12.3356
+SUMMARY cell=shared-down variant=mpp-static-k16 samples=21 gpu_min_ms=1.401333 gpu_p10_ms=1.401687 gpu_median_ms=1.403542 gpu_p90_ms=1.489042 gpu_max_ms=1.560312 cpu_median_ms=1.525146 gpu_median_tflops=12.2404 gpu_best_sample_tflops=12.2597
+SUMMARY cell=shared-down variant=mpp-dynamic-k8 samples=21 gpu_min_ms=5.322208 gpu_p10_ms=5.328687 gpu_median_ms=5.474875 gpu_p90_ms=5.539000 gpu_max_ms=5.582938 cpu_median_ms=5.618271 gpu_median_tflops=3.1379 gpu_best_sample_tflops=3.2280
+CELL name=routed-gate-up M=65536 N=1024 K=2048 tile=M16xN32 reduction_k=8/16 flops=274877906944 model_dispatches=40
+CORRECTNESS scope=full cell=routed-gate-up fixture=qmm-scale variant=mpp-static-k16 fp32_changed=21919543/67108864 bf16_changed=2301/67108864 max_abs=0.000915527344 max_ulp=1858076673 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=05148be68bdee72b actual_hash=a805e0e8504efafe
+CORRECTNESS scope=full cell=routed-gate-up fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=17306421/67108864 bf16_changed=1838/67108864 max_abs=0.000854492188 max_ulp=1858076673 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=05148be68bdee72b actual_hash=b6fcff669b35f6e0
+CORRECTNESS_GATE scope=full cell=routed-gate-up variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=routed-gate-up variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=routed-gate-up per_variant=5 dispatches_per_warmup=2
+ORDER cell=routed-gate-up sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=1/21 gpu_ms=23.319583 cpu_ms=23.448750 gpu_tflops=11.7874
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=1/21 gpu_ms=23.131250 cpu_ms=23.265666 gpu_tflops=11.8834
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=1/21 gpu_ms=86.983271 cpu_ms=87.103542 gpu_tflops=3.1601
+ORDER cell=routed-gate-up sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=2/21 gpu_ms=86.868437 cpu_ms=86.978208 gpu_tflops=3.1643
+SAMPLE cell=routed-gate-up variant=steel-k8 index=2/21 gpu_ms=23.119167 cpu_ms=23.250521 gpu_tflops=11.8896
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=2/21 gpu_ms=22.794750 cpu_ms=22.919417 gpu_tflops=12.0588
+ORDER cell=routed-gate-up sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=3/21 gpu_ms=22.845000 cpu_ms=22.970730 gpu_tflops=12.0323
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=3/21 gpu_ms=86.743958 cpu_ms=86.971166 gpu_tflops=3.1688
+SAMPLE cell=routed-gate-up variant=steel-k8 index=3/21 gpu_ms=23.033562 cpu_ms=23.186916 gpu_tflops=11.9338
+ORDER cell=routed-gate-up sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=4/21 gpu_ms=23.173458 cpu_ms=23.306041 gpu_tflops=11.8618
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=4/21 gpu_ms=23.080188 cpu_ms=23.208020 gpu_tflops=11.9097
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=4/21 gpu_ms=87.005979 cpu_ms=87.136687 gpu_tflops=3.1593
+ORDER cell=routed-gate-up sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=5/21 gpu_ms=86.865750 cpu_ms=87.001645 gpu_tflops=3.1644
+SAMPLE cell=routed-gate-up variant=steel-k8 index=5/21 gpu_ms=23.157313 cpu_ms=23.336500 gpu_tflops=11.8700
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=5/21 gpu_ms=22.713917 cpu_ms=22.865396 gpu_tflops=12.1017
+ORDER cell=routed-gate-up sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=6/21 gpu_ms=22.655938 cpu_ms=22.775666 gpu_tflops=12.1327
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=6/21 gpu_ms=86.531312 cpu_ms=86.734854 gpu_tflops=3.1766
+SAMPLE cell=routed-gate-up variant=steel-k8 index=6/21 gpu_ms=22.896813 cpu_ms=23.048416 gpu_tflops=12.0051
+ORDER cell=routed-gate-up sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=7/21 gpu_ms=23.031875 cpu_ms=23.200146 gpu_tflops=11.9347
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=7/21 gpu_ms=22.959729 cpu_ms=23.084729 gpu_tflops=11.9722
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=7/21 gpu_ms=87.093354 cpu_ms=87.234396 gpu_tflops=3.1561
+ORDER cell=routed-gate-up sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=8/21 gpu_ms=87.068563 cpu_ms=87.216291 gpu_tflops=3.1570
+SAMPLE cell=routed-gate-up variant=steel-k8 index=8/21 gpu_ms=23.158438 cpu_ms=23.285895 gpu_tflops=11.8694
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=8/21 gpu_ms=22.884646 cpu_ms=23.014917 gpu_tflops=12.0115
+ORDER cell=routed-gate-up sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=9/21 gpu_ms=22.773937 cpu_ms=22.896104 gpu_tflops=12.0698
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=9/21 gpu_ms=86.962063 cpu_ms=87.320813 gpu_tflops=3.1609
+SAMPLE cell=routed-gate-up variant=steel-k8 index=9/21 gpu_ms=22.966604 cpu_ms=23.279167 gpu_tflops=11.9686
+ORDER cell=routed-gate-up sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=10/21 gpu_ms=22.929542 cpu_ms=23.069104 gpu_tflops=11.9879
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=10/21 gpu_ms=23.043438 cpu_ms=23.170521 gpu_tflops=11.9287
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=10/21 gpu_ms=86.611625 cpu_ms=86.761687 gpu_tflops=3.1737
+ORDER cell=routed-gate-up sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=11/21 gpu_ms=87.048854 cpu_ms=87.230229 gpu_tflops=3.1577
+SAMPLE cell=routed-gate-up variant=steel-k8 index=11/21 gpu_ms=23.071562 cpu_ms=23.304855 gpu_tflops=11.9141
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=11/21 gpu_ms=22.685125 cpu_ms=22.872500 gpu_tflops=12.1171
+ORDER cell=routed-gate-up sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=12/21 gpu_ms=22.840125 cpu_ms=22.972417 gpu_tflops=12.0349
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=12/21 gpu_ms=87.031521 cpu_ms=87.178958 gpu_tflops=3.1584
+SAMPLE cell=routed-gate-up variant=steel-k8 index=12/21 gpu_ms=22.992687 cpu_ms=23.298938 gpu_tflops=11.9550
+ORDER cell=routed-gate-up sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=13/21 gpu_ms=23.256313 cpu_ms=23.384292 gpu_tflops=11.8195
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=13/21 gpu_ms=23.196438 cpu_ms=23.319416 gpu_tflops=11.8500
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=13/21 gpu_ms=86.866292 cpu_ms=87.005188 gpu_tflops=3.1644
+ORDER cell=routed-gate-up sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=14/21 gpu_ms=86.357125 cpu_ms=86.483937 gpu_tflops=3.1830
+SAMPLE cell=routed-gate-up variant=steel-k8 index=14/21 gpu_ms=23.190937 cpu_ms=23.406250 gpu_tflops=11.8528
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=14/21 gpu_ms=22.815625 cpu_ms=22.941188 gpu_tflops=12.0478
+ORDER cell=routed-gate-up sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=15/21 gpu_ms=22.907354 cpu_ms=23.040000 gpu_tflops=11.9995
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=15/21 gpu_ms=87.159625 cpu_ms=87.280021 gpu_tflops=3.1537
+SAMPLE cell=routed-gate-up variant=steel-k8 index=15/21 gpu_ms=22.933125 cpu_ms=23.218812 gpu_tflops=11.9861
+ORDER cell=routed-gate-up sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=16/21 gpu_ms=23.172625 cpu_ms=23.315375 gpu_tflops=11.8622
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=16/21 gpu_ms=23.146667 cpu_ms=23.285062 gpu_tflops=11.8755
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=16/21 gpu_ms=86.948938 cpu_ms=87.073083 gpu_tflops=3.1614
+ORDER cell=routed-gate-up sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=17/21 gpu_ms=86.603687 cpu_ms=86.746854 gpu_tflops=3.1740
+SAMPLE cell=routed-gate-up variant=steel-k8 index=17/21 gpu_ms=23.234563 cpu_ms=23.355229 gpu_tflops=11.8306
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=17/21 gpu_ms=22.619937 cpu_ms=22.743437 gpu_tflops=12.1520
+ORDER cell=routed-gate-up sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=18/21 gpu_ms=22.737625 cpu_ms=22.887104 gpu_tflops=12.0891
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=18/21 gpu_ms=86.845313 cpu_ms=87.061000 gpu_tflops=3.1651
+SAMPLE cell=routed-gate-up variant=steel-k8 index=18/21 gpu_ms=22.986833 cpu_ms=23.111042 gpu_tflops=11.9581
+ORDER cell=routed-gate-up sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-gate-up variant=steel-k8 index=19/21 gpu_ms=23.114771 cpu_ms=23.252188 gpu_tflops=11.8919
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=19/21 gpu_ms=23.053896 cpu_ms=23.186688 gpu_tflops=11.9233
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=19/21 gpu_ms=86.865042 cpu_ms=86.986125 gpu_tflops=3.1644
+ORDER cell=routed-gate-up sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=20/21 gpu_ms=86.932125 cpu_ms=87.069667 gpu_tflops=3.1620
+SAMPLE cell=routed-gate-up variant=steel-k8 index=20/21 gpu_ms=23.081229 cpu_ms=23.188437 gpu_tflops=11.9092
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=20/21 gpu_ms=22.963062 cpu_ms=23.076854 gpu_tflops=11.9704
+ORDER cell=routed-gate-up sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-gate-up variant=mpp-static-k16 index=21/21 gpu_ms=22.774000 cpu_ms=22.904333 gpu_tflops=12.0698
+SAMPLE cell=routed-gate-up variant=mpp-dynamic-k8 index=21/21 gpu_ms=86.893125 cpu_ms=87.021938 gpu_tflops=3.1634
+SAMPLE cell=routed-gate-up variant=steel-k8 index=21/21 gpu_ms=23.073833 cpu_ms=23.202938 gpu_tflops=11.9130
+SUMMARY cell=routed-gate-up variant=steel-k8 samples=21 gpu_min_ms=22.896813 gpu_p10_ms=22.933125 gpu_median_ms=23.081229 gpu_p90_ms=23.234563 gpu_max_ms=23.319583 cpu_median_ms=23.279167 gpu_median_tflops=11.9092 gpu_best_sample_tflops=12.0051
+SUMMARY cell=routed-gate-up variant=mpp-static-k16 samples=21 gpu_min_ms=22.619937 gpu_p10_ms=22.685125 gpu_median_ms=22.845000 gpu_p90_ms=23.131250 gpu_max_ms=23.196438 cpu_median_ms=22.972417 gpu_median_tflops=12.0323 gpu_best_sample_tflops=12.1520
+SUMMARY cell=routed-gate-up variant=mpp-dynamic-k8 samples=21 gpu_min_ms=86.357125 gpu_p10_ms=86.603687 gpu_median_ms=86.893125 gpu_p90_ms=87.068563 gpu_max_ms=87.159625 cpu_median_ms=87.061000 gpu_median_tflops=3.1634 gpu_best_sample_tflops=3.1830
+CELL name=routed-down M=65536 N=2048 K=512 tile=M16xN32 reduction_k=8/16 flops=137438953472 model_dispatches=40
+CORRECTNESS scope=full cell=routed-down fixture=qmm-scale variant=mpp-static-k16 fp32_changed=2899263/134217728 bf16_changed=66/134217728 max_abs=0.000122070312 max_ulp=8192 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=46035bf34bc818fa actual_hash=9ff6c9b8bbcd3f2e
+CORRECTNESS scope=full cell=routed-down fixture=qmm-scale variant=mpp-dynamic-k8 fp32_changed=2030327/134217728 bf16_changed=44/134217728 max_abs=0.000122070312 max_ulp=8192 qmm_1e-3=pass qwen_existing=pass nonfinite=0 reference_hash=46035bf34bc818fa actual_hash=30c8de518c003cb4
+CORRECTNESS_GATE scope=full cell=routed-down variant=mpp-static-k16 status=pass
+CORRECTNESS_GATE scope=full cell=routed-down variant=mpp-dynamic-k8 status=pass
+WARMUPS cell=routed-down per_variant=5 dispatches_per_warmup=2
+ORDER cell=routed-down sample=1 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=1/21 gpu_ms=11.393604 cpu_ms=11.536770 gpu_tflops=12.0628
+SAMPLE cell=routed-down variant=mpp-static-k16 index=1/21 gpu_ms=11.543937 cpu_ms=11.686625 gpu_tflops=11.9057
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=1/21 gpu_ms=43.139917 cpu_ms=43.267041 gpu_tflops=3.1859
+ORDER cell=routed-down sample=2 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=2/21 gpu_ms=43.334521 cpu_ms=43.504438 gpu_tflops=3.1716
+SAMPLE cell=routed-down variant=steel-k8 index=2/21 gpu_ms=11.405562 cpu_ms=11.534230 gpu_tflops=12.0502
+SAMPLE cell=routed-down variant=mpp-static-k16 index=2/21 gpu_ms=11.532146 cpu_ms=11.656021 gpu_tflops=11.9179
+ORDER cell=routed-down sample=3 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=3/21 gpu_ms=11.358417 cpu_ms=11.485125 gpu_tflops=12.1002
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=3/21 gpu_ms=43.088812 cpu_ms=43.222875 gpu_tflops=3.1897
+SAMPLE cell=routed-down variant=steel-k8 index=3/21 gpu_ms=11.418042 cpu_ms=11.545896 gpu_tflops=12.0370
+ORDER cell=routed-down sample=4 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=4/21 gpu_ms=11.482687 cpu_ms=11.615896 gpu_tflops=11.9692
+SAMPLE cell=routed-down variant=mpp-static-k16 index=4/21 gpu_ms=11.452521 cpu_ms=11.578875 gpu_tflops=12.0008
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=4/21 gpu_ms=43.265688 cpu_ms=43.417563 gpu_tflops=3.1766
+ORDER cell=routed-down sample=5 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=5/21 gpu_ms=42.995688 cpu_ms=43.110750 gpu_tflops=3.1966
+SAMPLE cell=routed-down variant=steel-k8 index=5/21 gpu_ms=11.416042 cpu_ms=11.546667 gpu_tflops=12.0391
+SAMPLE cell=routed-down variant=mpp-static-k16 index=5/21 gpu_ms=11.508958 cpu_ms=11.624771 gpu_tflops=11.9419
+ORDER cell=routed-down sample=6 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=6/21 gpu_ms=11.356375 cpu_ms=11.467604 gpu_tflops=12.1024
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=6/21 gpu_ms=43.156208 cpu_ms=43.283875 gpu_tflops=3.1847
+SAMPLE cell=routed-down variant=steel-k8 index=6/21 gpu_ms=11.311125 cpu_ms=11.455021 gpu_tflops=12.1508
+ORDER cell=routed-down sample=7 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=7/21 gpu_ms=11.312375 cpu_ms=11.424250 gpu_tflops=12.1494
+SAMPLE cell=routed-down variant=mpp-static-k16 index=7/21 gpu_ms=11.229208 cpu_ms=12.077771 gpu_tflops=12.2394
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=7/21 gpu_ms=43.086625 cpu_ms=43.212250 gpu_tflops=3.1898
+ORDER cell=routed-down sample=8 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=8/21 gpu_ms=42.865812 cpu_ms=42.985729 gpu_tflops=3.2063
+SAMPLE cell=routed-down variant=steel-k8 index=8/21 gpu_ms=11.416979 cpu_ms=11.573979 gpu_tflops=12.0381
+SAMPLE cell=routed-down variant=mpp-static-k16 index=8/21 gpu_ms=11.303458 cpu_ms=11.440687 gpu_tflops=12.1590
+ORDER cell=routed-down sample=9 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=9/21 gpu_ms=11.451625 cpu_ms=11.577188 gpu_tflops=12.0017
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=9/21 gpu_ms=43.244792 cpu_ms=43.369396 gpu_tflops=3.1782
+SAMPLE cell=routed-down variant=steel-k8 index=9/21 gpu_ms=11.315667 cpu_ms=11.446604 gpu_tflops=12.1459
+ORDER cell=routed-down sample=10 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=10/21 gpu_ms=11.532792 cpu_ms=11.680250 gpu_tflops=11.9172
+SAMPLE cell=routed-down variant=mpp-static-k16 index=10/21 gpu_ms=11.501250 cpu_ms=11.647417 gpu_tflops=11.9499
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=10/21 gpu_ms=43.021979 cpu_ms=43.155625 gpu_tflops=3.1946
+ORDER cell=routed-down sample=11 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=11/21 gpu_ms=43.238104 cpu_ms=43.365979 gpu_tflops=3.1787
+SAMPLE cell=routed-down variant=steel-k8 index=11/21 gpu_ms=11.370208 cpu_ms=11.527458 gpu_tflops=12.0876
+SAMPLE cell=routed-down variant=mpp-static-k16 index=11/21 gpu_ms=11.402438 cpu_ms=11.532042 gpu_tflops=12.0535
+ORDER cell=routed-down sample=12 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=12/21 gpu_ms=11.401979 cpu_ms=11.541104 gpu_tflops=12.0540
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=12/21 gpu_ms=43.165063 cpu_ms=43.293104 gpu_tflops=3.1840
+SAMPLE cell=routed-down variant=steel-k8 index=12/21 gpu_ms=11.311146 cpu_ms=11.455438 gpu_tflops=12.1508
+ORDER cell=routed-down sample=13 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=13/21 gpu_ms=11.504104 cpu_ms=11.644042 gpu_tflops=11.9469
+SAMPLE cell=routed-down variant=mpp-static-k16 index=13/21 gpu_ms=11.562500 cpu_ms=11.698187 gpu_tflops=11.8866
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=13/21 gpu_ms=43.080437 cpu_ms=43.203021 gpu_tflops=3.1903
+ORDER cell=routed-down sample=14 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=14/21 gpu_ms=43.190750 cpu_ms=43.326479 gpu_tflops=3.1821
+SAMPLE cell=routed-down variant=steel-k8 index=14/21 gpu_ms=11.398604 cpu_ms=11.548042 gpu_tflops=12.0575
+SAMPLE cell=routed-down variant=mpp-static-k16 index=14/21 gpu_ms=11.432375 cpu_ms=11.565000 gpu_tflops=12.0219
+ORDER cell=routed-down sample=15 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=15/21 gpu_ms=11.263063 cpu_ms=11.405333 gpu_tflops=12.2026
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=15/21 gpu_ms=43.141875 cpu_ms=43.270771 gpu_tflops=3.1857
+SAMPLE cell=routed-down variant=steel-k8 index=15/21 gpu_ms=11.188771 cpu_ms=11.327000 gpu_tflops=12.2837
+ORDER cell=routed-down sample=16 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=16/21 gpu_ms=11.724437 cpu_ms=11.850375 gpu_tflops=11.7224
+SAMPLE cell=routed-down variant=mpp-static-k16 index=16/21 gpu_ms=11.423000 cpu_ms=11.897896 gpu_tflops=12.0318
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=16/21 gpu_ms=43.113875 cpu_ms=43.254604 gpu_tflops=3.1878
+ORDER cell=routed-down sample=17 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=17/21 gpu_ms=43.271812 cpu_ms=43.403771 gpu_tflops=3.1762
+SAMPLE cell=routed-down variant=steel-k8 index=17/21 gpu_ms=11.415375 cpu_ms=11.544375 gpu_tflops=12.0398
+SAMPLE cell=routed-down variant=mpp-static-k16 index=17/21 gpu_ms=11.364958 cpu_ms=11.502709 gpu_tflops=12.0932
+ORDER cell=routed-down sample=18 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=18/21 gpu_ms=11.470250 cpu_ms=11.599896 gpu_tflops=11.9822
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=18/21 gpu_ms=43.422479 cpu_ms=43.552250 gpu_tflops=3.1652
+SAMPLE cell=routed-down variant=steel-k8 index=18/21 gpu_ms=11.250688 cpu_ms=11.378708 gpu_tflops=12.2160
+ORDER cell=routed-down sample=19 variants=steel-k8,mpp-static-k16,mpp-dynamic-k8
+SAMPLE cell=routed-down variant=steel-k8 index=19/21 gpu_ms=11.554271 cpu_ms=11.696480 gpu_tflops=11.8951
+SAMPLE cell=routed-down variant=mpp-static-k16 index=19/21 gpu_ms=11.530167 cpu_ms=11.670646 gpu_tflops=11.9199
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=19/21 gpu_ms=43.210938 cpu_ms=43.330146 gpu_tflops=3.1807
+ORDER cell=routed-down sample=20 variants=mpp-dynamic-k8,steel-k8,mpp-static-k16
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=20/21 gpu_ms=43.097646 cpu_ms=43.214084 gpu_tflops=3.1890
+SAMPLE cell=routed-down variant=steel-k8 index=20/21 gpu_ms=11.374625 cpu_ms=11.506500 gpu_tflops=12.0829
+SAMPLE cell=routed-down variant=mpp-static-k16 index=20/21 gpu_ms=11.364375 cpu_ms=11.497208 gpu_tflops=12.0938
+ORDER cell=routed-down sample=21 variants=mpp-static-k16,mpp-dynamic-k8,steel-k8
+SAMPLE cell=routed-down variant=mpp-static-k16 index=21/21 gpu_ms=11.455229 cpu_ms=11.580312 gpu_tflops=11.9979
+SAMPLE cell=routed-down variant=mpp-dynamic-k8 index=21/21 gpu_ms=43.206875 cpu_ms=43.331480 gpu_tflops=3.1810
+SAMPLE cell=routed-down variant=steel-k8 index=21/21 gpu_ms=11.354271 cpu_ms=11.542438 gpu_tflops=12.1046
+SUMMARY cell=routed-down variant=steel-k8 samples=21 gpu_min_ms=11.188771 gpu_p10_ms=11.311125 gpu_median_ms=11.398604 gpu_p90_ms=11.532792 gpu_max_ms=11.724437 cpu_median_ms=11.542438 gpu_median_tflops=12.0575 gpu_best_sample_tflops=12.2837
+SUMMARY cell=routed-down variant=mpp-static-k16 samples=21 gpu_min_ms=11.229208 gpu_p10_ms=11.303458 gpu_median_ms=11.432375 gpu_p90_ms=11.532146 gpu_max_ms=11.562500 cpu_median_ms=11.578875 gpu_median_tflops=12.0219 gpu_best_sample_tflops=12.2394
+SUMMARY cell=routed-down variant=mpp-dynamic-k8 samples=21 gpu_min_ms=42.865812 gpu_p10_ms=43.021979 gpu_median_ms=43.156208 gpu_p90_ms=43.271812 gpu_max_ms=43.422479 cpu_median_ms=43.283875 gpu_median_tflops=3.1847 gpu_best_sample_tflops=3.2063
+WEIGHTED variant=steel-k8 coverage=qwen-all-linear-except-scalar-gate model_flops=39921721016320 gpu_model_median_ms=3329.128748 gpu_effective_tflops=11.9916 gpu_best_sample_effective_tflops=12.1227 cpu_model_median_ms=3391.431660 cpu_effective_tflops=11.7713 threshold_tflops=22.0000 status=fail
+WEIGHTED variant=mpp-static-k16 coverage=qwen-all-linear-except-scalar-gate model_flops=39921721016320 gpu_model_median_ms=3321.478957 gpu_effective_tflops=12.0193 gpu_best_sample_effective_tflops=12.1737 cpu_model_median_ms=3381.849775 cpu_effective_tflops=11.8047 threshold_tflops=22.0000 status=fail
+WEIGHTED variant=mpp-dynamic-k8 coverage=qwen-all-linear-except-scalar-gate model_flops=39921721016320 gpu_model_median_ms=12641.986876 gpu_effective_tflops=3.1579 gpu_best_sample_effective_tflops=3.1844 cpu_model_median_ms=12707.056700 cpu_effective_tflops=3.1417 threshold_tflops=22.0000 status=fail
+CORRECTNESS_GATE scope=aggregate variant=mpp-static-k16 status=fail
+CORRECTNESS_GATE scope=aggregate variant=mpp-dynamic-k8 status=fail
+RESULT=complete dynamic_k8_correctness=fail threshold_status=fail
+POWER_SOURCE_AFTER=Now drawing from 'AC Power'
+POWER_MODE_AC_AFTER=2
+THERMAL_AFTER=Note: No thermal warning level has been recorded;Note: No performance warning level has been recorded;Note: No CPU power status has been recorded;
+POWER_VALID=pass

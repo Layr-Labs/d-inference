@@ -308,6 +308,39 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		}
 	}
 
+	// Learned effective token-budget ceilings: among LIVE entries the TIGHTER
+	// ceiling wins, not the fresher one. A ceiling is a measured "this box
+	// could not hold S", and an identity rebind is not evidence against it —
+	// taking the later entry would let a rebind widen a ceiling that only
+	// accepts are allowed to widen. The winner keeps its own latchedAt (and so
+	// its own TTL), which is what eventually retires it.
+	//
+	// Expiry is checked on BOTH sides, unlike the timestamp-ordered maps above
+	// where it falls out of the comparison for free. Compare tokens blind and
+	// an expired-but-tighter source silently destroys a live destination: the
+	// survivor carries the source's stale anchor, so it reads as expired and
+	// gates nothing. An expired entry has no evidentiary standing on either
+	// side, so it is simply dropped.
+	ceilingNow := time.Now()
+	ceilingLive := func(e *budgetCeilingEntry) bool {
+		return ceilingNow.Before(e.latchedAt.Add(r.budgetCeilingCfg.TTL))
+	}
+	for k, entry := range r.budgetCeilings {
+		if k.ProviderID != oldKey {
+			continue
+		}
+		nk := k
+		nk.ProviderID = newKey
+		delete(r.budgetCeilings, k)
+		if !ceilingLive(entry) {
+			continue
+		}
+		if cur, ok := r.budgetCeilings[nk]; ok && ceilingLive(cur) && cur.tokens <= entry.tokens {
+			continue
+		}
+		r.budgetCeilings[nk] = entry
+	}
+
 	// Capacity-503 rate windows: union the outcome slices chronologically. The
 	// large-map sweep uses the tail as the newest timestamp, so appending an older
 	// source history after a fresh destination would otherwise delete live state.

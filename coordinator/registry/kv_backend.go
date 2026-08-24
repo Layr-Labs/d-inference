@@ -29,9 +29,39 @@ import (
 // a contiguous sample and shows a clean baseline composed entirely of old
 // providers — the specific failure mode the pointer type exists to prevent.
 //
-// MEASUREMENT ONLY. Nothing here is consulted by routing, admission, scoring or
-// shedding; the sole consumers are metric tags. Acting on the backend kind is a
-// separate change with its own review.
+// ROUTING READS THIS FILE — ONE READER, DELIBERATELY. It was MEASUREMENT ONLY
+// through v0.8.0 ("the sole consumers are metric tags"), on the reasoning that
+// acting on the backend kind deserved its own review. This is that review.
+//
+// The one reader is the COLD token-budget estimate (servability.go:
+// pagedColdTokenBudgetCeiling). Its premise — stated in
+// coldTokenBudgetEstimate's own doc — was that a cold provider's estimated
+// post-load budget converges to what the slot reports once warm, "because both
+// are the same subtraction". Paged broke that premise and nothing else: the
+// cold estimate computes a CONTIGUOUS-shaped logical grant (0.9×mem − weights
+// − reserve), while a paged slot's real ceiling is a separately-planned
+// physical pool bounded by min(8 GiB, RAM/16)
+// (PagedKVPhysicalCapacityPolicy.machineHardCapBytes) — an order of magnitude
+// smaller on a 96 GiB box. The estimate is not merely imprecise there; it
+// describes a different quantity.
+//
+// The reader is narrow by construction and cannot widen without a new
+// justification:
+//   - PROVIDER granularity, not slot, and only for this purpose. The cold
+//     estimate is for a model with NO slot on this box, so no slot-level
+//     observation for it can exist; what is being asked is "does this MACHINE
+//     serve paged", which its other slots answer.
+//   - Tri-state preserved. No observation at all leaves the estimate exactly
+//     as it is today. An unenrolled or pre-0.8.0 box is never guessed into a
+//     paged ceiling.
+//   - Strictly tighter, never looser. The clamp can only lower an estimate,
+//     and only when the slot reports a real per-token KV rate (see
+//     pagedColdTokenBudgetCeiling) — dividing a real byte bound by the generic
+//     kvCacheBytesPerToken placeholder would manufacture a token count ~20×
+//     below the truth and shed servable traffic.
+//
+// Everything else here remains measurement: nothing in this file is consulted
+// by scoring, live admission or shedding.
 
 // Metric-tag vocabulary. The first two are the shipped wire values; the rest
 // encode the states a two-value vocabulary cannot express.
@@ -234,6 +264,36 @@ func clampKVFallbackReason(reason string) string {
 func (p *Provider) kvBackendForModelLocked(model string) (obs slotKVBackend, observed bool) {
 	obs, observed = p.kvBackends[model]
 	return obs, observed
+}
+
+// runsPagedKVLocked reports whether this MACHINE serves the paged KV backend,
+// by asking every slot it has ever named. It is the cold token-budget
+// estimate's input: that estimate is for a model with no slot here, so no
+// slot-level answer for it can exist, and the question it actually needs
+// answered is about the box's pool arithmetic, not about one model.
+//
+// ANY paged slot makes the box paged. The backend is a box-level capability —
+// kernels preflighted once, a crash-loop guard and a kill switch that flip the
+// whole binary, a physical-capacity policy driven by the machine's RAM — so a
+// box serving paged for one model will plan a paged pool for the next.
+// Mixed-kind boxes exist during a staged rollout (a per-load degrade), and for
+// this purpose the paged answer is the conservative one: it produces the
+// SMALLER cold estimate.
+//
+// A false answer covers both "observed contiguous" and "never observed" (a
+// pre-0.8.0 provider, or a box that has not loaded anything yet), and that
+// collapse is deliberate rather than a lost distinction: the sole reader clamps
+// on true and leaves its estimate untouched on false, which is the required
+// behaviour for an unobserved box as much as for a contiguous one. Returning a
+// tri-state would oblige every caller to re-derive that identity.
+// Caller must hold p.mu.
+func (p *Provider) runsPagedKVLocked() bool {
+	for _, obs := range p.kvBackends {
+		if obs.Kind == KVBackendPaged {
+			return true
+		}
+	}
+	return false
 }
 
 // slotKVBackendObservation is the one lookup both dimensions come from.

@@ -1453,6 +1453,18 @@ type Registry struct {
 	budgetClampCfg budgetClampConfig
 	budgetClamps   map[capacityRejectKey]*budgetClampEntry
 
+	// budgetCeilings implements the learned effective token-budget ceiling
+	// (budget_ceiling.go): the durable half of the gray-box fix. A capacity
+	// reject at a known commitment latches min(advertised, commitment −
+	// margin) as the budget admission may believe, so a pair whose advertised
+	// budget is STRUCTURALLY inflated (a paged slot linearising an affine pool
+	// charge) stops being re-selected at the level that just failed the moment
+	// the one-shot clamp releases. Widened back on sustained accepts,
+	// TTL-bounded. Keyed by stable fault identity; migrated on rebind; NOT
+	// cleared on Disconnect. Guarded by r.mu.
+	budgetCeilingCfg budgetCeilingConfig
+	budgetCeilings   map[capacityRejectKey]*budgetCeilingEntry
+
 	// capacityRateRejects / capacityRateAccepts implement the capacity-503
 	// rate penalty (capacity_rate.go): sliding windows of capacity rejects and
 	// served dispatches per (stable identity, model). Unlike every breaker
@@ -1584,6 +1596,8 @@ func New(logger *slog.Logger) *Registry {
 		capacityCooldownTrips:          make(map[capacityRejectKey]int),
 		budgetClampCfg:                 loadBudgetClampConfig(),
 		budgetClamps:                   make(map[capacityRejectKey]*budgetClampEntry),
+		budgetCeilingCfg:               loadBudgetCeilingConfig(),
+		budgetCeilings:                 make(map[capacityRejectKey]*budgetCeilingEntry),
 		capacityRateCfg:                loadCapacityRateConfig(),
 		capacityRateRejects:            make(map[capacityRejectKey][]time.Time),
 		capacityRateAccepts:            make(map[capacityRejectKey][]time.Time),

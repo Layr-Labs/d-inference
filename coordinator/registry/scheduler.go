@@ -165,12 +165,28 @@ type routingSnapshot struct {
 	// telemetry keep reading the provider-reported truth. Only set when the
 	// slot reports a token budget (activeTokenBudgetMax > 0).
 	budgetClamped bool
+	// learnedTokenBudgetMax is the pair's learned effective token-budget
+	// ceiling (budget_ceiling.go): min(advertised, the commitment a capacity
+	// reject proved the pair could NOT hold). 0 = nothing learned, in which
+	// case admission uses activeTokenBudgetMax unchanged. LIVE readers go
+	// through effectiveTokenBudgetMax(snap), never this field directly; cost
+	// math, the structural servability ceiling and telemetry keep reading the
+	// raw provider-reported budget.
+	learnedTokenBudgetMax int64
 	// kvBytesPerToken is the provider-reported per-token KV-cache cost (bytes)
 	// for THIS model's slot (BackendSlotCapacity.KVBytesPerToken). 0 = unreported
 	// (callers fall back to the kvCacheBytesPerToken default). Used by the
 	// servability predictor to estimate a cold provider's post-load token budget
 	// the same way the provider does, instead of the fixed default.
-	kvBytesPerToken    int64
+	kvBytesPerToken int64
+	// pagedKVBackend is true when this MACHINE serves the paged KV backend —
+	// any slot it has named reports kv_backend=paged (kv_backend.go
+	// runsPagedKVLocked). False also covers "never observed", which leaves the
+	// cold estimate untouched: an unobserved box is not a contiguous box.
+	// Read ONLY by the paged cold token-budget ceiling
+	// (pagedColdTokenBudgetCeiling); routing, scoring and live admission never
+	// consult the backend kind.
+	pagedKVBackend     bool
 	fleetMedianTPS     float64
 	hasBackendCapacity bool // provider reports BackendCapacity; TTFT estimates are reliable
 
@@ -1280,6 +1296,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	snap.pagedKVBackend = p.runsPagedKVLocked()
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -1294,6 +1311,10 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	// are both held here (see lock discipline above).
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+	// Learned effective ceiling (budget_ceiling.go): outlives the clamp, so a
+	// pair whose advertised budget is structurally inflated stops being
+	// re-selected at the commitment level that just failed.
+	snap.learnedTokenBudgetMax = r.budgetCeilingLocked(p.ID, model, snap.activeTokenBudgetMax, now)
 
 	return snap, true
 }
@@ -1368,7 +1389,12 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		if coordinatorExtra < 0 {
 			coordinatorExtra = 0
 		}
-		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
+		// effectiveTokenBudgetMax, not the raw heartbeat max: a learned
+		// ceiling (budget_ceiling.go) holds the pair below the commitment a
+		// capacity reject proved it could not hold. min(advertised, learned)
+		// by construction, so this can only ever admit LESS than the raw
+		// budget would.
+		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > effectiveTokenBudgetMax(snap) {
 			return false
 		}
 		// The per-slot max encodes this model's own context/KV ceiling. Through
@@ -1485,6 +1511,18 @@ func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string
 }
 
 func pendingTokenBudget(pr *PendingRequest) int {
+	return pr.RequestTokens()
+}
+
+// RequestTokens is the request's token demand (prompt + max_tokens) under the
+// coordinator's routing normalization: a negative prompt estimate clamps to 0
+// and an unset max_tokens defaults to defaultRequestedMaxTokens. This is the
+// unit every budget check speaks — pending-budget accounting, the admission
+// gate's requestTokens, and the commitment a capacity reject teaches the
+// learned budget ceiling (budget_ceiling.go) — so it is exported rather than
+// recomputed by the api layer, where a divergent normalization would learn a
+// ceiling in units the gate does not use.
+func (pr *PendingRequest) RequestTokens() int {
 	if pr == nil {
 		return 0
 	}
@@ -2291,12 +2329,14 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		snap.pagedKVBackend = p.runsPagedKVLocked()
 
 		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
 		// (including the budgetless-snapshot hold for reconnecting sessions)
 		// so the preflight cannot report capacity that routing then refuses.
 		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 		snap.budgetClamped = r.budgetClampActiveLocked(p.ID, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+		snap.learnedTokenBudgetMax = r.budgetCeilingLocked(p.ID, model, snap.activeTokenBudgetMax, now)
 
 		p.mu.Unlock()
 

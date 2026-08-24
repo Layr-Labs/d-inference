@@ -407,7 +407,19 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 			tripped = s.registry.RecordCapacityRejectLifecycle(providerID, pr.Model)
 		case s.isRequestShapeBatchBudgetReject(providerID, pr.Model, errStr, errReason):
 			tripped = s.registry.RecordCapacityRejectRequestShape(providerID, pr.Model)
+		case isTokenBudgetCapacityReject(errStr):
+			// Sized: the request's token demand on top of the commitment the
+			// pair was already holding is the exact level the provider refused,
+			// which is what the learned budget ceiling latches (registry/
+			// budget_ceiling.go) so the pair stops being re-selected at that
+			// level once the one-shot clamp releases. Only the token-budget /
+			// KV vocabulary qualifies — a drain or an OOM is a real capacity
+			// shed whose commitment number would teach the ceiling nothing.
+			tripped = s.registry.RecordCapacityRejectSized(
+				providerID, pr.Model, pr.RequestID, pr.RequestTokens())
 		default:
+			// Every other provider-indicting capacity shed: unchanged
+			// behaviour — clamp plus strike plus rate window, no ceiling.
 			tripped = s.registry.RecordCapacityReject(providerID, pr.Model)
 		}
 		if tripped {

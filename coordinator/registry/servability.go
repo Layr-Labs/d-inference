@@ -77,6 +77,22 @@ const (
 	// servabilityActivationFloorMinVersion is the first provider release
 	// whose UnifiedMemoryCap holds the 5.5 GiB reserve.
 	servabilityActivationFloorMinVersion = "0.8.0"
+
+	// pagedPoolMachineCapGiB and pagedPoolMemoryDivisor mirror the provider's
+	// PagedKVPhysicalCapacityPolicy machine hard cap:
+	//
+	//	machineCap = min(absoluteHardCapBytes, physicalMemoryBytes / physicalMemoryDivisor)
+	//	           = min(8 GiB,               RAM / 16)
+	//
+	// It is an UPPER bound on a paged pool, not the pool: the real plan is the
+	// minimum of this, the useful-context demand, a quarter of live KV
+	// headroom, twice Metal's max buffer length, and the logical grant. Using
+	// the loosest of those terms keeps the mirror on the fail-open side, and
+	// keeps it to the two inputs the coordinator can actually see (the others
+	// are live provider-side measurements). Retune ONLY when
+	// PagedKVPhysicalCapacityPolicy moves.
+	pagedPoolMachineCapGiB = 8.0
+	pagedPoolMemoryDivisor = 16.0
 )
 
 // servabilityActivationFloorForVersion selects the activation reserve the
@@ -156,6 +172,18 @@ type ServabilityVerdict struct {
 // whenever it exists. So the cold estimate has to converge to the warm report as
 // the slot loads, and it does, because both are the same subtraction.
 //
+// ON A CONTIGUOUS SLOT. v0.8.0's paged backend breaks that convergence
+// premise: a paged slot's ceiling is not this subtraction at all but a
+// separately planned physical pool bounded by min(8 GiB, RAM/16)
+// (PagedKVPhysicalCapacityPolicy), an order of magnitude smaller on a large
+// box. This function is deliberately unchanged — it still faithfully mirrors
+// the CONTIGUOUS reserve arithmetic, which is the only thing it ever claimed
+// to do — and the paged case is a second ceiling applied on top of it in
+// snapshotStructuralBudget (pagedColdTokenBudgetCeiling). Keeping them
+// separate is the point: this function has exactly one referent, and a caller
+// that cannot tell which backend a box runs gets the contiguous answer, which
+// is the fail-open one.
+//
 // That is why there is no attention-posture term here. A composed-attention
 // model (gemma-4: head_dim 256 sliding / 512 full) really does materialise a
 // bigger prefill score tensor than a fused one (gpt-oss: head_dim 64, inside
@@ -201,6 +229,85 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 	return int64(tokens)
 }
 
+// pagedColdTokenBudgetCeiling is the largest token budget a PAGED slot on this
+// machine could offer for the model once loaded: the paged pool's machine hard
+// cap divided by the model's paged per-token cost.
+//
+// It exists because coldTokenBudgetEstimate's convergence premise — the cold
+// estimate and the warm report are "the same subtraction" — is false for
+// paged. The cold estimate computes the CONTIGUOUS logical grant
+// (0.9×mem − weights − activation reserve, tens of GiB), but a paged slot
+// never gets that: PagedKVPhysicalCapacityPolicy plans a separate physical
+// pool bounded by min(8 GiB, RAM/16), so on a 96 GiB box the cold estimate
+// over-states the warm report by roughly 10×. That gap admits long requests
+// onto cold paged boxes that then reject them at the first submit — the exact
+// admit→503 shape the cold budget check was added to close.
+//
+// A REAL per-token rate is required; there is no kvCacheBytesPerToken
+// fallback here, and that omission is the correctness condition rather than an
+// oversight. That constant (400 kB/token, measured on a CONTIGUOUS 7B cache)
+// is ~20× a composed-attention model's marginal paged rate, so dividing a
+// paged BYTE bound by it would manufacture a token ceiling an order of
+// magnitude below the truth and shed traffic every provider could serve. The
+// caller therefore passes snap.kvBytesPerToken — the provider's own reported
+// rate for this model's slot — and this returns 0 (do not clamp) when it is
+// absent. Same tri-state discipline as kv_backend.go: an ambiguous input must
+// never tighten a gate whose "no" can be a terminal 429.
+//
+// # Reach, stated honestly
+//
+// Requiring a real rate makes the clamp NARROW, because a provider only
+// reports a slot for a model it is holding: the 1h idle unload leaves
+// slots:[] (KVBackendPosture), so the ordinary cold box arrives here with no
+// rate and is not clamped. What remains is the slot that is present but
+// non-resident to snapshotStructuralBudget — state "reloading" (wedge-recovery
+// rebuild) or "crashed" (wedge suspected), reporting a live kvBytesPerToken
+// while its KV byte capacity has collapsed to zero, which is one of the same
+// wedge triggers (EngineV2Bridge+Capacity: budgetMax = reportedKVBytesCapacity
+// / kvBytesPerToken). That is a real state, but a rare one.
+//
+// Narrower still: on that exact shape knownZeroTokenBudget already refuses the
+// box in LIVE admission (freeMemoryAdmits), so the only reader this clamp can
+// change is snapshotStructuralBudget → PredictServable. Its whole effect is to
+// move the fleet's terminal-429-versus-queue boundary onto the truth. So this
+// is consistency hardening for the paged fleet — NOT a material share of the
+// warm-path oversized_request rejections the learned ceiling addresses.
+func pagedColdTokenBudgetCeiling(totalMemoryGB float64, kvBytesPerToken int64) int64 {
+	if totalMemoryGB <= 0 || kvBytesPerToken <= 0 {
+		return 0
+	}
+	poolBytes := totalMemoryGB * float64(bytesPerGB) / pagedPoolMemoryDivisor
+	if capBytes := pagedPoolMachineCapGiB * float64(bytesPerGB); poolBytes > capBytes {
+		poolBytes = capBytes
+	}
+	tokens := int64(poolBytes / float64(kvBytesPerToken))
+	if tokens <= 0 {
+		return 0
+	}
+	return tokens
+}
+
+// effectiveTokenBudgetMax is the token-budget ceiling every LIVE admission
+// reader must use in place of the raw heartbeat value: the learned ceiling
+// (budget_ceiling.go) when one is latched and tighter, the advertised budget
+// otherwise.
+//
+// Zero-value safe on purpose. A snapshot built outside snapshotProviderLocked
+// (tests, and any future construction site) carries learnedTokenBudgetMax == 0,
+// which reads as "nothing learned" rather than as a zero budget.
+//
+// STRUCTURAL readers must NOT use this. snapshotStructuralBudget feeds the
+// fleet-level servability shed (PredictServable), whose "no" is a terminal
+// 429; a learned ceiling is transient, per-box evidence about live capacity
+// and would turn a merely-derated fleet into prompt_too_long. Same split the
+// clamp already draws (see liveRemainingBudget).
+func effectiveTokenBudgetMax(snap routingSnapshot) int64 {
+	if snap.learnedTokenBudgetMax > 0 && snap.learnedTokenBudgetMax < snap.activeTokenBudgetMax {
+		return snap.learnedTokenBudgetMax
+	}
+	return snap.activeTokenBudgetMax
+}
+
 // snapshotStructuralBudget returns this provider's structural token-budget
 // contribution for the model, and whether it is known. A resident slot uses the
 // provider-reported active_token_budget_max — which already nets out whatever
@@ -221,8 +328,21 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
 		return 0, false
 	}
-	return coldTokenBudgetEstimate(
-		snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken, snap.binaryVersion), true
+	estimate := coldTokenBudgetEstimate(
+		snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken, snap.binaryVersion)
+	// Paged boxes get a second, physical ceiling: the contiguous-shaped
+	// subtraction above is not the quantity a paged slot will report once
+	// loaded (see pagedColdTokenBudgetCeiling). Take the tighter of the two —
+	// this can only ever lower the estimate, and only when the machine has
+	// actually been observed serving paged AND the slot reports a real
+	// per-token KV rate.
+	if snap.pagedKVBackend {
+		if ceiling := pagedColdTokenBudgetCeiling(
+			snap.totalMemoryGB, snap.kvBytesPerToken); ceiling > 0 && ceiling < estimate {
+			estimate = ceiling
+		}
+	}
+	return estimate, true
 }
 
 // liveRemainingBudget is snapshotStructuralBudget minus the provider's CURRENTLY
@@ -247,7 +367,12 @@ func liveRemainingBudget(snap routingSnapshot) (budget int64, known bool) {
 		if snap.budgetClamped {
 			return 0, true
 		}
-		rem := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
+		// Learned effective ceiling (budget_ceiling.go): the durable successor
+		// to the clamp. min(advertised, the commitment a capacity reject
+		// proved the pair could not hold), so the live headroom can only ever
+		// be SMALLER than the raw heartbeat's — never larger. Structural
+		// readers stay raw for the same reason the clamp does (see below).
+		rem := effectiveTokenBudgetMax(snap) - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 		if rem < 0 {
 			rem = 0
 		}

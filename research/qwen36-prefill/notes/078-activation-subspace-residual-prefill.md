@@ -144,8 +144,8 @@ One basis is shared when projections already share an input:
 
 - GDN `qkv/z/a/b`;
 - full-attention `q/gate/k/v`;
-- routed gate/up, shared gate/up, and their scalar gates after the strict
-  router has selected top-k4.
+- routed gate/up and shared gate/up after the strict router has selected
+  top-k4. Routers and scalar gates themselves remain strict.
 
 Output projections use their own basis because their input differs.
 
@@ -351,6 +351,37 @@ sentinel recall of oracle worst repair rows >= 0.90
 
 The full output is used only to evaluate sentinel recall and numerical error.
 If a script uses full-output error to pick repairs, the result is invalid.
+
+### 5.1 Local implementation validation
+
+The Linux/NumPy run validates probe behavior, not Qwen rank or M3 speed:
+
+```text
+python3 -m unittest -v test_probe.py
+  7 tests, PASS
+
+rank-8 synthetic source, candidate rank 16, no repair
+  charged MAC fraction       0.119140625
+  output NRMSE               0.000124813
+  p99 row relative L2        0.000283129
+  projection screen          PASS
+
+rank-128 synthetic source, candidate rank 16, 10% repair
+  charged MAC fraction       0.220802307
+  output NRMSE               0.850335073
+  p99 row relative L2        0.973778107
+  projection screen          FAIL (numerics)
+
+same high-rank source, 100% repair
+  charged MAC fraction       1.134765625
+  output NRMSE               0.000000410
+  projection screen          FAIL (arithmetic)
+```
+
+The positive fixture only proves that the implementation recognizes a matrix
+constructed to be low rank. The two negative controls prove that the screen
+rejects both a cheap inaccurate contraction and an accurate over-budget exact
+repair endpoint.
 
 ## 6. Mac continuation gate
 

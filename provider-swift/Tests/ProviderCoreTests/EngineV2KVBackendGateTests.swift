@@ -588,8 +588,8 @@ struct EngineV2KVBackendGateTests {
         #expect(!prepared.schedulerConfig.enablePrefixCache)
     }
 
-    @Test("chunk and budget env overrides reach the factory scheduler config")
-    func schedulerEnvironmentOverridesReachFactoryConfig() throws {
+    @Test("unshippable chunk and budget env names cannot retune serving")
+    func unsupportedSchedulerEnvironmentDoesNotRetuneServing() throws {
         let model = try tinyGemma4Text()
         let prepared = try EngineV2Factory.prepareProductionBackend( // pragma: allowlist secret
             model: model,
@@ -598,11 +598,11 @@ struct EngineV2KVBackendGateTests {
             kvBackend: .contiguous,
             maxContextLength: 8192,
             environment: [
-                EngineV2Factory.prefillChunkKey: "1024",
-                EngineV2Factory.maxBatchedTokensKey: "4096",
+                "DARKBLOOM_CBV2_PREFILL_CHUNK": "1024",
+                "DARKBLOOM_CBV2_MAX_BATCHED_TOKENS": "4096",
             ])
-        #expect(prepared.schedulerConfig.prefillChunkSize == 1024)
-        #expect(prepared.schedulerConfig.maxBatchedTokensPerStep == 4096)
+        #expect(prepared.schedulerConfig.prefillChunkSize == 512)
+        #expect(prepared.schedulerConfig.maxBatchedTokensPerStep == 2048)
         #expect(prepared.schedulerConfig.soloPrefillStripeTokens == 2048)
         #expect(prepared.schedulerConfig.maxConcurrentRequests == 4)
     }

@@ -14,8 +14,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
     /// 4 added a first-token checksum.
-    /// 5 canonicalizes that field as `tokenChecksum` (while retaining the
-    /// compatibility alias) and records effective CBv2 chunk/budget tuning.
+    /// 5 canonicalizes that field as `tokenChecksum` while retaining the
+    /// schema-4 compatibility alias.
     public static let currentSchemaVersion = 5
 
     public struct Sample: Codable, Sendable {
@@ -44,8 +44,6 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     public let promptLengths: [Int]
     public let strategies: [String]
     public let iterations: Int
-    public let prefillChunkSize: Int
-    public let maxBatchedTokensPerStep: Int
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Selection versus the backends the measured engines were built with.
@@ -92,9 +90,6 @@ public enum SchedulerPrefillBenchmark {
     ) async throws -> SchedulerPrefillBenchmarkReport {
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
         let iterations = max(1, iterations)
-        let environment = ProcessInfo.processInfo.environment
-        let schedulerTuning = EngineV2Factory.effectiveSchedulerTuning(
-            environment: environment)
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
@@ -134,8 +129,7 @@ public enum SchedulerPrefillBenchmark {
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            kvBackend: kvBackend,
-            environment: environment
+            kvBackend: kvBackend
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -150,8 +144,7 @@ public enum SchedulerPrefillBenchmark {
                     weightBytes: facts.weightBytes,
                     isVLM: isVLM,
                     modelDirectory: modelDirectory,
-                    kvBackend: kvBackend,
-                    environment: environment
+                    kvBackend: kvBackend
                 )
                 if !resolved.contains(sample.resolvedKVBackend) {
                     resolved.append(sample.resolvedKVBackend)
@@ -169,13 +162,12 @@ public enum SchedulerPrefillBenchmark {
             promptLengths: lengths,
             strategies: [strategyLabel],
             iterations: iterations,
-            prefillChunkSize: schedulerTuning.prefillChunkSize,
-            maxBatchedTokensPerStep: schedulerTuning.maxBatchedTokensPerStep,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
-            soloPrefillStripeTokens: schedulerTuning.soloPrefillStripeTokens,
+            soloPrefillStripeTokens: EngineV2Factory.soloPrefillStripeTokens(
+                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize),
             samples: samples
         )
     }
@@ -188,8 +180,7 @@ public enum SchedulerPrefillBenchmark {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection,
-        environment: [String: String]
+        kvBackend: EngineV2KVBackendSelection
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
@@ -216,8 +207,7 @@ public enum SchedulerPrefillBenchmark {
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
-                kvBackend: kvBackend,
-                environment: environment)
+                kvBackend: kvBackend)
             return EngineParts(
                 engine: build.engine,
                 resolvedBackend: build.resolvedKVBackendDescriptor)

@@ -70,8 +70,7 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     /// 5 adds `batchSize` plus harness-computed prefill aggregate
     ///   (`prefillMakespanMs`, `aggregatePrefillTokensPerSecond`) so B=1/2/4
     ///   cells are first-class and not reconstructed from console rounding.
-    /// 6 adds every row's explicit `firstTokenAtMs` timestamp and records the
-    ///   effective CBv2 chunk/budget tuning used by the engine.
+    /// 6 adds every row's explicit `firstTokenAtMs` timestamp.
     public static let currentSchemaVersion = 6
 
     public let schemaVersion: Int
@@ -81,9 +80,6 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     public let decodeTokensPerRequest: Int
     public let batchSize: Int
     public let iterations: Int
-    public let prefillChunkSize: Int
-    public let maxBatchedTokensPerStep: Int
-    public let soloPrefillStripeTokens: Int?
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Bound enforced on every measured row's `arrivalErrorMs`. Samples that
@@ -200,9 +196,6 @@ public enum ArrivalInvarianceBenchmark {
         let patterns = patterns(batchSize: batchSize)
         let toleranceMs = resolvedToleranceMs(explicit: arrivalToleranceMs)
         let maxAttempts = max(1, maxAttemptsPerSample)
-        let environment = ProcessInfo.processInfo.environment
-        let schedulerTuning = EngineV2Factory.effectiveSchedulerTuning(
-            environment: environment)
         log("arrival tolerance \(String(format: "%.2f", toleranceMs)) ms, "
             + "up to \(maxAttempts) attempt(s) per sample")
         log("loading model \(modelID)")
@@ -242,8 +235,7 @@ public enum ArrivalInvarianceBenchmark {
             modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
             maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
-            kvBackend: kvBackend,
-            environment: environment
+            kvBackend: kvBackend
         )
         let engine = engineParts.engine
         log("kv backend selection \(kvBackend.rawValue), engine resolved "
@@ -369,9 +361,6 @@ public enum ArrivalInvarianceBenchmark {
             decodeTokensPerRequest: decodeTokens,
             batchSize: batchSize,
             iterations: iterations,
-            prefillChunkSize: schedulerTuning.prefillChunkSize,
-            maxBatchedTokensPerStep: schedulerTuning.maxBatchedTokensPerStep,
-            soloPrefillStripeTokens: schedulerTuning.soloPrefillStripeTokens,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             arrivalToleranceMs: toleranceMs,
@@ -584,8 +573,7 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         weightBytes: Int,
         maxConcurrentRequests: Int,
-        kvBackend: EngineV2KVBackendSelection,
-        environment: [String: String]
+        kvBackend: EngineV2KVBackendSelection
     ) async throws -> EngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -610,8 +598,7 @@ public enum ArrivalInvarianceBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
-                kvBackend: kvBackend,
-                environment: environment
+                kvBackend: kvBackend
             )
             return EngineParts(
                 engine: build.engine,

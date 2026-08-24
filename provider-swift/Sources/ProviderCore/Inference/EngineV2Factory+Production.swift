@@ -112,23 +112,6 @@ extension EngineV2Factory {
     /// stay correct but drop that family off the tile route.
     public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
 
-    /// Overrides `CBv2SchedulerConfig.maxBatchedTokensPerStep`. Unset keeps
-    /// the 2,048 default. Non-positive or unparseable values are ignored.
-    public static let maxBatchedTokensKey = "DARKBLOOM_CBV2_MAX_BATCHED_TOKENS"
-
-    /// Overrides `CBv2SchedulerConfig.prefillChunkSize`. Unset keeps the
-    /// 512 default. Non-positive or unparseable values are ignored.
-    public static let prefillChunkKey = "DARKBLOOM_CBV2_PREFILL_CHUNK"
-
-    /// Effective process-level CBv2 prefill tuning. Benchmark reports read
-    /// this same resolver the serving factory uses, so an artifact cannot
-    /// claim the defaults while its engine ran with environment overrides.
-    public struct SchedulerTuning: Sendable, Equatable {
-        public let prefillChunkSize: Int
-        public let maxBatchedTokensPerStep: Int
-        public let soloPrefillStripeTokens: Int?
-    }
-
     /// Serving default for the solo-prefill stripe (tokens). 2,048 is the
     /// largest expert-tile-qualified stripe (16,384 assignments at top-8)
     /// and the measured winner with trust + prompt narrowing.
@@ -148,62 +131,6 @@ extension EngineV2Factory {
         }
         guard let value = Int(raw), value > plainChunk else { return nil }
         return value
-    }
-
-    /// Positive integer env override, or `defaultValue` when unset / junk.
-    public static func positiveIntEnv(
-        _ key: String,
-        default defaultValue: Int,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Int {
-        guard let raw = environment[key],
-              let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              value > 0
-        else {
-            return defaultValue
-        }
-        return value
-    }
-
-    /// Resolve chunk, step-budget, and solo-stripe settings in their required
-    /// order. In particular, the stripe is compared with the effective chunk,
-    /// not the 512-token default.
-    public static func effectiveSchedulerTuning(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> SchedulerTuning {
-        let defaults = CBv2SchedulerConfig()
-        let prefillChunkSize = positiveIntEnv(
-            prefillChunkKey,
-            default: defaults.prefillChunkSize,
-            environment: environment)
-        let maxBatchedTokensPerStep = positiveIntEnv(
-            maxBatchedTokensKey,
-            default: defaults.maxBatchedTokensPerStep,
-            environment: environment)
-        return SchedulerTuning(
-            prefillChunkSize: prefillChunkSize,
-            maxBatchedTokensPerStep: maxBatchedTokensPerStep,
-            soloPrefillStripeTokens: soloPrefillStripeTokens(
-                abovePlainChunk: prefillChunkSize,
-                environment: environment))
-    }
-
-    /// The single scheduler-config construction path used by backend sizing
-    /// and final engine assembly.
-    static func makeSchedulerConfig(
-        maxConcurrentRequests: Int,
-        environment: [String: String]
-    ) -> CBv2SchedulerConfig {
-        let tuning = effectiveSchedulerTuning(environment: environment)
-        var config = CBv2SchedulerConfig(
-            maxConcurrentRequests: max(1, maxConcurrentRequests))
-        config.prefillChunkSize = tuning.prefillChunkSize
-        config.maxBatchedTokensPerStep = tuning.maxBatchedTokensPerStep
-        config.soloPrefillStripeTokens = tuning.soloPrefillStripeTokens
-        config.maxConcurrentPartialPrefills =
-            environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
-            .flatMap { $0 > 0 ? $0 : nil }
-        return config
     }
 
     /// Clamp a KV admission ceiling to physical unified memory. A ceiling
@@ -887,9 +814,14 @@ extension EngineV2Factory {
         // paged pool's `maxPrefillChunk` below AND is the instance the
         // engine runs on — `assembleProductionBuild` reads it back off the
         // preparation and sets only `enablePrefixCache`.
-        let schedulerConfig = Self.makeSchedulerConfig(
-            maxConcurrentRequests: maxConcurrentRequests,
+        var schedulerConfig = CBv2SchedulerConfig(
+            maxConcurrentRequests: max(1, maxConcurrentRequests))
+        schedulerConfig.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
+            abovePlainChunk: schedulerConfig.prefillChunkSize,
             environment: environment)
+        schedulerConfig.maxConcurrentPartialPrefills =
+            environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
+            .flatMap { $0 > 0 ? $0 : nil }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(

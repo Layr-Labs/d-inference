@@ -1,16 +1,16 @@
-# 022 — B=2 arrival harness + CBv2 budget knobs
+# 022 — B=2 arrival harness + rejected CBv2 budget knobs
 
-Status: implemented, not yet rebuilt on the Mac
+Status: harness kept; factory knobs reverted after E2
 
 Reviewer 016 vetoed `keep=yes` until the arrival harness can emit B=2
-and record harness-computed aggregate prefill tok/s. E2 also needs env
-overrides for chunk/budget; those did not exist (017).
+and record harness-computed aggregate prefill tok/s. E2 temporarily added
+env overrides for chunk/budget so the candidate geometry could be measured.
 
 ## Arrival harness (schema 6)
 
 `--arrival-batch-size 1|2|4` (default 4). JSON records `batchSize`,
 every row's submitted/first-token/completion timestamp, `prefillMakespanMs`,
-`aggregatePrefillTokensPerSecond`, and the effective chunk/budget tuning:
+and `aggregatePrefillTokensPerSecond`:
 
 ```
 tokens_per_row = prompt_tokens - 1
@@ -20,18 +20,12 @@ aggregate = batch * tokens_per_row / prefill_makespan
 
 Missing or invalid rows poison the cell. B=1 only runs `burst`.
 Scheduler-prefill schema 5 adds canonical `tokenChecksum` (same FNV as arrival
-rows), retains `firstTokenChecksum` as a schema-4 compatibility alias, and
-records the effective chunk/budget tuning.
+rows) and retains `firstTokenChecksum` as a schema-4 compatibility alias.
 
-## Factory knobs
+## Factory-knob verdict
 
-| Env | Default | Effect |
-|---|---|---|
-| `DARKBLOOM_CBV2_PREFILL_CHUNK` | 512 | `prefillChunkSize` |
-| `DARKBLOOM_CBV2_MAX_BATCHED_TOKENS` | 2048 | `maxBatchedTokensPerStep` |
-
-Unset / junk / non-positive keep the serving default. Solo stripe is
-resolved after the effective chunk.
-
-E2 candidate (not run yet): chunk=1024, budget=4096 → packed `[4,1024]`
-= M=32768, which E1 proved the 0.8.10 metallib hits.
+E2's 1,024 / 4,096 geometry improved aggregate prefill only 1.034x and changed
+greedy checksums for two of four rows. Gate 016 therefore vetoes the candidate.
+The serving factory no longer recognizes `DARKBLOOM_CBV2_PREFILL_CHUNK` or
+`DARKBLOOM_CBV2_MAX_BATCHED_TOKENS`; a regression test pins the shipping
+512 / 2,048 defaults even if those names appear in the environment. See 027.

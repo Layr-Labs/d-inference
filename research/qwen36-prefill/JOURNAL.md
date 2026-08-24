@@ -308,3 +308,28 @@ to tile waste. No cell approached 1.30×.
 Per-shape guards cannot turn a low-single-digit kernel cleanup into the
 2.5× objective. No full-model run; baseline restored. See `notes/040`.
 
+## 2026-08-24T07:05Z — E9 native uint4 affine factoring veto
+
+The isolated M3 Metal 4 probe compiled and executed
+`bfloat × uint4b_format → float` with strict precision. Position-sensitive
+codes 0–15 mapped exactly, and the GPU matched the factored affine algebra
+exactly.
+
+The two-term BF16-rounding adversary did not match the incumbent:
+`-1.52734375` versus `0.125` (max error 1.65234375, all 512 outputs).
+The BF16 output boundary also failed. Timing remained unreachable; no serving
+path changed. See `notes/041`.
+
+## 2026-08-24T07:05Z — E11 native uint4 MPP veto
+
+Standalone Metal 4 `bfloat × uint4b_format → float` compiled, linked,
+and executed on M3. Unsigned nibble mapping passed 512/512.
+
+The affine factorization candidate moved the incumbent per-weight BF16
+rounding boundary. A two-term adversary expected 0.125 and produced
+-1.5273438 (max error 1.65234375; BF16 output error 1.65625), failing
+512/512 outputs. Timing skipped by preregistered gate.
+
+Candidate B is numerically illegal. Existing probe and machine-readable
+evidence are in `probes/e9-native-uint4` and note 041.
+

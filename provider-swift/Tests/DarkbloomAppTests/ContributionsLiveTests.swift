@@ -301,6 +301,64 @@ struct ContributionsLiveTests {
         #expect(fixtureStore.snapshot != nil)
         #expect(await cli.fetchCount == 2)
     }
+
+    @Test("an older refresh cannot overwrite a newer response")
+    @MainActor
+    func staleRefreshIsDiscarded() async throws {
+        let cli = SequencedContributionsCLI()
+        let store = ContributionsStore(cli: cli)
+        let olderPayload = payload(earned: 100_000, jobs: 1)
+        let newerPayload = payload(earned: 900_000, jobs: 9)
+
+        let older = Task { await store.refresh() }
+        #expect(await waitForRequestCount(1, from: cli))
+        let newer = Task { await store.refresh() }
+        #expect(await waitForRequestCount(2, from: cli))
+
+        await cli.succeed(request: 1, with: newerPayload)
+        await newer.value
+        await cli.succeed(request: 0, with: olderPayload)
+        await older.value
+
+        #expect(store.snapshot?.earnedLifetime == MicroUSD(900_000))
+        #expect(store.snapshot?.lifetimeJobs == 9)
+    }
+
+    private func waitForRequestCount(
+        _ expected: Int,
+        from cli: SequencedContributionsCLI
+    ) async -> Bool {
+        for _ in 0 ..< 1_000 {
+            if await cli.requestCount == expected {
+                return true
+            }
+            await Task.yield()
+        }
+        return await cli.requestCount == expected
+    }
+}
+
+private actor SequencedContributionsCLI: ContributionsCLIRunning {
+    private var nextRequest = 0
+    private var continuations:
+        [Int: CheckedContinuation<ContributionsEarningsPayload, any Error>] = [:]
+
+    var requestCount: Int { nextRequest }
+
+    func fetchEarnings() async throws -> ContributionsEarningsPayload {
+        let request = nextRequest
+        nextRequest += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations[request] = continuation
+        }
+    }
+
+    func succeed(
+        request: Int,
+        with payload: ContributionsEarningsPayload
+    ) {
+        continuations.removeValue(forKey: request)?.resume(returning: payload)
+    }
 }
 
 @Suite("ContributionsCLI payload parsing")

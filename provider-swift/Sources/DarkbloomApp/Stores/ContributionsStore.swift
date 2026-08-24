@@ -29,6 +29,7 @@ final class ContributionsStore {
     private(set) var payoutError: PayoutValidationError?
 
     private var previewPayoutSequence = 1
+    private var refreshRevision: UInt64 = 0
     private let live: LiveContext?
 
     struct LiveContext: Sendable {
@@ -63,8 +64,11 @@ final class ContributionsStore {
     /// call it unconditionally.
     func refresh() async {
         guard let live else { return }
+        refreshRevision &+= 1
+        let revision = refreshRevision
         do {
             let payload = try await live.cli.fetchEarnings()
+            guard revision == refreshRevision else { return }
             snapshot = ContributionsLiveMapping.snapshot(from: payload, asOf: live.now())
             // The pulse series is a UI-preview-only artifact by contract
             // ("must never be presented as observed account data"): live mode
@@ -72,6 +76,7 @@ final class ContributionsStore {
             pulsePreview = nil
             availability = .available(lastUpdated: live.now())
         } catch {
+            guard revision == refreshRevision else { return }
             availability = .unavailable(message: error.localizedDescription)
         }
     }
@@ -193,6 +198,10 @@ final class ContributionsStore {
     func retryPreviewLoad() {
         guard case .unavailable = availability else { return }
         guard live == nil else {
+            // Close the retry gate synchronously so rapid clicks cannot create
+            // duplicate requests. The revision check in refresh also prevents
+            // any older in-flight response from replacing the retry result.
+            availability = .loading
             Task { await refresh() }
             return
         }

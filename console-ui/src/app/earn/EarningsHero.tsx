@@ -110,9 +110,8 @@ export function EarningsHero({
           <p className="text-xs text-text-secondary">
             This uses the fixed trailing {market.window_days}-day settled work pool and full-month
             availability; it is not a promise. Demand and competing capacity change. The base
-            reward range starts at zero because eligibility, five-minute work offsets, account
-            caps, and fixed-pool allocation are unknown; the memory-tier amount is only the upper
-            bound.
+            reward range starts at zero because five-minute eligibility and fixed-pool allocation
+            remain unknown; the policy-capped memory-tier amount is only the upper bound.
           </p>
         </div>
       )}

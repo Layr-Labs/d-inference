@@ -163,9 +163,9 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           </li>
           <li>
             Base rewards are separate from work demand. The memory tier is only a maximum before
-            five-minute work offsets, account caps, eligibility checks, and fixed-pool allocation.
-            The displayed net range therefore uses zero as its lower reward bound; no reward is
-            committed or guaranteed.
+            five-minute eligibility checks and fixed-pool allocation. The displayed net range
+            therefore uses zero as its lower reward bound; configured policy caps are reflected in
+            the upper bound, and no reward is committed or guaranteed.
           </li>
           <li>
             The audit reconciles {fmtUSD(market.audit.modeled_work_micro_usd / 1_000_000)} modeled

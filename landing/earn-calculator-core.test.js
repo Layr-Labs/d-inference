@@ -110,6 +110,12 @@ test("empty and inconsistent market responses are rejected", function () {
   assert.throws(function () {
     Core.parseMarket(inconsistent);
   }, /Invalid earnings market response/);
+
+  const nonStringTimestamp = marketFixture();
+  nonStringTimestamp.window_start = 0;
+  assert.throws(function () {
+    Core.parseMarket(nonStringTimestamp);
+  }, /Invalid earnings market response/);
 });
 
 test("a missing observed supply benchmark makes the model unavailable", function () {

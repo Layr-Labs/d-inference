@@ -214,8 +214,14 @@
   }
 
   function parseMarket(value) {
-    const start = isObject(value) ? Date.parse(value.window_start) : NaN;
-    const end = isObject(value) ? Date.parse(value.window_end) : NaN;
+    const start =
+      isObject(value) && typeof value.window_start === "string"
+        ? Date.parse(value.window_start)
+        : NaN;
+    const end =
+      isObject(value) && typeof value.window_end === "string"
+        ? Date.parse(value.window_end)
+        : NaN;
     if (
       !isObject(value) ||
       value.window_days !== 30 ||

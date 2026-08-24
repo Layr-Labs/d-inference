@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { parseEarningsMarket } from "@/lib/api/earnings-market";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EARNINGS_MARKET_TIMEOUT_MS,
+  fetchEarningsMarket,
+  parseEarningsMarket,
+} from "@/lib/api/earnings-market";
 
 const INVALID_RESPONSE = "Invalid earnings market response";
 
@@ -48,6 +52,11 @@ function validMarket() {
   };
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
 describe("parseEarningsMarket", () => {
   it("accepts a reconciled calculator-ready response", () => {
     expect(parseEarningsMarket(validMarket()).models[0].id).toBe("model");
@@ -67,5 +76,33 @@ describe("parseEarningsMarket", () => {
     const unavailable = validMarket();
     unavailable.models[0].estimate_available = false;
     expect(() => parseEarningsMarket(unavailable)).toThrow(INVALID_RESPONSE);
+  });
+
+  it("rejects non-string market timestamps", () => {
+    const payload = validMarket();
+    payload.window_start = 0 as unknown as string;
+    expect(() => parseEarningsMarket(payload)).toThrow(INVALID_RESPONSE);
+  });
+});
+
+describe("fetchEarningsMarket", () => {
+  it("aborts a stalled request instead of loading forever", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }),
+    );
+
+    const rejection = expect(fetchEarningsMarket()).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await vi.advanceTimersByTimeAsync(EARNINGS_MARKET_TIMEOUT_MS);
+    await rejection;
   });
 });

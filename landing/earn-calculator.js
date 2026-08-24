@@ -6,6 +6,7 @@
   "use strict";
 
   const Core = window.DarkbloomEarnings;
+  const LiveData = window.DarkbloomLiveData;
   const HARDWARE_OPTIONS =
     Core && Array.isArray(Core.HARDWARE_OPTIONS) ? Core.HARDWARE_OPTIONS : [];
 
@@ -84,7 +85,7 @@
     const list = document.getElementById("model-list");
     if (!list) return;
     list.innerHTML = "";
-    const status = document.createElement("div");
+    const status = document.createElement("li");
     status.className = "calc-model-row";
     status.textContent = message;
     list.appendChild(status);
@@ -96,7 +97,7 @@
     list.innerHTML = "";
     rows.forEach(function (entry) {
       const model = entry.model;
-      const row = document.createElement("div");
+      const row = document.createElement("li");
       row.className = "calc-model-row" + (entry.fits ? "" : " nofit");
 
       const mark = document.createElement("span");
@@ -249,7 +250,7 @@
     const policy = market.base_rewards;
     setText(
       "calc-base-intro",
-      "Maximum per-machine tiers at full availability, before work offsets, eligibility, and allocation. " +
+      "Maximum per-machine tiers at full availability, before eligibility and allocation. " +
         "All eligible machines share one fixed " +
         fmtUSD(policy.monthly_pool_micro_usd / 1e6) +
         " monthly pool; tier amounts are not guaranteed.",
@@ -438,7 +439,7 @@
       });
     }
 
-    if (!Core || !window.fetch || HARDWARE_OPTIONS.length === 0) {
+    if (!Core || !LiveData || !window.fetch || HARDWARE_OPTIONS.length === 0) {
       state.marketState = "unavailable";
       renderBaseRewardPolicy(state.marketState, null);
       renderUnavailable("Calculator configuration could not be loaded.");
@@ -446,13 +447,11 @@
       return;
     }
     render();
-    fetch(API_BASE + "/v1/earnings/market", {
-      headers: { Accept: "application/json" },
-    })
-      .then(function (response) {
-        if (!response.ok) throw new Error("earnings market " + response.status);
-        return response.json();
-      })
+    LiveData.fetchJSONWithTimeout(
+      window.fetch.bind(window),
+      API_BASE + "/v1/earnings/market",
+      LiveData.REQUEST_TIMEOUT_MS,
+    )
       .then(function (payload) {
         state.market = Core.parseMarket(payload);
         state.marketState = "ready";

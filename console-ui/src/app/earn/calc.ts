@@ -300,7 +300,10 @@ export function unavailableReasonLabel(
 }
 
 export function fmtUSD(value: number, decimals = 2): string {
-  const absolute = Math.abs(value).toFixed(decimals);
+  const absolute = Math.abs(value).toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
   return value < 0 ? `-$${absolute}` : `$${absolute}`;
 }
 

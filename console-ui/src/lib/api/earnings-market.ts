@@ -11,6 +11,7 @@ type JsonRecord = Record<string, unknown>;
 
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const INVALID_MARKET_RESPONSE = "Invalid earnings market response";
+export const EARNINGS_MARKET_TIMEOUT_MS = 10_000;
 const UNAVAILABLE_REASONS = new Set<EarningsUnavailableReason>([
   "settled_work_unavailable",
   "competing_capacity_unavailable",
@@ -196,11 +197,18 @@ export function parseEarningsMarket(value: unknown): EarningsMarketResponse {
 }
 
 export async function fetchEarningsMarket(): Promise<EarningsMarketResponse> {
-  const response = await fetch("/api/earnings/market", {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch earnings market: ${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EARNINGS_MARKET_TIMEOUT_MS);
+  try {
+    const response = await fetch("/api/earnings/market", {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch earnings market: ${response.status}`);
+    }
+    return parseEarningsMarket(await response.json());
+  } finally {
+    clearTimeout(timeout);
   }
-  return parseEarningsMarket(await response.json());
 }

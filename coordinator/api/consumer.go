@@ -49,14 +49,14 @@ const (
 	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
 	inferenceTimeout = 600 * time.Second
 
-	// preambleContentTimeout is the budget from the first boilerplate chunk to
-	// the first CONTENT chunk when the TTFT deadline has already expired. A
-	// provider that produced only preamble (role delta / Responses lifecycle)
-	// has written ZERO bytes to the client, so a role-then-stall zombie must
-	// fail over instead of pinning the request for the full inferenceTimeout.
-	// 90s comfortably covers the measured pre-content tail (vision prefill is
-	// 6-30s); genuine cold model loads signal via AcceptedCh and keep the full
-	// inferenceTimeout.
+	// preambleContentTimeout is the relative cap from the first boilerplate
+	// chunk to the first CONTENT chunk. A provider that produced only preamble
+	// (role delta / Responses lifecycle) has written ZERO bytes to the client,
+	// so a role-then-stall zombie must fail over instead of pinning the request
+	// for the full inferenceTimeout. 90s covers the measured pre-content tail
+	// (vision prefill is 6-30s). When ReceivedAt is stamped this cap cannot
+	// exceed leftover request-absolute first-token budget: AcceptedCh is not a
+	// completion token and must not reset that clock.
 	preambleContentTimeout = 90 * time.Second
 
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
@@ -694,6 +694,18 @@ func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.D
 	return seconds
 }
 
+// writeFirstTokenTimeout writes the OpenRouter-compatible retryable 429 used
+// when a request-absolute first-token clock expires after dispatch. Chat
+// exhausted already uses this shape (Retry-After + rate_limit_exceeded);
+// /v1/completions and /v1/messages must match so aggregators retry instead
+// of treating the timeout as a provider 504.
+func (s *Server) writeFirstTokenTimeout(w http.ResponseWriter, model, message string) {
+	retryAfter := s.estimateRetryAfter(model)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		message, withCode("rate_limit_exceeded")))
+}
+
 func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
 	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -1009,7 +1021,14 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.DispatchedAt = time.Now()
 	}
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
+	// Bound the provider write by the request-absolute first-token clock (see
+	// firstTokenWriteContext): a congested write lane must not silently eat
+	// the budget while the aggregator's cancel clock keeps running.
+	writeCtx, cancelWrite := firstTokenWriteContext(
+		r.Context(), timingReceivedAt(timing), ttftDeadline(estimatedPromptTokens))
+	writeErr := writeProviderInferenceRequest(writeCtx, provider, data)
+	cancelWrite()
+	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
@@ -4685,7 +4704,10 @@ reserveProvider:
 		return
 	}
 	timing.DispatchedAt = time.Now()
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
+	writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timing.ReceivedAt, genericDeadline)
+	writeErr := writeProviderInferenceRequest(writeCtx, provider, data)
+	cancelWrite()
+	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		cleanupPending()
 		refundExtra()
@@ -4708,10 +4730,25 @@ reserveProvider:
 	// before committing. This mirrors the chat completions path but without
 	// speculative dispatch (single attempt). If the provider misses the
 	// TTFT deadline, the request fails instead of streaming forever.
-	ttftTimer := time.NewTimer(genericDeadline)
+	ttftTimer := time.NewTimer(firstTokenRemainingSince(timing.ReceivedAt, genericDeadline))
 	var firstChunk string
 	committed := false
 	accepted := false
+
+	// commitGenericChunk mirrors the ChunkCh arms' first-chunk bookkeeping
+	// (stamp actual_ttft_ms anchor, mark committed, record the capacity
+	// ACCEPT). Used when a buffered chunk is recovered from a timer arm — an
+	// on-time token and a zero-duration timer race in Go's select.
+	commitGenericChunk := func(chunk string) {
+		firstChunk = chunk
+		pr.MarkFirstChunkArrived()
+		pr.MarkFirstContentArrived()
+		pr.MarkContentCommitted()
+		if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
+			pr.MarkRateOutcomeCounted()
+		}
+		committed = true
+	}
 
 	select {
 	case <-pr.AcceptedCh:
@@ -4773,6 +4810,10 @@ reserveProvider:
 		s.writeGenericProviderError(w, errMsg)
 		return
 	case <-ttftTimer.C:
+		if chunk, ok := takeBufferedGenericChunk(pr); ok {
+			commitGenericChunk(chunk)
+			break
+		}
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
@@ -4780,7 +4821,7 @@ reserveProvider:
 		refundReservation()
 		s.ddIncr("inference.dispatches", []string{"status:timeout"})
 		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
+		s.writeFirstTokenTimeout(w, model, "provider did not respond within TTFT deadline")
 		return
 	case <-r.Context().Done():
 		ttftTimer.Stop()
@@ -4794,9 +4835,13 @@ reserveProvider:
 		return
 	}
 
-	// If provider accepted (model reload), wait for first chunk with extended deadline.
+	// If provider accepted (model reload), keep waiting for first CONTENT
+	// on the same request-absolute first-token clock. Accept is not a token
+	// and must not reset the budget to inferenceTimeout (10 minutes) —
+	// OpenRouter will 504 at ~10s+1ms/token if no real token arrives.
 	if accepted && !committed {
-		chunkTimer := time.NewTimer(inferenceTimeout)
+		acceptedBudget := firstTokenRemainingSince(timing.ReceivedAt, genericDeadline)
+		chunkTimer := time.NewTimer(acceptedBudget)
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			chunkTimer.Stop()
@@ -4840,19 +4885,27 @@ reserveProvider:
 			s.writeGenericProviderError(w, errMsg)
 			return
 		case <-chunkTimer.C:
+			if chunk, ok := takeBufferedGenericChunk(pr); ok {
+				commitGenericChunk(chunk)
+				break
+			}
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
-			// Accepted-then-silent is a provider-at-fault 504 — feed the
-			// breaker (single-attempt path: no retry here, but repeated
-			// stalls must still accumulate into the routing cooldown). No
-			// provider message on this synthetic timeout, so errStr is "".
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			// Accepted-then-silent feeds the provider breaker ONLY when the
+			// provider was actually granted a provider-attributable window.
+			// A budget capped short by the request-absolute first-token clock
+			// is OUR deadline (queueing/admission before dispatch), not
+			// provider sickness — feeding it would quarantine a healthy cold
+			// provider (two 504 feeds in 60s cool the pair for 5 minutes).
+			if providerAttributableStall(acceptedBudget) {
+				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
-			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
+			s.writeFirstTokenTimeout(w, model, "provider accepted but timed out before first chunk")
 			return
 		case <-r.Context().Done():
 			chunkTimer.Stop()

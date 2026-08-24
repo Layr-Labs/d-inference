@@ -142,7 +142,7 @@ func buildEarningsMarketResponse(
 		}
 		capacityByModel[capacity.ModelID] = capacity
 	}
-	catalog, err := buildEarningsCatalog(records, aliases, capacityByModel)
+	catalog, err := buildEarningsCatalog(records, aliases)
 	if err != nil {
 		return earningsMarketResponse{}, err
 	}
@@ -151,12 +151,14 @@ func buildEarningsMarketResponse(
 	models := make([]earningsMarketModel, len(catalog))
 	for i, entry := range catalog {
 		model := entry.model
-		if capacity, ok := capacityByModel[entry.capacityMember]; ok {
-			model.AggregateTPS += capacity.AggregateTPS
-			model.AggregateMemoryBandwidthGBs += capacity.AggregateMemoryBandwidthGBs
-			model.BenchmarkTPS += capacity.BenchmarkTPS
-			model.BenchmarkMemoryBandwidthGBs += capacity.BenchmarkMemoryBandwidthGBs
-			model.ProviderSupply += capacity.EligibleProviders
+		for _, member := range entry.capacityMembers {
+			if capacity, ok := capacityByModel[member]; ok {
+				model.AggregateTPS += capacity.AggregateTPS
+				model.AggregateMemoryBandwidthGBs += capacity.AggregateMemoryBandwidthGBs
+				model.BenchmarkTPS += capacity.BenchmarkTPS
+				model.BenchmarkMemoryBandwidthGBs += capacity.BenchmarkMemoryBandwidthGBs
+				model.ProviderSupply += capacity.EligibleProviders
+			}
 		}
 		models[i] = model
 		modelIndex[model.ID] = i

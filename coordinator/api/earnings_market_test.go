@@ -194,10 +194,10 @@ func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *tes
 		aliased.PaidJobs != 4 {
 		t.Fatalf("aliased model = %+v", aliased)
 	}
-	if aliased.AggregateTPS != 100 || aliased.AggregateMemoryBandwidthGBs != 400 ||
-		aliased.BenchmarkTPS != 100 || aliased.BenchmarkMemoryBandwidthGBs != 400 ||
-		aliased.ProviderSupply != 1 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
-		t.Fatalf("aliased capacity = %+v, want desired-build-only 100 TPS / 400 GB/s / 1 provider", aliased)
+	if aliased.AggregateTPS != 150 || aliased.AggregateMemoryBandwidthGBs != 600 ||
+		aliased.BenchmarkTPS != 150 || aliased.BenchmarkMemoryBandwidthGBs != 600 ||
+		aliased.ProviderSupply != 2 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
+		t.Fatalf("aliased capacity = %+v, want desired + fallback 150 TPS / 600 GB/s / 2 providers", aliased)
 	}
 	standaloneModel := models[standalone]
 	if standaloneModel.WorkPayoutMicroUSD != 5_000_000 || standaloneModel.PaidTokens != 55 ||
@@ -283,6 +283,19 @@ func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.
 	}
 	if response.Audit.UnattributedWorkMicroUSD != 30_000_000 {
 		t.Fatalf("legacy unattributed work = %d, want 30000000", response.Audit.UnattributedWorkMicroUSD)
+	}
+}
+
+func TestActiveAliasMembersDeduplicatesDesiredAndFallback(t *testing.T) {
+	records := map[string]store.ModelRegistryRecord{
+		"shared": {ID: "shared"},
+	}
+	got := activeAliasMembers(store.ModelAlias{
+		DesiredBuild:  "shared",
+		PreviousBuild: "shared",
+	}, records)
+	if len(got) != 1 || got[0] != "shared" {
+		t.Fatalf("activeAliasMembers = %v, want [shared]", got)
 	}
 }
 

@@ -10,18 +10,17 @@ import (
 )
 
 type earningsCatalogModel struct {
-	model          earningsMarketModel
-	capacityMember string
+	model           earningsMarketModel
+	capacityMembers []string
 }
 
 // buildEarningsCatalog collapses each active standard alias's full historical
-// lineage into one public calculator row. Live capacity follows routing's
-// desired-then-previous preference and uses exactly one concrete build. Work is
-// attributed separately by the public identity persisted with each settlement.
+// lineage into one public calculator row. Desired and previous builds both
+// receive alias traffic, so both contribute competing live capacity. Historical
+// work is attributed separately by the public identity persisted at settlement.
 func buildEarningsCatalog(
 	records []store.ModelRegistryRecord,
 	aliases []store.ModelAlias,
-	capacityByModel map[string]registry.ModelCapacity,
 ) ([]earningsCatalogModel, error) {
 	recordsByID := make(map[string]store.ModelRegistryRecord, len(records))
 	for _, record := range records {
@@ -62,11 +61,11 @@ func buildEarningsCatalog(
 		}
 		publicAliasIDs[alias.AliasID] = struct{}{}
 
-		capacityMember := activeAliasMember(alias, recordsByID, capacityByModel)
-		if capacityMember == "" {
+		capacityMembers := activeAliasMembers(alias, recordsByID)
+		if len(capacityMembers) == 0 {
 			continue
 		}
-		primary := recordsByID[capacityMember]
+		primary := recordsByID[capacityMembers[0]]
 		displayName := alias.DisplayName
 		if displayName == "" {
 			displayName = primary.DisplayName
@@ -82,7 +81,7 @@ func buildEarningsCatalog(
 				SizeBytes:   primary.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(primary.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMember: capacityMember,
+			capacityMembers: capacityMembers,
 		})
 	}
 
@@ -109,18 +108,17 @@ func buildEarningsCatalog(
 				SizeBytes:   record.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(record.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMember: record.ID,
+			capacityMembers: []string{record.ID},
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].model.ID < out[j].model.ID })
 	return out, nil
 }
 
-func activeAliasMember(
+func activeAliasMembers(
 	alias store.ModelAlias,
 	recordsByID map[string]store.ModelRegistryRecord,
-	capacityByModel map[string]registry.ModelCapacity,
-) string {
+) []string {
 	members := make([]string, 0, 2)
 	for _, build := range []string{alias.DesiredBuild, alias.PreviousBuild} {
 		if build == "" {
@@ -130,19 +128,7 @@ func activeAliasMember(
 			members = append(members, build)
 		}
 	}
-	members = uniqueNonemptyStrings(members)
-	for _, build := range members {
-		if capacity, ok := capacityByModel[build]; ok && capacity.EligibleProviders > 0 {
-			return build
-		}
-	}
-	if len(members) == 0 {
-		return ""
-	}
-	// ResolveModel queues against Desired when neither build is currently
-	// routable. Preserve that first-member fallback so the public row remains
-	// visible with an explicit competing-capacity-unavailable state.
-	return members[0]
+	return uniqueNonemptyStrings(members)
 }
 
 func uniqueNonemptyStrings(values []string) []string {

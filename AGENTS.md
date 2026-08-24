@@ -74,7 +74,7 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
 ├── Sources/ProviderBenchmark*, kv-*  benchmark + KV-cache self-test executables
-└── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, app (incl. hermetic fresh-install), and publish tests
+└── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, app (incl. unsigned DEBUG lifecycle), and publish tests
 
 console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn, login

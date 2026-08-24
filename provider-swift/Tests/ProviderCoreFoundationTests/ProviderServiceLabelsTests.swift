@@ -78,6 +78,13 @@ struct LocalEndpointInfoTests {
             info,
             readIdentity: { _ in nil }
         ))
+
+        let encoded = String(
+            decoding: try JSONEncoder().encode(info),
+            as: UTF8.self
+        )
+        #expect(encoded.contains(#""start_time_micros":100"#))
+        #expect(!encoded.contains("startTimeMicros"))
     }
 
     @Test("An unspecified bind dials loopback (0.0.0.0 is not dialable)")

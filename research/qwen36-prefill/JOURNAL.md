@@ -370,7 +370,7 @@ Both are far below ≥22 TFLOPS. Full raw samples, GPU timestamps,
 thermal/power/process evidence, and source hashes are retained in notes
 044/045. Remaining reviewer request: bounded MPP tile/scope sweep.
 
-## 2026-08-24T08:06Z — E16 bounded MPP tile/scope sweep
+## 2026-08-24T08:09Z — E16 bounded MPP tile/scope sweep
 
 Compiled 60 strict BF16×BF16→FP32 candidates across five output tiles,
 K16/K32, 1/2/4-SIMD-group scopes, and cooperative/tensor inputs. The compiler
@@ -381,7 +381,7 @@ Qwen shapes (807,403,520 compared outputs).
 Every valid candidate recorded 16 GPU-timestamped samples per shape under AC /
 High Power. The bounded maximum median was **13.4182 TFLOPS** (M32×N32×K32,
 single-SIMD-group cooperative inputs); the fastest individual sample was
-13.4249. Both reach only 61.0% of the 22 TFLOPS continuation threshold.
+13.4236. Both reach only 61.0% of the 22 TFLOPS continuation threshold.
 
 Stop the enumerated matrix and do not integrate serving. This is a bounded
 measured maximum, not an M3 hardware theorem; unenumerated schedules, counter

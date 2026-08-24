@@ -143,21 +143,21 @@ each full shape was:
 | Shape | Fastest candidate | GPU TFLOP/s |
 |---|---|---:|
 | M2048 K2048 N8192 | M32×N32×K32, one SIMD group, cooperative inputs | **13.4182** |
-| M2048 K2048 N1024 | M16×N64×K32, two SIMD groups, tensor inputs | **12.8861** |
-| M2048 K512 N2048 | M16×N64×K32, two SIMD groups, tensor inputs | **13.0257** |
+| M2048 K2048 N1024 | M16×N64×K32, two SIMD groups, tensor inputs | **12.8865** |
+| M2048 K512 N2048 | M16×N64×K32, two SIMD groups, tensor inputs | **13.0299** |
 
 The global maximum is:
 
 ```text
 fastest valid median       13.4182 TFLOP/s
-fastest valid sample       13.4249 TFLOP/s
+fastest valid sample       13.4236 TFLOP/s
 continuation threshold     22.0000 TFLOP/s
 median shortfall            8.5818 TFLOP/s (39.0%)
 fraction of threshold       0.6099
 ```
 
 The best schedule improves the same wide shape only 1.048× over the current
-M16×N32×K16 cooperative schedule's 12.7975 TFLOP/s. Neither tile width,
+M16×N32×K16 cooperative schedule's 12.8060 TFLOP/s. Neither tile width,
 K32, nor 2/4-group cooperation exposes the missing near-2× arithmetic lane.
 
 ## Decision and scope

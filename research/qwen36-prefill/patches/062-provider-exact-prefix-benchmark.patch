@@ -789,7 +789,7 @@ index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb8
 +    }
 +}
 diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
-index e30a04592f3eaf25985d73b3fbdcb5e9025098c3..51e143f9bb02b4e94baddab58c8c326b0d19850c 100644
+index a47e9cf4b5796353668eb5489bb0e1460ea4e1d6..614d9f6c127cc2127b54c84229558e45717e8a94 100644
 --- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
 @@ -200,6 +200,42 @@ struct QwenPrefixReuseTests {
@@ -968,7 +968,7 @@ index e30a04592f3eaf25985d73b3fbdcb5e9025098c3..51e143f9bb02b4e94baddab58c8c326b
                  cacheSaltScope: "unique per scenario iteration",
                  capabilitySupported: true,
                  capabilityStrategy: "direct",
-@@ -527,3 +637,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
+@@ -535,3 +645,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
  
      func shutdown() async {}
  }

@@ -314,6 +314,7 @@ public enum LocalDataCleanup: Sendable {
         }
         if authToken {
             try? AuthTokenStore.delete()
+            ProviderAccountStore.delete()
         }
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a

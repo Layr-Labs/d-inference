@@ -51,6 +51,7 @@ struct Unenroll: AsyncParsableCommand {
         print("Local data cleanup will remove:")
         print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
         print("  • Auth token:    ~/.darkbloom/auth_token")
+        print("  • Linked account: ~/.darkbloom/provider_account")
         print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
         print()
 

@@ -745,3 +745,16 @@ Ordered patch 076 applies after 052–055 and pins B1/B2/B4 cache offsets,
 recurrent commit/rollback, cancellation isolation, and direct no-duplicate
 K/V/GDN comparisons. M3 performance and frozen semantic quality remain for the
 parent run. See `notes/076-frontier-state-river-handoff.md`.
+
+## 2026-08-24T20:45Z — suffix frontier crosses chunk boundaries
+
+The E49 river now executes every row in the final configurable prompt suffix
+(64 by default) through each skipped layer exactly once. The engine marks the
+suffix overlap per chunk and keeps incompatible packed overlaps separate;
+earlier rows continue to build artifact-only K/V or GDN history.
+
+Ordered patch 078 applies after 076 and adds B1/B2/B4 crossing-boundary
+transactions, no-duplicate offset/state checks, rollback, and cancellation
+coverage. Decode, MTP phases, vision embedding prefill, ordinary intermediate
+chunks, and the default-off path remain unchanged. The parent owns M3
+performance and quality gates. See `notes/078-suffix-frontier-state-river-handoff.md`.

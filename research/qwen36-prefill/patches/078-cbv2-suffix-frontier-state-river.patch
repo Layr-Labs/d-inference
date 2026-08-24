@@ -1,0 +1,1035 @@
+diff --git a/Libraries/MLXLLM/Models/Gemma4Text.swift b/Libraries/MLXLLM/Models/Gemma4Text.swift
+index 3c44bd2..647afdd 100644
+--- a/Libraries/MLXLLM/Models/Gemma4Text.swift
++++ b/Libraries/MLXLLM/Models/Gemma4Text.swift
+@@ -2192,14 +2192,12 @@ extension Gemma4TextModel: CBv2LanguageModelPrefillForwardable {
+     ) -> MLXArray {
+         let hidden = model.cbv2Prefill(
+             inputs, cache: cache, inputEmbedding: inputEmbedding)
+-        switch requirement {
+-        case .evaluationOnly:
+-            // Small handle whose graph depends on the whole trunk — forcing
+-            // it commits every layer's K/V write for this chunk.
+-            return hidden[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits:
++        if requirement.needsLastPositionLogits {
+             return applyLMHead(hidden[0..., -1, 0...])
+         }
++        // Small handle whose graph depends on the whole trunk — forcing it
++        // commits every layer's K/V write for this chunk.
++        return hidden[0..., -1, 0 ..< 1]
+     }
+ }
+ 
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+index e407d73..4b20be0 100644
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -659,16 +659,21 @@ final class Qwen35GatedDeltaNet: Module {
+     }
+ 
+     /// Fold historical rows with the state-only graph, then execute the full
+-    /// GDN contribution for the final row from that prefix state. Only the
+-    /// post-frontier state is staged, so the final token is consumed once.
++    /// GDN contribution for the trailing frontier rows from that prefix state.
++    /// Only the post-frontier state is staged, so every row is consumed once
++    /// and recurrent chronology is preserved across a chunk boundary.
+     func cbv2ForwardFrontierFromArtifactHistory(
+         _ inputs: MLXArray,
++        frontierTokenCount: Int,
+         modelLayerIndex: Int,
+         recurrentState: [CBv2RecurrentStateEvaluation]
+     ) -> MLXArray {
+         let B = inputs.dim(0)
+         let S = inputs.dim(1)
+-        precondition(S > 0, "Qwen35 frontier state river requires a final row")
++        precondition(
++            frontierTokenCount > 0 && frontierTokenCount <= S,
++            "Qwen35 frontier state river requires a nonempty in-chunk suffix")
++        let historyCount = S - frontierTokenCount
+ 
+         let qkv = inProjQKV(inputs)
+         let b = inProjB(inputs)
+@@ -680,8 +685,8 @@ final class Qwen35GatedDeltaNet: Module {
+ 
+         let frontierConv: MLXArray
+         let frontierSSM: MLXArray
+-        if S > 1 {
+-            let history = 0 ..< (S - 1)
++        if historyCount > 0 {
++            let history = 0 ..< historyCount
+             let prefix = processChunk(
+                 qkv: qkv[0..., history, 0...],
+                 a: a[0..., history, 0...],
+@@ -696,11 +701,11 @@ final class Qwen35GatedDeltaNet: Module {
+             frontierSSM = initialSSM
+         }
+ 
+-        let final = (S - 1) ..< S
++        let frontierRows = historyCount ..< S
+         let frontier = processChunk(
+-            qkv: qkv[0..., final, 0...],
+-            a: a[0..., final, 0...],
+-            b: b[0..., final, 0...],
++            qkv: qkv[0..., frontierRows, 0...],
++            a: a[0..., frontierRows, 0...],
++            b: b[0..., frontierRows, 0...],
+             convState: frontierConv,
+             ssmState: frontierSSM,
+             mask: nil)
+@@ -711,10 +716,10 @@ final class Qwen35GatedDeltaNet: Module {
+             recurrentState: recurrentState,
+             operation: "frontier-state-river")
+ 
+-        let z = inProjZ(inputs[0..., final, 0...])
+-            .reshaped(B, 1, numVHeads, headVDim)
++        let z = inProjZ(inputs[0..., frontierRows, 0...])
++            .reshaped(B, frontierTokenCount, numVHeads, headVDim)
+         let normedOut = norm(frontier.out, gate: z)
+-        return outProj(normedOut.reshaped(B, 1, -1))
++        return outProj(normedOut.reshaped(B, frontierTokenCount, -1))
+     }
+ 
+     private func cbv2InputState(
+@@ -1517,7 +1522,7 @@ final class Qwen35DecoderLayer: Module {
+         return x
+     }
+ 
+-    /// Build artifacts for every historical row, then run the final row
++    /// Build artifacts for every historical row, then run a trailing suffix
+     /// through this layer's full attention/GDN, residual, and MLP exactly
+     /// once. Historical hidden rows remain byte-for-byte pass-through values.
+     ///
+@@ -1529,11 +1534,16 @@ final class Qwen35DecoderLayer: Module {
+         attentionCache: (any CBv2AttendingLayerCache)?,
+         recurrentState: [CBv2RecurrentStateEvaluation],
+         positionIds: MLXArray?,
++        frontierTokenCount: Int,
+         usePrefillMoERoutingPolicy: Bool
+     ) -> MLXArray? {
+         precondition(x.ndim == 3 && x.dim(1) > 0)
+         let length = x.dim(1)
+-        let final = (length - 1) ..< length
++        precondition(
++            frontierTokenCount > 0 && frontierTokenCount <= length,
++            "Qwen35 frontier state river requires an in-chunk suffix")
++        let historyCount = length - frontierTokenCount
++        let frontierRows = historyCount ..< length
+         let normalized = inputLayerNorm(x)
+ 
+         let frontierContribution: MLXArray
+@@ -1541,6 +1551,7 @@ final class Qwen35DecoderLayer: Module {
+             precondition(attentionCache == nil, "Qwen35 recurrent layer received attention KV")
+             frontierContribution = linearAttn!.cbv2ForwardFrontierFromArtifactHistory(
+                 normalized,
++                frontierTokenCount: frontierTokenCount,
+                 modelLayerIndex: modelLayerIndex,
+                 recurrentState: recurrentState)
+         } else {
+@@ -1550,26 +1561,26 @@ final class Qwen35DecoderLayer: Module {
+             else {
+                 return nil
+             }
+-            if length > 1 {
+-                let history = 0 ..< (length - 1)
++            if historyCount > 0 {
++                let history = 0 ..< historyCount
+                 selfAttn!.cbv2CommitKVOnly(
+                     normalized[0..., history, 0...],
+                     cache: commitCache,
+                     positionIds: cbv2PositionSlice(positionIds, range: history))
+             }
+             frontierContribution = selfAttn!.cbv2Forward(
+-                normalized[0..., final, 0...],
++                normalized[0..., frontierRows, 0...],
+                 cache: attentionCache,
+-                positionIds: cbv2PositionSlice(positionIds, range: final))
++                positionIds: cbv2PositionSlice(positionIds, range: frontierRows))
+         }
+ 
+-        let frontierInput = x[0..., final, 0...]
++        let frontierInput = x[0..., frontierRows, 0...]
+         let frontierResidual = frontierInput + frontierContribution
+         let frontierOutput = frontierResidual + applyMLP(
+             postAttentionLayerNorm(frontierResidual),
+             usePrefillRoutingPolicy: usePrefillMoERoutingPolicy)
+-        guard length > 1 else { return frontierOutput }
+-        return concatenated([x[0..., 0 ..< (length - 1), 0...], frontierOutput], axis: 1)
++        guard historyCount > 0 else { return frontierOutput }
++        return concatenated([x[0..., 0 ..< historyCount, 0...], frontierOutput], axis: 1)
+     }
+ 
+     private func cbv2PositionSlice(
+@@ -1755,12 +1766,24 @@ public class Qwen35TextModelInner: Module {
+         recurrentState: [CBv2RecurrentStateEvaluation],
+         positionIds: MLXArray? = nil,
+         phase: Qwen35CBv2ForwardPhase,
++        fullDepthSuffixTokenCount: Int? = nil,
+         captureRecurrentWindow: Bool = false,
+         usePrefillMoERoutingPolicy: Bool = false
+     ) -> MLXArray {
+         precondition(
+             caches.count == layers.filter({ !$0.isLinear }).count,
+             "Qwen35 CBv2 requires only full-attention caches")
++        let resolvedSuffixTokenCount: Int
++        if cbv2PrefillLayerPolicy.isEnabled && phase == .prefillFrontier {
++            let requested =
++                fullDepthSuffixTokenCount ?? cbv2PrefillLayerPolicy.frontierTokenCount
++            precondition(
++                requested > 0 && requested <= cbv2PrefillLayerPolicy.frontierTokenCount,
++                "Qwen35 in-chunk frontier exceeds the configured suffix")
++            resolvedSuffixTokenCount = min(requested, inputs.dim(1))
++        } else {
++            resolvedSuffixTokenCount = 0
++        }
+         var hiddenStates = inputEmbeddings ?? embedTokens(inputs)
+         var attentionIndex = 0
+         for (modelLayerIndex, layer) in layers.enumerated() {
+@@ -1796,6 +1819,7 @@ public class Qwen35TextModelInner: Module {
+                     attentionCache: attentionCache,
+                     recurrentState: recurrentState,
+                     positionIds: positionIds,
++                    frontierTokenCount: resolvedSuffixTokenCount,
+                     usePrefillMoERoutingPolicy: usePrefillMoERoutingPolicy)
+                 {
+                     hiddenStates = riverHidden
+@@ -1977,6 +2001,13 @@ extension Qwen35TextModel: CBv2PositionAxisProviding {
+     public var cbv2PositionAxisCount: Int? { 3 }
+ }
+ 
++extension Qwen35TextModel: CBv2FullDepthSuffixPrefillProviding {
++    public var cbv2FullDepthSuffixTokenCount: Int {
++        guard model.cbv2PrefillLayerPolicy.isEnabled else { return 0 }
++        return model.cbv2PrefillLayerPolicy.frontierTokenCount
++    }
++}
++
+ extension Qwen35TextModel: CBv2PositionedRecurrentLanguageModelForwardable,
+     CBv2PositionedRecurrentEmbeddingForwardable
+ {
+@@ -2048,8 +2079,9 @@ extension Qwen35TextModel: CBv2PositionedRecurrentLanguageModelForwardable,
+ /// exactly one row. With the default-off artifact experiment disabled, the
+ /// trunk — every K/V write, every recurrent-state stage, positions, and
+ /// embeddings — remains byte-identical to `positionedForward`. When enabled,
+-/// the explicit intermediate/frontier phases select the state-river paths
+-/// above. Final RMSNorm is row-independent, so norm-after-slice equals
++/// the engine marks every chunk intersecting the configured final-N suffix;
++/// earlier rows remain artifact-only while suffix rows take the state-river
++/// path above. Final RMSNorm is row-independent, so norm-after-slice equals
+ /// slice-after-norm for the surviving row. Decode, MTP draft/verify, and
+ /// capture paths keep their existing full contracts.
+ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+@@ -2072,15 +2104,25 @@ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+             return attending
+         }
+         let phase: Qwen35CBv2ForwardPhase
++        let fullDepthSuffixTokenCount: Int?
+         if inputEmbedding != nil {
+             // Vision embedding prefill retains the checkpoint path.
+             phase = .decode
++            fullDepthSuffixTokenCount = nil
+         } else {
+             switch requirement {
+             case .evaluationOnly:
+                 phase = .prefillIntermediate
++                fullDepthSuffixTokenCount = nil
++            case .evaluationOnlyWithFullDepthSuffix(let tokenCount):
++                phase = .prefillFrontier
++                fullDepthSuffixTokenCount = tokenCount
+             case .lastPositionLogits:
+                 phase = .prefillFrontier
++                fullDepthSuffixTokenCount = nil
++            case .lastPositionLogitsWithFullDepthSuffix(let tokenCount):
++                phase = .prefillFrontier
++                fullDepthSuffixTokenCount = tokenCount
+             }
+         }
+         let hidden = model.cbv2Forward(
+@@ -2089,16 +2131,15 @@ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+             // Notes 050/054 register the approximation for TEXT prompt
+             // prefill only. Decode, MTP, and vision stay on the full path.
+             phase: phase,
++            fullDepthSuffixTokenCount: fullDepthSuffixTokenCount,
+             usePrefillMoERoutingPolicy: inputEmbedding == nil)
+-        switch requirement {
+-        case .evaluationOnly:
+-            // Small handle whose graph depends on the whole trunk — forcing
+-            // it commits every layer's K/V write and recurrent stage.
+-            return hidden[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits:
++        if requirement.needsLastPositionLogits {
+             let last = model.norm(hidden[0..., -1, 0...])
+             return lmHead.map { $0(last) } ?? model.embedTokens.asLinear(last)
+         }
++        // Small handle whose graph depends on the whole trunk — forcing it
++        // commits every layer's K/V write and recurrent stage.
++        return hidden[0..., -1, 0 ..< 1]
+     }
+ }
+ 
+diff --git a/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift b/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
+index c142f61..532e3c6 100644
+--- a/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
++++ b/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
+@@ -8,8 +8,9 @@ public enum Qwen35CBv2ForwardPhase: Equatable, Sendable {
+     /// A prompt chunk that cannot produce logits. Every skipped layer builds
+     /// only its persistent artifact and passes hidden rows through.
+     case prefillIntermediate
+-    /// The terminal prompt chunk. Historical rows remain artifact-only while
+-    /// the last row traverses every skipped layer's full checkpoint function.
++    /// A prompt chunk intersecting the final bounded suffix. Rows before the
++    /// in-chunk boundary remain artifact-only while trailing rows traverse
++    /// every skipped layer's full checkpoint function.
+     case prefillFrontier
+     case decode
+     case mtp
+@@ -21,35 +22,47 @@ public enum Qwen35CBv2PrefillLayerMode: Equatable, Sendable {
+     case artifactHistoryWithFullFrontier
+ }
+ 
+-/// Default-off frontier-state-river experiment for Qwen3.5/3.6 TEXT prefill.
++/// Default-off suffix-frontier state-river experiment for Qwen3.5/3.6 TEXT
++/// prefill.
+ ///
+ /// Full layers execute the checkpoint function. Every other layer constructs
+ /// only the persistent artifact decode needs (GDN terminal state or attention
+-/// K/V) for historical prompt rows and passes their hidden inputs through. On
+-/// the terminal chunk, the final row then executes that skipped layer once
+-/// against the constructed prefix artifact. Decode and MTP always execute the
+-/// full checkpoint function.
++/// K/V) for historical prompt rows and passes their hidden inputs through.
++/// Every chunk intersecting the final bounded suffix executes its trailing
++/// overlap against the constructed prefix artifact, including when the suffix
++/// crosses chunk boundaries. Decode and MTP always execute the full checkpoint
++/// function.
+ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+     public static let enabledEnvironmentKey =
+         "DARKBLOOM_QWEN35_PREFILL_ARTIFACT_ONLY"
+     public static let fullLayersEnvironmentKey =
+         "DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS"
++    public static let frontierTokensEnvironmentKey =
++        "DARKBLOOM_QWEN35_PREFILL_FRONTIER_TOKENS"
+     /// E=4 from note 054. E=8 is selected explicitly with `0-7`.
+     public static let defaultFullLayerSelection = "0-3"
++    /// Sixty-four full-depth suffix rows fit the 512-token 2.5x arithmetic
++    /// budget while covering the query/instruction frontier in the first Mac
++    /// quality probe.
++    public static let defaultFrontierTokenCount = 64
++    public static let maximumFrontierTokenCount = 2_048
+ 
+     public static let disabled = Qwen35CBv2PrefillLayerPolicy()
+ 
+     public let layerCount: Int
+     public let fullLayers: Set<Int>
++    public let frontierTokenCount: Int
+     public let isEnabled: Bool
+ 
+     private init(
+         layerCount: Int = 0,
+         fullLayers: Set<Int> = [],
++        frontierTokenCount: Int = 0,
+         isEnabled: Bool = false
+     ) {
+         self.layerCount = layerCount
+         self.fullLayers = fullLayers
++        self.frontierTokenCount = frontierTokenCount
+         self.isEnabled = isEnabled
+     }
+ 
+@@ -87,10 +100,24 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+         else {
+             return .disabled
+         }
++        let frontierTokenCount: Int
++        if let rawFrontier = environment[frontierTokensEnvironmentKey] {
++            guard
++                let parsed = Int(
++                    rawFrontier.trimmingCharacters(in: .whitespacesAndNewlines)),
++                (1 ... maximumFrontierTokenCount).contains(parsed)
++            else {
++                return .disabled
++            }
++            frontierTokenCount = parsed
++        } else {
++            frontierTokenCount = defaultFrontierTokenCount
++        }
+ 
+         return Qwen35CBv2PrefillLayerPolicy(
+             layerCount: layerCount,
+             fullLayers: fullLayers,
++            frontierTokenCount: frontierTokenCount,
+             isEnabled: true)
+     }
+ 
+@@ -127,7 +154,8 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+         guard isEnabled else { return "disabled" }
+         let full = fullLayers.sorted().map(String.init).joined(separator: ",")
+         let artifact = skippedLayers.sorted().map(String.init).joined(separator: ",")
+-        return "frontier_state_river=1;full=\(full);artifact=\(artifact)"
++        return "frontier_state_river=1;frontier_tokens=\(frontierTokenCount);"
++            + "full=\(full);artifact=\(artifact)"
+     }
+ 
+     private static func parseEnabled(_ raw: String) -> Bool {
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+index b0e84d8..b46c9e0 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+@@ -1382,6 +1382,34 @@ public final class EngineLoopV2: @unchecked Sendable {
+             forward.recurrent)
+     }
+ 
++    /// Resolve the prompt-output contract and, for an explicitly advertising
++    /// model, the exact overlap between this chunk and the final N prompt
++    /// rows. Ordinary chunks retain the original enum cases so disabled and
++    /// non-participating models observe no requirement change.
++    func prefillRequirement(
++        start: Int,
++        count: Int,
++        promptTokenCount: Int,
++        samples: Bool
++    ) -> CBv2PrefillRequirement {
++        precondition(
++            start >= 0 && count > 0 && start + count <= promptTokenCount,
++            "CBv2 prefill chunk must be inside the prompt")
++        let base: CBv2PrefillRequirement =
++            samples ? .lastPositionLogits : .evaluationOnly
++        let suffixLimit =
++            (model as? any CBv2FullDepthSuffixPrefillProviding)?
++            .cbv2FullDepthSuffixTokenCount ?? 0
++        guard suffixLimit > 0 else { return base }
++
++        let suffixStart = max(0, promptTokenCount - suffixLimit)
++        let suffixCount = max(0, start + count - max(start, suffixStart))
++        guard suffixCount > 0 else { return base }
++        return samples
++            ? .lastPositionLogitsWithFullDepthSuffix(tokenCount: suffixCount)
++            : .evaluationOnlyWithFullDepthSuffix(tokenCount: suffixCount)
++    }
++
+     /// Prompt-only output seam (see PrefillOutputV2.swift). Capable models
+     /// skip the vocabulary projection for discarded prompt positions;
+     /// everything else keeps the established full-logits forward and is
+@@ -1416,12 +1444,10 @@ public final class EngineLoopV2: @unchecked Sendable {
+         } else {
+             logits = model.forward(tokens: tokens, caches: caches)
+         }
+-        switch requirement {
+-        case .evaluationOnly:
+-            return logits[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits:
++        if requirement.needsLastPositionLogits {
+             return logits[0..., -1, 0...]
+         }
++        return logits[0..., -1, 0 ..< 1]
+     }
+ 
+     // MARK: - Teacher-forced top-1 scoring (backend parity measurement)
+@@ -1512,9 +1538,14 @@ public final class EngineLoopV2: @unchecked Sendable {
+             let inputs = MLXArray(promptTokens[index ..< index + count].map(Int32.init))
+                 .reshaped([1, count])
+             let caches = eagerCaches(rowStates: [state])
++            let requirement = prefillRequirement(
++                start: index,
++                count: count,
++                promptTokenCount: promptTokens.count,
++                samples: isFinalChunk)
+             let output = prefillOutput(
+                 tokens: inputs, inputEmbeddings: nil, caches: caches,
+-                requirement: isFinalChunk ? .lastPositionLogits : .evaluationOnly)
++                requirement: requirement)
+             teacherForcedPrefillChunks += 1
+             var toEval = eagerCacheInnerState(caches)
+             if isFinalChunk {
+@@ -1698,6 +1729,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+             struct PackedGroup {
+                 let count: Int
+                 let samples: Bool
++                let requirement: CBv2PrefillRequirement
+                 var rows: [RowWork]
+             }
+             var groups: [PackedGroup] = []
+@@ -1715,13 +1747,23 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 if (model as? any CBv2RecurrentSteppableModel)?.recurrentStateSpec != nil,
+                     hasSpan || row.rec.request.positionState != nil
+                 { continue }
++                let requirement = prefillRequirement(
++                    start: row.start,
++                    count: row.count,
++                    promptTokenCount: row.rec.request.promptTokens.count,
++                    samples: row.samples)
+                 if let index = groups.firstIndex(where: {
+                     $0.count == row.count && $0.samples == row.samples
++                        && $0.requirement == requirement
+                 }) {
+                     groups[index].rows.append(row)
+                 } else {
+                     groups.append(
+-                        PackedGroup(count: row.count, samples: row.samples, rows: [row]))
++                        PackedGroup(
++                            count: row.count,
++                            samples: row.samples,
++                            requirement: requirement,
++                            rows: [row]))
+                 }
+             }
+ 
+@@ -1735,8 +1777,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 }
+                 let inputs = MLXArray(flatTokens).reshaped([group.rows.count, group.count])
+                 let caches = eagerCaches(rowStates: group.rows.map { kvStates[$0.rec.id]! })
+-                let requirement: CBv2PrefillRequirement =
+-                    group.samples ? .lastPositionLogits : .evaluationOnly
++                let requirement = group.requirement
+                 let spanContexts = group.rows.map {
+                     multimodalByID[$0.rec.id]?.chunkContext(
+                         start: $0.start, count: $0.count)
+@@ -1813,8 +1854,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+             let slice = rec.tokens[row.start ..< row.start + row.count]
+             let inputs = MLXArray(slice.map(Int32.init)).reshaped([1, row.count])
+             let caches = eagerCaches(rowStates: [kvStates[rec.id]!])
+-            let requirement: CBv2PrefillRequirement =
+-                row.samples ? .lastPositionLogits : .evaluationOnly
++            let requirement = prefillRequirement(
++                start: row.start,
++                count: row.count,
++                promptTokenCount: rec.request.promptTokens.count,
++                samples: row.samples)
+             let output: MLXArray
+             if let multimodal = multimodalByID[rec.id],
+                 !multimodal.spansInChunk(start: row.start, count: row.count).isEmpty
+@@ -1916,10 +1960,10 @@ public final class EngineLoopV2: @unchecked Sendable {
+     func narrowPrefillOutput(
+         _ logits: MLXArray, requirement: CBv2PrefillRequirement
+     ) -> MLXArray {
+-        switch requirement {
+-        case .evaluationOnly: return logits[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits: return logits[0..., -1, 0...]
++        if requirement.needsLastPositionLogits {
++            return logits[0..., -1, 0...]
+         }
++        return logits[0..., -1, 0 ..< 1]
+     }
+ 
+     // MARK: Vision prefill (span-containing chunks only)
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefillOutputV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefillOutputV2.swift
+index ee02aec..fc33b4a 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefillOutputV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefillOutputV2.swift
+@@ -36,9 +36,44 @@ import MLX
+ /// - `lastPositionLogits`: the chunk reaches the prompt frontier. The engine
+ ///   needs `[B, vocab]` for the final position only — never the full
+ ///   `[B, L, vocab]`.
++/// - `*WithFullDepthSuffix`: same output contract as the corresponding base
++///   case, plus the number of trailing rows in this chunk that an explicitly
++///   opted-in model must run through its full-depth prompt path. Models that
++///   do not advertise such a policy treat these exactly like the base cases.
+ public enum CBv2PrefillRequirement: Sendable, Equatable {
+     case evaluationOnly
++    case evaluationOnlyWithFullDepthSuffix(tokenCount: Int)
+     case lastPositionLogits
++    case lastPositionLogitsWithFullDepthSuffix(tokenCount: Int)
++
++    public var needsLastPositionLogits: Bool {
++        switch self {
++        case .evaluationOnly, .evaluationOnlyWithFullDepthSuffix:
++            false
++        case .lastPositionLogits, .lastPositionLogitsWithFullDepthSuffix:
++            true
++        }
++    }
++
++    public var fullDepthSuffixTokenCount: Int? {
++        switch self {
++        case .evaluationOnly, .lastPositionLogits:
++            nil
++        case .evaluationOnlyWithFullDepthSuffix(let tokenCount),
++            .lastPositionLogitsWithFullDepthSuffix(let tokenCount):
++            tokenCount
++        }
++    }
++}
++
++/// Optional process-wide prompt policy advertised by a steppable model.
++///
++/// The engine uses this only to identify chunks intersecting the final N
++/// prompt rows. A zero value leaves every requirement byte-for-byte on the
++/// established path. The requirement remains an output contract; the model
++/// owns the meaning and execution of its advertised full-depth suffix.
++public protocol CBv2FullDepthSuffixPrefillProviding {
++    var cbv2FullDepthSuffixTokenCount: Int { get }
+ }
+ 
+ /// Opt-in prompt-forward refinement for steppable models.
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift
+index b161904..192cda8 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift
+@@ -49,6 +49,15 @@ extension CBv2SteppableLanguageModelAdapter: CBv2PositionAxisProviding {
+     }
+ }
+ 
++extension CBv2SteppableLanguageModelAdapter: CBv2FullDepthSuffixPrefillProviding {
++    public var cbv2FullDepthSuffixTokenCount: Int {
++        max(
++            0,
++            (model as? any CBv2FullDepthSuffixPrefillProviding)?
++                .cbv2FullDepthSuffixTokenCount ?? 0)
++    }
++}
++
+ // MARK: - Request-owned recurrent state
+ 
+ extension CBv2SteppableLanguageModelAdapter: CBv2RecurrentSteppableModel {
+@@ -137,10 +146,10 @@ extension CBv2SteppableLanguageModelAdapter: CBv2RecurrentPrefillSteppableModel
+             logits = recurrent.cbv2Forward(
+                 tokens, caches: asKVCaches(caches), recurrentState: recurrentState)
+         }
+-        switch requirement {
+-        case .evaluationOnly: return logits[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits: return logits[0..., -1, 0...]
++        if requirement.needsLastPositionLogits {
++            return logits[0..., -1, 0...]
+         }
++        return logits[0..., -1, 0 ..< 1]
+     }
+ }
+ 
+@@ -186,10 +195,10 @@ extension CBv2SteppableLanguageModelAdapter: CBv2PackedPrefillSteppableModel {
+             } else {
+                 logits = forward(tokens: tokens, caches: caches)
+             }
+-            switch requirement {
+-            case .evaluationOnly: return logits[0..., -1, 0 ..< 1]
+-            case .lastPositionLogits: return logits[0..., -1, 0...]
++            if requirement.needsLastPositionLogits {
++                return logits[0..., -1, 0...]
+             }
++            return logits[0..., -1, 0 ..< 1]
+         }
+         return prefillable.cbv2Prefill(
+             tokens,
+diff --git a/Tests/MLXLMTests/CBv2MultimodalTests.swift b/Tests/MLXLMTests/CBv2MultimodalTests.swift
+index e66ab4c..57308e5 100644
+--- a/Tests/MLXLMTests/CBv2MultimodalTests.swift
++++ b/Tests/MLXLMTests/CBv2MultimodalTests.swift
+@@ -312,12 +312,10 @@ final class CBv2PackedVisionTestModel:
+         } else {
+             logits = forward(tokens: tokens, caches: caches)
+         }
+-        switch requirement {
+-        case .evaluationOnly:
+-            return logits[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits:
++        if requirement.needsLastPositionLogits {
+             return logits[0..., -1, 0...]
+         }
++        return logits[0..., -1, 0 ..< 1]
+     }
+ 
+     func embedPromptTokens(_ tokens: MLXArray) -> MLXArray {
+diff --git a/Tests/MLXLMTests/CBv2PackedPrefillTests.swift b/Tests/MLXLMTests/CBv2PackedPrefillTests.swift
+index 0deebb1..5287b2c 100644
+--- a/Tests/MLXLMTests/CBv2PackedPrefillTests.swift
++++ b/Tests/MLXLMTests/CBv2PackedPrefillTests.swift
+@@ -174,10 +174,10 @@ final class CBv2PackedRecordingModel: CBv2PackedPrefillSteppableModel,
+         } else {
+             logits = inner.forward(tokens: tokens, caches: caches)
+         }
+-        switch requirement {
+-        case .evaluationOnly: return logits[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits: return logits[0..., -1, 0...]
++        if requirement.needsLastPositionLogits {
++            return logits[0..., -1, 0...]
+         }
++        return logits[0..., -1, 0 ..< 1]
+     }
+ 
+     // MARK: CBv2SteppableModel
+diff --git a/Tests/MLXLMTests/CBv2PrefillOutputTests.swift b/Tests/MLXLMTests/CBv2PrefillOutputTests.swift
+index 879c56a..4690bdd 100644
+--- a/Tests/MLXLMTests/CBv2PrefillOutputTests.swift
++++ b/Tests/MLXLMTests/CBv2PrefillOutputTests.swift
+@@ -138,15 +138,13 @@ class CBv2PrefillNarrowingModel: CBv2PrefillFallbackModel, CBv2PrefillSteppableM
+                     inputEmbeddings: inputEmbeddings, tokens: tokens)))
+         let hidden = inputEmbeddings ?? base.embed(tokens)
+         let normed = trunk(hidden: hidden, caches: caches)
+-        switch requirement {
+-        case .evaluationOnly:
+-            // No vocabulary projection at all — a [B, 1] handle whose graph
+-            // still transitively covers the whole chunk (and its KV writes).
+-            return normed[0..., -1, 0 ..< 1]
+-        case .lastPositionLogits:
++        if requirement.needsLastPositionLogits {
+             // LM head on the LAST ROW ONLY ⇒ [B, vocab].
+             return base.lmHead(normed[0..., -1, 0...])
+         }
++        // No vocabulary projection at all — a [B, 1] handle whose graph
++        // still transitively covers the whole chunk (and its KV writes).
++        return normed[0..., -1, 0 ..< 1]
+     }
+ 
+     /// `TinyTestModel.forwardV2(hidden:caches:)` minus the LM head.
+@@ -172,6 +170,17 @@ class CBv2PrefillNarrowingModel: CBv2PrefillFallbackModel, CBv2PrefillSteppableM
+     }
+ }
+ 
++final class CBv2SuffixFrontierRecordingModel: CBv2PrefillNarrowingModel,
++    CBv2FullDepthSuffixPrefillProviding
++{
++    let cbv2FullDepthSuffixTokenCount: Int
++
++    init(_ base: TinyTestModel, tokenCount: Int) {
++        self.cbv2FullDepthSuffixTokenCount = tokenCount
++        super.init(base)
++    }
++}
++
+ // MARK: - Synchronous prefill/decode driver (harness caches, greedy)
+ 
+ /// Drives `EngineLoopV2.prefillOutput` chunk-by-chunk over the harness layer
+@@ -450,6 +459,37 @@ final class CBv2PrefillOutputTests: XCTestCase {
+             "exactly one frontier chunk")
+     }
+ 
++    func testEngineMarksSuffixWhenItCrossesAnIntermediateChunkBoundary() async throws {
++        let base = TinyTestModel.make(seed: hiddenSeed)
++        let model = CBv2SuffixFrontierRecordingModel(base, tokenCount: 10)
++        // Prompt 22 / chunk 8 => [0,8), [8,16), [16,22). The final ten
++        // rows start at 12, so four belong to the second (intermediate)
++        // chunk and six belong to the terminal chunk.
++        let prompt = makePromptTokens(length: 22, seed: 701)
++        let engine = makeEngine(model: model, base: base, prefillChunkSize: 8)
++
++        let collected = await cbv2SchedCollect(
++            try engine.submit(
++                CBv2Request(
++                    id: CBv2RequestID(1), promptTokens: prompt,
++                    sampling: .init(temperature: 0), maxTokens: 4)))
++        await engine.shutdown()
++        XCTAssertEqual(collected.finishReason, .length)
++
++        let prefills = model.log.compactMap { entry -> CBv2PrefillCall? in
++            if case .prefill(let call) = entry { return call }
++            return nil
++        }
++        XCTAssertEqual(prefills.map(\.tokenShape), [[1, 8], [1, 8], [1, 6]])
++        XCTAssertEqual(
++            prefills.map(\.requirement),
++            [
++                .evaluationOnly,
++                .evaluationOnlyWithFullDepthSuffix(tokenCount: 4),
++                .lastPositionLogitsWithFullDepthSuffix(tokenCount: 6),
++            ])
++    }
++
+     // MARK: 3. Token parity: narrowed vs full-logits fallback
+ 
+     func testNarrowedPathIsTokenIdenticalToFallback() throws {
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
+index 4b3d17d..b6c8933 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
+@@ -299,6 +299,8 @@ struct Qwen35ArtifactOnlyPhaseTests {
+             model: model, config: config, phase: .prefillIntermediate)
+         let frontier = try run(
+             model: model, config: config, phase: .prefillFrontier)
++        let full = try run(
++            model: model, config: config, phase: .decode)
+         #expect(
+             intermediate.roots.count
+                 == 2 * config.cbv2RecurrentStateSpec().layers.count)
+@@ -309,5 +311,8 @@ struct Qwen35ArtifactOnlyPhaseTests {
+         #expect(frontier.recurrent.count == 6)
+         #expect(intermediate.cacheSnapshots.map(\.offset) == [3, 3])
+         #expect(frontier.cacheSnapshots.map(\.offset) == [3, 3])
++        #expect(
++            TinyArtifactQwen.close(frontier.hidden, full.hidden),
++            "the default 64-row frontier must run this entire 3-row chunk fully")
+     }
+ }
+diff --git a/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift b/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
+index 7635a64..451d843 100644
+--- a/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
++++ b/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
+@@ -29,6 +29,9 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+         #expect(policy.isEnabled)
+         #expect(policy.fullLayers == Set([0, 1, 2, 3]))
+         #expect(policy.skippedLayers.count == 36)
++        #expect(
++            policy.frontierTokenCount
++                == Qwen35CBv2PrefillLayerPolicy.defaultFrontierTokenCount)
+         #expect(policy.mode(layerIndex: 3, phase: .prefillIntermediate) == .full)
+         #expect(policy.mode(layerIndex: 4, phase: .prefillIntermediate) == .artifactOnly)
+         #expect(
+@@ -36,7 +39,8 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+                 == .artifactHistoryWithFullFrontier)
+         #expect(
+             policy.descriptor
+-                .hasPrefix("frontier_state_river=1;full=0,1,2,3;artifact="))
++                .hasPrefix(
++                    "frontier_state_river=1;frontier_tokens=64;full=0,1,2,3;artifact="))
+     }
+ 
+     @Test func explicitFullLayerRangesAreStrictlyParsed() {
+@@ -69,6 +73,30 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+                 == .artifactHistoryWithFullFrontier)
+     }
+ 
++    @Test func explicitFrontierCountIsStrictlyParsed() {
++        let valid = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
++            [
++                Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
++                Qwen35CBv2PrefillLayerPolicy.fullLayersEnvironmentKey: "0-3",
++                Qwen35CBv2PrefillLayerPolicy.frontierTokensEnvironmentKey: " 7 ",
++            ],
++            layerCount: 8)
++        #expect(valid.isEnabled)
++        #expect(valid.frontierTokenCount == 7)
++        #expect(valid.descriptor.contains("frontier_tokens=7"))
++
++        for value in ["", "0", "-1", "seven", "2049"] {
++            let invalid = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
++                [
++                    Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
++                    Qwen35CBv2PrefillLayerPolicy.fullLayersEnvironmentKey: "0-3",
++                    Qwen35CBv2PrefillLayerPolicy.frontierTokensEnvironmentKey: value,
++                ],
++                layerCount: 8)
++            #expect(invalid == .disabled)
++        }
++    }
++
+     @Test func malformedSelectionFailsClosedAsOnePolicy() {
+         let invalidSelections = [
+             "", ",", "0,", ",0", "3-", "-3", "5-3", "0--3", "eight", "8",
+diff --git a/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
+index 7498bd7..1457c78 100644
+--- a/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
++++ b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
+@@ -7,11 +7,13 @@ import Testing
+ 
+ @Suite("Qwen frontier state river layer artifacts")
+ struct Qwen35FrontierStateRiverLayerTests {
+-    @Test func attentionCommitsHistoryAndFrontierKVExactlyOnce() throws {
++    @Test func attentionCommitsHistoryAndFullSuffixKVExactlyOnce() throws {
+         let config = try TinyArtifactQwen.configuration(hiddenLayers: 4)
+         let kind = try #require(config.cbv2LayerKinds.first)
+         let batchSize = 2
+         let length = 5
++        let frontierTokenCount = 3
++        let historyCount = length - frontierTokenCount
+         MLXRandom.seed(0xF1_0A)
+         let layer = Qwen35DecoderLayer(config, layerIdx: 3)
+         let input = MLXRandom.normal([batchSize, length, config.hiddenSize])
+@@ -30,6 +32,7 @@ struct Qwen35FrontierStateRiverLayerTests {
+             attentionCache: actual.0,
+             recurrentState: [],
+             positionIds: positions,
++            frontierTokenCount: frontierTokenCount,
+             usePrefillMoERoutingPolicy: false))
+         let full = layer.cbv2Forward(
+             input,
+@@ -41,14 +44,14 @@ struct Qwen35FrontierStateRiverLayerTests {
+ 
+         #expect(
+             TinyArtifactQwen.identical(
+-                river[0..., 0 ..< (length - 1), 0...],
+-                input[0..., 0 ..< (length - 1), 0...]),
++                river[0..., 0 ..< historyCount, 0...],
++                input[0..., 0 ..< historyCount, 0...]),
+             "historical hidden rows must pass through")
+         #expect(
+             TinyArtifactQwen.close(
+-                river[0..., (length - 1) ..< length, 0...],
+-                full[0..., (length - 1) ..< length, 0...]),
+-            "the frontier must execute the complete skipped attention layer")
++                river[0..., historyCount ..< length, 0...],
++                full[0..., historyCount ..< length, 0...]),
++            "every suffix row must execute the complete skipped attention layer")
+ 
+         for (actualRow, referenceRow) in zip(actual.1, reference.1) {
+             let actualSnapshot = actualRow.snapshot()
+@@ -63,18 +66,20 @@ struct Qwen35FrontierStateRiverLayerTests {
+             #expect(TinyArtifactQwen.close(
+                 actualSnapshot.values, referenceSnapshot.values))
+         }
+-        #expect(actual.0.offset == length, "the final token must not be committed twice")
++        #expect(actual.0.offset == length, "no suffix token may be committed twice")
+         #expect(
+             TinyArtifactQwen.identical(
+                 actual.0.positionOffsets,
+                 MLXArray(Array(repeating: Int32(length), count: batchSize))))
+     }
+ 
+-    @Test func gdnStagesOnlyThePostFrontierState() throws {
++    @Test func gdnStagesOnlyThePostSuffixStateInChronologicalOrder() throws {
+         let config = try TinyArtifactQwen.configuration(hiddenLayers: 4)
+         let spec = TinyArtifactQwen.recurrentSpec(config, layers: [0])
+         let batchSize = 2
+         let length = 5
++        let frontierTokenCount = 3
++        let historyCount = length - frontierTokenCount
+         MLXRandom.seed(0xF1_6D)
+         let layer = Qwen35DecoderLayer(config, layerIdx: 0)
+         let input = MLXRandom.normal([batchSize, length, config.hiddenSize])
+@@ -99,6 +104,7 @@ struct Qwen35FrontierStateRiverLayerTests {
+             attentionCache: nil,
+             recurrentState: actualTransactions,
+             positionIds: nil,
++            frontierTokenCount: frontierTokenCount,
+             usePrefillMoERoutingPolicy: false))
+         layer.linearAttn!.cbv2UpdateStateOnly(
+             layer.inputLayerNorm(input),
+@@ -120,14 +126,14 @@ struct Qwen35FrontierStateRiverLayerTests {
+ 
+         #expect(
+             TinyArtifactQwen.identical(
+-                river[0..., 0 ..< (length - 1), 0...],
+-                input[0..., 0 ..< (length - 1), 0...]),
++                river[0..., 0 ..< historyCount, 0...],
++                input[0..., 0 ..< historyCount, 0...]),
+             "historical hidden rows must pass through")
+         #expect(
+             TinyArtifactQwen.close(
+-                river[0..., (length - 1) ..< length, 0...],
+-                full[0..., (length - 1) ..< length, 0...]),
+-            "the frontier must execute the complete skipped GDN layer")
++                river[0..., historyCount ..< length, 0...],
++                full[0..., historyCount ..< length, 0...]),
++            "every suffix row must execute the complete skipped GDN layer")
+ 
+         for row in 0 ..< batchSize {
+             let actual = try #require(actualStates[row].state(modelLayerIndex: 0))
+diff --git a/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift b/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift
+index 3d61fca..cdc4ebe 100644
+--- a/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift
++++ b/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift
+@@ -50,7 +50,8 @@ struct Qwen35FrontierStateRiverTransactionTests {
+         model: Qwen35TextModelInner,
+         fixture: BatchFixture,
+         tokens: MLXArray,
+-        phase: Qwen35CBv2ForwardPhase
++        phase: Qwen35CBv2ForwardPhase,
++        fullDepthSuffixTokenCount: Int? = nil
+     ) throws -> [CBv2RecurrentStateEvaluation] {
+         let transactions = try fixture.recurrent.map { try $0.bind() }
+         let caches: [any CBv2AttendingLayerCache] = fixture.caches.map { $0 }
+@@ -58,7 +59,8 @@ struct Qwen35FrontierStateRiverTransactionTests {
+             tokens,
+             caches: caches,
+             recurrentState: transactions,
+-            phase: phase)
++            phase: phase,
++            fullDepthSuffixTokenCount: fullDepthSuffixTokenCount)
+         let roots = try transactions.flatMap { try $0.evaluate() }
+         eval([hidden] + roots + fixture.caches.flatMap { $0.innerState() })
+         #expect(!roots.isEmpty)
+@@ -116,16 +118,23 @@ struct Qwen35FrontierStateRiverTransactionTests {
+     }
+ 
+     private func assertFrontierTransactionAndCancellation(
+-        batchSize: Int,
+-        frontierLength: Int
++        batchSize: Int
+     ) throws {
+         let config = try TinyArtifactQwen.configuration()
+         let environment = [
+             Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
+             Qwen35CBv2PrefillLayerPolicy.fullLayersEnvironmentKey: "0-3",
++            Qwen35CBv2PrefillLayerPolicy.frontierTokensEnvironmentKey: "5",
+         ]
+-        let intermediateLength = 3
+-        let totalLength = intermediateLength + frontierLength
++        // Final suffix [3, 8) crosses the second chunk: [0, 2) is wholly
++        // artifact-only, [2, 6) contributes one history row plus three full
++        // suffix rows, and [6, 8) contributes the final two full suffix rows.
++        let historicalLength = 2
++        let boundaryLength = 4
++        let boundarySuffixLength = 3
++        let terminalLength = 2
++        let boundaryOffset = historicalLength + boundaryLength
++        let totalLength = boundaryOffset + terminalLength
+         MLXRandom.seed(UInt64(0xB0_00 + batchSize))
+         let model = Qwen35TextModelInner(config, environment: environment)
+         let fixture = try makeBatchFixture(
+@@ -139,14 +148,34 @@ struct Qwen35FrontierStateRiverTransactionTests {
+             fixture: fixture,
+             tokens: promptChunk(
+                 batchSize: batchSize,
+-                length: intermediateLength,
++                length: historicalLength,
+                 seed: 5),
+             phase: .prefillIntermediate)
+         for transaction in intermediate { try transaction.commit() }
+         for cacheRows in fixture.rows {
+             #expect(
+                 cacheRows.map(\.absoluteOffset)
+-                    == Array(repeating: intermediateLength, count: batchSize))
++                    == Array(repeating: historicalLength, count: batchSize))
++        }
++
++        let boundary = try execute(
++            model: model,
++            fixture: fixture,
++            tokens: promptChunk(
++                batchSize: batchSize,
++                length: boundaryLength,
++                seed: 17),
++            phase: .prefillFrontier,
++            fullDepthSuffixTokenCount: boundarySuffixLength)
++        for transaction in boundary { try transaction.commit() }
++        for (cache, cacheRows) in zip(fixture.caches, fixture.rows) {
++            #expect(
++                cacheRows.map(\.absoluteOffset)
++                    == Array(repeating: boundaryOffset, count: batchSize))
++            #expect(cache.offset == boundaryOffset)
++            #expect(TinyArtifactQwen.identical(
++                cache.positionOffsets,
++                MLXArray(Array(repeating: Int32(boundaryOffset), count: batchSize))))
+         }
+ 
+         let cancelledIndex = batchSize / 2
+@@ -160,12 +189,13 @@ struct Qwen35FrontierStateRiverTransactionTests {
+             fixture: fixture,
+             tokens: promptChunk(
+                 batchSize: batchSize,
+-                length: frontierLength,
++                length: terminalLength,
+                 seed: 29),
+-            phase: .prefillFrontier)
++            phase: .prefillFrontier,
++            fullDepthSuffixTokenCount: terminalLength)
+ 
+-        // Every layer consumes exactly the intermediate and terminal chunks.
+-        // A duplicated full frontier update would report totalLength + 1.
++        // Every layer consumes all three chunks exactly once despite the
++        // artifact/full split inside the boundary chunk.
+         for (cache, cacheRows) in zip(fixture.caches, fixture.rows) {
+             #expect(
+                 cacheRows.map(\.absoluteOffset)
+@@ -241,21 +271,14 @@ struct Qwen35FrontierStateRiverTransactionTests {
+     }
+ 
+     @Test func frontierRiverB1TransactionOffsetsAndCancellation() throws {
+-        // A one-row terminal chunk exercises the no-history branch.
+-        try assertFrontierTransactionAndCancellation(
+-            batchSize: 1,
+-            frontierLength: 1)
++        try assertFrontierTransactionAndCancellation(batchSize: 1)
+     }
+ 
+     @Test func frontierRiverB2TransactionOffsetsAndCancellation() throws {
+-        try assertFrontierTransactionAndCancellation(
+-            batchSize: 2,
+-            frontierLength: 4)
++        try assertFrontierTransactionAndCancellation(batchSize: 2)
+     }
+ 
+     @Test func frontierRiverB4TransactionOffsetsAndCancellation() throws {
+-        try assertFrontierTransactionAndCancellation(
+-            batchSize: 4,
+-            frontierLength: 4)
++        try assertFrontierTransactionAndCancellation(batchSize: 4)
+     }
+ }

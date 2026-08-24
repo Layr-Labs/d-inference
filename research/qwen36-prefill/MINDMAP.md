@@ -139,5 +139,9 @@ barriers cannot move the FP32 MMA ceiling (`notes/039`).
 E10 BM64×BN64 preserved numerics and gained 3–8% only at large M, while
 regressing T1024 ~42% (`notes/040`). Retiling cannot supply 2.5×.
 
+Native uint4 MPP executes on M3, but affine factoring changes the
+per-weight BF16 rounding boundary and failed 512/512 adversarial outputs
+(note 041). TensorOps Candidate B is closed before timing.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

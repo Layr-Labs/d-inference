@@ -57,6 +57,7 @@ e10-bm64bn64-gate-t4096	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx
 e10-bm64bn64-gate-t8192	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	8192	1	qmm_ms	22.6000	ms	1.075x	no	BM32=24.2983
 e10-bm64bn64-down-t8192	2026-08-24T07:04:30Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	8192	1	qmm_ms	11.5308	ms	1.079x	no	BM32=12.4437
 e10-bm64bn64-correctness	2026-08-24T07:04:11Z	m3-max-128gb-2	bm64bn64-patches	mlx-swift-tests	2	yes	E10-BM64BN64	bm64-bn64-bk32	8192	1	correctness	1	pass	pass	meta	10 tests pass; hits25 fallbacks0
+e11-native-uint4-correctness	2026-08-24T07:04:57Z	m3-max-128gb-2	a05f1d5f	standalone-metal-probe	2	yes	E11-native-uint4	factored-affine-group64	64	1	correctness	0	pass	fail	no	512/512 adversarial mismatches; max_abs=1.65234375; timing skipped
 
 
 

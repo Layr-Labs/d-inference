@@ -1,7 +1,11 @@
-# 041 — E9 native uint4 MPP Candidate B
+# 041 — E11 native uint4 MPP Candidate B
 
 Status: **rejected by the preregistered adversarial correctness gate; no
 timing run**
+
+The standalone probe retained its original internal `e9-native-uint4`
+name; the shared experiment ledger records this result as E11 because
+E9/E10 were assigned to BK64 and BM64×BN64.
 
 ## Question
 

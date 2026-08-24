@@ -45,22 +45,13 @@ public struct SecurityCommandRunner: @unchecked Sendable {
 
         try process.run()
 
-        // Drain stdout and stderr concurrently BEFORE waiting for exit. macOS
-        // pipe buffers hold only ~512 bytes; if the child fills either pipe it
-        // blocks in write() while the parent blocks in waitUntilExit() — a
-        // deadlock. Reading both on separate queues also prevents one pipe
-        // filling while we block draining the other.
-        let outHandle = stdoutPipe.fileHandleForReading
-        let errHandle = stderrPipe.fileHandleForReading
-        var stdoutData = Data()
-        var stderrData = Data()
-        let readGroup = DispatchGroup()
-        let readQueue = DispatchQueue(label: "security.command.read", attributes: .concurrent)
-        readGroup.enter()
-        readQueue.async { stdoutData = outHandle.readDataToEndOfFile(); readGroup.leave() }
-        readGroup.enter()
-        readQueue.async { stderrData = errHandle.readDataToEndOfFile(); readGroup.leave() }
-        readGroup.wait()
+        // Drain the pipes BEFORE waiting for exit. macOS pipe buffers hold only
+        // ~512 bytes; a child that fills stdout blocks in write() while the
+        // parent blocks in waitUntilExit() — a deadlock. readDataToEndOfFile()
+        // reads until the child closes the stream, so draining stdout first
+        // also unblocks the child and lets it finish and close stderr.
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         return SecurityCommandResult(

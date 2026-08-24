@@ -1,0 +1,158 @@
+diff --git a/Tests/MLXTests/QwenExpertDenseReferencePerfTests.swift b/Tests/MLXTests/QwenExpertDenseReferencePerfTests.swift
+new file mode 100644
+--- /dev/null
++++ b/Tests/MLXTests/QwenExpertDenseReferencePerfTests.swift
+@@ -0,0 +1,154 @@
++// Copyright © 2026 Eigen Labs.
++//
++// Upper-bound experiment for Qwen 3.5/3.6 routed prefill. It compares the
++// shipping sorted W4 gather-QMM with a BF16 gather-MM over the exact same
++// dequantized weights. The BF16 path excludes its one-time dequantization;
++// it answers whether a memory-resident prefill cache has enough arithmetic
++// headroom to justify a [REDACTED] design.
++//
++//   MLX_EXPERT_DENSE_REFERENCE_PERF=1 \
++//   MLX_GATHER_QMM_EXPERT_SLICES=trust \
++//     swift test --filter QwenExpertDenseReferencePerfTests
++
++import Foundation
++import MLX
++import XCTest
++
++#if canImport(Metal)
++
++final class QwenExpertDenseReferencePerfTests: XCTestCase {
++    override class func setUp() {
++        setDefaultDevice()
++    }
++
++    func testDenseBF16UpperBoundAtServingAssignmentCount() throws {
++        try XCTSkipUnless(
++            ProcessInfo.processInfo.environment["MLX_EXPERT_DENSE_REFERENCE_PERF"] == "1",
++            "dense-reference perf run is explicit opt-in")
++
++        let expertCount = 256
++        let groupSize = 64
++        let bits = 4
++        let assignments = 16_384
++        let iterations = 15
++        let warmup = 3
++        let cases: [(name: String, k: Int, n: Int, dtype: DType)] = [
++            ("gate_up_fused T2048 bf16", 2048, 1024, .bfloat16),
++            ("down T2048 bf16", 512, 2048, .bfloat16),
++            // Precision experiment only. Qwen's shipping activations are
++            // BF16, so FP16 cannot be kept without full-model checksum parity.
++            ("gate_up_fused T2048 fp16", 2048, 1024, .float16),
++            ("down T2048 fp16", 512, 2048, .float16),
++        ]
++
++        let expertIndices: [Int32] = (0 ..< expertCount).flatMap {
++            Array(repeating: Int32($0), count: assignments / expertCount)
++        }
++        let rhsIndices = MLXArray(expertIndices).asType(.uint32)
++
++        for benchCase in cases {
++            let originalWeights = MLXRandom.normal(
++                [expertCount, benchCase.n, benchCase.k]
++            ).asType(benchCase.dtype)
++            let (quantizedWeights, scales, biases) = quantized(
++                originalWeights, groupSize: groupSize, bits: bits, mode: .affine)
++            let denseWeights = dequantized(
++                quantizedWeights,
++                scales: scales,
++                biases: biases,
++                groupSize: groupSize,
++                bits: bits,
++                mode: .affine,
++                dtype: benchCase.dtype
++            ).swappedAxes(-1, -2)
++            let x = MLXRandom.normal(
++                [assignments, 1, benchCase.k]
++            ).asType(benchCase.dtype)
++            if let biases {
++                eval(quantizedWeights, scales, biases, denseWeights, rhsIndices, x)
++            } else {
++                eval(quantizedWeights, scales, denseWeights, rhsIndices, x)
++            }
++
++            func quantizedRun() -> MLXArray {
++                gatherQuantizedMM(
++                    x,
++                    quantizedWeights,
++                    scales: scales,
++                    biases: biases,
++                    rhsIndices: rhsIndices,
++                    transpose: true,
++                    groupSize: groupSize,
++                    bits: bits,
++                    mode: .affine,
++                    sortedIndices: true
++                )
++            }
++
++            func denseRun() -> MLXArray {
++                gatherMM(
++                    x,
++                    denseWeights,
++                    rhsIndices: rhsIndices,
++                    sortedIndices: true
++                )
++            }
++
++            // Arithmetic roof only: one large GEMM with the same M/K/N and
++            // FLOP count, but one shared expert matrix. This is not a legal
++            // MoE implementation; it isolates the cost of grouped/expert
++            // geometry from the GPU's dense BF16 capability.
++            func monolithicRun() -> MLXArray {
++                x.reshaped([assignments, benchCase.k]).matmul(denseWeights[0])
++            }
++
++            let quantizedOutput = quantizedRun()
++            let denseOutput = denseRun()
++            eval(quantizedOutput, denseOutput)
++            let referenceScale = denseOutput.abs().max().item(Float.self)
++            let tolerance = max(1e-2, 4 * referenceScale / 256)
++            XCTAssertTrue(
++                quantizedOutput.allClose(
++                    denseOutput, rtol: 2e-2, atol: Double(tolerance)
++                ).item(Bool.self),
++                "\(benchCase.name) W4 and dequantized BF16 outputs differ")
++
++            let routes: [(name: String, run: () -> MLXArray)] = [
++                ("w4", quantizedRun),
++                ("bf16", denseRun),
++                ("bf16-monolithic-roof", monolithicRun),
++            ]
++            for route in routes {
++                let run = route.run
++                for _ in 0 ..< warmup { eval(run()) }
++                var samples: [Double] = []
++                samples.reserveCapacity(iterations)
++                for _ in 0 ..< iterations {
++                    let start = DispatchTime.now().uptimeNanoseconds
++                    eval(run())
++                    let end = DispatchTime.now().uptimeNanoseconds
++                    samples.append(Double(end - start) / 1e6)
++                }
++                samples.sort()
++                let median = samples[samples.count / 2]
++                let p10 = samples[samples.count / 10]
++                let p90 = samples[(samples.count * 9) / 10]
++                let operations =
++                    2.0 * Double(assignments)
++                    * Double(benchCase.n) * Double(benchCase.k)
++                let tflops = operations / (median / 1e3) / 1e12
++                var line = "[qwen-expert-dense-reference] \(benchCase.name) "
++                line += "route=\(route.name) "
++                line += "median=" + String(format: "%.4f", median) + "ms "
++                line += "p10=" + String(format: "%.4f", p10) + " "
++                line += "p90=" + String(format: "%.4f", p90) + " "
++                line += "tflops=" + String(format: "%.2f", tflops) + "\n"
++                FileHandle.standardError.write(Data(line.utf8))
++            }
++            Memory.clearCache()
++        }
++    }
++}
++
++#endif

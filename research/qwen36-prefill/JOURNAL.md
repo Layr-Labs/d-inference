@@ -253,3 +253,15 @@ Below the preregistered 1.05× continuation bar, so no full-model run.
 Patches reversed and baseline source/metallib/host restored. See
 `notes/035`.
 
+## 2026-08-24T06:32Z — E8 strict MPP Candidate A veto
+
+E6 used MLX NAX's `relaxed_precision=true`. E8 changed the portable MPP
+descriptor to strict FP32 destination/accumulation (`false`) while
+keeping incumbent BF16 operands. It produced the **same 11 failures and
+same errors** as E6.
+
+The M3 optimized-shader mismatch is reduction/tile behavior, not relaxed
+precision. No timing. Patch reversed and baseline restored. Candidate A
+from hostile review 032 is closed through MLX's available MPP primitive.
+See `notes/036`.
+

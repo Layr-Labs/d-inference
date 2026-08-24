@@ -122,5 +122,9 @@ E7 ported upstream FP32 affine dequantization. Correctness passed, but
 the combined routed gain was only 1.030× (`notes/035`), below its
 full-model continuation bar.
 
+E8 set portable MPP to strict FP32 accumulation; the M3 fallback
+produced the same 11 errors as relaxed E6 (`notes/036`). Existing MPP
+cannot preserve the incumbent reduction contract.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

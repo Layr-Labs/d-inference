@@ -61,7 +61,7 @@ func registerEarningsCapacity(
 			TemplateRenderOK: &templateOK,
 		}},
 		Backend:                 registry.BackendMLXSwift,
-		PublicKey:               id + "-key",
+		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivateOnly:             privateOnly,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{

@@ -16,7 +16,6 @@ func registerCapacityBenchmarkProvider(
 ) {
 	t.Helper()
 	msg := testRegisterMessage()
-	msg.PublicKey = id + "-public-key"
 	msg.Hardware.MemoryBandwidthGBs = bandwidth
 	msg.Models = []protocol.ModelInfo{{
 		ID:               model,

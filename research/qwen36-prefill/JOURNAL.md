@@ -715,4 +715,4 @@ Resident entries plus every concurrent in-flight candidate share the same
 hard cache ceiling; reservation failure occurs before allocation, and
 discard/error paths release the claim. Six cache tests, eight engine tests,
 ten provider benchmark tests, and the release build pass. Ordered patch 075
-advances the nested tree to `c267de0434835bda4a40c1b8c4ddedffbebf1664`.
+advances the nested tree to `d542c155f800e4574d7245b6f08b55a2b0ae8573`.

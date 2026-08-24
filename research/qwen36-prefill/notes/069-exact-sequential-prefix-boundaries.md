@@ -156,10 +156,10 @@ in order:
 4. `073-exact-cache-canonical-prefill-profile.patch`
    (`sha256:f70bda02bb92b18a8c66be6a3f147e90995da81eb161cc54df72ae2586536c83`).
 5. `075-exact-cache-donation-reservations.patch`
-   (`sha256:175173488a50f652c61b059b16271c53658b7e69c49c5066ee85a316cbf4baaa`).
+   (`sha256:4bfd65b8c99cf69b71718789c330cd11e4bd20e6862b673cbcd137b264f69cdc`).
 
 Replaying that sequence and staging the result yields tree
-`c267de0434835bda4a40c1b8c4ddedffbebf1664`.
+`d542c155f800e4574d7245b6f08b55a2b0ae8573`.
 
 The root provider and benchmark changes are already ordinary tracked files on
 the research branch. Do **not** reapply
@@ -188,7 +188,7 @@ do
 done
 git -C "$tmp" add -A
 test "$(git -C "$tmp" write-tree)" = \
-  c267de0434835bda4a40c1b8c4ddedffbebf1664
+  d542c155f800e4574d7245b6f08b55a2b0ae8573
 ```
 
 Patch 061 is intentionally emitted with zero context so the repository's

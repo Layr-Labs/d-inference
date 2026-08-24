@@ -181,14 +181,19 @@ stalled control plane from overbooking a host whose guest may still be running.
 The pinned runtime treats a wedged or ambiguous run-lock probe as `unknown`,
 never `stopped`. Each active-session marker durably binds the exact
 `config.json` and `.run-owner.lock` device/inode pair to the owning process's
-kernel-reported birth time before virtualization starts. Post-restart status
-and stop discover the POSIX lock owner through `F_GETLK`, then require the
-marker, both path identities, the owner PID, and its birth time to agree before
-signaling. Legacy markers, replaced inodes, reused PIDs, missing owner locks,
-and ambiguous probes all fail closed without deleting the marker or releasing
-capacity. Stop completes only after acquiring the original run locks; it never
-uses `lsof` opener lists or replaces `config.json` to manufacture an unlocked
-path.
+kernel-reported birth time before virtualization starts. Status keeps those
+descriptors and any acquired proof locks through marker classification, never
+deletes lifecycle authority, and reports `running` only after the framework
+start succeeds; `starting` and `stopping` remain fail-closed states. A
+same-process stop uses the in-memory virtualization service. After a controller
+restart, `F_GETLK` may prove that another process owns the lock, but that PID is
+never treated as a control capability: stop returns inconclusive and capacity
+stays reserved until an identity-bound owner channel exists or the owner exits.
+Legacy markers, replaced inodes, reused PIDs, missing owner locks, and ambiguous
+probes likewise retain capacity. Terminal cleanup clears the marker only while
+holding the original run locks; if emergency framework stop fails, the
+single-VM owner process exits instead of unwinding those locks around a live
+guest. The proof never uses `lsof` opener lists or replaces `config.json`.
 
 ## Pinned Lume substrate
 

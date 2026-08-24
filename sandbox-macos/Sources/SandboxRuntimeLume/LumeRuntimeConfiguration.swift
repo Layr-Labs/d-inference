@@ -27,7 +27,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedRunLockIdentityPatchPath =
         "ThirdParty/lume-patches/0003-bind-run-lock-identity.patch"
     public static let pinnedRunLockIdentityPatchSHA256 =
-        "0c0a57fb61990c93fdb541183c4555d25c84e2fb218f32149b3891e41e437a17"
+        "189c2b7f3e0adde5966e15e7403ed7657cedfff60208102590e0eac6b524f3b7"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,

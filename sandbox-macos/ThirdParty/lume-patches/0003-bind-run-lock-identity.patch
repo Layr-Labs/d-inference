@@ -1,5 +1,5 @@
 diff --git a/libs/lume/Package.swift b/libs/lume/Package.swift
-index abfb86c673373dcb1001f864a805026810c841eb..26d4ee6c6ccfe94b6dbf6b8c1d071a404a6fdd34 100644
+index abfb86c6..26d4ee6c 100644
 --- a/libs/lume/Package.swift
 +++ b/libs/lume/Package.swift
 @@ -53 +53,4 @@ let package = Package(
@@ -8,15 +8,25 @@ index abfb86c673373dcb1001f864a805026810c841eb..26d4ee6c6ccfe94b6dbf6b8c1d071a40
 +            resources: [
 +                .copy("RunLockTestHelper.c")
 +            ])
+diff --git a/libs/lume/src/Commands/Attach.swift b/libs/lume/src/Commands/Attach.swift
+index 49e96e7d..821d8af0 100644
+--- a/libs/lume/src/Commands/Attach.swift
++++ b/libs/lume/src/Commands/Attach.swift
+@@ -60 +60 @@ struct Attach: AsyncParsableCommand {
+-      try NativeDisplayAttachService.requestNativeDisplay(vmDirectory: vmDirectory)
++      try await NativeDisplayAttachService.requestNativeDisplay(vmDirectory: vmDirectory)
+@@ -67 +67 @@ struct Attach: AsyncParsableCommand {
+-          try NativeDisplayAttachService.requestNativeDisplay(vmDirectory: vmDirectory)
++          try await NativeDisplayAttachService.requestNativeDisplay(vmDirectory: vmDirectory)
 diff --git a/libs/lume/src/Errors/Errors.swift b/libs/lume/src/Errors/Errors.swift
-index 007f267e9423e8caec6ac902a56f3dce8edc913d..107e37e01520ba05536dd74dbf305d2cc5c9dbdb 100644
+index 007f267e..f7ff94bc 100644
 --- a/libs/lume/src/Errors/Errors.swift
 +++ b/libs/lume/src/Errors/Errors.swift
 @@ -204 +204 @@ enum VMError: Error, LocalizedError {
 -                "Virtual machine liveness is inconclusive: \(name). Refusing to mutate or release it."
-+                "Virtual machine liveness is inconclusive: \(name). Refusing to mutate or signal it."
++                "Virtual machine liveness is inconclusive: \(name). Refusing to mutate or control it."
 diff --git a/libs/lume/src/FileSystem/VMDirectory.swift b/libs/lume/src/FileSystem/VMDirectory.swift
-index 2a3e8fe7674025542ddccd3fd2d82a2f1391f2a4..38ce3c89445535fbafe699de07be8a5cc6e0fcfc 100644
+index 2a3e8fe7..c9d89891 100644
 --- a/libs/lume/src/FileSystem/VMDirectory.swift
 +++ b/libs/lume/src/FileSystem/VMDirectory.swift
 @@ -19,0 +20 @@ struct VMDirectory: Sendable {
@@ -25,7 +35,7 @@ index 2a3e8fe7674025542ddccd3fd2d82a2f1391f2a4..38ce3c89445535fbafe699de07be8a5c
 +    let runOwnerLockPath: Path
 @@ -52,0 +55 @@ struct VMDirectory: Sendable {
 +        self.runOwnerLockPath = dir.file(FileNames.runOwnerLock)
-@@ -256,6 +259,3 @@ extension VMDirectory {
+@@ -256,6 +259,9 @@ extension VMDirectory {
 -/// Legacy markers carry only `url` and `sharedDirectories`; both still decode
 -/// unchanged, and a VNC-backed session still encodes exactly those two fields.
 -/// A VNC-disabled session has no URL, so it omits `url` and instead records the
@@ -34,50 +44,79 @@ index 2a3e8fe7674025542ddccd3fd2d82a2f1391f2a4..38ce3c89445535fbafe699de07be8a5c
 -/// report the VM as stopped instead of acting on stale information.
 +/// New markers bind the exact config and owner-lock inodes to the kernel process
 +/// birth identity that acquired them. Legacy markers still decode, but cannot
-+/// establish cross-process liveness or authorize a signal.
-@@ -267,2 +267 @@ struct VNCSession: Codable {
++/// establish cross-process liveness or authorize owner control.
++enum VMRunLifecyclePhase: String, Codable, Equatable, Sendable {
++    case starting
++    case running
++    case stopping
++}
++
+@@ -267,2 +273 @@ struct VNCSession: Codable {
 -    /// PID of the owning `lume run` process. Written only for VNC-disabled
 -    /// sessions, which have no listening port to probe for liveness.
 +    /// Legacy PID-only liveness field retained for decoding old markers.
-@@ -270 +269 @@ struct VNCSession: Codable {
+@@ -270 +275 @@ struct VNCSession: Codable {
 -    /// Unix timestamp of when the session started.
 +    /// Legacy wall-clock timestamp retained for decoding old markers.
-@@ -271,0 +271,2 @@ struct VNCSession: Codable {
+@@ -271,0 +277,4 @@ struct VNCSession: Codable {
 +    /// Mandatory identity proof for markers written by the hardened runtime.
 +    let runIdentity: RunSessionIdentity?
-@@ -281 +282,2 @@ struct VNCSession: Codable {
++    /// Explicit lifecycle phase for fail-closed status reporting.
++    let phase: VMRunLifecyclePhase?
+@@ -281 +290,3 @@ struct VNCSession: Codable {
 -        startedAt: Double? = nil
 +        startedAt: Double? = nil,
-+        runIdentity: RunSessionIdentity? = nil
-@@ -287,0 +290 @@ struct VNCSession: Codable {
++        runIdentity: RunSessionIdentity? = nil,
++        phase: VMRunLifecyclePhase? = nil
+@@ -287,0 +299,2 @@ struct VNCSession: Codable {
 +        self.runIdentity = runIdentity
-@@ -290 +293 @@ struct VNCSession: Codable {
++        self.phase = phase
+@@ -290 +303 @@ struct VNCSession: Codable {
 -    /// Marker for a run started with `--vnc disabled`.
 +    /// Legacy marker shape used by pre-identity VNC-disabled runs.
-@@ -303,0 +307,14 @@ struct VNCSession: Codable {
+@@ -303,0 +317,27 @@ struct VNCSession: Codable {
 +
 +    static func active(
 +        url: String?,
 +        sharedDirectories: [SharedDirectory]? = nil,
 +        vncEnabled: Bool,
-+        runIdentity: RunSessionIdentity
++        runIdentity: RunSessionIdentity,
++        phase: VMRunLifecyclePhase = .running
 +    ) -> VNCSession {
 +        VNCSession(
 +            url: url,
 +            sharedDirectories: sharedDirectories,
 +            vncEnabled: vncEnabled,
-+            runIdentity: runIdentity
++            runIdentity: runIdentity,
++            phase: phase
 +        )
 +    }
-@@ -318,2 +335,4 @@ extension VMDirectory {
++
++    func withPhase(_ phase: VMRunLifecyclePhase) -> VNCSession {
++        VNCSession(
++            url: url,
++            sharedDirectories: sharedDirectories,
++            vncEnabled: vncEnabled,
++            pid: pid,
++            startedAt: startedAt,
++            runIdentity: runIdentity,
++            phase: phase)
++    }
+@@ -318,2 +358,4 @@ extension VMDirectory {
 -            guard FileManager.default.createFile(atPath: sessionsPath.path, contents: data) else {
 -                throw VMDirectoryError.fileCreationFailed(sessionsPath.path)
 +            try data.write(to: sessionsPath.url, options: .atomic)
 +            guard chmod(sessionsPath.path, mode_t(S_IRUSR | S_IWUSR)) == 0 else {
 +                throw VMDirectoryError.fileCreationFailed(
 +                    sessionsPath.path)
+@@ -343,2 +385,3 @@ extension VMDirectory {
+-    func clearSession() {
+-        try? FileManager.default.removeItem(atPath: sessionsPath.path)
++    func clearSession() throws {
++        guard sessionsPath.exists() else { return }
++        try FileManager.default.removeItem(atPath: sessionsPath.path)
 diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
-index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd84893c700 100644
+index d4505bfb..411ccae3 100644
 --- a/libs/lume/src/LumeController.swift
 +++ b/libs/lume/src/LumeController.swift
 @@ -14,2 +14,2 @@ final class SharedVM {
@@ -90,7 +129,7 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 -        runningVMs[name] = vm
 +    func register(_ vm: VM) {
 +        runningVMs[cacheKey(for: vm.vmDirContext.dir)] = vm
-@@ -22,2 +22,10 @@ final class SharedVM {
+@@ -22,2 +22,13 @@ final class SharedVM {
 -    func removeVM(name: String) {
 -        runningVMs.removeValue(forKey: name)
 +    func unregister(_ vm: VM) {
@@ -102,11 +141,14 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 +    }
 +
 +    private func cacheKey(for vmDirectory: VMDirectory) -> String {
-+        vmDirectory.configPath.url.standardizedFileURL.path
-@@ -80 +88 @@ final class LumeController {
++        vmDirectory.configPath.url
++            .standardizedFileURL
++            .resolvingSymlinksInPath()
++            .path
+@@ -80 +91 @@ final class LumeController {
 -        runLockProbe: RunLockProbe = LsofRunLockProbe()
 +        runLockProbe: RunLockProbe = SystemRunLockProbe()
-@@ -159,12 +166,0 @@ final class LumeController {
+@@ -159,12 +169,0 @@ final class LumeController {
 -    /// Parses the VNC port from a VNC URL
 -    /// - Parameter url: VNC URL like "vnc://:password@127.0.0.1:62295"
 -    /// - Returns: The port number if successfully parsed, nil otherwise
@@ -119,14 +161,14 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 -        return UInt16(port)
 -    }
 -
-@@ -210,5 +206 @@ final class LumeController {
+@@ -210,5 +209 @@ final class LumeController {
 -        // Check if VM is running via SharedVM cache (same-process fast path)
 -        let runningVM = SharedVM.shared.getVM(name: vmName)
 -        var observedStatus = runningVM == nil ? "stopped" : "running"
 -
 -        // Get VNC URL and IP address only if running
 +        var observedStatus = "stopped"
-@@ -219,39 +211,48 @@ final class LumeController {
+@@ -219,39 +214,55 @@ final class LumeController {
 -        // If not in cache, check if session file exists (cross-process fallback)
 -        // Session files are created when VM starts and deleted when VM stops.
 -        // Each marker kind carries its own liveness proof, and a marker that
@@ -167,14 +209,16 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 -                          NetworkUtils.isLocalPortInUse(port: port) {
 -                    // Parse VNC port from URL like "vnc://:password@127.0.0.1:62295"
 +        if let runningVM = SharedVM.shared.getVM(for: vmDir) {
-+            if let identity = runningVM.runIdentityForLiveness,
++            if runningVM.runPhaseForLiveness == .running,
++               let identity = runningVM.runIdentityForLiveness,
 +               identity.isSupported,
 +               identity.process == RunLockProcessIdentity.current(),
 +               identity.matchesPaths(
 +                   configPath: vmDir.configPath.path,
 +                   ownerLockPath: vmDir.runOwnerLockPath.path),
-+               let session = try? vmDir.loadSession(),
-+               session.runIdentity == identity
++               let session = loadRunSession(vmDir),
++               session.runIdentity == identity,
++               session.phase == .running
 +            {
 +                observedStatus = "running"
 +                if session.isVNCEnabled {
@@ -183,16 +227,19 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 +            } else {
 +                observedStatus = "unknown"
 +                Logger.info(
-+                    "Cached VM lifecycle does not match its run identity",
++                    "Cached VM lifecycle is not provably running",
 +                    metadata: ["name": vmName])
 +            }
 +        } else {
-+            let observation = runLockProbe.observeLock(
++            let observationLease = runLockProbe.acquireObservation(
 +                configPath: vmDir.configPath.path,
 +                ownerLockPath: vmDir.runOwnerLockPath.path
 +            )
++            defer { observationLease.close() }
++            let observation = observationLease.observation
++
 +            if vmDir.sessionsPath.exists() {
-+                guard let session = try? vmDir.loadSession(),
++                guard let session = loadRunSession(vmDir),
 +                      let identity = session.runIdentity,
 +                      identity.isSupported
 +                else {
@@ -213,8 +260,10 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 +                switch observation {
 +                case .owned(let files, let process)
 +                    where files.matches(identity.files)
-+                        && process == identity.process:
-@@ -259,16 +260,2 @@ final class LumeController {
++                        && process == identity.process
++                        && session.phase == .running
++                        && observationLease.pathsStillMatch():
+@@ -259,16 +270,2 @@ final class LumeController {
 -                    vncUrl = url
 -                } else {
 -                    switch runLockProbe.observeLock(
@@ -233,31 +282,33 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 -                            metadata: ["name": vmName])
 +                    if session.isVNCEnabled {
 +                        vncUrl = session.url
-@@ -275,0 +263,12 @@ final class LumeController {
+@@ -275,0 +273,11 @@ final class LumeController {
 +                case .unlocked(let files)
-+                    where files.matches(identity.files):
-+                    vmDir.clearSession()
++                    where files.matches(identity.files)
++                        && observationLease.pathsStillMatch():
++                    // Status never mutates lifecycle authority. The lease
++                    // keeps start excluded through this marker classification.
 +                    observedStatus = "stopped"
-+                    Logger.info(
-+                        "Cleaned up a proven-stale VM session marker",
-+                        metadata: ["name": vmName])
 +                case .unlocked, .owned, .inconclusive:
 +                    observedStatus = "unknown"
 +                    Logger.info(
 +                        "VM run identity does not match its live lock state",
 +                        metadata: ["name": vmName])
-@@ -278,3 +277 @@ final class LumeController {
+@@ -278,4 +286,3 @@ final class LumeController {
 -                switch runLockProbe.observeLock(
 -                    ofFileAt: vmDir.configPath.path
 -                ) {
+-                case .unlocked:
 +                switch observation {
-@@ -283 +280 @@ final class LumeController {
++                case .unlocked
++                    where observationLease.pathsStillMatch():
+@@ -283 +290 @@ final class LumeController {
 -                case .heldBy, .inconclusive:
-+                case .owned, .inconclusive:
-@@ -286 +283 @@ final class LumeController {
++                case .unlocked, .owned, .inconclusive:
+@@ -286 +293 @@ final class LumeController {
 -                        "VM run lock is not provably idle and has no session marker",
 +                        "VM lock state has no authoritative session marker",
-@@ -293,8 +289,0 @@ final class LumeController {
+@@ -293,8 +299,0 @@ final class LumeController {
 -            // Try to get VNC URL from session file (if not already loaded)
 -            if vncUrl == nil && !sessionSuppressesVNCUrl {
 -                let session = try? vmDir.loadSession()
@@ -266,26 +317,70 @@ index d4505bfbbcb1e328bcecfe5a690ae3b55740ae4c..908eb236880518bec4d480b237bfefd8
 -                }
 -            }
 -
-@@ -976,2 +965,2 @@ final class LumeController {
+@@ -322,0 +322,16 @@ final class LumeController {
++    private func loadRunSession(
++        _ vmDirectory: VMDirectory
++    ) -> VNCSession? {
++        do {
++            return try vmDirectory.loadSession()
++        } catch {
++            Logger.info(
++                "Could not decode VM session marker",
++                metadata: [
++                    "name": vmDirectory.name,
++                    "error": error.localizedDescription,
++                ])
++            return nil
++        }
++    }
++
+@@ -976,2 +991,2 @@ final class LumeController {
 -            if SharedVM.shared.getVM(name: normalizedName) != nil {
 -                try await stopVM(name: normalizedName)
 +            if SharedVM.shared.getVM(for: vmDir) != nil {
 +                try await stopVM(name: normalizedName, storage: storage)
-@@ -1078 +1067 @@ final class LumeController {
+@@ -1078 +1093 @@ final class LumeController {
 -            if let cachedVM = SharedVM.shared.getVM(name: normalizedName) {
 +            if let cachedVM = SharedVM.shared.getVM(for: vmDir) {
-@@ -1085,2 +1073,0 @@ final class LumeController {
+@@ -1085,2 +1099,0 @@ final class LumeController {
 -            // Remove VM from cache after stopping
 -            SharedVM.shared.removeVM(name: normalizedName)
-@@ -1089,2 +1075,0 @@ final class LumeController {
+@@ -1089,2 +1101,0 @@ final class LumeController {
 -            // Clean up cache even if stop fails
 -            SharedVM.shared.removeVM(name: normalizedName)
-@@ -1242 +1226,0 @@ final class LumeController {
+@@ -1242 +1252,0 @@ final class LumeController {
 -            SharedVM.shared.setVM(name: normalizedName, vm: vm)
-@@ -1257 +1240,0 @@ final class LumeController {
+@@ -1257 +1266,0 @@ final class LumeController {
 -            SharedVM.shared.removeVM(name: normalizedName)
+diff --git a/libs/lume/src/Utils/NetworkUtils.swift b/libs/lume/src/Utils/NetworkUtils.swift
+index eefebf15..45f18ec0 100644
+--- a/libs/lume/src/Utils/NetworkUtils.swift
++++ b/libs/lume/src/Utils/NetworkUtils.swift
+@@ -6,2 +6 @@ enum NetworkUtils {
+-    /// Prevents `lume ls` and other commands from hanging when subprocesses
+-    /// (lsof, nc, ping) get stuck during concurrent VM state transitions.
++    /// Prevents network probes from hanging when their subprocesses get stuck.
+@@ -79,18 +77,0 @@ enum NetworkUtils {
+-
+-    /// Checks if a local port has a process listening on it
+-    /// Uses lsof which is fast for local port checks
+-    /// - Parameter port: The port number to check
+-    /// - Returns: true if a process is listening on the port, false otherwise
+-    static func isLocalPortInUse(port: UInt16) -> Bool {
+-        let process = Process()
+-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+-        process.arguments = ["-i", ":\(port)", "-sTCP:LISTEN"]
+-
+-        let pipe = Pipe()
+-        process.standardOutput = pipe
+-        process.standardError = pipe
+-
+-        // lsof should complete quickly for local port checks;
+-        // 5s timeout guards against hangs during VM state transitions
+-        return runWithTimeout(process, timeout: 5)
+-    }
 diff --git a/libs/lume/src/Utils/RunLockProbe.swift b/libs/lume/src/Utils/RunLockProbe.swift
-index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27d6224003 100644
+index 81d3f87c..1962211f 100644
 --- a/libs/lume/src/Utils/RunLockProbe.swift
 +++ b/libs/lume/src/Utils/RunLockProbe.swift
 @@ -4,8 +4,3 @@ import Foundation
@@ -383,17 +478,17 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +                UInt64(info.pbi_start_tvsec) * 1_000_000
 +                + UInt64(info.pbi_start_tvusec)
 +        )
-@@ -37,0 +73 @@ extension RunLockProbe {
+@@ -37,0 +73,5 @@ extension RunLockProbe {
 +}
-@@ -39,4 +75,10 @@ extension RunLockProbe {
++
++struct RunLockFilesIdentity: Codable, Equatable, Sendable {
++    let config: RunLockFileIdentity
++    let ownerLock: RunLockFileIdentity
+@@ -39,4 +79,6 @@ extension RunLockProbe {
 -    /// The single owning process, matching the "first holder wins" rule that
 -    /// `stop` and `attach` have always used.
 -    func lockOwnerPID(ofFileAt path: String) -> pid_t? {
 -        lockHolderPIDs(ofFileAt: path)?.first
-+struct RunLockFilesIdentity: Codable, Equatable, Sendable {
-+    let config: RunLockFileIdentity
-+    let ownerLock: RunLockFileIdentity
-+
 +    init(
 +        config: RunLockFileIdentity,
 +        ownerLock: RunLockFileIdentity
@@ -422,19 +517,23 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +              let ownerLock = RunLockFileIdentity(
 +                  descriptor: ownerLockDescriptor)
 +        else {
-@@ -58,0 +98,60 @@ extension RunLockProbe {
+@@ -58,0 +98,2 @@ extension RunLockProbe {
 +        self.config = config
 +        self.ownerLock = ownerLock
-+    }
-+}
-+
+@@ -62,4 +103,6 @@ extension RunLockProbe {
+-/// Carries a reference across a `@Sendable` boundary where the compiler cannot
+-/// prove safety but the callee's use is thread-safe.
+-private final class UncheckedBox<Value>: @unchecked Sendable {
+-    let value: Value
 +struct RunSessionIdentity: Codable, Equatable, Sendable {
 +    static let currentSchemaVersion = 1
 +
 +    let schemaVersion: Int
 +    let process: RunLockProcessIdentity
 +    let files: RunLockFilesIdentity
-+
+@@ -67,2 +110,7 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
+-    init(_ value: Value) {
+-        self.value = value
 +    init(
 +        process: RunLockProcessIdentity,
 +        files: RunLockFilesIdentity
@@ -442,7 +541,7 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        self.schemaVersion = Self.currentSchemaVersion
 +        self.process = process
 +        self.files = files
-+    }
+@@ -69,0 +118,39 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
 +
 +    var isSupported: Bool {
 +        schemaVersion == Self.currentSchemaVersion
@@ -475,67 +574,201 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +    case unlocked(ObservedRunLockFiles)
 +    case owned(ObservedRunLockFiles, RunLockProcessIdentity)
 +    case inconclusive(ObservedRunLockFiles?)
-+
-+    var files: ObservedRunLockFiles? {
-+        switch self {
-+        case .unlocked(let files), .owned(let files, _):
-+            return files
-+        case .inconclusive(let files):
-+            return files
-+        }
-@@ -62,4 +161,6 @@ extension RunLockProbe {
--/// Carries a reference across a `@Sendable` boundary where the compiler cannot
--/// prove safety but the callee's use is thread-safe.
--private final class UncheckedBox<Value>: @unchecked Sendable {
--    let value: Value
-+protocol RunLockProbe: Sendable {
-+    func observeLock(
-+        configPath: String,
-+        ownerLockPath: String
-+    ) -> RunLockObservation
 +}
-@@ -67,2 +168,26 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
--    init(_ value: Value) {
--        self.value = value
-+struct SystemRunLockProbe: RunLockProbe {
-+    func observeLock(
++
++protocol RunLockProbe: Sendable {
++    func acquireObservation(
 +        configPath: String,
 +        ownerLockPath: String
-+    ) -> RunLockObservation {
-+        guard let descriptors = RunLockDescriptorSet.openExisting(
-+                  configPath: configPath,
-+                  ownerLockPath: ownerLockPath)
-+        else {
-+            return .inconclusive(nil)
-+        }
-+        defer { descriptors.close() }
-+        guard descriptors.pathsStillMatch(
-+                  configPath: configPath,
-+                  ownerLockPath: ownerLockPath)
-+        else {
-+            return .inconclusive(descriptors.files)
-+        }
-+        let observation = descriptors.observe()
-+        guard descriptors.pathsStillMatch(
-+                  configPath: configPath,
-+                  ownerLockPath: ownerLockPath)
-+        else {
-+            return .inconclusive(descriptors.files)
-+        }
-+        return observation
-@@ -72,6 +197,4 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
++    ) -> RunLockObservationLease
+@@ -72,6 +159,4 @@ private final class UncheckedBox<Value>: @unchecked Sendable {
 -/// `lsof`-backed probe with a hard wall-clock bound.
 -///
 -/// `lume list` runs this once per VM that recorded a VNC-disabled session, so a
 -/// slow or wedged `lsof` must never stall the caller indefinitely.
 -struct LsofRunLockProbe: RunLockProbe {
 -    static let defaultTimeout: TimeInterval = 2.0
++/// Keeps the descriptors and any proof locks behind an observation alive until
++/// its caller has read and classified the session marker.
++final class RunLockObservationLease: @unchecked Sendable {
++    let observation: RunLockObservation
+@@ -79 +164,7 @@ struct LsofRunLockProbe: RunLockProbe {
+-    let timeout: TimeInterval
++    private let stateLock = NSLock()
++    private var descriptors: RunLockDescriptorSet?
++    private let ownsProofLocks: Bool
++    private let configPath: String?
++    private let ownerLockPath: String?
++    private let synthetic: Bool
++    private var closed = false
+@@ -81,2 +172,13 @@ struct LsofRunLockProbe: RunLockProbe {
+-    init(timeout: TimeInterval = LsofRunLockProbe.defaultTimeout) {
+-        self.timeout = timeout
++    fileprivate init(
++        observation: RunLockObservation,
++        descriptors: RunLockDescriptorSet?,
++        ownsProofLocks: Bool,
++        configPath: String? = nil,
++        ownerLockPath: String? = nil
++    ) {
++        self.observation = observation
++        self.descriptors = descriptors
++        self.ownsProofLocks = ownsProofLocks
++        self.configPath = configPath
++        self.ownerLockPath = ownerLockPath
++        self.synthetic = descriptors == nil
+@@ -85,9 +187,8 @@ struct LsofRunLockProbe: RunLockProbe {
+-    func observeLock(ofFileAt path: String) -> RunLockObservation {
+-        let descriptor = Darwin.open(
+-            path,
+-            O_RDWR | O_CLOEXEC | O_NOFOLLOW
+-        )
+-        guard descriptor >= 0 else {
+-            return .inconclusive
+-        }
+-        defer { Darwin.close(descriptor) }
++    static func synthetic(
++        _ observation: RunLockObservation
++    ) -> RunLockObservationLease {
++        RunLockObservationLease(
++            observation: observation,
++            descriptors: nil,
++            ownsProofLocks: false)
++    }
+@@ -95,3 +196,5 @@ struct LsofRunLockProbe: RunLockProbe {
+-        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+-            flock(descriptor, LOCK_UN)
+-            return .unlocked
++    func pathsStillMatch() -> Bool {
++        stateLock.lock()
++        defer { stateLock.unlock() }
++        guard !closed else {
++            return false
+@@ -99,2 +202,8 @@ struct LsofRunLockProbe: RunLockProbe {
+-        guard errno == EWOULDBLOCK || errno == EAGAIN else {
+-            return .inconclusive
++        if synthetic {
++            return true
++        }
++        guard let descriptors,
++              let configPath,
++              let ownerLockPath
++        else {
++            return false
+@@ -101,0 +211,4 @@ struct LsofRunLockProbe: RunLockProbe {
++        return descriptors.pathsStillMatch(
++            configPath: configPath,
++            ownerLockPath: ownerLockPath)
++    }
+@@ -103,4 +216,5 @@ struct LsofRunLockProbe: RunLockProbe {
+-        guard let processIdentifiers = lsofProcessIdentifiers(
+-            ofFileAt: path
+-        ) else {
+-            return .inconclusive
++    func close() {
++        stateLock.lock()
++        guard !closed else {
++            stateLock.unlock()
++            return
+@@ -108,2 +222,4 @@ struct LsofRunLockProbe: RunLockProbe {
+-        if !processIdentifiers.isEmpty {
+-            return .heldBy(processIdentifiers)
++        closed = true
++        guard let descriptors else {
++            stateLock.unlock()
++            return
+@@ -110,0 +227,2 @@ struct LsofRunLockProbe: RunLockProbe {
++        self.descriptors = nil
++        stateLock.unlock()
+@@ -112,5 +230,40 @@ struct LsofRunLockProbe: RunLockProbe {
+-        // The owner may have exited between the failed flock and lsof. Prove
+-        // that transition directly against the still-open inode.
+-        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+-            flock(descriptor, LOCK_UN)
+-            return .unlocked
++        if ownsProofLocks {
++            descriptors.release()
++        }
++        descriptors.close()
++    }
++
++    deinit {
++        close()
++    }
++}
++
++struct SystemRunLockProbe: RunLockProbe {
++    func acquireObservation(
++        configPath: String,
++        ownerLockPath: String
++    ) -> RunLockObservationLease {
++        guard let descriptors = RunLockDescriptorSet.openExisting(
++                  configPath: configPath,
++                  ownerLockPath: ownerLockPath)
++        else {
++            return .synthetic(.inconclusive(nil))
++        }
++        guard descriptors.pathsStillMatch(
++                  configPath: configPath,
++                  ownerLockPath: ownerLockPath)
++        else {
++            descriptors.close()
++            return .synthetic(.inconclusive(descriptors.files))
++        }
++        let (observation, ownsProofLocks) =
++            descriptors.acquireObservation()
++        guard descriptors.pathsStillMatch(
++                  configPath: configPath,
++                  ownerLockPath: ownerLockPath)
++        else {
++            if ownsProofLocks {
++                descriptors.release()
++            }
++            descriptors.close()
++            return .synthetic(.inconclusive(descriptors.files))
+@@ -118 +271,18 @@ struct LsofRunLockProbe: RunLockProbe {
+-        return .inconclusive
++        return RunLockObservationLease(
++            observation: observation,
++            descriptors: descriptors,
++            ownsProofLocks: ownsProofLocks,
++            configPath: configPath,
++            ownerLockPath: ownerLockPath)
++    }
++
++    /// Snapshot convenience for diagnostics and tests that do not mutate state.
++    func observeLock(
++        configPath: String,
++        ownerLockPath: String
++    ) -> RunLockObservation {
++        let lease = acquireObservation(
++            configPath: configPath,
++            ownerLockPath: ownerLockPath)
++        defer { lease.close() }
++        return lease.observation
+@@ -119,0 +290 @@ struct LsofRunLockProbe: RunLockProbe {
++}
+@@ -121,9 +292,4 @@ struct LsofRunLockProbe: RunLockProbe {
+-    private func lsofProcessIdentifiers(ofFileAt path: String) -> [pid_t]? {
+-        let process = Process()
+-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+-        process.arguments = ["-n", "-P", "-w", "-t", path]
+-        let output = Pipe()
+-        process.standardOutput = output
+-        // Share one pipe so exit 1 with no bytes means "no holders", while an
+-        // lsof diagnostic cannot be mistaken for that definitive empty result.
+-        process.standardError = output
 +struct RunLockDescriptorSet {
 +    let configDescriptor: Int32
 +    let ownerLockDescriptor: Int32?
 +    let files: ObservedRunLockFiles
-@@ -79 +202,29 @@ struct LsofRunLockProbe: RunLockProbe {
--    let timeout: TimeInterval
+@@ -131,6 +297,9 @@ struct LsofRunLockProbe: RunLockProbe {
+-        do {
+-            try process.run()
+-        } catch {
+-            Logger.debug(
+-                "Could not run lsof to resolve the VM run lock owner",
+-                metadata: ["path": path, "error": error.localizedDescription])
 +    static func openForRun(
 +        configPath: String,
 +        ownerLockPath: String
@@ -545,9 +778,17 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +            O_RDWR | O_CLOEXEC | O_NOFOLLOW
 +        )
 +        guard configDescriptor >= 0 else {
-+            return nil
-+        }
-+
+@@ -140,10 +309,25 @@ struct LsofRunLockProbe: RunLockProbe {
+-        // Terminating the child closes the pipe, so the pending read below
+-        // always unblocks even if lsof itself is stuck. `Process` is
+-        // thread-safe for termination but not `Sendable`, so it crosses into
+-        // the watchdog through an explicit box.
+-        let box = UncheckedBox(process)
+-        let watchdog = DispatchWorkItem {
+-            let child = box.value
+-            if child.isRunning {
+-                child.terminate()
+-            }
 +        let ownerLockDescriptor = Darwin.open(
 +            ownerLockPath,
 +            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
@@ -565,9 +806,7 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +            Darwin.close(configDescriptor)
 +            return nil
 +        }
-@@ -81,2 +232,16 @@ struct LsofRunLockProbe: RunLockProbe {
--    init(timeout: TimeInterval = LsofRunLockProbe.defaultTimeout) {
--        self.timeout = timeout
++
 +        guard let files = RunLockFilesIdentity(
 +                  configDescriptor: configDescriptor,
 +                  ownerLockDescriptor: ownerLockDescriptor)
@@ -575,7 +814,12 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +            Darwin.close(ownerLockDescriptor)
 +            Darwin.close(configDescriptor)
 +            return nil
-+        }
+@@ -151,5 +335,9 @@ struct LsofRunLockProbe: RunLockProbe {
+-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+-            deadline: .now() + timeout, execute: watchdog)
+-        let data = (try? output.fileHandleForReading.readToEnd()) ?? Data()
+-        process.waitUntilExit()
+-        watchdog.cancel()
 +        return RunLockDescriptorSet(
 +            configDescriptor: configDescriptor,
 +            ownerLockDescriptor: ownerLockDescriptor,
@@ -584,19 +828,17 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +                ownerLock: files.ownerLock
 +            )
 +        )
-@@ -85,3 +250,6 @@ struct LsofRunLockProbe: RunLockProbe {
--    func observeLock(ofFileAt path: String) -> RunLockObservation {
--        let descriptor = Darwin.open(
--            path,
++    }
+@@ -157 +345,15 @@ struct LsofRunLockProbe: RunLockProbe {
+-        if process.terminationReason == .uncaughtSignal {
 +    static func openExisting(
 +        configPath: String,
 +        ownerLockPath: String
 +    ) -> RunLockDescriptorSet? {
 +        let configDescriptor = Darwin.open(
 +            configPath,
-@@ -90,2 +258,8 @@ struct LsofRunLockProbe: RunLockProbe {
--        guard descriptor >= 0 else {
--            return .inconclusive
++            O_RDWR | O_CLOEXEC | O_NOFOLLOW
++        )
 +        guard configDescriptor >= 0,
 +              let configIdentity = RunLockFileIdentity(
 +                  descriptor: configDescriptor)
@@ -604,13 +846,10 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +            if configDescriptor >= 0 {
 +                Darwin.close(configDescriptor)
 +            }
-+            return nil
-@@ -93 +266,0 @@ struct LsofRunLockProbe: RunLockProbe {
--        defer { Darwin.close(descriptor) }
-@@ -95,3 +268,11 @@ struct LsofRunLockProbe: RunLockProbe {
--        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
--            flock(descriptor, LOCK_UN)
--            return .unlocked
+@@ -160,2 +362,12 @@ struct LsofRunLockProbe: RunLockProbe {
+-        if process.terminationStatus == 1 && data.isEmpty {
+-            return []
++
 +        let ownerLockDescriptor = Darwin.open(
 +            ownerLockPath,
 +            O_RDWR | O_CLOEXEC | O_NOFOLLOW
@@ -622,9 +861,8 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        {
 +            Darwin.close(configDescriptor)
 +            return nil
-@@ -99,2 +280,8 @@ struct LsofRunLockProbe: RunLockProbe {
--        guard errno == EWOULDBLOCK || errno == EAGAIN else {
--            return .inconclusive
+@@ -163 +375,7 @@ struct LsofRunLockProbe: RunLockProbe {
+-        guard process.terminationStatus == 0 else {
 +        let ownerLockIdentity =
 +            ownerLockDescriptor >= 0
 +            ? RunLockFileIdentity(descriptor: ownerLockDescriptor)
@@ -632,8 +870,8 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        if ownerLockDescriptor >= 0 && ownerLockIdentity == nil {
 +            Darwin.close(ownerLockDescriptor)
 +            Darwin.close(configDescriptor)
-+            return nil
-@@ -101,0 +289,10 @@ struct LsofRunLockProbe: RunLockProbe {
+@@ -166 +384,9 @@ struct LsofRunLockProbe: RunLockProbe {
+-        return Self.parsePIDs(from: data)?.filter { $0 != getpid() }
 +        return RunLockDescriptorSet(
 +            configDescriptor: configDescriptor,
 +            ownerLockDescriptor:
@@ -643,18 +881,19 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +                ownerLock: ownerLockIdentity
 +            )
 +        )
-+    }
-@@ -103,4 +300,3 @@ struct LsofRunLockProbe: RunLockProbe {
--        guard let processIdentifiers = lsofProcessIdentifiers(
--            ofFileAt: path
--        ) else {
--            return .inconclusive
+@@ -169,8 +395,50 @@ struct LsofRunLockProbe: RunLockProbe {
+-    /// Parses `lsof -t` output, which emits one decimal PID per holder.
+-    static func parsePIDs(from data: Data) -> [pid_t]? {
+-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+-        let lines = text.split(whereSeparator: \.isNewline)
+-        var result: [pid_t] = []
+-        for line in lines {
+-            guard let pid = pid_t(line), pid > 0 else {
+-                return nil
 +    func close() {
 +        if let ownerLockDescriptor {
 +            Darwin.close(ownerLockDescriptor)
-@@ -108,2 +304,10 @@ struct LsofRunLockProbe: RunLockProbe {
--        if !processIdentifiers.isEmpty {
--            return .heldBy(processIdentifiers)
++        }
 +        Darwin.close(configDescriptor)
 +    }
 +
@@ -665,29 +904,16 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        guard let ownerLockDescriptor else {
 +            flock(configDescriptor, LOCK_UN)
 +            return false
-@@ -112,5 +316,4 @@ struct LsofRunLockProbe: RunLockProbe {
--        // The owner may have exited between the failed flock and lsof. Prove
--        // that transition directly against the still-open inode.
--        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
--            flock(descriptor, LOCK_UN)
--            return .unlocked
++        }
++
 +        var lock = Self.wholeFileLock(type: F_WRLCK)
 +        guard fcntl(ownerLockDescriptor, F_SETLK, &lock) == 0 else {
 +            flock(configDescriptor, LOCK_UN)
 +            return false
-@@ -118 +321 @@ struct LsofRunLockProbe: RunLockProbe {
--        return .inconclusive
++        }
 +        return true
-@@ -121,9 +324,7 @@ struct LsofRunLockProbe: RunLockProbe {
--    private func lsofProcessIdentifiers(ofFileAt path: String) -> [pid_t]? {
--        let process = Process()
--        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
--        process.arguments = ["-n", "-P", "-w", "-t", path]
--        let output = Pipe()
--        process.standardOutput = output
--        // Share one pipe so exit 1 with no bytes means "no holders", while an
--        // lsof diagnostic cannot be mistaken for that definitive empty result.
--        process.standardError = output
++    }
++
 +    func release() {
 +        if let ownerLockDescriptor {
 +            var lock = Self.wholeFileLock(type: F_UNLCK)
@@ -695,83 +921,56 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        }
 +        _ = flock(configDescriptor, LOCK_UN)
 +    }
-@@ -131,7 +332,12 @@ struct LsofRunLockProbe: RunLockProbe {
--        do {
--            try process.run()
--        } catch {
--            Logger.debug(
--                "Could not run lsof to resolve the VM run lock owner",
--                metadata: ["path": path, "error": error.localizedDescription])
--            return nil
-+    func observe() -> RunLockObservation {
++
++    /// Returns an observation plus whether this descriptor set now owns both
++    /// available proof locks. An unlocked result always retains enough
++    /// exclusion to prevent a new run owner from publishing a marker.
++    func acquireObservation() -> (RunLockObservation, Bool) {
 +        let configLockResult = flock(
 +            configDescriptor,
 +            LOCK_EX | LOCK_NB
 +        )
 +        let configLockError = configLockResult == 0 ? 0 : errno
 +        if configLockResult == 0 {
-+            _ = flock(configDescriptor, LOCK_UN)
-+        } else if configLockError != EWOULDBLOCK
-+                    && configLockError != EAGAIN
-+        {
-+            return .inconclusive(files)
-@@ -140,10 +346,4 @@ struct LsofRunLockProbe: RunLockProbe {
--        // Terminating the child closes the pipe, so the pending read below
--        // always unblocks even if lsof itself is stuck. `Process` is
--        // thread-safe for termination but not `Sendable`, so it crosses into
--        // the watchdog through an explicit box.
--        let box = UncheckedBox(process)
--        let watchdog = DispatchWorkItem {
--            let child = box.value
--            if child.isRunning {
--                child.terminate()
--            }
++            guard let ownerLockDescriptor else {
++                return (.unlocked(files), true)
++            }
++
++            var lock = Self.wholeFileLock(type: F_WRLCK)
++            guard fcntl(ownerLockDescriptor, F_SETLK, &lock) == 0 else {
++                _ = flock(configDescriptor, LOCK_UN)
++                return (.inconclusive(files), false)
+@@ -178 +446 @@ struct LsofRunLockProbe: RunLockProbe {
+-            result.append(pid)
++            return (.unlocked(files), true)
+@@ -180 +448,46 @@ struct LsofRunLockProbe: RunLockProbe {
+-        return result
++        guard configLockError == EWOULDBLOCK
++                || configLockError == EAGAIN
++        else {
++            return (.inconclusive(files), false)
++        }
++
 +        guard let ownerLockDescriptor else {
-+            return configLockResult == 0
-+                ? .unlocked(files)
-+                : .inconclusive(files)
-@@ -151,5 +350,0 @@ struct LsofRunLockProbe: RunLockProbe {
--        DispatchQueue.global(qos: .userInitiated).asyncAfter(
--            deadline: .now() + timeout, execute: watchdog)
--        let data = (try? output.fileHandleForReading.readToEnd()) ?? Data()
--        process.waitUntilExit()
--        watchdog.cancel()
-@@ -157,2 +352,3 @@ struct LsofRunLockProbe: RunLockProbe {
--        if process.terminationReason == .uncaughtSignal {
--            return nil
++            return (.inconclusive(files), false)
++        }
++
 +        var lock = Self.wholeFileLock(type: F_WRLCK)
 +        guard fcntl(ownerLockDescriptor, F_GETLK, &lock) == 0 else {
-+            return .inconclusive(files)
-@@ -160,2 +356,4 @@ struct LsofRunLockProbe: RunLockProbe {
--        if process.terminationStatus == 1 && data.isEmpty {
--            return []
++            return (.inconclusive(files), false)
++        }
 +        if lock.l_type == F_UNLCK {
-+            return configLockResult == 0
-+                ? .unlocked(files)
-+                : .inconclusive(files)
-@@ -163,2 +361,6 @@ struct LsofRunLockProbe: RunLockProbe {
--        guard process.terminationStatus == 0 else {
--            return nil
-+        guard configLockResult != 0,
-+              lock.l_pid > 0,
++            return (.inconclusive(files), false)
++        }
++        guard lock.l_pid > 0,
 +              let process = RunLockProcessIdentity.read(
 +                  processIdentifier: lock.l_pid)
 +        else {
-+            return .inconclusive(files)
-@@ -166 +368 @@ struct LsofRunLockProbe: RunLockProbe {
--        return Self.parsePIDs(from: data)?.filter { $0 != getpid() }
-+        return .owned(files, process)
-@@ -169,10 +371,7 @@ struct LsofRunLockProbe: RunLockProbe {
--    /// Parses `lsof -t` output, which emits one decimal PID per holder.
--    static func parsePIDs(from data: Data) -> [pid_t]? {
--        guard let text = String(data: data, encoding: .utf8) else { return nil }
--        let lines = text.split(whereSeparator: \.isNewline)
--        var result: [pid_t] = []
--        for line in lines {
--            guard let pid = pid_t(line), pid > 0 else {
--                return nil
--            }
--            result.append(pid)
++            return (.inconclusive(files), false)
++        }
++        return (.owned(files, process), false)
++    }
++
 +    func pathsStillMatch(
 +        configPath: String,
 +        ownerLockPath: String
@@ -779,8 +978,7 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        guard let config = RunLockFileIdentity(path: configPath)
 +        else {
 +            return false
-@@ -180 +379,12 @@ struct LsofRunLockProbe: RunLockProbe {
--        return result
++        }
 +        return files.config == config
 +            && files.ownerLock
 +                == RunLockFileIdentity(path: ownerLockPath)
@@ -793,24 +991,92 @@ index 81d3f87c47a5e4852e30697f88ac4a89dcedf000..4a74bf61b56dcd25fa3599bb31a1fb27
 +        lock.l_start = 0
 +        lock.l_len = 0
 +        return lock
+diff --git a/libs/lume/src/VM/LinuxVM.swift b/libs/lume/src/VM/LinuxVM.swift
+index 57d9bfc4..5031e7a1 100644
+--- a/libs/lume/src/VM/LinuxVM.swift
++++ b/libs/lume/src/VM/LinuxVM.swift
+@@ -10 +10,3 @@ final class LinuxVM: VM {
+-        displayPresenterFactory: @escaping @MainActor (DisplayMode, VNCService) -> VMDisplayPresenter = defaultDisplayPresenter
++        displayPresenterFactory: @escaping @MainActor (DisplayMode, VNCService) -> VMDisplayPresenter = defaultDisplayPresenter,
++        ownerFailStopHandler: @escaping VMOwnerFailStopHandler =
++            terminateOwnerProcessAfterFailedEmergencyStop
+@@ -16 +18,2 @@ final class LinuxVM: VM {
+-            displayPresenterFactory: displayPresenterFactory
++            displayPresenterFactory: displayPresenterFactory,
++            ownerFailStopHandler: ownerFailStopHandler
 diff --git a/libs/lume/src/VM/NativeDisplayAttachService.swift b/libs/lume/src/VM/NativeDisplayAttachService.swift
-index 8d87b10c23b113bcc5d830326dd8fb5510280644..233d7121815ff2b5c0c35b7761d31c40644375d4 100644
+index 8d87b10c..40b84f7c 100644
 --- a/libs/lume/src/VM/NativeDisplayAttachService.swift
 +++ b/libs/lume/src/VM/NativeDisplayAttachService.swift
-@@ -19 +19 @@ private struct NativeDisplayOwner: Codable {
+@@ -1 +0,0 @@
+-import Darwin
+@@ -6 +4,0 @@ enum NativeDisplayAttachError: LocalizedError {
+-  case requestFailed
+@@ -12,2 +9,0 @@ enum NativeDisplayAttachError: LocalizedError {
+-    case .requestFailed:
+-      return "Failed to ask the running VM process to show its native display."
+@@ -18,5 +14 @@ enum NativeDisplayAttachError: LocalizedError {
+-private struct NativeDisplayOwner: Codable {
 -  let processIdentifier: Int32
-+  let runIdentity: RunSessionIdentity
-@@ -24,3 +24,3 @@ private struct NativeDisplayOwner: Codable {
+-}
+-
+-/// Provides a small, process-local control channel for revealing the native viewer.
++/// Provides process-local control for revealing a native viewer.
+@@ -24,3 +16,3 @@ private struct NativeDisplayOwner: Codable {
 -/// The owning `lume run` process registers SIGUSR1 and writes its PID into the VM
 -/// directory. An `attach` process verifies that PID still owns the VM configuration
 -/// lock before signaling it. The signal never crosses into an unrelated Lume daemon.
-+/// The owning `lume run` process registers SIGUSR1 and writes its full run
-+/// identity into the VM directory. An `attach` process verifies that exact
-+/// process birth and both locked inodes before signaling it.
-@@ -40 +40,11 @@ enum NativeDisplayAttachService {
++/// No PID is a control capability: a birth check and a later signal are not
++/// atomic on macOS. Cross-process native attachment stays unavailable until an
++/// authenticated identity-bound owner channel is implemented.
+@@ -29,4 +21,2 @@ enum NativeDisplayAttachService {
+-  private nonisolated static let ownerFileName = ".native-display-owner.json"
+-  private static var signalSource: DispatchSourceSignal?
+-  private static var ownerFileURL: URL?
+-  private static var showAction: (@MainActor @Sendable () async -> Void)?
++  private static var showActions:
++    [String: (@MainActor @Sendable () async -> Void)] = [:]
+@@ -38,17 +28,5 @@ enum NativeDisplayAttachService {
+-    unregister()
+-
 -    let owner = NativeDisplayOwner(processIdentifier: getpid())
-+    guard let session = try? vmDirectory.loadSession(),
-+      let runIdentity = session.runIdentity,
+-    let fileURL = ownerURL(for: vmDirectory)
+-    let data = try JSONEncoder().encode(owner)
+-    try data.write(to: fileURL, options: .atomic)
+-    chmod(fileURL.path, S_IRUSR | S_IWUSR)
+-
+-    showAction = show
+-    ownerFileURL = fileURL
+-    signal(SIGUSR1, SIG_IGN)
+-
+-    let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+-    source.setEventHandler {
+-      Task { @MainActor in
+-        await showAction?()
+-      }
++    let session: VNCSession
++    do {
++      session = try vmDirectory.loadSession()
++    } catch {
++      throw NativeDisplayAttachError.unavailable
+@@ -56,15 +34,9 @@ enum NativeDisplayAttachService {
+-    signalSource = source
+-    source.resume()
+-  }
+-
+-  static func unregister() {
+-    signalSource?.cancel()
+-    signalSource = nil
+-    showAction = nil
+-
+-    if let ownerFileURL,
+-      let data = try? Data(contentsOf: ownerFileURL),
+-      let owner = try? JSONDecoder().decode(NativeDisplayOwner.self, from: data),
+-      owner.processIdentifier == getpid()
+-    {
+-      try? FileManager.default.removeItem(at: ownerFileURL)
++    guard let runIdentity = session.runIdentity,
++      session.phase == .running,
 +      runIdentity.isSupported,
 +      runIdentity.process == RunLockProcessIdentity.current(),
 +      runIdentity.matchesPaths(
@@ -818,60 +1084,106 @@ index 8d87b10c23b113bcc5d830326dd8fb5510280644..233d7121815ff2b5c0c35b7761d31c40
 +        ownerLockPath: vmDirectory.runOwnerLockPath.path)
 +    else {
 +      throw NativeDisplayAttachError.unavailable
-+    }
-+    let owner = NativeDisplayOwner(runIdentity: runIdentity)
-@@ -68 +78 @@ enum NativeDisplayAttachService {
--      owner.processIdentifier == getpid()
-+      owner.runIdentity.process == RunLockProcessIdentity.current()
-@@ -76,2 +86 @@ enum NativeDisplayAttachService {
+@@ -72 +44 @@ enum NativeDisplayAttachService {
+-    ownerFileURL = nil
++    showActions[key(for: vmDirectory)] = show
+@@ -75,3 +47,2 @@ enum NativeDisplayAttachService {
+-  nonisolated static func isAvailable(vmDirectory: VMDirectory) -> Bool {
 -    guard let owner = validatedOwner(for: vmDirectory) else { return false }
 -    return kill(owner.processIdentifier, 0) == 0
-+    validatedOwner(for: vmDirectory) != nil
-@@ -84 +93,9 @@ enum NativeDisplayAttachService {
++  static func unregister(vmDirectory: VMDirectory) {
++    showActions.removeValue(forKey: key(for: vmDirectory))
+@@ -80,6 +51,3 @@ enum NativeDisplayAttachService {
+-  nonisolated static func requestNativeDisplay(vmDirectory: VMDirectory) throws {
+-    guard let owner = validatedOwner(for: vmDirectory) else {
+-      throw NativeDisplayAttachError.unavailable
+-    }
 -    guard kill(owner.processIdentifier, SIGUSR1) == 0 else {
-+    guard RunLockProcessIdentity.read(
-+      processIdentifier: owner.runIdentity.process.processIdentifier
-+    ) == owner.runIdentity.process else {
-+      throw NativeDisplayAttachError.unavailable
-+    }
-+    guard kill(
-+      owner.runIdentity.process.processIdentifier,
-+      SIGUSR1
-+    ) == 0 else {
-@@ -95,2 +112,9 @@ enum NativeDisplayAttachService {
+-      throw NativeDisplayAttachError.requestFailed
++  static func isAvailable(vmDirectory: VMDirectory) -> Bool {
++    guard showActions[key(for: vmDirectory)] != nil else {
++      return false
+@@ -86,0 +55 @@ enum NativeDisplayAttachService {
++    return hasCurrentRunningSession(vmDirectory)
+@@ -89,8 +58,5 @@ enum NativeDisplayAttachService {
+-  private nonisolated static func validatedOwner(
+-    for vmDirectory: VMDirectory
+-  ) -> NativeDisplayOwner? {
+-    let fileURL = ownerURL(for: vmDirectory)
+-    guard let data = try? Data(contentsOf: fileURL),
+-      let owner = try? JSONDecoder().decode(NativeDisplayOwner.self, from: data),
 -      owner.processIdentifier > 0,
 -      owner.processIdentifier == lockOwnerPID(for: vmDirectory.configPath.url)
-+      owner.runIdentity.isSupported,
-+      let session = try? vmDirectory.loadSession(),
-+      session.runIdentity == owner.runIdentity,
-+      case .owned(let files, let process) = SystemRunLockProbe().observeLock(
++  static func requestNativeDisplay(
++    vmDirectory: VMDirectory
++  ) async throws {
++    guard hasCurrentRunningSession(vmDirectory),
++      let show = showActions[key(for: vmDirectory)]
+@@ -98 +64 @@ enum NativeDisplayAttachService {
+-      return nil
++      throw NativeDisplayAttachError.unavailable
+@@ -100 +66 @@ enum NativeDisplayAttachService {
+-    return owner
++    await show()
+@@ -103,2 +69,20 @@ enum NativeDisplayAttachService {
+-  private nonisolated static func ownerURL(for vmDirectory: VMDirectory) -> URL {
+-    vmDirectory.dir.file(ownerFileName).url
++  private static func hasCurrentRunningSession(
++    _ vmDirectory: VMDirectory
++  ) -> Bool {
++    let session: VNCSession
++    do {
++      session = try vmDirectory.loadSession()
++    } catch {
++      return false
++    }
++    guard session.phase == .running,
++      let runIdentity = session.runIdentity,
++      runIdentity.isSupported,
++      runIdentity.process == RunLockProcessIdentity.current(),
++      runIdentity.matchesPaths(
 +        configPath: vmDirectory.configPath.path,
-+        ownerLockPath: vmDirectory.runOwnerLockPath.path
-+      ),
-+      files.matches(owner.runIdentity.files),
-+      process == owner.runIdentity.process
-@@ -106,4 +129,0 @@ enum NativeDisplayAttachService {
--
++        ownerLockPath: vmDirectory.runOwnerLockPath.path)
++    else {
++      return false
++    }
++    return true
+@@ -107,2 +91,5 @@ enum NativeDisplayAttachService {
 -  private nonisolated static func lockOwnerPID(for configURL: URL) -> Int32? {
 -    LsofRunLockProbe(timeout: 10).lockOwnerPID(ofFileAt: configURL.path)
--  }
++  private static func key(for vmDirectory: VMDirectory) -> String {
++    vmDirectory.configPath.url
++      .standardizedFileURL
++      .resolvingSymlinksInPath()
++      .path
 diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
-index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612415ae14f 100644
+index c1a5a593..8721e066 100644
 --- a/libs/lume/src/VM/VM.swift
 +++ b/libs/lume/src/VM/VM.swift
-@@ -64 +64,5 @@ class VM {
+@@ -64 +64,8 @@ class VM {
 -    private var activeNoVNCSession: VNCSession?
 +    private var activeRunIdentity: RunSessionIdentity?
++    private var activeRunPhase: VMRunLifecyclePhase?
 +    private var runLifecycleIsActive = false
 +    private var runStopRequested = false
 +    private var runLifecycleExitWaiters:
 +        [CheckedContinuation<Void, Never>] = []
-@@ -69,4 +72,0 @@ class VM {
++    private var retainedRunLocks: RunLockDescriptorSet?
++    private var retainedResizeGuard: FileHandle?
+@@ -69,4 +76 @@ class VM {
 -    /// Resolves the config-file run-lock owner during cross-process `stop`.
 -    // Lifecycle commands may run while the host is under VM boot I/O. Give
 -    // their one-shot lock lookup more time than list/get's latency-bound probe.
 -    private let runLockProbe: RunLockProbe = LsofRunLockProbe(timeout: 10)
-@@ -102,0 +103,9 @@ class VM {
++    private let ownerFailStopHandler: VMOwnerFailStopHandler
+@@ -84 +88,3 @@ class VM {
+-            defaultDisplayPresenter
++            defaultDisplayPresenter,
++        ownerFailStopHandler: @escaping VMOwnerFailStopHandler =
++            terminateOwnerProcessAfterFailedEmergencyStop
+@@ -89,0 +96 @@ class VM {
++        self.ownerFailStopHandler = ownerFailStopHandler
+@@ -102,0 +110,18 @@ class VM {
 +    /// Identity held by this object's active `run` lifecycle.
 +    ///
 +    /// Same-process status checks use this instead of reopening the POSIX owner
@@ -881,11 +1193,38 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +        activeRunIdentity
 +    }
 +
-@@ -220,2 +229 @@ class VM {
++    var runPhaseForLiveness: VMRunLifecyclePhase? {
++        guard activeRunPhase == .running else {
++            return activeRunPhase
++        }
++        return virtualizationService?.state == .running
++            ? .running
++            : .stopping
++    }
++
+@@ -194,0 +220 @@ class VM {
++        var retainResizeGuardOnExit = false
+@@ -196,2 +222,13 @@ class VM {
+-            flock(resizeGuard.fileDescriptor, LOCK_UN)
+-            try? resizeGuard.close()
++            if !retainResizeGuardOnExit {
++                _ = flock(resizeGuard.fileDescriptor, LOCK_UN)
++                do {
++                    try resizeGuard.close()
++                } catch {
++                    Logger.error(
++                        "Failed to close VM resize guard",
++                        metadata: [
++                            "name": vmDirContext.name,
++                            "error": error.localizedDescription,
++                        ])
++                }
++            }
+@@ -220,2 +257 @@ class VM {
 -        // Refuse to boot while a disk-resize transaction is armed. The marker is
 -        // authoritative because run()'s emergency lock cleanup can defeat flock.
 +        // Refuse to boot while a disk-resize transaction is armed.
-@@ -229 +237,11 @@ class VM {
+@@ -229 +265,11 @@ class VM {
 -        // Try to acquire lock on config file
 +        // Never reopen the POSIX owner-lock file while this process already
 +        // owns it: closing any additional descriptor would release all of this
@@ -898,30 +1237,40 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +
 +        // Hold both the compatibility config flock and a dedicated POSIX owner
 +        // lock. The latter exposes its exact PID through F_GETLK without lsof.
-@@ -231 +249 @@ class VM {
+@@ -231 +277 @@ class VM {
 -            "Attempting to acquire lock on config file",
 +            "Attempting to acquire VM run locks",
-@@ -236,6 +254,8 @@ class VM {
+@@ -236,7 +282,5 @@ class VM {
 -        let fileHandle = try FileHandle(forWritingTo: vmDirContext.dir.configPath.url)
 -        guard flock(fileHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
 -            try? fileHandle.close()
 -            Logger.error(
 -                "VM already running (failed to acquire lock)", metadata: ["name": vmDirContext.name]
 -            )
+-            throw VMError.alreadyRunning(vmDirContext.name)
 +        guard let runLocks = RunLockDescriptorSet.openForRun(
 +                  configPath: vmDirContext.dir.configPath.path,
 +                  ownerLockPath: vmDirContext.dir.runOwnerLockPath.path)
 +        else {
 +            throw VMError.livenessInconclusive(vmDirContext.name)
-+        }
-+        defer { runLocks.close() }
-+        guard runLocks.tryAcquire() else {
-@@ -244,4 +264,37 @@ class VM {
+@@ -244 +288,2 @@ class VM {
 -        Logger.info("Successfully acquired lock", metadata: ["name": vmDirContext.name])
--        defer {
++        var retainRunLocksOnExit = false
++        var runLocksAcquired = false
+@@ -246,2 +291,48 @@ class VM {
 -            flock(fileHandle.fileDescriptor, LOCK_UN)
 -            try? fileHandle.close()
-+        defer { runLocks.release() }
++            if !retainRunLocksOnExit {
++                if runLocksAcquired {
++                    runLocks.release()
++                }
++                runLocks.close()
++            }
++        }
++        guard runLocks.tryAcquire() else {
++            throw VMError.alreadyRunning(vmDirContext.name)
++        }
++        runLocksAcquired = true
 +        guard runLocks.pathsStillMatch(
 +                  configPath: vmDirContext.dir.configPath.path,
 +                  ownerLockPath:
@@ -947,7 +1296,8 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +            sharedDirectories:
 +                sharedDirectories.isEmpty ? nil : sharedDirectories,
 +            vncEnabled: vncPolicy.isEnabled,
-+            runIdentity: runIdentity
++            runIdentity: runIdentity,
++            phase: .starting
 +        )
 +        // This write is a startup precondition. No VM service starts unless an
 +        // authoritative marker for the exact held inodes is durable on disk.
@@ -958,42 +1308,141 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +                      vmDirContext.dir.runOwnerLockPath.path)
 +        else {
 +            throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -248,0 +302 @@ class VM {
+@@ -248,0 +340 @@ class VM {
 +
-@@ -251 +305 @@ class VM {
+@@ -251 +343,2 @@ class VM {
 -        activeNoVNCSession = nil
 +        activeRunIdentity = runIdentity
-@@ -252,0 +307,2 @@ class VM {
++        activeRunPhase = .starting
+@@ -252,0 +346,7 @@ class VM {
 +        beginRunLifecycle()
-+        defer { endRunLifecycle() }
-@@ -360 +416,2 @@ class VM {
++        var retainLifecycleOnExit = false
++        defer {
++            if !retainLifecycleOnExit {
++                endRunLifecycle()
++            }
++        }
+@@ -360 +460,2 @@ class VM {
 -                saveNoVNCSessionData(sharedDirectories: sharedDirectories)
 +                try saveNoVNCSessionData(
 +                    sharedDirectories: sharedDirectories)
-@@ -368,0 +426,5 @@ class VM {
+@@ -368,0 +470,5 @@ class VM {
 +            try throwIfRunStopRequested()
 +            try validateActiveRunIdentity(
 +                runLocks,
 +                expected: runIdentity)
 +
-@@ -372,0 +435,4 @@ class VM {
+@@ -372,0 +479,11 @@ class VM {
++            guard service.state == .running else {
++                throw VMError.internalError(
++                    "Virtualization service start returned without a running state")
++            }
 +            try throwIfRunStopRequested()
 +            try validateActiveRunIdentity(
 +                runLocks,
 +                expected: runIdentity)
-@@ -424,0 +491 @@ class VM {
++            try transitionRunPhase(
++                to: .running,
++                expectedIdentity: runIdentity)
+@@ -424,0 +542 @@ class VM {
 +            try throwIfRunStopRequested()
-@@ -629 +696,3 @@ class VM {
+@@ -459,2 +577,5 @@ class VM {
+-            await cleanupSession()
+-        } catch {
++            try transitionRunPhase(
++                to: .stopping,
++                expectedIdentity: runIdentity)
++            try await cleanupSessionAfterTerminalState()
++        } catch let runError {
+@@ -465,2 +586,2 @@ class VM {
+-                    "error": error.localizedDescription,
+-                    "errorType": "\(type(of: error))",
++                    "error": runError.localizedDescription,
++                    "errorType": "\(type(of: runError))",
+@@ -469,3 +590,40 @@ class VM {
+-            // Presentation/startup failure and task cancellation must not leave a running guest.
+-            if let service = virtualizationService,
+-                service.state == .running || service.state == .paused
++            // Starting and stopping are deliberately never reported as running.
++            activeRunPhase = .stopping
++            do {
++                try persistActiveRunPhase(
++                    .stopping,
++                    expectedIdentity: runIdentity)
++            } catch {
++                Logger.error(
++                    "Failed to persist emergency stopping phase",
++                    metadata: [
++                        "name": vmDirContext.name,
++                        "error": error.localizedDescription,
++                    ])
++            }
++
++            @MainActor
++            func retainAuthorityAndInvokeFailStop(
++                stopError: Error,
++                service: VMVirtualizationService
++            ) -> Error {
++                retainedRunLocks = runLocks
++                retainedResizeGuard = resizeGuard
++                retainRunLocksOnExit = true
++                retainResizeGuardOnExit = true
++                retainLifecycleOnExit = true
++
++                _ = ownerFailStopHandler(
++                    VMOwnerFailStopReason(
++                        vmName: vmDirContext.name,
++                        runError: runError.localizedDescription,
++                        stopError: stopError.localizedDescription,
++                        serviceState: String(describing: service.state)))
++                return runError
++            }
++
++            // Presentation/startup failure and task cancellation must not
++            // leave a live in-process guest behind normal scope unwinding.
++            let cleanupService = virtualizationService
++            if let service = cleanupService,
++               service.state != .stopped
+@@ -473 +631,21 @@ class VM {
+-                try? await service.stop()
++                do {
++                    try await service.stop()
++                } catch let stopError {
++                    guard service.state == .stopped else {
++                        throw retainAuthorityAndInvokeFailStop(
++                            stopError: stopError,
++                            service: service)
++                    }
++                    Logger.error(
++                        "Emergency stop threw after reaching terminal state",
++                        metadata: [
++                            "name": vmDirContext.name,
++                            "error": stopError.localizedDescription,
++                        ])
++                }
++                guard service.state == .stopped else {
++                    throw retainAuthorityAndInvokeFailStop(
++                        stopError: VMError.internalError(
++                            "Emergency stop returned without a terminal virtualization state"),
++                        service: service)
++                }
+@@ -475,2 +653,2 @@ class VM {
+-            await cleanupSession()
+-            throw error
++            try await cleanupSessionAfterTerminalState()
++            throw runError
+@@ -629 +807,3 @@ class VM {
 -                saveSessionData(url: sessionURL, sharedDirectories: updated)
 +                try saveSessionData(
 +                    url: sessionURL,
 +                    sharedDirectories: updated)
-@@ -631,2 +700,2 @@ class VM {
+@@ -631,2 +811,2 @@ class VM {
 -        } else if activeNoVNCSession != nil {
 -            saveNoVNCSessionData(sharedDirectories: updated)
 +        } else if activeRunIdentity != nil {
 +            try saveNoVNCSessionData(sharedDirectories: updated)
-@@ -678,0 +748,48 @@ class VM {
+@@ -679 +859,73 @@ class VM {
+-    private func cleanupSession() async {
 +    private func beginRunLifecycle() {
 +        runStopRequested = false
 +        runLifecycleIsActive = true
@@ -1003,6 +1452,7 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +    private func endRunLifecycle() {
 +        SharedVM.shared.unregister(self)
 +        activeRunIdentity = nil
++        activeRunPhase = nil
 +        runStopRequested = false
 +        runLifecycleIsActive = false
 +        let waiters = runLifecycleExitWaiters
@@ -1027,6 +1477,27 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +        }
 +    }
 +
++    private func transitionRunPhase(
++        to phase: VMRunLifecyclePhase,
++        expectedIdentity: RunSessionIdentity
++    ) throws {
++        try persistActiveRunPhase(
++            phase,
++            expectedIdentity: expectedIdentity)
++        activeRunPhase = phase
++    }
++
++    private func persistActiveRunPhase(
++        _ phase: VMRunLifecyclePhase,
++        expectedIdentity: RunSessionIdentity
++    ) throws {
++        let marker = try vmDirContext.dir.loadSession()
++        guard marker.runIdentity == expectedIdentity else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
++        }
++        try vmDirContext.dir.saveSession(marker.withPhase(phase))
++    }
++
 +    private func validateActiveRunIdentity(
 +        _ runLocks: RunLockDescriptorSet,
 +        expected: RunSessionIdentity
@@ -1034,15 +1505,29 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +        guard runLocks.pathsStillMatch(
 +                  configPath: vmDirContext.dir.configPath.path,
 +                  ownerLockPath:
-+                      vmDirContext.dir.runOwnerLockPath.path),
-+              let marker = try? vmDirContext.dir.loadSession(),
-+              marker.runIdentity == expected
++                      vmDirContext.dir.runOwnerLockPath.path)
 +        else {
++            throw VMError.livenessInconclusive(vmDirContext.name)
++        }
++        let marker = try vmDirContext.dir.loadSession()
++        guard marker.runIdentity == expected else {
 +            throw VMError.livenessInconclusive(vmDirContext.name)
 +        }
 +    }
 +
-@@ -699,6 +816,3 @@ class VM {
++    private func cleanupSessionAfterTerminalState() async throws {
+@@ -681 +933,5 @@ class VM {
+-        sessionCleanedUp = true
++        if let virtualizationService {
++            guard virtualizationService.state == .stopped else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
++        }
+@@ -685 +941,2 @@ class VM {
+-            NativeDisplayAttachService.unregister()
++            NativeDisplayAttachService.unregister(
++                vmDirectory: vmDirContext.dir)
+@@ -699,6 +956,3 @@ class VM {
 -        if !activeVNCPolicy.isEnabled {
 -            // No VNC service owns this run's marker, so drop it here. Doing it
 -            // unconditionally also covers a failed start that never booted.
@@ -1051,20 +1536,52 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -        }
 +        // VM owns the marker lifecycle; clear it while the authoritative run
 +        // locks are still held.
-+        vmDirContext.dir.clearSession()
-@@ -716,2 +830,4 @@ class VM {
++        try vmDirContext.dir.clearSession()
+@@ -705,0 +960 @@ class VM {
++        sessionCleanedUp = true
+@@ -716,2 +971,21 @@ class VM {
 -        // If we have a virtualization service, try to stop it cleanly first
 -        if let service = virtualizationService {
++        if let cachedVM = SharedVM.shared.getVM(
++            for: vmDirContext.dir),
++           cachedVM !== self
++        {
++            try await cachedVM.stop()
++            return
++        }
++
++        if retainedRunLocks != nil || retainedResizeGuard != nil {
++            try await stopRetainedRunAfterFailStop()
++            return
++        }
++
 +        // Same-process stop is synchronized with run()'s real lifecycle exit,
 +        // including startup before Virtualization.framework reaches `running`.
 +        if runLifecycleIsActive {
 +            runStopRequested = true
-@@ -719,5 +835,10 @@ class VM {
++            activeRunPhase = .stopping
++            guard let activeRunIdentity else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
+@@ -719,5 +993,27 @@ class VM {
 -                Logger.info(
 -                    "Stopping VM via virtualization service", metadata: ["name": vmDirContext.name])
 -                try await service.stop()
 -                await cleanupSession()
 -                try await verifyManagedRunLockReleased()
++                try persistActiveRunPhase(
++                    .stopping,
++                    expectedIdentity: activeRunIdentity)
++            } catch {
++                Logger.error(
++                    "Failed to persist stopping VM phase",
++                    metadata: [
++                        "name": vmDirContext.name,
++                        "error": error.localizedDescription,
++                    ])
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
++            do {
 +                if let service = virtualizationService,
 +                   (service.state == .running
 +                    || service.state == .paused)
@@ -1073,74 +1590,68 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +                        "Stopping VM via virtualization service",
 +                        metadata: ["name": vmDirContext.name])
 +                    try await service.stop()
++                    guard service.state == .stopped else {
++                        throw VMError.livenessInconclusive(
++                            vmDirContext.name)
++                    }
 +                }
 +                await waitForRunLifecycleExit()
-@@ -735 +856 @@ class VM {
+@@ -735 +1031 @@ class VM {
 -                // Fall through to process termination
 +                throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -739,6 +860,4 @@ class VM {
+@@ -739,15 +1035,4 @@ class VM {
 -        let fileHandle: FileHandle
 -        do {
 -            fileHandle = try FileHandle(
 -                forUpdating: vmDirContext.dir.configPath.url
 -            )
 -        } catch {
-+        guard let runLocks = RunLockDescriptorSet.openForRun(
-+                  configPath: vmDirContext.dir.configPath.path,
-+                  ownerLockPath: vmDirContext.dir.runOwnerLockPath.path)
-+        else {
-@@ -747,4 +866,9 @@ class VM {
+-            throw VMError.livenessInconclusive(vmDirContext.name)
+-        }
 -        var ownsProofLock = false
 -        defer {
 -            if ownsProofLock {
 -                flock(fileHandle.fileDescriptor, LOCK_UN)
-+        defer { runLocks.close() }
-+
-+        let marker: VNCSession?
-+        if vmDirContext.dir.sessionsPath.exists() {
-+            guard let loaded = try? vmDirContext.dir.loadSession(),
-+                  let identity = loaded.runIdentity,
-+                  identity.isSupported
-+            else {
-+                throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -752 +876,3 @@ class VM {
+-            }
 -            try? fileHandle.close()
-+            marker = loaded
-+        } else {
-+            marker = nil
-@@ -755,6 +881,10 @@ class VM {
+-        }
++        let observationLease = SystemRunLockProbe().acquireObservation(
++                  configPath: vmDirContext.dir.configPath.path,
++                  ownerLockPath: vmDirContext.dir.runOwnerLockPath.path)
++        defer { observationLease.close() }
+@@ -755,6 +1040,12 @@ class VM {
 -        let processIdentifier: pid_t
 -        switch runLockProbe.observeLock(
 -            ofFileAt: vmDirContext.dir.configPath.path
 -        ) {
 -        case .unlocked:
 -            guard tryAcquireProofLock(fileHandle) else {
-+        let ownerIdentity: RunSessionIdentity
-+        switch runLocks.observe() {
-+        case .unlocked(let files):
-+            if let markerIdentity = marker?.runIdentity {
-+                guard files.matches(markerIdentity.files) else {
-+                    throw VMError.livenessInconclusive(
-+                        vmDirContext.name)
-+                }
++        let marker: VNCSession?
++        if vmDirContext.dir.sessionsPath.exists() {
++            let loaded: VNCSession
++            do {
++                loaded = try vmDirContext.dir.loadSession()
++            } catch {
++                throw VMError.livenessInconclusive(
++                    vmDirContext.name)
 +            }
-+            guard runLocks.tryAcquire() else {
-@@ -763,6 +893,4 @@ class VM {
++            guard let identity = loaded.runIdentity,
++                  identity.isSupported
++            else {
+@@ -763,9 +1054,3 @@ class VM {
 -            ownsProofLock = true
 -            try finishProvenStop(fileHandle)
 -            return
 -        case .heldBy(let processIdentifiers):
 -            processIdentifier = try verifiedRunProcess(
 -                among: processIdentifiers
-+            defer { runLocks.release() }
-+            try finishProvenStop(
-+                runLocks,
-+                expectedIdentity: marker?.runIdentity
-@@ -770,11 +898,7 @@ class VM {
+-            )
 -        case .inconclusive:
 -            throw VMError.livenessInconclusive(vmDirContext.name)
--        }
--
++            marker = loaded
++        } else {
++            marker = nil
+@@ -774,7 +1059,7 @@ class VM {
 -        guard runLockStillBelongs(
 -            to: processIdentifier
 -        ) else {
@@ -1148,41 +1659,28 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -                ownsProofLock = true
 -                try finishProvenStop(fileHandle)
 -                return
-+            return
-+        case .owned(let files, let process):
-+            guard let identity = marker?.runIdentity,
-+                  files.matches(identity.files),
-+                  process == identity.process
-+            else {
-+                throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -781,0 +906,2 @@ class VM {
-+            ownerIdentity = identity
-+        case .inconclusive:
-@@ -784 +909,0 @@ class VM {
++        switch observationLease.observation {
++        case .unlocked(let files):
++            if let markerIdentity = marker?.runIdentity {
++                guard files.matches(markerIdentity.files) else {
++                    throw VMError.livenessInconclusive(
++                        vmDirContext.name)
++                }
+@@ -782,21 +1067,2 @@ class VM {
+-            throw VMError.livenessInconclusive(vmDirContext.name)
+-        }
 -        _ = kill(processIdentifier, SIGINT)
-@@ -786,4 +911,9 @@ class VM {
+-
 -        if try await waitForProofLock(
 -            fileHandle,
 -            attempts: 10,
 -            delay: .seconds(1)
-+        try signalValidatedOwner(
-+            ownerIdentity,
-+            signal: SIGINT,
-+            runLocks: runLocks
-+        )
-+        if try await waitForRunLocks(
-+            runLocks,
-+            attempts: 100,
-+            delay: .milliseconds(100)
-@@ -791,2 +921,5 @@ class VM {
+-        ) {
 -            ownsProofLock = true
 -            try finishProvenStop(fileHandle)
-+            defer { runLocks.release() }
-+            try finishProvenStop(
-+                runLocks,
-+                expectedIdentity: ownerIdentity
-+            )
-@@ -796,14 +929,7 @@ class VM {
+-            return
+-        }
+-
 -        guard runLockStillBelongs(
 -            to: processIdentifier
 -        ) else {
@@ -1190,29 +1688,28 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -                ownsProofLock = true
 -                try finishProvenStop(fileHandle)
 -                return
--            }
--            throw VMError.livenessInconclusive(vmDirContext.name)
--        }
++            guard observationLease.pathsStillMatch() else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
+@@ -803,0 +1070,6 @@ class VM {
++            try vmDirContext.dir.clearSession()
++            return
++        case .owned, .inconclusive:
++            // A PID is not a control capability. Until the owner exposes an
++            // authenticated identity-bound channel, another process must not
++            // signal it.
+@@ -806,11 +1077,0 @@ class VM {
 -        _ = kill(processIdentifier, SIGKILL)
 -
 -        guard try await waitForProofLock(
 -            fileHandle,
-+        try signalValidatedOwner(
-+            ownerIdentity,
-+            signal: SIGKILL,
-+            runLocks: runLocks
-+        )
-+        guard try await waitForRunLocks(
-+            runLocks,
-@@ -815,2 +941,5 @@ class VM {
+-            attempts: 20,
+-            delay: .milliseconds(100)
+-        ) else {
+-            throw VMError.livenessInconclusive(vmDirContext.name)
+-        }
 -        ownsProofLock = true
 -        try finishProvenStop(fileHandle)
-+        defer { runLocks.release() }
-+        try finishProvenStop(
-+            runLocks,
-+            expectedIdentity: ownerIdentity
-+        )
-@@ -819,15 +948,22 @@ class VM {
+@@ -819,15 +1080,4 @@ class VM {
 -    private func verifiedRunProcess(
 -        among processIdentifiers: [pid_t]
 -    ) throws -> pid_t {
@@ -1228,32 +1725,14 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -        }
 -        guard processIdentifiers.count == 1,
 -              let processIdentifier = processIdentifiers.first
-+    private func signalValidatedOwner(
-+        _ identity: RunSessionIdentity,
-+        signal: Int32,
-+        runLocks: RunLockDescriptorSet
-+    ) throws {
-+        guard let marker = try? vmDirContext.dir.loadSession(),
-+              marker.runIdentity == identity,
-+              runLocks.pathsStillMatch(
-+                  configPath: vmDirContext.dir.configPath.path,
-+                  ownerLockPath:
-+                      vmDirContext.dir.runOwnerLockPath.path),
-+              case .owned(let files, let process) = runLocks.observe(),
-+              files.matches(identity.files),
-+              process == identity.process,
-+              RunLockProcessIdentity.read(
-+                  processIdentifier:
-+                      identity.process.processIdentifier
-+              ) == identity.process,
-+              runLocks.pathsStillMatch(
-+                  configPath: vmDirContext.dir.configPath.path,
-+                  ownerLockPath:
-+                      vmDirContext.dir.runOwnerLockPath.path)
-@@ -837,12 +973,2 @@ class VM {
++    private func stopRetainedRunAfterFailStop() async throws {
++        guard runLifecycleIsActive,
++              let activeRunIdentity,
++              let service = virtualizationService
+@@ -837,2 +1086,0 @@ class VM {
 -        return processIdentifier
 -    }
--
+@@ -840,9 +1088,13 @@ class VM {
 -    private func runLockStillBelongs(
 -        to processIdentifier: pid_t
 -    ) -> Bool {
@@ -1263,33 +1742,64 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -            )
 -        else {
 -            return false
-+        guard kill(identity.process.processIdentifier, signal) == 0 else {
-+            throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -850,7 +975,0 @@ class VM {
++        runStopRequested = true
++        activeRunPhase = .stopping
++        do {
++            try persistActiveRunPhase(
++                .stopping,
++                expectedIdentity: activeRunIdentity)
++        } catch {
++            Logger.error(
++                "Failed to persist stopping phase for retained VM",
++                metadata: [
++                    "name": vmDirContext.name,
++                    "error": error.localizedDescription,
++                ])
+@@ -850,2 +1101,0 @@ class VM {
 -        return processIdentifiers.contains(processIdentifier)
 -    }
--
+@@ -853,20 +1103,14 @@ class VM {
 -    private func tryAcquireProofLock(
 -        _ fileHandle: FileHandle
 -    ) -> Bool {
 -        flock(fileHandle.fileDescriptor, LOCK_EX | LOCK_NB) == 0
-@@ -859,2 +978,2 @@ class VM {
+-    }
+-
 -    private func waitForProofLock(
 -        _ fileHandle: FileHandle,
-+    private func waitForRunLocks(
-+        _ runLocks: RunLockDescriptorSet,
-@@ -865 +984 @@ class VM {
+-        attempts: Int,
+-        delay: Duration
+-    ) async throws -> Bool {
+-        for attempt in 0..<attempts {
 -            if tryAcquireProofLock(fileHandle) {
-+            if runLocks.tryAcquire() {
-@@ -868,3 +986,0 @@ class VM {
+-                return true
+-            }
 -            guard errno == EWOULDBLOCK || errno == EAGAIN else {
 -                throw VMError.livenessInconclusive(vmDirContext.name)
 -            }
-@@ -879 +995,2 @@ class VM {
+-            if attempt + 1 < attempts {
+-                try await Task.sleep(for: delay)
++        if service.state != .stopped {
++            do {
++                try await service.stop()
++            } catch let stopError {
++                Logger.error(
++                    "Retained VM emergency stop threw",
++                    metadata: [
++                        "name": vmDirContext.name,
++                        "error": stopError.localizedDescription,
++                    ])
++                guard service.state == .stopped else {
++                    throw VMError.livenessInconclusive(
++                        vmDirContext.name)
++                }
+@@ -875,16 +1119 @@ class VM {
+-        return false
+-    }
+-
+-    private func finishProvenStop(
 -        _ fileHandle: FileHandle
-+        _ runLocks: RunLockDescriptorSet,
-+        expectedIdentity: RunSessionIdentity?
-@@ -881,9 +998,18 @@ class VM {
+-    ) throws {
 -        var descriptorMetadata = stat()
 -        var pathMetadata = stat()
 -        guard fstat(fileHandle.fileDescriptor, &descriptorMetadata) == 0,
@@ -1299,34 +1809,27 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -              ) == 0,
 -              descriptorMetadata.st_dev == pathMetadata.st_dev,
 -              descriptorMetadata.st_ino == pathMetadata.st_ino
-+        if let expectedIdentity {
-+            guard runLocks.files.matches(expectedIdentity.files) else {
-+                throw VMError.livenessInconclusive(vmDirContext.name)
-+            }
-+            if vmDirContext.dir.sessionsPath.exists() {
-+                guard let marker = try? vmDirContext.dir.loadSession(),
-+                      marker.runIdentity == expectedIdentity
-+                else {
-+                    throw VMError.livenessInconclusive(vmDirContext.name)
-+                }
-+            }
-+        } else if vmDirContext.dir.sessionsPath.exists() {
-+            throw VMError.livenessInconclusive(vmDirContext.name)
-+        }
-+        guard runLocks.pathsStillMatch(
-+                  configPath: vmDirContext.dir.configPath.path,
-+                  ownerLockPath:
-+                      vmDirContext.dir.runOwnerLockPath.path)
-@@ -898,21 +1023,0 @@ class VM {
+-        else {
++        guard service.state == .stopped else {
+@@ -893,3 +1122 @@ class VM {
+-        vmDirContext.dir.clearSession()
+-        virtualizationService = nil
+-        vncService.stop()
++        try await finishRetainedRunAfterTerminalState()
+@@ -898,2 +1125,2 @@ class VM {
 -    private func verifyManagedRunLockReleased() async throws {
 -        let fileHandle: FileHandle
--        do {
++    private func finishRetainedRunAfterTerminalState() async throws {
++        var firstError: Error?
+@@ -901,3 +1128 @@ class VM {
 -            fileHandle = try FileHandle(
 -                forUpdating: vmDirContext.dir.configPath.url
 -            )
--        } catch {
++            try await cleanupSessionAfterTerminalState()
+@@ -905 +1130 @@ class VM {
 -            throw VMError.livenessInconclusive(vmDirContext.name)
--        }
++            firstError = error
+@@ -907,7 +1132,21 @@ class VM {
 -        defer { try? fileHandle.close() }
 -        guard try await waitForProofLock(
 -            fileHandle,
@@ -1334,12 +1837,31 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 -            delay: .milliseconds(100)
 -        ) else {
 -            throw VMError.livenessInconclusive(vmDirContext.name)
--        }
++
++        if let runLocks = retainedRunLocks {
++            runLocks.release()
++            runLocks.close()
++            retainedRunLocks = nil
++        }
++        if let resizeGuard = retainedResizeGuard {
++            _ = flock(resizeGuard.fileDescriptor, LOCK_UN)
++            do {
++                try resizeGuard.close()
++            } catch {
++                if firstError == nil {
++                    firstError = error
++                }
++            }
++            retainedResizeGuard = nil
++        }
++        endRunLifecycle()
++
++        if let firstError {
++            throw firstError
+@@ -915,2 +1153,0 @@ class VM {
 -        defer { flock(fileHandle.fileDescriptor, LOCK_UN) }
 -        try finishProvenStop(fileHandle)
--    }
--
-@@ -1091,14 +1196,6 @@ class VM {
+@@ -1091,14 +1328,8 @@ class VM {
 -    private func saveSessionData(url: String, sharedDirectories: [SharedDirectory]) {
 -        do {
 -            let session = VNCSession(
@@ -1358,15 +1880,18 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +        url: String,
 +        sharedDirectories: [SharedDirectory]
 +    ) throws {
-+        guard let activeRunIdentity else {
++        guard let activeRunIdentity,
++              let activeRunPhase
++        else {
 +            throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -1105,0 +1203,15 @@ class VM {
+@@ -1105,0 +1337,16 @@ class VM {
 +        let session = VNCSession.active(
 +            url: url,
 +            sharedDirectories:
 +                sharedDirectories.isEmpty ? nil : sharedDirectories,
 +            vncEnabled: true,
-+            runIdentity: activeRunIdentity
++            runIdentity: activeRunIdentity,
++            phase: activeRunPhase
 +        )
 +        try vmDirContext.dir.saveSession(session)
 +        Logger.info(
@@ -1376,7 +1901,7 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +                "dirs": "\(sharedDirectories.map { $0.hostPath }.joined(separator: ", "))",
 +                "sessionsPath": "\(vmDirContext.dir.sessionsPath.path)",
 +            ])
-@@ -1109,23 +1221,5 @@ class VM {
+@@ -1109,23 +1356,7 @@ class VM {
 -    ///
 -    /// There is no URL or port to record, so the marker carries this process's
 -    /// PID and start time. `get`/`list` in another process treat the VM as
@@ -1403,15 +1928,18 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +    private func saveNoVNCSessionData(
 +        sharedDirectories: [SharedDirectory]
 +    ) throws {
-+        guard let activeRunIdentity else {
++        guard let activeRunIdentity,
++              let activeRunPhase
++        else {
 +            throw VMError.livenessInconclusive(vmDirContext.name)
-@@ -1132,0 +1227,15 @@ class VM {
+@@ -1132,0 +1364,16 @@ class VM {
 +        let session = VNCSession.active(
 +            url: nil,
 +            sharedDirectories:
 +                sharedDirectories.isEmpty ? nil : sharedDirectories,
 +            vncEnabled: false,
-+            runIdentity: activeRunIdentity
++            runIdentity: activeRunIdentity,
++            phase: activeRunPhase
 +        )
 +        try vmDirContext.dir.saveSession(session)
 +        Logger.info(
@@ -1421,12 +1949,12 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +                "pid": "\(activeRunIdentity.process.processIdentifier)",
 +                "sessionsPath": vmDirContext.dir.sessionsPath.path,
 +            ])
-@@ -1143 +1252,3 @@ class VM {
+@@ -1143 +1390,3 @@ class VM {
 -        saveSessionData(url: url, sharedDirectories: sharedDirectories)
 +        try saveSessionData(
 +            url: url,
 +            sharedDirectories: sharedDirectories)
-@@ -1319,107 +1430,8 @@ class VM {
+@@ -1319,107 +1568,8 @@ class VM {
 -        guard vmDirContext.initialized else {
 -            throw VMError.notInitialized(vmDirContext.name)
 -        }
@@ -1542,8 +2070,49 @@ index c1a5a593de457c2f466f5c86ca5f88110af12d0f..174452e70937df312eb6928b021b6612
 +            recoveryMode: recoveryMode,
 +            usbMassStoragePaths: usbImagePaths
 +        )
+diff --git a/libs/lume/src/VM/VMOwnerFailStopPolicy.swift b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+new file mode 100644
+index 00000000..cad10141
+--- /dev/null
++++ b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+@@ -0,0 +1,35 @@
++import Darwin
++import Foundation
++
++struct VMOwnerFailStopReason: Equatable, Sendable {
++    let vmName: String
++    let runError: String
++    let stopError: String
++    let serviceState: String
++}
++
++/// Production never returns from a failed emergency stop. Tests may inject the
++/// retaining disposition; VM then keeps every run authority until a later
++/// same-process stop proves the virtualization service is terminal.
++enum VMOwnerFailStopDisposition: Sendable {
++    case retainAuthorityForTesting
++}
++
++typealias VMOwnerFailStopHandler =
++    @MainActor (VMOwnerFailStopReason) -> VMOwnerFailStopDisposition
++
++@MainActor
++func terminateOwnerProcessAfterFailedEmergencyStop(
++    _ reason: VMOwnerFailStopReason
++) -> VMOwnerFailStopDisposition {
++    Logger.error(
++        "Emergency VM stop failed; terminating the owner process",
++        metadata: [
++            "name": reason.vmName,
++            "runError": reason.runError,
++            "stopError": reason.stopError,
++            "serviceState": reason.serviceState,
++        ])
++    Darwin._exit(70)
++    fatalError("Darwin._exit unexpectedly returned")
++}
 diff --git a/libs/lume/src/VNC/VNCService.swift b/libs/lume/src/VNC/VNCService.swift
-index fac0255da934ef3711c231dbfa3388387149a928..3f137de037bca893a69f5d9b05bf86fe48c77fc1 100644
+index fac0255d..3f137de0 100644
 --- a/libs/lume/src/VNC/VNCService.swift
 +++ b/libs/lume/src/VNC/VNCService.swift
 @@ -56,0 +57 @@ final class DefaultVNCService: VNCService {
@@ -1561,24 +2130,141 @@ index fac0255da934ef3711c231dbfa3388387149a928..3f137de037bca893a69f5d9b05bf86fe
 @@ -183 +181 @@ final class DefaultVNCService: VNCService {
 -        vmDirectory.clearSession()
 +        activeURL = nil
+diff --git a/libs/lume/tests/AttachCommandTests.swift b/libs/lume/tests/AttachCommandTests.swift
+index 3daec286..67faed0d 100644
+--- a/libs/lume/tests/AttachCommandTests.swift
++++ b/libs/lume/tests/AttachCommandTests.swift
+@@ -6,0 +7,5 @@ import Testing
++@MainActor
++private final class NativeAttachCounter {
++  var value = 0
++}
++
+@@ -22,2 +27,3 @@ func attachCommandParsing() throws {
+-@Test("A VM without a registered owner cannot accept native attachment")
+-func nativeAttachRequiresRegisteredOwner() throws {
++@MainActor
++@Test("A VM without a same-process owner cannot accept native attachment")
++func nativeAttachRequiresRegisteredOwner() async throws {
+@@ -30,2 +36,3 @@ func nativeAttachRequiresRegisteredOwner() throws {
+-  #expect(throws: NativeDisplayAttachError.self) {
+-    try NativeDisplayAttachService.requestNativeDisplay(vmDirectory: directory)
++  await #expect(throws: NativeDisplayAttachError.self) {
++    try await NativeDisplayAttachService.requestNativeDisplay(
++      vmDirectory: directory)
+@@ -33,0 +41,46 @@ func nativeAttachRequiresRegisteredOwner() throws {
++
++@MainActor
++@Test("Native attachment uses only the same-process owner action")
++func nativeAttachUsesSameProcessAction() async throws {
++  let root = FileManager.default.temporaryDirectory
++    .appendingPathComponent(UUID().uuidString)
++  try FileManager.default.createDirectory(
++    at: root,
++    withIntermediateDirectories: true)
++  defer { try? FileManager.default.removeItem(at: root) }
++
++  let directory = VMDirectory(Path(root.path))
++  try Data().write(to: directory.configPath.url)
++  try Data().write(to: directory.runOwnerLockPath.url)
++  let process = try #require(RunLockProcessIdentity.current())
++  let config = try #require(
++    RunLockFileIdentity(path: directory.configPath.path))
++  let ownerLock = try #require(
++    RunLockFileIdentity(path: directory.runOwnerLockPath.path))
++  try directory.saveSession(
++    .active(
++      url: nil,
++      vncEnabled: false,
++      runIdentity: RunSessionIdentity(
++        process: process,
++        files: RunLockFilesIdentity(
++          config: config,
++          ownerLock: ownerLock))))
++
++  let showCount = NativeAttachCounter()
++  try NativeDisplayAttachService.register(
++    vmDirectory: directory
++  ) {
++    showCount.value += 1
++  }
++  defer {
++    NativeDisplayAttachService.unregister(
++      vmDirectory: directory)
++  }
++
++  #expect(NativeDisplayAttachService.isAvailable(
++    vmDirectory: directory))
++  try await NativeDisplayAttachService.requestNativeDisplay(
++    vmDirectory: directory)
++  #expect(showCount.value == 1)
++}
+diff --git a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+index 383ad543..7d5545e9 100644
+--- a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
++++ b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+@@ -24,0 +25,6 @@ final class MockVMVirtualizationService: VMVirtualizationService {
++    private var shouldHoldStart = false
++    private var shouldHoldStop = false
++    private var startContinuation: CheckedContinuation<Void, Never>?
++    private var stopContinuation: CheckedContinuation<Void, Never>?
++    private(set) var startEntered = false
++    private(set) var stopEntered = false
+@@ -46,0 +53,20 @@ final class MockVMVirtualizationService: VMVirtualizationService {
++    func holdStartUntilReleased() {
++        shouldHoldStart = true
++    }
++
++    func holdStopUntilReleased() {
++        shouldHoldStop = true
++    }
++
++    func releaseStart() {
++        shouldHoldStart = false
++        startContinuation?.resume()
++        startContinuation = nil
++    }
++
++    func releaseStop() {
++        shouldHoldStop = false
++        stopContinuation?.resume()
++        stopContinuation = nil
++    }
++
+@@ -47,0 +74,6 @@ final class MockVMVirtualizationService: VMVirtualizationService {
++        startEntered = true
++        if shouldHoldStart {
++            await withCheckedContinuation {
++                startContinuation = $0
++            }
++        }
+@@ -53,0 +86,6 @@ final class MockVMVirtualizationService: VMVirtualizationService {
++        stopEntered = true
++        if shouldHoldStop {
++            await withCheckedContinuation {
++                stopContinuation = $0
++            }
++        }
 diff --git a/libs/lume/tests/RunLockLivenessTests.swift b/libs/lume/tests/RunLockLivenessTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a531caeb80f
+index 00000000..55099e39
 --- /dev/null
 +++ b/libs/lume/tests/RunLockLivenessTests.swift
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,697 @@
 +import Darwin
 +import Foundation
 +import Testing
 +
 +@testable import lume
 +
-+private enum LockChildMode: String {
++enum LockChildMode: String {
 +    case owner
 +    case opener
++    case configOwner = "config-owner"
++    case recordOwner = "record-owner"
 +}
 +
-+private enum LockChildError: Error {
++enum LockChildError: Error {
 +    case systemCall(String, Int32)
 +    case setupFailed
 +    case helperResourceMissing
@@ -1680,7 +2366,40 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +    }
 +}
 +
-+private final class LockTestHelper {
++private final class StartWhileObservationGuardedProbe:
++    RunLockProbe, @unchecked Sendable
++{
++    private let attemptStart: () throws -> Void
++    private(set) var startWasBlocked = false
++    private(set) var unexpectedStartError: Error?
++
++    init(attemptStart: @escaping () throws -> Void) {
++        self.attemptStart = attemptStart
++    }
++
++    func acquireObservation(
++        configPath: String,
++        ownerLockPath: String
++    ) -> RunLockObservationLease {
++        let lease = SystemRunLockProbe().acquireObservation(
++            configPath: configPath,
++            ownerLockPath: ownerLockPath)
++        guard case .unlocked = lease.observation else {
++            unexpectedStartError = LockChildError.setupFailed
++            return lease
++        }
++        do {
++            try attemptStart()
++        } catch LockChildError.setupFailed {
++            startWasBlocked = true
++        } catch {
++            unexpectedStartError = error
++        }
++        return lease
++    }
++}
++
++final class LockTestHelper {
 +    private let temporaryDirectory: URL
 +    private let executable: URL
 +
@@ -1708,6 +2427,7 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +                URL(fileURLWithPath: "/usr/bin/xcrun")
 +            compiler.arguments = [
 +                "--sdk", "macosx", "clang",
++                "-D_DARWIN_C_SOURCE",
 +                "-std=c11", "-Wall", "-Wextra", "-Werror",
 +                source.path,
 +                "-o", executable.path,
@@ -1773,7 +2493,7 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +    }
 +}
 +
-+private final class LockTestChild {
++final class LockTestChild {
 +    let processIdentifier: pid_t
 +    private let process: Process
 +    private var releaseHandle: FileHandle?
@@ -1838,6 +2558,97 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +    #expect(
 +        SharedVM.shared.getVM(
 +            for: fixture.directory) == nil)
++}
++
++@MainActor
++@Test("status holds real proof locks through stopped classification")
++func statusStartRaceCannotClearLiveMarker() throws {
++    let fixture = try makeLivenessFixture(
++        named: "status-start-race")
++    defer {
++        try? FileManager.default.removeItem(
++            at: fixture.storage)
++    }
++    guard FileManager.default.createFile(
++              atPath:
++                  fixture.directory.runOwnerLockPath.path,
++              contents: Data()),
++          chmod(
++              fixture.directory.runOwnerLockPath.path,
++              mode_t(S_IRUSR | S_IWUSR)) == 0
++    else {
++        throw LockChildError.setupFailed
++    }
++
++    let helper = try LockTestHelper()
++    var owner: LockTestChild?
++    defer { owner?.terminate() }
++    let probe = StartWhileObservationGuardedProbe {
++        let startedOwner = try helper.spawn(
++            mode: .owner,
++            configPath:
++                fixture.directory.configPath.path,
++            ownerLockPath:
++                fixture.directory.runOwnerLockPath.path)
++        owner = startedOwner
++        let runIdentity = try identity(
++            for: startedOwner,
++            in: fixture.directory)
++        try fixture.directory.saveSession(
++            .active(
++                url: nil,
++                vncEnabled: false,
++                runIdentity: runIdentity))
++    }
++    let controller = LumeController(runLockProbe: probe)
++
++    let details = try controller.getDetails(
++        name: fixture.directory.name,
++        storage: fixture.storage.path)
++    if let unexpectedStartError = probe.unexpectedStartError {
++        throw unexpectedStartError
++    }
++    #expect(probe.startWasBlocked)
++    #expect(owner == nil)
++    #expect(details.status == "stopped")
++    #expect(!fixture.directory.sessionsPath.exists())
++
++    let startedOwner = try helper.spawn(
++        mode: .owner,
++        configPath: fixture.directory.configPath.path,
++        ownerLockPath:
++            fixture.directory.runOwnerLockPath.path)
++    owner = startedOwner
++    let runIdentity = try identity(
++        for: startedOwner,
++        in: fixture.directory)
++    try fixture.directory.saveSession(
++        .active(
++            url: nil,
++            vncEnabled: false,
++            runIdentity: runIdentity))
++    guard case .owned(let files, let process) =
++        SystemRunLockProbe().observeLock(
++            configPath:
++                fixture.directory.configPath.path,
++            ownerLockPath:
++                fixture.directory.runOwnerLockPath.path)
++    else {
++        Issue.record(
++            "The deterministic start did not retain its kernel locks")
++        return
++    }
++    #expect(files.matches(runIdentity.files))
++    #expect(process == runIdentity.process)
++    let runningDetails = try controller.getDetails(
++        name: fixture.directory.name,
++        storage: fixture.storage.path)
++    #expect(
++        runningDetails.status == "running",
++        "A start that acquires after status releases its guard must be visible to the next status call")
++    #expect(
++        fixture.directory.sessionsPath.exists(),
++        "Status must not clear the active owner's session marker")
 +}
 +
 +@MainActor
@@ -1919,8 +2730,8 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +}
 +
 +@MainActor
-+@Test("stop signals the kernel lock owner, never a generic config opener")
-+func stopSignalsOnlyTheKernelLockOwner() async throws {
++@Test("cross-process stop never signals a locked owner or generic opener")
++func crossProcessStopDoesNotSignalLockedProcesses() async throws {
 +    let fixture = try makeLivenessFixture(
 +        named: "owner-not-opener")
 +    defer {
@@ -1964,11 +2775,15 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +    #expect(files.matches(runIdentity.files))
 +    #expect(process == runIdentity.process)
 +
-+    try await fixture.vm.stop()
++    await expectLivenessInconclusive(
++        named: fixture.directory.name
++    ) {
++        try await fixture.vm.stop()
++    }
 +
-+    #expect(!owner.isAlive())
++    #expect(owner.isAlive())
 +    #expect(opener.isAlive())
-+    #expect(!fixture.directory.sessionsPath.exists())
++    #expect(fixture.directory.sessionsPath.exists())
 +}
 +
 +@MainActor
@@ -2065,6 +2880,34 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +}
 +
 +@MainActor
++@Test("a malformed marker cannot authorize a cross-process stop")
++func malformedMarkerCannotStopOwner() async throws {
++    let fixture = try makeLivenessFixture(
++        named: "malformed-stop")
++    defer {
++        try? FileManager.default.removeItem(
++            at: fixture.storage)
++    }
++    let helper = try LockTestHelper()
++    let owner = try helper.spawn(
++        mode: .owner,
++        configPath: fixture.directory.configPath.path,
++        ownerLockPath:
++            fixture.directory.runOwnerLockPath.path)
++    defer { owner.terminate() }
++    try Data("{".utf8).write(
++        to: fixture.directory.sessionsPath.url)
++
++    await expectLivenessInconclusive(
++        named: fixture.directory.name
++    ) {
++        try await fixture.vm.stop()
++    }
++    #expect(owner.isAlive())
++    #expect(fixture.directory.sessionsPath.exists())
++}
++
++@MainActor
 +@Test("a reused PID birth identity cannot authorize a signal")
 +func reusedProcessIdentityCannotStopOwner() async throws {
 +    let fixture = try makeLivenessFixture(
@@ -2107,10 +2950,10 @@ index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a53
 +}
 diff --git a/libs/lume/tests/RunLockTestHelper.c b/libs/lume/tests/RunLockTestHelper.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..291449fcd061400cda02ff7a72da09ab69ecd7f0
+index 00000000..f906149c
 --- /dev/null
 +++ b/libs/lume/tests/RunLockTestHelper.c
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,105 @@
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <signal.h>
@@ -2148,40 +2991,52 @@ index 0000000000000000000000000000000000000000..291449fcd061400cda02ff7a72da09ab
 +    }
 +
 +    const bool owns_locks = strcmp(argv[1], "owner") == 0;
++    const bool owns_config_lock =
++        owns_locks || strcmp(argv[1], "config-owner") == 0;
++    const bool owns_record_lock =
++        owns_locks || strcmp(argv[1], "record-owner") == 0;
 +    const bool opens_only = strcmp(argv[1], "opener") == 0;
-+    if (!owns_locks && !opens_only) {
++    if (!owns_config_lock && !owns_record_lock && !opens_only) {
 +        (void)write_ready(0);
 +        return 1;
 +    }
 +
 +    reset_termination_signals();
 +
-+    const int config_flags = owns_locks ? O_RDWR : O_RDONLY;
 +    const int config_descriptor =
-+        open(argv[2], config_flags | O_CLOEXEC | O_NOFOLLOW);
++        owns_config_lock || opens_only
++            ? open(
++                  argv[2],
++                  (owns_config_lock ? O_RDWR : O_RDONLY)
++                      | O_CLOEXEC | O_NOFOLLOW)
++            : -1;
 +    int owner_descriptor = -1;
-+    bool setup_succeeded = config_descriptor >= 0;
++    bool setup_succeeded =
++        (!owns_config_lock && !opens_only)
++        || config_descriptor >= 0;
 +
-+    if (setup_succeeded && owns_locks) {
++    if (setup_succeeded && owns_record_lock) {
 +        owner_descriptor =
 +            open(
 +                argv[3],
 +                O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
 +                S_IRUSR | S_IWUSR);
++        setup_succeeded = owner_descriptor >= 0;
++    }
++    if (setup_succeeded && owns_config_lock) {
 +        setup_succeeded =
-+            owner_descriptor >= 0
-+            && flock(config_descriptor, LOCK_EX | LOCK_NB) == 0;
-+        if (setup_succeeded) {
-+            struct flock lock = {
-+                .l_start = 0,
-+                .l_len = 0,
-+                .l_pid = 0,
-+                .l_type = F_WRLCK,
-+                .l_whence = SEEK_SET,
-+            };
-+            setup_succeeded =
-+                fcntl(owner_descriptor, F_SETLK, &lock) == 0;
-+        }
++            flock(config_descriptor, LOCK_EX | LOCK_NB) == 0;
++    }
++    if (setup_succeeded && owns_record_lock) {
++        struct flock lock = {
++            .l_start = 0,
++            .l_len = 0,
++            .l_pid = 0,
++            .l_type = F_WRLCK,
++            .l_whence = SEEK_SET,
++        };
++        setup_succeeded =
++            fcntl(owner_descriptor, F_SETLK, &lock) == 0;
 +    }
 +
 +    if (!write_ready(setup_succeeded ? 1 : 0)) {
@@ -2205,19 +3060,175 @@ index 0000000000000000000000000000000000000000..291449fcd061400cda02ff7a72da09ab
 +    return setup_succeeded ? 0 : 1;
 +}
 diff --git a/libs/lume/tests/VMDisplayLifecycleTests.swift b/libs/lume/tests/VMDisplayLifecycleTests.swift
-index 04be4f46910eecef33d70c6085ecff6b3059f06f..d04e405b2d5c4b4092c09e7984fa574adf4c8cfd 100644
+index 04be4f46..d39cc6e2 100644
 --- a/libs/lume/tests/VMDisplayLifecycleTests.swift
 +++ b/libs/lume/tests/VMDisplayLifecycleTests.swift
-@@ -108,0 +109 @@ func presenterSelectionAndGuestShutdownCleanup() async throws {
+@@ -27,0 +28,19 @@ private final class MockDisplayPresenter: VMDisplayPresenter {
++@MainActor
++private final class StopFailurePresenter: VMDisplayPresenter {
++  let service: MockVMVirtualizationService
++
++  init(service: MockVMVirtualizationService) {
++    self.service = service
++  }
++
++  func show(context: VMDisplayContext) async throws {
++    await service.configure(
++      shouldFail: true,
++      error: VMError.internalError("deterministic stop failure")
++    )
++    throw PresenterTestError.showFailed
++  }
++
++  func hide() {}
++}
++
+@@ -73,0 +93,67 @@ private func waitUntil(
++@MainActor
++@Test("starting and stopping phases remain unknown to status")
++func transitionalRunPhasesAreUnknown() async throws {
++  let (root, _, context) = try makeDisplayTestDirectory()
++  defer { try? FileManager.default.removeItem(at: root) }
++
++  let service = MockVMVirtualizationService()
++  service.holdStartUntilReleased()
++  let presenter = MockDisplayPresenter()
++  let vm = MockVM(
++    vmDirContext: context,
++    virtualizationServiceFactory: { _ in service },
++    vncServiceFactory: { MockVNCService(vmDirectory: $0) },
++    displayPresenterFactory: { _, _ in presenter }
++  )
++  let controller = LumeController()
++  let storage = root.deletingLastPathComponent().path
++
++  let runTask = Task {
++    try await vm.run(
++      displayMode: .none,
++      sharedDirectories: [],
++      mount: nil,
++      vncPolicy: .disabled)
++  }
++  try await waitUntil { service.startEntered }
++
++  #expect(vm.runPhaseForLiveness == .starting)
++  #expect(try context.dir.loadSession().phase == .starting)
++  #expect(
++    try controller.getDetails(
++      name: context.dir.name,
++      storage: storage
++    ).status == "unknown")
++
++  service.releaseStart()
++  try await waitUntil { vm.runPhaseForLiveness == .running }
++
++  #expect(try context.dir.loadSession().phase == .running)
++  #expect(
++    try controller.getDetails(
++      name: context.dir.name,
++      storage: storage
++    ).status == "running")
++
++  service.holdStopUntilReleased()
++  let stopTask = Task {
++    try await vm.stop()
++  }
++  try await waitUntil { service.stopEntered }
++
++  #expect(vm.runPhaseForLiveness == .stopping)
++  #expect(try context.dir.loadSession().phase == .stopping)
++  #expect(
++    try controller.getDetails(
++      name: context.dir.name,
++      storage: storage
++    ).status == "unknown")
++
++  service.releaseStop()
++  try await stopTask.value
++  try await runTask.value
++
++  #expect(!context.dir.sessionsPath.exists())
++  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++}
++
+@@ -108,0 +195 @@ func presenterSelectionAndGuestShutdownCleanup() async throws {
 +    #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -139,0 +141 @@ func fatalGuestStopCleanup() async throws {
+@@ -139,0 +227 @@ func fatalGuestStopCleanup() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -164,0 +167 @@ func presenterFailureCleanup() async throws {
+@@ -164,0 +253,69 @@ func presenterFailureCleanup() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -194,0 +198 @@ func cancellationCleanup() async throws {
++}
++
++@MainActor
++@Test("failed emergency stop retains authority until terminal proof")
++func failedEmergencyStopCannotReleaseLivenessProof() async throws {
++  let (root, _, context) = try makeDisplayTestDirectory()
++  defer { try? FileManager.default.removeItem(at: root) }
++
++  let service = MockVMVirtualizationService()
++  var failStopReasons: [VMOwnerFailStopReason] = []
++  let vm = MockVM(
++    vmDirContext: context,
++    virtualizationServiceFactory: { _ in service },
++    vncServiceFactory: { MockVNCService(vmDirectory: $0) },
++    displayPresenterFactory: { _, _ in
++      StopFailurePresenter(service: service)
++    },
++    ownerFailStopHandler: { reason in
++      failStopReasons.append(reason)
++      return .retainAuthorityForTesting
++    }
++  )
++
++  await #expect(throws: PresenterTestError.self) {
++    try await vm.run(
++      displayMode: .none,
++      sharedDirectories: [],
++      mount: nil,
++      vncPolicy: .disabled
++    )
++  }
++
++  #expect(service.stopCallCount == 1)
++  #expect(service.state == .running)
++  #expect(failStopReasons.count == 1)
++  #expect(context.dir.sessionsPath.exists())
++  #expect(try context.dir.loadSession().phase == .stopping)
++  #expect(SharedVM.shared.getVM(for: context.dir) === vm)
++  #expect(vm.runPhaseForLiveness == .stopping)
++  let helper = try LockTestHelper()
++  for (mode, proof) in [
++    (LockChildMode.configOwner, "config flock"),
++    (LockChildMode.recordOwner, "owner record lock"),
++  ] {
++    do {
++      let contender = try helper.spawn(
++        mode: mode,
++        configPath: context.dir.configPath.path,
++        ownerLockPath: context.dir.runOwnerLockPath.path)
++      contender.terminate()
++      Issue.record(
++        "A failed emergency stop released its \(proof)")
++    } catch LockChildError.setupFailed {
++      // Expected: the injected fail-stop retains this authority.
++    }
++  }
++
++  await service.configure(shouldFail: false)
++  try await vm.stop()
++
++  #expect(service.state == .stopped)
++  #expect(!context.dir.sessionsPath.exists())
++  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
++  let nextOwner = try helper.spawn(
++    mode: .owner,
++    configPath: context.dir.configPath.path,
++    ownerLockPath: context.dir.runOwnerLockPath.path)
++  nextOwner.terminate()
+@@ -194,0 +352 @@ func cancellationCleanup() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
 diff --git a/libs/lume/tests/VNCPolicyTests.swift b/libs/lume/tests/VNCPolicyTests.swift
-index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29389d07e5 100644
+index 9b87a3e9..fc7443bb 100644
 --- a/libs/lume/tests/VNCPolicyTests.swift
 +++ b/libs/lume/tests/VNCPolicyTests.swift
 @@ -1,0 +2 @@ import ArgumentParser
@@ -2234,11 +3245,11 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 -            : .heldBy(processIdentifiers)
 +  let observation: RunLockObservation
 +
-+  func observeLock(
++  func acquireObservation(
 +    configPath: String,
 +    ownerLockPath: String
-+  ) -> RunLockObservation {
-+    observation
++  ) -> RunLockObservationLease {
++    .synthetic(observation)
 +  }
 +}
 +
@@ -2271,11 +3282,13 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +  ObservedRunLockFiles(
 +    config: identity.files.config,
 +    ownerLock: identity.files.ownerLock)
-@@ -175,0 +206 @@ func legacySessionDecoding() throws {
+@@ -175,0 +206,2 @@ func legacySessionDecoding() throws {
 +  #expect(session.runIdentity == nil)
-@@ -193,0 +225 @@ func noVNCSessionDecoding() throws {
++  #expect(session.phase == nil)
+@@ -193,0 +226,2 @@ func noVNCSessionDecoding() throws {
 +  #expect(session.runIdentity == nil)
-@@ -219,0 +252,41 @@ func noVNCSessionRoundTrip() throws {
++  #expect(session.phase == nil)
+@@ -219,0 +254,43 @@ func noVNCSessionRoundTrip() throws {
 +@Test("A current session marker requires process birth and both file identities")
 +func currentSessionIdentityRoundTrip() throws {
 +  let (root, context) = try makeVMTestDirectory()
@@ -2300,6 +3313,8 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +    runIdentity["files"] as? [String: Any])
 +
 +  #expect(loaded.runIdentity == identity)
++  #expect(loaded.phase == .running)
++  #expect(object["phase"] as? String == "running")
 +  #expect(runIdentity["schemaVersion"] as? Int == 1)
 +  #expect(process["processIdentifier"] as? Int == 4242)
 +  #expect(process["startTimeMicroseconds"] != nil)
@@ -2317,11 +3332,11 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +  #expect(object["startedAt"] == nil)
 +}
 +
-@@ -242,0 +316 @@ func disabledRunNeverStartsVNC() async throws {
+@@ -242,0 +320 @@ func disabledRunNeverStartsVNC() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -246,0 +321 @@ func disabledRunNeverStartsVNC() async throws {
+@@ -246,0 +325 @@ func disabledRunNeverStartsVNC() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) === vm)
-@@ -254,2 +329,8 @@ func disabledRunNeverStartsVNC() async throws {
+@@ -254,2 +333,8 @@ func disabledRunNeverStartsVNC() async throws {
 -  #expect(session.pid == getpid())
 -  #expect((session.startedAt ?? 0) > 0)
 +  #expect(session.pid == nil)
@@ -2332,13 +3347,13 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +    identity.matchesPaths(
 +      configPath: context.dir.configPath.path,
 +      ownerLockPath: context.dir.runOwnerLockPath.path))
-@@ -260,0 +342 @@ func disabledRunNeverStartsVNC() async throws {
+@@ -260,0 +346 @@ func disabledRunNeverStartsVNC() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -291,0 +374 @@ func enabledRunKeepsStartingVNCForEveryDisplayMode() async throws {
+@@ -291,0 +378 @@ func enabledRunKeepsStartingVNCForEveryDisplayMode() async throws {
 +    #expect(session.runIdentity != nil)
-@@ -323,0 +407 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
+@@ -323,0 +411 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
-@@ -326,0 +411,34 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
+@@ -326,0 +415,34 @@ func disabledRunClearsMarkerOnStartFailure() async throws {
 +@MainActor
 +@Test("A session marker write must succeed before VM construction or start")
 +func markerWriteFailurePreventsVMStart() async throws {
@@ -2373,7 +3388,7 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +  #expect(SharedVM.shared.getVM(for: context.dir) == nil)
 +}
 +
-@@ -355,23 +472,0 @@ func vmRunRefusesConflictingVNCPolicy() async throws {
+@@ -355,23 +476,0 @@ func vmRunRefusesConflictingVNCPolicy() async throws {
 -// MARK: - Run lock probe
 -
 -@Test("lsof -t output parses into holder PIDs")
@@ -2397,7 +3412,7 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 -  #expect(probe.observeLock(ofFileAt: "/other/config.json") == .unlocked)
 -}
 -
-@@ -406,2 +501,17 @@ private func makeStoppedVMLocation(named name: String) throws -> (URL, VMDirecto
+@@ -406,2 +505,17 @@ private func makeStoppedVMLocation(named name: String) throws -> (URL, VMDirecto
 -@Test("A VNC-disabled VM reports running while its PID holds the run lock")
 -func noVNCStatusIsRunningForLiveLockHolder() throws {
 +@Test("An unlocked VM without any marker is provably stopped")
@@ -2417,46 +3432,78 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +@MainActor
 +@Test("A VM reports running only when its complete run identity matches")
 +func statusIsRunningForMatchingRunIdentity() throws {
-@@ -409,0 +520 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
+@@ -409,0 +524 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
 +  let identity = try makeRunIdentity(for: vmDir)
-@@ -411 +522,4 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
+@@ -411 +526,4 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
 -    VNCSession.vncDisabled(pid: 4242, startedAt: Date().timeIntervalSince1970))
 +    .active(
 +      url: nil,
 +      vncEnabled: false,
 +      runIdentity: identity))
-@@ -414 +528,4 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
+@@ -414 +532,4 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
 -    runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [4242]]))
 +    runLockProbe: StubRunLockProbe(
 +      observation: .owned(
 +        observedFiles(for: identity),
 +        identity.process)))
-@@ -429,2 +546,2 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
+@@ -429,2 +550,33 @@ func noVNCStatusIsRunningForLiveLockHolder() throws {
 -@Test("A VNC-disabled marker whose PID no longer holds the lock is stale")
 -func noVNCStatusIsStoppedForDeadLockHolder() throws {
-+@Test("A matching unlocked identity proves a session marker is stale")
++@Test("Cross-process starting and stopping markers remain unknown")
++func statusRejectsTransitionalRunPhases() throws {
++  for phase in [
++    VMRunLifecyclePhase.starting,
++    VMRunLifecyclePhase.stopping,
++  ] {
++    let (storage, vmDir) = try makeStoppedVMLocation(
++      named: "transitional-\(phase.rawValue)")
++    defer { try? FileManager.default.removeItem(at: storage) }
++    let identity = try makeRunIdentity(for: vmDir)
++    try vmDir.saveSession(
++      .active(
++        url: nil,
++        vncEnabled: false,
++        runIdentity: identity,
++        phase: phase))
++    let controller = LumeController(
++      runLockProbe: StubRunLockProbe(
++        observation: .owned(
++          observedFiles(for: identity),
++          identity.process)))
++
++    let details = try controller.getDetails(
++      name: vmDir.name,
++      storage: storage.path)
++    #expect(details.status == "unknown")
++    #expect(vmDir.sessionsPath.exists())
++  }
++}
++
++@MainActor
++@Test("A matching unlocked identity is stopped without status deleting its marker")
 +func statusIsStoppedForMatchingUnlockedIdentity() throws {
-@@ -432,0 +550 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+@@ -432,0 +585 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
 +  let identity = try makeRunIdentity(for: vmDir)
-@@ -434 +552,4 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+@@ -434 +587,4 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
 -    VNCSession.vncDisabled(pid: 4242, startedAt: Date().timeIntervalSince1970))
 +    .active(
 +      url: nil,
 +      vncEnabled: false,
 +      runIdentity: identity))
-@@ -436 +557,3 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+@@ -436 +592 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
 -  let controller = LumeController(runLockProbe: StubRunLockProbe(holdersByPath: [:]))
-+  let controller = LumeController(
-+    runLockProbe: StubRunLockProbe(
-+      observation: .unlocked(observedFiles(for: identity))))
-@@ -445,2 +568,2 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
++  let controller = LumeController()
+@@ -441 +597 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
+-  #expect(!vmDir.sessionsPath.exists())
++  #expect(vmDir.sessionsPath.exists())
+@@ -445,2 +601,2 @@ func noVNCStatusIsStoppedForDeadLockHolder() throws {
 -@Test("A mismatched lock owner leaves VNC-disabled VM liveness unknown")
 -func noVNCStatusRejectsRecycledPID() throws {
 +@Test("A reused PID with a different birth is unknown and preserves its marker")
 +func statusRejectsReusedProcessIdentifier() throws {
-@@ -448,0 +572 @@ func noVNCStatusRejectsRecycledPID() throws {
+@@ -448,0 +605 @@ func noVNCStatusRejectsRecycledPID() throws {
 +  let identity = try makeRunIdentity(for: vmDir)
-@@ -450 +574,8 @@ func noVNCStatusRejectsRecycledPID() throws {
+@@ -450 +607,8 @@ func noVNCStatusRejectsRecycledPID() throws {
 -    VNCSession.vncDisabled(pid: 4242, startedAt: Date().timeIntervalSince1970))
 +    .active(
 +      url: nil,
@@ -2466,58 +3513,58 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +    processIdentifier: identity.process.processIdentifier,
 +    startTimeMicroseconds:
 +      identity.process.startTimeMicroseconds + 1)
-@@ -453 +584,4 @@ func noVNCStatusRejectsRecycledPID() throws {
+@@ -453 +617,4 @@ func noVNCStatusRejectsRecycledPID() throws {
 -    runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [777]]))
 +    runLockProbe: StubRunLockProbe(
 +      observation: .owned(
 +        observedFiles(for: identity),
 +        reusedProcess)))
-@@ -461,3 +595,3 @@ func noVNCStatusRejectsRecycledPID() throws {
+@@ -461,3 +628,3 @@ func noVNCStatusRejectsRecycledPID() throws {
 -@Test("A locked VNC-disabled marker without a PID has unknown liveness")
 -func noVNCStatusRejectsMarkerWithoutPID() throws {
 -  let (storage, vmDir) = try makeStoppedVMLocation(named: "no-vnc-pidless")
 +@Test("A legacy marker is unknown and cannot be deleted as stale")
 +func statusRejectsLegacyMarker() throws {
 +  let (storage, vmDir) = try makeStoppedVMLocation(named: "legacy-marker")
-@@ -465 +599,5 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
+@@ -465 +632,5 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
 -  try vmDir.saveSession(VNCSession(url: nil, vncEnabled: false))
 +  let identity = try makeRunIdentity(for: vmDir)
 +  try vmDir.saveSession(
 +    .vncDisabled(
 +      pid: identity.process.processIdentifier,
 +      startedAt: 1_750_000_000))
-@@ -468 +606,2 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
+@@ -468 +639,2 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
 -    runLockProbe: StubRunLockProbe(holdersByPath: [vmDir.configPath.path: [4242]]))
 +    runLockProbe: StubRunLockProbe(
 +      observation: .unlocked(observedFiles(for: identity))))
-@@ -470 +609 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
+@@ -470 +642 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
 -  let details = try controller.getDetails(name: "no-vnc-pidless", storage: storage.path)
 +  let details = try controller.getDetails(name: "legacy-marker", storage: storage.path)
-@@ -476,2 +615,2 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
+@@ -476,2 +648,2 @@ func noVNCStatusRejectsMarkerWithoutPID() throws {
 -@Test("An inconclusive lock probe preserves a VNC-disabled marker")
 -func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
 +@Test("An inconclusive lock probe reports unknown and preserves its marker")
 +func statusPreservesMarkerWhenProbeIsInconclusive() throws {
-@@ -479,0 +619 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+@@ -479,0 +652 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
 +  let identity = try makeRunIdentity(for: vmDir)
-@@ -481 +621,4 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+@@ -481 +654,4 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
 -    VNCSession.vncDisabled(pid: 4242, startedAt: Date().timeIntervalSince1970))
 +    .active(
 +      url: nil,
 +      vncEnabled: false,
 +      runIdentity: identity))
-@@ -485 +628,2 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+@@ -485 +661,2 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
 -      holdersByPath: [:], inconclusivePaths: [vmDir.configPath.path]))
 +      observation: .inconclusive(
 +        observedFiles(for: identity))))
-@@ -494,3 +638,3 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
+@@ -494,3 +671,3 @@ func noVNCStatusPreservesMarkerWhenProbeIsInconclusive() throws {
 -@Test("A stale VNC-backed marker is still detected by its port, not by the run lock")
 -func vncEnabledStatusStillUsesPortProbe() throws {
 -  let (storage, vmDir) = try makeStoppedVMLocation(named: "vnc-stale")
 +@Test("A pathname replacement reports unknown and preserves the bound marker")
 +func statusRejectsReplacementConfigInode() throws {
 +  let (storage, vmDir) = try makeStoppedVMLocation(named: "replaced-config")
-@@ -498,2 +642,16 @@ func vncEnabledStatusStillUsesPortProbe() throws {
+@@ -498,2 +675,16 @@ func vncEnabledStatusStillUsesPortProbe() throws {
 -  // Port 1 is never bound by a VM and the config lock is free.
 -  try vmDir.saveSession(VNCSession(url: "vnc://:pass@127.0.0.1:1"))
 +  let identity = try makeRunIdentity(for: vmDir)
@@ -2536,14 +3583,14 @@ index 9b87a3e9d60483dcbe271c0d51fa636316063ff8..5e2d52fd97683ea6029b328f78db8c29
 +    throw VMDirectoryError.fileCreationFailed(
 +      vmDir.configPath.path)
 +  }
-@@ -501 +659 @@ func vncEnabledStatusStillUsesPortProbe() throws {
+@@ -501 +692 @@ func vncEnabledStatusStillUsesPortProbe() throws {
 -  let controller = LumeController(runLockProbe: StubRunLockProbe(holdersByPath: [:]))
 +  let controller = LumeController()
-@@ -503,2 +661,2 @@ func vncEnabledStatusStillUsesPortProbe() throws {
+@@ -503,2 +694,2 @@ func vncEnabledStatusStillUsesPortProbe() throws {
 -  let details = try controller.getDetails(name: "vnc-stale", storage: storage.path)
 -  #expect(details.status == "stopped")
 +  let details = try controller.getDetails(name: "replaced-config", storage: storage.path)
 +  #expect(details.status == "unknown")
-@@ -506 +664 @@ func vncEnabledStatusStillUsesPortProbe() throws {
+@@ -506 +697 @@ func vncEnabledStatusStillUsesPortProbe() throws {
 -  #expect(!vmDir.sessionsPath.exists())
 +  #expect(vmDir.sessionsPath.exists())

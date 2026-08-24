@@ -346,9 +346,11 @@ private func detectChipName() -> String {
     process.standardError = Pipe()
 
     guard let _ = try? process.run() else { return "Unknown" }
-    process.waitUntilExit()
-
+    // Drain stdout BEFORE waiting for exit. macOS pipe buffers hold only ~512
+    // bytes; system_profiler output exceeds that, so waiting first deadlocks
+    // (child blocks in write(), parent blocks in waitUntilExit()).
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
 
     for line in output.components(separatedBy: "\n") {
@@ -387,9 +389,12 @@ private func detectSerialNumberFromIOReg() -> String? {
     process.standardError = Pipe()
 
     guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
+    // Drain stdout BEFORE waiting for exit. macOS pipe buffers hold only ~512
+    // bytes and ioreg output far exceeds that, so waiting first deadlocks
+    // (child blocks in write(), parent blocks in waitUntilExit()) — which is
+    // what leaves the serial number unavailable to attestation.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
     return parseSerialNumberFromIOReg(output)
 }
@@ -404,9 +409,10 @@ private func detectSerialNumberFromSystemProfiler() -> String? {
     process.standardError = Pipe()
 
     guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
+    // Drain stdout before waiting to avoid the pipe-buffer deadlock
+    // (see detectSerialNumberFromIOReg above).
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
 
     return parseSerialNumberFromSystemProfiler(output)

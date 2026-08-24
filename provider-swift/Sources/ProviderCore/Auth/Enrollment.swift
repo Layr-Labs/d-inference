@@ -28,16 +28,19 @@ public func macHardwareSerialNumber() -> String? {
     process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
     let pipe = Pipe()
     process.standardOutput = pipe
-    process.standardError = Pipe()
+    process.standardError = FileHandle.nullDevice
 
     do {
         try process.run()
     } catch {
         return nil
     }
-    process.waitUntilExit()
-
+    // Drain stdout BEFORE waiting for exit. macOS pipe buffers hold only
+    // ~512 bytes and ioreg output far exceeds that, so waiting first
+    // deadlocks (child blocks in write(), parent blocks in waitUntilExit()).
+    // This is what leaves the serial number unavailable to attestation.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     guard let text = String(data: data, encoding: .utf8) else { return nil }
 
     for line in text.split(separator: "\n") {

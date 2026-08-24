@@ -102,9 +102,10 @@ public func checkRDMADisabled() -> Bool {
         logger.debug("RDMA check: rdma_ctl not available, assuming safe")
         return true
     }
-    process.waitUntilExit()
-
+    // Drain stdout before waiting to avoid a pipe-buffer deadlock (macOS pipe
+    // buffers are ~512B; waiting before reading hangs a child that fills them).
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
     let disabled = output.trimmingCharacters(in: .whitespacesAndNewlines) == "disabled"
 
@@ -182,9 +183,10 @@ public func checkHardenedRuntimeEnabled() -> Bool {
         logger.warning("Hardened Runtime check: failed to run codesign: \(error)")
         return false
     }
-    process.waitUntilExit()
-
+    // codesign writes to stderr; drain it before waiting to avoid a
+    // pipe-buffer deadlock (macOS pipe buffers are ~512B).
     let data = errPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
 
     // Look for "flags=0x10000(runtime)" which indicates hardened runtime
@@ -243,13 +245,15 @@ public func verifyBundleSignature() throws {
         logger.warning("Could not verify bundle signature: \(error)")
         return // Don't fail if codesign isn't available
     }
+    // Drain stderr BEFORE waiting to avoid a pipe-buffer deadlock (codesign
+    // writes diagnostics to stderr; macOS pipe buffers are ~512B).
+    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
 
     if process.terminationStatus == 0 {
         logger.info("App bundle signature valid")
     } else {
-        let data = errPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = String(data: data, encoding: .utf8) ?? "unknown error"
+        let stderr = String(data: errData, encoding: .utf8) ?? "unknown error"
         throw SecurityError.bundleSignatureInvalid(stderr)
     }
 }
@@ -396,9 +400,10 @@ public func systemVolumeHash() -> String? {
     } catch {
         return nil
     }
-    process.waitUntilExit()
-
+    // Drain stdout before waiting to avoid a pipe-buffer deadlock: diskutil
+    // output exceeds the ~512B macOS pipe buffer, so waiting first hangs.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let output = String(data: data, encoding: .utf8) ?? ""
 
     // Extract hash from snapshot name: com.apple.os.update-<HASH>

@@ -111,16 +111,21 @@ private func detectGPUInfo() throws -> (chipName: String, gpuCores: UInt32) {
 
     let pipe = Pipe()
     process.standardOutput = pipe
-    process.standardError = Pipe()
+    process.standardError = FileHandle.nullDevice
 
     try process.run()
+
+    // Drain stdout BEFORE waiting for exit. macOS pipe buffers hold only
+    // ~512 bytes and system_profiler output exceeds that, so waiting first
+    // deadlocks: the child blocks in write() while the parent blocks in
+    // waitUntilExit(). readDataToEndOfFile() reads until the child closes
+    // stdout, so it also serves as the join point; waitUntilExit() then reaps.
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
 
     guard process.terminationStatus == 0 else {
         return (fallbackChipName(), 0)
     }
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
     guard
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

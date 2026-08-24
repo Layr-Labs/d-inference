@@ -108,12 +108,14 @@ public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentSt
         logger.debug("profiles status failed to launch: \(error)")
         return .checkFailed
     }
-    process.waitUntilExit()
-
+    // Drain stdout BEFORE waiting for exit to avoid a pipe-buffer deadlock:
+    // macOS pipe buffers hold ~512 bytes, so a child that fills the buffer
+    // blocks in write() while the parent blocks in waitUntilExit().
     let output = String(
         data: outPipe.fileHandleForReading.readDataToEndOfFile(),
         encoding: .utf8
     ) ?? ""
+    process.waitUntilExit()
 
     if process.terminationStatus != 0
         && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

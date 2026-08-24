@@ -86,7 +86,7 @@ record_header() {
         "$SCRIPT_DIR/main.swift" \
         "$SCRIPT_DIR/run.sh" \
         | tr '\n' ';')"
-    echo "CONTRACT=strict-BF16xBF16-to-FP32-supported-cooperative-load-store"
+    echo "CONTRACT=strict-BF16xBF16-to-FP32-cooperative-or-tensor-input-cooperative-store"
     echo "THRESHOLD_TFLOPS=22"
     echo "SERVING_CODE_CHANGED=no"
 }

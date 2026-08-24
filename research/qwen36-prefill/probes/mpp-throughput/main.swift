@@ -185,7 +185,7 @@ private func run() throws {
         "CONTRACT=BF16xBF16-to-FP32"
             + " relaxed_precision=false"
             + " mode=multiply_accumulate"
-            + " inputs=supported-cooperative-load"
+            + " inputs=supported-cooperative-load-or-direct-tensor"
             + " output=supported-cooperative-store"
             + " accumulator=one-cooperative-FP32-across-logical-K"
             + " steel=simdgroup-8x8x8-FP32")

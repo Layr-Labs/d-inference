@@ -1,0 +1,21 @@
+PROBE=mpp-qwen-arithmetic-roof
+DATE_UTC=2026-08-24T07:14:22Z
+HOST=gaj’s MacBook Pro
+HW_MODEL=Mac15,9
+OS=26.4
+XCODE=Xcode 26.5;Build version 17F42;
+METAL=Apple metal version 32023.883 (metalfe-32023.883);Target: air64-apple-darwin25.4.0;Thread model: posix;InstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin;
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; finishing charge; 0:08 remaining present: true
+ powermode            2
+SOURCE_SHA256=69af9dae9a284ab12deec8fee7233db78871e412e4591e3e1ff8e03e8014d492  /Users/gaj/work/qwen36-prefill/probes/mpp-reduction/perf.metal;28e4bfffbe3056bb0f3225c2d70e03aa20f98e043425ee10ff86bbb97074d759  /Users/gaj/work/qwen36-prefill/probes/mpp-reduction/perf.swift;
+CORRECTNESS variant=mpp-static-k16 fp32_changed=0/512 bf16_changed=0/512 max_abs=0
+CORRECTNESS variant=mpp-dynamic-k8 fp32_changed=0/512 bf16_changed=0/512 max_abs=0
+DEVICE=Apple M3 Max
+WORK tiles=8192 repeats=128 useful_flops=17179869184
+PERF variant=steel-k8x2 gpu_median_ms=1.2562 gpu_p10_ms=1.2560 gpu_p90_ms=1.2609 wall_median_ms=1.5319 tflops=13.68 n=15
+PERF variant=mpp-static-k16 gpu_median_ms=1.2519 gpu_p10_ms=1.2516 gpu_p90_ms=1.2522 wall_median_ms=1.5506 tflops=13.72 n=15
+PERF variant=mpp-dynamic-k8 gpu_median_ms=5.1277 gpu_p10_ms=5.1193 gpu_p90_ms=5.1335 wall_median_ms=5.3934 tflops=3.35 n=15
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; finishing charge; 0:08 remaining present: true
+ powermode            2

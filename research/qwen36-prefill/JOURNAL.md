@@ -337,3 +337,18 @@ the M3 fallback, not because MPP arithmetic is inherently incompatible.
 Candidate A reopens only through supported cooperative load/store.
 Timing is next; no serving integration yet. See `notes/042`.
 
+## 2026-08-24T07:14Z — E13 strict MPP hard roof
+
+Supported, bit-identical BF16×BF16→FP32 MPP versus Steel, 17.18 GFLOP
+per dispatch, 15 GPU-timestamped samples:
+
+- Steel K8×2: **13.68 TFLOPS**;
+- static K16 MPP: **13.72 TFLOPS** (1.003×);
+- dynamic K8 MPP: **3.35 TFLOPS**.
+
+The note-026 continuation threshold was ≥22 TFLOPS. At 13.72, B=4×8K
+linear work alone needs 159.692/13.72 = **11.64 s**, above the entire
+2.5× target of **8.415 s**, even with every non-linear operation free.
+
+Same-quality 2.5× on M3 is physically closed. See `notes/043`.
+

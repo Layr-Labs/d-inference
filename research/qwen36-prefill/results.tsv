@@ -60,6 +60,9 @@ e11-native-uint4-correctness	2026-08-24T07:04:57Z	m3-max-128gb-2	a05f1d5f	standa
 e12-mpp-static-k16-correctness	2026-08-24T07:09:23Z	m3-max-128gb-2	mpp-reduction-probe	standalone-metal-probe	2	yes	E12-MPP-reduction	supported-static-k16	16	1	correctness	1	pass	pass	pending	bit-identical 1536/1536 outputs vs Steel K8x2
 e12-mpp-dynamic-k8-correctness	2026-08-24T07:09:23Z	m3-max-128gb-2	mpp-reduction-probe	standalone-metal-probe	2	yes	E12-MPP-reduction	supported-dynamic-k8	16	1	correctness	1	pass	pass	pending	QMM/Qwen tolerance pass; BF16 output bit-identical
 e12-mpp-mlx-manual-layout	2026-08-24T07:09:23Z	m3-max-128gb-2	mpp-reduction-probe	standalone-metal-probe	2	yes	E12-MPP-reduction	mlx-manual-register-layout	16	1	correctness	0	pass	fail	no	up to 512/512 BF16 outputs changed; explains E6/E8
+e13-steel-arithmetic-roof	2026-08-24T07:14:22Z	m3-max-128gb-2	7104f8c1	standalone-metal-probe	2	yes	E13-MPP-roof	steel-k8x2	2048	1	tflops	13.68	TFLOPS	1.00	roof	GPU timestamps; 15 samples; bit-identical reference
+e13-mpp-static-k16-roof	2026-08-24T07:14:22Z	m3-max-128gb-2	7104f8c1	standalone-metal-probe	2	yes	E13-MPP-roof	strict-static-k16	2048	1	tflops	13.72	TFLOPS	1.003x	roof	bit-identical; below 22 TFLOPS stop threshold
+e13-mpp-dynamic-k8-roof	2026-08-24T07:14:22Z	m3-max-128gb-2	7104f8c1	standalone-metal-probe	2	yes	E13-MPP-roof	strict-dynamic-k8	2048	1	tflops	3.35	TFLOPS	0.245x	no	bit-identical but 4.1x slower than static
 
 
 

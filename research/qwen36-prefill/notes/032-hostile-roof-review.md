@@ -50,12 +50,14 @@ For both routed projections in the benchmark:
 assignments = 16,384
 
 gate_up: 2 × 16,384 × 2,048 × 1,024 = 68.719476736 GFLOP
-down:    2 × 16,384 ×   512 × 2,048 = 68.719476736 GFLOP
+down:    2 × 16,384 ×   512 × 2,048 = 34.359738368 GFLOP
 ```
 
 Counting one multiply and one add as two useful model FLOPs is internally
 consistent with the project ledger and common advertised GPU FLOP rates. The
-reported effective rates reproduce from those counts and the logged medians.
+reported effective rates reproduce from those projection-specific counts and
+the logged medians. Treating the two projections as equal-work would overstate
+the down path by 2×.
 
 That is only a **useful-work** count. Affine W4 QMM also unpacks nibbles,
 loads scale/bias values, computes dequantized values, casts them, builds or
@@ -109,8 +111,8 @@ The measured wall-time cross-check is even more direct. E3's two routed
 medians imply:
 
 ```text
-(6.3125 ms + 3.3834 ms) × 40 layers = 0.3878 s
-0.3878 / 1.2253 s B=1 2K baseline    = 31.7% of wall
+(6.3132 ms + 3.3636 ms) × 40 layers = 0.3871 s
+0.3871 / 1.2253 s B=1 2K baseline    = 31.6% of wall
 ```
 
 E1 gave approximately 0.404 s, or 33.0%. Making that measured route 1.13×
@@ -172,10 +174,10 @@ and not an exhaustive kernel search.
 
 It is intentionally favorable in several ways:
 
-- one 4 MiB BF16 matrix is reused for every row;
+- one 2–4 MiB BF16 matrix is reused for every row;
 - all dimensions are tile-aligned;
 - expert routing and dequantization are absent;
-- the output is already warm after three iterations.
+- kernel, allocator, and cache state receive three warmup iterations.
 
 Those properties make it a useful implementation control. They do not make
 its 12.3 TFLOP/s an upper bound. It can still lose to:
@@ -500,8 +502,9 @@ No extrapolation from B=1 or 2K is accepted.
 
 ### R2 — Weighted all-projection kernel roof
 
-At all real dense row counts and routed assignment counts
-`8K/16K/32K/65K`, benchmark:
+At every row count found by R1, including dense
+`N ∈ {512, 1,024, 2,048, 4,096, 8,192}` and routed
+`M=8N ∈ {4,096, 8,192, 16,384, 32,768, 65,536}`, benchmark:
 
 1. shipping Steel W4 QMM/gather-QMM;
 2. current dense BF16 Steel GEMM/gather-MM;

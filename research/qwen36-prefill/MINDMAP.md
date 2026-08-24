@@ -146,13 +146,17 @@ per-weight BF16 rounding boundary and failed 512/512 adversarial outputs
 E12 found supported MPP cooperative load/store is bit-identical at
 static K16; dynamic K8 passes existing tolerances. MLX NAX failed because
 its manual cooperative-register mapping is invalid on M3 (`notes/042`).
-Candidate A survived to a Qwen-shape timing gate.
+Candidate A survives to a Qwen-shape timing gate.
 
-E13 measured that supported static-K16 schedule over eight M=2048 K/N
-shapes. It was bit-identical to Steel, but delivered only 12.6478 weighted
-useful GPU TFLOP/s versus Steel's 11.0401 (1.1456×), far below the 22
-continuation gate (`notes/043`). Candidate A is dead on this M3 schedule;
-no serving integration.
+E13 closes Candidate A: strict MPP = 13.72 TFLOPS versus Steel 13.68;
+dynamic K8 = 3.35. At that optimistic arithmetic-only roof, B=4×8K
+linear work alone takes 11.64 s > the full 8.415 s 2.5× target
+(`notes/043`). Same-quality M3 2.5× is physically closed.
+
+E14 repeats the static-K16 route with complete M=2048 matrices, eight real
+K/N cells, and a model-work harmonic. It remains bit-identical but delivers
+only 12.6478 weighted GPU TFLOP/s versus Steel's 11.0401 (1.1456×), confirming
+the stop with the stricter full-shape ABBA protocol (`notes/044`).
 
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

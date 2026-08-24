@@ -337,17 +337,32 @@ the M3 fallback, not because MPP arithmetic is inherently incompatible.
 Candidate A reopens only through supported cooperative load/store.
 Timing is next; no serving integration yet. See `notes/042`.
 
-## 2026-08-24T07:19Z — E13 supported MPP throughput is below gate
+## 2026-08-24T07:14Z — E13 strict MPP hard roof
 
-The standalone static-K16 MPP path retained one FP32 cooperative
+Supported, bit-identical BF16×BF16→FP32 MPP versus Steel, 17.18 GFLOP
+per dispatch, 15 GPU-timestamped samples:
+
+- Steel K8×2: **13.68 TFLOPS**;
+- static K16 MPP: **13.72 TFLOPS** (1.003×);
+- dynamic K8 MPP: **3.35 TFLOPS**.
+
+The note-026 continuation threshold was ≥22 TFLOPS. At 13.72, B=4×8K
+linear work alone needs 159.692/13.72 = **11.64 s**, above the entire
+2.5× target of **8.415 s**, even with every non-linear operation free.
+
+Same-quality 2.5× on M3 is physically closed. See `notes/043`.
+
+## 2026-08-24T07:19Z — E14 full-shape weighted MPP confirms stop
+
+The stricter standalone static-K16 probe retained one FP32 cooperative
 accumulator across K and matched the actual Steel/simdgroup FP32 control
-bit-for-bit on all 37,289,984 outputs across eight M=2048 K/N shapes.
+bit-for-bit on all 37,289,984 outputs across eight full M=2048 K/N shapes.
 
 Under AC/High Power, 16 GPU-complete ABBA samples per arm/cell gave
 12.6478 weighted useful GPU TFLOP/s for MPP versus 11.0401 for Steel
 (1.1456×). The primary K2048×N1024 cell reached 12.5791 TFLOP/s.
 
-This is far below the preregistered 22 TFLOP/s continuation gate.
-Candidate A is correct but dead on this M3 schedule; no dequant/gather
-or serving integration. See `notes/043` and the complete raw artifact.
+This full-matrix, real-work-weighted result confirms E13 far below the
+22 TFLOP/s continuation gate. No dequant/gather or serving integration.
+See `notes/044` and the complete raw artifact.
 

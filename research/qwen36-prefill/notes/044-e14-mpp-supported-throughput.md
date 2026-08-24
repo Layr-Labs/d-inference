@@ -1,4 +1,4 @@
-# 043 — Supported Metal 4 MPP BF16→FP32 throughput gate
+# 044 — E14 supported Metal 4 MPP full-shape throughput gate
 
 Status: **complete — correct, but 12.65 weighted TFLOP/s misses the 22
 continuation gate**
@@ -7,10 +7,12 @@ continuation gate**
 
 Note 042 established that the supported Metal 4 cooperative-tensor
 `load`/`store` route can preserve the incumbent reduction contract on the M3
-fallback. This experiment asks the next, narrower question:
+fallback. Note 043 then measured a cache-resident repeated-tile arithmetic
+roof of 13.72 TFLOP/s, already below the stop threshold. This stricter
+follow-up asks:
 
-> Does static-K16 MPP BF16×BF16→FP32 sustain at least 22 useful TFLOP/s over a
-> Qwen-relevant dense K/N mix on the M3 Max?
+> Does static-K16 MPP BF16×BF16→FP32 sustain at least 22 useful TFLOP/s over
+> complete M=2048 matrices and a Qwen-relevant dense K/N mix on the M3 Max?
 
 This is an isolated arithmetic probe. It does not dequantize packed weights,
 gather experts, call MLX, or change serving.
@@ -193,7 +195,8 @@ load/store, but it misses the preregistered continuation threshold by 9.35
 TFLOP/s (42.5%). Stop this same-quality MPP line on M3. Do not build the
 dequant/gather path or wire serving from this result.
 
-This is a measured implementation ceiling for the tested M16×N32 static-K16
+This full-shape weighted result confirms E13's optimistic cached-tile stop.
+It is a measured implementation ceiling for the tested M16×N32 static-K16
 schedule, not a theorem about every possible MPP tile or a future Apple
 generation. It is nevertheless the requested ratchet: this schedule cannot
 provide the arithmetic rate required by the current 2.5× program.

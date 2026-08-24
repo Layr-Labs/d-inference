@@ -65,8 +65,12 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         let expired = try capacityArbiter.expiredLeases()
         var results: [LumeExpiredLeaseReconciliationResult] = []
         results.reserveCapacity(expired.count)
-        for lease in expired {
+        for observed in expired {
+            var lease = observed
             do {
+                lease = try capacityArbiter.fenceExpiredLease(
+                    scope: observed.scope
+                )
                 try await runtime.stop(
                     name: lease.virtualMachineName,
                     scope: lease.scope

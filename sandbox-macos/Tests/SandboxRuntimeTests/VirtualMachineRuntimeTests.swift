@@ -52,4 +52,22 @@ final class VirtualMachineRuntimeTests: XCTestCase {
             XCTAssertEqual(error as? SandboxRuntimeError, .diskSmallerThanWorkspace)
         }
     }
+
+    func testSpecificationRejectsBootDiskOutsidePolicy() throws {
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        XCTAssertThrowsError(try SandboxVirtualMachineSpecification(
+            name: "sandbox",
+            resources: resources,
+            imageSource: .localTemplate(name: "base"),
+            diskBytes: 101 * SandboxResourcePolicy.gibibyte
+        )) { error in
+            XCTAssertEqual(
+                error as? SandboxRuntimeError,
+                .diskOutsidePolicy(
+                    requested: 101 * SandboxResourcePolicy.gibibyte,
+                    allowed: SandboxDiskPolicy.alpha.bootDiskBytes
+                )
+            )
+        }
+    }
 }

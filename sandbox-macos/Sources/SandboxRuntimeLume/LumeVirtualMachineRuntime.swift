@@ -95,7 +95,8 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
         scope: SandboxOperationScope?,
         operation: SandboxLeaseOperation,
         virtualMachineName: String,
-        resources: SandboxResourceSpecification? = nil
+        resources: SandboxResourceSpecification? = nil,
+        bootDiskBytes: UInt64? = nil
     ) throws -> SandboxLeaseMutationAuthorization? {
         if let capacityArbiter {
             guard let scope else {
@@ -108,7 +109,8 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
                     scope: scope,
                     virtualMachineName: virtualMachineName,
                     operation: operation,
-                    resources: resources
+                    resources: resources,
+                    bootDiskBytes: bootDiskBytes
                 )
             } catch SandboxCapacityError.leaseOperationInProgress {
                 throw SandboxRuntimeError.operationInProgress(

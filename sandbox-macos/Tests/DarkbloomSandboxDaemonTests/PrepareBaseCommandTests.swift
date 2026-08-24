@@ -50,6 +50,13 @@ final class PrepareBaseCommandTests: XCTestCase {
             "--storage", "/vms",
             "--ipsw", "/image.ipsw",
             "--name", "base",
+            "--disk-gib", "101",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+            "--name", "base",
             "--unknown", "value",
         ]))
     }

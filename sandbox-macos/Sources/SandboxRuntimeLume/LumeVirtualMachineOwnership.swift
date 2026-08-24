@@ -28,6 +28,11 @@ enum LumeVirtualMachineOwnership {
         let installationID: UUID
     }
 
+    enum Presence: Equatable, Sendable {
+        case absent
+        case owned(Identity)
+    }
+
     static func write(
         specification: SandboxVirtualMachineSpecification,
         owner: Owner,
@@ -147,6 +152,27 @@ enum LumeVirtualMachineOwnership {
         return Identity(installationID: record.installationID)
     }
 
+    static func presence(
+        name: String,
+        owner: Owner,
+        in storageDirectory: URL
+    ) throws -> Presence {
+        guard let record = try loadIfPresent(
+            name: name,
+            from: storageDirectory
+        ) else {
+            return .absent
+        }
+        guard record.name == name,
+              record.matches(owner: owner)
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) belongs to a different Darkbloom sandbox scope"
+            )
+        }
+        return .owned(Identity(installationID: record.installationID))
+    }
+
     static func matches(
         specification: SandboxVirtualMachineSpecification,
         owner: Owner,
@@ -165,6 +191,21 @@ enum LumeVirtualMachineOwnership {
         name: String,
         from storageDirectory: URL
     ) throws -> Record {
+        guard let record = try loadIfPresent(
+            name: name,
+            from: storageDirectory
+        ) else {
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) is not owned by Darkbloom"
+            )
+        }
+        return record
+    }
+
+    private static func loadIfPresent(
+        name: String,
+        from storageDirectory: URL
+    ) throws -> Record? {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -176,6 +217,9 @@ enum LumeVirtualMachineOwnership {
             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
         )
         guard virtualMachineDescriptor >= 0 else {
+            if errno == ENOENT {
+                return nil
+            }
             throw SandboxRuntimeError.unsupported(
                 "VM \(name) is not owned by Darkbloom"
             )

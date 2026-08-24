@@ -71,6 +71,14 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertEqual(first.issuedAt, now)
         XCTAssertEqual(first.workspaceBytes, resources.workspaceBytes)
         XCTAssertEqual(
+            first.bootDiskBytes,
+            SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound
+        )
+        XCTAssertEqual(
+            first.reservedGrowthBytes,
+            126 * SandboxResourcePolicy.gibibyte
+        )
+        XCTAssertEqual(
             try arbiter.reserve(
                 sandboxID: firstID,
                 generation: try generation(1),
@@ -127,13 +135,13 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
     }
 
-    func testEnforcesAggregateWorkspaceReservation() throws {
+    func testEnforcesAggregateBootAndWorkspaceGrowthReservation() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let arbiter = try makeArbiter(
             stateDirectory: stateDirectory,
-            maximumWorkspaceGiB: 50
+            maximumGrowthGiB: 151
         )
         try initializeDedicated(arbiter)
         _ = try arbiter.reserve(
@@ -152,6 +160,50 @@ final class HostCapacityArbiterTests: XCTestCase {
                 resources: try makeResources(workspaceGiB: 25),
                 expiresAt: now.addingTimeInterval(120)
             )
+        }
+    }
+
+    func testStorageHeadroomIsRevalidatedAgainstLiveAvailability() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let storage = TestStorageAvailability(
+            300 * SandboxResourcePolicy.gibibyte
+        )
+        let arbiter = try SandboxHostCapacityArbiter(
+            stateDirectory: stateDirectory,
+            policy: SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
+            ),
+            currentDate: { clock.now() },
+            availableStorageBytes: { storage.available() }
+        )
+        try initializeDedicated(arbiter)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-storage-headroom",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        XCTAssertEqual(
+            try arbiter.validateStorageHeadroom().reservedGrowthBytes,
+            lease.reservedGrowthBytes
+        )
+        storage.set(145 * SandboxResourcePolicy.gibibyte)
+
+        assertCapacityError(.insufficientHostStorage(
+            needed: 146 * SandboxResourcePolicy.gibibyte,
+            available: 145 * SandboxResourcePolicy.gibibyte
+        )) {
+            _ = try arbiter.validateStorageHeadroom()
         }
     }
 
@@ -310,6 +362,14 @@ final class HostCapacityArbiterTests: XCTestCase {
                 resources: try makeResources(workspaceGiB: 50)
             )
         }
+        assertCapacityError(.leaseResourceMismatch) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .create,
+                bootDiskBytes: 99 * SandboxResourcePolicy.gibibyte
+            )
+        }
         let staleScope = SandboxOperationScope(
             sandboxID: lease.scope.sandboxID,
             generation: lease.scope.generation,
@@ -454,6 +514,58 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testExpiryFenceRotatesAuthorityBeforeCleanup() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
+        try initializeDedicated(arbiter)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-expiry-fence",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        assertCapacityError(.leaseNotExpired) {
+            _ = try arbiter.fenceExpiredLease(scope: lease.scope)
+        }
+        clock.set(lease.expiresAt)
+
+        let fenced = try arbiter.fenceExpiredLease(scope: lease.scope)
+
+        XCTAssertEqual(fenced.expiresAt, lease.expiresAt)
+        XCTAssertGreaterThan(
+            fenced.scope.fencingToken,
+            lease.scope.fencingToken
+        )
+        assertCapacityError(.staleFencingToken) {
+            try arbiter.release(scope: lease.scope)
+        }
+        XCTAssertEqual(
+            try arbiter.authorize(
+                scope: fenced.scope,
+                virtualMachineName: fenced.virtualMachineName,
+                operation: .stop
+            ),
+            fenced
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(arbiter.expiredLeases().first),
+            fenced
+        )
+        let refenced = try arbiter.fenceExpiredLease(scope: fenced.scope)
+        XCTAssertGreaterThan(
+            refenced.scope.fencingToken,
+            fenced.scope.fencingToken,
+            "a crash retry must durably revoke the prior cleanup attempt"
+        )
+    }
+
     func testRenewReportsUncertainPublicationAfterDirectorySyncError() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -466,10 +578,13 @@ final class HostCapacityArbiterTests: XCTestCase {
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
                     16 * SandboxResourcePolicy.gibibyte,
-                maximumReservedWorkspaceBytes:
-                    100 * SandboxResourcePolicy.gibibyte
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { clock.now() },
+            availableStorageBytes: { UInt64.max },
             directorySynchronizationError: {
                 synchronizer.synchronizationError(for: $0)
             }
@@ -851,6 +966,8 @@ final class HostCapacityArbiterTests: XCTestCase {
             object["leases"] as? [[String: Any]]
         )
         legacyLeases[0].removeValue(forKey: "workspaceBytes")
+        legacyLeases[0].removeValue(forKey: "bootDiskBytes")
+        legacyLeases[0].removeValue(forKey: "reservedGrowthBytes")
         object["leases"] = legacyLeases
         try JSONSerialization.data(
             withJSONObject: object,
@@ -869,6 +986,10 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertEqual(
             migratedLease.workspaceBytes,
             SandboxResourcePolicy.alpha.workspaceBytes.upperBound
+        )
+        XCTAssertEqual(
+            migratedLease.reservedGrowthBytes,
+            151 * SandboxResourcePolicy.gibibyte
         )
         try migrated.release(scope: lease.scope)
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
@@ -890,7 +1011,8 @@ final class HostCapacityArbiterTests: XCTestCase {
         stateDirectory: URL,
         maximumCPUCount: UInt16 = 8,
         maximumMemoryGiB: UInt64 = 16,
-        maximumWorkspaceGiB: UInt64 = 100,
+        maximumGrowthGiB: UInt64 = 300,
+        availableStorageBytes: UInt64 = UInt64.max,
         clock: TestWallClock? = nil
     ) throws -> SandboxHostCapacityArbiter {
         let clock = clock ?? TestWallClock(
@@ -902,10 +1024,13 @@ final class HostCapacityArbiterTests: XCTestCase {
                 maximumReservedCPUCount: maximumCPUCount,
                 maximumReservedMemoryBytes: maximumMemoryGiB
                     * SandboxResourcePolicy.gibibyte,
-                maximumReservedWorkspaceBytes: maximumWorkspaceGiB
-                    * SandboxResourcePolicy.gibibyte
+                maximumReservedGrowthBytes: maximumGrowthGiB
+                    * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
             ),
-            currentDate: { clock.now() }
+            currentDate: { clock.now() },
+            availableStorageBytes: { availableStorageBytes }
         )
     }
 
@@ -1012,6 +1137,27 @@ private final class TestWallClock: @unchecked Sendable {
     }
 
     func set(_ value: Date) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
+    }
+}
+
+private final class TestStorageAvailability: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64
+
+    init(_ value: UInt64) {
+        self.value = value
+    }
+
+    func available() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: UInt64) {
         lock.lock()
         self.value = value
         lock.unlock()

@@ -117,6 +117,8 @@ enum PrepareBaseCommand {
                   let cpu = UInt16(values["--cpu"] ?? "4"),
                   let memory = UInt64(values["--memory-gib"] ?? "8"),
                   let disk = UInt64(values["--disk-gib"] ?? "100"),
+                  disk == SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound
+                    / SandboxResourcePolicy.gibibyte,
                   lume.hasPrefix("/"),
                   storage.hasPrefix("/"),
                   ipsw.hasPrefix("/")

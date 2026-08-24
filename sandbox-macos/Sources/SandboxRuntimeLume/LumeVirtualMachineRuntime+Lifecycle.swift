@@ -15,20 +15,35 @@ extension LumeVirtualMachineRuntime {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
         }
-        let leaseAuthorization = try authorize(
-            scope: scope,
-            operation: .inspect,
-            virtualMachineName: name
-        )
-        defer { withExtendedLifetime(leaseAuthorization) {} }
-        let record = try await inspect(name: name)
-        if record != nil {
-            _ = try LumeVirtualMachineOwnership.requireOwned(
-                name: name,
-                owner: .init(operationScope: scope),
-                in: configuration.storageDirectory
+        guard let capacityArbiter else {
+            throw SandboxRuntimeError.unsupported(
+                "lease-fenced Lume operation requires a capacity arbiter"
             )
         }
+        _ = try capacityArbiter.authorize(
+            scope: scope,
+            virtualMachineName: name,
+            operation: .inspect
+        )
+        let record = try await inspect(name: name)
+        let ownership = try LumeVirtualMachineOwnership.presence(
+            name: name,
+            owner: .init(operationScope: scope),
+            in: configuration.storageDirectory
+        )
+        switch (record, ownership) {
+        case (.some, .owned), (.none, .absent):
+            break
+        case (.some, .absent), (.none, .owned):
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) runtime and ownership presence disagree"
+            )
+        }
+        _ = try capacityArbiter.authorize(
+            scope: scope,
+            virtualMachineName: name,
+            operation: .inspect
+        )
         return record
     }
 
@@ -55,7 +70,8 @@ extension LumeVirtualMachineRuntime {
             scope: scope,
             operation: .create,
             virtualMachineName: specification.name,
-            resources: specification.resources
+            resources: specification.resources,
+            bootDiskBytes: specification.diskBytes
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
         let owner = LumeVirtualMachineOwnership.Owner(
@@ -119,8 +135,15 @@ extension LumeVirtualMachineRuntime {
                 "--network", "nat",
             ])
         case .localTemplate(let template):
-            guard try await inspect(name: template) != nil else {
+            guard let templateRecord = try await inspect(name: template) else {
                 throw SandboxRuntimeError.invalidImageReference
+            }
+            guard templateRecord.diskBytes == specification.diskBytes else {
+                throw SandboxRuntimeError.templateBootDiskMismatch(
+                    template: template,
+                    requested: specification.diskBytes,
+                    actual: templateRecord.diskBytes
+                )
             }
             let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
                 name: template,
@@ -141,6 +164,9 @@ extension LumeVirtualMachineRuntime {
         )
 
         do {
+            if let capacityArbiter {
+                _ = try capacityArbiter.validateStorageHeadroom()
+            }
             _ = try await run(
                 arguments: arguments,
                 timeoutSeconds: configuration.createTimeoutSeconds,

@@ -150,10 +150,13 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
                     16 * SandboxResourcePolicy.gibibyte,
-                maximumReservedWorkspaceBytes:
-                    100 * SandboxResourcePolicy.gibibyte
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
             ),
-            currentDate: { clock.now() }
+            currentDate: { clock.now() },
+            availableStorageBytes: { UInt64.max }
         )
         _ = try arbiter.initialize()
         _ = try arbiter.setMode(.sandboxDedicated)
@@ -241,7 +244,9 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
-    func testLeaseFencedInspectLinearizesBeforeRenewal() async throws {
+    func testLeaseFencedInspectRejectsRenewedFenceWithoutBlockingRenewal()
+        async throws
+    {
         let fixture = try FakeLumeFixture(
             behavior: "block-first-list"
         )
@@ -258,10 +263,13 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
                     16 * SandboxResourcePolicy.gibibyte,
-                maximumReservedWorkspaceBytes:
-                    100 * SandboxResourcePolicy.gibibyte
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
             ),
-            currentDate: { clock.now() }
+            currentDate: { clock.now() },
+            availableStorageBytes: { UInt64.max }
         )
         _ = try arbiter.initialize()
         _ = try arbiter.setMode(.sandboxDedicated)
@@ -303,20 +311,199 @@ final class LumeRuntimeFailureTests: XCTestCase {
         while !(await status.started) {
             try await Task.sleep(for: .milliseconds(10))
         }
-        try await Task.sleep(for: .milliseconds(100))
+        let waitClock = ContinuousClock()
+        let completionDeadline = waitClock.now.advanced(by: .seconds(2))
+        while !(await status.completed),
+              waitClock.now < completionDeadline
+        {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let completedWhileInspecting = await status.completed
-        XCTAssertFalse(
+        XCTAssertTrue(
             completedWhileInspecting,
-            "renewal must not rotate the fence during inspection"
+            "inspection must not hold the lease lock across Lume I/O"
         )
 
         try fixture.allowListToContinue()
-        let record = try await inspection.value
-        XCTAssertEqual(record?.name, fixture.virtualMachineName)
         let renewed = try await renewal.value
         XCTAssertGreaterThan(
             renewed.scope.fencingToken,
             lease.scope.fencingToken
+        )
+        do {
+            _ = try await inspection.value
+            XCTFail("inspection must discard an observation under a stale fence")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .staleFencingToken)
+        }
+    }
+
+    func testLeaseFencedInspectRejectsReleaseDuringObservation()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(behavior: "block-first-list")
+        defer { try? fixture.remove() }
+        defer { try? fixture.allowListToContinue() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let inspection = Task {
+            try await runtime.inspect(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+        }
+        try await fixture.waitForListToStart()
+
+        try arbiter.release(scope: lease.scope)
+        try fixture.allowListToContinue()
+
+        do {
+            _ = try await inspection.value
+            XCTFail("inspection must discard a released lease observation")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseNotFound)
+        }
+    }
+
+    func testLeaseFencedInspectRejectsListedVMWithoutOwnership() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        try FileManager.default.removeItem(at: fixture.ownershipMarker)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        do {
+            _ = try await runtime.inspect(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("listed VM without ownership must fail closed")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "VM \(fixture.virtualMachineName) is not owned by Darkbloom"
+                )
+            )
+        }
+    }
+
+    func testLeaseFencedInspectRejectsOwnershipWithoutListedVM()
+        async throws
+    {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        try FileManager.default.removeItem(at: fixture.state)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        do {
+            _ = try await runtime.inspect(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("ownership without a listed VM must fail closed")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "VM \(fixture.virtualMachineName) runtime and ownership presence disagree"
+                )
+            )
+        }
+    }
+
+    func testCreateRechecksStorageHeadroomBeforeLumeMutation() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let storage = LumeTestStorageAvailability(
+            300 * SandboxResourcePolicy.gibibyte
+        )
+        let arbiter = try fixture.makeCapacityArbiter(
+            clock: clock,
+            availableStorageBytes: { storage.available() }
+        )
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: resources,
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let specification = try SandboxVirtualMachineSpecification(
+            name: fixture.virtualMachineName,
+            resources: resources,
+            imageSource: .restoreImage(
+                url: fixture.restoreImage,
+                unattendedPreset: "tahoe"
+            ),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        storage.set(145 * SandboxResourcePolicy.gibibyte)
+
+        do {
+            try await runtime.create(
+                scope: lease.scope,
+                specification: specification
+            )
+            XCTFail("create must fail before Lume when headroom disappears")
+        } catch let error as SandboxRuntimeError {
+            XCTFail("storage rejection cleanup failed unexpectedly: \(error)")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(
+                error,
+                .insufficientHostStorage(
+                    needed: 146 * SandboxResourcePolicy.gibibyte,
+                    available: 145 * SandboxResourcePolicy.gibibyte
+                )
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.createStarted.path
+            )
         )
     }
 
@@ -341,9 +528,12 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
         let results = try await runtime.reconcileExpiredLeases()
 
-        XCTAssertEqual(
-            results,
-            [.init(lease: lease, outcome: .released)]
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .released)
+        XCTAssertEqual(results[0].lease.scope.sandboxID, lease.scope.sandboxID)
+        XCTAssertGreaterThan(
+            results[0].lease.scope.fencingToken,
+            lease.scope.fencingToken
         )
         try await fixture.waitForState("stopped")
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
@@ -384,7 +574,12 @@ final class LumeRuntimeFailureTests: XCTestCase {
             return XCTFail("ownership failure must retain the lease")
         }
         XCTAssertTrue(detail.contains("different Darkbloom sandbox scope"))
-        XCTAssertEqual(try arbiter.snapshot().leases, [lease])
+        let retained = try XCTUnwrap(arbiter.snapshot().leases.first)
+        XCTAssertEqual(retained, results[0].lease)
+        XCTAssertGreaterThan(
+            retained.scope.fencingToken,
+            lease.scope.fencingToken
+        )
         try await fixture.waitForState("running")
     }
 
@@ -1184,6 +1379,38 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testCloneRejectsTemplateBootDiskMismatchBeforeMutation() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+        let requestedDisk = 99 * SandboxResourcePolicy.gibibyte
+        let specification = try SandboxVirtualMachineSpecification(
+            name: "sandbox-clone-mismatch",
+            resources: SandboxResourceSpecification.macOSSmall(),
+            imageSource: .localTemplate(
+                name: fixture.virtualMachineName
+            ),
+            diskBytes: requestedDisk,
+            diskPolicy: SandboxDiskPolicy(
+                bootDiskBytes: requestedDisk...requestedDisk
+            )
+        )
+
+        do {
+            try await runtime.create(specification)
+            XCTFail("clone must reject a boot-disk mismatch before Lume")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .templateBootDiskMismatch(
+                    template: fixture.virtualMachineName,
+                    requested: requestedDisk,
+                    actual: 100 * SandboxResourcePolicy.gibibyte
+                )
+            )
+        }
+    }
+
     func testDeleteRemovesStoppedOwnedVirtualMachine() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }
@@ -1840,7 +2067,9 @@ private struct FakeLumeFixture {
     }
 
     func makeCapacityArbiter(
-        clock: LumeTestWallClock
+        clock: LumeTestWallClock,
+        availableStorageBytes:
+            @escaping @Sendable () throws -> UInt64 = { UInt64.max }
     ) throws -> SandboxHostCapacityArbiter {
         let arbiter = try SandboxHostCapacityArbiter(
             stateDirectory: directory.appendingPathComponent(
@@ -1851,10 +2080,13 @@ private struct FakeLumeFixture {
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
                     16 * SandboxResourcePolicy.gibibyte,
-                maximumReservedWorkspaceBytes:
-                    100 * SandboxResourcePolicy.gibibyte
+                maximumReservedGrowthBytes:
+                    300 * SandboxResourcePolicy.gibibyte,
+                storageHeadroomBytes:
+                    20 * SandboxResourcePolicy.gibibyte
             ),
-            currentDate: { clock.now() }
+            currentDate: { clock.now() },
+            availableStorageBytes: availableStorageBytes
         )
         _ = try arbiter.initialize()
         _ = try arbiter.setMode(.sandboxDedicated)
@@ -2344,6 +2576,27 @@ private final class LumeTestWallClock: @unchecked Sendable {
     }
 
     func set(_ value: Date) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
+    }
+}
+
+private final class LumeTestStorageAvailability: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64
+
+    init(_ value: UInt64) {
+        self.value = value
+    }
+
+    func available() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: UInt64) {
         lock.lock()
         self.value = value
         lock.unlock()

@@ -1,6 +1,20 @@
 import Foundation
 import SandboxCore
 
+public struct SandboxDiskPolicy: Equatable, Sendable {
+    public let bootDiskBytes: ClosedRange<UInt64>
+
+    public init(bootDiskBytes: ClosedRange<UInt64>) {
+        self.bootDiskBytes = bootDiskBytes
+    }
+
+    public static let alpha = SandboxDiskPolicy(
+        bootDiskBytes:
+            (100 * SandboxResourcePolicy.gibibyte)
+            ... (100 * SandboxResourcePolicy.gibibyte)
+    )
+}
+
 public enum SandboxVirtualMachineState: String, Codable, CaseIterable, Sendable {
     case stopped
     case starting
@@ -47,7 +61,8 @@ public struct SandboxVirtualMachineSpecification: Equatable, Sendable {
         name: String,
         resources: SandboxResourceSpecification,
         imageSource: SandboxVirtualMachineImageSource,
-        diskBytes: UInt64
+        diskBytes: UInt64,
+        diskPolicy: SandboxDiskPolicy = .alpha
     ) throws {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard SandboxVirtualMachineNamePolicy.isValid(normalizedName) else {
@@ -56,6 +71,12 @@ public struct SandboxVirtualMachineSpecification: Equatable, Sendable {
         let normalizedImageSource = try imageSource.normalized()
         guard diskBytes >= resources.workspaceBytes else {
             throw SandboxRuntimeError.diskSmallerThanWorkspace
+        }
+        guard diskPolicy.bootDiskBytes.contains(diskBytes) else {
+            throw SandboxRuntimeError.diskOutsidePolicy(
+                requested: diskBytes,
+                allowed: diskPolicy.bootDiskBytes
+            )
         }
         self.name = normalizedName
         self.resources = resources
@@ -139,6 +160,15 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
     case invalidName
     case invalidImageReference
     case diskSmallerThanWorkspace
+    case diskOutsidePolicy(
+        requested: UInt64,
+        allowed: ClosedRange<UInt64>
+    )
+    case templateBootDiskMismatch(
+        template: String,
+        requested: UInt64,
+        actual: UInt64?
+    )
     case executableNotFound(String)
     case operationTimedOut(String)
     case operationInProgress(name: String, operation: String)
@@ -155,6 +185,11 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
             return "VM image reference must not be empty"
         case .diskSmallerThanWorkspace:
             return "VM disk must be at least as large as the workspace quota"
+        case .diskOutsidePolicy(let requested, let allowed):
+            return "VM boot disk \(requested) bytes is outside \(allowed.lowerBound)...\(allowed.upperBound)"
+        case .templateBootDiskMismatch(let template, let requested, let actual):
+            let actualDescription = actual.map(String.init) ?? "unknown"
+            return "VM template \(template) boot disk \(actualDescription) does not match requested \(requested) bytes"
         case .executableNotFound(let executable):
             return "required runtime executable not found: \(executable)"
         case .operationTimedOut(let operation):

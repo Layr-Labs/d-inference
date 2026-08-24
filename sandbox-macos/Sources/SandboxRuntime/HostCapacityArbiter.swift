@@ -5,34 +5,47 @@ public struct SandboxHostCapacityArbiter: Sendable {
     private let store: SandboxCapacityStateStore
     private let policy: SandboxCapacityPolicy
     private let currentDate: @Sendable () -> Date
+    private let availableStorageBytes: @Sendable () throws -> UInt64
 
     public init(
         stateDirectory: URL,
+        storageDirectory: URL,
         policy: SandboxCapacityPolicy
     ) throws {
+        let inspector = SandboxStorageVolumeInspector()
         try self.init(
             stateDirectory: stateDirectory,
             policy: policy,
-            currentDate: { Date() }
+            currentDate: { Date() },
+            availableStorageBytes: {
+                try inspector.inspect(
+                    path: storageDirectory
+                ).availableImportantBytes
+            }
         )
-    }
-
-    package init(
-        stateDirectory: URL,
-        policy: SandboxCapacityPolicy,
-        currentDate: @escaping @Sendable () -> Date
-    ) throws {
-        self.store = try SandboxCapacityStateStore(
-            stateDirectory: stateDirectory
-        )
-        self.policy = policy
-        self.currentDate = currentDate
     }
 
     package init(
         stateDirectory: URL,
         policy: SandboxCapacityPolicy,
         currentDate: @escaping @Sendable () -> Date,
+        availableStorageBytes:
+            @escaping @Sendable () throws -> UInt64
+    ) throws {
+        self.store = try SandboxCapacityStateStore(
+            stateDirectory: stateDirectory
+        )
+        self.policy = policy
+        self.currentDate = currentDate
+        self.availableStorageBytes = availableStorageBytes
+    }
+
+    package init(
+        stateDirectory: URL,
+        policy: SandboxCapacityPolicy,
+        currentDate: @escaping @Sendable () -> Date,
+        availableStorageBytes:
+            @escaping @Sendable () throws -> UInt64,
         directorySynchronizationError:
             @escaping @Sendable (Int32) -> Int32?
     ) throws {
@@ -42,6 +55,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
         self.policy = policy
         self.currentDate = currentDate
+        self.availableStorageBytes = availableStorageBytes
     }
 
     @discardableResult
@@ -63,7 +77,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
         scope: SandboxOperationScope,
         virtualMachineName: String,
         operation: SandboxLeaseOperation,
-        resources: SandboxResourceSpecification? = nil
+        resources: SandboxResourceSpecification? = nil,
+        bootDiskBytes: UInt64? = nil
     ) throws -> SandboxCapacityLease {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
@@ -86,6 +101,11 @@ public struct SandboxHostCapacityArbiter: Sendable {
                     throw SandboxCapacityError.leaseResourceMismatch
                 }
             }
+            if let bootDiskBytes {
+                guard lease.bootDiskBytes == bootDiskBytes else {
+                    throw SandboxCapacityError.leaseResourceMismatch
+                }
+            }
             if operation.requiresActiveLease {
                 guard state.mode == .sandboxDedicated else {
                     throw SandboxCapacityError.hostNotAcceptingSandboxes(
@@ -104,7 +124,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
         scope: SandboxOperationScope,
         virtualMachineName: String,
         operation: SandboxLeaseOperation,
-        resources: SandboxResourceSpecification? = nil
+        resources: SandboxResourceSpecification? = nil,
+        bootDiskBytes: UInt64? = nil
     ) throws -> SandboxLeaseMutationAuthorization {
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: scope.sandboxID,
@@ -114,7 +135,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
             scope: scope,
             virtualMachineName: virtualMachineName,
             operation: operation,
-            resources: resources
+            resources: resources,
+            bootDiskBytes: bootDiskBytes
         )
         return SandboxLeaseMutationAuthorization(
             operationLock: operationLock
@@ -146,11 +168,22 @@ public struct SandboxHostCapacityArbiter: Sendable {
         generation: SandboxGeneration,
         virtualMachineName: String,
         resources: SandboxResourceSpecification,
+        bootDiskBytes: UInt64 =
+            SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound,
         expiresAt: Date
     ) throws -> SandboxCapacityLease {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
         }
+        guard SandboxDiskPolicy.alpha.bootDiskBytes.contains(
+            bootDiskBytes
+        ) else {
+            throw SandboxCapacityError.invalidBootDiskBytes
+        }
+        let reservedGrowthBytes = try SandboxStorageReservation.growthBytes(
+            bootDiskBytes: bootDiskBytes,
+            workspaceBytes: resources.workspaceBytes
+        )
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: sandboxID
         )
@@ -177,7 +210,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 guard existing.virtualMachineName == virtualMachineName,
                       existing.cpuCount == resources.cpuCount,
                       existing.memoryBytes == resources.memoryBytes,
-                      existing.workspaceBytes == resources.workspaceBytes
+                      existing.workspaceBytes == resources.workspaceBytes,
+                      existing.bootDiskBytes == bootDiskBytes,
+                      existing.reservedGrowthBytes == reservedGrowthBytes
                 else {
                     throw SandboxCapacityError.staleFencingToken
                 }
@@ -234,30 +269,26 @@ public struct SandboxHostCapacityArbiter: Sendable {
             else {
                 throw SandboxCapacityError.capacityExhausted
             }
-            let reservedWorkspace = try state.leases.reduce(UInt64(0)) {
+            let reservedGrowth = try state.leases.reduce(UInt64(0)) {
                 let (sum, overflow) = $0.addingReportingOverflow(
-                    $1.workspaceBytes
+                    $1.reservedGrowthBytes
                 )
                 guard !overflow else {
                     throw SandboxCapacityError.corruptState
                 }
                 return sum
             }
-            let (newWorkspace, workspaceOverflow) = reservedWorkspace
-                .addingReportingOverflow(resources.workspaceBytes)
-            guard !workspaceOverflow,
-                  newWorkspace <= policy.maximumReservedWorkspaceBytes
+            let (newGrowth, growthOverflow) = reservedGrowth
+                .addingReportingOverflow(reservedGrowthBytes)
+            guard !growthOverflow,
+                  newGrowth <= policy.maximumReservedGrowthBytes
             else {
                 throw SandboxCapacityError.capacityExhausted
             }
-            guard state.nextFencingToken < UInt64.max,
-                  let fencingToken = SandboxFencingToken(
-                      rawValue: state.nextFencingToken
-                  )
-            else {
-                throw SandboxCapacityError.fencingTokenExhausted
-            }
-            state.nextFencingToken += 1
+            _ = try storageCapacitySnapshot(
+                reservedGrowthBytes: newGrowth
+            )
+            let fencingToken = try Self.issueFencingToken(in: &state)
 
             let lease = SandboxCapacityLease(
                 scope: SandboxOperationScope(
@@ -269,6 +300,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 cpuCount: resources.cpuCount,
                 memoryBytes: resources.memoryBytes,
                 workspaceBytes: resources.workspaceBytes,
+                bootDiskBytes: bootDiskBytes,
+                reservedGrowthBytes: reservedGrowthBytes,
                 issuedAt: now,
                 expiresAt: expiresAt
             )
@@ -317,14 +350,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
             if expiresAt == existing.expiresAt {
                 return existing
             }
-            guard state.nextFencingToken < UInt64.max,
-                  let fencingToken = SandboxFencingToken(
-                      rawValue: state.nextFencingToken
-                  )
-            else {
-                throw SandboxCapacityError.fencingTokenExhausted
-            }
-            state.nextFencingToken += 1
+            let fencingToken = try Self.issueFencingToken(in: &state)
             let renewed = SandboxCapacityLease(
                 scope: SandboxOperationScope(
                     sandboxID: existing.scope.sandboxID,
@@ -335,11 +361,49 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 cpuCount: existing.cpuCount,
                 memoryBytes: existing.memoryBytes,
                 workspaceBytes: existing.workspaceBytes,
+                bootDiskBytes: existing.bootDiskBytes,
+                reservedGrowthBytes: existing.reservedGrowthBytes,
                 issuedAt: existing.issuedAt,
                 expiresAt: expiresAt
             )
             state.leases[index] = renewed
             return renewed
+        }
+    }
+
+    public func fenceExpiredLease(
+        scope: SandboxOperationScope
+    ) throws -> SandboxCapacityLease {
+        let operationLock = try store.acquireLeaseOperationLock(
+            sandboxID: scope.sandboxID
+        )
+        defer { withExtendedLifetime(operationLock) {} }
+        return try store.update { state in
+            let index = try Self.leaseIndex(for: scope, in: state.leases)
+            let existing = state.leases[index]
+            guard existing.scope.fencingToken == scope.fencingToken else {
+                throw SandboxCapacityError.staleFencingToken
+            }
+            guard existing.expiresAt <= currentDate() else {
+                throw SandboxCapacityError.leaseNotExpired
+            }
+            let fenced = SandboxCapacityLease(
+                scope: SandboxOperationScope(
+                    sandboxID: existing.scope.sandboxID,
+                    generation: existing.scope.generation,
+                    fencingToken: try Self.issueFencingToken(in: &state)
+                ),
+                virtualMachineName: existing.virtualMachineName,
+                cpuCount: existing.cpuCount,
+                memoryBytes: existing.memoryBytes,
+                workspaceBytes: existing.workspaceBytes,
+                bootDiskBytes: existing.bootDiskBytes,
+                reservedGrowthBytes: existing.reservedGrowthBytes,
+                issuedAt: existing.issuedAt,
+                expiresAt: existing.expiresAt
+            )
+            state.leases[index] = fenced
+            return fenced
         }
     }
 
@@ -368,6 +432,25 @@ public struct SandboxHostCapacityArbiter: Sendable {
         }
     }
 
+    public func validateStorageHeadroom() throws
+        -> SandboxStorageCapacitySnapshot
+    {
+        try store.update { state in
+            let reservedGrowth = try state.leases.reduce(UInt64(0)) {
+                let (sum, overflow) = $0.addingReportingOverflow(
+                    $1.reservedGrowthBytes
+                )
+                guard !overflow else {
+                    throw SandboxCapacityError.corruptState
+                }
+                return sum
+            }
+            return try storageCapacitySnapshot(
+                reservedGrowthBytes: reservedGrowth
+            )
+        }
+    }
+
     private func validateDeadline(_ expiresAt: Date, now: Date) throws {
         let duration = expiresAt.timeIntervalSince(now)
         guard duration.isFinite,
@@ -376,6 +459,47 @@ public struct SandboxHostCapacityArbiter: Sendable {
         else {
             throw SandboxCapacityError.invalidLeaseDeadline
         }
+    }
+
+    private func storageCapacitySnapshot(
+        reservedGrowthBytes: UInt64
+    ) throws -> SandboxStorageCapacitySnapshot {
+        let (neededStorage, overflow) = reservedGrowthBytes
+            .addingReportingOverflow(policy.storageHeadroomBytes)
+        guard !overflow else {
+            throw SandboxCapacityError.capacityExhausted
+        }
+        let available: UInt64
+        do {
+            available = try availableStorageBytes()
+        } catch {
+            throw SandboxCapacityError.storageInspectionFailed
+        }
+        guard available >= neededStorage else {
+            throw SandboxCapacityError.insufficientHostStorage(
+                needed: neededStorage,
+                available: available
+            )
+        }
+        return SandboxStorageCapacitySnapshot(
+            reservedGrowthBytes: reservedGrowthBytes,
+            storageHeadroomBytes: policy.storageHeadroomBytes,
+            availableStorageBytes: available
+        )
+    }
+
+    private static func issueFencingToken(
+        in state: inout SandboxCapacityState
+    ) throws -> SandboxFencingToken {
+        guard state.nextFencingToken < UInt64.max,
+              let fencingToken = SandboxFencingToken(
+                  rawValue: state.nextFencingToken
+              )
+        else {
+            throw SandboxCapacityError.fencingTokenExhausted
+        }
+        state.nextFencingToken += 1
+        return fencingToken
     }
 
     private static func leaseIndex(

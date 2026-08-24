@@ -418,10 +418,20 @@ struct SandboxCapacityStateStore: Sendable {
         let issued = lease.issuedAt.timeIntervalSinceReferenceDate
         let expires = lease.expiresAt.timeIntervalSinceReferenceDate
         let duration = lease.expiresAt.timeIntervalSince(lease.issuedAt)
+        let expectedGrowth = try? SandboxStorageReservation.growthBytes(
+            bootDiskBytes: lease.bootDiskBytes,
+            workspaceBytes: lease.workspaceBytes
+        )
         return SandboxVirtualMachineNamePolicy.isValid(lease.virtualMachineName)
             && lease.cpuCount > 0
             && lease.memoryBytes > 0
-            && lease.workspaceBytes > 0
+            && SandboxResourcePolicy.alpha.workspaceBytes.contains(
+                lease.workspaceBytes
+            )
+            && SandboxDiskPolicy.alpha.bootDiskBytes.contains(
+                lease.bootDiskBytes
+            )
+            && lease.reservedGrowthBytes == expectedGrowth
             && issued.isFinite
             && expires.isFinite
             && duration > 0

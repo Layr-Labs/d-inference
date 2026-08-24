@@ -4,6 +4,9 @@ canary-512	2026-08-24T05:22:20Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-
 b1-512	2026-08-24T05:23:22Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-baseline	none	512	1	prefill_tps	1435	tok/s	1.00	baseline	median of 3; 0.697 ms/t
 b1-2048	2026-08-24T05:23:22Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-baseline	none	2048	1	prefill_tps	1669	tok/s	1.00	baseline	median of 3; 0.599 ms/t
 b1-8192	2026-08-24T05:23:22Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-baseline	none	8192	1	prefill_tps	1555	tok/s	1.00	baseline	median of 3; 0.643 ms/t
-b4-2048-i1	2026-08-24T05:24:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	prefill_tps_from_makespan	1663	tok/s	1.00	pending	makespan 4926ms; log line 211 tok/s is DECODE not prefill
+b4-2048-i1	2026-08-24T05:24:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	prefill_tps_from_makespan	1663	tok/s	1.00	pending	makespan 4926ms; discarded first harness; see official rows
+b4-2048-burst	2026-08-24T05:28:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	prefill_tps	1661	tok/s	0.995	baseline	median 2 burst iters; TTFT 4827/5044; JSON artifacts/baseline-arrival-2048.json
+b4-2048-burst	2026-08-24T05:28:00Z	m3-max-128gb-2	0.8.10-installed	0.8.10	2	yes	H0-burst	none	2048	4	ttft_median	4936	ms	4.03x_vs_b1	baseline	all 4 rows equal TTFT
+
 
 

@@ -177,6 +177,19 @@ enum PreviewCapture {
         message: String,
         data: [String: Any]
     ) {
+        let environment = ProcessInfo.processInfo.environment
+        let logPath: String
+        if let configuredPath = environment["DARKBLOOM_PREVIEW_DEBUG_LOG"] {
+            logPath = configuredPath
+        } else if let previewPath = environment["DARKBLOOM_RENDER_PREVIEW_PATH"] {
+            logPath = URL(fileURLWithPath: previewPath)
+                .deletingLastPathComponent()
+                .appendingPathComponent("preview-debug.ndjson")
+                .path
+        } else {
+            return
+        }
+
         let payload: [String: Any] = [
             "hypothesisId": hypothesisId,
             "location": location,
@@ -185,7 +198,7 @@ enum PreviewCapture {
             "timestamp": Int64(Date().timeIntervalSince1970 * 1_000),
         ]
         guard let encoded = try? JSONSerialization.data(withJSONObject: payload),
-              let file = fopen("/opt/cursor/logs/debug.log", "a")
+              let file = fopen(logPath, "a")
         else {
             return
         }

@@ -131,12 +131,17 @@ struct KVPoolReclaimerTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
-        let reclaim = Task { await reclaimer.sweep() }
-        #expect(await gate.waitUntilClearStarted())
-        let failsafe = Task {
-            try? await taskSleep(.milliseconds(250))
+        let failsafe = DispatchWorkItem { gate.releaseClear() }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + .seconds(2),
+            execute: failsafe)
+        defer {
+            failsafe.cancel()
             gate.releaseClear()
         }
+
+        let reclaim = Task.detached { await reclaimer.sweep() }
+        #expect(await gate.waitUntilClearStarted())
 
         let startedAt = ContinuousClock.now
         let duringClear = reclaimer.telemetrySnapshot()
@@ -232,7 +237,7 @@ private final class BlockingReclaimGate: @unchecked Sendable {
         lock.lock()
         clearStarted = true
         lock.unlock()
-        release.wait()
+        _ = release.wait(timeout: .now() + 3)
     }
 
     func waitUntilClearStarted() async -> Bool {

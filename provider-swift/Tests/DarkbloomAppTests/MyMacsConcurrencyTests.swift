@@ -20,12 +20,12 @@ struct MyMacsConcurrencyTests {
 
         await fleet.succeedProviderCall(1, with: Self.providers(id: "newer"))
         await newer.value
-        #expect(store.snapshot?.macs.map(\.id) == ["newer"])
+        #expect(store.snapshot?.macs.map(\.providerID) == ["newer"])
         #expect(store.snapshot?.asOf == newerDate)
 
         await fleet.succeedProviderCall(0, with: Self.providers(id: "older"))
         await older.value
-        #expect(store.snapshot?.macs.map(\.id) == ["newer"])
+        #expect(store.snapshot?.macs.map(\.providerID) == ["newer"])
         #expect(store.snapshot?.asOf == newerDate)
     }
 
@@ -88,10 +88,34 @@ struct MyMacsConcurrencyTests {
         #expect(await fleet.waitForProviderCalls(2))
 
         await fleet.succeedProviderCall(1, with: Self.providers(id: "retry"))
-        #expect(await eventually { store.snapshot?.macs.map(\.id) == ["retry"] })
+        #expect(await eventually {
+            store.snapshot?.macs.map(\.providerID) == ["retry"]
+        })
         await fleet.succeedProviderCall(0, with: Self.providers(id: "refresh"))
         #expect(await eventually { await fleet.pendingProviderCalls == 0 })
-        #expect(store.snapshot?.macs.map(\.id) == ["retry"])
+        #expect(store.snapshot?.macs.map(\.providerID) == ["retry"])
+    }
+
+    @Test("A 401 that completes sign-in clears progress and leaves a retryable signed-out state")
+    @MainActor
+    func signInSessionExpiryClearsProgress() async {
+        let session = MutableAccountSession(token: "new-account-token")
+        let fleet = OutOfOrderFleet()
+        let store = MyMacsStore(session: session, fleet: fleet)
+
+        let signIn = Task { await store.signInLive() }
+        #expect(await fleet.waitForProviderCalls(1))
+        #expect(store.isSigningIn)
+
+        await fleet.failProviderCall(0, with: FleetClientError.sessionExpired)
+        await signIn.value
+
+        #expect(!store.isSigningIn)
+        #expect(session.accessToken() == nil)
+        guard case .signedOut = store.availability else {
+            Issue.record("An expired sign-in session must remain retryable")
+            return
+        }
     }
 
     private static func providers(id: String) -> MyMacsProvidersWireResponse {
@@ -168,6 +192,10 @@ private actor OutOfOrderFleet: FleetServicing {
         with response: MyMacsProvidersWireResponse
     ) {
         providerContinuations.removeValue(forKey: call)?.resume(returning: response)
+    }
+
+    func failProviderCall(_ call: Int, with error: FleetClientError) {
+        providerContinuations.removeValue(forKey: call)?.resume(throwing: error)
     }
 
     func waitForProviderCalls(_ expected: Int) async -> Bool {

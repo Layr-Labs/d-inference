@@ -133,5 +133,8 @@ Primary denominator is now real (`notes/037`): B=4×8K = 1,557.4 tok/s
 The complete one-binary B=1/2/4 × 512/2K/8K matrix is locked in
 `notes/038`; no remaining experiment may use an extrapolated denominator.
 
+E9 BK64 preserved numerics but was flat (best 1.008×); halving outer
+barriers cannot move the FP32 MMA ceiling (`notes/039`).
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

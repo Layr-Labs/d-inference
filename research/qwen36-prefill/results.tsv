@@ -44,6 +44,11 @@ b2-v6-512	2026-08-24T06:44:00Z	m3-max-128gb-2	3cfe7e89	5e1e3110	2	yes	H0-matrix	
 b2-v6-2048	2026-08-24T06:46:00Z	m3-max-128gb-2	3cfe7e89	5e1e3110	2	yes	H0-matrix	default-chunk-budget	2048	2	prefill_tps	1621.4	tok/s	1.00	baseline	3 iters; makespan_ms=2525.0; checksums stable
 b4-v6-512	2026-08-24T06:43:00Z	m3-max-128gb-2	3cfe7e89	5e1e3110	2	yes	H0-matrix	default-chunk-budget	512	4	prefill_tps	1712.6	tok/s	1.00	baseline	3 iters; makespan_ms=1193.5; checksums stable
 b4-v6-2048	2026-08-24T06:45:00Z	m3-max-128gb-2	3cfe7e89	5e1e3110	2	yes	H0-matrix	default-chunk-budget	2048	4	prefill_tps	1694.4	tok/s	1.00	baseline	3 iters; makespan_ms=4832.5; checksums stable
+e9-bk64-gate-t2048	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	2048	1	qmm_ms	6.3104	ms	0.999x	no	BK32=6.3045; hits25 fallbacks0
+e9-bk64-down-t2048	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	2048	1	qmm_ms	3.3447	ms	1.002x	no	BK32=3.3518; hits25 fallbacks0
+e9-bk64-gate-t4096	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	qmm_ms	12.2278	ms	1.008x	no	BK32=12.3299; hits25 fallbacks0
+e9-bk64-down-t4096	2026-08-24T06:58:51Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	qmm_ms	6.3412	ms	1.002x	no	BK32=6.3552; hits25 fallbacks0
+e9-bk64-correctness	2026-08-24T06:58:32Z	m3-max-128gb-2	bk64-patches	mlx-swift-tests	2	yes	E9-BK64	bm32-bn32-bk64	4096	1	correctness	1	pass	pass	meta	10 tests pass
 
 
 

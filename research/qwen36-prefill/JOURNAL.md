@@ -288,3 +288,14 @@ One schema-6 binary, three repetitions:
 B=1 TTFT 356.2 / 1,224.7 / 5,295.6 ms. All required denominators are
 now first-class harness artifacts. See `notes/038`.
 
+## 2026-08-24T06:58Z — E9 exact BK64 dead
+
+BK64 passed all 10 sorted/Qwen correctness tests and hit 25/25 with zero
+fallbacks. Separate-process BK32/BK64 A/B:
+
+- T2048 gate 0.999×, down 1.002×;
+- T4096 gate **1.008×**, down 1.002×.
+
+Halving outer barriers does not move the FP32 SIMD MMA ceiling. No
+full-model run; baseline restored. See `notes/039`.
+

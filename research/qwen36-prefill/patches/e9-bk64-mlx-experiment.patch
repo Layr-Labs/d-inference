@@ -1,0 +1,246 @@
+diff --git a/mlx/backend/common/gemma4_expert_qmm.h b/mlx/backend/common/gemma4_expert_qmm.h
+index 23b1a21d..5c9fbd6e 100644
+--- a/mlx/backend/common/gemma4_expert_qmm.h
++++ b/mlx/backend/common/gemma4_expert_qmm.h
+@@ -16,6 +16,7 @@ typedef struct mlx_metal_gemma4_expert_qmm_diagnostics {
+   uint8_t aot_available;
+   uint8_t nax_available;
+   uint8_t armed;
++  uint32_t selected_bk;
+   uint64_t attempts;
+   uint64_t hits;
+   uint64_t fallback_nax;
+@@ -43,9 +44,23 @@ MLX_API void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot_and_disarm(
+ #ifdef __cplusplus
+ 
+ #include <atomic>
++#include <string_view>
+ 
+ namespace mlx::core::metal {
+ 
++enum class Gemma4ExpertQMMTileDepth : uint32_t {
++  bk32 = 32,
++  bk64 = 64,
++};
++
++// The shipping/default tile stays BK32. BK64 is an exact, explicit
++// experiment selected once when the Metal device is constructed.
++inline Gemma4ExpertQMMTileDepth gemma4_expert_qmm_tile_depth_from_env(
++    std::string_view value) {
++  return value == "64" || value == "bk64" ? Gemma4ExpertQMMTileDepth::bk64
++                                           : Gemma4ExpertQMMTileDepth::bk32;
++}
++
+ enum class Gemma4ExpertQMMRoute : uint8_t {
+   not_requested,
+   hit,
+diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
+index 030cfad2..6bc1183a 100644
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -577,34 +577,49 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
+   // produces undefined tile output instead of the legacy fallback.
+   gemma4_expert_qmm_trust_sorted_ = expert_qmm_env == "trust";
+ 
++  std::string expert_qmm_bk_env =
++      env::get_var("MLX_GATHER_QMM_EXPERT_BK", "");
++  std::transform(
++      expert_qmm_bk_env.begin(),
++      expert_qmm_bk_env.end(),
++      expert_qmm_bk_env.begin(),
++      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  gemma4_expert_qmm_selected_bk_ = static_cast<uint32_t>(
++      gemma4_expert_qmm_tile_depth_from_env(expert_qmm_bk_env));
++
+   constexpr const char* descriptor_kernel =
+       "build_gemma4_sorted_expert_tiles_bm32";
+   constexpr const char* descriptor_kernel_e256 =
+       "build_sorted_expert_tiles_bm32_e256";
+-  constexpr const char* tile_kernel =
++  constexpr const char* tile_kernel_bk32 =
+       "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+       "alN_true_bm_32_bn_32_bk_32";
++  constexpr const char* tile_kernel_bk64 =
++      "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
++      "alN_true_bm_32_bn_32_bk_64";
++  gemma4_expert_qmm_tile_kernel_name_ =
++      gemma4_expert_qmm_selected_bk_ == 64 ? tile_kernel_bk64
++                                           : tile_kernel_bk32;
+   auto has_default_function = [this](const char* name) {
+     auto ns_name = NS::String::string(name, NS::ASCIIStringEncoding);
+     auto function =
+         NS::TransferPtr(default_library_->newFunction(ns_name));
+     return function.get() != nullptr;
+   };
+-  // All expert-tile symbols ship from one source-matched metallib
+-  // (scripts/fetch-metallib.sh completeness contract), so availability is
+-  // all-or-nothing: a metallib missing any of them predates this revision
+-  // and must fail the whole route closed.
++  // The descriptor builders and selected tile variant must come from the
++  // source-matched metallib. An older metallib can still serve the default
++  // BK32 path; explicitly selecting BK64 fails that experiment closed.
+   gemma4_expert_qmm_aot_available_ =
+       has_default_function(descriptor_kernel) &&
+       has_default_function(descriptor_kernel_e256) &&
+-      has_default_function(tile_kernel);
++      has_default_function(gemma4_expert_qmm_tile_kernel_name_.c_str());
+   if (gemma4_expert_qmm_requested_ && gemma4_expert_qmm_aot_available_) {
+     try {
+       // Resolve the pipelines once so missing or incompatible packaged AOT
+       // assets fail closed before an inference command encoder is touched.
+       get_kernel(descriptor_kernel);
+       get_kernel(descriptor_kernel_e256);
+-      get_kernel(tile_kernel);
++      get_kernel(gemma4_expert_qmm_tile_kernel_name_);
+     } catch (...) {
+       gemma4_expert_qmm_aot_available_ = false;
+     }
+@@ -1003,6 +1018,7 @@ void gemma4_expert_qmm_diagnostics_snapshot(
+     diagnostics->aot_available = d.gemma4_expert_qmm_aot_available();
+     diagnostics->nax_available = mlx::core::metal::is_nax_available();
+     diagnostics->armed = counters.armed;
++    diagnostics->selected_bk = d.gemma4_expert_qmm_selected_bk();
+     diagnostics->attempts = counters.attempts();
+     diagnostics->hits = counters.hits;
+     diagnostics->fallback_nax = counters.fallback_nax;
+diff --git a/mlx/backend/metal/device.h b/mlx/backend/metal/device.h
+index 697b3ade..bfca9307 100644
+--- a/mlx/backend/metal/device.h
++++ b/mlx/backend/metal/device.h
+@@ -201,6 +201,12 @@ class MLX_API Device {
+   bool gemma4_expert_qmm_aot_available() const {
+     return gemma4_expert_qmm_aot_available_;
+   }
++  uint32_t gemma4_expert_qmm_selected_bk() const {
++    return gemma4_expert_qmm_selected_bk_;
++  }
++  const std::string& gemma4_expert_qmm_tile_kernel_name() const {
++    return gemma4_expert_qmm_tile_kernel_name_;
++  }
+   bool gemma4_expert_qmm_diagnostics_armed() const {
+     return gemma4_expert_qmm_counters_.armed();
+   }
+@@ -270,6 +276,8 @@ class MLX_API Device {
+   bool gemma4_expert_qmm_requested_{false};
+   bool gemma4_expert_qmm_trust_sorted_{false};
+   bool gemma4_expert_qmm_aot_available_{false};
++  uint32_t gemma4_expert_qmm_selected_bk_{32};
++  std::string gemma4_expert_qmm_tile_kernel_name_;
+   Gemma4ExpertQMMCounters gemma4_expert_qmm_counters_;
+   std::unordered_map<
+       MTL::Library*,
+diff --git a/mlx/backend/metal/kernels/quantized.h b/mlx/backend/metal/kernels/quantized.h
+index 04e5b13f..42d87d2b 100644
+--- a/mlx/backend/metal/kernels/quantized.h
++++ b/mlx/backend/metal/kernels/quantized.h
+@@ -2684,7 +2684,9 @@ template <
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+   static_assert(BM == 32, "Gemma 4 expert tiles require BM=32");
+-  static_assert(BK == 32, "Gemma 4 expert tiles require BK=32");
++  static_assert(
++      BK == 32 || BK == 64,
++      "Gemma 4 expert tiles support only the qualified BK32/BK64 variants");
+   static_assert(BN == 32, "Gemma 4 expert tiles require BN=32");
+ 
+   // tid.y is uniform across the threadgroup. Empty capacity slots return
+@@ -2697,6 +2699,13 @@ template <
+   constexpr int pack_factor = get_pack_factor<bits, 8>();
+   constexpr int bytes_per_pack = get_bytes_per_pack<bits>();
+   constexpr int BK_padded = BK + 16 / sizeof(T);
++  constexpr size_t threadgroup_storage_bytes =
++      size_t(BM + BN) * size_t(BK_padded) * sizeof(T);
++  // M3 exposes 32 KiB of threadgroup memory. BF16 BK32 uses 5,120 bytes;
++  // BK64 uses 9,216 bytes, leaving the candidate below the architectural cap.
++  static_assert(
++      threadgroup_storage_bytes <= 32 * 1024,
++      "Expert tile exceeds the M3 threadgroup-memory budget");
+   threadgroup T Xs[BM * BK_padded];
+   threadgroup T Ws[BN * BK_padded];
+ 
+diff --git a/mlx/backend/metal/kernels/quantized.metal b/mlx/backend/metal/kernels/quantized.metal
+index 75e788ea..c7206670 100644
+--- a/mlx/backend/metal/kernels/quantized.metal
++++ b/mlx/backend/metal/kernels/quantized.metal
+@@ -192,6 +192,19 @@ instantiate_kernel(
+     32,
+     32)
+ 
++// Exact BK64 experiment: BM/BN, sorted descriptors, W4 g64 BF16
++// dequantization, and the regular BlockMMA accumulation sequence are unchanged.
++instantiate_kernel(
++    "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_64",
++    affine_gather_qmm_gemma4_expert_tiles,
++    bfloat16_t,
++    64,
++    4,
++    true,
++    32,
++    64,
++    32)
++
+ // Sorted expert-tile descriptor builders. The E=128 instantiation keeps the
+ // historical Gemma 4 host name; E=256 serves Qwen 3.5/3.6 MoE. The tile
+ // kernel instantiation above is expert-count agnostic (K/N are runtime
+diff --git a/mlx/backend/metal/quantized.cpp b/mlx/backend/metal/quantized.cpp
+index 0db1404d..d24cf40d 100644
+--- a/mlx/backend/metal/quantized.cpp
++++ b/mlx/backend/metal/quantized.cpp
+@@ -1328,9 +1328,8 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
+   const char* descriptor_kernel_name = expert_count == 256
+       ? "build_sorted_expert_tiles_bm32_e256"
+       : "build_gemma4_sorted_expert_tiles_bm32";
+-  constexpr const char* tile_kernel_name =
+-      "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+-      "alN_true_bm_32_bn_32_bk_32";
++  const std::string& tile_kernel_name =
++      d.gemma4_expert_qmm_tile_kernel_name();
+ 
+   MTL::ComputePipelineState* descriptor_kernel = nullptr;
+   MTL::ComputePipelineState* tile_kernel = nullptr;
+diff --git a/tests/device_tests.cpp b/tests/device_tests.cpp
+index 7bae91d8..9c520aaf 100644
+--- a/tests/device_tests.cpp
++++ b/tests/device_tests.cpp
+@@ -4,10 +4,29 @@
+ 
+ #include <cstdlib>
+ 
++#include "mlx/backend/common/gemma4_expert_qmm.h"
+ #include "mlx/mlx.h"
+ 
+ using namespace mlx::core;
+ 
++TEST_CASE("test expert QMM tile-depth experiment selector") {
++  using metal::Gemma4ExpertQMMTileDepth;
++  using metal::gemma4_expert_qmm_tile_depth_from_env;
++
++  // Absence, the documented baseline spelling, and invalid values all retain
++  // the shipping BK32 default. Only an explicit BK64 spelling opts in.
++  for (std::string_view value : {"", "32", "bk32", "true", "invalid"}) {
++    CHECK(
++        gemma4_expert_qmm_tile_depth_from_env(value) ==
++        Gemma4ExpertQMMTileDepth::bk32);
++  }
++  for (std::string_view value : {"64", "bk64"}) {
++    CHECK(
++        gemma4_expert_qmm_tile_depth_from_env(value) ==
++        Gemma4ExpertQMMTileDepth::bk64);
++  }
++}
++
+ TEST_CASE("test device placement") {
+   auto device = default_device();
+   Device d = gpu::is_available() ? Device::gpu : Device::cpu;
+diff --git a/tests/gpu_tests.cpp b/tests/gpu_tests.cpp
+index 1cbe6691..d885e3d5 100644
+--- a/tests/gpu_tests.cpp
++++ b/tests/gpu_tests.cpp
+@@ -688,7 +688,6 @@ TEST_CASE("test layer norm vjp bias grad race") {
+   CHECK(worst <= 1e-5);
+ }
+ 
+-
+ TEST_CASE("test Gemma 4 expert QMM pure route table") {
+   using metal::Gemma4ExpertQMMRoute;
+   using metal::Gemma4ExpertQMMRouteInput;

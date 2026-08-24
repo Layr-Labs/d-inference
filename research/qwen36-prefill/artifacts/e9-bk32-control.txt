@@ -1,0 +1,22 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-23 23:58:48.225.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-23 23:58:48.225.
+Test Suite 'QwenExpertTilePerfTests' started at 2026-08-23 23:58:48.225.
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' started.
+[qwen-expert-tile-perf] route=tile geometry=bm32_bn32_bk32 aot=true nax=false
+[qwen-expert-tile-perf] gate_up_fused T2048 M=16384: median 6.3045 ms p10 6.2903 p90 6.3310 (~48 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T2048 M=16384: median 3.3518 ms p10 3.3350 p90 3.3685 (~45 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T4096 M=32768: median 12.3299 ms p10 12.2562 p90 12.3837 (~24 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T4096 M=32768: median 6.3552 ms p10 6.3498 p90 6.3674 (~24 GB/s wt) hits=25 fallbacks=0 n=25
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' passed (1.329 seconds).
+Test Suite 'QwenExpertTilePerfTests' passed at 2026-08-23 23:58:49.555.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.329 (1.329) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-23 23:58:49.555.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.329 (1.330) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:58:49.555.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.329 (1.330) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -11,7 +11,7 @@ enum DaemonSnapshotMapping {
     struct Inputs {
         var state: DaemonState?
         var processIsAlive: Bool
-        var serviceIsInstalled: Bool
+        var serviceIsLoaded: Bool
         var localEndpoint: LocalEndpointInfo?
         var now: Date
         var providerName: String
@@ -19,14 +19,14 @@ enum DaemonSnapshotMapping {
         init(
             state: DaemonState?,
             processIsAlive: Bool,
-            serviceIsInstalled: Bool = true,
+            serviceIsLoaded: Bool = true,
             localEndpoint: LocalEndpointInfo?,
             now: Date = .now,
             providerName: String = "This Mac"
         ) {
             self.state = state
             self.processIsAlive = processIsAlive
-            self.serviceIsInstalled = serviceIsInstalled
+            self.serviceIsLoaded = serviceIsLoaded
             self.localEndpoint = localEndpoint
             self.now = now
             self.providerName = providerName
@@ -111,7 +111,7 @@ enum DaemonSnapshotMapping {
         let scheduleState = classifySchedule(state.schedule, state: state, now: now)
 
         guard inputs.processIsAlive else {
-            if inputs.serviceIsInstalled {
+            if inputs.serviceIsLoaded {
                 switch scheduleState {
                 case .off: return .scheduledOff
                 case .expired: return .stale

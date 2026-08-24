@@ -84,6 +84,29 @@ func providerStoreRetriesFailure() async {
     #expect(attemptCount == 2)
 }
 
+@Test("An automatically monitored store adopts late daemon evidence")
+@MainActor
+func providerStoreAutomaticallyMonitors() async {
+    let initial = ProviderPreviewScenario.paused.snapshot
+    var online = ProviderPreviewScenario.online.snapshot
+    online.trust.state = .verified
+    online.trust.level = "hardware"
+    let service = PublishingProviderRuntimeService(snapshot: initial)
+    let store = ProviderStore(
+        service: service,
+        initialSnapshot: initial,
+        startsMonitoring: true
+    )
+
+    await service.publish(online)
+
+    for _ in 0 ..< 100 where store.snapshot != online {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(store.snapshot == online)
+    #expect(store.loadState == .loaded)
+}
+
 private actor FailingProviderRuntimeService: ProviderRuntimeServicing {
     let snapshot: ProviderSnapshot
 
@@ -103,6 +126,45 @@ private actor FailingProviderRuntimeService: ProviderRuntimeServicing {
 
     func perform(_: ProviderAction) throws -> ProviderSnapshot {
         throw ProviderRuntimeServiceError.unavailable("Preview runtime is unavailable.")
+    }
+}
+
+private actor PublishingProviderRuntimeService: ProviderRuntimeServicing {
+    private var snapshot: ProviderSnapshot
+    private var continuations: [UUID: AsyncStream<ProviderSnapshot>.Continuation] = [:]
+
+    init(snapshot: ProviderSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func currentSnapshot() -> ProviderSnapshot {
+        snapshot
+    }
+
+    func updates() -> AsyncStream<ProviderSnapshot> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream.makeStream(of: ProviderSnapshot.self)
+        continuations[id] = continuation
+        continuation.yield(snapshot)
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeContinuation(id) }
+        }
+        return stream
+    }
+
+    func perform(_: ProviderAction) -> ProviderSnapshot {
+        snapshot
+    }
+
+    func publish(_ snapshot: ProviderSnapshot) {
+        self.snapshot = snapshot
+        for continuation in continuations.values {
+            continuation.yield(snapshot)
+        }
+    }
+
+    private func removeContinuation(_ id: UUID) {
+        continuations[id] = nil
     }
 }
 

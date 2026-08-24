@@ -40,7 +40,9 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
     private let providerName: String
     private let localEndpointReader: @Sendable () -> LocalEndpointInfo?
     private let processAlive: @Sendable (Int32) -> Bool
+    private let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
     private let selectionInstalled: @Sendable () -> Bool
+    private let serviceLoaded: @Sendable () -> Bool
 
     /// Snapshot computed from disk synchronously at init — lets the
     /// `@MainActor` store boot with real state before any actor hop.
@@ -65,7 +67,9 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         providerName: String = ProcessInfo.processInfo.environment["DARKBLOOM_PROVIDER_NAME"] ?? "This Mac",
         localEndpointReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
         processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
-        selectionInstalled: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentInstalled
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
+        selectionInstalled: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentInstalled,
+        serviceLoaded: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentLoaded
     ) {
         self.stateFileURL = stateFileURL
         self.cli = cli
@@ -75,12 +79,15 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         self.providerName = providerName
         self.localEndpointReader = localEndpointReader
         self.processAlive = processAlive
+        self.processIdentityReader = processIdentityReader
         self.selectionInstalled = selectionInstalled
+        self.serviceLoaded = serviceLoaded
         let initial = Self.mapFromDisk(
             stateFileURL: stateFileURL, providerName: providerName,
             localEndpointReader: localEndpointReader,
             processAlive: processAlive,
-            selectionInstalled: selectionInstalled
+            processIdentityReader: processIdentityReader,
+            serviceLoaded: serviceLoaded
         )
         published = initial
         initialSnapshot = initial
@@ -224,7 +231,8 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
             stateFileURL: stateFileURL, providerName: providerName,
             localEndpointReader: localEndpointReader,
             processAlive: processAlive,
-            selectionInstalled: selectionInstalled
+            processIdentityReader: processIdentityReader,
+            serviceLoaded: serviceLoaded
         )
         guard mapped != published else { return }
         published = mapped
@@ -267,17 +275,38 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         providerName: String,
         localEndpointReader: @Sendable () -> LocalEndpointInfo?,
         processAlive: @Sendable (Int32) -> Bool,
-        selectionInstalled: @Sendable () -> Bool
+        processIdentityReader: @Sendable (Int32) -> ProcessIdentity?,
+        serviceLoaded: @Sendable () -> Bool
     ) -> ProviderSnapshot {
         let state = DaemonStateFile.read(from: stateFileURL)
         return DaemonSnapshotMapping.map(
             DaemonSnapshotMapping.Inputs(
                 state: state,
-                processIsAlive: state.map { processAlive($0.pid) } ?? false,
-                serviceIsInstalled: selectionInstalled(),
+                processIsAlive: state.map {
+                    processBelongsToState(
+                        $0,
+                        processAlive: processAlive,
+                        processIdentityReader: processIdentityReader
+                    )
+                } ?? false,
+                serviceIsLoaded: serviceLoaded(),
                 localEndpoint: localEndpointReader(),
                 providerName: providerName
             )
         )
+    }
+
+    private static func processBelongsToState(
+        _ state: DaemonState,
+        processAlive: @Sendable (Int32) -> Bool,
+        processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
+    ) -> Bool {
+        guard let recordedIdentity = state.processIdentity else {
+            return processAlive(state.pid)
+        }
+        guard recordedIdentity.pid == state.pid else {
+            return false
+        }
+        return processIdentityReader(state.pid) == recordedIdentity
     }
 }

@@ -1,5 +1,14 @@
 import SwiftUI
 
+enum ChatSessionMode: Equatable {
+    case fixture
+    case live
+
+    static func resolve(isPreview: Bool) -> Self {
+        isPreview ? .fixture : .live
+    }
+}
+
 struct PrivateChatView: View {
     let identity: MachineIdentity
 
@@ -11,15 +20,17 @@ struct PrivateChatView: View {
 
     init(
         identity: MachineIdentity,
-        fixture: PreviewChatFixture = .empty
+        fixture: PreviewChatFixture = .empty,
+        isPreview: Bool
     ) {
         self.identity = identity
-        // Preview captures (DEBUG env config) stay fixture-driven and fully
-        // deterministic. Real launches chat against the actual local endpoint
-        // from ~/.darkbloom/local.json through the live store.
-        if ProductPreviewConfiguration.current != nil {
+        // Every preview session stays fixture-driven and deterministic,
+        // including onboarding previews that finish into the product shell.
+        // Real launches use the endpoint discovered in ~/.darkbloom/local.json.
+        switch ChatSessionMode.resolve(isPreview: isPreview) {
+        case .fixture:
             _store = State(initialValue: PreviewChatStore(fixture: fixture))
-        } else {
+        case .live:
             _store = State(initialValue: PreviewChatStore(live: LiveChatConfiguration()))
         }
     }

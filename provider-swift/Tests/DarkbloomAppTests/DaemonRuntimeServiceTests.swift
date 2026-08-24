@@ -43,7 +43,10 @@ struct DaemonRuntimeServiceTests {
     private func makeService(
         stateFileURL: URL,
         cli: StubCLI,
-        installed: Bool = true
+        selectionInstalled: Bool = true,
+        serviceLoaded: Bool = true,
+        processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = { _ in nil }
     ) -> DaemonRuntimeService {
         DaemonRuntimeService(
             stateFileURL: stateFileURL,
@@ -53,8 +56,10 @@ struct DaemonRuntimeServiceTests {
             settleTimeout: .seconds(5),
             providerName: "Test Mac",
             localEndpointReader: { nil },
-            processAlive: { _ in true },
-            selectionInstalled: { installed }
+            processAlive: processAlive,
+            processIdentityReader: processIdentityReader,
+            selectionInstalled: { selectionInstalled },
+            serviceLoaded: { serviceLoaded }
         )
     }
 
@@ -118,6 +123,47 @@ struct DaemonRuntimeServiceTests {
         #expect(stale?.lastProblem?.id == "provider-state-stale")
     }
 
+    @Test("A reused PID cannot make a dead provider look live")
+    func processIdentityMismatchMapsPaused() {
+        let url = stateFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var state = testRunningState()
+        state.processIdentity = ProcessIdentity(pid: state.pid, startTimeMicros: 11)
+        writeState(state, to: url)
+
+        let service = makeService(
+            stateFileURL: url,
+            cli: StubCLI(),
+            processAlive: { _ in true },
+            processIdentityReader: {
+                ProcessIdentity(pid: $0, startTimeMicros: 22)
+            }
+        )
+
+        #expect(service.initialSnapshot.runState == .paused)
+        #expect(service.initialSnapshot.pid == nil)
+    }
+
+    @Test("A matching kernel process identity preserves daemon liveness")
+    func matchingProcessIdentityMapsOnline() {
+        let url = stateFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let identity = ProcessIdentity(pid: 4001, startTimeMicros: 11)
+        var state = testRunningState(pid: identity.pid)
+        state.processIdentity = identity
+        writeState(state, to: url)
+
+        let service = makeService(
+            stateFileURL: url,
+            cli: StubCLI(),
+            processAlive: { _ in false },
+            processIdentityReader: { _ in identity }
+        )
+
+        #expect(service.initialSnapshot.runState == .online)
+        #expect(service.initialSnapshot.pid == identity.pid)
+    }
+
     // MARK: Lifecycle
 
     @Test("Start with an installed selection runs `restart` and converges online")
@@ -127,7 +173,12 @@ struct DaemonRuntimeServiceTests {
         let cli = StubCLI()
         // The "daemon" boots when the CLI runs: the state file appears.
         cli.onRun = { _ in DaemonStateFile.write(testRunningState(), to: url) }
-        let service = makeService(stateFileURL: url, cli: cli, installed: true)
+        let service = makeService(
+            stateFileURL: url,
+            cli: cli,
+            selectionInstalled: true,
+            serviceLoaded: false
+        )
 
         let stream = await service.updates()
         async let starting = nextUpdate(from: stream) { $0.runState == .starting }
@@ -146,7 +197,11 @@ struct DaemonRuntimeServiceTests {
         defer { try? FileManager.default.removeItem(at: url) }
         let cli = StubCLI()
         cli.onRun = { _ in DaemonStateFile.write(testRunningState(), to: url) }
-        let service = makeService(stateFileURL: url, cli: cli, installed: false)
+        let service = makeService(
+            stateFileURL: url,
+            cli: cli,
+            selectionInstalled: false
+        )
 
         let result = try await service.perform(.start)
         let runs = await cli.runs

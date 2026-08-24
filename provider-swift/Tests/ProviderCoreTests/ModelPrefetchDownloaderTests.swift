@@ -849,6 +849,102 @@ struct ModelPrefetchDownloaderTests {
             Int64(partialWhole.count - partialPrefix.count + missing.count))
     }
 
+    @Test("storage planning reads resumable staging without changing it")
+    func storagePlanReadsStagingWithoutMutation() async throws {
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/storage-plan-\(UUID().uuidString)"
+        let prefix = "v2/storage-plan/v1"
+        let complete = Data("complete config".utf8)
+        let partialWhole = Data("partially downloaded model shard".utf8)
+        let partialPrefix = Data(partialWhole.prefix(11))
+        let files = [
+            ManifestFile(
+                path: "config.json",
+                sizeBytes: Int64(complete.count),
+                sha256: sha256Hex(complete),
+                role: "config"
+            ),
+            ManifestFile(
+                path: "model.safetensors",
+                sizeBytes: Int64(partialWhole.count),
+                sha256: sha256Hex(partialWhole),
+                role: "weight"
+            ),
+        ]
+        let aggregate = aggregateHash(files: [
+            ("config.json", complete),
+            ("model.safetensors", partialWhole),
+        ])
+        let manifest = ModelManifest(
+            schemaVersion: 1,
+            modelID: modelID,
+            version: "v1",
+            r2Prefix: prefix,
+            aggregateSHA256: aggregate,
+            totalSizeBytes: Int64(complete.count + partialWhole.count),
+            fileCount: files.count,
+            files: files,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        PrefetchURLProtocol.files = [
+            "/\(prefix)/manifest.json": try encoder.encode(manifest),
+        ]
+
+        let modelDirectory = ModelDownloader.cacheModelDirectory(for: modelID)
+        let stagingDirectory = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ModelDownloader.localStagingDirName(r2Prefix: prefix),
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: modelDirectory) }
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true
+        )
+        let completeURL = stagingDirectory.appendingPathComponent("config.json")
+        let partialURL = stagingDirectory
+            .appendingPathComponent("model.safetensors")
+            .appendingPathExtension("part")
+        try complete.write(to: completeURL)
+        try partialPrefix.write(to: partialURL)
+
+        let downloader = ModelDownloader(
+            r2CDNURL: "https://cdn.example.test",
+            urlSession: makeSession()
+        )
+        let model = CatalogModel(
+            id: modelID,
+            s3Name: "unused",
+            displayName: "Storage Plan",
+            sizeGb: 99,
+            r2Prefix: prefix,
+            aggregateSHA256: aggregate,
+            totalSizeBytes: 99_000_000_000,
+            fileCount: files.count
+        )
+        let reserve: Int64 = 123
+
+        let plan = try await downloader.storagePlan(
+            for: model,
+            reserveBytes: reserve
+        )
+
+        let expectedRemaining = Int64(partialWhole.count - partialPrefix.count)
+        #expect(plan.remainingBytes == expectedRemaining)
+        #expect(plan.reserveBytes == reserve)
+        #expect(plan.requiredAvailableBytes == expectedRemaining + reserve)
+        #expect(try Data(contentsOf: completeURL) == complete)
+        #expect(try Data(contentsOf: partialURL) == partialPrefix)
+        #expect(!FileManager.default.fileExists(
+            atPath: stagingDirectory
+                .appendingPathComponent("model.safetensors")
+                .path
+        ))
+    }
+
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
     func foregroundDownloadResumesFromStaging() async throws {
         // The foreground (serve-time) download path must also resume an interrupted

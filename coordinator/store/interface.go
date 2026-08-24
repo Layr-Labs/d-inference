@@ -791,7 +791,7 @@ type ProviderEarning struct {
 	ID               int64     `json:"id"`
 	AccountID        string    `json:"account_id"`
 	ProviderID       string    `json:"provider_id"`
-	ProviderKey      string    `json:"provider_key"` // X25519 public key (stable hardware ID)
+	ProviderKey      string    `json:"provider_key"` // X25519 session key; map through provider records/sessions for hardware identity
 	JobID            string    `json:"job_id"`
 	Model            string    `json:"model"`
 	AmountMicroUSD   int64     `json:"amount_micro_usd"`

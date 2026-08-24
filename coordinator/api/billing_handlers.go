@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	apitypes "github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -833,20 +834,36 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	records, err := s.store.ListProvidersByAccount(r.Context(), accountID)
+	if err != nil {
+		s.logger.Error("get account providers for earnings failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch provider identities"))
+		return
+	}
+	providers := make([]apitypes.AccountEarningsProvider, 0, len(records))
+	for _, record := range records {
+		providers = append(providers, apitypes.AccountEarningsProvider{
+			ProviderID:   record.ID,
+			ProviderKey:  record.PublicKey,
+			SerialNumber: record.SerialNumber,
+		})
+	}
+
 	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
 
-	body, err := json.Marshal(map[string]any{
-		"account_id":                     accountID,
-		"earnings":                       earnings,
-		"total_micro_usd":                summary.TotalMicroUSD,
-		"total_usd":                      fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
-		"count":                          summary.Count,
-		"recent_count":                   len(earnings),
-		"history_limit":                  limit,
-		"available_balance_micro_usd":    availableBalance,
-		"available_balance_usd":          fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
-		"withdrawable_balance_micro_usd": withdrawableBalance,
-		"withdrawable_balance_usd":       fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
+	body, err := json.Marshal(apitypes.AccountEarningsResponse{
+		AccountID:                   accountID,
+		Earnings:                    earnings,
+		Providers:                   providers,
+		TotalMicroUSD:               summary.TotalMicroUSD,
+		TotalUSD:                    fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
+		Count:                       summary.Count,
+		RecentCount:                 len(earnings),
+		HistoryLimit:                limit,
+		AvailableBalanceMicroUSD:    availableBalance,
+		AvailableBalanceUSD:         fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
+		WithdrawableBalanceMicroUSD: withdrawableBalance,
+		WithdrawableBalanceUSD:      fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal earnings"))

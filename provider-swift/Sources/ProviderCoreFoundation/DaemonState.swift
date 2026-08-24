@@ -100,29 +100,23 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public struct Identity: Codable, Sendable, Equatable {
         /// `[provider] name` from provider.toml (e.g. "darkbloom-mac16-1").
         public var providerName: String
-        /// The operator payout address the coordinator's
-        /// `GET /v1/provider/earnings?wallet=<address>` endpoint keys on.
-        ///
-        /// Which string that IS: the coordinator resolves it on the web
-        /// handler side as `s.ledger.Balance(wallet)` + payouts whose
-        /// `ProviderAddress == wallet` — i.e. the **ledger account id the
-        /// coordinator credited this machine's payouts to**, which is the
-        /// account id minted when the operator linked THIS machine via the
-        /// device-code flow (`darkbloom login`). The coordinator returns it
-        /// as `account_id` in the `POST /v1/device/token` response; the
-        /// provider persists it at `~/.darkbloom/provider_account`
-        /// (`ProviderCore.ProviderAccountStore`) at login time and sends the
-        /// corresponding auth token at WebSocket registration. nil when the
-        /// machine has never completed a login (the daemon then serves
-        /// unlinked and there is nothing to key earnings on).
-        ///
-        /// It is an identifier, not a credential: the earnings endpoint is
-        /// explicitly NO-AUTH, so persisting it widens no attack surface.
+        /// Account id returned by device login. It is an identifier, not a
+        /// credential; authenticated earnings requests still require the
+        /// provider token.
         public var operatorAddress: String?
+        /// X25519 key advertised for this daemon session. The key is ephemeral
+        /// across daemon restarts, so account history also carries a
+        /// key-to-hardware-serial mapping for stable "This Mac" grouping.
+        public var providerKey: String?
 
-        public init(providerName: String, operatorAddress: String? = nil) {
+        public init(
+            providerName: String,
+            operatorAddress: String? = nil,
+            providerKey: String? = nil
+        ) {
             self.providerName = providerName
             self.operatorAddress = operatorAddress
+            self.providerKey = providerKey
         }
     }
 

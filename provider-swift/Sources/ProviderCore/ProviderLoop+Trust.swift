@@ -75,7 +75,8 @@ extension ProviderLoop {
             schedule: schedulePostureForState(at: writtenAt),
             identity: DaemonState.Identity(
                 providerName: loopConfig.config.provider.name,
-                operatorAddress: ProviderAccountStore.load())
+                operatorAddress: ProviderAccountStore.load(),
+                providerKey: keyPair.publicKeyBase64)
         )
     }
 

@@ -373,11 +373,9 @@ private func runDeviceCodeLogin(
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
             try AuthTokenStore.save(token)
-            // Persist the linked account id next to the token (best-effort):
-            // `darkbloom earnings` and the daemon-state identity block read
-            // it to address the coordinator's wallet-keyed earnings endpoint.
-            // A failure here must not fail the link — the auth token already
-            // carries the serving-critical half.
+            // Persist the linked account id next to the token (best-effort)
+            // for daemon-state identity. Authenticated earnings can recover
+            // it later, so a local write failure must not fail the link.
             if let accountID = tokenResp.accountID, !accountID.isEmpty {
                 try? ProviderAccountStore.save(accountID)
             }

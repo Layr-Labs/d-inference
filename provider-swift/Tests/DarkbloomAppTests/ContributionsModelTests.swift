@@ -35,7 +35,7 @@ func malformedContributionSnapshotsAreRejected() throws {
     let snapshot = try #require(ContributionsStore(fixture: .active).snapshot)
     let encoded = try JSONEncoder().encode(snapshot)
     var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-    object["currentProviderKey"] = ""
+    object["currentProviderKeys"] = [""]
     let malformed = try JSONSerialization.data(withJSONObject: object)
 
     #expect(throws: DecodingError.self) {

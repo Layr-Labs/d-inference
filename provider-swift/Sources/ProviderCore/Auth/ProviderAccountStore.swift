@@ -5,14 +5,12 @@
 /// login`), the coordinator's `POST /v1/device/token` response carries an
 /// `account_id`: the ledger account the coordinator credits this provider's
 /// payouts to (see `CreditProviderAccount` server-side). Persisting it lets
-/// read-only surfaces — `darkbloom earnings` and the daemon-state `identity`
-/// block — name the wallet address the NO-AUTH
-/// `GET /v1/provider/earnings?wallet=<address>` endpoint expects without
-/// another network round trip or re-reading a token.
+/// read-only daemon-state surfaces name the linked operator. Earnings requests
+/// still authenticate with the provider token and recover this identifier
+/// from `GET /v1/provider/account-earnings` if an older install lacks the file.
 ///
-/// The account id is an identifier, not a credential (the earnings endpoint
-/// is deliberately unauthenticated), so it lives next to — not inside — the
-/// auth token, with the same 0600 permissions policy.
+/// The account id is an identifier, not a credential, so it lives next to —
+/// not inside — the auth token, with the same 0600 permissions policy.
 import Foundation
 
 public enum ProviderAccountStore: Sendable {

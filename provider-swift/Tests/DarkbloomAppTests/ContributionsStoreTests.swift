@@ -10,7 +10,7 @@ func contributionScopeFiltersLedger() throws {
     #expect(store.scope == .thisMac)
     #expect(!store.filteredLedger.isEmpty)
     #expect(store.filteredLedger.allSatisfy {
-        $0.providerKey == snapshot.currentProviderKey
+        snapshot.currentProviderKeys.contains($0.providerKey)
     })
     #expect(Set(store.filteredLedger.map(\.providerID)).count > 1)
     let thisMacCount = store.filteredLedger.count
@@ -19,7 +19,7 @@ func contributionScopeFiltersLedger() throws {
     store.setScope(.allMacs)
     #expect(store.filteredLedger.count > thisMacCount)
     #expect(store.filteredLedger.contains {
-        $0.providerKey != snapshot.currentProviderKey
+        !snapshot.currentProviderKeys.contains($0.providerKey)
     })
     #expect(store.shownRecordsTokenCount > thisMacTokens)
     #expect(zip(store.filteredLedger, store.filteredLedger.dropFirst()).allSatisfy {

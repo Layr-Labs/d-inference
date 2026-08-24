@@ -34,7 +34,7 @@ enum ContributionsFixtures {
     private static var activeSnapshot: ContributionsSnapshot {
         ContributionsSnapshot(
             asOf: timestamp,
-            currentProviderKey: "preview-machine-key-this-mac",
+            currentProviderKeys: ["preview-machine-key-this-mac"],
             availableBalance: MicroUSD(8_750_000),
             withdrawableBalance: MicroUSD(7_500_000),
             earnedLifetime: MicroUSD(18_750_000),
@@ -121,7 +121,7 @@ enum ContributionsFixtures {
     private static var emptySnapshot: ContributionsSnapshot {
         ContributionsSnapshot(
             asOf: timestamp,
-            currentProviderKey: "preview-machine-key-this-mac",
+            currentProviderKeys: ["preview-machine-key-this-mac"],
             availableBalance: .zero,
             withdrawableBalance: .zero,
             earnedLifetime: .zero,

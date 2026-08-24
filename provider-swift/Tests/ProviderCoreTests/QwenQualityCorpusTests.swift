@@ -123,8 +123,8 @@ struct QwenQualityCorpusTests {
         #expect(submitted.allSatisfy { $0.sampling.topP == 1 })
         #expect(submitted.allSatisfy { $0.sampling.topK == 0 })
         #expect(submitted.allSatisfy { $0.maxTokens == 32 })
-        #expect(submitted.allSatisfy(\.stopTokens.isEmpty))
-        #expect(submitted.allSatisfy(\.stopStrings.isEmpty))
+        #expect(submitted.allSatisfy { $0.stopTokens.isEmpty })
+        #expect(submitted.allSatisfy { $0.stopStrings.isEmpty })
         #expect(submitted.allSatisfy { !$0.prefixCacheEnabled })
         #expect(engine.maximumActiveSubmissions == 1)
     }

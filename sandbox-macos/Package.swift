@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "SandboxRuntime", targets: ["SandboxRuntime"]),
         .library(name: "SandboxRuntimeLume", targets: ["SandboxRuntimeLume"]),
         .library(name: "SandboxRuntimeVZ", targets: ["SandboxRuntimeVZ"]),
+        .library(name: "SandboxHostControl", targets: ["SandboxHostControl"]),
         .executable(name: "darkbloom-sandboxd", targets: ["DarkbloomSandboxDaemon"]),
     ],
     targets: [
@@ -51,6 +52,11 @@ let package = Package(
                 .linkedFramework("Virtualization"),
             ]
         ),
+        .target(
+            name: "SandboxHostControl",
+            dependencies: ["SandboxCore"],
+            path: "Sources/SandboxHostControl"
+        ),
         .executableTarget(
             name: "DarkbloomSandboxDaemon",
             dependencies: [
@@ -60,6 +66,7 @@ let package = Package(
                 "SandboxRuntimeVZ",
                 "SandboxSecurity",
                 "SandboxStorage",
+                "SandboxHostControl",
             ],
             path: "Sources/DarkbloomSandboxDaemon"
         ),
@@ -92,6 +99,11 @@ let package = Package(
             name: "SandboxRuntimeVZTests",
             dependencies: ["SandboxCore", "SandboxRuntimeVZ"],
             path: "Tests/SandboxRuntimeVZTests"
+        ),
+        .testTarget(
+            name: "SandboxHostControlTests",
+            dependencies: ["SandboxCore", "SandboxHostControl"],
+            path: "Tests/SandboxHostControlTests"
         ),
         .testTarget(
             name: "DarkbloomSandboxDaemonTests",

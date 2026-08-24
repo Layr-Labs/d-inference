@@ -340,10 +340,10 @@ index 196b453b..969a3c19 100644
 +        // the backend that will actually serve. Everything else,
 diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
 new file mode 100644
-index 00000000..131e8ec7
+index 00000000..68a0395d
 --- /dev/null
 +++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,316 @@
 +// Copyright © 2026 Eigen Labs.
 +//
 +// Default-off deployment policy for exact Qwen prompt-state reuse. This is
@@ -415,8 +415,10 @@ index 00000000..131e8ec7
 +    static let exactPrefixCacheMaxFractionEnvironmentKey =
 +        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION"
 +
-+    /// One GiB retains several measured Qwen boundaries, while the fractional
-+    /// ceiling prevents the cache from dominating a small slot.
++    /// One GiB is a conservative opt-in starting point, while the fractional
++    /// ceiling prevents the cache from dominating a small slot. It does not
++    /// retain the benchmark's complete 8K/32-boundary set (~4.83 GB); an
++    /// operator must explicitly raise the byte ceiling for that hit profile.
 +    static let defaultExactPrefixCacheMaxBytes = 1_073_741_824
 +    static let defaultExactPrefixCacheMaxFraction = 0.125
 +

@@ -139,7 +139,7 @@ func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *tes
 	}
 
 	registerEarningsCapacity(t, reg, "desired-provider", desired, 400, 100, false)
-	registerEarningsCapacity(t, reg, "previous-provider", previous, 200, 50, false)
+	registerEarningsCapacity(t, reg, "previous-provider", previous, 100, 50, false)
 	registerEarningsCapacity(t, reg, "retired-provider", retired, 800, 999, false)
 	registerEarningsCapacity(t, reg, "private-provider", desired, 600, 777, true)
 
@@ -194,10 +194,10 @@ func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *tes
 		aliased.PaidJobs != 4 {
 		t.Fatalf("aliased model = %+v", aliased)
 	}
-	if aliased.AggregateTPS != 150 || aliased.AggregateMemoryBandwidthGBs != 600 ||
-		aliased.BenchmarkTPS != 150 || aliased.BenchmarkMemoryBandwidthGBs != 600 ||
+	if aliased.AggregateTPS != 150 || aliased.AggregateMemoryBandwidthGBs != 500 ||
+		aliased.BenchmarkTPS != 100 || aliased.BenchmarkMemoryBandwidthGBs != 400 ||
 		aliased.ProviderSupply != 2 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
-		t.Fatalf("aliased capacity = %+v, want desired + fallback 150 TPS / 600 GB/s / 2 providers", aliased)
+		t.Fatalf("aliased capacity = %+v, want 150 TPS / 500 GB/s union with desired-only 100 TPS / 400 GB/s benchmark", aliased)
 	}
 	standaloneModel := models[standalone]
 	if standaloneModel.WorkPayoutMicroUSD != 5_000_000 || standaloneModel.PaidTokens != 55 ||

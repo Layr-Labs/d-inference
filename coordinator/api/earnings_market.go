@@ -155,10 +155,12 @@ func buildEarningsMarketResponse(
 			if capacity, ok := capacityByModel[member]; ok {
 				model.AggregateTPS += capacity.AggregateTPS
 				model.AggregateMemoryBandwidthGBs += capacity.AggregateMemoryBandwidthGBs
-				model.BenchmarkTPS += capacity.BenchmarkTPS
-				model.BenchmarkMemoryBandwidthGBs += capacity.BenchmarkMemoryBandwidthGBs
 				model.ProviderSupply += capacity.EligibleProviders
 			}
+		}
+		if capacity, ok := capacityByModel[entry.candidateMember]; ok {
+			model.BenchmarkTPS = capacity.BenchmarkTPS
+			model.BenchmarkMemoryBandwidthGBs = capacity.BenchmarkMemoryBandwidthGBs
 		}
 		models[i] = model
 		modelIndex[model.ID] = i

@@ -11,13 +11,16 @@ import (
 
 type earningsCatalogModel struct {
 	model           earningsMarketModel
+	candidateMember string
 	capacityMembers []string
 }
 
 // buildEarningsCatalog collapses each active standard alias's full historical
 // lineage into one public calculator row. Desired and previous builds both
-// receive alias traffic, so both contribute competing live capacity. Historical
-// work is attributed separately by the public identity persisted at settlement.
+// receive alias traffic, so both contribute competing live capacity. A new
+// provider converges to Desired, so candidate metadata and benchmarking use the
+// first active member only. Historical work is attributed separately by the
+// public identity persisted at settlement.
 func buildEarningsCatalog(
 	records []store.ModelRegistryRecord,
 	aliases []store.ModelAlias,
@@ -81,6 +84,7 @@ func buildEarningsCatalog(
 				SizeBytes:   primary.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(primary.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
+			candidateMember: capacityMembers[0],
 			capacityMembers: capacityMembers,
 		})
 	}
@@ -108,6 +112,7 @@ func buildEarningsCatalog(
 				SizeBytes:   record.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(record.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
+			candidateMember: record.ID,
 			capacityMembers: []string{record.ID},
 		})
 	}

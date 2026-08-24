@@ -272,6 +272,9 @@ public enum LaunchAgent: Sendable {
     /// rectangular cap override is the operator's lever to REDUCE speculative
     /// verification work short of disabling MTP entirely; it must survive
     /// install/restart like the kill switches.
+    /// `DARKBLOOM_CBV2_PROMPT_FORK`: the default-off exact live-fork
+    /// experiment reads this variable inside EngineV2. Forwarding it is
+    /// required for an explicit shell opt-in to reach the launchd daemon.
     /// `DARKBLOOM_KV_BACKEND_GUARD`: the crash-loop guard's record-path
     /// override (`KVBackendGuardStore.pathEnvKey`). The guard has one writer
     /// (the launchd watchdog — same key in `WatchdogAgent.passthroughEnvKeys`)
@@ -291,6 +294,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_EXACT_PREFIX_CACHE",
         "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES",
         "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION",
+        "DARKBLOOM_CBV2_PROMPT_FORK",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",

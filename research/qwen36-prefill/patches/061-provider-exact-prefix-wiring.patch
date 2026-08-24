@@ -37,6 +37,36 @@ index 9818adf3..b5d08595 100644
 +	"exact_prefix_cache_donations":         {},
 +	"exact_prefix_cache_donations_dropped": {},
 +	"exact_prefix_cache_evictions":         {},
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+index 4be5c86d..5af600ee 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+@@ -20,0 +21,4 @@ public enum QwenPrefixReuseBenchmark {
++    private static let prefixExperimentEnvironmentKeys = [
++        "DARKBLOOM_CBV2_PROMPT_FORK",
++        "DARKBLOOM_PREFIX_BENCH_FORCE_FORK",
++    ]
+@@ -77 +80,0 @@ public enum QwenPrefixReuseBenchmark {
+-        let policyEnvironment = QwenQualityCorpusBenchmark.capturedPolicyEnvironment()
+@@ -78,0 +82 @@ public enum QwenPrefixReuseBenchmark {
++        let policyEnvironment = capturedPolicyEnvironment(processEnvironment)
+@@ -292,0 +297,16 @@ public enum QwenPrefixReuseBenchmark {
++    /// Prefix reports extend the quality harness's safe policy allowlist with
++    /// the two controls that distinguish a durable-cache run from a forced
++    /// no-hit live-fork run. Never serialize unrelated process environment.
++    static func capturedPolicyEnvironment(
++        _ environment: [String: String] = ProcessInfo.processInfo.environment
++    ) -> [String: String] {
++        var captured = QwenQualityCorpusBenchmark.capturedPolicyEnvironment(
++            environment)
++        for key in prefixExperimentEnvironmentKeys {
++            if let value = environment[key], !value.isEmpty {
++                captured[key] = value
++            }
++        }
++        return captured
++    }
++
 diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift
 new file mode 100644
 index 00000000..79cd9639
@@ -310,7 +340,7 @@ index 196b453b..969a3c19 100644
 +        // the backend that will actually serve. Everything else,
 diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
 new file mode 100644
-index 00000000..652e9177
+index 00000000..131e8ec7
 --- /dev/null
 +++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
 @@ -0,0 +1,314 @@
@@ -909,13 +939,18 @@ index 72d2d319..e6d099ae 100644
 +                exactPrefixCacheBytesInUse: $0.exactPrefixCacheBytesInUse,
 +                exactPrefixCacheEntries: $0.exactPrefixCacheEntries)
 diff --git a/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift b/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
-index e2184b24..684136b6 100644
+index e2184b24..27e72e8f 100644
 --- a/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
 +++ b/provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift
-@@ -290,0 +291,3 @@ public enum LaunchAgent: Sendable {
+@@ -274,0 +275,3 @@ public enum LaunchAgent: Sendable {
++    /// `DARKBLOOM_CBV2_PROMPT_FORK`: the default-off exact live-fork
++    /// experiment reads this variable inside EngineV2. Forwarding it is
++    /// required for an explicit shell opt-in to reach the launchd daemon.
+@@ -290,0 +294,4 @@ public enum LaunchAgent: Sendable {
 +        "DARKBLOOM_EXACT_PREFIX_CACHE",
 +        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES",
 +        "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION",
++        "DARKBLOOM_CBV2_PROMPT_FORK",
 diff --git a/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift b/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift
 index aee883c7..bf2edf14 100644
 --- a/provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift
@@ -1006,7 +1041,7 @@ index 63f5e6e4..3d6933fe 100644
 +
 diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
 new file mode 100644
-index 00000000..499e8b8b
+index 00000000..f772cf1c
 --- /dev/null
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
 @@ -0,0 +1,389 @@
@@ -1400,10 +1435,10 @@ index 00000000..499e8b8b
 +    }
 +}
 diff --git a/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift b/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
-index 720ff2f1..8c760ebe 100644
+index 720ff2f1..639c3207 100644
 --- a/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/LaunchAgentRestartTests.swift
-@@ -61,0 +62,13 @@ struct LaunchAgentEnvironmentTests {
+@@ -61,0 +62,19 @@ struct LaunchAgentEnvironmentTests {
 +    @Test func forwardsExactPrefixCacheOptInAndHardCeilings() {
 +        let out = LaunchAgent.passthroughEnvironment(from: [
 +            "DARKBLOOM_EXACT_PREFIX_CACHE": "1",
@@ -1415,6 +1450,12 @@ index 720ff2f1..8c760ebe 100644
 +            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES": "1073741824",
 +            "DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION": "0.125",
 +        ])
++    }
++
++    @Test func forwardsPromptForkOptInToDaemon() {
++        let out = LaunchAgent.passthroughEnvironment(
++            from: ["DARKBLOOM_CBV2_PROMPT_FORK": "1", "PATH": "/usr/bin"])
++        #expect(out == ["DARKBLOOM_CBV2_PROMPT_FORK": "1"])
 +    }
 +
 diff --git a/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift b/provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift
@@ -1468,5 +1509,25 @@ index 8892f6cd..18b19144 100644
 +        #expect(serialized?.contains("policy-must-not-escape") == false)
 +
 +        await bridge.shutdown()
++    }
++
+diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
+index 31dfd105..b55f9766 100644
+--- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
+@@ -33,0 +34,15 @@ struct QwenPrefixReuseTests {
++    @Test
++    func prefixPolicyEnvironmentCapturesForkControlsWithoutSecrets() {
++        let captured = QwenPrefixReuseBenchmark.capturedPolicyEnvironment([
++            "DARKBLOOM_CBV2_PROMPT_FORK": "1",
++            "DARKBLOOM_PREFIX_BENCH_FORCE_FORK": "1",
++            "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
++            "DARKBLOOM_API_TOKEN": "secret",
++        ])
++        #expect(captured == [
++            "DARKBLOOM_CBV2_PROMPT_FORK": "1",
++            "DARKBLOOM_PREFIX_BENCH_FORCE_FORK": "1",
++            "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
++        ])
 +    }
 +

@@ -1,0 +1,361 @@
+From 5b626759eddddbc85d6f566d50d41c531d064d5e Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 05:59:21 +0000
+Subject: [PATCH] perf(metal): dequantize QMM weights in float32
+
+---
+ mlx/backend/metal/kernels/fp_quantized.h     |  7 +-
+ mlx/backend/metal/kernels/fp_quantized_nax.h |  7 +-
+ mlx/backend/metal/kernels/quantized.h        | 73 +++++++++++---------
+ mlx/backend/metal/kernels/quantized_nax.h    | 73 +++++++++++---------
+ python/tests/test_quantized.py               | 60 ++++++++++++++++
+ 5 files changed, 148 insertions(+), 72 deletions(-)
+
+diff --git a/mlx/backend/metal/kernels/fp_quantized.h b/mlx/backend/metal/kernels/fp_quantized.h
+index 8d6740db..4e096901 100644
+--- a/mlx/backend/metal/kernels/fp_quantized.h
++++ b/mlx/backend/metal/kernels/fp_quantized.h
+@@ -137,11 +137,12 @@ inline void qouter(const thread uint8_t* w, U x, U scale, thread U* result) {
+ 
+ template <typename U, int bits>
+ inline void dequantize(uint8_t w, U scale, threadgroup U* w_local) {
++  const float s = float(scale);
+   if constexpr (bits == 4) {
+-    w_local[0] = scale * Dequantize<4, U>{}(w);
+-    w_local[1] = scale * Dequantize<4, U>{}(w >> 4);
++    w_local[0] = static_cast<U>(s * Dequantize<4, float>{}(w));
++    w_local[1] = static_cast<U>(s * Dequantize<4, float>{}(w >> 4));
+   } else {
+-    w_local[0] = scale * Dequantize<8, U>{}(w);
++    w_local[0] = static_cast<U>(s * Dequantize<8, float>{}(w));
+   }
+ }
+ 
+diff --git a/mlx/backend/metal/kernels/fp_quantized_nax.h b/mlx/backend/metal/kernels/fp_quantized_nax.h
+index 0ea6af16..da339ba4 100644
+--- a/mlx/backend/metal/kernels/fp_quantized_nax.h
++++ b/mlx/backend/metal/kernels/fp_quantized_nax.h
+@@ -61,11 +61,12 @@ struct Dequantize {
+ 
+ template <typename U, int bits>
+ inline void dequantize(uint8_t w, U scale, threadgroup U* w_local) {
++  const float s = float(scale);
+   if constexpr (bits == 4) {
+-    w_local[0] = scale * Dequantize<4, U>{}(w);
+-    w_local[1] = scale * Dequantize<4, U>{}(w >> 4);
++    w_local[0] = static_cast<U>(s * Dequantize<4, float>{}(w));
++    w_local[1] = static_cast<U>(s * Dequantize<4, float>{}(w >> 4));
+   } else {
+-    w_local[0] = scale * Dequantize<8, U>{}(w);
++    w_local[0] = static_cast<U>(s * Dequantize<8, float>{}(w));
+   }
+ }
+ 
+diff --git a/mlx/backend/metal/kernels/quantized.h b/mlx/backend/metal/kernels/quantized.h
+index 04e5b13f..796d34c7 100644
+--- a/mlx/backend/metal/kernels/quantized.h
++++ b/mlx/backend/metal/kernels/quantized.h
+@@ -489,17 +489,16 @@ inline void dequantize(const device uint8_t* w, U scale, U bias, W w_local) {
+           bits == 8,
+       "Template undefined for bits not in {2, 3, 4, 5, 6, 8}");
+ 
++  const float s = float(scale);
++  const float b = float(bias);
++
+   if (bits == 2) {
+-    U s[4] = {
+-        scale,
+-        scale / static_cast<U>(4.0f),
+-        scale / static_cast<U>(16.0f),
+-        scale / static_cast<U>(64.0f)};
++    float sc[4] = {s, s / 4.0f, s / 16.0f, s / 64.0f};
+     for (int i = 0; i < (N / 4); i++) {
+-      w_local[4 * i] = s[0] * (w[i] & 0x03) + bias;
+-      w_local[4 * i + 1] = s[1] * (w[i] & 0x0c) + bias;
+-      w_local[4 * i + 2] = s[2] * (w[i] & 0x30) + bias;
+-      w_local[4 * i + 3] = s[3] * (w[i] & 0xc0) + bias;
++      w_local[4 * i] = static_cast<U>(sc[0] * (w[i] & 0x03) + b);
++      w_local[4 * i + 1] = static_cast<U>(sc[1] * (w[i] & 0x0c) + b);
++      w_local[4 * i + 2] = static_cast<U>(sc[2] * (w[i] & 0x30) + b);
++      w_local[4 * i + 3] = static_cast<U>(sc[3] * (w[i] & 0xc0) + b);
+     }
+   }
+ 
+@@ -508,22 +507,24 @@ inline void dequantize(const device uint8_t* w, U scale, U bias, W w_local) {
+       w_local += 8 * i;
+       w += 3 * i;
+ 
+-      w_local[0] = (w[0] & 0x7) * scale + bias;
+-      w_local[1] = ((w[0] & 0x38) >> 3) * scale + bias;
+-      w_local[2] = (((w[0] & 0xc0) >> 6) + ((w[1] & 0x1) << 2)) * scale + bias;
+-      w_local[3] = ((w[1] & 0xe) >> 1) * scale + bias;
+-      w_local[4] = ((w[1] & 0x70) >> 4) * scale + bias;
+-      w_local[5] = (((w[1] & 0x80) >> 7) + ((w[2] & 0x3) << 1)) * scale + bias;
+-      w_local[6] = ((w[2] & 0x1c) >> 2) * scale + bias;
+-      w_local[7] = ((w[2] & 0xe0) >> 5) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x7) * s + b);
++      w_local[1] = static_cast<U>(((w[0] & 0x38) >> 3) * s + b);
++      w_local[2] =
++          static_cast<U>((((w[0] & 0xc0) >> 6) + ((w[1] & 0x1) << 2)) * s + b);
++      w_local[3] = static_cast<U>(((w[1] & 0xe) >> 1) * s + b);
++      w_local[4] = static_cast<U>(((w[1] & 0x70) >> 4) * s + b);
++      w_local[5] =
++          static_cast<U>((((w[1] & 0x80) >> 7) + ((w[2] & 0x3) << 1)) * s + b);
++      w_local[6] = static_cast<U>(((w[2] & 0x1c) >> 2) * s + b);
++      w_local[7] = static_cast<U>(((w[2] & 0xe0) >> 5) * s + b);
+     }
+   }
+ 
+   else if (bits == 4) {
+-    U s[2] = {scale, scale / static_cast<U>(16.0f)};
++    float sc[2] = {s, s / 16.0f};
+     for (int i = 0; i < (N / 2); i++) {
+-      w_local[2 * i] = s[0] * (w[i] & 0x0f) + bias;
+-      w_local[2 * i + 1] = s[1] * (w[i] & 0xf0) + bias;
++      w_local[2 * i] = static_cast<U>(sc[0] * (w[i] & 0x0f) + b);
++      w_local[2 * i + 1] = static_cast<U>(sc[1] * (w[i] & 0xf0) + b);
+     }
+   }
+ 
+@@ -532,14 +533,18 @@ inline void dequantize(const device uint8_t* w, U scale, U bias, W w_local) {
+       w_local += 8 * i;
+       w += 5 * i;
+ 
+-      w_local[0] = (w[0] & 0x1f) * scale + bias;
+-      w_local[1] = (((w[0] & 0xe0) >> 5) + ((w[1] & 0x3) << 3)) * scale + bias;
+-      w_local[2] = ((w[1] & 0x7c) >> 2) * scale + bias;
+-      w_local[3] = (((w[1] & 0x80) >> 7) + ((w[2] & 0xf) << 1)) * scale + bias;
+-      w_local[4] = (((w[2] & 0xf0) >> 4) + ((w[3] & 0x1) << 4)) * scale + bias;
+-      w_local[5] = ((w[3] & 0x3e) >> 1) * scale + bias;
+-      w_local[6] = (((w[3] & 0xc0) >> 6) + ((w[4] & 0x7) << 2)) * scale + bias;
+-      w_local[7] = ((w[4] & 0xf8) >> 3) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x1f) * s + b);
++      w_local[1] =
++          static_cast<U>((((w[0] & 0xe0) >> 5) + ((w[1] & 0x3) << 3)) * s + b);
++      w_local[2] = static_cast<U>(((w[1] & 0x7c) >> 2) * s + b);
++      w_local[3] =
++          static_cast<U>((((w[1] & 0x80) >> 7) + ((w[2] & 0xf) << 1)) * s + b);
++      w_local[4] =
++          static_cast<U>((((w[2] & 0xf0) >> 4) + ((w[3] & 0x1) << 4)) * s + b);
++      w_local[5] = static_cast<U>(((w[3] & 0x3e) >> 1) * s + b);
++      w_local[6] =
++          static_cast<U>((((w[3] & 0xc0) >> 6) + ((w[4] & 0x7) << 2)) * s + b);
++      w_local[7] = static_cast<U>(((w[4] & 0xf8) >> 3) * s + b);
+     }
+   }
+ 
+@@ -547,16 +552,18 @@ inline void dequantize(const device uint8_t* w, U scale, U bias, W w_local) {
+     for (int i = 0; i < (N / 4); i++) {
+       w_local += 4 * i;
+       w += 3 * i;
+-      w_local[0] = (w[0] & 0x3f) * scale + bias;
+-      w_local[1] = (((w[0] >> 6) & 0x03) + ((w[1] & 0x0f) << 2)) * scale + bias;
+-      w_local[2] = (((w[1] >> 4) & 0x0f) + ((w[2] & 0x03) << 4)) * scale + bias;
+-      w_local[3] = ((w[2] >> 2) & 0x3f) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x3f) * s + b);
++      w_local[1] =
++          static_cast<U>((((w[0] >> 6) & 0x03) + ((w[1] & 0x0f) << 2)) * s + b);
++      w_local[2] =
++          static_cast<U>((((w[1] >> 4) & 0x0f) + ((w[2] & 0x03) << 4)) * s + b);
++      w_local[3] = static_cast<U>(((w[2] >> 2) & 0x3f) * s + b);
+     }
+   }
+ 
+   else if (bits == 8) {
+     for (int i = 0; i < N; i++) {
+-      w_local[i] = scale * w[i] + bias;
++      w_local[i] = static_cast<U>(s * w[i] + b);
+     }
+   }
+ }
+diff --git a/mlx/backend/metal/kernels/quantized_nax.h b/mlx/backend/metal/kernels/quantized_nax.h
+index d50af867..95b9ae27 100644
+--- a/mlx/backend/metal/kernels/quantized_nax.h
++++ b/mlx/backend/metal/kernels/quantized_nax.h
+@@ -491,17 +491,16 @@ dequantize(const device uint8_t* w, U scale, U bias, threadgroup U* w_local) {
+           bits == 8,
+       "Template undefined for bits not in {2, 3, 4, 5, 6, 8}");
+ 
++  const float s = float(scale);
++  const float b = float(bias);
++
+   if (bits == 2) {
+-    U s[4] = {
+-        scale,
+-        scale / static_cast<U>(4.0f),
+-        scale / static_cast<U>(16.0f),
+-        scale / static_cast<U>(64.0f)};
++    float sc[4] = {s, s / 4.0f, s / 16.0f, s / 64.0f};
+     for (int i = 0; i < (N / 4); i++) {
+-      w_local[4 * i] = s[0] * (w[i] & 0x03) + bias;
+-      w_local[4 * i + 1] = s[1] * (w[i] & 0x0c) + bias;
+-      w_local[4 * i + 2] = s[2] * (w[i] & 0x30) + bias;
+-      w_local[4 * i + 3] = s[3] * (w[i] & 0xc0) + bias;
++      w_local[4 * i] = static_cast<U>(sc[0] * (w[i] & 0x03) + b);
++      w_local[4 * i + 1] = static_cast<U>(sc[1] * (w[i] & 0x0c) + b);
++      w_local[4 * i + 2] = static_cast<U>(sc[2] * (w[i] & 0x30) + b);
++      w_local[4 * i + 3] = static_cast<U>(sc[3] * (w[i] & 0xc0) + b);
+     }
+   }
+ 
+@@ -510,22 +509,24 @@ dequantize(const device uint8_t* w, U scale, U bias, threadgroup U* w_local) {
+       w_local += 8 * i;
+       w += 3 * i;
+ 
+-      w_local[0] = (w[0] & 0x7) * scale + bias;
+-      w_local[1] = ((w[0] & 0x38) >> 3) * scale + bias;
+-      w_local[2] = (((w[0] & 0xc0) >> 6) + ((w[1] & 0x1) << 2)) * scale + bias;
+-      w_local[3] = ((w[1] & 0xe) >> 1) * scale + bias;
+-      w_local[4] = ((w[1] & 0x70) >> 4) * scale + bias;
+-      w_local[5] = (((w[1] & 0x80) >> 7) + ((w[2] & 0x3) << 1)) * scale + bias;
+-      w_local[6] = ((w[2] & 0x1c) >> 2) * scale + bias;
+-      w_local[7] = ((w[2] & 0xe0) >> 5) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x7) * s + b);
++      w_local[1] = static_cast<U>(((w[0] & 0x38) >> 3) * s + b);
++      w_local[2] =
++          static_cast<U>((((w[0] & 0xc0) >> 6) + ((w[1] & 0x1) << 2)) * s + b);
++      w_local[3] = static_cast<U>(((w[1] & 0xe) >> 1) * s + b);
++      w_local[4] = static_cast<U>(((w[1] & 0x70) >> 4) * s + b);
++      w_local[5] =
++          static_cast<U>((((w[1] & 0x80) >> 7) + ((w[2] & 0x3) << 1)) * s + b);
++      w_local[6] = static_cast<U>(((w[2] & 0x1c) >> 2) * s + b);
++      w_local[7] = static_cast<U>(((w[2] & 0xe0) >> 5) * s + b);
+     }
+   }
+ 
+   else if (bits == 4) {
+-    U s[2] = {scale, scale / static_cast<U>(16.0f)};
++    float sc[2] = {s, s / 16.0f};
+     for (int i = 0; i < (N / 2); i++) {
+-      w_local[2 * i] = s[0] * (w[i] & 0x0f) + bias;
+-      w_local[2 * i + 1] = s[1] * (w[i] & 0xf0) + bias;
++      w_local[2 * i] = static_cast<U>(sc[0] * (w[i] & 0x0f) + b);
++      w_local[2 * i + 1] = static_cast<U>(sc[1] * (w[i] & 0xf0) + b);
+     }
+   }
+ 
+@@ -534,14 +535,18 @@ dequantize(const device uint8_t* w, U scale, U bias, threadgroup U* w_local) {
+       w_local += 8 * i;
+       w += 5 * i;
+ 
+-      w_local[0] = (w[0] & 0x1f) * scale + bias;
+-      w_local[1] = (((w[0] & 0xe0) >> 5) + ((w[1] & 0x3) << 3)) * scale + bias;
+-      w_local[2] = ((w[1] & 0x7c) >> 2) * scale + bias;
+-      w_local[3] = (((w[1] & 0x80) >> 7) + ((w[2] & 0xf) << 1)) * scale + bias;
+-      w_local[4] = (((w[2] & 0xf0) >> 4) + ((w[3] & 0x1) << 4)) * scale + bias;
+-      w_local[5] = ((w[3] & 0x3e) >> 1) * scale + bias;
+-      w_local[6] = (((w[3] & 0xc0) >> 6) + ((w[4] & 0x7) << 2)) * scale + bias;
+-      w_local[7] = ((w[4] & 0xf8) >> 3) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x1f) * s + b);
++      w_local[1] =
++          static_cast<U>((((w[0] & 0xe0) >> 5) + ((w[1] & 0x3) << 3)) * s + b);
++      w_local[2] = static_cast<U>(((w[1] & 0x7c) >> 2) * s + b);
++      w_local[3] =
++          static_cast<U>((((w[1] & 0x80) >> 7) + ((w[2] & 0xf) << 1)) * s + b);
++      w_local[4] =
++          static_cast<U>((((w[2] & 0xf0) >> 4) + ((w[3] & 0x1) << 4)) * s + b);
++      w_local[5] = static_cast<U>(((w[3] & 0x3e) >> 1) * s + b);
++      w_local[6] =
++          static_cast<U>((((w[3] & 0xc0) >> 6) + ((w[4] & 0x7) << 2)) * s + b);
++      w_local[7] = static_cast<U>(((w[4] & 0xf8) >> 3) * s + b);
+     }
+   }
+ 
+@@ -549,16 +554,18 @@ dequantize(const device uint8_t* w, U scale, U bias, threadgroup U* w_local) {
+     for (int i = 0; i < (N / 4); i++) {
+       w_local += 4 * i;
+       w += 3 * i;
+-      w_local[0] = (w[0] & 0x3f) * scale + bias;
+-      w_local[1] = (((w[0] >> 6) & 0x03) + ((w[1] & 0x0f) << 2)) * scale + bias;
+-      w_local[2] = (((w[1] >> 4) & 0x0f) + ((w[2] & 0x03) << 4)) * scale + bias;
+-      w_local[3] = ((w[2] >> 2) & 0x3f) * scale + bias;
++      w_local[0] = static_cast<U>((w[0] & 0x3f) * s + b);
++      w_local[1] =
++          static_cast<U>((((w[0] >> 6) & 0x03) + ((w[1] & 0x0f) << 2)) * s + b);
++      w_local[2] =
++          static_cast<U>((((w[1] >> 4) & 0x0f) + ((w[2] & 0x03) << 4)) * s + b);
++      w_local[3] = static_cast<U>(((w[2] >> 2) & 0x3f) * s + b);
+     }
+   }
+ 
+   else if (bits == 8) {
+     for (int i = 0; i < N; i++) {
+-      w_local[i] = scale * w[i] + bias;
++      w_local[i] = static_cast<U>(s * w[i] + b);
+     }
+   }
+ }
+diff --git a/python/tests/test_quantized.py b/python/tests/test_quantized.py
+index 2850c7c3..107e1573 100644
+--- a/python/tests/test_quantized.py
++++ b/python/tests/test_quantized.py
+@@ -287,6 +287,66 @@ class TestQuantized(mlx_tests.MLXTestCase):
+                 tol = 1e-3 if dtype == mx.float32 else 1.5e-3
+                 self.assertLess((y_q - y_hat).abs().max(), tol)
+ 
++    def test_bfloat16_affine_qmm_dequantizes_in_float32(self):
++        # For scale=0.0185546875, bias=-1.9921875, and code=15, doing
++        # multiply/add in bfloat16 produces -1.71875. Float32 arithmetic
++        # followed by one bfloat16 store produces -1.7109375. A 64-element
++        # dot with ones therefore distinguishes the paths exactly:
++        # -110.0 before the float32-dequant change, -109.5 after it.
++        group_size, bits = 64, 4
++        M, N, K = 32, 32, 64
++        packed_k = K * bits // 32
++        scale = 0.0185546875
++        bias = -1.9921875
++        expected_value = -109.5
++
++        packed_code = mx.array(0xFFFFFFFF, dtype=mx.uint32)
++        weights = mx.broadcast_to(packed_code, (N, packed_k))
++        scales = mx.full((N, K // group_size), scale, dtype=mx.bfloat16)
++        biases = mx.full((N, K // group_size), bias, dtype=mx.bfloat16)
++        x = mx.ones((M, K), dtype=mx.bfloat16)
++        expected = mx.full((M, N), expected_value, dtype=mx.bfloat16)
++
++        actual = mx.quantized_matmul(
++            x,
++            weights,
++            scales,
++            biases,
++            transpose=True,
++            group_size=group_size,
++            bits=bits,
++        )
++        self.assertTrue(mx.array_equal(actual, expected))
++
++        # Exercise the sorted-RHS gather path that serves MoE prefill. Exact
++        # Qwen E=256 K/N route coverage remains in the downstream Swift tests.
++        E, assignments = 2, 32
++        expert_weights = mx.broadcast_to(packed_code, (E, N, packed_k))
++        expert_scales = mx.full(
++            (E, N, K // group_size), scale, dtype=mx.bfloat16
++        )
++        expert_biases = mx.full(
++            (E, N, K // group_size), bias, dtype=mx.bfloat16
++        )
++        expert_indices = mx.array([0] * 16 + [1] * 16, dtype=mx.uint32)
++        gather_x = mx.ones((assignments, 1, K), dtype=mx.bfloat16)
++        gather_expected = mx.full(
++            (assignments, 1, N), expected_value, dtype=mx.bfloat16
++        )
++
++        gather_actual = mx.gather_qmm(
++            gather_x,
++            expert_weights,
++            expert_scales,
++            expert_biases,
++            rhs_indices=expert_indices,
++            transpose=True,
++            group_size=group_size,
++            bits=bits,
++            sorted_indices=True,
++        )
++        self.assertTrue(mx.array_equal(gather_actual, gather_expected))
++
+     def test_qmm_large_dims(self):
+         # Regression test for an int16 overflow in the NAX qmm kernels:
+         # the per-simdgroup edge sizes were computed as
+-- 
+2.43.0
+

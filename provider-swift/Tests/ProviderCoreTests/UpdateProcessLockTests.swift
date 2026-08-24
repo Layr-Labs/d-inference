@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ProviderCore
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -25,6 +26,36 @@ struct UpdateProcessLockTests {
             #expect(owner?.operation == "first")
             #expect(owner?.pid == getpid())
             #expect(owner?.processIdentity == ProcessIdentity.current())
+        }
+    }
+
+    @Test("self-updater session is blocked by the shared app installer lock")
+    func updaterCoordinatesWithOneShotInstallers() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "shared-install-lock-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = try InstallMutationLock.acquirePrimary(
+            in: root,
+            timeout: 0
+        )
+        defer { installer.release() }
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: root,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+
+        do {
+            _ = try updater.beginUpdateSession(
+                operation: "must-not-race-installer",
+                timeout: 0
+            )
+            Issue.record("self-updater acquired the one-shot installer lock")
+        } catch UpdateError.lockBusy(_, let owner) {
+            #expect(owner == nil)
         }
     }
 

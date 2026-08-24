@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import ProviderCoreFoundation
 
 /// Release information returned by the coordinator.
 public struct ReleaseInfo: Sendable {
@@ -763,14 +764,37 @@ public struct SelfUpdater: Sendable {
             verifyCodeSignatures: verifyCodeSignatures,
             faultInjector: recoveryFaultInjector
         )
+        let installMutationLock: InstallMutationLock
+        do {
+            installMutationLock = try InstallMutationLock.acquirePrimary(
+                in: installRoot,
+                timeout: timeout
+            )
+        } catch let error as InstallMutationLock.LockError {
+            switch error {
+            case .timedOut:
+                throw UpdateError.lockBusy(
+                    reason: error.localizedDescription,
+                    owner: nil
+                )
+            case .unavailable:
+                throw UpdateError.replaceFailed(error.localizedDescription)
+            }
+        }
+
         do {
             let processLock = try UpdateProcessLock.acquire(
                 at: store.lockPath,
                 operation: operation,
                 timeout: timeout
             )
-            return UpdateSession(processLock: processLock, store: store)
+            return UpdateSession(
+                installMutationLock: installMutationLock,
+                processLock: processLock,
+                store: store
+            )
         } catch let error as UpdateProcessLock.LockError {
+            installMutationLock.release()
             // Only real contention is `lockBusy` — flock is kernel-owned and
             // auto-releases on owner death, so `.busy` always means a LIVE
             // process holds the lease. An unopenable recovery dir or lock
@@ -783,6 +807,9 @@ public struct SelfUpdater: Sendable {
                 )
             }
             throw UpdateError.replaceFailed(error.description)
+        } catch {
+            installMutationLock.release()
+            throw error
         }
     }
 

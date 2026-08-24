@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 enum AppInstallOutcome: Equatable {
     case continueLaunch
@@ -204,7 +205,7 @@ struct AppInstallCoordinator {
             expected: sourceMetadata
         )
 
-        let preservedForeignApp = try AppInstallLock.withLock(
+        let preservedForeignApp = try InstallMutationLock.withOneShotInstallLock(
             in: destinationRoot,
             fileManager: fileManager
         ) {

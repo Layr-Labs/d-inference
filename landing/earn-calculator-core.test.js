@@ -107,3 +107,18 @@ test("electricity includes full-month idle draw and realized workload draw", fun
     ) < 1e-12,
   );
 });
+
+test("base reward potential cannot exceed the configured fleet pool", function () {
+  assert.equal(
+    Core.baseRewardPotentialUSD(
+      {
+        enabled: true,
+        monthly_pool_micro_usd: 5_000_000,
+        min_uptime_fraction: 0.9,
+        tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
+      },
+      24,
+    ),
+    5,
+  );
+});

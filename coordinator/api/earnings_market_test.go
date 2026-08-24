@@ -113,6 +113,7 @@ func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
 	addActiveEarningsModel(t, st, desired, "Desired build", 32, 20_000_000_000)
 	addActiveEarningsModel(t, st, previous, "Previous build", 48, 30_000_000_000)
 	addActiveEarningsModel(t, st, standalone, "Standalone", 24, 10_000_000_000)
+	addActiveEarningsModel(t, st, clone, "Marketplace clone", 32, 20_000_000_000)
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID:       aliasID,
 		DisplayName:   "Public Model",
@@ -223,6 +224,49 @@ func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
 	if !response.BaseRewards.Enabled || response.BaseRewards.MonthlyPoolMicroUSD != 9_000_000_000 ||
 		response.BaseRewards.MinUptimeFraction != 0.90 || len(response.BaseRewards.Tiers) == 0 {
 		t.Fatalf("base reward policy = %+v", response.BaseRewards)
+	}
+}
+
+func TestEarningsMarketHandlerMarksMissingObservedBenchmarkUnavailable(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const modelID = "unbenchmarked-model"
+	addActiveEarningsModel(t, st, modelID, "Unbenchmarked", 24, 8_000_000_000)
+	registerEarningsCapacity(t, reg, "fallback-provider", modelID, 400, 0, false)
+	if err := st.RecordProviderEarning(&store.ProviderEarning{
+		JobID:            "unbenchmarked-job",
+		Model:            modelID,
+		AmountMicroUSD:   1_000_000,
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		CreatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("RecordProviderEarning: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/earnings/market", nil)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response earningsMarketResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Models) != 1 {
+		t.Fatalf("models = %+v, want one", response.Models)
+	}
+	model := response.Models[0]
+	if model.AggregateTPS <= 0 || model.ProviderSupply != 1 {
+		t.Fatalf("fallback capacity = %+v, want positive competing supply", model)
+	}
+	if model.BenchmarkTPS != 0 || model.BenchmarkMemoryBandwidthGBs != 0 ||
+		model.EstimateAvailable || model.UnavailableReason != "throughput_benchmark_unavailable" {
+		t.Fatalf("unbenchmarked model = %+v, want explicit throughput unavailability", model)
 	}
 }
 

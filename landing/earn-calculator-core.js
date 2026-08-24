@@ -222,7 +222,9 @@
         selectedMinRAM = tier.min_ram_gb;
       }
     });
-    return selected;
+    // A per-machine display must still obey the allocator's fleet-wide cap.
+    // Competition from other eligible machines can reduce the real grant.
+    return Math.min(selected, policy.monthly_pool_micro_usd / 1e6);
   }
 
   function calculateModelEstimate(model, hardware, memoryGB, baseRewards, electricityCostPerKWh) {

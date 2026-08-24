@@ -1,4 +1,3 @@
-import { proxyHeaders } from "../http/proxy-client";
 import type {
   BaseRewardTier,
   EarningsMarketAudit,
@@ -193,7 +192,7 @@ export function parseEarningsMarket(value: unknown): EarningsMarketResponse {
 
 export async function fetchEarningsMarket(): Promise<EarningsMarketResponse> {
   const response = await fetch("/api/earnings/market", {
-    headers: proxyHeaders(),
+    headers: { Accept: "application/json" },
   });
   if (!response.ok) {
     throw new Error(`Failed to fetch earnings market: ${response.status}`);

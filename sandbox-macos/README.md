@@ -133,8 +133,13 @@ reservation receives a monotonically increasing fencing token. A bounded,
 durable per-sandbox generation high-water mark survives release and restart;
 equal or older generations fail closed instead of reclaiming prior authority.
 Capacity state also binds the canonical runtime storage path, directory inode,
-and device. All pre-v3 state is quarantined because neither complete released
-generation history nor the runtime storage identity can be reconstructed.
+and device. Version 4 additionally persists the complete effective admission
+policy and a compare-and-swap revision. Version 3 is atomically migrated into
+`draining` quarantine with the startup policy durably bound; a crash before
+publication leaves version 3 to retry, while an uncertain post-rename
+publication remains draining. All pre-v3 state is rejected because neither
+complete released generation history nor the runtime storage identity can be
+reconstructed.
 The alpha history admits 4,096 distinct sandbox IDs and then fails closed.
 Resetting that history is safe only during host reprovisioning after the broker
 is stopped, the host is drained, and every VM/artifact on the bound storage
@@ -177,13 +182,18 @@ The alpha policy admits exactly two running sandboxes, fixes the sparse macOS
 boot disk at 100 GiB, and reserves each clone's worst-case boot-disk CoW growth,
 25/50 GiB workspace, and 1 GiB host overhead. Aggregate CPU, memory, and growth
 admission runs under an inter-process `flock` on the already-bound state
-directory inode. If a restarted broker's reduced CPU, memory, or growth policy
-no longer covers durable leases, it acquires the complete bounded lease
-lock set and durably moves the host to `draining`. This waits for in-flight
-mutations, rejects new work and renewals, preserves stop/delete authority, and
-cannot be undone by raising policy again; admission can resume only after all
-leases are cleaned up and an operator explicitly returns the empty host to
-`sandbox_dedicated`. Reservation and VM creation both require the configured
+directory inode. Policy initialization and adoption acquire all lease slots in
+ascending order before the state-directory lock, then atomically persist CPU,
+memory, growth, storage-headroom, lease-duration, and sandbox-count limits.
+Every reservation and renewal uses those durable limits rather than its
+process-local startup configuration. A reduction that no longer covers durable
+leases moves the host to `draining` before adoption returns. This waits for
+in-flight mutations, rejects new work and renewals, and preserves stop/delete
+authority. Widening is rejected by default and requires an explicit adoption
+against the current durable policy revision; it never clears an existing
+drain. Admission can resume only after all leases are cleaned up and an
+operator explicitly returns the empty host to `sandbox_dedicated`.
+Reservation and VM creation both require the configured
 storage directory's live descriptor-bound filesystem capacity to cover all
 reserved growth plus operator-configured headroom. Every fenced operation
 revalidates that the configured path still resolves to the persisted directory

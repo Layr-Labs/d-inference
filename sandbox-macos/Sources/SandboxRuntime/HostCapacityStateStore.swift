@@ -8,11 +8,13 @@ struct SandboxGenerationHighWatermark: Codable, Equatable {
 }
 
 struct SandboxCapacityState: Codable, Equatable {
-    static let schemaVersion: UInt16 = 3
+    static let schemaVersion: UInt16 = 4
     static let maximumGenerationHighWatermarks = 4_096
 
     let schemaVersion: UInt16
     var mode: SandboxHostMode
+    var effectivePolicy: SandboxCapacityPolicy
+    var policyRevision: UInt64
     var nextFencingToken: UInt64
     var leases: [SandboxCapacityLease]
     var generationHighWatermarks: [SandboxGenerationHighWatermark]
@@ -21,6 +23,8 @@ struct SandboxCapacityState: Codable, Equatable {
     init(
         schemaVersion: UInt16 = Self.schemaVersion,
         mode: SandboxHostMode,
+        effectivePolicy: SandboxCapacityPolicy,
+        policyRevision: UInt64 = 1,
         nextFencingToken: UInt64,
         leases: [SandboxCapacityLease],
         generationHighWatermarks: [SandboxGenerationHighWatermark] = [],
@@ -28,6 +32,8 @@ struct SandboxCapacityState: Codable, Equatable {
     ) {
         self.schemaVersion = schemaVersion
         self.mode = mode
+        self.effectivePolicy = effectivePolicy
+        self.policyRevision = policyRevision
         self.nextFencingToken = nextFencingToken
         self.leases = leases
         self.generationHighWatermarks = generationHighWatermarks
@@ -48,6 +54,14 @@ struct SandboxCapacityState: Codable, Equatable {
             )
         }
         mode = try container.decode(SandboxHostMode.self, forKey: .mode)
+        effectivePolicy = try container.decode(
+            SandboxCapacityPolicy.self,
+            forKey: .effectivePolicy
+        )
+        policyRevision = try container.decode(
+            UInt64.self,
+            forKey: .policyRevision
+        )
         nextFencingToken = try container.decode(
             UInt64.self,
             forKey: .nextFencingToken
@@ -71,6 +85,8 @@ struct SandboxCapacityState: Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.schemaVersion, forKey: .schemaVersion)
         try container.encode(mode, forKey: .mode)
+        try container.encode(effectivePolicy, forKey: .effectivePolicy)
+        try container.encode(policyRevision, forKey: .policyRevision)
         try container.encode(nextFencingToken, forKey: .nextFencingToken)
         try container.encode(leases, forKey: .leases)
         try container.encode(
@@ -85,6 +101,8 @@ struct SandboxCapacityState: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case mode
+        case effectivePolicy
+        case policyRevision
         case nextFencingToken
         case leases
         case generationHighWatermarks
@@ -92,63 +110,53 @@ struct SandboxCapacityState: Codable, Equatable {
     }
 }
 
-struct SandboxCapacityAgentDebugEvent: Encodable {
-    let hypothesisId: String
-    let location: String
-    let message: String
-    let data: [String: String]
-    let timestamp: Int64
-}
+private struct SandboxCapacityStateV3: Decodable {
+    let schemaVersion: UInt16
+    let mode: SandboxHostMode
+    let nextFencingToken: UInt64
+    let leases: [SandboxCapacityLease]
+    let generationHighWatermarks: [SandboxGenerationHighWatermark]
+    let storageIdentity: SandboxStorageVolumeIdentity
 
-enum SandboxCapacityAgentDebugLog {
-    static func append(
-        hypothesisId: String,
-        location: String,
-        message: String,
-        data: [String: String]
-    ) {
-        let event = SandboxCapacityAgentDebugEvent(
-            hypothesisId: hypothesisId,
-            location: location,
-            message: message,
-            data: data,
-            timestamp: Int64(Date().timeIntervalSince1970 * 1_000)
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(
+            UInt16.self,
+            forKey: .schemaVersion
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard var encoded = try? encoder.encode(event) else {
-            return
+        guard schemaVersion == 3 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported legacy capacity state version"
+            )
         }
-        encoded.append(0x0A)
-        let descriptor = Darwin.open(
-            "/opt/cursor/logs/debug.log",
-            O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC,
-            S_IRUSR | S_IWUSR
+        mode = try container.decode(SandboxHostMode.self, forKey: .mode)
+        nextFencingToken = try container.decode(
+            UInt64.self,
+            forKey: .nextFencingToken
         )
-        guard descriptor >= 0 else {
-            return
-        }
-        defer { close(descriptor) }
-        encoded.withUnsafeBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                return
-            }
-            var offset = 0
-            while offset < buffer.count {
-                let written = Darwin.write(
-                    descriptor,
-                    baseAddress.advanced(by: offset),
-                    buffer.count - offset
-                )
-                if written < 0, errno == EINTR {
-                    continue
-                }
-                guard written > 0 else {
-                    return
-                }
-                offset += written
-            }
-        }
+        leases = try container.decode(
+            [SandboxCapacityLease].self,
+            forKey: .leases
+        )
+        generationHighWatermarks = try container.decode(
+            [SandboxGenerationHighWatermark].self,
+            forKey: .generationHighWatermarks
+        )
+        storageIdentity = try container.decode(
+            SandboxStorageVolumeIdentity.self,
+            forKey: .storageIdentity
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case mode
+        case nextFencingToken
+        case leases
+        case generationHighWatermarks
+        case storageIdentity
     }
 }
 
@@ -192,22 +200,43 @@ struct SandboxCapacityStateStore: Sendable {
         self.directorySynchronizationError = directorySynchronizationError
     }
 
-    func initialize(_ initial: SandboxCapacityState) throws -> SandboxCapacityState {
+    /// The caller must hold every lease-operation slot lock in ascending order.
+    func updatePolicyState(
+        requestedPolicy: SandboxCapacityPolicy,
+        initializeIfMissing: Bool,
+        _ operation: (inout SandboxCapacityState) throws -> Void
+    ) throws -> SandboxCapacityState? {
         try withLockedDirectory { directoryDescriptor in
+            var state: SandboxCapacityState
+            var requiresWrite = false
             do {
-                return try readState(from: directoryDescriptor)
+                state = try readState(from: directoryDescriptor)
             } catch SandboxCapacityError.uninitialized {
-                try writeState(initial, to: directoryDescriptor)
-                return initial
+                guard initializeIfMissing else {
+                    return nil
+                }
+                state = SandboxCapacityState(
+                    mode: .draining,
+                    effectivePolicy: requestedPolicy,
+                    nextFencingToken: 1,
+                    leases: [],
+                    storageIdentity: storageIdentity
+                )
+                requiresWrite = true
+            } catch SandboxCapacityError.corruptState {
+                state = try readLegacyV3State(
+                    from: directoryDescriptor,
+                    requestedPolicy: requestedPolicy
+                )
+                requiresWrite = true
             }
-        }
-    }
-
-    func validateExistingStateIfPresent() throws {
-        do {
-            _ = try read()
-        } catch SandboxCapacityError.uninitialized {
-            return
+            let original = state
+            try operation(&state)
+            try validate(state)
+            if requiresWrite || state != original {
+                try writeState(state, to: directoryDescriptor)
+            }
+            return state
         }
     }
 
@@ -340,6 +369,50 @@ struct SandboxCapacityStateStore: Sendable {
     private func readState(from directoryDescriptor: Int32) throws
         -> SandboxCapacityState
     {
+        let data = try readStateData(from: directoryDescriptor)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let state: SandboxCapacityState
+        do {
+            state = try decoder.decode(SandboxCapacityState.self, from: data)
+        } catch {
+            throw SandboxCapacityError.corruptState
+        }
+        try validate(state)
+        return state
+    }
+
+    private func readLegacyV3State(
+        from directoryDescriptor: Int32,
+        requestedPolicy: SandboxCapacityPolicy
+    ) throws -> SandboxCapacityState {
+        let data = try readStateData(from: directoryDescriptor)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let legacy: SandboxCapacityStateV3
+        do {
+            legacy = try decoder.decode(
+                SandboxCapacityStateV3.self,
+                from: data
+            )
+        } catch {
+            throw SandboxCapacityError.corruptState
+        }
+        let migrated = SandboxCapacityState(
+            mode: .draining,
+            effectivePolicy: requestedPolicy,
+            nextFencingToken: legacy.nextFencingToken,
+            leases: legacy.leases,
+            generationHighWatermarks: legacy.generationHighWatermarks,
+            storageIdentity: legacy.storageIdentity
+        )
+        try validate(migrated)
+        return migrated
+    }
+
+    private func readStateData(
+        from directoryDescriptor: Int32
+    ) throws -> Data {
         let descriptor = openat(
             directoryDescriptor,
             Self.stateFileName,
@@ -362,16 +435,7 @@ struct SandboxCapacityStateStore: Sendable {
         } catch {
             throw Self.authorityError(error)
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .millisecondsSince1970
-        let state: SandboxCapacityState
-        do {
-            state = try decoder.decode(SandboxCapacityState.self, from: data)
-        } catch {
-            throw SandboxCapacityError.corruptState
-        }
-        try validate(state)
-        return state
+        return data
     }
 
     private func writeState(
@@ -488,9 +552,13 @@ struct SandboxCapacityStateStore: Sendable {
 
     private static func validate(_ state: SandboxCapacityState) throws {
         guard state.schemaVersion == SandboxCapacityState.schemaVersion,
+              state.policyRevision > 0,
               state.nextFencingToken > 0,
               state.leases.count <= SandboxCapacityPolicy.supportedRunningSandboxes,
-              state.mode != .inference || state.leases.isEmpty
+              state.mode != .inference || state.leases.isEmpty,
+              state.mode != .sandboxDedicated
+                  || state.effectivePolicy
+                      .accommodatesResourceCommitments(state.leases)
         else {
             throw SandboxCapacityError.corruptState
         }

@@ -26,7 +26,7 @@ public enum SandboxStorageReservation {
     }
 }
 
-public struct SandboxCapacityPolicy: Equatable, Sendable {
+public struct SandboxCapacityPolicy: Codable, Equatable, Sendable {
     public static let supportedRunningSandboxes = 2
     public static let maximumSupportedLeaseDurationSeconds: TimeInterval = 600
 
@@ -63,6 +63,11 @@ public struct SandboxCapacityPolicy: Equatable, Sendable {
         self.storageHeadroomBytes = storageHeadroomBytes
         self.maximumLeaseDurationSeconds = maximumLeaseDurationSeconds
     }
+}
+
+public enum SandboxCapacityPolicyAdoption: Equatable, Sendable {
+    case restrictOnly
+    case allowWidening(expectedPolicyRevision: UInt64)
 }
 
 public struct SandboxCapacityLease: Codable, Equatable, Sendable {
@@ -164,10 +169,19 @@ public struct SandboxCapacityLease: Codable, Equatable, Sendable {
 public struct SandboxCapacitySnapshot: Equatable, Sendable {
     public let mode: SandboxHostMode
     public let leases: [SandboxCapacityLease]
+    public let effectivePolicy: SandboxCapacityPolicy
+    public let policyRevision: UInt64
 
-    public init(mode: SandboxHostMode, leases: [SandboxCapacityLease]) {
+    public init(
+        mode: SandboxHostMode,
+        leases: [SandboxCapacityLease],
+        effectivePolicy: SandboxCapacityPolicy,
+        policyRevision: UInt64
+    ) {
         self.mode = mode
         self.leases = leases
+        self.effectivePolicy = effectivePolicy
+        self.policyRevision = policyRevision
     }
 }
 
@@ -226,6 +240,9 @@ package struct SandboxLeaseMutationAuthorization: @unchecked Sendable {
 
 public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConvertible {
     case invalidPolicy
+    case policyWideningRequiresExplicitAdoption
+    case stalePolicyRevision(expected: UInt64, actual: UInt64)
+    case policyRevisionExhausted
     case uninitialized
     case corruptState
     case invalidModeTransition(from: SandboxHostMode, to: SandboxHostMode)
@@ -263,6 +280,12 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
         switch self {
         case .invalidPolicy:
             return "sandbox capacity policy is invalid"
+        case .policyWideningRequiresExplicitAdoption:
+            return "sandbox capacity policy widening requires explicit adoption"
+        case .stalePolicyRevision(let expected, let actual):
+            return "sandbox capacity policy revision \(expected) is stale; current revision is \(actual)"
+        case .policyRevisionExhausted:
+            return "sandbox capacity policy revision space is exhausted"
         case .uninitialized:
             return "sandbox capacity state is uninitialized"
         case .corruptState:

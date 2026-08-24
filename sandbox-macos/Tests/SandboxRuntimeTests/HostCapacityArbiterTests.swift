@@ -287,14 +287,16 @@ final class HostCapacityArbiterTests: XCTestCase {
             first,
             "policy fencing must retain cleanup authority"
         )
-        let restoredPolicy = try makeArbiter(
-            stateDirectory: stateDirectory,
-            maximumCPUCount: 8
-        )
+        assertCapacityError(.policyWideningRequiresExplicitAdoption) {
+            _ = try makeArbiter(
+                stateDirectory: stateDirectory,
+                maximumCPUCount: 8
+            )
+        }
         XCTAssertEqual(
-            try restoredPolicy.snapshot().mode,
+            try reduced.snapshot().mode,
             .draining,
-            "raising policy again must not resurrect previously fenced authority"
+            "implicit widening must leave the reduced policy and drain intact"
         )
         try releaseLease(first, using: reduced)
         try releaseLease(second, using: reduced)
@@ -304,25 +306,29 @@ final class HostCapacityArbiterTests: XCTestCase {
             "a human may re-enable admission only after fenced leases are gone"
         )
 
-        let reopened = try makeArbiter(
+        let reducedSnapshot = try reduced.snapshot()
+        let widened = try makeArbiter(
             stateDirectory: stateDirectory,
-            maximumCPUCount: 8
+            maximumCPUCount: 8,
+            policyAdoption: .allowWidening(
+                expectedPolicyRevision: reducedSnapshot.policyRevision
+            )
         )
         XCTAssertEqual(
-            try reopened.snapshot().mode,
+            try widened.snapshot().mode,
             .sandboxDedicated,
-            "the durable drain must survive until explicit empty-host recovery"
+            "explicit widening must not alter an operator-restored host mode"
+        )
+        XCTAssertEqual(
+            try widened.snapshot().effectivePolicy.maximumReservedCPUCount,
+            8
         )
     }
 
-    func testReducedPolicyAdoptionRaceAllowsStaleReservationCommit()
-        async throws
-    {
+    func testStaleArbiterCannotReserveAgainstReducedPolicy() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let now = Date(timeIntervalSince1970: 2_000_000_000)
-        let previewBarrier = ReservationPreviewBarrier()
-        defer { previewBarrier.resume() }
         let original = try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
             policy: SandboxCapacityPolicy(
@@ -335,29 +341,11 @@ final class HostCapacityArbiterTests: XCTestCase {
                     20 * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { now },
-            availableStorageBytes: { UInt64.max },
-            reservationPreviewed: { previewBarrier.pause() }
+            availableStorageBytes: { UInt64.max }
         )
         try initializeDedicated(original)
         let resources = try makeResources(cpuCount: 8)
         let firstGeneration = try generation(1)
-
-        let reservation = Task.detached {
-            try original.reserve(
-                sandboxID: SandboxID(),
-                generation: firstGeneration,
-                virtualMachineName: "sandbox-policy-adoption-race",
-                resources: resources,
-                expiresAt: now.addingTimeInterval(120)
-            )
-        }
-        guard previewBarrier.waitUntilPaused() else {
-            previewBarrier.resume()
-            _ = try? await reservation.value
-            return XCTFail(
-                "old-policy reservation must pause after its accepted preview"
-            )
-        }
 
         let reduced = try makeArbiter(
             stateDirectory: stateDirectory,
@@ -366,24 +354,102 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertEqual(
             try reduced.snapshot().mode,
             .sandboxDedicated,
-            "the fitting-state fast path currently returns without fencing"
+            "a fitting empty host need not drain when its limit is reduced"
         )
-        previewBarrier.resume()
 
-        let staleLease = try await reservation.value
-        let violated = try reduced.snapshot()
-        XCTAssertEqual(staleLease.cpuCount, 8)
-        XCTAssertEqual(violated.leases, [staleLease])
+        assertCapacityError(.capacityExhausted) {
+            _ = try original.reserve(
+                sandboxID: SandboxID(),
+                generation: firstGeneration,
+                virtualMachineName: "sandbox-policy-adoption-race",
+                resources: resources,
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
         XCTAssertEqual(
-            violated.mode,
+            try reduced.snapshot().mode,
             .sandboxDedicated,
-            "diagnostic: stale commit leaves work authorization enabled"
+            "rejected stale work must not force an otherwise fitting host to drain"
         )
-        XCTAssertGreaterThan(
-            violated.leases.reduce(UInt16(0)) { $0 + $1.cpuCount },
-            4,
-            "diagnostic: durable commitments exceed the adopted CPU limit"
+        XCTAssertTrue(try reduced.snapshot().leases.isEmpty)
+    }
+
+    func testConcurrentUninitializedArbitersConvergeOnReducedPolicy()
+        async throws
+    {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let broad = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
         )
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+
+        async let broadOutcome = policyInitializationOutcome(broad)
+        async let reducedOutcome = policyInitializationOutcome(reduced)
+        let broadResult = await broadOutcome
+        let reducedResult = await reducedOutcome
+
+        XCTAssertEqual(reducedResult, .initialized)
+        XCTAssertTrue(
+            broadResult == .initialized
+                || broadResult == .rejected(
+                    .policyWideningRequiresExplicitAdoption
+                ),
+            "\(broadResult)"
+        )
+        let snapshot = try reduced.snapshot()
+        XCTAssertEqual(snapshot.effectivePolicy.maximumReservedCPUCount, 4)
+        XCTAssertEqual(snapshot.mode, .draining)
+    }
+
+    func testConcurrentInitializedArbitersCannotRestoreStalePolicy()
+        async throws
+    {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let original = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
+        )
+        try initializeDedicated(original)
+        let stale = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
+        )
+
+        async let staleOutcome = policyInitializationOutcome(stale)
+        let reducedPolicy = try SandboxCapacityPolicy(
+            maximumReservedCPUCount: 4,
+            maximumReservedMemoryBytes:
+                16 * SandboxResourcePolicy.gibibyte,
+            maximumReservedGrowthBytes:
+                300 * SandboxResourcePolicy.gibibyte,
+            storageHeadroomBytes:
+                20 * SandboxResourcePolicy.gibibyte
+        )
+        async let reducedOutcome = policyAdoptionOutcome(
+            stateDirectory: stateDirectory,
+            policy: reducedPolicy
+        )
+        let staleResult = await staleOutcome
+        let reducedResult = await reducedOutcome
+
+        XCTAssertEqual(reducedResult, .initialized)
+        XCTAssertTrue(
+            staleResult == .initialized
+                || staleResult == .rejected(
+                    .policyWideningRequiresExplicitAdoption
+                ),
+            "\(staleResult)"
+        )
+        let snapshot = try original.snapshot()
+        XCTAssertEqual(snapshot.effectivePolicy.maximumReservedCPUCount, 4)
+        XCTAssertEqual(snapshot.mode, .sandboxDedicated)
+        XCTAssertTrue(snapshot.leases.isEmpty)
     }
 
     func testReducedPolicyFenceWaitsForActiveLeaseMutation() async throws {
@@ -479,11 +545,237 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
-    func testRejectedIdentifiersDoNotCreateDurableLeaseLocks() throws {
+    func testStaleRenewalUsesDurableLeaseDurationPolicy() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let original = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(original)
+        let lease = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-policy-renewal",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(20)
+        )
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumLeaseDurationSeconds: 30
+        )
+
+        XCTAssertEqual(try reduced.snapshot().mode, .sandboxDedicated)
+        assertCapacityError(.invalidLeaseDeadline) {
+            _ = try original.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+        XCTAssertEqual(
+            try original.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .start
+            ),
+            lease,
+            "a fitting lease remains active under the reduced durable policy"
+        )
+    }
+
+    func testDurableStoragePolicyFieldsGovernStaleArbiter() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let available = 200 * SandboxResourcePolicy.gibibyte
+        let original = try makeArbiter(
+            stateDirectory: stateDirectory,
+            availableStorageBytes: available
+        )
+        try initializeDedicated(original)
+        _ = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-storage-policy",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumGrowthGiB: 150,
+            storageHeadroomGiB: 80,
+            availableStorageBytes: available
+        )
+        let snapshot = try reduced.snapshot()
+        XCTAssertEqual(
+            snapshot.mode,
+            .draining,
+            "stricter durable headroom must drain over-limit commitments"
+        )
+        XCTAssertEqual(
+            snapshot.effectivePolicy.maximumReservedGrowthBytes,
+            150 * SandboxResourcePolicy.gibibyte
+        )
+        XCTAssertEqual(
+            snapshot.effectivePolicy.storageHeadroomBytes,
+            80 * SandboxResourcePolicy.gibibyte
+        )
+        assertCapacityError(.insufficientHostStorage(
+            needed: 206 * SandboxResourcePolicy.gibibyte,
+            available: available
+        )) {
+            _ = try original.validateStorageHeadroom()
+        }
+
+        let object = try persistedStateObject(in: stateDirectory)
+        let storedPolicy = try XCTUnwrap(
+            object["effectivePolicy"] as? [String: Any]
+        )
+        XCTAssertEqual(
+            (storedPolicy["maximumReservedGrowthBytes"] as? NSNumber)?
+                .uint64Value,
+            150 * SandboxResourcePolicy.gibibyte
+        )
+        XCTAssertEqual(
+            (storedPolicy["storageHeadroomBytes"] as? NSNumber)?.uint64Value,
+            80 * SandboxResourcePolicy.gibibyte
+        )
+    }
+
+    func testExplicitWideningRequiresCurrentPolicyRevision() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let original = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8
+        )
+        _ = try original.initialize()
+        let reduced = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+        let reducedSnapshot = try reduced.snapshot()
+
+        assertCapacityError(.policyWideningRequiresExplicitAdoption) {
+            _ = try makeArbiter(
+                stateDirectory: stateDirectory,
+                maximumCPUCount: 8
+            )
+        }
+        assertCapacityError(.stalePolicyRevision(
+            expected: reducedSnapshot.policyRevision - 1,
+            actual: reducedSnapshot.policyRevision
+        )) {
+            _ = try makeArbiter(
+                stateDirectory: stateDirectory,
+                maximumCPUCount: 8,
+                policyAdoption: .allowWidening(
+                    expectedPolicyRevision:
+                        reducedSnapshot.policyRevision - 1
+                )
+            )
+        }
+        XCTAssertEqual(
+            try reduced.snapshot().effectivePolicy.maximumReservedCPUCount,
+            4,
+            "rejected widening must not partially update durable limits"
+        )
+
+        let widened = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 8,
+            policyAdoption: .allowWidening(
+                expectedPolicyRevision: reducedSnapshot.policyRevision
+            )
+        )
+        XCTAssertEqual(
+            try widened.snapshot().effectivePolicy.maximumReservedCPUCount,
+            8
+        )
+        XCTAssertGreaterThan(
+            try widened.snapshot().policyRevision,
+            reducedSnapshot.policyRevision
+        )
+    }
+
+    func testV3StateMigratesIntoDurableDrainingQuarantine() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let original = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(original)
+        let lease = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-policy-migration",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try downgradePersistedStateToV3(in: stateDirectory)
+
+        let migrated = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+        let snapshot = try migrated.snapshot()
+        XCTAssertEqual(snapshot.mode, .draining)
+        XCTAssertEqual(snapshot.leases, [lease])
+        XCTAssertEqual(snapshot.effectivePolicy.maximumReservedCPUCount, 4)
+        XCTAssertEqual(snapshot.policyRevision, 1)
+        let object = try persistedStateObject(in: stateDirectory)
+        XCTAssertEqual(
+            (object["schemaVersion"] as? NSNumber)?.uint16Value,
+            SandboxCapacityState.schemaVersion
+        )
+        XCTAssertNotNil(object["effectivePolicy"])
+        XCTAssertNotNil(object["policyRevision"])
+    }
+
+    func testV3MigrationPublicationUncertaintyRemainsQuarantined()
+        throws
+    {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let original = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(original)
+        try downgradePersistedStateToV3(in: stateDirectory)
+        let synchronizer = TestDirectorySynchronizer()
+        synchronizer.fail(with: EIO)
+        let policy = try makePolicy(maximumCPUCount: 4)
+
+        assertCapacityError(.publicationUncertain(EIO)) {
+            _ = try SandboxHostCapacityArbiter(
+                stateDirectory: stateDirectory,
+                policy: policy,
+                currentDate: {
+                    Date(timeIntervalSince1970: 2_000_000_000)
+                },
+                availableStorageBytes: { UInt64.max },
+                directorySynchronizationError: {
+                    synchronizer.synchronizationError(for: $0)
+                }
+            )
+        }
+
+        let reopened = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumCPUCount: 4
+        )
+        XCTAssertEqual(try reopened.snapshot().mode, .draining)
+        XCTAssertEqual(
+            try reopened.snapshot().effectivePolicy.maximumReservedCPUCount,
+            4
+        )
+    }
+
+    func testRejectedIdentifiersDoNotGrowDurableLeaseLockSet() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
         _ = try arbiter.initialize()
+        let initialLockFiles = try FileManager.default.contentsOfDirectory(
+            atPath: stateDirectory.path
+        ).filter { $0.hasPrefix("lease-slot-") }.sorted()
+        XCTAssertEqual(initialLockFiles.count, 64)
         let rejectedID = SandboxID()
         let scope = SandboxOperationScope(
             sandboxID: rejectedID,
@@ -509,8 +801,8 @@ final class HostCapacityArbiterTests: XCTestCase {
 
         let lockFiles = try FileManager.default.contentsOfDirectory(
             atPath: stateDirectory.path
-        ).filter { $0.hasPrefix("lease-slot-") }
-        XCTAssertTrue(lockFiles.isEmpty)
+        ).filter { $0.hasPrefix("lease-slot-") }.sorted()
+        XCTAssertEqual(lockFiles, initialLockFiles)
     }
 
     func testFencingRejectsStaleCommandsAndSurvivesRestart() throws {
@@ -1329,6 +1621,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         let firstGeneration = try generation(1)
         let state = SandboxCapacityState(
             mode: .sandboxDedicated,
+            effectivePolicy: try makePolicy(),
             nextFencingToken: 1,
             leases: [],
             generationHighWatermarks: (
@@ -1367,6 +1660,9 @@ final class HostCapacityArbiterTests: XCTestCase {
         maximumCPUCount: UInt16 = 8,
         maximumMemoryGiB: UInt64 = 16,
         maximumGrowthGiB: UInt64 = 300,
+        storageHeadroomGiB: UInt64 = 20,
+        maximumLeaseDurationSeconds: TimeInterval = 300,
+        policyAdoption: SandboxCapacityPolicyAdoption = .restrictOnly,
         availableStorageBytes: UInt64 = UInt64.max,
         clock: TestWallClock? = nil
     ) throws -> SandboxHostCapacityArbiter {
@@ -1375,17 +1671,35 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
         return try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
-            policy: SandboxCapacityPolicy(
-                maximumReservedCPUCount: maximumCPUCount,
-                maximumReservedMemoryBytes: maximumMemoryGiB
-                    * SandboxResourcePolicy.gibibyte,
-                maximumReservedGrowthBytes: maximumGrowthGiB
-                    * SandboxResourcePolicy.gibibyte,
-                storageHeadroomBytes:
-                    20 * SandboxResourcePolicy.gibibyte
+            policy: makePolicy(
+                maximumCPUCount: maximumCPUCount,
+                maximumMemoryGiB: maximumMemoryGiB,
+                maximumGrowthGiB: maximumGrowthGiB,
+                storageHeadroomGiB: storageHeadroomGiB,
+                maximumLeaseDurationSeconds: maximumLeaseDurationSeconds
             ),
+            policyAdoption: policyAdoption,
             currentDate: { clock.now() },
             availableStorageBytes: { availableStorageBytes }
+        )
+    }
+
+    private func makePolicy(
+        maximumCPUCount: UInt16 = 8,
+        maximumMemoryGiB: UInt64 = 16,
+        maximumGrowthGiB: UInt64 = 300,
+        storageHeadroomGiB: UInt64 = 20,
+        maximumLeaseDurationSeconds: TimeInterval = 300
+    ) throws -> SandboxCapacityPolicy {
+        try SandboxCapacityPolicy(
+            maximumReservedCPUCount: maximumCPUCount,
+            maximumReservedMemoryBytes: maximumMemoryGiB
+                * SandboxResourcePolicy.gibibyte,
+            maximumReservedGrowthBytes: maximumGrowthGiB
+                * SandboxResourcePolicy.gibibyte,
+            storageHeadroomBytes: storageHeadroomGiB
+                * SandboxResourcePolicy.gibibyte,
+            maximumLeaseDurationSeconds: maximumLeaseDurationSeconds
         )
     }
 
@@ -1410,6 +1724,38 @@ final class HostCapacityArbiterTests: XCTestCase {
                 + "/test-storage",
             device: 0,
             inode: 0
+        )
+    }
+
+    private func persistedStateObject(
+        in stateDirectory: URL
+    ) throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(
+                    contentsOf: stateDirectory.appendingPathComponent(
+                        "capacity.json"
+                    )
+                )
+            ) as? [String: Any]
+        )
+    }
+
+    private func downgradePersistedStateToV3(
+        in stateDirectory: URL
+    ) throws {
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        var object = try persistedStateObject(in: stateDirectory)
+        object["schemaVersion"] = 3
+        object.removeValue(forKey: "effectivePolicy")
+        object.removeValue(forKey: "policyRevision")
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
         )
     }
 
@@ -1490,21 +1836,43 @@ private enum ReservationOutcome: Equatable, Sendable {
     case failed(String)
 }
 
-private final class ReservationPreviewBarrier: @unchecked Sendable {
-    private let paused = DispatchSemaphore(value: 0)
-    private let proceed = DispatchSemaphore(value: 0)
+private enum PolicyInitializationOutcome: Equatable, Sendable {
+    case initialized
+    case rejected(SandboxCapacityError)
+    case unexpected(String)
+}
 
-    func pause() {
-        paused.signal()
-        proceed.wait()
+private func policyInitializationOutcome(
+    _ arbiter: SandboxHostCapacityArbiter
+) -> PolicyInitializationOutcome {
+    do {
+        _ = try arbiter.initialize()
+        return .initialized
+    } catch let error as SandboxCapacityError {
+        return .rejected(error)
+    } catch {
+        return .unexpected(String(describing: error))
     }
+}
 
-    func waitUntilPaused() -> Bool {
-        paused.wait(timeout: .now() + 5) == .success
-    }
-
-    func resume() {
-        proceed.signal()
+private func policyAdoptionOutcome(
+    stateDirectory: URL,
+    policy: SandboxCapacityPolicy
+) -> PolicyInitializationOutcome {
+    do {
+        _ = try SandboxHostCapacityArbiter(
+            stateDirectory: stateDirectory,
+            policy: policy,
+            currentDate: {
+                Date(timeIntervalSince1970: 2_000_000_000)
+            },
+            availableStorageBytes: { UInt64.max }
+        )
+        return .initialized
+    } catch let error as SandboxCapacityError {
+        return .rejected(error)
+    } catch {
+        return .unexpected(String(describing: error))
     }
 }
 

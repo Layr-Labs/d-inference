@@ -174,8 +174,10 @@ struct WatchdogProbeParseTests {
 
     @Test("stale heartbeat from the live daemon marks it inactive")
     func staleLiveDaemonIsInactive() {
+        let identity = ProcessIdentity(pid: 42, startTimeMicros: 7)
         let state = DaemonState(
             pid: 42,
+            processIdentity: identity,
             version: "1.0.0",
             writtenAt: 100,
             startedAt: 10
@@ -184,14 +186,16 @@ struct WatchdogProbeParseTests {
             processRunning: true,
             daemonState: state,
             now: 500,
-            processAlive: { $0 == 42 }
+            readIdentity: { _ in identity }
         ))
     }
 
-    @Test("fresh heartbeat or unrelated old state preserves activity")
+    @Test("fresh matching heartbeat or identity-less old state preserves launchd activity")
     func freshOrUnrelatedState() {
+        let identity = ProcessIdentity(pid: 42, startTimeMicros: 7)
         let state = DaemonState(
             pid: 42,
+            processIdentity: identity,
             version: "1.0.0",
             writtenAt: 480,
             startedAt: 10
@@ -200,13 +204,18 @@ struct WatchdogProbeParseTests {
             processRunning: true,
             daemonState: state,
             now: 500,
-            processAlive: { $0 == 42 }
+            readIdentity: { _ in identity }
         ))
+        let legacyState = DaemonState(
+            pid: 42,
+            version: "1.0.0",
+            writtenAt: 100,
+            startedAt: 10
+        )
         #expect(WatchdogProbe.providerActive(
             processRunning: true,
-            daemonState: state,
-            now: 1_000,
-            processAlive: { _ in false }
+            daemonState: legacyState,
+            now: 1_000
         ))
     }
 
@@ -229,7 +238,6 @@ struct WatchdogProbeParseTests {
             processRunning: true,
             daemonState: state,
             now: 500,
-            processAlive: { $0 == 42 },
             readIdentity: { _ in ProcessIdentity(pid: 42, startTimeMicros: 99) }
         ))
         // Same kernel identity → the stale record demotes, as before.
@@ -237,7 +245,6 @@ struct WatchdogProbeParseTests {
             processRunning: true,
             daemonState: state,
             now: 500,
-            processAlive: { $0 == 42 },
             readIdentity: { _ in recorded }
         ))
         // Fresh record from the matching identity stays active.
@@ -245,7 +252,6 @@ struct WatchdogProbeParseTests {
             processRunning: true,
             daemonState: state,
             now: 150,
-            processAlive: { $0 == 42 },
             readIdentity: { _ in recorded }
         ))
     }

@@ -2,16 +2,14 @@ import Foundation
 
 /// Canonical rule for deciding whether an on-disk daemon record still
 /// describes a live provider process. A PID alone is insufficient because the
-/// kernel can reuse it after the provider exits.
+/// kernel can reuse it after the provider exits. Legacy records without a
+/// kernel start identity therefore fail closed.
 public enum DaemonStateRuntimeTruth {
     public static func belongsToLiveProcess(
         _ state: DaemonState,
-        processAlive: (Int32) -> Bool = daemonProcessAlive,
         readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
     ) -> Bool {
-        guard let recorded = state.processIdentity else {
-            return processAlive(state.pid)
-        }
+        guard let recorded = state.processIdentity else { return false }
         guard recorded.pid == state.pid else {
             return false
         }
@@ -21,12 +19,10 @@ public enum DaemonStateRuntimeTruth {
     public static func isFreshAndLive(
         _ state: DaemonState,
         now: Double = Date().timeIntervalSince1970,
-        processAlive: (Int32) -> Bool = daemonProcessAlive,
         readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
     ) -> Bool {
         belongsToLiveProcess(
             state,
-            processAlive: processAlive,
             readIdentity: readIdentity
         ) && !state.isStale(now: now)
     }

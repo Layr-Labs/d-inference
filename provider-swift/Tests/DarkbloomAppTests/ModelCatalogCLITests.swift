@@ -67,9 +67,8 @@ struct ModelCatalogCLIRunnerTests {
         stateFileURL: URL? = nil,
         physicalMemoryBytes: UInt64 = 32 * 1_073_741_824,
         now: @escaping @Sendable () -> Date = Date.init,
-        processAlive: @escaping @Sendable (Int32) -> Bool = { _ in true },
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
-            _ in nil
+            ProcessIdentity(pid: $0, startTimeMicros: 100)
         }
     ) -> ProcessModelCatalogCLIRunner {
         ProcessModelCatalogCLIRunner(
@@ -81,7 +80,6 @@ struct ModelCatalogCLIRunnerTests {
                 .appendingPathComponent("missing-state-\(UUID().uuidString).json"),
             physicalMemoryBytes: physicalMemoryBytes,
             now: now,
-            processAlive: processAlive,
             processIdentityReader: processIdentityReader
         )
     }
@@ -141,6 +139,7 @@ struct ModelCatalogCLIRunnerTests {
         DaemonStateFile.write(
             DaemonState(
                 pid: 4711,
+                processIdentity: ProcessIdentity(pid: 4711, startTimeMicros: 100),
                 version: "0.8.0",
                 writtenAt: Date().timeIntervalSince1970,
                 startedAt: Date().timeIntervalSince1970 - 60,
@@ -170,7 +169,7 @@ struct ModelCatalogCLIRunnerTests {
         #expect(snapshot.physicalMemoryGB == 32)
     }
 
-    @Test("stale, dead, and PID-reused daemon records never keep models warm")
+    @Test("stale, identity-less, and PID-reused daemon records never keep models warm")
     func inactiveRuntimeStateIsDiscounted() async throws {
         let script = try makeStubCLI(contents: multiCommandScript)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -180,6 +179,7 @@ struct ModelCatalogCLIRunnerTests {
         DaemonStateFile.write(
             DaemonState(
                 pid: 4711,
+                processIdentity: ProcessIdentity(pid: 4711, startTimeMicros: 100),
                 version: "0.8.0",
                 writtenAt: now.timeIntervalSince1970 - 91,
                 startedAt: now.timeIntervalSince1970 - 120,
@@ -216,8 +216,7 @@ struct ModelCatalogCLIRunnerTests {
         let dead = try await runner(
             script: script,
             stateFileURL: deadURL,
-            now: { now },
-            processAlive: { _ in false }
+            now: { now }
         ).fetchSnapshot()
         #expect(dead.warmModelIDs.isEmpty)
         #expect(dead.servingModelID == nil)
@@ -243,7 +242,6 @@ struct ModelCatalogCLIRunnerTests {
             script: script,
             stateFileURL: reusedURL,
             now: { now },
-            processAlive: { _ in true },
             processIdentityReader: {
                 _ in ProcessIdentity(pid: 4711, startTimeMicros: 200)
             }

@@ -39,7 +39,6 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
     private let settleTimeout: Duration
     private let providerName: String
     private let localEndpointReader: @Sendable () -> LocalEndpointInfo?
-    private let processAlive: @Sendable (Int32) -> Bool
     private let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
     private let selectionInstalled: @Sendable () -> Bool
     private let serviceLoaded: @Sendable () -> Bool
@@ -66,7 +65,6 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         settleTimeout: Duration = .seconds(30),
         providerName: String = ProcessInfo.processInfo.environment["DARKBLOOM_PROVIDER_NAME"] ?? "This Mac",
         localEndpointReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
-        processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
         selectionInstalled: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentInstalled,
         serviceLoaded: @escaping @Sendable () -> Bool = DarkbloomServiceLabels.providerLaunchAgentLoaded
@@ -78,14 +76,12 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         self.settleTimeout = settleTimeout
         self.providerName = providerName
         self.localEndpointReader = localEndpointReader
-        self.processAlive = processAlive
         self.processIdentityReader = processIdentityReader
         self.selectionInstalled = selectionInstalled
         self.serviceLoaded = serviceLoaded
         let initial = Self.mapFromDisk(
             stateFileURL: stateFileURL, providerName: providerName,
             localEndpointReader: localEndpointReader,
-            processAlive: processAlive,
             processIdentityReader: processIdentityReader,
             serviceLoaded: serviceLoaded
         )
@@ -230,7 +226,6 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         let mapped = Self.mapFromDisk(
             stateFileURL: stateFileURL, providerName: providerName,
             localEndpointReader: localEndpointReader,
-            processAlive: processAlive,
             processIdentityReader: processIdentityReader,
             serviceLoaded: serviceLoaded
         )
@@ -274,7 +269,6 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         stateFileURL: URL,
         providerName: String,
         localEndpointReader: @Sendable () -> LocalEndpointInfo?,
-        processAlive: @Sendable (Int32) -> Bool,
         processIdentityReader: @Sendable (Int32) -> ProcessIdentity?,
         serviceLoaded: @Sendable () -> Bool
     ) -> ProviderSnapshot {
@@ -285,7 +279,6 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
                 processIsAlive: state.map {
                     DaemonStateRuntimeTruth.belongsToLiveProcess(
                         $0,
-                        processAlive: processAlive,
                         readIdentity: processIdentityReader
                     )
                 } ?? false,

@@ -36,24 +36,19 @@ func buildEarningsCatalog(
 	sort.Slice(aliases, func(i, j int) bool { return aliases[i].AliasID < aliases[j].AliasID })
 	hiddenBuilds := make(map[string]struct{})
 	publicAliasIDs := make(map[string]struct{})
+	openRouterAliasIDs := make(map[string]struct{})
 	canonicalByHistory := make(map[string]string)
 	out := make([]earningsCatalogModel, 0, len(records))
 
 	for _, alias := range aliases {
+		if alias.OpenRouterOnly && alias.AliasID != "" {
+			openRouterAliasIDs[alias.AliasID] = struct{}{}
+		}
+	}
+
+	for _, alias := range aliases {
 		if !alias.Active || alias.OpenRouterOnly || alias.AliasID == "" {
 			continue
-		}
-		capacityMembers := activeAliasMembers(alias, recordsByID)
-		if len(capacityMembers) == 0 {
-			continue
-		}
-		primary := recordsByID[capacityMembers[0]]
-		displayName := alias.DisplayName
-		if displayName == "" {
-			displayName = primary.DisplayName
-		}
-		if displayName == "" {
-			displayName = alias.AliasID
 		}
 		historyMembers := uniqueNonemptyStrings(append(
 			[]string{alias.AliasID, alias.DesiredBuild, alias.PreviousBuild},
@@ -74,6 +69,19 @@ func buildEarningsCatalog(
 			canonicalByHistory[member] = alias.AliasID
 		}
 		publicAliasIDs[alias.AliasID] = struct{}{}
+
+		capacityMembers := activeAliasMembers(alias, recordsByID)
+		if len(capacityMembers) == 0 {
+			continue
+		}
+		primary := recordsByID[capacityMembers[0]]
+		displayName := alias.DisplayName
+		if displayName == "" {
+			displayName = primary.DisplayName
+		}
+		if displayName == "" {
+			displayName = alias.AliasID
+		}
 		out = append(out, earningsCatalogModel{
 			model: earningsMarketModel{
 				ID:          alias.AliasID,
@@ -88,6 +96,9 @@ func buildEarningsCatalog(
 
 	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
 	for _, record := range records {
+		if _, openRouterOnly := openRouterAliasIDs[record.ID]; openRouterOnly {
+			continue
+		}
 		if _, isAlias := publicAliasIDs[record.ID]; isAlias {
 			continue
 		}

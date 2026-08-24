@@ -13,7 +13,7 @@ func registerCapacityBenchmarkProvider(
 	bandwidth, fallbackTPS, observedTPS float64,
 	privateOnly bool,
 	templateOK *bool,
-) {
+) *Provider {
 	t.Helper()
 	msg := testRegisterMessage()
 	msg.Hardware.MemoryBandwidthGBs = bandwidth
@@ -39,6 +39,7 @@ func registerCapacityBenchmarkProvider(
 		}},
 	}
 	p.mu.Unlock()
+	return p
 }
 
 func TestModelCapacitySnapshotAggregatesBandwidthAndObservedBenchmark(t *testing.T) {
@@ -48,10 +49,19 @@ func TestModelCapacitySnapshotAggregatesBandwidthAndObservedBenchmark(t *testing
 	broken := false
 
 	registerCapacityBenchmarkProvider(t, reg, "observed-a", model, 400, 10, 100, false, &ok)
-	registerCapacityBenchmarkProvider(t, reg, "observed-b", model, 200, 10, 50, false, &ok)
+	busy := registerCapacityBenchmarkProvider(t, reg, "observed-b", model, 200, 10, 50, false, &ok)
+	busy.mu.Lock()
+	busy.BackendCapacity.Slots[0].State = "running"
+	busy.BackendCapacity.Slots[0].NumRunning = 1
+	busy.BackendCapacity.Slots[0].MaxConcurrency = 1
+	busy.mu.Unlock()
 	registerCapacityBenchmarkProvider(t, reg, "unobserved", model, 100, 30, 0, false, &ok)
 	registerCapacityBenchmarkProvider(t, reg, "private", model, 800, 500, 500, true, &ok)
 	registerCapacityBenchmarkProvider(t, reg, "broken-template", model, 600, 400, 400, false, &broken)
+	crashed := registerCapacityBenchmarkProvider(t, reg, "crashed", model, 500, 300, 300, false, &ok)
+	crashed.mu.Lock()
+	crashed.BackendCapacity.Slots[0].State = "crashed"
+	crashed.mu.Unlock()
 
 	var got *ModelCapacity
 	for _, capacity := range reg.ModelCapacitySnapshot() {
@@ -66,6 +76,9 @@ func TestModelCapacitySnapshotAggregatesBandwidthAndObservedBenchmark(t *testing
 	}
 	if got.EligibleProviders != 3 {
 		t.Fatalf("EligibleProviders = %d, want 3", got.EligibleProviders)
+	}
+	if got.RoutableProviders != 2 {
+		t.Fatalf("RoutableProviders = %d, want 2 (busy provider still competes)", got.RoutableProviders)
 	}
 	if got.AggregateTPS != 180 {
 		t.Fatalf("AggregateTPS = %.1f, want 180", got.AggregateTPS)

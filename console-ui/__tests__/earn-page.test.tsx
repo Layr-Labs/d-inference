@@ -4,6 +4,7 @@ import type { EarningsMarketResponse } from "@/lib/api/types";
 import {
   CHIP_OPTIONS,
   DEFAULT_ELEC_COST_PER_KWH,
+  baseRewardPotentialUSD,
   calculateModelEstimate,
   conservedCandidatePayout,
 } from "@/app/earn/calc";
@@ -144,6 +145,20 @@ describe("market-conserving earnings math", () => {
       estimate!.workPoolUSD,
       12,
     );
+  });
+
+  it("caps a machine's base-reward maximum at the configured fleet pool", () => {
+    expect(
+      baseRewardPotentialUSD(
+        {
+          enabled: true,
+          monthly_pool_micro_usd: 5_000_000,
+          min_uptime_fraction: 0.9,
+          tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
+        },
+        24,
+      ),
+    ).toBe(5);
   });
 });
 

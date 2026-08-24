@@ -166,7 +166,9 @@ export function baseRewardPotentialUSD(
       selectedMinRAM = tier.min_ram_gb;
     }
   }
-  return selected;
+  // Even one machine cannot receive more than the allocator's entire monthly
+  // pool. Actual allocation may be lower when other eligible machines share it.
+  return Math.min(selected, policy.monthly_pool_micro_usd / 1_000_000);
 }
 
 export function calculateModelEstimate(

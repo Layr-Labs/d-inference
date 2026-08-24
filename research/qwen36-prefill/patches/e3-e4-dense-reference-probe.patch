@@ -9,7 +9,7 @@ new file mode 100644
 +// shipping sorted W4 gather-QMM with a BF16 gather-MM over the exact same
 +// dequantized weights. The BF16 path excludes its one-time dequantization;
 +// it answers whether a memory-resident prefill cache has enough arithmetic
-+// headroom to justify a [REDACTED] design.
++// headroom to justify an in-memory cache design.
 +//
 +//   MLX_EXPERT_DENSE_REFERENCE_PERF=1 \
 +//   MLX_GATHER_QMM_EXPERT_SLICES=trust \

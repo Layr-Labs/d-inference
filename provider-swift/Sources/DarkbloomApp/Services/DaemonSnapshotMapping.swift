@@ -136,8 +136,7 @@ enum DaemonSnapshotMapping {
            failingTrustStatuses.contains(trust.status.lowercased()) {
             return .attention
         }
-        if let loadError = state.lastModelLoadError,
-           inputs.now.timeIntervalSince1970 - loadError.at <= loadErrorAttentionAge {
+        if attentiveLoadError(inputs) != nil {
             return .attention
         }
         return .online
@@ -264,7 +263,7 @@ enum DaemonSnapshotMapping {
                 recoveryTitle: "Restart Darkbloom"
             )
         }
-        if let loadError = inputs.state?.lastModelLoadError,
+        if let loadError = attentiveLoadError(inputs),
            runState != .paused {
             return ProviderProblem(
                 id: "model-load-error",
@@ -275,6 +274,14 @@ enum DaemonSnapshotMapping {
             )
         }
         return nil
+    }
+
+    private static func attentiveLoadError(_ inputs: Inputs) -> DaemonState.ModelLoadError? {
+        guard let loadError = inputs.state?.lastModelLoadError else {
+            return nil
+        }
+        let age = max(0, inputs.now.timeIntervalSince1970 - loadError.at)
+        return age < loadErrorAttentionAge ? loadError : nil
     }
 
     private static func mapCapacity(_ capacity: DaemonState.Capacity) -> ProviderCapacitySnapshot {

@@ -283,10 +283,10 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
             DaemonSnapshotMapping.Inputs(
                 state: state,
                 processIsAlive: state.map {
-                    processBelongsToState(
+                    DaemonStateRuntimeTruth.belongsToLiveProcess(
                         $0,
                         processAlive: processAlive,
-                        processIdentityReader: processIdentityReader
+                        readIdentity: processIdentityReader
                     )
                 } ?? false,
                 serviceIsLoaded: serviceLoaded(),
@@ -296,17 +296,4 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         )
     }
 
-    private static func processBelongsToState(
-        _ state: DaemonState,
-        processAlive: @Sendable (Int32) -> Bool,
-        processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
-    ) -> Bool {
-        guard let recordedIdentity = state.processIdentity else {
-            return processAlive(state.pid)
-        }
-        guard recordedIdentity.pid == state.pid else {
-            return false
-        }
-        return processIdentityReader(state.pid) == recordedIdentity
-    }
 }

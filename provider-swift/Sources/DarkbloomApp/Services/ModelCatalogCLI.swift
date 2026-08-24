@@ -187,15 +187,25 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
     private let locator: any DarkbloomCLILocating
     private let stateFileURL: URL
     private let physicalMemoryBytes: UInt64
+    private let now: @Sendable () -> Date
+    private let processAlive: @Sendable (Int32) -> Bool
+    private let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
 
     init(
         locator: any DarkbloomCLILocating = SystemDarkbloomCLILocator(),
         stateFileURL: URL = DaemonStateFile.path(),
-        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        now: @escaping @Sendable () -> Date = Date.init,
+        processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? =
+            ProcessIdentity.read
     ) {
         self.locator = locator
         self.stateFileURL = stateFileURL
         self.physicalMemoryBytes = physicalMemoryBytes
+        self.now = now
+        self.processAlive = processAlive
+        self.processIdentityReader = processIdentityReader
     }
 
     func fetchSnapshot() async throws -> ModelLibrarySnapshot {
@@ -232,11 +242,23 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         }
 
         let daemonState = DaemonStateFile.read(from: stateFileURL)
-        let serving = daemonState?.inferenceActive == true ? daemonState?.currentModel : nil
+        let stateIsFreshAndLive = daemonState.map {
+            DaemonStateRuntimeTruth.isFreshAndLive(
+                $0,
+                now: now().timeIntervalSince1970,
+                processAlive: processAlive,
+                readIdentity: processIdentityReader
+            )
+        } ?? false
+        let serving = stateIsFreshAndLive && daemonState?.inferenceActive == true
+            ? daemonState?.currentModel
+            : nil
         return ModelLibrarySnapshot(
             catalog: catalog,
             local: local,
-            warmModelIDs: Set(daemonState?.warmModels ?? []),
+            warmModelIDs: stateIsFreshAndLive
+                ? Set(daemonState?.warmModels ?? [])
+                : [],
             servingModelID: serving,
             physicalMemoryGB: physicalMemoryBytes > 0
                 ? Int(physicalMemoryBytes / 1_073_741_824)

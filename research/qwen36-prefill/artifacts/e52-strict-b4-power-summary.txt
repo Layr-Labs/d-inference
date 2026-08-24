@@ -1,0 +1,27 @@
+E52 strict Qwen B4x8192 privileged GPU power/frequency summary
+
+Benchmark burst:
+aggregate_prefill_tokens_per_second=1542.3
+prefill_makespan_ms=21264.5
+arrival_error_ms=0.02
+
+powermetrics:
+sample_interval_ms=100
+all_samples=1800
+samples_active_residency_ge_90_percent=1620
+active_residency_median_percent=100.0
+active_frequency_median_mhz=1374.0
+active_frequency_p10_mhz=1371.0
+active_frequency_p90_mhz=1378.0
+active_frequency_samples_ge_1370_fraction=0.948148
+active_gpu_power_median_w=47.3885
+active_gpu_power_p10_w=44.178
+active_gpu_power_p90_w=50.515
+active_gpu_power_max_w=51.854
+
+decision:
+The Metal System Trace Medium-performance enum is not a live downclock.
+Strict B4 prefill runs near the 1380 MHz device maximum at sustained high
+power and 100% median active residency. Remaining headroom, if any, is
+kernel-internal (issue/occupancy/bandwidth/dependency), not command feed,
+thermal fade, or frequency policy.

@@ -644,6 +644,20 @@ prefix improves only to five. This disproves cached-frontier sampling as
 the sole cause. Revert the experiment and investigate adopted-cache
 layout / decode scheduling. See `notes/071`.
 
+## 2026-08-24T21:20Z — E52 B4 is not downclocked
+
+Privileged `powermetrics` across strict B4×8K records 1,620 samples at
+≥90% active residency:
+
+- median frequency **1,374 MHz** (p10/p90 1,371/1,378);
+- 94.81% of active samples at ≥1,370 MHz;
+- median GPU power **47.39 W**, p90 50.52 W;
+- 100% median active residency.
+
+The Metal trace's 61% `Medium` label is not a real frequency throttle.
+Clock, thermals, and command feed are closed; remaining strict headroom is
+inside kernels. See `notes/081`.
+
 ## 2026-08-24T16:37Z — E43 moves divergence before adoption
 
 The full state/logit trace rejects cache corruption and decode scheduling.

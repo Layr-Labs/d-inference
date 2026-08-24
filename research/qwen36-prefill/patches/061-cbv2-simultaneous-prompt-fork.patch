@@ -1068,10 +1068,10 @@ index e74c209..61e9e9a 100644
          defer { lock.unlock() }
 diff --git a/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
 new file mode 100644
-index 0000000..ec9d27e
+index 0000000..407428d
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,254 @@
 +import Foundation
 +import XCTest
 +
@@ -1284,14 +1284,20 @@ index 0000000..ec9d27e
 +        harness: CBv2PromptForkHarness,
 +        gate: CBv2PromptForkForwardGate
 +    ) async -> Bool {
++        var observedEntries = 0
 +        for _ in 0 ..< 4 {
 +            let formed = await cbv2SchedWait(timeoutSeconds: 0.1) {
 +                harness.engine.promptForkActivity().cohortsFormed == 1
 +            }
 +            if formed { return true }
-+            guard await gate.waitUntilEntered() else {
++            let previousEntries = observedEntries
++            let entered = await cbv2SchedWait(timeoutSeconds: 1) {
++                gate.entryCount > previousEntries
++            }
++            guard entered else {
 +                continue
 +            }
++            observedEntries = gate.entryCount
 +            if harness.engine.promptForkActivity().cohortsFormed == 1 {
 +                return true
 +            }
@@ -1475,10 +1481,10 @@ index 0000000..adf892b
 +}
 diff --git a/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
 new file mode 100644
-index 0000000..41e29fa
+index 0000000..e623149
 --- /dev/null
 +++ b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,226 @@
 +import Foundation
 +import MLX
 +
@@ -1487,28 +1493,27 @@ index 0000000..41e29fa
 +final class CBv2PromptForkForwardGate: @unchecked Sendable {
 +    private let lock = NSLock()
 +    private var isOpen = false
-+    let entered = DispatchSemaphore(value: 0)
++    private var entries = 0
 +    private let release = DispatchSemaphore(value: 0)
 +
 +    func waitIfClosed() {
 +        lock.lock()
 +        let shouldWait = !isOpen
++        if shouldWait { entries += 1 }
 +        lock.unlock()
 +        guard shouldWait else { return }
-+        entered.signal()
 +        _ = release.wait(timeout: .now() + 10)
++    }
++
++    var entryCount: Int {
++        lock.lock()
++        defer { lock.unlock() }
++        return entries
 +    }
 +
 +    /// Release one blocked forward while keeping the next forward gated.
 +    func advance() {
 +        release.signal()
-+    }
-+
-+    func waitUntilEntered(timeoutSeconds: TimeInterval = 1) async -> Bool {
-+        let entered = entered
-+        return await Task.detached {
-+            entered.wait(timeout: .now() + timeoutSeconds) == .success
-+        }.value
 +    }
 +
 +    /// Release the current forward and leave all later forwards unblocked.

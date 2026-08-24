@@ -1,0 +1,16 @@
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -1517,7 +1517,11 @@ public class Qwen35TextModelInner: Module {
+         super.init()
+ 
+         if cbv2PrefillLayerPolicy.isEnabled || prefillMoERoutingPolicy.reducedTopK != nil {
+-            print("[INFO] Qwen35 CBv2 prefill experiment: \(cbv2PrefillExperimentDescriptor)")
++            FileHandle.standardError.write(Data(
++                "[INFO] Qwen35 CBv2 prefill experiment: "
++                    .appending(cbv2PrefillExperimentDescriptor)
++                    .appending("\n")
++                    .utf8))
+         }
+     }
+ 

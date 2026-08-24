@@ -6,38 +6,46 @@
 using namespace metal;
 using namespace mpp::tensor_ops;
 
-// Both kernels assign one 16x32 output tile to one SIMD group. Four
-// independent SIMD groups share a threadgroup; no threadgroup memory or
-// cross-SIMD communication is used.
-constant constexpr uint tileM = 16;
-constant constexpr uint tileN = 32;
-constant constexpr uint mppChunkK = 16;
-constant constexpr uint steelChunkK = 8;
-constant constexpr uint simdgroupsPerThreadgroup = 4;
-
 struct DenseShape {
   uint m;
   uint k;
   uint n;
 };
 
-using MPPLeftExtents = metal::extents<int, mppChunkK, tileM>;
-using MPPRightExtents = metal::extents<int, tileN, mppChunkK>;
-using MPPDestinationExtents = metal::extents<int, tileN, tileM>;
-using SteelFragment = metal::simdgroup_matrix<float, 8, 8>;
+#if defined(COMPILE_MPP_CANDIDATE)
 
-METAL_FUNC uint output_tile_index(
-    uint threadgroup_index,
-    ushort simdgroup_index) {
-  return threadgroup_index * simdgroupsPerThreadgroup +
-      uint(simdgroup_index);
-}
+#if !defined(MPP_TILE_M) || !defined(MPP_TILE_N) || !defined(MPP_TILE_K) || \
+    !defined(MPP_SCOPE_SIMDGROUPS) || !defined(MPP_FUNCTION)
+#error "MPP candidate compile requires tile, scope, and function macros"
+#endif
 
-// Metal 4 MPP Candidate A. The descriptor K is statically 16. Each loop
-// iteration uses supported cooperative-tensor load operations for BF16 A/B,
-// while one FP32 cooperative destination remains live for the entire logical
-// K reduction. Only the final FP32 tile is stored.
-kernel void mpp_bf16_fp32_static_k16(
+#if MPP_SCOPE_SIMDGROUPS == 1
+using MPPScope = metal::execution_simdgroup;
+constant constexpr uint mppOutputTilesPerThreadgroup = 4;
+#elif MPP_SCOPE_SIMDGROUPS == 2
+using MPPScope = metal::execution_simdgroups<2>;
+constant constexpr uint mppOutputTilesPerThreadgroup = 1;
+#elif MPP_SCOPE_SIMDGROUPS == 4
+using MPPScope = metal::execution_simdgroups<4>;
+constant constexpr uint mppOutputTilesPerThreadgroup = 1;
+#else
+#error "MPP_SCOPE_SIMDGROUPS must be 1, 2, or 4"
+#endif
+
+constant constexpr uint mppTileM = MPP_TILE_M;
+constant constexpr uint mppTileN = MPP_TILE_N;
+constant constexpr uint mppTileK = MPP_TILE_K;
+
+using MPPLeftExtents = metal::extents<int, MPP_TILE_K, MPP_TILE_M>;
+using MPPRightExtents = metal::extents<int, MPP_TILE_N, MPP_TILE_K>;
+using MPPDestinationExtents = metal::extents<int, MPP_TILE_N, MPP_TILE_M>;
+
+// Every matrix entry in the compile matrix instantiates this strict
+// BF16xBF16->FP32 operation independently. A single-SIMD-group operation packs
+// four independent output tiles into one threadgroup. Multi-SIMD-group scopes
+// use exactly the configured 2 or 4 groups cooperatively for one output tile,
+// as required by the Metal 4 execution-scope contract.
+kernel void MPP_FUNCTION(
     device bfloat* a [[buffer(0)]],
     device bfloat* b [[buffer(1)]],
     device float* output [[buffer(2)]],
@@ -45,20 +53,22 @@ kernel void mpp_bf16_fp32_static_k16(
     ushort simdgroup_index [[simdgroup_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]]) {
   constexpr auto descriptor = matmul2d_descriptor(
-      int(tileM),
-      int(tileN),
-      int(mppChunkK),
+      int(mppTileM),
+      int(mppTileN),
+      int(mppTileK),
       false,
       false,
       false,
       matmul2d_descriptor::mode::multiply_accumulate);
-  matmul2d<descriptor, metal::execution_simdgroup> operation;
+  matmul2d<descriptor, MPPScope> operation;
 
-  const uint n_tiles = shape.n / tileN;
-  const uint tile_index =
-      output_tile_index(threadgroup_position.x, simdgroup_index);
-  const uint m_origin = (tile_index / n_tiles) * tileM;
-  const uint n_origin = (tile_index % n_tiles) * tileN;
+  const uint n_tiles = shape.n / mppTileN;
+  const uint tile_index = MPP_SCOPE_SIMDGROUPS == 1
+      ? threadgroup_position.x * mppOutputTilesPerThreadgroup +
+          uint(simdgroup_index)
+      : threadgroup_position.x;
+  const uint m_origin = (tile_index / n_tiles) * mppTileM;
+  const uint n_origin = (tile_index % n_tiles) * mppTileN;
 
   auto cooperative_a =
       operation.get_left_input_cooperative_tensor<bfloat, bfloat, float>();
@@ -72,11 +82,13 @@ kernel void mpp_bf16_fp32_static_k16(
 
 #pragma clang loop unroll(full)
   for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {
-    cooperative_c.set(i, 0.0f);
+    if (cooperative_c.get_mask(i)) {
+      cooperative_c.set(i, 0.0f);
+    }
   }
 
 #pragma clang loop unroll(disable)
-  for (uint k_origin = 0; k_origin < shape.k; k_origin += mppChunkK) {
+  for (uint k_origin = 0; k_origin < shape.k; k_origin += mppTileK) {
     auto a_tile = metal::tensor(
         a + m_origin * shape.k + k_origin,
         MPPLeftExtents{},
@@ -97,6 +109,19 @@ kernel void mpp_bf16_fp32_static_k16(
   cooperative_c.store(c_tile);
 }
 
+#endif
+
+#if defined(COMPILE_STEEL)
+
+// The Steel control keeps the incumbent 16x32 output tile and four independent
+// SIMD groups per threadgroup. It is compiled into its own metallib so one
+// rejected MPP descriptor cannot suppress the reference pipeline.
+constant constexpr uint steelTileM = 16;
+constant constexpr uint steelTileN = 32;
+constant constexpr uint steelChunkK = 8;
+constant constexpr uint steelSIMDGroupsPerThreadgroup = 4;
+using SteelFragment = metal::simdgroup_matrix<float, 8, 8>;
+
 // Steel control. This is the same 8x8 simdgroup matrix primitive and FP32
 // fragment contract used by BaseMMAFrag<float>: BF16 values are promoted while
 // loading each fragment, and one FP32 accumulator per 8x8 output fragment is
@@ -110,11 +135,12 @@ kernel void steel_simdgroup_fp32_reference(
     ushort lane [[thread_index_in_simdgroup]],
     ushort simdgroup_index [[simdgroup_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]]) {
-  const uint n_tiles = shape.n / tileN;
+  const uint n_tiles = shape.n / steelTileN;
   const uint tile_index =
-      output_tile_index(threadgroup_position.x, simdgroup_index);
-  const uint m_origin = (tile_index / n_tiles) * tileM;
-  const uint n_origin = (tile_index % n_tiles) * tileN;
+      threadgroup_position.x * steelSIMDGroupsPerThreadgroup +
+      uint(simdgroup_index);
+  const uint m_origin = (tile_index / n_tiles) * steelTileM;
+  const uint n_origin = (tile_index % n_tiles) * steelTileN;
 
   const ushort qid = lane >> 2;
   const uint fragment_row = uint((qid & 4) + ((lane >> 1) & 3));
@@ -213,3 +239,5 @@ kernel void steel_simdgroup_fp32_reference(
 
 #undef STORE_STEEL_FRAGMENT
 }
+
+#endif

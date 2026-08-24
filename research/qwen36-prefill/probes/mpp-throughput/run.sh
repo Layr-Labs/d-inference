@@ -3,20 +3,29 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="${1:-$SCRIPT_DIR/out}"
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mpp-throughput.XXXXXX")"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mpp-tile-sweep.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
-mkdir -p "$OUT_DIR"
 
+CANDIDATE_SOURCE="$SCRIPT_DIR/candidates.tsv"
+KERNEL_SOURCE="$SCRIPT_DIR/kernel.metal"
+ACCEPTED_MANIFEST="$BUILD_DIR/accepted-candidates.tsv"
+COMPILE_MATRIX="$OUT_DIR/compile-matrix.tsv"
 RESULT="$OUT_DIR/result.txt"
-METAL_LOG="$OUT_DIR/metal-compiler.txt"
-METALLIB_LOG="$OUT_DIR/metallib-linker.txt"
-SWIFT_LOG="$OUT_DIR/swift-compiler.txt"
 PROBE_LOG="$OUT_DIR/probe.txt"
+SWIFT_LOG="$OUT_DIR/swift-compiler.txt"
 POWER_BEFORE="$OUT_DIR/power-before.txt"
 POWER_AFTER="$OUT_DIR/power-after.txt"
 PROCESSES_BEFORE="$OUT_DIR/processes-before.txt"
 PROCESSES_AFTER="$OUT_DIR/processes-after.txt"
 GPU_METADATA="$OUT_DIR/gpu-metadata.txt"
+COMPILER_LOG_DIR="$OUT_DIR/metal-compiler"
+LINKER_LOG_DIR="$OUT_DIR/metallib-linker"
+
+mkdir -p \
+    "$OUT_DIR" \
+    "$BUILD_DIR/candidates" \
+    "$COMPILER_LOG_DIR" \
+    "$LINKER_LOG_DIR"
 
 METAL_FLAGS=(
     -std=metal4.0
@@ -58,7 +67,7 @@ power_gate_passes() {
 }
 
 record_header() {
-    echo "PROBE=mpp-supported-static-k16-throughput"
+    echo "PROBE=mpp-bounded-tile-execution-scope-sweep"
     echo "DATE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "HOST=$(scutil --get ComputerName)"
     echo "HW_MODEL=$(sysctl -n hw.model)"
@@ -70,12 +79,16 @@ record_header() {
     echo "POWER_MODE_AC=$(ac_power_mode)"
     echo "GPU_NAME=$(awk -F': ' '/Chipset Model:/ { print $2; exit }' "$GPU_METADATA")"
     echo "SOURCE_SHA256=$(shasum -a 256 \
-        "$SCRIPT_DIR/kernel.metal" \
+        "$CANDIDATE_SOURCE" \
+        "$KERNEL_SOURCE" \
         "$SCRIPT_DIR/ProbeTypes.swift" \
         "$SCRIPT_DIR/MetalRunner.swift" \
         "$SCRIPT_DIR/main.swift" \
         "$SCRIPT_DIR/run.sh" \
         | tr '\n' ';')"
+    echo "CONTRACT=strict-BF16xBF16-to-FP32-supported-cooperative-load-store"
+    echo "THRESHOLD_TFLOPS=22"
+    echo "SERVING_CODE_CHANGED=no"
 }
 
 record_invalid_gate() {
@@ -86,6 +99,24 @@ record_invalid_gate() {
         echo "TIMING=skipped reason=$reason"
         echo "VERDICT=invalid reason=$reason no_serving_integration=true"
     } | tee "$RESULT"
+}
+
+record_rejection_logs() {
+    local candidate tile_m tile_n tile_k scope scope_groups compile_status link_status
+    while IFS=$'\t' read -r \
+        candidate tile_m tile_n tile_k scope scope_groups compile_status link_status
+    do
+        [[ -z "$candidate" || "$candidate" == \#* ]] && continue
+        if [[ "$compile_status" != "pass" ]]; then
+            echo "METAL_REJECTION_BEGIN candidate=$candidate"
+            sed -n '1,1200p' "$COMPILER_LOG_DIR/$candidate.txt"
+            echo "METAL_REJECTION_END candidate=$candidate"
+        elif [[ "$link_status" != "pass" ]]; then
+            echo "METALLIB_REJECTION_BEGIN candidate=$candidate"
+            sed -n '1,1200p' "$LINKER_LOG_DIR/$candidate.txt"
+            echo "METALLIB_REJECTION_END candidate=$candidate"
+        fi
+    done <"$COMPILE_MATRIX"
 }
 
 system_profiler SPDisplaysDataType >"$GPU_METADATA"
@@ -105,19 +136,23 @@ if pgrep -x darkbloom >"$OUT_DIR/darkbloom-pids-before.txt"; then
     exit 0
 fi
 
+# The Steel control is isolated from every candidate AIR so a rejected MPP
+# descriptor cannot suppress the reference pipeline.
 set +e
 xcrun -sdk macosx metal "${METAL_FLAGS[@]}" \
-    -c "$SCRIPT_DIR/kernel.metal" \
-    -o "$BUILD_DIR/kernel.air" >"$METAL_LOG" 2>&1
-METAL_STATUS=$?
+    -DCOMPILE_STEEL=1 \
+    -c "$KERNEL_SOURCE" \
+    -o "$BUILD_DIR/steel.air" \
+    >"$COMPILER_LOG_DIR/steel.txt" 2>&1
+STEEL_METAL_STATUS=$?
 set -e
-if [[ "$METAL_STATUS" -ne 0 ]]; then
+if [[ "$STEEL_METAL_STATUS" -ne 0 ]]; then
     {
         record_header
-        echo "RUN_VALID=no reason=metal-compile"
-        echo "METAL_COMPILE=fail exit=$METAL_STATUS"
-        sed -n '1,240p' "$METAL_LOG"
-        echo "TIMING=skipped reason=metal-compile"
+        echo "RUN_VALID=no reason=steel-metal-compile"
+        echo "STEEL_METAL_COMPILE=fail exit=$STEEL_METAL_STATUS"
+        sed -n '1,1200p' "$COMPILER_LOG_DIR/steel.txt"
+        echo "TIMING=skipped reason=steel-metal-compile"
         echo "VERDICT=invalid reason=probe-build no_serving_integration=true"
     } | tee "$RESULT"
     exit 1
@@ -125,22 +160,83 @@ fi
 
 set +e
 xcrun -sdk macosx metallib \
-    "$BUILD_DIR/kernel.air" \
-    -o "$BUILD_DIR/kernel.metallib" >"$METALLIB_LOG" 2>&1
-METALLIB_STATUS=$?
+    "$BUILD_DIR/steel.air" \
+    -o "$BUILD_DIR/steel.metallib" \
+    >"$LINKER_LOG_DIR/steel.txt" 2>&1
+STEEL_LINK_STATUS=$?
 set -e
-if [[ "$METALLIB_STATUS" -ne 0 ]]; then
+if [[ "$STEEL_LINK_STATUS" -ne 0 ]]; then
     {
         record_header
-        echo "RUN_VALID=no reason=metallib-link"
-        echo "METAL_COMPILE=pass"
-        echo "METALLIB_LINK=fail exit=$METALLIB_STATUS"
-        sed -n '1,240p' "$METALLIB_LOG"
-        echo "TIMING=skipped reason=metallib-link"
+        echo "RUN_VALID=no reason=steel-metallib-link"
+        echo "STEEL_METAL_COMPILE=pass"
+        echo "STEEL_METALLIB_LINK=fail exit=$STEEL_LINK_STATUS"
+        sed -n '1,1200p' "$LINKER_LOG_DIR/steel.txt"
+        echo "TIMING=skipped reason=steel-metallib-link"
         echo "VERDICT=invalid reason=probe-build no_serving_integration=true"
     } | tee "$RESULT"
     exit 1
 fi
+
+printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tmetal_compile\tmetallib_link\n' \
+    >"$COMPILE_MATRIX"
+printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tmetallib_path\n' \
+    >"$ACCEPTED_MANIFEST"
+
+REQUESTED_COUNT=0
+COMPILED_COUNT=0
+LINKED_COUNT=0
+while IFS=$'\t' read -r \
+    candidate tile_m tile_n tile_k scope scope_groups
+do
+    [[ -z "$candidate" || "$candidate" == \#* ]] && continue
+    REQUESTED_COUNT=$((REQUESTED_COUNT + 1))
+    candidate_air="$BUILD_DIR/candidates/$candidate.air"
+    candidate_metallib="$BUILD_DIR/candidates/$candidate.metallib"
+
+    set +e
+    xcrun -sdk macosx metal "${METAL_FLAGS[@]}" \
+        -DCOMPILE_MPP_CANDIDATE=1 \
+        -DMPP_TILE_M="$tile_m" \
+        -DMPP_TILE_N="$tile_n" \
+        -DMPP_TILE_K="$tile_k" \
+        -DMPP_SCOPE_SIMDGROUPS="$scope_groups" \
+        -DMPP_FUNCTION="$candidate" \
+        -c "$KERNEL_SOURCE" \
+        -o "$candidate_air" \
+        >"$COMPILER_LOG_DIR/$candidate.txt" 2>&1
+    metal_status=$?
+    set -e
+    if [[ "$metal_status" -ne 0 ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\tfail\tnot-run\n' \
+            "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+            >>"$COMPILE_MATRIX"
+        continue
+    fi
+    COMPILED_COUNT=$((COMPILED_COUNT + 1))
+
+    set +e
+    xcrun -sdk macosx metallib \
+        "$candidate_air" \
+        -o "$candidate_metallib" \
+        >"$LINKER_LOG_DIR/$candidate.txt" 2>&1
+    link_status=$?
+    set -e
+    if [[ "$link_status" -ne 0 ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\tpass\tfail\n' \
+            "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+            >>"$COMPILE_MATRIX"
+        continue
+    fi
+    LINKED_COUNT=$((LINKED_COUNT + 1))
+    printf '%s\t%s\t%s\t%s\t%s\t%s\tpass\tpass\n' \
+        "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+        >>"$COMPILE_MATRIX"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+        "$candidate_metallib" \
+        >>"$ACCEPTED_MANIFEST"
+done <"$CANDIDATE_SOURCE"
 
 set +e
 xcrun swiftc -O -framework Metal \
@@ -154,18 +250,23 @@ if [[ "$SWIFT_STATUS" -ne 0 ]]; then
     {
         record_header
         echo "RUN_VALID=no reason=swift-compile"
-        echo "METAL_COMPILE=pass"
-        echo "METALLIB_LINK=pass"
+        echo "STEEL_METAL_COMPILE=pass"
+        echo "STEEL_METALLIB_LINK=pass"
+        echo "COMPILE_COUNTS requested=$REQUESTED_COUNT compiled=$COMPILED_COUNT linked=$LINKED_COUNT"
+        echo "COMPILE_MATRIX_BEGIN"
+        sed -n '1,240p' "$COMPILE_MATRIX"
+        echo "COMPILE_MATRIX_END"
+        record_rejection_logs
         echo "SWIFT_COMPILE=fail exit=$SWIFT_STATUS"
-        sed -n '1,240p' "$SWIFT_LOG"
+        sed -n '1,1200p' "$SWIFT_LOG"
         echo "TIMING=skipped reason=swift-compile"
         echo "VERDICT=invalid reason=probe-build no_serving_integration=true"
     } | tee "$RESULT"
     exit 1
 fi
 
-# Compilation is complete before this second gate. No benchmark process is
-# launched unless posture is still valid and the provider remains stopped.
+# Compilation is complete before this second posture gate. No benchmark process
+# starts unless the machine is still on AC / High Power and Darkbloom is absent.
 if ! power_gate_passes; then
     record_invalid_gate "power-posture-changed-before-probe"
     exit 0
@@ -177,7 +278,9 @@ fi
 
 set +e
 MPP_POWER_GATE=ac-high \
-    "$BUILD_DIR/mpp-throughput-probe" "$BUILD_DIR/kernel.metallib" \
+    "$BUILD_DIR/mpp-throughput-probe" \
+    "$BUILD_DIR" \
+    "$ACCEPTED_MANIFEST" \
     >"$PROBE_LOG" 2>&1
 PROBE_STATUS=$?
 set -e
@@ -190,14 +293,27 @@ if ! power_gate_passes; then
     POST_GATE="fail"
 fi
 
+RUN_VALID="yes"
+if [[ "$POST_GATE" != "pass" || "$PROBE_STATUS" -ne 0 ]]; then
+    RUN_VALID="no"
+fi
+
 {
     record_header
-    echo "RUN_VALID=$([[ "$POST_GATE" == "pass" ]] && echo yes || echo no)"
-    echo "METAL_COMPILE=pass"
-    echo "METALLIB_LINK=pass"
+    echo "RUN_VALID=$RUN_VALID"
+    echo "STEEL_METAL_COMPILE=pass"
+    echo "STEEL_METALLIB_LINK=pass"
     echo "SWIFT_COMPILE=pass"
+    echo "COMPILE_COUNTS requested=$REQUESTED_COUNT compiled=$COMPILED_COUNT linked=$LINKED_COUNT"
+    echo "COMPILE_MATRIX_BEGIN"
+    sed -n '1,240p' "$COMPILE_MATRIX"
+    echo "COMPILE_MATRIX_END"
+    record_rejection_logs
     echo "PROBE_EXIT=$PROBE_STATUS"
     echo "POWER_POST_GATE=$POST_GATE"
+    echo "GPU_METADATA_BEGIN"
+    sed -n '1,240p' "$GPU_METADATA"
+    echo "GPU_METADATA_END"
     echo "POWER_BEFORE_BEGIN"
     sed -n '1,240p' "$POWER_BEFORE"
     echo "POWER_BEFORE_END"
@@ -205,7 +321,7 @@ fi
     sed -n '1,40p' "$PROCESSES_BEFORE"
     echo "PROCESSES_BEFORE_END"
     echo "PROBE_OUTPUT_BEGIN"
-    sed -n '1,2000p' "$PROBE_LOG"
+    sed -n '1,12000p' "$PROBE_LOG"
     echo "PROBE_OUTPUT_END"
     echo "POWER_AFTER_BEGIN"
     sed -n '1,240p' "$POWER_AFTER"
@@ -219,33 +335,51 @@ if [[ "$POST_GATE" != "pass" ]]; then
     echo "fatal: AC/High Power posture changed during the run" >&2
     exit 1
 fi
-
-if [[ "$PROBE_STATUS" -eq 2 ]]; then
-    if ! grep -Fq "CORRECTNESS_GATE=fail" "$PROBE_LOG" \
-        || ! grep -Fq "TIMING=skipped reason=steel_correctness_gate" "$PROBE_LOG" \
-        || grep -q '^SAMPLE ' "$PROBE_LOG"
-    then
-        echo "fatal: correctness rejection did not fail closed" >&2
-        exit 1
-    fi
-    exit 0
-fi
 if [[ "$PROBE_STATUS" -ne 0 ]]; then
     exit "$PROBE_STATUS"
 fi
 
-if [[ "$(grep -c '^SUMMARY .*arm=mpp samples=16 ' "$PROBE_LOG")" -ne 8 ]] \
-    || [[ "$(grep -c '^SUMMARY .*arm=steel samples=16 ' "$PROBE_LOG")" -ne 8 ]]
+if ! grep -Fq "PIPELINE_MATRIX linked=$LINKED_COUNT " "$PROBE_LOG"; then
+    echo "fatal: pipeline matrix does not cover every linked candidate" >&2
+    exit 1
+fi
+if ! grep -Eq '^CORRECTNESS_GATE executable=[0-9]+ runtime_rejected=[0-9]+ numerical_rejected=[0-9]+ valid=[1-9][0-9]*$' \
+    "$PROBE_LOG"
 then
-    echo "fatal: probe did not record 16 samples per arm for all eight shapes" >&2
+    echo "fatal: correctness matrix did not retain a valid candidate" >&2
     exit 1
 fi
-if [[ "$(grep -c '^SAMPLE .*gpu_complete=yes ' "$PROBE_LOG")" -ne 256 ]]; then
-    echo "fatal: probe did not record 256 GPU-complete A/B samples" >&2
+if ! grep -Eq '^TIMING_GATE valid_before_timing=[0-9]+ timing_rejected=[0-9]+ fully_timed=[1-9][0-9]* samples_per_candidate_shape=16$' \
+    "$PROBE_LOG"
+then
+    echo "fatal: timing matrix is incomplete" >&2
     exit 1
 fi
-if ! grep -Eq '^VERDICT=(continue|stop) ' "$PROBE_LOG"; then
-    echo "fatal: measured probe omitted the >=22 TFLOPS verdict" >&2
+if awk '
+    /^SUMMARY / {
+        count++
+        if ($0 !~ / samples=16 / || $0 !~ / gpu_complete_samples=16 /) {
+            bad=1
+        }
+    }
+    END { exit(count > 0 && !bad ? 0 : 1) }
+' "$PROBE_LOG"
+then
+    :
+else
+    echo "fatal: one or more summaries lack 16 GPU-complete samples" >&2
+    exit 1
+fi
+if ! grep -Eq '^BOUNDED_MAX_VALID_MEDIAN .* threshold_tflops=22\.0 .* hardware_theorem=false$' \
+    "$PROBE_LOG"
+then
+    echo "fatal: bounded maximum median is missing" >&2
+    exit 1
+fi
+if ! grep -Eq '^VERDICT=(continue|stop) .* bounded_sweep_only=true hardware_theorem=false no_serving_integration=true$' \
+    "$PROBE_LOG"
+then
+    echo "fatal: bounded >=22 TFLOPS verdict is missing" >&2
     exit 1
 fi
 

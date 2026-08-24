@@ -11,9 +11,121 @@ enum ProbeFailure: Error, CustomStringConvertible {
     }
 }
 
-enum Arm: String, CaseIterable {
-    case mpp
+struct MPPCandidate: Hashable {
+    let id: String
+    let tileM: Int
+    let tileN: Int
+    let tileK: Int
+    let scope: String
+    let scopeSIMDGroups: Int
+    let metallibPath: String
+
+    var threadsPerThreadgroup: Int {
+        (scopeSIMDGroups == 1 ? 4 : scopeSIMDGroups) * 32
+    }
+
+    var outputTilesPerThreadgroup: Int {
+        scopeSIMDGroups == 1 ? 4 : 1
+    }
+
+    static func loadManifest(path: String) throws -> [MPPCandidate] {
+        let contents = try String(contentsOfFile: path, encoding: .utf8)
+        var candidates: [MPPCandidate] = []
+        var seen: Set<String> = []
+
+        for (lineIndex, rawLine) in contents.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).enumerated() {
+            let line = String(rawLine)
+            if line.isEmpty || line.hasPrefix("#") {
+                continue
+            }
+            let fields = line.split(
+                separator: "\t",
+                omittingEmptySubsequences: false
+            ).map(String.init)
+            guard fields.count == 7,
+                  let tileM = Int(fields[1]),
+                  let tileN = Int(fields[2]),
+                  let tileK = Int(fields[3]),
+                  let scopeSIMDGroups = Int(fields[5])
+            else {
+                throw ProbeFailure.message(
+                    "invalid accepted-candidate manifest line \(lineIndex + 1): \(line)")
+            }
+            let candidate = MPPCandidate(
+                id: fields[0],
+                tileM: tileM,
+                tileN: tileN,
+                tileK: tileK,
+                scope: fields[4],
+                scopeSIMDGroups: scopeSIMDGroups,
+                metallibPath: fields[6])
+            try candidate.validateDefinition()
+            guard seen.insert(candidate.id).inserted else {
+                throw ProbeFailure.message("duplicate candidate id \(candidate.id)")
+            }
+            candidates.append(candidate)
+        }
+        return candidates
+    }
+
+    func validateDefinition() throws {
+        guard !id.isEmpty,
+              id.first?.isLetter == true,
+              id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" })
+        else {
+            throw ProbeFailure.message("\(id) is not a valid Metal function identifier")
+        }
+        guard tileM > 0, tileN > 0, tileK > 0,
+              [16, 32, 64].contains(tileM),
+              [16, 32, 64].contains(tileN),
+              [16, 32].contains(tileK)
+        else {
+            throw ProbeFailure.message(
+                "\(id) has out-of-sweep tile M\(tileM)N\(tileN)K\(tileK)")
+        }
+        let expectedScope: String
+        switch scopeSIMDGroups {
+        case 1:
+            expectedScope = "execution_simdgroup"
+        case 2:
+            expectedScope = "execution_simdgroups_2"
+        case 4:
+            expectedScope = "execution_simdgroups_4"
+        default:
+            throw ProbeFailure.message(
+                "\(id) has unsupported scope SIMD-group count \(scopeSIMDGroups)")
+        }
+        guard scope == expectedScope else {
+            throw ProbeFailure.message(
+                "\(id) scope \(scope) does not match \(scopeSIMDGroups) SIMD groups")
+        }
+    }
+}
+
+enum BenchmarkVariant: Hashable {
     case steel
+    case mpp(MPPCandidate)
+
+    var id: String {
+        switch self {
+        case .steel:
+            return "steel_m16_n32_k8_sg1"
+        case .mpp(let candidate):
+            return candidate.id
+        }
+    }
+
+    var candidate: MPPCandidate? {
+        switch self {
+        case .steel:
+            return nil
+        case .mpp(let candidate):
+            return candidate
+        }
+    }
 }
 
 struct DenseShape {
@@ -21,10 +133,6 @@ struct DenseShape {
     let m: Int
     let k: Int
     let n: Int
-
-    // Real-model useful linear work represented by this K/N cell. The units
-    // are GFLOP per source token and come from note 026's 40-layer ledger.
-    let modelGFLOPsPerToken: Double
 
     var elementCount: Int {
         m * n
@@ -34,27 +142,43 @@ struct DenseShape {
         2.0 * Double(m) * Double(k) * Double(n)
     }
 
-    var threadgroupCount: Int {
-        let outputTiles = (m / 16) * (n / 32)
-        return outputTiles / 4
-    }
-
-    func validate() throws {
+    func validateForSteel() throws {
         guard m > 0, k > 0, n > 0,
               m.isMultiple(of: 16),
-              k.isMultiple(of: 16),
+              k.isMultiple(of: 8),
               n.isMultiple(of: 32)
         else {
             throw ProbeFailure.message(
-                "\(label) must be positive and divisible by M16/K16/N32")
+                "\(label) must be positive and divisible by Steel M16/K8/N32")
         }
-        guard ((m / 16) * (n / 32)).isMultiple(of: 4) else {
+        let outputTiles = (m / 16) * (n / 32)
+        guard outputTiles.isMultiple(of: 4) else {
             throw ProbeFailure.message(
-                "\(label) output tile count must divide four SIMD groups")
+                "\(label) Steel output tile count must divide four SIMD groups")
         }
         guard m <= Int(UInt32.max), k <= Int(UInt32.max), n <= Int(UInt32.max) else {
             throw ProbeFailure.message("\(label) exceeds 32-bit Metal dimensions")
         }
+    }
+
+    func threadgroupCount(for variant: BenchmarkVariant) throws -> Int {
+        try validateForSteel()
+        guard let candidate = variant.candidate else {
+            return ((m / 16) * (n / 32)) / 4
+        }
+        guard m.isMultiple(of: candidate.tileM),
+              k.isMultiple(of: candidate.tileK),
+              n.isMultiple(of: candidate.tileN)
+        else {
+            throw ProbeFailure.message(
+                "\(candidate.id) does not tile \(label) exactly")
+        }
+        let outputTiles = (m / candidate.tileM) * (n / candidate.tileN)
+        guard outputTiles.isMultiple(of: candidate.outputTilesPerThreadgroup) else {
+            throw ProbeFailure.message(
+                "\(candidate.id) output tile count does not fit its execution scope")
+        }
+        return outputTiles / candidate.outputTilesPerThreadgroup
     }
 }
 
@@ -71,9 +195,9 @@ struct DenseShapeParameters {
 }
 
 struct TimingSample {
-    let arm: Arm
-    let block: Int
-    let position: String
+    let variantID: String
+    let round: Int
+    let position: Int
     let gpuStartSeconds: Double
     let gpuEndSeconds: Double
     let kernelStartSeconds: Double
@@ -96,6 +220,7 @@ struct TimingSummary {
     let gpuP90Seconds: Double
     let gpuMinimumSeconds: Double
     let gpuMaximumSeconds: Double
+    let kernelMedianSeconds: Double
     let cpuMedianSeconds: Double
 }
 
@@ -190,8 +315,6 @@ func compareOutputs(
             && absoluteError <= Float(0.001) + Float(0.001) * abs(expected)
     }
 
-    // The ordinary QMM gate is tolerance-based, while the current serving
-    // projection boundary is BF16. Require both, without widening either.
     let passed = nonFinite == 0 && qmmTolerancePassed && bf16Changed == 0
     return Comparison(
         passed: passed,
@@ -203,8 +326,7 @@ func compareOutputs(
         maxRelativeError: maxRelativeError,
         qmmTolerancePassed: qmmTolerancePassed,
         steelHash: String(format: "%016llx", steelHash),
-        mppHash: String(format: "%016llx", mppHash)
-    )
+        mppHash: String(format: "%016llx", mppHash))
 }
 
 private func percentile(_ sorted: [Double], fraction: Double) -> Double {
@@ -213,22 +335,24 @@ private func percentile(_ sorted: [Double], fraction: Double) -> Double {
     return sorted[max(0, min(sorted.count - 1, index))]
 }
 
+private func median(_ sorted: [Double]) -> Double {
+    precondition(!sorted.isEmpty)
+    if sorted.count.isMultiple(of: 2) {
+        return (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+    }
+    return sorted[sorted.count / 2]
+}
+
 func summarize(_ samples: [TimingSample]) throws -> TimingSummary {
     guard samples.count >= 15 else {
         throw ProbeFailure.message(
             "timing summary requires >=15 samples, got \(samples.count)")
     }
     let gpu = samples.map(\.gpuSeconds).sorted()
+    let kernel = samples.map(\.kernelSeconds).sorted()
     let cpu = samples.map(\.cpuSeconds).sorted()
     guard let gpuMinimum = gpu.first, let gpuMaximum = gpu.last else {
         throw ProbeFailure.message("timing summary received no samples")
-    }
-
-    func median(_ sorted: [Double]) -> Double {
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
-        }
-        return sorted[sorted.count / 2]
     }
 
     return TimingSummary(
@@ -238,29 +362,18 @@ func summarize(_ samples: [TimingSample]) throws -> TimingSummary {
         gpuP90Seconds: percentile(gpu, fraction: 0.90),
         gpuMinimumSeconds: gpuMinimum,
         gpuMaximumSeconds: gpuMaximum,
-        cpuMedianSeconds: median(cpu)
-    )
+        kernelMedianSeconds: median(kernel),
+        cpuMedianSeconds: median(cpu))
 }
 
 func usefulTFLOPS(operations: Double, seconds: Double) -> Double {
     operations / seconds / 1e12
 }
 
-func weightedEffectiveTFLOPS(
-    shapes: [DenseShape],
-    summaries: [String: TimingSummary],
-    useGPU: Bool
-) throws -> Double {
-    var totalWeight = 0.0
-    var weightedSecondsPerTFLOP = 0.0
-    for shape in shapes {
-        guard let summary = summaries[shape.label] else {
-            throw ProbeFailure.message("missing timing summary for \(shape.label)")
-        }
-        let seconds = useGPU ? summary.gpuMedianSeconds : summary.cpuMedianSeconds
-        let rate = usefulTFLOPS(operations: shape.usefulOperations, seconds: seconds)
-        totalWeight += shape.modelGFLOPsPerToken
-        weightedSecondsPerTFLOP += shape.modelGFLOPsPerToken / rate
+func rotated<T>(_ values: [T], by offset: Int) -> [T] {
+    guard !values.isEmpty else {
+        return []
     }
-    return totalWeight / weightedSecondsPerTFLOP
+    let normalized = offset % values.count
+    return Array(values[normalized...]) + Array(values[..<normalized])
 }

@@ -1,6 +1,12 @@
 import Foundation
 import Metal
 
+struct PipelineStatus {
+    let candidate: MPPCandidate
+    let accepted: Bool
+    let detail: String
+}
+
 final class PreparedShape {
     let shape: DenseShape
     let a: MTLBuffer
@@ -9,7 +15,7 @@ final class PreparedShape {
     let steelOutput: MTLBuffer
 
     init(device: MTLDevice, shape: DenseShape, seed: UInt64) throws {
-        try shape.validate()
+        try shape.validateForSteel()
         self.shape = shape
         a = try PreparedShape.makeInputBuffer(
             device: device,
@@ -31,12 +37,12 @@ final class PreparedShape {
             label: "\(shape.label)-steel-output-fp32")
     }
 
-    func output(for arm: Arm) -> MTLBuffer {
-        switch arm {
-        case .mpp:
-            return mppOutput
+    func output(for variant: BenchmarkVariant) -> MTLBuffer {
+        switch variant {
         case .steel:
             return steelOutput
+        case .mpp:
+            return mppOutput
         }
     }
 
@@ -89,80 +95,119 @@ final class PreparedShape {
 
 final class MetalRunner {
     let device: MTLDevice
-    private let queue: MTLCommandQueue
-    private let pipelines: [Arm: MTLComputePipelineState]
-    private let threadsPerThreadgroup = MTLSize(width: 128, height: 1, depth: 1)
+    let pipelineStatuses: [PipelineStatus]
+    let executableCandidates: [MPPCandidate]
 
-    init(metallibPath: String) throws {
+    private let queue: MTLCommandQueue
+    private let steelPipeline: MTLComputePipelineState
+    private let candidatePipelines: [String: MTLComputePipelineState]
+
+    init(buildDirectory: String, candidates: [MPPCandidate]) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw ProbeFailure.message("Metal device unavailable")
         }
         guard let queue = device.makeCommandQueue() else {
             throw ProbeFailure.message("Metal command queue unavailable")
         }
-        let library = try device.makeLibrary(URL: URL(fileURLWithPath: metallibPath))
-        let functionNames: [Arm: String] = [
-            .mpp: "mpp_bf16_fp32_static_k16",
-            .steel: "steel_simdgroup_fp32_reference",
-        ]
-        var pipelines: [Arm: MTLComputePipelineState] = [:]
-        for arm in Arm.allCases {
-            guard let functionName = functionNames[arm],
-                  let function = library.makeFunction(name: functionName)
-            else {
-                throw ProbeFailure.message("metallib lacks \(arm.rawValue) function")
+
+        let buildURL = URL(fileURLWithPath: buildDirectory, isDirectory: true)
+        let steelLibrary = try device.makeLibrary(
+            URL: buildURL.appendingPathComponent("steel.metallib"))
+        guard let steelFunction = steelLibrary.makeFunction(
+            name: "steel_simdgroup_fp32_reference")
+        else {
+            throw ProbeFailure.message("Steel metallib lacks reference function")
+        }
+        let steelPipeline = try device.makeComputePipelineState(function: steelFunction)
+        try MetalRunner.validatePipeline(
+            steelPipeline,
+            functionName: "steel_simdgroup_fp32_reference",
+            threadsPerThreadgroup: 128)
+
+        var statuses: [PipelineStatus] = []
+        var executable: [MPPCandidate] = []
+        var pipelines: [String: MTLComputePipelineState] = [:]
+        for candidate in candidates {
+            do {
+                let library = try device.makeLibrary(
+                    URL: URL(fileURLWithPath: candidate.metallibPath))
+                guard let function = library.makeFunction(name: candidate.id) else {
+                    throw ProbeFailure.message(
+                        "metallib lacks function \(candidate.id)")
+                }
+                let pipeline = try device.makeComputePipelineState(function: function)
+                try MetalRunner.validatePipeline(
+                    pipeline,
+                    functionName: candidate.id,
+                    threadsPerThreadgroup: candidate.threadsPerThreadgroup)
+                pipelines[candidate.id] = pipeline
+                executable.append(candidate)
+                statuses.append(PipelineStatus(
+                    candidate: candidate,
+                    accepted: true,
+                    detail: "thread_width=\(pipeline.threadExecutionWidth)"
+                        + " max_threads=\(pipeline.maxTotalThreadsPerThreadgroup)"))
+            } catch {
+                statuses.append(PipelineStatus(
+                    candidate: candidate,
+                    accepted: false,
+                    detail: String(describing: error)))
             }
-            let pipeline = try device.makeComputePipelineState(function: function)
-            guard pipeline.threadExecutionWidth == 32 else {
-                throw ProbeFailure.message(
-                    "\(functionName) SIMD width is \(pipeline.threadExecutionWidth), expected 32")
-            }
-            guard pipeline.maxTotalThreadsPerThreadgroup >= threadsPerThreadgroup.width else {
-                throw ProbeFailure.message(
-                    "\(functionName) permits only \(pipeline.maxTotalThreadsPerThreadgroup) threads")
-            }
-            pipelines[arm] = pipeline
         }
 
         self.device = device
         self.queue = queue
-        self.pipelines = pipelines
+        self.steelPipeline = steelPipeline
+        self.pipelineStatuses = statuses
+        self.executableCandidates = executable
+        self.candidatePipelines = pipelines
     }
 
     func execute(
-        arm: Arm,
+        variant: BenchmarkVariant,
         prepared: PreparedShape,
-        block: Int = 0,
-        position: String = "correctness"
+        round: Int = 0,
+        position: Int = 0
     ) throws -> TimingSample {
-        guard let pipeline = pipelines[arm] else {
-            throw ProbeFailure.message("missing pipeline for \(arm.rawValue)")
+        let pipeline: MTLComputePipelineState
+        let threadsPerThreadgroup: Int
+        switch variant {
+        case .steel:
+            pipeline = steelPipeline
+            threadsPerThreadgroup = 128
+        case .mpp(let candidate):
+            guard let candidatePipeline = candidatePipelines[candidate.id] else {
+                throw ProbeFailure.message("missing pipeline for \(candidate.id)")
+            }
+            pipeline = candidatePipeline
+            threadsPerThreadgroup = candidate.threadsPerThreadgroup
         }
+        let threadgroupCount = try prepared.shape.threadgroupCount(for: variant)
 
         let cpuStart = DispatchTime.now().uptimeNanoseconds
         guard let commandBuffer = queue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else {
-            throw ProbeFailure.message("failed to make \(arm.rawValue) command buffer")
+            throw ProbeFailure.message("failed to make \(variant.id) command buffer")
         }
         commandBuffer.label =
-            "\(prepared.shape.label)-\(arm.rawValue)-block\(block)-\(position)"
+            "\(prepared.shape.label)-\(variant.id)-round\(round)-position\(position)"
         encoder.label = commandBuffer.label
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(prepared.a, offset: 0, index: 0)
         encoder.setBuffer(prepared.b, offset: 0, index: 1)
-        encoder.setBuffer(prepared.output(for: arm), offset: 0, index: 2)
+        encoder.setBuffer(prepared.output(for: variant), offset: 0, index: 2)
         var parameters = DenseShapeParameters(prepared.shape)
         encoder.setBytes(
             &parameters,
             length: MemoryLayout<DenseShapeParameters>.stride,
             index: 3)
         encoder.dispatchThreadgroups(
-            MTLSize(
-                width: prepared.shape.threadgroupCount,
+            MTLSize(width: threadgroupCount, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(
+                width: threadsPerThreadgroup,
                 height: 1,
-                depth: 1),
-            threadsPerThreadgroup: threadsPerThreadgroup)
+                depth: 1))
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -172,26 +217,51 @@ final class MetalRunner {
             let detail = commandBuffer.error?.localizedDescription
                 ?? "no command-buffer error detail"
             throw ProbeFailure.message(
-                "\(commandBuffer.label ?? arm.rawValue) status="
+                "\(commandBuffer.label ?? variant.id) status="
                     + "\(commandBuffer.status.rawValue) error=\(detail)")
         }
         guard commandBuffer.gpuStartTime > 0,
               commandBuffer.gpuEndTime > commandBuffer.gpuStartTime
         else {
             throw ProbeFailure.message(
-                "\(commandBuffer.label ?? arm.rawValue) has invalid GPU timestamps "
-                    + "start=\(commandBuffer.gpuStartTime) end=\(commandBuffer.gpuEndTime)")
+                "\(commandBuffer.label ?? variant.id) has invalid GPU timestamps "
+                    + "start=\(commandBuffer.gpuStartTime) "
+                    + "end=\(commandBuffer.gpuEndTime)")
+        }
+        guard commandBuffer.kernelStartTime > 0,
+              commandBuffer.kernelEndTime > commandBuffer.kernelStartTime
+        else {
+            throw ProbeFailure.message(
+                "\(commandBuffer.label ?? variant.id) has invalid kernel timestamps "
+                    + "start=\(commandBuffer.kernelStartTime) "
+                    + "end=\(commandBuffer.kernelEndTime)")
         }
 
         return TimingSample(
-            arm: arm,
-            block: block,
+            variantID: variant.id,
+            round: round,
             position: position,
             gpuStartSeconds: commandBuffer.gpuStartTime,
             gpuEndSeconds: commandBuffer.gpuEndTime,
             kernelStartSeconds: commandBuffer.kernelStartTime,
             kernelEndSeconds: commandBuffer.kernelEndTime,
-            cpuSeconds: Double(cpuEnd - cpuStart) * 1e-9
-        )
+            cpuSeconds: Double(cpuEnd - cpuStart) * 1e-9)
+    }
+
+    private static func validatePipeline(
+        _ pipeline: MTLComputePipelineState,
+        functionName: String,
+        threadsPerThreadgroup: Int
+    ) throws {
+        guard pipeline.threadExecutionWidth == 32 else {
+            throw ProbeFailure.message(
+                "\(functionName) SIMD width is \(pipeline.threadExecutionWidth), expected 32")
+        }
+        guard pipeline.maxTotalThreadsPerThreadgroup >= threadsPerThreadgroup else {
+            throw ProbeFailure.message(
+                "\(functionName) permits only "
+                    + "\(pipeline.maxTotalThreadsPerThreadgroup) threads; "
+                    + "\(threadsPerThreadgroup) required")
+        }
     }
 }

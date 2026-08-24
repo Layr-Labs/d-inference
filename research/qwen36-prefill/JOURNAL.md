@@ -621,3 +621,12 @@ in its report. Over three 8K/64-token iterations:
 The target >2.5× boundaries therefore survive the deployed default
 budget. Completion equality remains 75%, so the quality blocker is
 unchanged.
+
+## 2026-08-24T15:29Z — E42 final-block replay rejected
+
+Restoring the 7,936-token boundary and replaying the final 256 prompt
+tokens preserves large speedups but does not restore 64-token equality.
+B1/B2 remain divergent after 2/1 generated tokens; B4's median common
+prefix improves only to five. This disproves cached-frontier sampling as
+the sole cause. Revert the experiment and investigate adopted-cache
+layout / decode scheduling. See `notes/071`.

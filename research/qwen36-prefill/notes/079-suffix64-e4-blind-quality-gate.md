@@ -270,7 +270,7 @@ evaluations before deployment acceptance.
 ## E54 full2 + suffix192 + top-k4 follow-up
 
 The candidate in
-`artifacts/e54-quality-full2-suffix192-topk4-128.json` uses the same 12 prompts,
+`artifacts/e54-quality-full2-suffix192-topk4-128.json.gz` uses the same 12 prompts,
 corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
 native. Semantic scoring again used only prompt and generated text. The
 full-layer/profile metadata, token identity, checksums, agreement, prefixes,

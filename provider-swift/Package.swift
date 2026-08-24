@@ -305,7 +305,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: ["darkbloom", "ProviderCoreFoundation"],
             path: "Tests/DarkbloomCLITests"
         ),
 

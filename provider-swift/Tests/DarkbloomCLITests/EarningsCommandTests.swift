@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import darkbloom
+import ProviderCoreFoundation
 
 @Suite("darkbloom earnings")
 struct EarningsCommandTests {

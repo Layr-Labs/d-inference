@@ -259,6 +259,17 @@ public enum CBv2DivergenceDiagnostics {
     private static let maxDecodeStep =
         ProcessInfo.processInfo.environment["DARKBLOOM_PREFIX_DIVERGENCE_MAX_DECODE_STEP"]
         .flatMap(Int.init) ?? 6
+    static let forcedPrefillChunkTokens: Int? =
+        enabled
+        ? ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_CHUNK_TOKENS"
+        ].flatMap(Int.init).flatMap { $0 > 0 ? $0 : nil }
+        : nil
+    static let forcesUnpackedPrefill =
+        enabled
+        && ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PREFIX_DIVERGENCE_FORCE_UNPACKED_PREFILL"
+        ] == "1"
     private static let logPath = "/opt/cursor/logs/debug.log"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var registrations: [CBv2RequestID: Registration] = [:]
@@ -287,6 +298,21 @@ public enum CBv2DivergenceDiagnostics {
                 "iteration": batch.iteration,
                 "requestIDBase": String(batch.requestIDBase),
                 "cohortSize": batch.count,
+            ])
+        // #endregion
+        guard forcedPrefillChunkTokens != nil || forcesUnpackedPrefill else { return }
+        // #region agent log
+        append(
+            hypothesisID: "F,G",
+            location: "DivergenceDiagnosticsV2.swift:registerBatch",
+            message: "diagnostic prefill posture override",
+            data: [
+                "phase": batch.phase,
+                "scenario": batch.scenario,
+                "iteration": batch.iteration,
+                "forcedPrefillChunkTokens":
+                    forcedPrefillChunkTokens.map { $0 as Any } ?? NSNull(),
+                "forcesUnpackedPrefill": forcesUnpackedPrefill,
             ])
         // #endregion
     }

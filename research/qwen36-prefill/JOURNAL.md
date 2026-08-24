@@ -630,3 +630,22 @@ B1/B2 remain divergent after 2/1 generated tokens; B4's median common
 prefix improves only to five. This disproves cached-frontier sampling as
 the sole cause. Revert the experiment and investigate adopted-cache
 layout / decode scheduling. See `notes/071`.
+
+## 2026-08-24T16:37Z — E43 moves divergence before adoption
+
+The full state/logit trace rejects cache corruption and decode scheduling.
+Every warm full-hit continuation matches its solo donor for all 64 tokens.
+For B1, donor and warm state/logits are identical through the first six decode
+steps despite compact adopted convolution-tail strides.
+
+The first difference is prefill posture. Native B1 uses 2,048-token chunks;
+cache construction stops at every 256-token snapshot boundary. Their prompt
+frontiers already differ in 79/80 state probes and logits. Native B2/B4 both
+use 512-token chunks but also differ from each other, isolating packed cohort
+width as another finite-precision dimension. Cursor and recurrent restore
+state are exact.
+
+Next, force a diagnostic-only 256-token, unpacked prefill posture in every arm.
+If complete equality returns, treat donor fidelity as the cache correctness
+contract and scheduler-posture variation as an explicit quality-gated numerical
+policy; do not ship the slow canonical posture. See `notes/072`.

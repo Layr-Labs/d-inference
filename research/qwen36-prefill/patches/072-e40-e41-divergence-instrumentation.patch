@@ -12,6 +12,32 @@ index 04bf10c..2438126 100644
      /// Non-nil marks this step as an MTP round (verify and/or seed work,
      /// finalized by `finalizeMTPRound`). MTP rounds NEVER chain: the
      /// chained path's finalize loop and `deferredReleases` assume exactly
+@@ -638,7 +641,10 @@ public final class EngineLoopV2: @unchecked Sendable {
+     /// engine reports and the flag it acts on cannot drift. Configuration
+     /// only: see the counters above for whether anything packed.
+     var packedPrefillSupported: Bool {
+-        cacheProvider.supportsPackedPrefill
++        // #region agent log
++        if CBv2DivergenceDiagnostics.forcesUnpackedPrefill { return false }
++        // #endregion
++        return cacheProvider.supportsPackedPrefill
+             && (model as? CBv2PackedPrefillSteppableModel)?.supportsPackedPrefill == true
+     }
+ 
+@@ -943,6 +950,13 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 {
+                     rec.exactSnapshotBlockSize = exactCache.exactSnapshotBlockSize
+                 }
++                // #region agent log
++                if let chunkTokens = CBv2DivergenceDiagnostics.forcedPrefillChunkTokens,
++                    let rec = scheduler.record(for: request.id)
++                {
++                    rec.exactSnapshotBlockSize = chunkTokens
++                }
++                // #endregion
+                 armLease(for: request)
+                 detokenizers[request.id] =
+                     detokenizerFactory.makeDetokenizer(stopStrings: request.stopStrings)
 @@ -1060,6 +1063,15 @@ public final class EngineLoopV2: @unchecked Sendable {
                  if isFullPrompt, let frontier = exact.frontierLogits {
                      exactFrontierLogits[requestID] = frontier

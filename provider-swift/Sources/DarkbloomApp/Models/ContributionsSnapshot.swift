@@ -9,8 +9,8 @@ enum PayoutReadiness: String, Codable, Sendable {
 /// account balance, lifetime summary, and bounded recent-ledger fields.
 struct ContributionsSnapshot: Codable, Equatable, Sendable {
     var asOf: Date
-    /// Stable X25519 hardware identity for the Mac running this app.
-    var currentProviderKey: String
+    /// Every session key known to belong to the Mac running this app.
+    var currentProviderKeys: Set<String>
     var availableBalance: MicroUSD
     var withdrawableBalance: MicroUSD
     var earnedLifetime: MicroUSD
@@ -21,7 +21,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
 
     init(
         asOf: Date,
-        currentProviderKey: String,
+        currentProviderKeys: Set<String>,
         availableBalance: MicroUSD,
         withdrawableBalance: MicroUSD,
         earnedLifetime: MicroUSD,
@@ -32,7 +32,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
     ) {
         precondition(Self.isValid(
             asOf: asOf,
-            currentProviderKey: currentProviderKey,
+            currentProviderKeys: currentProviderKeys,
             availableBalance: availableBalance,
             withdrawableBalance: withdrawableBalance,
             earnedLifetime: earnedLifetime,
@@ -42,7 +42,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
         ), "Invalid contributions snapshot")
 
         self.asOf = asOf
-        self.currentProviderKey = currentProviderKey
+        self.currentProviderKeys = currentProviderKeys
         self.availableBalance = availableBalance
         self.withdrawableBalance = withdrawableBalance
         self.earnedLifetime = earnedLifetime
@@ -55,7 +55,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let asOf = try container.decode(Date.self, forKey: .asOf)
-        let currentProviderKey = try container.decode(String.self, forKey: .currentProviderKey)
+        let currentProviderKeys = try container.decode(Set<String>.self, forKey: .currentProviderKeys)
         let availableBalance = try container.decode(MicroUSD.self, forKey: .availableBalance)
         let withdrawableBalance = try container.decode(MicroUSD.self, forKey: .withdrawableBalance)
         let earnedLifetime = try container.decode(MicroUSD.self, forKey: .earnedLifetime)
@@ -66,7 +66,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
 
         guard Self.isValid(
             asOf: asOf,
-            currentProviderKey: currentProviderKey,
+            currentProviderKeys: currentProviderKeys,
             availableBalance: availableBalance,
             withdrawableBalance: withdrawableBalance,
             earnedLifetime: earnedLifetime,
@@ -81,7 +81,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
         }
 
         self.asOf = asOf
-        self.currentProviderKey = currentProviderKey
+        self.currentProviderKeys = currentProviderKeys
         self.availableBalance = availableBalance
         self.withdrawableBalance = withdrawableBalance
         self.earnedLifetime = earnedLifetime
@@ -93,7 +93,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
 
     private static func isValid(
         asOf: Date,
-        currentProviderKey: String,
+        currentProviderKeys: Set<String>,
         availableBalance: MicroUSD,
         withdrawableBalance: MicroUSD,
         earnedLifetime: MicroUSD,
@@ -101,7 +101,7 @@ struct ContributionsSnapshot: Codable, Equatable, Sendable {
         minimumPayout: MicroUSD,
         records: [ContributionRecord]
     ) -> Bool {
-        guard !currentProviderKey.isEmpty,
+        guard currentProviderKeys.allSatisfy({ !$0.isEmpty }),
               withdrawableBalance <= availableBalance,
               lifetimeJobs >= 0,
               minimumPayout > .zero,

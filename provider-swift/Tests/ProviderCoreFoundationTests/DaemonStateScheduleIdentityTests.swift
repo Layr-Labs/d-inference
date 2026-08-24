@@ -26,7 +26,8 @@ struct DaemonStateScheduleIdentityTests {
             nextChangeAtEpoch: 1_800)
         state.identity = DaemonState.Identity(
             providerName: "darkbloom-mac16-1",
-            operatorAddress: "acct-test-123")
+            operatorAddress: "acct-test-123",
+            providerKey: "x25519-session-key")
 
         DaemonStateFile.write(state, to: url)
         let decoded = try #require(DaemonStateFile.read(from: url))
@@ -36,6 +37,7 @@ struct DaemonStateScheduleIdentityTests {
         #expect(decoded.schedule?.nextChangeAtEpoch == 1_800)
         #expect(decoded.identity?.providerName == "darkbloom-mac16-1")
         #expect(decoded.identity?.operatorAddress == "acct-test-123")
+        #expect(decoded.identity?.providerKey == "x25519-session-key")
     }
 
     @Test("absent fields decode as nil and stay omitted when re-encoded")
@@ -90,6 +92,7 @@ struct DaemonStateScheduleIdentityTests {
         #expect(decoded.schedule?.nextChangeAtEpoch == nil)
         #expect(decoded.identity?.providerName == "darkbloom")
         #expect(decoded.identity?.operatorAddress == nil)
+        #expect(decoded.identity?.providerKey == nil)
     }
 
     @Test("wire keys use snake_case expected by consumers")
@@ -100,12 +103,17 @@ struct DaemonStateScheduleIdentityTests {
         var state = DaemonState(pid: 1, version: "x", writtenAt: 1, startedAt: 1)
         state.schedule = DaemonState.SchedulePosture(
             mode: "scheduled-off", summary: "Sat,Sun 09:00-18:00", nextChangeAtEpoch: 4_096)
-        state.identity = DaemonState.Identity(providerName: "n", operatorAddress: "acct-x")
+        state.identity = DaemonState.Identity(
+            providerName: "n",
+            operatorAddress: "acct-x",
+            providerKey: "key-x"
+        )
         DaemonStateFile.write(state, to: url)
 
         let raw = String(decoding: try Data(contentsOf: url), as: UTF8.self)
         for key in ["\"schedule\"", "\"mode\"", "\"summary\"", "\"next_change_at_epoch\"",
-                    "\"identity\"", "\"provider_name\"", "\"operator_address\""] {
+                    "\"identity\"", "\"provider_name\"", "\"operator_address\"",
+                    "\"provider_key\""] {
             #expect(raw.contains(key), "missing wire key \(key)")
         }
     }

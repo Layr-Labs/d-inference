@@ -21,8 +21,7 @@ final class ContributionsStore {
     private(set) var availability: ContributionsAvailability
     private(set) var snapshot: ContributionsSnapshot?
     /// Decorative seven-day series for UI evaluation only. This is intentionally
-    /// separate from the coordinator-shaped snapshot. Live stores replace it
-    /// with a series derived from the fetched payout rows.
+    /// separate from the coordinator-shaped snapshot.
     private(set) var pulsePreview: ContributionPulsePreview?
     var scope: ContributionScope
     private(set) var previewPayoutState: PreviewPayoutState = .idle
@@ -49,9 +48,8 @@ final class ContributionsStore {
         live = nil
     }
 
-    /// Live store: feeds from `darkbloom earnings --json` (the coordinator's
-    /// no-auth provider earnings endpoint). Starts in `.loading`; the view's
-    /// first appear (or the retry action) drives `refresh()`.
+    /// Live store: feeds from authenticated `darkbloom earnings --json`.
+    /// Starts in `.loading`; the view's first appear (or retry) drives refresh.
     init(cli: any ContributionsCLIRunning, now: @escaping @Sendable () -> Date = Date.init) {
         availability = .loading
         snapshot = nil
@@ -84,7 +82,7 @@ final class ContributionsStore {
         switch scope {
         case .thisMac:
             records = snapshot.records.filter {
-                $0.providerKey == snapshot.currentProviderKey
+                snapshot.currentProviderKeys.contains($0.providerKey)
             }
         case .allMacs:
             records = snapshot.records
@@ -212,38 +210,51 @@ final class ContributionsStore {
 
 // MARK: - Live mapping (earnings payload -> snapshot)
 
-/// Maps the coordinator's wallet-keyed earnings payload onto the app's
-/// coordinator-shaped models. Exact integer micro-USD end to end; fields the
-/// endpoint does not report are derived conservatively and documented here:
-///
-/// - `withdrawableBalance` mirrors `balance_micro_usd`: the wallet endpoint
-///   does not split withdrawable vs. pending (that split exists only on the
-///   authenticated account endpoint), so the invariant
-///   `withdrawable <= available` holds trivially and the UI's payout
-///   validation floors against the full balance.
-/// - `minimumPayout` is an app-side display floor ($1), not a coordinator
-///   rule — the endpoint has no minimum concept.
-/// - Records come from `payouts` only; `ledger` rows are account-audit
-///   metadata, not per-job earnings.
+/// Maps authenticated account earnings onto privacy-safe app records. The
+/// coordinator includes provider-key/session-to-serial mappings so every
+/// ephemeral key from this physical Mac remains in the "This Mac" scope.
 enum ContributionsLiveMapping {
-    /// Display-only payout floor for the live snapshot. Matches the fixture
-    /// value so preview and live surfaces describe payouts identically.
     static let liveMinimumPayout = MicroUSD(1_000_000)
 
     static func snapshot(from payload: ContributionsEarningsPayload, asOf: Date) -> ContributionsSnapshot {
-        // The wallet this payload was fetched for (echoed by the CLI) keys
-        // every record: the endpoint already filtered payouts to that
-        // address. A bare coordinator payload (tests only) leaves it empty —
-        // the snapshot requires a non-empty key, so substitute a marker.
-        let wallet = (payload.wallet?.isEmpty == false) ? payload.wallet! : "unknown-wallet"
-        let records = payload.payouts.map { record(from: $0, wallet: wallet, asOf: asOf) }
+        let providersByKey = Dictionary(
+            payload.providers.filter { !$0.providerKey.isEmpty }.map { ($0.providerKey, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let providersByID = Dictionary(
+            payload.providers.filter { !$0.providerID.isEmpty }.map { ($0.providerID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var currentProviderKeys = Set<String>()
+        if let currentKey = payload.currentProviderKey, !currentKey.isEmpty {
+            currentProviderKeys.insert(currentKey)
+        }
+        if let currentSerial = payload.currentSerialNumber, !currentSerial.isEmpty {
+            currentProviderKeys.formUnion(payload.providers.lazy
+                .filter { $0.serialNumber == currentSerial }
+                .map(\.providerKey)
+                .filter { !$0.isEmpty })
+        }
+        let records = payload.earnings.enumerated().map { index, earning in
+            record(
+                from: earning,
+                fallbackIndex: index,
+                providersByKey: providersByKey,
+                providersByID: providersByID,
+                currentSerial: payload.currentSerialNumber,
+                asOf: asOf
+            )
+        }
         return ContributionsSnapshot(
             asOf: asOf,
-            currentProviderKey: wallet,
-            availableBalance: nonNegative(payload.balanceMicroUSD),
-            withdrawableBalance: nonNegative(payload.balanceMicroUSD),
-            earnedLifetime: nonNegative(payload.totalEarnedMicroUSD),
-            lifetimeJobs: Int64(max(0, payload.totalJobs)),
+            currentProviderKeys: currentProviderKeys,
+            availableBalance: nonNegative(payload.availableBalanceMicroUSD),
+            withdrawableBalance: min(
+                nonNegative(payload.withdrawableBalanceMicroUSD),
+                nonNegative(payload.availableBalanceMicroUSD)
+            ),
+            earnedLifetime: nonNegative(payload.totalMicroUSD),
+            lifetimeJobs: max(0, payload.count),
             minimumPayout: liveMinimumPayout,
             payoutReadiness: .ready,
             records: records
@@ -251,39 +262,59 @@ enum ContributionsLiveMapping {
     }
 
     private static func record(
-        from payout: ContributionsEarningsPayload.Payout,
-        wallet: String,
+        from earning: ContributionsEarningsPayload.Earning,
+        fallbackIndex: Int,
+        providersByKey: [String: ContributionsEarningsPayload.ProviderIdentity],
+        providersByID: [String: ContributionsEarningsPayload.ProviderIdentity],
+        currentSerial: String?,
         asOf: Date
     ) -> ContributionRecord {
-        // Stable unique ids prefer the store row id; ledger-reconstructed
-        // rows (id 0) fall back to the job reference.
         let id: String
-        if payout.id != 0 {
-            id = "payout-\(payout.id)"
-        } else if let jobID = payout.jobID, !jobID.isEmpty {
-            id = "job-\(jobID)"
+        if earning.id != 0 {
+            id = "earning-\(earning.id)"
+        } else if !earning.jobID.isEmpty {
+            id = "job-\(earning.jobID)"
         } else {
-            id = "payout-\(payout.timestamp.map { String(Int($0.timeIntervalSince1970)) } ?? "unknown")"
+            id = "earning-fallback-\(fallbackIndex)"
         }
-        let modelID = (payout.model?.isEmpty == false) ? payout.model! : "unknown"
+        let providerKey = earning.providerKey.isEmpty
+            ? (earning.providerID.isEmpty ? "unknown-provider" : earning.providerID)
+            : earning.providerKey
+        let providerID = earning.providerID.isEmpty ? providerKey : earning.providerID
+        let identity = providersByKey[earning.providerKey] ?? providersByID[earning.providerID]
+        let modelID = earning.model.isEmpty ? "unknown" : earning.model
         return ContributionRecord(
             id: id,
-            timestamp: min(payout.timestamp ?? asOf, asOf),
-            providerKey: wallet,
-            providerID: (payout.jobID?.isEmpty == false) ? payout.jobID! : id,
-            providerName: "This Mac",
+            timestamp: min(earning.createdAt ?? asOf, asOf),
+            providerKey: providerKey,
+            providerID: providerID,
+            providerName: providerName(identity: identity, currentSerial: currentSerial),
             modelID: modelID,
-            modelName: modelID,
-            inputTokens: 0,
-            outputTokens: 0,
-            amount: nonNegative(payout.amountMicroUSD)
+            modelName: modelID == "base_reward" ? "Base reward" : modelID,
+            inputTokens: nonNegativeTokens(earning.promptTokens),
+            outputTokens: nonNegativeTokens(earning.completionTokens),
+            amount: nonNegative(earning.amountMicroUSD)
         )
     }
 
-    /// Defensive clamp: the coordinator only ever writes non-negative payout
-    /// amounts, but `MicroUSD` preconditions on it — a corrupt row must not
-    /// crash the app.
+    private static func providerName(
+        identity: ContributionsEarningsPayload.ProviderIdentity?,
+        currentSerial: String?
+    ) -> String {
+        guard let serial = identity?.serialNumber, !serial.isEmpty else {
+            return "Provider"
+        }
+        if serial == currentSerial {
+            return "This Mac"
+        }
+        return "Mac ••••\(serial.suffix(4))"
+    }
+
     private static func nonNegative(_ value: Int64) -> MicroUSD {
         MicroUSD(validating: value) ?? .zero
+    }
+
+    private static func nonNegativeTokens(_ value: Int) -> UInt64 {
+        value > 0 ? UInt64(value) : 0
     }
 }

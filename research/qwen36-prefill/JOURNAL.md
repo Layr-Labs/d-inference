@@ -218,3 +218,14 @@ and monolithic GEMM were flat. M3 exposes no 2× FP16 path to these
 Steel kernels. An invasive dtype change is dead before full-model
 checksum risk. See `notes/029`.
 
+## 2026-08-24T06:14Z — E5 half accumulation correctness veto
+
+Steel's hidden FP16-throughput loophole was tested directly: expert MMA
+accumulator `float` → `half`, all else fixed. Metallib compiled, then
+`SortedGatherQuantizedMMTests` produced **30 failures**, with gate_up
+errors up to 2,368 and down up to 96 across every M/histogram class.
+
+Per preregistration, no timing run. Patch reversed; canonical source and
+baseline metallib restored. The nominal 2× half-accumulator lane cannot
+preserve the model contract. See `notes/033`.
+

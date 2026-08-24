@@ -1,0 +1,53 @@
+diff --git a/mlx/backend/metal/kernels/quantized.h b/mlx/backend/metal/kernels/quantized.h
+--- a/mlx/backend/metal/kernels/quantized.h
++++ b/mlx/backend/metal/kernels/quantized.h
+@@ -1196,7 +1196,8 @@ template <
+     const bool aligned_N,
+     const int BM = 32,
+     const int BK = 32,
+-    const int BN = 32>
++    const int BN = 32,
++    typename AccumType = float>
+ METAL_FUNC void qmm_t_expert_impl(
+     const device uint32_t* w,
+     const device T* scales,
+@@ -1227,7 +1228,20 @@ METAL_FUNC void qmm_t_expert_impl(
+ 
+   // Instantiate the appropriate BlockMMA and Loader
+   using mma_t = mlx::steel::
+-      BlockMMA<T, T, BM, BN, BK, WM, WN, false, true, BK_padded, BK_padded>;
++      BlockMMA<
++          T,
++          T,
++          BM,
++          BN,
++          BK,
++          WM,
++          WN,
++          false,
++          true,
++          BK_padded,
++          BK_padded,
++          AccumType,
++          mlx::steel::TransformNone<AccumType, AccumType>>;
+   using loader_x_t =
+       mlx::steel::BlockLoader<T, BM, BK, BK_padded, 1, WM * WN * SIMD_SIZE>;
+   using loader_w_t = QuantizedBlockLoader<
+@@ -2720,7 +2734,7 @@ void affine_gather_qmm_gemma4_expert_tiles(
+ 
+   const uint3 local_tid = uint3(tid.x, 0, 0);
+   if (row_count <= 16) {
+-    qmm_t_expert_impl<T, group_size, bits, aligned_N, 16, BK, BN>(
++    qmm_t_expert_impl<T, group_size, bits, aligned_N, 16, BK, BN, half>(
+         reinterpret_cast<const device uint32_t*>(expert_w),
+         scales,
+         biases,
+@@ -2737,7 +2751,7 @@ void affine_gather_qmm_gemma4_expert_tiles(
+         simd_gid,
+         simd_lid);
+   } else {
+-    qmm_t_expert_impl<T, group_size, bits, aligned_N, BM, BK, BN>(
++    qmm_t_expert_impl<T, group_size, bits, aligned_N, BM, BK, BN, half>(
+         reinterpret_cast<const device uint32_t*>(expert_w),
+         scales,
+         biases,

@@ -29,6 +29,7 @@ e3-monolithic-down	2026-08-24T06:04:24Z	m3-max-128gb-2	mlx-swift-local	mlx-swift
 e4-fp16-w4-gate	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-w4-gather	2048	1	tflops	11.23	TFLOPS	1.03x	no	no 2x FP16 lane
 e4-fp16-w4-down	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-w4-gather	2048	1	tflops	10.78	TFLOPS	1.06x	no	no 2x FP16 lane
 e4-fp16-monolithic-gate	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-single-matrix	2048	1	tflops	12.29	TFLOPS	1.00x	roof	flat vs BF16 illegal roof
+e5-half-accum-correctness	2026-08-24T06:14:01Z	m3-max-128gb-2	remote-metal-patch	mlx-swift-tests	2	yes	E5-half-accumulator	half-accum-expert-tile	2048	1	correctness	0	pass	fail	no	30 failures; gate error up to 2368; no timing per preregistration
 
 
 

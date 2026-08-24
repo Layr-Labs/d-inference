@@ -110,6 +110,7 @@ make_artifact() {
     local capability=$2
     local include_resource=$3
     local include_fan=${4:-no}
+    local version=${5:-2.0.0}
     local stage="$ROOT/stage-$RANDOM"
     local app="$stage/Darkbloom.app"
     local binary="$ROOT/$capability"
@@ -117,14 +118,15 @@ make_artifact() {
     cp "$binary" "$app/Contents/MacOS/darkbloom"
     cp "$binary" "$app/Contents/MacOS/darkbloom-enclave"
     cp "$binary" "$app/Contents/MacOS/mlx.metallib"
-    cat > "$app/Contents/Info.plist" <<'PLIST'
+    cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>io.darkbloom.install-test</string>
+<key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
 <key>CFBundleExecutable</key><string>darkbloom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>$version</string>
 </dict></plist>
 PLIST
 
@@ -183,8 +185,15 @@ artifact_hashes() {
 run_install() {
     local archive=$1
     local install_dir=$2
+    run_install_with "$INSTALLER" "$archive" "$install_dir"
+}
+
+run_install_with() {
+    local installer=$1
+    local archive=$2
+    local install_dir=$3
     artifact_hashes "$archive"
-    PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
+    PATH="$CLT_SHIMS:$PATH" bash "$installer" --install-bundle-test \
         "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
         "$FAN_HELPER_REQUIREMENT"
 }
@@ -195,11 +204,15 @@ run_install_without_hashes() {
 }
 
 VALID="$ROOT/valid.tar.gz"
+OLDER="$ROOT/older.tar.gz"
+NEWEST="$ROOT/newest.tar.gz"
 MISSING="$ROOT/missing.tar.gz"
 LEGACY="$ROOT/legacy.tar.gz"
-make_artifact "$VALID" paged yes yes
-make_artifact "$MISSING" paged no yes
-make_artifact "$LEGACY" legacy no no
+make_artifact "$VALID" paged yes yes 2.0.0
+make_artifact "$OLDER" paged yes yes 1.0.0
+make_artifact "$NEWEST" paged yes yes 3.0.0
+make_artifact "$MISSING" paged no yes 2.0.0
+make_artifact "$LEGACY" legacy no no 2.0.0
 
 # The designated requirement must be applied to the complete app target,
 # whose main-executable signature seals Contents/Resources.
@@ -281,13 +294,17 @@ test_user_app_shortcut "$REPO_ROOT/coordinator/api/install.sh" embedded
 write_existing_bundle() {
     local app=$1
     local bundle_id=$2
+    local version=${3:-1.0.0}
     mkdir -p "$app/Contents"
     cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>$bundle_id</string>
+<key>CFBundleExecutable</key><string>darkbloom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>$version</string>
 </dict></plist>
 PLIST
     printf 'existing\n' > "$app/sentinel"
@@ -410,13 +427,86 @@ done
 # are swapped in place without producing a misleading foreign backup.
 for owned_id in io.darkbloom.provider dev.darkbloom.app; do
     owned_install="$ROOT/owned-${owned_id//./-}"
-    write_existing_bundle "$owned_install/Darkbloom.app" "$owned_id"
+    if [ "$owned_id" = "io.darkbloom.provider" ]; then
+        run_install "$VALID" "$owned_install"
+    else
+        write_existing_bundle "$owned_install/Darkbloom.app" "$owned_id"
+    fi
     run_install "$VALID" "$owned_install"
     test ! -e "$owned_install/Darkbloom.app/sentinel"
     shopt -s nullglob
     owned_foreign=("$owned_install"/Darkbloom.app.foreign-*)
     test "${#owned_foreign[@]}" -eq 0
 done
+
+# A same-ID app without the pinned release signature is user-owned foreign
+# content, not permission to erase it.
+ADHOC_SAME_ID_INSTALL="$ROOT/ad-hoc-same-id"
+write_existing_bundle \
+    "$ADHOC_SAME_ID_INSTALL/Darkbloom.app" io.darkbloom.provider 9.0.0
+run_install "$VALID" "$ADHOC_SAME_ID_INSTALL"
+assert_one_foreign_copy "$ADHOC_SAME_ID_INSTALL"
+test -f "$PRESERVED_FOREIGN/sentinel"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$PRESERVED_FOREIGN/Contents/Info.plist")" = "9.0.0"
+
+# Every installer entry point is monotonic: a stale but correctly signed
+# archive cannot replace a newer installed app.
+for installer_label in source embedded; do
+    if [ "$installer_label" = "source" ]; then
+        version_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        version_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    version_install="$ROOT/version-$installer_label"
+    run_install_with "$version_installer" "$VALID" "$version_install"
+    if run_install_with "$version_installer" "$OLDER" "$version_install"; then
+        echo "$installer_label installer accepted a signed downgrade" >&2
+        exit 1
+    fi
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+        "$version_install/Darkbloom.app/Contents/Info.plist")" = "2.0.0"
+    shopt -s nullglob
+    version_backups=("$version_install"/.install-backup-*)
+    version_staging=("$version_install"/.install-staging-*)
+    test "${#version_backups[@]}" -eq 0
+    test "${#version_staging[@]}" -eq 0
+done
+
+# Competing valid installers share one destination lock. Whichever reaches the
+# commit first, the final app is the highest version and no transaction debris
+# remains.
+CONCURRENT_INSTALL="$ROOT/concurrent-install"
+run_install "$OLDER" "$CONCURRENT_INSTALL"
+artifact_hashes "$VALID"
+valid_binary_hash=$BINARY_HASH
+valid_metallib_hash=$METALLIB_HASH
+artifact_hashes "$NEWEST"
+newest_binary_hash=$BINARY_HASH
+newest_metallib_hash=$METALLIB_HASH
+PATH="$CLT_SHIMS:$PATH" bash "$REPO_ROOT/scripts/install.sh" \
+    --install-bundle-test "$VALID" "$CONCURRENT_INSTALL" \
+    "$valid_binary_hash" "$valid_metallib_hash" "$FAN_HELPER_REQUIREMENT" &
+valid_pid=$!
+PATH="$CLT_SHIMS:$PATH" bash "$REPO_ROOT/coordinator/api/install.sh" \
+    --install-bundle-test "$NEWEST" "$CONCURRENT_INSTALL" \
+    "$newest_binary_hash" "$newest_metallib_hash" "$FAN_HELPER_REQUIREMENT" &
+newest_pid=$!
+valid_status=0
+newest_status=0
+wait "$valid_pid" || valid_status=$?
+wait "$newest_pid" || newest_status=$?
+test "$newest_status" -eq 0
+[[ "$valid_status" -eq 0 || "$valid_status" -eq 1 ]]
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$CONCURRENT_INSTALL/Darkbloom.app/Contents/Info.plist")" = "3.0.0"
+shopt -s nullglob
+concurrent_backups=("$CONCURRENT_INSTALL"/.install-backup-*)
+concurrent_staging=("$CONCURRENT_INSTALL"/.install-staging-*)
+concurrent_locks=("$CONCURRENT_INSTALL"/.app-install-lock*)
+test "${#concurrent_backups[@]}" -eq 0
+test "${#concurrent_staging[@]}" -eq 0
+test "${#concurrent_locks[@]}" -eq 0
 
 make_fan_variant() {
     local output=$1

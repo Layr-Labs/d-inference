@@ -202,7 +202,17 @@ existing_bundle_is_ours() {
     id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
         "$app/Contents/Info.plist" 2>/dev/null || true)
     case "$id" in
-        io.darkbloom.provider|dev.darkbloom.app) return 0 ;;
+        io.darkbloom.provider)
+            read_canonical_app_version "$app" >/dev/null || return 1
+            if [ "$INSTALL_TEST_MODE" = "1" ]; then
+                codesign --verify --deep --strict --verbose=2 \
+                    "$app" >/dev/null 2>&1
+            else
+                verify_code_requirement \
+                    "$app" 1 "$DARKBLOOM_DESIGNATED_REQUIREMENT"
+            fi
+            ;;
+        dev.darkbloom.app) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -228,6 +238,195 @@ install_test_fault() {
 
 install_path_exists() {
     [ -e "$1" ] || [ -L "$1" ]
+}
+
+read_canonical_app_version() {
+    local app=$1
+    local short_version
+    local bundle_version
+    short_version=$(/usr/libexec/PlistBuddy \
+        -c 'Print :CFBundleShortVersionString' \
+        "$app/Contents/Info.plist" 2>/dev/null || true)
+    bundle_version=$(/usr/libexec/PlistBuddy \
+        -c 'Print :CFBundleVersion' \
+        "$app/Contents/Info.plist" 2>/dev/null || true)
+    local pattern='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+    [ -n "$short_version" ] \
+        && [ "$short_version" = "$bundle_version" ] \
+        && [[ "$short_version" =~ $pattern ]] \
+        || return 1
+    printf '%s\n' "$short_version"
+}
+
+compare_numeric_identifiers() {
+    local left=$1
+    local right=$2
+    while [ "${#left}" -gt 1 ] && [ "${left#0}" != "$left" ]; do left=${left#0}; done
+    while [ "${#right}" -gt 1 ] && [ "${right#0}" != "$right" ]; do right=${right#0}; done
+    if [ "${#left}" -lt "${#right}" ]; then
+        printf '%s\n' -1
+    elif [ "${#left}" -gt "${#right}" ]; then
+        printf '%s\n' 1
+    elif [[ "$left" < "$right" ]]; then
+        printf '%s\n' -1
+    elif [[ "$left" > "$right" ]]; then
+        printf '%s\n' 1
+    else
+        printf '%s\n' 0
+    fi
+}
+
+semver_is_older() {
+    local candidate_no_build=${1%%+*}
+    local installed_no_build=${2%%+*}
+    local candidate_core=${candidate_no_build%%-*}
+    local installed_core=${installed_no_build%%-*}
+    local candidate_pre=""
+    local installed_pre=""
+    [[ "$candidate_no_build" == *-* ]] && candidate_pre=${candidate_no_build#*-}
+    [[ "$installed_no_build" == *-* ]] && installed_pre=${installed_no_build#*-}
+
+    local -a candidate_parts
+    local -a installed_parts
+    IFS=. read -r -a candidate_parts <<< "$candidate_core"
+    IFS=. read -r -a installed_parts <<< "$installed_core"
+    local index
+    local comparison
+    for index in 0 1 2; do
+        comparison=$(compare_numeric_identifiers \
+            "${candidate_parts[$index]}" "${installed_parts[$index]}")
+        [ "$comparison" -lt 0 ] && return 0
+        [ "$comparison" -gt 0 ] && return 1
+    done
+
+    [ -z "$candidate_pre" ] && return 1
+    [ -z "$installed_pre" ] && return 0
+
+    local -a candidate_identifiers
+    local -a installed_identifiers
+    IFS=. read -r -a candidate_identifiers <<< "$candidate_pre"
+    IFS=. read -r -a installed_identifiers <<< "$installed_pre"
+    local count=${#candidate_identifiers[@]}
+    [ "${#installed_identifiers[@]}" -gt "$count" ] \
+        && count=${#installed_identifiers[@]}
+    for ((index = 0; index < count; index++)); do
+        if [ "$index" -ge "${#candidate_identifiers[@]}" ]; then return 0; fi
+        if [ "$index" -ge "${#installed_identifiers[@]}" ]; then return 1; fi
+        local candidate_identifier=${candidate_identifiers[$index]}
+        local installed_identifier=${installed_identifiers[$index]}
+        if [[ "$candidate_identifier" =~ ^[0-9]+$ ]] \
+            && [[ "$installed_identifier" =~ ^[0-9]+$ ]]
+        then
+            comparison=$(compare_numeric_identifiers \
+                "$candidate_identifier" "$installed_identifier")
+            [ "$comparison" -lt 0 ] && return 0
+            [ "$comparison" -gt 0 ] && return 1
+        elif [[ "$candidate_identifier" =~ ^[0-9]+$ ]]; then
+            return 0
+        elif [[ "$installed_identifier" =~ ^[0-9]+$ ]]; then
+            return 1
+        elif [[ "$candidate_identifier" < "$installed_identifier" ]]; then
+            return 0
+        elif [[ "$candidate_identifier" > "$installed_identifier" ]]; then
+            return 1
+        fi
+    done
+    return 1
+}
+
+validate_app_version_transition() {
+    local staged_app=$1
+    local destination=$2
+    local source_version
+    source_version=$(read_canonical_app_version "$staged_app") || {
+        fail_install "Staged Darkbloom.app has invalid or inconsistent version metadata."
+        return 1
+    }
+    install_path_exists "$destination" || return 0
+    existing_bundle_is_ours "$destination" || return 0
+
+    local installed_id
+    installed_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist" 2>/dev/null || true)
+    [ "$installed_id" = "io.darkbloom.provider" ] || return 0
+    local installed_version
+    installed_version=$(read_canonical_app_version "$destination") || return 0
+    semver_is_older "$source_version" "$installed_version" || return 0
+    fail_install \
+        "Refusing to replace newer Darkbloom $installed_version with $source_version."
+}
+
+ACTIVE_APP_INSTALL_LOCK=""
+
+release_app_install_lock() {
+    [ -n "$ACTIVE_APP_INSTALL_LOCK" ] || return 0
+    local lock=$ACTIVE_APP_INSTALL_LOCK
+    ACTIVE_APP_INSTALL_LOCK=""
+    local owner
+    owner=$(sed -n 's/^token=//p' "$lock/owner" 2>/dev/null || true)
+    if [ "$owner" = "$$-$APP_INSTALL_LOCK_TOKEN" ]; then
+        rm -rf "$lock"
+    fi
+}
+
+reclaim_stale_app_install_lock() {
+    local lock=$1
+    local owner_pid
+    owner_pid=$(sed -n 's/^pid=//p' "$lock/owner" 2>/dev/null || true)
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]]; then
+        kill -0 "$owner_pid" 2>/dev/null && return 1
+    else
+        local modified
+        local now
+        modified=$(stat -f '%m' "$lock" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        [ "$modified" -gt 0 ] && [ $((now - modified)) -ge 5 ] || return 1
+    fi
+
+    local stale="${lock}.stale-$$-$RANDOM"
+    mv "$lock" "$stale" 2>/dev/null || return 1
+    rm -rf "$stale"
+}
+
+acquire_app_install_lock() {
+    local install_dir=$1
+    local lock="$install_dir/.app-install-lock"
+    local deadline=$(( $(date +%s) + 30 ))
+    while ! mkdir "$lock" 2>/dev/null; do
+        reclaim_stale_app_install_lock "$lock" && continue
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            fail_install "Another Darkbloom installation is still active."
+            return 1
+        fi
+        sleep 0.05
+    done
+
+    chmod 700 "$lock" || {
+        rm -rf "$lock"
+        return 1
+    }
+    APP_INSTALL_LOCK_TOKEN="$RANDOM-$RANDOM"
+    printf 'pid=%s\ntoken=%s\n' "$$" "$$-$APP_INSTALL_LOCK_TOKEN" > "$lock/owner" || {
+        rm -rf "$lock"
+        return 1
+    }
+    chmod 600 "$lock/owner" || {
+        rm -rf "$lock"
+        return 1
+    }
+    ACTIVE_APP_INSTALL_LOCK=$lock
+}
+
+with_app_install_lock() {
+    local install_dir=$1
+    shift
+    acquire_app_install_lock "$install_dir" || return 1
+    trap release_app_install_lock EXIT INT TERM HUP
+    local status=0
+    "$@" || status=$?
+    release_app_install_lock
+    trap - EXIT INT TERM HUP
+    return "$status"
 }
 
 restore_backed_up_links() {
@@ -350,6 +549,7 @@ commit_staged_app() {
     local had_previous=0
     local previous_was_foreign=0
     local links_touched=0
+    validate_app_version_transition "$staged_app" "$destination" || return 1
     mkdir -p "$backup" "$bin_dir" || {
         rm -rf "$backup"
         return 1
@@ -492,7 +692,8 @@ install_bundle_atomically() {
             rm -rf "$stage"
             return 1
         }
-        commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
+        with_app_install_lock \
+            "$install_dir" commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
             rm -rf "$stage"
             fail_install "Atomic app swap failed; previous install was restored."
             return 1
@@ -512,7 +713,8 @@ install_bundle_atomically() {
                 return 1
             }
         fi
-        commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
+        with_app_install_lock \
+            "$install_dir" commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
             rm -rf "$stage"
             fail_install "Atomic flat-bundle swap failed; previous install was restored."
             return 1

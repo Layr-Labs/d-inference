@@ -674,7 +674,7 @@ index 800a3d00f221f73ff4b2337e2b9b1606956b0039..7635a64882a9272b666e75f7c46ea353
  }
 diff --git a/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..c5f23ddf8c2bbfed814ed416add658f1cd363d84
+index 0000000000000000000000000000000000000000..7498bd77dd8177cb484c48c14ed2df6cc6b391a6
 --- /dev/null
 +++ b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
 @@ -0,0 +1,147 @@
@@ -738,9 +738,9 @@ index 0000000000000000000000000000000000000000..c5f23ddf8c2bbfed814ed416add658f1
 +                referenceSnapshot.keys, referenceSnapshot.values)
 +            #expect(actualSnapshot.offset == length)
 +            #expect(referenceSnapshot.offset == length)
-+            #expect(TinyArtifactQwen.identical(
++            #expect(TinyArtifactQwen.close(
 +                actualSnapshot.keys, referenceSnapshot.keys))
-+            #expect(TinyArtifactQwen.identical(
++            #expect(TinyArtifactQwen.close(
 +                actualSnapshot.values, referenceSnapshot.values))
 +        }
 +        #expect(actual.0.offset == length, "the final token must not be committed twice")

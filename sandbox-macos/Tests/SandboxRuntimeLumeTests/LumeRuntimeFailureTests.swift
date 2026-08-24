@@ -1902,6 +1902,52 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testCancelledExecuteStopsLocallyManagedRunWithoutCrossProcessControl()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "credentialed-readiness-executor"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 4,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+        try await runtime.start(name: fixture.virtualMachineName)
+        try fixture.setBehavior(
+            "block-first-list-stop-liveness-inconclusive"
+        )
+        let execution = Task {
+            try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: try SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    timeoutSeconds: 30
+                )
+            )
+        }
+        try await fixture.waitForListToStart()
+
+        execution.cancel()
+
+        do {
+            _ = try await execution.value
+            XCTFail("cancelled execute should throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
     func testClaimAppearingAfterReplayStopsVirtualMachine() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
@@ -3265,6 +3311,10 @@ private struct FakeLumeFixture {
         try Data().write(to: listContinue)
     }
 
+    func setBehavior(_ value: String) throws {
+        try Data("\(value)\n".utf8).write(to: behavior)
+    }
+
     func launchStartHolderSubprocess(now: Date) throws -> Process {
         let testBundle = Bundle(
             for: LumeRuntimeFailureTests.self
@@ -3633,12 +3683,16 @@ private struct FakeLumeFixture {
               ;;
           esac
         done
-        if [ "$behavior" = "block-first-list" ] && [ ! -f "$root/list-started" ]; then
-          : > "$root/list-started"
-          while [ ! -f "$root/list-continue" ]; do
-            /bin/sleep 0.01
-          done
-        fi
+        case "$behavior" in
+          block-first-list|block-first-list-stop-liveness-inconclusive)
+            if [ ! -f "$root/list-started" ]; then
+              : > "$root/list-started"
+              while [ ! -f "$root/list-continue" ]; do
+                /bin/sleep 0.01
+              done
+            fi
+            ;;
+        esac
         if [ ! -f "$state_file" ] || [ ! -d "$storage/sandbox-failure-test" ]; then
           printf '%s\\n' '[]'
           exit 0
@@ -3818,7 +3872,8 @@ private struct FakeLumeFixture {
         exit 64
         ;;
       stop)
-        if [ "$behavior" = "stop-liveness-inconclusive" ]; then
+        if [ "$behavior" = "stop-liveness-inconclusive" ] \
+          || [ "$behavior" = "block-first-list-stop-liveness-inconclusive" ]; then
           printf '%s\\n' "VM liveness is inconclusive" >&2
           exit 70
         fi

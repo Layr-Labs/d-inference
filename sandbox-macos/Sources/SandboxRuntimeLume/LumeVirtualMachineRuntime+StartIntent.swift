@@ -139,11 +139,15 @@ extension LumeVirtualMachineRuntime {
             return
         }
 
-        _ = try await run(
-            arguments: storageArguments(["stop", name]),
-            timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "stop"
-        )
+        if let process = runningProcesses.removeValue(forKey: name) {
+            _ = await process.stop()
+        } else {
+            _ = try await run(
+                arguments: storageArguments(["stop", name]),
+                timeoutSeconds: configuration.commandTimeoutSeconds,
+                operation: "stop"
+            )
+        }
         try await waitForState(
             name: name,
             expected: .stopped,

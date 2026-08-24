@@ -172,6 +172,80 @@ struct ChatStoreTests {
         #expect(!store.isResponding)
     }
 
+    @Test("Retry reuses the failed user message instead of appending it")
+    func retryReusesFailedTurn() async throws {
+        let store = makeLiveStore(client: nil)
+        let prompt = try #require(store.beginResponse(to: "Hello?"))
+        let userID = try #require(store.messages.last?.id)
+        await store.respondLive(to: prompt)
+        #expect(store.failure == .noDiscovery)
+
+        let retryPrompt = try #require(store.retryLastFailedResponse())
+
+        #expect(retryPrompt == "Hello?")
+        #expect(store.messages.count == 1)
+        #expect(store.messages[0].id == userID)
+        #expect(store.messages[0].role == .user)
+        #expect(store.isResponding)
+        #expect(store.failure == nil)
+        #expect(store.retryLastFailedResponse() == nil)
+    }
+
+    @Test("Retry drops failed partial output and sends one copy of the prompt")
+    func retryReplacesPartialWithoutDuplicatingWireHistory() async throws {
+        let recorder = RetryChatRecorder()
+        let client = LocalEndpointClient(
+            baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
+            apiKey: "dk-test",
+            dataTransport: { _ in (Data(), HTTPURLResponse()) },
+            lineTransport: { request in
+                let attempt = recorder.record(request.httpBody)
+                let stream = AsyncThrowingStream<String, Error> { continuation in
+                    if attempt == 1 {
+                        continuation.yield(
+                            #"data: {"choices":[{"delta":{"content":"half"}}]}"#
+                        )
+                        continuation.finish(throwing: URLError(.networkConnectionLost))
+                    } else {
+                        continuation.yield(
+                            #"data: {"choices":[{"delta":{"content":"complete"}}]}"#
+                        )
+                        continuation.yield("data: [DONE]")
+                        continuation.finish()
+                    }
+                }
+                return (
+                    stream,
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!
+                )
+            }
+        )
+        let store = makeLiveStore(client: client)
+        let prompt = try #require(store.beginResponse(to: "Stream once"))
+        let userID = try #require(store.messages.first?.id)
+        await store.respondLive(to: prompt)
+        #expect(store.messages.map(\.text) == ["Stream once", "half"])
+        #expect(store.failure != nil)
+
+        let retryPrompt = try #require(store.retryLastFailedResponse())
+        #expect(store.messages.map(\.text) == ["Stream once"])
+        #expect(store.messages[0].id == userID)
+        await store.respondLive(to: retryPrompt)
+
+        #expect(store.failure == nil)
+        #expect(store.messages.map(\.text) == ["Stream once", "complete"])
+        #expect(recorder.bodies.count == 2)
+        let secondBody = try #require(recorder.bodies[1])
+        let decoded = try JSONSerialization.jsonObject(with: secondBody) as? [String: Any]
+        let wireMessages = decoded?["messages"] as? [[String: String]]
+        #expect(wireMessages == [["role": "user", "content": "Stream once"]])
+    }
+
     // MARK: Model selection
 
     @Test("Without a provider model the store falls back to the endpoint's first model")
@@ -329,5 +403,17 @@ struct ChatStoreTests {
     final class ChatRequestRecorder: @unchecked Sendable {
         var requests: [URLRequest] = []
         var bodies: [Data?] = []
+    }
+
+    final class RetryChatRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var bodies: [Data?] = []
+
+        func record(_ body: Data?) -> Int {
+            lock.withLock {
+                bodies.append(body)
+                return bodies.count
+            }
+        }
     }
 }

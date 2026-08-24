@@ -77,6 +77,7 @@ final class PreviewChatStore {
     var route: ChatRoute
 
     private let live: LiveChatConfiguration?
+    private var responseUserMessageID: UUID?
 
     init(
         messages: [LocalChatMessage] = [],
@@ -119,7 +120,40 @@ final class PreviewChatStore {
         let prompt = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isResponding else { return nil }
 
-        messages.append(LocalChatMessage(role: .user, text: prompt))
+        let message = LocalChatMessage(role: .user, text: prompt)
+        messages.append(message)
+        responseUserMessageID = message.id
+        failure = nil
+        isResponding = true
+        return prompt
+    }
+
+    /// Re-run the failed turn without appending its user message again.
+    /// Partial assistant output belongs to the failed attempt and is removed
+    /// before the same user-message identity is sent again.
+    @discardableResult
+    func retryLastFailedResponse() -> String? {
+        guard failure != nil, !isResponding else { return nil }
+        guard let responseUserMessageID,
+              let userIndex = messages.firstIndex(where: {
+                  $0.id == responseUserMessageID && $0.role == .user
+              })
+        else {
+            failure = nil
+            self.responseUserMessageID = nil
+            return nil
+        }
+
+        if userIndex < messages.index(before: messages.endIndex) {
+            messages.removeSubrange(messages.index(after: userIndex)...)
+        }
+        let prompt = messages[userIndex].text
+        guard !prompt.isEmpty else {
+            failure = nil
+            self.responseUserMessageID = nil
+            return nil
+        }
+        failure = nil
         isResponding = true
         return prompt
     }
@@ -133,6 +167,7 @@ final class PreviewChatStore {
         ))
         isResponding = false
         failure = nil
+        responseUserMessageID = nil
     }
 
     // MARK: - Live streaming
@@ -192,6 +227,9 @@ final class PreviewChatStore {
 
         dropMessageIfEmpty(assistantID)
         isResponding = false
+        if failure == nil {
+            responseUserMessageID = nil
+        }
     }
 
     /// Model id for the request: the provider's current model if any,
@@ -231,16 +269,19 @@ final class PreviewChatStore {
             }
         }
         isResponding = false
+        responseUserMessageID = nil
     }
 
     func reset() {
         messages.removeAll()
         isResponding = false
         failure = nil
+        responseUserMessageID = nil
     }
 
     func clearFailure() {
         failure = nil
+        responseUserMessageID = nil
     }
 
     // MARK: - Streaming helpers

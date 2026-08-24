@@ -21,6 +21,7 @@ struct DiagnosticsView: View {
                         if !store.isScanning, !store.report.prioritizedFixes.isEmpty {
                             DiagnosticFixesSection(
                                 fixes: store.report.prioritizedFixes,
+                                isLive: store.isLive,
                                 onOpen: open
                             )
                         }

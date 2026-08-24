@@ -10,7 +10,8 @@ struct DaemonSnapshotMappingTests {
     private func freshState(
         pid: Int32 = 4242,
         trust: DaemonState.Trust? = nil,
-        inferenceActive: Bool = false
+        inferenceActive: Bool = false,
+        schedule: DaemonState.SchedulePosture? = nil
     ) -> DaemonState {
         DaemonState(
             pid: pid,
@@ -24,7 +25,8 @@ struct DaemonSnapshotMappingTests {
             stats: DaemonState.Stats(requestsServed: 41, tokensGenerated: 98_231, usageGaps: 2),
             system: DaemonState.SystemInfo(memoryPressure: 0.4, cpuUsage: 0.2, thermalState: "nominal"),
             capacity: DaemonState.Capacity(totalMemoryGb: 128, gpuMemoryActiveGb: 21.6, gpuMemoryCacheGb: 3.2),
-            connectivity: DaemonState.Connectivity(reconnectCount: 1, lastError: nil)
+            connectivity: DaemonState.Connectivity(reconnectCount: 1, lastError: nil),
+            schedule: schedule
         )
     }
 
@@ -94,6 +96,52 @@ struct DaemonSnapshotMappingTests {
         let snapshot = DaemonSnapshotMapping.map(inputs(state: freshState(inferenceActive: true), alive: true))
         #expect(snapshot.runState == .serving)
         #expect(snapshot.isServing)
+    }
+
+    @Test("Daemon schedule posture maps into live availability")
+    func scheduleMapsIntoAvailability() {
+        let nextChange = referenceNow.timeIntervalSince1970 + 3_600
+        let active = freshState(schedule: .init(
+            mode: "scheduled-active",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: nextChange
+        ))
+        let activeSnapshot = DaemonSnapshotMapping.map(inputs(state: active, alive: true))
+
+        #expect(activeSnapshot.runState == .online)
+        #expect(activeSnapshot.availability.state == .scheduledActive)
+        #expect(activeSnapshot.availability.summary == "Mon-Fri 09:00-17:00")
+        #expect(activeSnapshot.availability.nextChangeAt == Date(timeIntervalSince1970: nextChange))
+    }
+
+    @Test("Outside scheduled hours is not reported as manually paused")
+    func scheduledOffMapsWithoutLiveProcess() {
+        let nextChange = referenceNow.timeIntervalSince1970 + 3_600
+        let state = freshState(schedule: .init(
+            mode: "scheduled-off",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: nextChange
+        ))
+        let snapshot = DaemonSnapshotMapping.map(inputs(state: state, alive: false))
+
+        #expect(snapshot.runState == .scheduledOff)
+        #expect(!snapshot.isRunning)
+        #expect(snapshot.availability.state == .scheduledOff)
+        #expect(snapshot.availability.summary.contains("Mon-Fri 09:00-17:00"))
+        #expect(snapshot.availability.nextChangeAt == Date(timeIntervalSince1970: nextChange))
+    }
+
+    @Test("Expired scheduled-off posture cannot mask a stopped provider")
+    func expiredScheduledOffMapsPaused() {
+        let state = freshState(schedule: .init(
+            mode: "scheduled-off",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: referenceNow.timeIntervalSince1970 - 1
+        ))
+        let snapshot = DaemonSnapshotMapping.map(inputs(state: state, alive: false))
+
+        #expect(snapshot.runState == .paused)
+        #expect(snapshot.availability.state == .paused)
     }
 
     @Test("Old writes → stale run state + critical problem")

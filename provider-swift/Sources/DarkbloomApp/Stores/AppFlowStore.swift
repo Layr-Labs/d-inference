@@ -21,13 +21,19 @@ final class AppFlowStore {
         preferences: (any AppFlowPreferenceStoring)? = nil,
         launchOverride: AppPhase? = AppPhase.currentDebugLaunchOverride,
         onboardingFlow: OnboardingFlowModel? = nil,
-        initialDestination: ProductDestination = .overview
+        initialDestination: ProductDestination = .overview,
+        bootstrapEvidence: AppFlowBootstrapEvidence? = nil
     ) {
         let preferences = preferences ?? UserDefaultsAppFlowPreferences()
         let persistenceEnabled = launchOverride == nil
-        let hasCompletedOnboarding = persistenceEnabled
+        let persistedCompletion = persistenceEnabled
             ? preferences.hasCompletedNetworkOnboarding
             : launchOverride == .product
+        let machineCanBootstrap = persistenceEnabled &&
+            !persistedCompletion &&
+            preferences.onboardingDraft == nil &&
+            bootstrapEvidence?.canOpenProductWithoutOnboarding == true
+        let hasCompletedOnboarding = persistedCompletion || machineCanBootstrap
         let draftCandidate = persistenceEnabled && !hasCompletedOnboarding
             ? preferences.onboardingDraft
             : nil
@@ -38,6 +44,9 @@ final class AppFlowStore {
 
         if draftCandidate != nil, storedDraft == nil {
             preferences.onboardingDraft = nil
+        }
+        if machineCanBootstrap {
+            preferences.hasCompletedNetworkOnboarding = true
         }
 
         self.preferences = preferences

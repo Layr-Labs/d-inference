@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DiagnosticFixesSection: View {
     let fixes: [DiagnosticFix]
+    let isLive: Bool
     let onOpen: (DiagnosticFix) -> Void
 
     var body: some View {
@@ -28,12 +29,12 @@ struct DiagnosticFixesSection: View {
                         Spacer()
 
                         if index == 0 {
-                            Button(fix.action.buttonTitle) {
+                            Button(fix.action.buttonTitle(isLive: isLive)) {
                                 onOpen(fix)
                             }
                             .buttonStyle(.borderedProminent)
                         } else {
-                            Button(fix.action.buttonTitle) {
+                            Button(fix.action.buttonTitle(isLive: isLive)) {
                                 onOpen(fix)
                             }
                             .buttonStyle(.bordered)
@@ -51,8 +52,9 @@ struct DiagnosticFixesSection: View {
     }
 }
 
-private extension DiagnosticFixAction {
-    var buttonTitle: String {
+extension DiagnosticFixAction {
+    func buttonTitle(isLive: Bool) -> String {
+        if isLive { return "View Guidance" }
         switch self {
         case .openEnrollment: "Finish Setup"
         case .openRecoveryInstructions: "View Instructions"

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LocalAPIConnectionSurface: View {
     let endpoint: LocalAPIEndpointSnapshot
+    let isLive: Bool
     let isAPIKeyRevealed: Bool
     let copiedItem: LocalAPICopyItem?
     let onRevealAPIKey: (Bool) -> Void
@@ -58,7 +59,7 @@ struct LocalAPIConnectionSurface: View {
 
                     HStack(spacing: 0) {
                         connectionFact(
-                            label: endpoint.mode == nil ? "Mode" : "Sample mode",
+                            label: LocalAPIPresentation.modeLabel(endpoint.mode, isLive: isLive),
                             value: LocalAPIPresentation.modeTitle(endpoint.mode)
                         )
                         Divider().frame(height: 32)
@@ -78,6 +79,7 @@ struct LocalAPIConnectionSurface: View {
 
                     LocalAPICredentialsView(
                         endpoint: endpoint,
+                        isLive: isLive,
                         isRevealed: isAPIKeyRevealed,
                         copiedItem: copiedItem,
                         onReveal: onRevealAPIKey,
@@ -175,7 +177,7 @@ struct LocalAPIConnectionSurface: View {
 
                 VStack(alignment: .leading, spacing: 11) {
                     connectionFact(
-                        label: endpoint.mode == nil ? "Mode" : "Sample mode",
+                        label: LocalAPIPresentation.modeLabel(endpoint.mode, isLive: isLive),
                         value: LocalAPIPresentation.modeTitle(endpoint.mode),
                         allowsWrapping: true
                     )
@@ -198,6 +200,7 @@ struct LocalAPIConnectionSurface: View {
 
                 LocalAPICredentialsView(
                     endpoint: endpoint,
+                    isLive: isLive,
                     isRevealed: isAPIKeyRevealed,
                     copiedItem: copiedItem,
                     onReveal: onRevealAPIKey,
@@ -227,14 +230,7 @@ struct LocalAPIConnectionSurface: View {
     }
 
     private var statusTitle: String {
-        switch endpoint.health {
-        case .checking: "Checking sample endpoint"
-        case .reachable where endpoint.isOpenWithoutAuthentication:
-            "Sample endpoint open"
-        case .reachable:
-            "Sample endpoint ready"
-        case .unreachable: "Sample endpoint unavailable"
-        }
+        LocalAPIPresentation.healthTitle(endpoint, isLive: isLive)
     }
 
     private var statusSystemImage: String {

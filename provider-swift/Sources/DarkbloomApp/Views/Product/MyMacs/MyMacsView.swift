@@ -72,7 +72,9 @@ struct MyMacsView: View {
                                     store.refresh()
                                 }
                                 .controlSize(.small)
-                                .help("Refresh this UI preview snapshot")
+                                .help(store.mode == .live
+                                    ? "Refresh linked Macs"
+                                    : "Refresh this UI preview snapshot")
                             }
                         }
                     }
@@ -366,7 +368,7 @@ struct MyMacsView: View {
         reconcileFilteredSelection()
         // Fixture sign-in resolves synchronously; live sign-in is async — the
         // announcement only fires for the deterministic preview transition.
-        if case .ready = store.availability {
+        if store.mode == .fixture, case .ready = store.availability {
             AccessibilityNotification.Announcement("Signed in to the My Macs UI preview").post()
         }
     }

@@ -1,14 +1,11 @@
 import SwiftUI
 
 struct LocalAPIStateView: View {
-    enum Kind {
-        case starting
-        case stopped
-        case unavailable
-    }
+    typealias Kind = LocalAPIEndpointPhase
 
     let kind: Kind
     let message: String
+    let isLive: Bool
     let onRetry: () -> Void
     let onOpenDiagnostics: () -> Void
 
@@ -61,7 +58,7 @@ struct LocalAPIStateView: View {
                 ProgressView()
                     .controlSize(.small)
                     .padding(.top, 6)
-                    .accessibilityLabel("Waiting for the sample endpoint")
+                    .accessibilityLabel(isLive ? "Waiting for the endpoint" : "Waiting for the sample endpoint")
             } else if kind == .unavailable {
                 HStack(spacing: 10) {
                     Button("Check Again", action: onRetry)
@@ -75,11 +72,7 @@ struct LocalAPIStateView: View {
     }
 
     private var title: String {
-        switch kind {
-        case .starting: "Sample endpoint is starting"
-        case .stopped: "No sample endpoint is running"
-        case .unavailable: "The sample endpoint needs attention"
-        }
+        LocalAPIPresentation.stateTitle(kind, isLive: isLive)
     }
 
     private var systemImage: String {

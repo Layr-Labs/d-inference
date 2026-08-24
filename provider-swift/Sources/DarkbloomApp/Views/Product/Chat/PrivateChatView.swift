@@ -93,6 +93,7 @@ struct PrivateChatView: View {
                         set: { store.route = $0 }
                     ),
                     isResponding: store.isResponding,
+                    isLive: store.isLive,
                     isFocused: $composerIsFocused,
                     availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
                     noteOverride: store.isLive ? liveComposerNote : nil,

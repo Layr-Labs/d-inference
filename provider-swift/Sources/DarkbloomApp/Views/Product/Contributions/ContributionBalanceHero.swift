@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContributionBalanceHero: View {
     let snapshot: ContributionsSnapshot
+    let allowsPreviewPayout: Bool
     let onRequestPayout: () -> Void
 
     private var canRequestPayout: Bool {
@@ -35,24 +36,26 @@ struct ContributionBalanceHero: View {
             VStack(alignment: .trailing, spacing: 10) {
                 payoutStatus
 
-                Button {
-                    onRequestPayout()
-                } label: {
-                    Label(
-                        snapshot.payoutReadiness == .setupRequired
-                            ? "Review payout readiness"
-                            : "Preview withdrawal",
-                        systemImage: snapshot.payoutReadiness == .setupRequired
-                            ? "person.crop.circle.badge.plus"
-                            : "arrow.up.right"
+                if allowsPreviewPayout {
+                    Button {
+                        onRequestPayout()
+                    } label: {
+                        Label(
+                            snapshot.payoutReadiness == .setupRequired
+                                ? "Review payout readiness"
+                                : "Preview withdrawal",
+                            systemImage: snapshot.payoutReadiness == .setupRequired
+                                ? "person.crop.circle.badge.plus"
+                                : "arrow.up.right"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(
+                        snapshot.payoutReadiness == .ready &&
+                            snapshot.withdrawableBalance < snapshot.minimumPayout
                     )
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(
-                    snapshot.payoutReadiness == .ready &&
-                        snapshot.withdrawableBalance < snapshot.minimumPayout
-                )
 
                 Text(minimumPayoutDetail)
                     .font(.system(size: 10))
@@ -94,7 +97,7 @@ struct ContributionBalanceHero: View {
                 )
             } else if canRequestPayout {
                 ProductStatusBadge(
-                    title: "Ready to withdraw",
+                    title: allowsPreviewPayout ? "Preview ready" : "Balance available",
                     systemImage: "checkmark.circle.fill",
                     tint: ProductPalette.positive
                 )
@@ -113,7 +116,9 @@ struct ContributionBalanceHero: View {
             return "Payouts need attention before you can withdraw"
         }
         if canRequestPayout {
-            return "UI preview only — no money will move"
+            return allowsPreviewPayout
+                ? "UI preview only — no money will move"
+                : "Payout actions are not available in the Mac app"
         }
         return "Minimum withdrawal: \(ContributionsPresentation.amount(snapshot.minimumPayout))"
     }

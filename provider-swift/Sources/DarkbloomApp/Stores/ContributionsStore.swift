@@ -108,6 +108,8 @@ final class ContributionsStore {
         return snapshot.lifetimeJobs == 0 && snapshot.records.isEmpty
     }
 
+    var isLive: Bool { live != nil }
+
     func setScope(_ scope: ContributionScope) {
         self.scope = scope
     }

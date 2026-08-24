@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ResumeSetupCard: View {
     let draft: OnboardingDraft
+    let showsPreviewChrome: Bool
     let onResume: () -> Void
     let onStartOver: () -> Void
 
@@ -23,7 +24,7 @@ struct ResumeSetupCard: View {
                 .foregroundStyle(DarkbloomTheme.ink.opacity(0.58))
                 .padding(.top, 7)
 
-            Text("Only UI progress is saved. Account, profile, and model status remain sample states until live setup is connected.")
+            Text(progressDetail)
                 .font(DarkbloomTheme.chivo(11))
                 .lineSpacing(3)
                 .foregroundStyle(DarkbloomTheme.ink.opacity(0.48))
@@ -60,5 +61,12 @@ struct ResumeSetupCard: View {
         }
         .shadow(color: DarkbloomTheme.accent.opacity(0.08), radius: 24, y: 12)
         .accessibilityElement(children: .contain)
+    }
+
+    private var progressDetail: String {
+        if showsPreviewChrome {
+            return "Only UI progress is saved. Account, profile, and model status remain sample states in this preview."
+        }
+        return "Darkbloom saved your place. Resume to recheck account, profile, model, and provider status against this Mac."
     }
 }

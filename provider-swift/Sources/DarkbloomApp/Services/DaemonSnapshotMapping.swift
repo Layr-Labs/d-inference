@@ -64,9 +64,11 @@ enum DaemonSnapshotMapping {
             pid: isRunning ? state?.pid : nil,
             startedAt: isRunning ? state.map { Date(timeIntervalSince1970: $0.startedAt) } : nil,
             trust: mapTrust(state?.trust),
-            availability: runState == .paused
-                ? ProviderAvailabilitySnapshot(state: .paused, summary: "Paused by you", nextChangeAt: nil)
-                : ProviderAvailabilitySnapshot(state: .alwaysAvailable, summary: "Available whenever Darkbloom is running", nextChangeAt: nil),
+            availability: mapAvailability(
+                state: state,
+                runState: runState,
+                now: epochNow
+            ),
             activity: ProviderActivitySnapshot(
                 requestsServed: state?.stats.requestsServed ?? 0,
                 tokensGenerated: state?.stats.tokensGenerated ?? 0,
@@ -89,9 +91,13 @@ enum DaemonSnapshotMapping {
     // MARK: - Pieces
 
     private static func resolveRunState(inputs: Inputs) -> ProviderRunState {
-        guard let state = inputs.state, inputs.processIsAlive else {
+        guard let state = inputs.state else {
             return .paused
         }
+        if scheduleIsCurrentlyOff(state.schedule, state: state, now: inputs.now.timeIntervalSince1970) {
+            return .scheduledOff
+        }
+        guard inputs.processIsAlive else { return .paused }
         if state.isStale(now: inputs.now.timeIntervalSince1970) {
             return .stale
         }
@@ -107,6 +113,67 @@ enum DaemonSnapshotMapping {
             return .attention
         }
         return .online
+    }
+
+    private static func mapAvailability(
+        state: DaemonState?,
+        runState: ProviderRunState,
+        now: TimeInterval
+    ) -> ProviderAvailabilitySnapshot {
+        if runState == .paused {
+            return ProviderAvailabilitySnapshot(
+                state: .paused,
+                summary: "Paused by you",
+                nextChangeAt: nil
+            )
+        }
+
+        guard let state, let schedule = state.schedule else {
+            return ProviderAvailabilitySnapshot(
+                state: .alwaysAvailable,
+                summary: "Available whenever Darkbloom is running",
+                nextChangeAt: nil
+            )
+        }
+
+        let nextChange = schedule.nextChangeAtEpoch.map {
+            Date(timeIntervalSince1970: $0)
+        }
+        switch schedule.mode.lowercased() {
+        case "scheduled-active":
+            return ProviderAvailabilitySnapshot(
+                state: .scheduledActive,
+                summary: schedule.summary,
+                nextChangeAt: nextChange
+            )
+        case "scheduled-off"
+            where scheduleIsCurrentlyOff(schedule, state: state, now: now):
+            return ProviderAvailabilitySnapshot(
+                state: .scheduledOff,
+                summary: "Outside scheduled hours · \(schedule.summary)",
+                nextChangeAt: nextChange
+            )
+        default:
+            return ProviderAvailabilitySnapshot(
+                state: .alwaysAvailable,
+                summary: "Available whenever Darkbloom is running",
+                nextChangeAt: nil
+            )
+        }
+    }
+
+    private static func scheduleIsCurrentlyOff(
+        _ schedule: DaemonState.SchedulePosture?,
+        state: DaemonState,
+        now: TimeInterval
+    ) -> Bool {
+        guard let schedule, schedule.mode.lowercased() == "scheduled-off" else {
+            return false
+        }
+        if let nextChange = schedule.nextChangeAtEpoch {
+            return now < nextChange
+        }
+        return !state.isStale(now: now)
     }
 
     private static func mapTrust(_ trust: DaemonState.Trust?) -> ProviderTrustSnapshot {

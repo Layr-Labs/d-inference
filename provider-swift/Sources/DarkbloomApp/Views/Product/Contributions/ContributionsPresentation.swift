@@ -1,6 +1,10 @@
 import Foundation
 
 enum ContributionsPresentation {
+    static func allowsPayoutActions(isLive: Bool) -> Bool {
+        !isLive
+    }
+
     static func amount(_ value: MicroUSD) -> String {
         value.formattedUSD()
     }

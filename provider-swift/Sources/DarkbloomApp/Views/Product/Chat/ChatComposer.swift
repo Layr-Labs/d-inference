@@ -4,6 +4,7 @@ struct ChatComposer: View {
     @Binding var draft: String
     @Binding var route: ChatRoute
     let isResponding: Bool
+    let isLive: Bool
     var isFocused: FocusState<Bool>.Binding
     /// Selectable routes; live stores restrict this to `.thisMac` because
     /// network routing isn't a live surface yet (honesty over symmetry).
@@ -27,7 +28,7 @@ struct ChatComposer: View {
                     .lineLimit(1...5)
                     .focused(isFocused)
                     .onSubmit(onSubmit)
-                    .accessibilityHint("Press Return to send this preview message")
+                    .accessibilityHint(ChatPresentation.submitHint(isLive: isLive))
 
                 sendOrStopButton
             }
@@ -96,8 +97,8 @@ struct ChatComposer: View {
                 composerButtonIcon("stop.fill", tint: DarkbloomTheme.accent)
             }
             .buttonStyle(.plain)
-            .help("Stop sample reply")
-            .accessibilityLabel("Stop sample reply")
+            .help(ChatPresentation.stopLabel(isLive: isLive))
+            .accessibilityLabel(ChatPresentation.stopLabel(isLive: isLive))
         } else {
             Button(action: onSubmit) {
                 composerButtonIcon(
@@ -110,8 +111,8 @@ struct ChatComposer: View {
             .buttonStyle(.plain)
             .disabled(draftIsEmpty)
             .keyboardShortcut(.return, modifiers: [.command])
-            .help("Send preview message")
-            .accessibilityLabel("Send preview message")
+            .help(ChatPresentation.sendLabel(isLive: isLive))
+            .accessibilityLabel(ChatPresentation.sendLabel(isLive: isLive))
         }
     }
 

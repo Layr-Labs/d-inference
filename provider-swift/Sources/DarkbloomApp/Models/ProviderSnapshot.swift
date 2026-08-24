@@ -144,9 +144,9 @@ struct ProviderSnapshot: Codable, Equatable, Sendable {
 
     var isRunning: Bool {
         switch runState {
-        case .online, .serving, .scheduledOff, .attention, .starting, .stopping, .restarting:
+        case .online, .serving, .attention, .starting, .stopping, .restarting:
             true
-        case .paused, .stale:
+        case .paused, .scheduledOff, .stale:
             false
         }
     }

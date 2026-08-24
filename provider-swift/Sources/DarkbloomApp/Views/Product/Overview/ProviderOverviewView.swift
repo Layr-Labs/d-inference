@@ -3,6 +3,7 @@ import SwiftUI
 struct ProviderOverviewView: View {
     let identity: MachineIdentity
     let store: ProviderStore
+    let isPreview: Bool
     let onOpenChat: () -> Void
     let onOpenLocalAPI: () -> Void
     let onOpenAvailability: () -> Void
@@ -271,8 +272,12 @@ struct ProviderOverviewView: View {
                     .padding(.top, 18)
                 Text(
                     snapshot.localEndpoint?.isReachable == true
-                        ? "Connect your own client here, or use the in-app Chat preview. Network routing remains a separate choice."
-                        : "Set up an OpenAI-compatible endpoint for your own clients, or explore the in-app Chat preview."
+                        ? (isPreview
+                            ? "Connect your own client here, or use the in-app Chat preview. Network routing remains a separate choice."
+                            : "Connect your own client here, or use Chat in Darkbloom. Network routing remains a separate choice.")
+                        : (isPreview
+                            ? "Set up an OpenAI-compatible endpoint for your own clients, or explore the in-app Chat preview."
+                            : "Set up an OpenAI-compatible endpoint for your own clients, then use Chat in Darkbloom.")
                 )
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -285,7 +290,7 @@ struct ProviderOverviewView: View {
                     }
                     .buttonStyle(.link)
 
-                    Button("Preview Chat") {
+                    Button(isPreview ? "Preview Chat" : "Open Chat") {
                         onOpenChat()
                     }
                     .buttonStyle(.link)

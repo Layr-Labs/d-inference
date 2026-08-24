@@ -15,6 +15,10 @@ struct CompatibilityConfirmation {
 }
 
 enum ModelLibraryPresentation {
+    static func allowsTransientSelection(isLive: Bool) -> Bool {
+        !isLive
+    }
+
     static func displayedModels(
         from models: [ModelSummary],
         scope: ModelScope

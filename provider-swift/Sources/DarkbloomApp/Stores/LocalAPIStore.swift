@@ -87,6 +87,11 @@ final class LocalAPIStore {
         return endpoint
     }
 
+    var isLive: Bool {
+        if case .live = source { return true }
+        return false
+    }
+
     func setAPIKeyRevealed(_ revealed: Bool) {
         isAPIKeyRevealed = revealed && endpoint?.requiresAuthentication == true
     }

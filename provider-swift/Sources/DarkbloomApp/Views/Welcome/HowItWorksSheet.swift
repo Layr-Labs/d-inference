@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct HowItWorksSheet: View {
+    let showsPreviewChrome: Bool
     let onStartSetup: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -87,12 +88,14 @@ struct HowItWorksSheet: View {
             }
             .productSurface()
 
-            Label(
-                "This UI preview simulates setup. It does not install a profile, download a model, or start a provider.",
-                systemImage: "eye.fill"
-            )
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
+            if showsPreviewChrome {
+                Label(
+                    "This UI preview simulates setup. It does not install a profile, download a model, or start a provider.",
+                    systemImage: "eye.fill"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
         }
     }
 

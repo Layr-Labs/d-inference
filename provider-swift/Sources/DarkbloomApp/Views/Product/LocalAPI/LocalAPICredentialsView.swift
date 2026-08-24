@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LocalAPICredentialsView: View {
     let endpoint: LocalAPIEndpointSnapshot
+    let isLive: Bool
     let isRevealed: Bool
     let copiedItem: LocalAPICopyItem?
     let onReveal: (Bool) -> Void
@@ -11,7 +12,7 @@ struct LocalAPICredentialsView: View {
         if endpoint.requiresAuthentication {
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("SAMPLE API KEY")
+                    Text(LocalAPIPresentation.apiKeyLabel(isLive: isLive).uppercased())
                         .font(.system(size: 9, weight: .bold))
                         .tracking(0.8)
                         .foregroundStyle(.secondary)
@@ -30,31 +31,37 @@ struct LocalAPICredentialsView: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Sample API key")
+                .accessibilityLabel(LocalAPIPresentation.apiKeyLabel(isLive: isLive))
                 .accessibilityValue(isRevealed ? "Revealed" : "Hidden")
 
                 HStack(spacing: 12) {
-                    Button(isRevealed ? "Hide" : "Reveal sample key") {
+                    Button(isRevealed ? "Hide" : (isLive ? "Reveal key" : "Reveal sample key")) {
                         onReveal(!isRevealed)
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel(isRevealed ? "Hide sample API key" : "Reveal sample API key")
+                    .accessibilityLabel(
+                        isRevealed
+                            ? "Hide \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
+                            : "Reveal \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
+                    )
 
                     Button {
                         onCopy(.apiKey)
                     } label: {
                         Label(
-                            copiedItem == .apiKey ? "Copied" : "Copy sample key",
+                            copiedItem == .apiKey
+                                ? "Copied"
+                                : (isLive ? "Copy key" : "Copy sample key"),
                             systemImage: copiedItem == .apiKey ? "checkmark" : "doc.on.doc"
                         )
                     }
                     .buttonStyle(.bordered)
-                    .accessibilityLabel("Copy sample API key")
+                    .accessibilityLabel("Copy \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))")
 
                     Spacer(minLength: 0)
                 }
 
-                Text("The provider stores its local token in ~/.darkbloom/local_token with owner-only file permissions. This preview never reads that file.")
+                Text(LocalAPIPresentation.credentialsDetail(isLive: isLive))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

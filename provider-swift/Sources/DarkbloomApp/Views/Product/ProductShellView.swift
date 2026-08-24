@@ -10,6 +10,7 @@ struct ProductShellView: View {
     let myMacsStore: MyMacsStore
     let availabilityStore: AvailabilityStore
     let chatFixture: PreviewChatFixture
+    let isPreview: Bool
     let initialDestination: ProductDestination?
     let onSelectDestination: (ProductDestination) -> Void
     let onInitialDestinationApplied: () -> Void
@@ -147,6 +148,7 @@ struct ProductShellView: View {
             ProviderOverviewView(
                 identity: identity,
                 store: providerStore,
+                isPreview: isPreview,
                 onOpenChat: { select(.chat) },
                 onOpenLocalAPI: { select(.localAPI) },
                 onOpenAvailability: { select(.availability) },

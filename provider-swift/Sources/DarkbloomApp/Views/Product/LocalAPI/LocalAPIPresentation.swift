@@ -1,5 +1,11 @@
 import Foundation
 
+enum LocalAPIEndpointPhase {
+    case starting
+    case stopped
+    case unavailable
+}
+
 enum LocalAPIPresentation {
     static func modeTitle(_ mode: LocalAPIMode?) -> String {
         switch mode {
@@ -80,9 +86,49 @@ enum LocalAPIPresentation {
         requiresAuthentication ? "API key required" : "Authentication disabled"
     }
 
-    static func authenticationDetail(requiresAuthentication: Bool) -> String {
+    static func authenticationDetail(
+        requiresAuthentication: Bool,
+        isLive: Bool = false
+    ) -> String {
         requiresAuthentication
-            ? "Send the bearer token with every inference request. The sample key stays hidden until you reveal it."
+            ? "Send the bearer token with every inference request. The \(isLive ? "API key" : "sample key") stays hidden until you reveal it."
             : "Any process that can reach this address can make inference requests. Enable authentication before exposing it."
+    }
+
+    static func stateTitle(_ phase: LocalAPIEndpointPhase, isLive: Bool) -> String {
+        let endpoint = isLive ? "endpoint" : "sample endpoint"
+        switch phase {
+        case .starting: "\(isLive ? "Endpoint" : "Sample endpoint") is starting"
+        case .stopped: "No \(endpoint) is running"
+        case .unavailable: "The \(endpoint) needs attention"
+        }
+    }
+
+    static func healthTitle(_ endpoint: LocalAPIEndpointSnapshot, isLive: Bool) -> String {
+        let noun = isLive ? "Endpoint" : "Sample endpoint"
+        switch endpoint.health {
+        case .checking: "Checking \(noun.lowercased())"
+        case .reachable where endpoint.isOpenWithoutAuthentication:
+            "\(noun) open"
+        case .reachable:
+            "\(noun) ready"
+        case .unreachable:
+            "\(noun) unavailable"
+        }
+    }
+
+    static func modeLabel(_ mode: LocalAPIMode?, isLive: Bool) -> String {
+        isLive || mode == nil ? "Mode" : "Sample mode"
+    }
+
+    static func apiKeyLabel(isLive: Bool) -> String {
+        isLive ? "API key" : "Sample API key"
+    }
+
+    static func credentialsDetail(isLive: Bool) -> String {
+        if isLive {
+            return "Darkbloom reads this credential from the provider’s owner-only local discovery record. Keep it secret and rotate it by restarting the local endpoint."
+        }
+        return "The provider stores its local token with owner-only file permissions. This preview uses a fixture and never reads that file."
     }
 }

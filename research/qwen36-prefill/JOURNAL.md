@@ -308,18 +308,6 @@ to tile waste. No cell approached 1.30×.
 Per-shape guards cannot turn a low-single-digit kernel cleanup into the
 2.5× objective. No full-model run; baseline restored. See `notes/040`.
 
-## 2026-08-24T07:05Z — E9 native uint4 affine factoring veto
-
-The isolated M3 Metal 4 probe compiled and executed
-`bfloat × uint4b_format → float` with strict precision. Position-sensitive
-codes 0–15 mapped exactly, and the GPU matched the factored affine algebra
-exactly.
-
-The two-term BF16-rounding adversary did not match the incumbent:
-`-1.52734375` versus `0.125` (max error 1.65234375, all 512 outputs).
-The BF16 output boundary also failed. Timing remained unreachable; no serving
-path changed. See `notes/041`.
-
 ## 2026-08-24T07:05Z — E11 native uint4 MPP veto
 
 Standalone Metal 4 `bfloat × uint4b_format → float` compiled, linked,

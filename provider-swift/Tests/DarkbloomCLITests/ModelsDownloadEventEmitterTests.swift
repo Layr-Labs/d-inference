@@ -121,4 +121,18 @@ struct ModelsDownloadEventEmitterTests {
         let plain = try Models.Download.parse(["org/m"])
         #expect(!plain.json)
     }
+
+    @Test("catalog download-plan flag parses only when explicitly requested")
+    func catalogDownloadPlanFlagParsing() throws {
+        let appCatalog = try Models.Catalog.parse([
+            "--json",
+            "--include-download-plans",
+        ])
+        #expect(appCatalog.json)
+        #expect(appCatalog.includeDownloadPlans)
+
+        let publicCatalog = try Models.Catalog.parse(["--json"])
+        #expect(publicCatalog.json)
+        #expect(!publicCatalog.includeDownloadPlans)
+    }
 }

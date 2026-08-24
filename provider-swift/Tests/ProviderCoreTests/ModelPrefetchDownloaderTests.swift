@@ -772,6 +772,27 @@ struct ModelPrefetchDownloaderTests {
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("small.json")) == smallBytes)
     }
 
+    @Test("download storage plans apply the reserve to remaining bytes, not full model bytes")
+    func storagePlanUsesRemainingBytesAndReserve() {
+        let available = Int64(4 * 1_073_741_824)
+        let reserve = ModelDownloadStoragePlan.appReserveBytes
+
+        let resumed = ModelDownloadStoragePlan(
+            remainingBytes: 1_000_000_000,
+            reserveBytes: reserve,
+            availableBytes: available
+        )
+        #expect(resumed.requiredAvailableBytes == 1_000_000_000 + reserve)
+        #expect(resumed.hasSufficientCapacity)
+
+        let incorrectlyChargedAsFresh = ModelDownloadStoragePlan(
+            remainingBytes: 10_000_000_000,
+            reserveBytes: reserve,
+            availableBytes: available
+        )
+        #expect(!incorrectlyChargedAsFresh.hasSufficientCapacity)
+    }
+
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
     func foregroundDownloadResumesFromStaging() async throws {
         // The foreground (serve-time) download path must also resume an interrupted

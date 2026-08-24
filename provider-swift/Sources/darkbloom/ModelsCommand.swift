@@ -101,6 +101,9 @@ extension Models {
         @Flag(help: "Emit JSON instead of a table.")
         var json = false
 
+        @Flag(help: "Include side-effect-free, resume-aware disk plans in JSON output.")
+        var includeDownloadPlans = false
+
         @Option(help: "Filter by model_type (e.g. text).")
         var type: String?
 
@@ -118,7 +121,24 @@ extension Models {
             }
 
             if json {
-                try printJSON(entries)
+                if includeDownloadPlans {
+                    let downloader = ModelDownloader(catalogClient: client)
+                    var plans: [String: ModelDownloadStoragePlan] = [:]
+                    do {
+                        for entry in entries {
+                            plans[entry.id] = try await downloader.storagePlan(for: entry)
+                        }
+                    } catch let error as ModelCatalogError {
+                        printError("could not plan model download: \(error)")
+                        throw ExitCode.failure
+                    }
+                    try printJSON(ModelsCatalogPlanOutput(
+                        models: entries,
+                        downloadPlans: plans
+                    ))
+                } else {
+                    try printJSON(entries)
+                }
                 return
             }
 
@@ -164,6 +184,16 @@ extension Models {
                 print("  Remove with: darkbloom models remove <id>")
             }
         }
+    }
+}
+
+private struct ModelsCatalogPlanOutput: Encodable {
+    let models: [CatalogModel]
+    let downloadPlans: [String: ModelDownloadStoragePlan]
+
+    enum CodingKeys: String, CodingKey {
+        case models
+        case downloadPlans = "download_plans"
     }
 }
 

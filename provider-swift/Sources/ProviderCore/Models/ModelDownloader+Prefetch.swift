@@ -195,11 +195,14 @@ extension ModelDownloader {
 
     internal static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
         guard requiredBytes > 0 else { return }
-        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
-        guard available <= 0 || available >= requiredBytes else {
+        let plan = ModelDownloadStoragePlan(
+            remainingBytes: requiredBytes,
+            reserveBytes: 0,
+            availableBytes: try availableCapacity(at: directory)
+        )
+        guard plan.hasSufficientCapacity else {
             throw ModelCatalogError.downloadFailed(
-                "insufficient disk space: need \(requiredBytes) bytes, available \(available) bytes"
+                "insufficient disk space: need \(requiredBytes) bytes, available \(plan.availableBytes ?? 0) bytes"
             )
         }
     }

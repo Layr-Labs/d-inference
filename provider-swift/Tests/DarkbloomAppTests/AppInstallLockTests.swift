@@ -62,7 +62,10 @@ struct AppInstallLockTests {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let lock = root.appendingPathComponent(AppInstallLock.directoryName)
-        try FileManager.default.createDirectory(at: lock)
+        try FileManager.default.createDirectory(
+            at: lock,
+            withIntermediateDirectories: false
+        )
         try Data("pid=2000000000\ntoken=dead\n".utf8)
             .write(to: lock.appendingPathComponent("owner"))
 
@@ -78,7 +81,10 @@ struct AppInstallLockTests {
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-app-lock-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false
+        )
         return root
     }
 }

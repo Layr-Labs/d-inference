@@ -861,7 +861,7 @@
     "logical_expert_matrices" : 31488,
     "quantized_weight_tensors" : 522
   },
-  "date_utc" : "2026-08-24T09:04:28Z",
+  "date_utc" : "2026-08-24T09:28:56Z",
   "decode_contract" : {
     "affine" : "root-pinned-MLX-0a725e30-bfloat16-multiply-then-add",
     "mxfp8" : "MLX-E4M3-times-E8M0-to-bfloat16"
@@ -910,9 +910,9 @@
     "mapping" : "exact-dyadic-BF16-field-homomorphism",
     "required_formula" : "floor(0.61*N*K/(N+K))+1"
   },
-  "root_git_sha" : "96eb2bac9542e7fd627ed5741aeb70b047d0acbd",
+  "root_git_sha" : "2e261c6789cb0f3190ad0dcea0ffb739839f347b",
   "root_pinned_mlx_gitlink" : "0a725e3000edabc4911cde345270ca950bfa152f",
   "schema_version" : 1,
   "snapshot_path" : "/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local",
-  "source_sha256" : "b9c2119b39ca1fe90aa7729d6a418e9aba3c2d47773c32154062b623b62de29d"
+  "source_sha256" : "baae56560b4fa52b01dc46a7c1288b9cdccb3b677bed901d2db61863170a0659"
 }

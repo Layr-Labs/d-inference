@@ -1,13 +1,14 @@
 PROBE=qwen36-real-weight-structure-audit
-DATE_UTC=2026-08-24T09:04:55Z
+DATE_UTC=2026-08-24T09:24:24Z
 HOST=gaj’s MacBook Pro
 HW_MODEL=Mac15,9
 HW_MEMSIZE=137438953472
 OS=26.4
 OS_BUILD=25E246
-ROOT_GIT_SHA=96eb2bac9542e7fd627ed5741aeb70b047d0acbd
+SWIFT=Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101);Target: arm64-apple-macosx26.0;
+ROOT_GIT_SHA=2e261c6789cb0f3190ad0dcea0ffb739839f347b
 PINNED_MLX_GITLINK=0a725e3000edabc4911cde345270ca950bfa152f
-SOURCE_SET_SHA256=b9c2119b39ca1fe90aa7729d6a418e9aba3c2d47773c32154062b623b62de29d
+SOURCE_SET_SHA256=baae56560b4fa52b01dc46a7c1288b9cdccb3b677bed901d2db61863170a0659
 SNAPSHOT=/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
 STREAMING_CONTRACT=one-tensor-mmap-at-a-time-fixed-16MiB-shard-hash-buffer-no-MLX-model-load-no-mocks
 PROBE_EXIT=0
@@ -28,12 +29,12 @@ VERDICT=model-wide-rank-factor->=39%-deletion-ruled-out exact_finite_field=true 
 LIMITS=rank-stops-at-required-plus-64-unless-exact-upper-reached;near-rank-not-shippable;real-routing-separate
 SUMMARY_END
 RESOURCE_USAGE_BEGIN
-      327.50 real      2468.88 user         7.76 sys
-           764575744  maximum resident set size
+      271.61 real      2170.49 user         8.94 sys
+           726859776  maximum resident set size
                    0  average shared memory size
                    0  average unshared data size
                    0  average unshared stack size
-             1296151  page reclaims
+             1292522  page reclaims
                    1  page faults
                    0  swaps
                    0  block input operations
@@ -41,9 +42,9 @@ RESOURCE_USAGE_BEGIN
                    0  messages sent
                    0  messages received
                    0  signals received
-                  16  voluntary context switches
-              247204  involuntary context switches
-      34186021414300  instructions retired
-       8233805072161  cycles elapsed
-           434275264  peak memory footprint
+                  11  voluntary context switches
+              363989  involuntary context switches
+      34250995389170  instructions retired
+       7089746821907  cycles elapsed
+           445629424  peak memory footprint
 RESOURCE_USAGE_END

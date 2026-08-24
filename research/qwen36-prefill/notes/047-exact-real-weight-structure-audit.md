@@ -18,17 +18,17 @@ The Swift probe read this immutable snapshot directly on the `Mac15,9` M3 Max:
 The successful run pins:
 
 ```text
-root source commit     96eb2bac9542e7fd627ed5741aeb70b047d0acbd
+root source commit     2e261c6789cb0f3190ad0dcea0ffb739839f347b
 pinned MLX gitlink     0a725e3000edabc4911cde345270ca950bfa152f
-probe source-set SHA   b9c2119b39ca1fe90aa7729d6a418e9aba3c2d47773c32154062b623b62de29d
-raw archive SHA-256    fd91dfa1200c7f964f15a529cd97906c0d7e8e8baab9b8b4b5f1d806222cf08f
+probe source-set SHA   baae56560b4fa52b01dc46a7c1288b9cdccb3b677bed901d2db61863170a0659
+raw archive SHA-256    638abddb4aa87ccb939367a56c1b43bc1a2c49a21c7b830542c4356f48f1b8b7
 ```
 
 The scanner maps only the current packed weight/scales/biases triplet and uses
 one fixed 16 MiB POSIX buffer while hashing shards. It does not construct an
-MLX model and uses no mock weights. `/usr/bin/time -l` recorded 764,575,744
-bytes maximum resident set size, 434,275,264 bytes peak memory footprint, and
-zero swaps while scanning the roughly 20 GiB snapshot in 327.50 seconds.
+MLX model and uses no mock weights. `/usr/bin/time -l` recorded 726,859,776
+bytes maximum resident set size, 445,629,424 bytes peak memory footprint, and
+zero swaps while scanning the roughly 20 GiB snapshot in 271.61 seconds.
 
 The archived input hashes are:
 

@@ -47,8 +47,10 @@ Everything else misses or changes the experiment:
 
 No paper result is evidence that Qwen reaches the bar on this M3. SpecPrefill's
 7.66x result used an 8B Llama speculator and a 405B Llama target on 8 H100/H200
-GPUs; LazyLLM reports up to 2.34x; FastKV 1.82x; training-free River-LLM
-1.71–2.16x. They establish mechanisms and risks, not transfer numbers.
+GPUs; LazyLLM reports up to 2.34x; FastKV 1.82x; River-LLM 1.71–2.16x.
+River-LLM is training-free but copies and post-training-quantizes W4A16 exit
+layers, so it is outside strict fixed-parameter mode. These papers establish
+mechanisms and risks, not transfer numbers.
 
 ## 1. Binding contract
 
@@ -506,8 +508,9 @@ Choose an exact boundary `E` after layer 3 or 7:
 This uses every skipped layer's existing cache/state projection weights. It
 skips old-token Q/O or Z/output projections, MoE, shared expert, router, and
 residual evolution. It resembles SwiftKV's SingleInputKV or River-LLM's exit
-river, extended to the 30 GDN states. Unlike SwiftKV, no projection is
-distilled.
+river, extended to the 30 GDN states. Unlike those implementations, this
+candidate neither distills projections nor creates post-training-quantized exit
+weights.
 
 The frontier is full-depth and exact **conditioned on the synthesized
 histories**. It is not the native full-prompt frontier.
@@ -546,8 +549,9 @@ At 8K the ideal absolute budgets are:
 E=8 has little wall-time margin; E=4 is the serious implementation candidate.
 E=12 is arithmetically dead.
 
-If "correction" means restoring a fraction of the skipped full token-layer
-work, the maximum fraction before crossing 0.4 is:
+If "correction" means replacing the corresponding artifact-only computation
+with a fraction of the skipped full token-layer work, the maximum fraction
+before crossing 0.4 is:
 
 | Length | E=4 correction budget | E=8 correction budget |
 |---|---:|---:|
@@ -823,17 +827,20 @@ External:
   ICML 2025.
 - Fu et al., [LazyLLM](https://arxiv.org/abs/2407.14057), 2024.
 - Jo et al., [FastKV](https://arxiv.org/abs/2502.01068), Findings of ACL 2026.
-- Chen et al., [GemFilter](https://aclanthology.org/2026.findings-acl.677/),
+- Shi et al., [GemFilter](https://aclanthology.org/2026.findings-acl.677/),
   Findings of ACL 2026.
 - Qiao et al., [SwiftKV](https://aclanthology.org/2025.emnlp-main.1306/),
   EMNLP 2025.
-- Huang et al., [River-LLM](https://aclanthology.org/2026.acl-long.1746/),
+- Shen and Zou, [River-LLM](https://aclanthology.org/2026.acl-long.1746/),
   ACL 2026.
 - Jiang et al.,
   [LongLLMLingua](https://aclanthology.org/2024.acl-long.91/), ACL 2024.
 - Yao et al., [CacheBlend](https://arxiv.org/abs/2405.16444), EuroSys 2025.
+- Agarwal et al., [Cache-Craft](https://arxiv.org/abs/2502.15734), SIGMOD 2025.
 - Gim et al., [Prompt Cache](https://arxiv.org/abs/2311.04934), MLSys 2024.
 - Mohtashami and Jaggi,
   [Landmark Attention](https://arxiv.org/abs/2305.16300), NeurIPS 2023.
 - Jiang et al., [MInference](https://arxiv.org/abs/2407.02490), NeurIPS 2024.
+- Tiwari et al., [QuantSpec](https://proceedings.mlr.press/v267/tiwari25b.html),
+  ICML 2025.
 - Li et al., [SnapKV](https://arxiv.org/abs/2404.14469), NeurIPS 2024.

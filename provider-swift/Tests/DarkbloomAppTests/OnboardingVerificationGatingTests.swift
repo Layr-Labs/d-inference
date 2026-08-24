@@ -32,10 +32,12 @@ struct OnboardingVerificationGatingTests {
         _ trust: DaemonState.Trust?,
         to fixture: Fixture,
         pid: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
-        modelID: String = Self.modelID
+        modelID: String = Self.modelID,
+        processIdentity: ProcessIdentity? = ProcessIdentity.current()
     ) {
         let state = DaemonState(
             pid: pid,
+            processIdentity: processIdentity,
             version: "0.0.0-test",
             writtenAt: fixture.writtenAt,
             startedAt: fixture.writtenAt,
@@ -141,6 +143,27 @@ struct OnboardingVerificationGatingTests {
         await run.value
     }
 
+    @Test("A live PID without kernel identity cannot unlock verification")
+    func identitylessProviderCannotPass() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(
+            stateURL: fixture.stateURL,
+            verificationCheckInGrace: .milliseconds(300))
+        writeTrust(
+            trust(status: "verified", level: "hardware"),
+            to: fixture,
+            processIdentity: nil
+        )
+
+        let run = Task { await flow.runAutomaticWorkForCurrentStep() }
+        let delayed = await eventually { flow.verificationPhase == .checkInDelayed }
+        #expect(delayed)
+        #expect(!flow.canContinue)
+        flow.cancelPendingOperations()
+        await run.value
+    }
+
     @Test("A fresh verified state file with a dead PID cannot unlock verification")
     func deadProviderCannotPass() async throws {
         let fixture = try makeFixture()
@@ -151,7 +174,8 @@ struct OnboardingVerificationGatingTests {
         writeTrust(
             trust(status: "verified", level: "hardware"),
             to: fixture,
-            pid: Int32.max
+            pid: Int32.max,
+            processIdentity: ProcessIdentity(pid: Int32.max, startTimeMicros: 1)
         )
 
         let run = Task { await flow.runAutomaticWorkForCurrentStep() }

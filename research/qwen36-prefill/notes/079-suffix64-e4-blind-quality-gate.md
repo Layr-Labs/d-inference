@@ -1,6 +1,7 @@
-# 079 — Suffix64/128 E4 blind 128-token semantic quality gate
+# 079 — Suffix-frontier E4 blind 128-token semantic quality gate
 
-Status: **both performance thresholds PASS; both semantic policies FAIL**
+Status: **suffix64/128 semantic FAIL; suffix192 + top-k4 semantic PASS;
+all supplied performance cells PASS**
 
 This review compares:
 
@@ -192,3 +193,76 @@ revalidated from this semantic artifact. This is the closest measured
 state-river quality/speed point so far, but the semantic kill-switch still
 binds. Do not label or ship suffix128 E4 as quality-approved without eliminating
 the expedition source fabrication and passing a fresh blind run.
+
+## Suffix192 + top-k4 E4 follow-up
+
+The candidate in
+`artifacts/e50-quality-suffix192-topk4-e4-128.json` uses the same 12 prompts,
+corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
+native. Scoring again used only prompt and generated text; profile metadata,
+token identity, checksums, agreement, prefixes, and timing did not enter any
+semantic judgment.
+
+### Suffix192 + top-k4 per-case scores
+
+| Case | Native T/F/K/I/C/X | Suffix192 + top-k4 T/F/K/I/C/X | Relative quality | Semantic judgment |
+|---|---:|---:|---|---|
+| `reasoning-rate-plan` | 3/5/—/3/4/0 | 4/5/—/3/4/0 | candidate slight win | The candidate correctly reaches both 4- and 6-minute service times; native stops at the cutter-time line. Neither reaches the 52-minute schedule or polisher bottleneck. |
+| `reasoning-constraint-order` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both correctly preserve the entities, slots, constraints, and exhaustive-ordering task, then stop before listing either valid ordering. |
+| `reasoning-estimation` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both retain 37 hikers, 9 hours, warm weather, assumptions, safety margin, arithmetic, and the drinking/non-drinking split, then stop before selecting a rate. |
+| `code-python-bug` | 3/—/3/3/4/0 | 3/—/3/3/4/0 | tie | Both accurately identify the empty-input and terminal-run faults and requested implementation/tests, then stop while quoting the original function. |
+| `code-swift-actor` | 2/—/3/2/4/0 | 2/—/3/2/4/0 | tie | Both accurately preserve the actor, deadline, API, stale-delete, Sendable, and dependency requirements but emit no implementation or usage. |
+| `factual-heat-pump` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both preserve the correct COP, external-heat, conservation, and real-world-condition direction but stop before the substantive explanation. |
+| `factual-database-index` | 4/5/—/3/4/0 | 3/4/—/3/4/0 | native win | The candidate accurately enumerates the requested comparison dimensions but reaches no index behavior. Native begins the actual comparison with the correct general B-tree equality path. |
+| `factual-probability` | 4/5/—/3/4/0 | 3/3/—/3/4/0 | native win | The candidate correctly frames PPV, prevalence, and the 10,000-person method but ends on the visibly false/incomplete `96% = 0.9`. Native preserves all supplied rates. |
+| `long-context-expedition-log` | 4/5/—/3/4/0 | 3/5/—/3/4/0 | native slight win | The candidate remains source-faithful, recognizes all seven days and four text-only questions, and invents no identifier or fact, but extracts no requested answer. Native begins exact Day-1 fact extraction. |
+| `long-context-incident-summary` | 3/5/—/3/4/0 | 3/3/—/2/4/0 | native win | The candidate preserves R41, feature flags, object-store metadata calls, latency, queues, manifests, and code review, but introduces a nonexistent `09:09` timestamp and reaches no summary or actions. |
+| `instruction-json-only` | 0/3/—/0/4/0 | 0/3/—/0/4/0 | inherited fatal tie | Both start with prose, irreversibly violating the JSON-only envelope, while accurately preserving the requested fields and normalization rules. |
+| `instruction-rewrite` | 3/5/—/2/4/0 | 3/5/—/2/4/0 | tie | The candidate preserves the full source note and every rewrite constraint but, like native, does not produce the requested final update. |
+
+### Suffix192 + top-k4 relative aggregate
+
+| Metric | Native | Suffix192 + top-k4 | Candidate delta |
+|---|---:|---:|---:|
+| Mean final-answer trajectory | 2.92 | 2.75 | -0.17 |
+| Mean applicable correctness (`F/K`) | 4.25 | 3.83 | -0.42 |
+| Mean instruction adherence | 2.58 | 2.50 | -0.08 |
+| Mean coherence | 4.00 | 4.00 | 0.00 |
+| Mean corruption severity | 0.00 | 0.00 | 0.00 |
+| Adjusted quality total | 225/300 (75.00%) | 217/300 (72.33%) | **-2.67 percentage points** |
+
+Pairwise result: **7 ties, 1 candidate win, and 4 native wins**. Suffix192 +
+top-k4 retains **96.44%** of the native adjusted score.
+
+### Suffix192 + top-k4 fatal failures and policy decision
+
+- **Candidate-only fatal failures: 0.**
+- **Inherited fatal failures: 1.** `instruction-json-only` violates the exact
+  envelope in both reports.
+- The probability arm has one candidate-only boundary-local math defect, and
+  the incident arm has one false timestamp. Both are scored as material
+  correctness regressions, not repetition, unrelated-task collapse, or a
+  completed false answer.
+- There are **zero `X >= 3` cases**, and every mean quality dimension remains
+  inside the policy's 1.0-point loss limit.
+
+**Semantic verdict: PASS for the explicit approximate policy.** The candidate
+satisfies all four criteria:
+
+1. 96.44% adjusted-score retention exceeds the 95% floor;
+2. it introduces zero candidate-only fatal failures;
+3. it has zero `X >= 3` cases;
+4. its largest mean-dimension loss is 0.42 points.
+
+The supplied B4x2K speed is **2.635x**, 0.135x above the 2.5x performance
+threshold; it is performance context rather than a value independently
+revalidated from this semantic artifact. Suffix192 + top-k4 is therefore the
+first suffix-frontier candidate in note 079 to pass both the supplied
+performance threshold and the explicit semantic screen.
+
+This is an explicitly approximate, default-off research-screen PASS, not
+semantic parity or a full ship gate. The visible math/timestamp regressions, the
+inherited JSON-only failure, the small synthetic corpus, and the fixed
+128-token analysis-heavy cutoff remain limitations. Notes 051–053 still require
+larger task, long-state, distributional, open-generation, and confidence-bound
+evaluations before deployment acceptance.

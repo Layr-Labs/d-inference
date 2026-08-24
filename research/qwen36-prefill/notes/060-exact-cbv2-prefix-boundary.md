@@ -39,7 +39,7 @@ An exact boundary after prompt token `P - 1` is one atomic object:
 2. **30 request-owned GDN rows**
    - convolution tail at every non-attention model layer;
    - SSM matrix at every non-attention model layer;
-   - the configured activation dtype for conv and **FP32** for SSM;
+   - the embedding output dtype for conv and **FP32** for SSM;
    - 61.40625 MiB for the concrete 40-layer checkpoint.
 3. **Model position**
    - `modelPosition == tokenCount == P`.
@@ -190,9 +190,27 @@ The test matrix is:
 | ownership | independently advance/release restored attention and recurrent rows |
 | LRU | pinned entries survive; unpinned oldest evicts; hard budget never exceeded |
 | identity | changed token, scope, model, policy, layout, or recurrent spec misses/fails cold |
+| quantized embedding | packed `uint32` weights still declare the dequantized activation dtype |
 
 These are repeated-prefix results. They do not alter or satisfy the locked cold,
 prefix-cache-off throughput denominator in note 050.
+
+### Real-model donation diagnosis
+
+Default-off instrumentation on the 4-bit affine Qwen3.6 checkpoint reached the
+donation path with all policy guards satisfied. The ten attention rows were
+`[1, 2, 512, 256]` bfloat16 at offset 512, the 30 recurrent rows had
+`[1, 3, 8192]` bfloat16 conv tails and `[1, 32, 128, 128]` FP32 SSM state, and
+the 76,846,080-byte boundary passed the cache budget gate. Snapshot validation
+then correctly rejected layer 0 because the declared conv dtype was `uint32`.
+
+The declaration had read `embedTokens.weight.dtype`. That is the activation
+dtype for an ordinary embedding, but a `QuantizedEmbedding` stores packed codes
+as `uint32`; its dequantized output follows `scales.dtype`. Qwen creates every
+conv tail from the embedding-derived `inputs.dtype`, so the recurrent spec now
+uses the quantized embedding's scales dtype and retains the ordinary weight
+dtype fallback. Shape, layer-index, SSM-FP32, identity, ownership, cancellation,
+and byte-accounting checks are unchanged.
 
 ## 8. Patch handoff
 
@@ -208,10 +226,10 @@ research/qwen36-prefill/patches/061-provider-exact-prefix-wiring.patch
 ```
 
 Apply `060` inside `libs/mlx-swift-lm` at local base `51ab73f` (the tree
-produced by the ordered `052`–`055` patches documented in note 050). This
-reproduces exact-only local commit `e34d7a3`; simultaneous prompt forking is
-not included. Then apply `061` at the root repository to admit the stronger
-cache through `EngineV2Factory` without admitting a legacy KV-only cache.
+produced by the ordered `052`–`055` patches documented in note 050).
+Simultaneous prompt forking is not included. Then apply `061` at the root
+repository to admit the stronger cache through `EngineV2Factory` without
+admitting a legacy KV-only cache.
 
 ## 9. Follow-ons
 

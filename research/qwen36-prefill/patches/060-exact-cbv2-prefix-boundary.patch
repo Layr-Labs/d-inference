@@ -1,5 +1,5 @@
 diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
-index 62f4a2b..c3d0eaf 100644
+index 62f4a2b..ac25113 100644
 --- a/Libraries/MLXLLM/Models/Qwen35.swift
 +++ b/Libraries/MLXLLM/Models/Qwen35.swift
 @@ -207,6 +207,10 @@ public struct Qwen35TextConfiguration: Codable, Sendable {
@@ -13,6 +13,21 @@ index 62f4a2b..c3d0eaf 100644
          capabilities.supportsMTP = true
          capabilities.supportsCompactRecurrentMTPReplay = true
          // Rectangular [B, L] prompt cohorts: one recurrent state row per
+@@ -1732,7 +1736,13 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
+     public var cbv2LayerKinds: [CBv2LayerKind] { configuration.cbv2LayerKinds }
+ 
+     public var cbv2RecurrentStateSpec: CBv2RecurrentStateSpec {
+-        configuration.cbv2RecurrentStateSpec(activationDType: model.embedTokens.weight.dtype)
++        // Recurrent convolution tails are created from `inputs.dtype`. For a
++        // quantized embedding, `weight` is packed UInt32 storage while the
++        // dequantized output follows the scales dtype.
++        let activationDType =
++            (model.embedTokens as? QuantizedEmbedding)?.scales.dtype
++            ?? model.embedTokens.weight.dtype
++        return configuration.cbv2RecurrentStateSpec(activationDType: activationDType)
+     }
+ 
+     public var cbv2Capabilities: CBv2ModelCapabilities { configuration.cbv2Capabilities }
 diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
 index b0e84d8..1774ad0 100644
 --- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
@@ -1682,10 +1697,42 @@ index 0000000..da0c136
 +    }
 +}
 diff --git a/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift b/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
-index 41f9e61..192d897 100644
+index 41f9e61..d0aa6b1 100644
 --- a/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
 +++ b/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
-@@ -82,10 +82,13 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
+@@ -1,5 +1,6 @@
+ import Foundation
+ import MLX
++import MLXNN
+ import XCTest
+ 
+ @testable import MLXLLM
+@@ -65,6 +66,24 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
+         XCTAssertTrue(kinds.allSatisfy { $0.attention == .full })
+     }
+ 
++    func testQuantizedEmbeddingSpecUsesDequantizedActivationDType() throws {
++        let model = Qwen35TextModel(try configuration())
++        model.update(parameters: model.parameters().mapValues { $0.asType(.bfloat16) })
++        quantize(model: model, groupSize: 32, bits: 4) { path, _ in
++            path == "model.embed_tokens"
++        }
++
++        let embedding = try XCTUnwrap(model.model.embedTokens as? QuantizedEmbedding)
++        let output = embedding(MLXArray([Int32(0)]))
++        let spec = model.cbv2RecurrentStateSpec
++
++        XCTAssertEqual(embedding.weight.dtype, .uint32)
++        XCTAssertEqual(embedding.scales.dtype, .bfloat16)
++        XCTAssertEqual(output.dtype, .bfloat16)
++        XCTAssertTrue(spec.layers.allSatisfy { $0.convDType == output.dtype })
++        XCTAssertFalse(spec.layers.contains { $0.convDType == embedding.weight.dtype })
++    }
++
+     func testCacheConstructionUsesCompactStorageAndOriginalLayerIndices() throws {
+         let config = try configuration(hiddenLayers: 8, valueHeads: 2, keyHeads: 1,
+             keyHeadDim: 4, valueHeadDim: 4)
+@@ -82,10 +101,13 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
              CBv2SteppableLanguageModelAdapter(model).cbv2PositionAxisCount, 3)
      }
  
@@ -1700,7 +1747,7 @@ index 41f9e61..192d897 100644
          XCTAssertFalse(capability.supportsPagedKV)
          XCTAssertFalse(capability.supportsCompiledDecode)
          // Packed prefill is now a deliberate Qwen claim (rectangular [B, L]
-@@ -100,6 +103,14 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
+@@ -100,6 +122,14 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
              modelSupportsPrefixReuse: capability.supportsPrefixReuse)
          XCTAssertFalse(prefix.isSupported)
          XCTAssertEqual(prefix.unsupportedReason, .modelRequestStateUnsupported)

@@ -67,3 +67,54 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: canonical.path))
     #expect(!FileManager.default.fileExists(atPath: legacy.path))
 }
+
+@Test func providerTokenRevokerSendsAuthenticatedDelete() async throws {
+    let recorder = TokenRevokeRequestRecorder(status: 204)
+    let revoker = ProviderTokenRevoker { request in
+        try await recorder.send(request)
+    }
+
+    try await revoker.revoke(
+        coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+        token: "provider-secret"
+    )
+
+    let request = try #require(await recorder.request)
+    #expect(request.httpMethod == "DELETE")
+    #expect(request.url?.absoluteString == "https://api.darkbloom.dev/v1/device/token")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer provider-secret")
+}
+
+@Test func providerTokenRevokerRejectsNonSuccess() async {
+    let recorder = TokenRevokeRequestRecorder(status: 503)
+    let revoker = ProviderTokenRevoker { request in
+        try await recorder.send(request)
+    }
+
+    await #expect(throws: ProviderTokenRevokeError.rejected(status: 503)) {
+        try await revoker.revoke(
+            coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+            token: "provider-secret"
+        )
+    }
+}
+
+private actor TokenRevokeRequestRecorder {
+    private(set) var request: URLRequest?
+    private let status: Int
+
+    init(status: Int) {
+        self.status = status
+    }
+
+    func send(_ request: URLRequest) throws -> (Data, URLResponse) {
+        self.request = request
+        let response = try #require(HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        ))
+        return (Data(), response)
+    }
+}

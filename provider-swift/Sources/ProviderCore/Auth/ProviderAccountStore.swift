@@ -55,12 +55,12 @@ public enum ProviderAccountStore: Sendable {
         )
     }
 
-    /// Delete the stored account id. Best-effort: a missing file is already
-    /// "deleted".
-    public static func delete() {
+    /// Delete the stored account id. A missing file is already deleted; other
+    /// filesystem failures are surfaced so logout cannot report false success.
+    public static func delete() throws {
         let path = accountPath()
         if FileManager.default.fileExists(atPath: path.path) {
-            try? FileManager.default.removeItem(at: path)
+            try FileManager.default.removeItem(at: path)
         }
     }
 }

@@ -206,17 +206,14 @@ extension ModelDownloader {
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
-        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader now byte-resumes (streams to a stable
-        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
-        // in each `.part`: a near-complete resume of a big shard must not be charged
-        // disk room equal to the whole shard.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
+        let diskState = inspectManifestDownloadState(
+            files: jobs.map(\.file),
+            destinations: jobs.map(\.destination)
+        )
+        let alreadyValid = diskState.alreadyValid
         try Self.ensureAvailableCapacity(
             at: snapshotsDir,
-            requiredBytes: Self.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
-            )
+            requiredBytes: diskState.remainingBytes
         )
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 

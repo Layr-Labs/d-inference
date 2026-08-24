@@ -76,7 +76,11 @@ extension ModelDownloader {
 
         // Classify each file once (hashing is expensive) into already-valid vs
         // still-needed. Reused for both progress seeding and the capacity check.
-        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+        let diskState = inspectManifestDownloadState(
+            files: jobs.map(\.file),
+            destinations: jobs.map(\.destination)
+        )
+        let alreadyValid = diskState.alreadyValid
 
         // Bytes already verified on disk (resumed files) count toward progress
         // immediately. `progress` is updated as each file completes.
@@ -93,16 +97,10 @@ extension ModelDownloader {
         // would spuriously fail a resume that has plenty of room for what remains.
         // Publishing is a same-volume move of the staging dir, so staged bytes
         // need no extra headroom.
-        // Count bytes already saved in each file's resumable `.part` so a tight-
-        // disk resume isn't rejected for lacking room equal to a whole shard when
-        // the byte-resume below will only append the missing suffix via `Range`.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        let remainingBytes = Self.remainingBytesToFetch(
-            sizes: jobs.map(\.file.sizeBytes),
-            alreadyValid: alreadyValid,
-            partBytes: partBytes
+        try Self.ensureAvailableCapacity(
+            at: snapshotsDir,
+            requiredBytes: diskState.remainingBytes
         )
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent

@@ -1,0 +1,57 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/13] Write swift-version--58304C5D6DBC2206.txt
+[3/10] Compiling fp_quantized.cpp
+[4/15] Compiling quantized_nax.cpp
+[4/15] Compiling quantized.cpp
+[4/15] Compiling fp_quantized_nax.cpp
+[7/15] Compiling device.cpp
+[8/16] Write Objects.LinkFileList
+[10/16] Linking darkbloom-enclave
+[11/16] Applying darkbloom-enclave
+[12/16] Linking darkbloom
+[13/16] Applying darkbloom
+[15/17] Emitting module DarkbloomCLITests
+[15/17] Write Objects.LinkFileList
+[16/17] Linking DarkbloomProviderPackageTests
+Build complete! (22.63s)
+Test Suite 'Selected tests' started at 2026-08-23 23:52:01.448.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-23 23:52:01.449.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-23 23:52:01.449.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:52:01.449.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite ArrivalPrefillAccountingTests started.
+◇ Test aggregateConversionCannotOverflowInt() started.
+◇ Test tokenChecksumIsStableAndOrderSensitive() started.
+◇ Test arrivalRowsEncodeAllThreeTimestamps() started.
+◇ Test schedulerSampleEncodesCanonicalChecksumAndCompatibilityAlias() started.
+◇ Test missingOrInvalidRowsPoisonTheCell() started.
+◇ Test batchSizeSelectsRowCount() started.
+◇ Test everyNamedPatternHasExactlyBatchSizeRows() started.
+◇ Test allowedBatchSizesAreExactlyOneTwoFour() started.
+◇ Test aggregateUsesLMinusOneAndPrefillMakespan() started.
+◇ Test makespanIsMaxFirstMinusMinSubmit() started.
+✔ Test allowedBatchSizesAreExactlyOneTwoFour() passed after 0.001 seconds.
+◇ Test metricsUseMaxFirstTokenMinusMinSubmission() started.
+✔ Test aggregateConversionCannotOverflowInt() passed after 0.001 seconds.
+✔ Test everyNamedPatternHasExactlyBatchSizeRows() passed after 0.001 seconds.
+✔ Test tokenChecksumIsStableAndOrderSensitive() passed after 0.001 seconds.
+✔ Test aggregateUsesLMinusOneAndPrefillMakespan() passed after 0.001 seconds.
+✔ Test batchSizeSelectsRowCount() passed after 0.001 seconds.
+✔ Test makespanIsMaxFirstMinusMinSubmit() passed after 0.001 seconds.
+✔ Test metricsUseMaxFirstTokenMinusMinSubmission() passed after 0.001 seconds.
+✔ Test arrivalRowsEncodeAllThreeTimestamps() passed after 0.001 seconds.
+✔ Test schedulerSampleEncodesCanonicalChecksumAndCompatibilityAlias() passed after 0.001 seconds.
+✔ Test missingOrInvalidRowsPoisonTheCell() passed after 0.001 seconds.
+✔ Suite ArrivalPrefillAccountingTests passed after 0.002 seconds.
+✔ Test run with 11 tests in 1 suite passed after 0.002 seconds.

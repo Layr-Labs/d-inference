@@ -1,0 +1,21 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.27s)
+Test Suite 'Selected tests' started at 2026-08-23 23:52:02.683.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-23 23:52:02.684.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-23 23:52:02.684.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:52:02.684.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "benchmark arrival options" started.
+◇ Test arrivalBatchSizeAcceptsExactlyOneTwoFour() started.
+◇ Test arrivalBatchSizeDefaultsToFour() started.
+✔ Test arrivalBatchSizeDefaultsToFour() passed after 0.005 seconds.
+✔ Test arrivalBatchSizeAcceptsExactlyOneTwoFour() passed after 0.027 seconds.
+✔ Suite "benchmark arrival options" passed after 0.028 seconds.
+✔ Test run with 2 tests in 1 suite passed after 0.028 seconds.

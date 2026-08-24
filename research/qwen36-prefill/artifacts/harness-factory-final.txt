@@ -1,0 +1,69 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.27s)
+Test Suite 'Selected tests' started at 2026-08-23 23:52:03.932.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-23 23:52:03.933.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-23 23:52:03.933.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:52:03.933.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 KV-backend gate (real tiny models)" started.
+◇ Test "auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults" started.
+✔ Test "auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults" passed after 0.080 seconds.
+◇ Test "auto resolves CONTIGUOUS for Gemma-4" started.
+✔ Test "auto resolves CONTIGUOUS for Gemma-4" passed after 0.003 seconds.
+◇ Test "an EXPLICIT paged selection still resolves paged after the v0.8.1 flip" started.
+✔ Test "an EXPLICIT paged selection still resolves paged after the v0.8.1 flip" passed after 0.760 seconds.
+◇ Test "explicit contiguous wins over the GPT-OSS auto default" started.
+✔ Test "explicit contiguous wins over the GPT-OSS auto default" passed after 0.004 seconds.
+◇ Test "explicit paged GPT-OSS preflights packaged resources and physical pool truth" started.
+✔ Test "explicit paged GPT-OSS preflights packaged resources and physical pool truth" passed after 0.454 seconds.
+◇ Test "explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)" started.
+✔ Test "explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)" passed after 0.302 seconds.
+◇ Test "fleet kill switch forces explicit paged to contiguous at the deepest layer" started.
+✔ Test "fleet kill switch forces explicit paged to contiguous at the deepest layer" passed after 0.004 seconds.
+◇ Test "kernel-ineligible shape REFUSES an explicit paged request" started.
+✔ Test "kernel-ineligible shape REFUSES an explicit paged request" passed after 0.153 seconds.
+◇ Test "failed kernel preflight REFUSES before slab construction" started.
+✔ Test "failed kernel preflight REFUSES before slab construction" passed after 0.003 seconds.
+◇ Test "physical-capacity shortfall REFUSES an explicit paged request" started.
+✔ Test "physical-capacity shortfall REFUSES an explicit paged request" passed after 0.002 seconds.
+◇ Test "non-explicit selections permit paged-failure degradation" started.
+✔ Test "non-explicit selections permit paged-failure degradation" passed after 0.001 seconds.
+◇ Test "`.auto` never enters the paged ladder — no preflight, no reason, no dtype" started.
+✔ Test "`.auto` never enters the paged ladder — no preflight, no reason, no dtype" passed after 0.002 seconds.
+◇ Test "the crash-loop guard is DORMANT under the v0.8.1 contiguous default" started.
+✔ Test "the crash-loop guard is DORMANT under the v0.8.1 contiguous default" passed after 0.005 seconds.
+◇ Test "explicit paged IGNORES the crash-loop guard — operator intent beats automation" started.
+✔ Test "explicit paged IGNORES the crash-loop guard — operator intent beats automation" passed after 0.305 seconds.
+◇ Test "kill-switch degrade constructs frozen-full cache for resolved contiguous backend" started.
+✔ Test "kill-switch degrade constructs frozen-full cache for resolved contiguous backend" passed after 0.003 seconds.
+◇ Test "paged pool is sized from the ONE scheduler config the engine runs on" started.
+✔ Test "paged pool is sized from the ONE scheduler config the engine runs on" passed after 0.310 seconds.
+◇ Test "unshippable chunk and budget env names cannot retune serving" started.
+✔ Test "unshippable chunk and budget env names cannot retune serving" passed after 0.002 seconds.
+◇ Test "slot factory hands the cache factory the RESOLVED backend's capability" started.
+✔ Test "slot factory hands the cache factory the RESOLVED backend's capability" passed after 0.296 seconds.
+◇ Test "slot factory REFUSES an explicit paged request it cannot serve" started.
+✔ Test "slot factory REFUSES an explicit paged request it cannot serve" passed after 0.003 seconds.
+◇ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" started.
+✔ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" passed after 0.004 seconds.
+◇ Test "a resolved-CONTIGUOUS slot gets NO prefix cache — adoption is not exact there" started.
+✔ Test "a resolved-CONTIGUOUS slot gets NO prefix cache — adoption is not exact there" passed after 0.002 seconds.
+◇ Test "a resolved-PAGED slot KEEPS the prefix cache — the gate is not a global disable" started.
+✔ Test "a resolved-PAGED slot KEEPS the prefix cache — the gate is not a global disable" passed after 0.317 seconds.
+◇ Test "the gate follows the RESOLVED backend: paged degraded by the kill switch gets no cache" started.
+✔ Test "the gate follows the RESOLVED backend: paged degraded by the kill switch gets no cache" passed after 0.003 seconds.
+◇ Test "`.auto` slots get no prefix cache, because `.auto` is contiguous" started.
+✔ Test "`.auto` slots get no prefix cache, because `.auto` is contiguous" passed after 0.002 seconds.
+◇ Test "slot factory routes a VLM slot to paged now that the cache vouches" started.
+✔ Test "slot factory routes a VLM slot to paged now that the cache vouches" passed after 0.315 seconds.
+◇ Test "a VLM slot whose cache does not vouch is still forced to contiguous" started.
+✔ Test "a VLM slot whose cache does not vouch is still forced to contiguous" passed after 0.001 seconds.
+✔ Suite "EngineV2 KV-backend gate (real tiny models)" passed after 3.347 seconds.
+✔ Test run with 26 tests in 1 suite passed after 3.347 seconds.

@@ -1,0 +1,198 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+Building for serving...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[1/3] Compiling array.cpp
+[2/142] Compiling version.cpp
+[2/142] Write sources
+[4/142] Compiling utils.cpp
+[5/142] Compiling cuda.cpp
+[6/142] Compiling metal.cpp
+[7/142] Compiling distributed_group.cpp
+[8/142] Compiling compile.cpp
+[9/142] Compiling distributed.cpp
+[10/142] Compiling graph_utils.cpp
+[11/142] Compiling linalg.cpp
+[12/142] Compiling export.cpp
+[13/142] Compiling fft.cpp
+[14/142] Compiling device.cpp
+[15/142] Compiling map.cpp
+[16/142] Compiling io.cpp
+[17/142] Compiling io_types.cpp
+[18/142] Compiling fast.cpp
+[19/142] Compiling closure.cpp
+[20/142] Compiling no_gguf.cpp
+[21/142] Compiling stream.cpp
+[22/142] Compiling scheduler.cpp
+[23/142] Compiling dtype_utils.cpp
+[24/142] Compiling dtype.cpp
+[25/142] Compiling graph_utils.cpp
+[26/142] Compiling utils.cpp
+[27/142] Compiling no_ring.cpp
+[28/142] Compiling load.cpp
+[29/142] Compiling fft.cpp
+[30/142] Compiling random.cpp
+[31/142] Compiling device.cpp
+[32/142] Compiling no_nccl.cpp
+[33/142] Compiling no_mpi.cpp
+[34/142] Compiling linalg.cpp
+[35/142] Compiling primitives.cpp
+[36/142] Compiling distributed.cpp
+[37/142] Compiling ops.cpp
+[38/142] Compiling fast.cpp
+[39/142] Compiling einsum.cpp
+[40/142] Compiling utils.cpp
+[41/142] Compiling safetensors.cpp
+[42/142] Compiling transforms.cpp
+[43/142] Compiling unary.cpp
+[44/142] Compiling softmax.cpp
+[45/142] Compiling ternary.cpp
+[46/142] Compiling slicing.cpp
+[47/142] Compiling scan.cpp
+[48/142] Compiling sort.cpp
+[49/142] Compiling resident.cpp
+[50/142] Compiling rope.cpp
+[51/142] Compiling scaled_dot_product_attention.cpp
+[52/142] Compiling compile.cpp
+[53/142] Compiling primitives.cpp
+[54/142] Compiling metal.cpp
+[55/142] Compiling reduce.cpp
+[56/142] Compiling logsumexp.cpp
+[57/142] Compiling normalization.cpp
+[58/142] Compiling quantized.cpp
+[59/142] Compiling fence.cpp
+[60/142] Compiling hadamard.cpp
+[61/142] Compiling event.cpp
+[62/142] Compiling device_info.cpp
+[63/142] Compiling distributed.cpp
+[64/142] Compiling indexing.cpp
+[65/142] Compiling eval.cpp
+[66/142] Compiling primitives.cpp
+[67/142] Compiling slicing.cpp
+[68/142] Compiling jit_kernels.cpp
+[69/142] Compiling matmul.cpp
+[70/142] Compiling threefry.cpp
+[71/142] Compiling custom_kernel.cpp
+[72/142] Compiling primitives.cpp
+[73/142] Compiling copy.cpp
+[75/142] Compiling allocator.cpp
+[76/142] Compiling compiled.cpp
+[77/142] Compiling no_cuda.cpp
+[78/142] Compiling binary.cpp
+[79/142] Compiling device.cpp
+[80/142] Compiling conv.cpp
+[81/142] Compiling softmax.cpp
+[82/142] Compiling svd.cpp
+[83/142] Compiling qrf.cpp
+[84/142] Compiling select.cpp
+[85/142] Compiling ops.cpp
+[86/142] Compiling primitives.cpp
+[87/142] Compiling export.cpp
+[88/142] Compiling fft.cpp
+[89/142] Compiling luf.cpp
+[90/142] Compiling jit_compiler.cpp
+[91/142] Compiling logsumexp.cpp
+[92/142] Compiling matmul.cpp
+[93/142] Compiling masked_mm.cpp
+[94/142] Compiling hadamard.cpp
+[95/142] Compiling cblas.cpp
+[96/142] Compiling encoder.cpp
+[97/142] Compiling inverse.cpp
+[98/142] Compiling device_info.cpp
+[99/142] Compiling eval.cpp
+[100/142] Compiling bnns.cpp
+[101/142] Compiling distributed.cpp
+[102/142] Compiling eigh.cpp
+[103/142] Compiling utils.cpp
+[104/142] Compiling eig.cpp
+[105/142] Compiling slicing.cpp
+[106/142] Compiling unary.cpp
+[107/142] Compiling cholesky.cpp
+[108/142] Compiling reduce.cpp
+[109/142] Compiling quantized.cpp
+[110/142] Compiling quantized_nax.cpp
+[111/142] Compiling quantized.cpp
+[112/142] Compiling load.cpp
+[113/142] Compiling fp_quantized_nax.cpp
+[114/142] Compiling fp_quantized.cpp
+[115/142] Compiling arg_reduce.cpp
+[116/142] Compiling broadcasting.cpp
+[117/142] Compiling compiled.cpp
+[118/142] Compiling common.cpp
+[119/142] Compiling jaccl_conditional.cpp
+[120/142] Compiling version.cpp
+[121/142] Compiling metal_kernel.cpp
+[122/142] Compiling transforms_impl.cpp
+[123/142] Compiling fft.cpp
+[124/142] Compiling conv.cpp
+[125/142] Compiling array.cpp
+[126/142] Compiling compiled_conditional.cpp
+[127/142] Compiling vector.cpp
+[128/142] Compiling string.cpp
+[129/142] Compiling transforms.cpp
+[130/142] Compiling reduce.cpp
+[131/142] Compiling scan.cpp
+[132/142] Compiling sort.cpp
+[133/142] Compiling stream.cpp
+[134/142] Compiling memory.cpp
+[135/142] Compiling random.cpp
+[136/142] Compiling ops.cpp
+[137/142] Compiling copy.cpp
+[138/142] Compiling indexing.cpp
+[139/142] Compiling binary.cpp
+[141/143] Compiling MLX ArrayAt.swift
+[142/144] Compiling MLXFast MLXFast.swift
+[143/145] Compiling MLXLMCommon DoRA+Layers.swift
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2142:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2140 |                 stream?.reserveEmission()
+2141 |                 detokQueue.async {
+2142 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2143 |                     stream?.emit(
+2144 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2328:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2326 |         if rec.request.stopStrings.isEmpty {
+2327 |             detokQueue.async {
+2328 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2329 |                 if !trailing.isEmpty {
+2330 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[143/145] Write Objects.LinkFileList
+[144/145] Linking darkbloom
+Build of product 'darkbloom' complete! (96.51s)

@@ -222,23 +222,24 @@ final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate, ObservableObj
     func applicationDidFinishLaunching(_: Notification) {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        if environment["DARKBLOOM_RENDER_PREVIEW_PATH"] != nil {
-            // #region agent log
-            PreviewCapture.debugLog(
-                hypothesisId: "A",
-                location: "DarkbloomApp.swift:applicationDidFinishLaunching",
-                message: "Preview process finished application launch",
-                data: [
-                    "installStateReady": installState.isReady,
-                    "installStateInteractive": installState.isInteractive,
-                    "applicationWindowCount": NSApp.windows.count,
-                    "visibleWindowCount": NSApp.windows.filter(\.isVisible).count,
-                    "activationPolicy": Int(NSApp.activationPolicy().rawValue),
-                    "launchPhase": environment["DARKBLOOM_LAUNCH_PHASE"] ?? "unset",
-                ]
-            )
-            // #endregion
-        }
+        // #region agent log
+        PreviewCapture.debugLog(
+            hypothesisId: "A",
+            location: "DarkbloomApp.swift:applicationDidFinishLaunching",
+            message: "Debug process finished application launch",
+            data: [
+                "previewPathPresent": environment["DARKBLOOM_RENDER_PREVIEW_PATH"] != nil,
+                "previewDelayPresent": environment["DARKBLOOM_RENDER_PREVIEW_DELAY"] != nil,
+                "skipRelocationPresent": environment["DARKBLOOM_SKIP_APP_RELOCATION"] != nil,
+                "installStateReady": installState.isReady,
+                "installStateInteractive": installState.isInteractive,
+                "applicationWindowCount": NSApp.windows.count,
+                "visibleWindowCount": NSApp.windows.filter(\.isVisible).count,
+                "activationPolicy": Int(NSApp.activationPolicy().rawValue),
+                "launchPhase": environment["DARKBLOOM_LAUNCH_PHASE"] ?? "unset",
+            ]
+        )
+        // #endregion
         PreviewAppearance.applyIfRequested(to: NSApp)
         #endif
         guard installState.isInteractive else { return }

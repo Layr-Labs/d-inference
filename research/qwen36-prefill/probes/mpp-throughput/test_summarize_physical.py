@@ -79,6 +79,7 @@ GPU_INTERVAL_XML = """<?xml version="1.0"?>
 <col><mnemonic>channel-name</mnemonic></col>
 <col><mnemonic>start-latency</mnemonic></col>
 <col><mnemonic>event-depth</mnemonic></col>
+<col><mnemonic>event-label</mnemonic></col>
 <col><mnemonic>state</mnemonic></col>
 <col><mnemonic>process</mnemonic></col>
 </schema>
@@ -88,8 +89,11 @@ GPU_INTERVAL_XML = """<?xml version="1.0"?>
 <gpu-channel-name fmt="Compute">Compute</gpu-channel-name>
 <duration>100000</duration>
 <metal-nesting-level>0</metal-nesting-level>
+<formatted-label id="1" fmt="GPU Execution ( darkbloom (42) )">
+<process id="2" fmt="darkbloom (42)"><pid>42</pid></process>
+</formatted-label>
 <gpu-state fmt="Active">Active</gpu-state>
-<process id="1" fmt="darkbloom (42)">42</process>
+<process ref="2"/>
 </row>
 <row>
 <start-time>1100000</start-time>
@@ -97,8 +101,9 @@ GPU_INTERVAL_XML = """<?xml version="1.0"?>
 <gpu-channel-name fmt="Compute">Compute</gpu-channel-name>
 <duration>200000</duration>
 <metal-nesting-level>0</metal-nesting-level>
+<formatted-label ref="1"/>
 <gpu-state fmt="Active">Active</gpu-state>
-<process ref="1"/>
+<process ref="2"/>
 </row>
 </node>
 </trace-query-result>

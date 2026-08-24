@@ -52,6 +52,12 @@ class TraceTable:
         ]
         identifiers: dict[str, tuple[str, str]] = {}
         for row in node.findall("row"):
+            for nested in row.iter():
+                identifier = nested.get("id")
+                if identifier is None:
+                    continue
+                raw = (nested.text or "").strip()
+                identifiers[identifier] = (raw, nested.get("fmt", raw))
             values: list[tuple[str, str]] = []
             for element in list(row):
                 reference = element.get("ref")
@@ -61,9 +67,6 @@ class TraceTable:
                     raw = (element.text or "").strip()
                     display = element.get("fmt", raw)
                     resolved = (raw, display)
-                    identifier = element.get("id")
-                    if identifier is not None:
-                        identifiers[identifier] = resolved
                 values.append(resolved)
             self.rows.append(dict(zip(columns, values)))
 

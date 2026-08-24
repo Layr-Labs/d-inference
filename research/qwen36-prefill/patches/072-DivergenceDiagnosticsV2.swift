@@ -243,7 +243,7 @@ public enum CBv2DivergenceDiagnostics {
         }
     }
 
-    private struct Registration {
+    struct Registration {
         let phase: String
         let scenario: String
         let iteration: Int

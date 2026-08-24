@@ -10,6 +10,21 @@ import {
 
 const upstream = stubUpstreamFetch();
 
+describe("GET /api/earnings/market", () => {
+  it("proxies the public calculator snapshot without credentials", async () => {
+    upstream.fetch.mockResolvedValueOnce(ok({ window_days: 30, models: [] }));
+    const { GET } = await import("@/app/api/earnings/market/route");
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    expect(upstream.fetch).toHaveBeenCalledWith(
+      `${DEFAULT_COORD}/v1/earnings/market`,
+      { cache: "no-store" },
+    );
+    expect(res.headers.get("Cache-Control")).toContain("s-maxage=60");
+  });
+});
+
 describe("GET /api/me/earnings", () => {
   it("proxies auth to /v1/provider/account-earnings with the limit", async () => {
     upstream.fetch.mockResolvedValueOnce(ok({ earnings: [], total_usd: "0" }));

@@ -58,6 +58,23 @@ var floorTiers = []struct {
 	{24, 10_000_000},  // $10/mo — entry tier (20B baseline + specialist work)
 }
 
+// Tier is one public memory-tier policy row. MonthlyMicroUSD is the maximum
+// per-machine tier amount before uptime eligibility and fleet-pool allocation.
+type Tier struct {
+	MinRAMGB        int   `json:"min_ram_gb"`
+	MonthlyMicroUSD int64 `json:"monthly_micro_usd"`
+}
+
+// Tiers returns a copy of the configured memory-tier policy, highest memory
+// first. Calculator clients consume this rather than duplicating policy values.
+func Tiers() []Tier {
+	tiers := make([]Tier, len(floorTiers))
+	for i, tier := range floorTiers {
+		tiers[i] = Tier{MinRAMGB: tier.MinGB, MonthlyMicroUSD: tier.Floor}
+	}
+	return tiers
+}
+
 // TierFloor returns the µUSD/mo floor for a verified memory size (GB).
 // Sub-24GB → 0. Tiers are inclusive of their MinGB boundary and extend upward
 // until the next tier, so 47GB sits in the 32GB tier and 48GB jumps to the 48GB

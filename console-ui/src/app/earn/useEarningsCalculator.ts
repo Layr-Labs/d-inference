@@ -1,102 +1,94 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { fetchModels, fetchPricing, type Model } from "@/lib/api";
+import {
+  fetchEarningsMarket,
+  type EarningsMarketModel,
+  type EarningsMarketResponse,
+} from "@/lib/api";
 import {
   CHIP_OPTIONS,
   DEFAULT_ELEC_COST_PER_KWH,
-  type CatalogModel,
-  type ModelEarnings,
-  buildCatalogModels,
-  calculateModelEarnings,
-  calculatePortfolioEarnings,
-  tierFloorUSD,
+  calculateModelEstimate,
+  type ModelEarningsEstimate,
 } from "./calc";
 
-// Always-on, at the demand assumptions in calc.ts (60% utilization, ~2.5
-// concurrent requests while active). We deliberately don't expose
-// utilization/hours — this is the realistic figure, not a saturated best case;
-// the base-reward floor is added on top.
-export const ALWAYS_ON_HOURS = 24;
+export type EarningsMarketState = "loading" | "ready" | "unavailable";
 
-/** One row of the read-only "What your Mac can run" list. */
 export interface ModelRow {
-  model: CatalogModel;
+  model: EarningsMarketModel;
   fits: boolean;
-  earnings: ModelEarnings | null; // null when the model doesn't fit
+  estimate: ModelEarningsEstimate | null;
 }
 
-/**
- * Owns all earnings-calculator state + derivations. Two inputs (chip + memory);
- * electricity is baked in at the US-average $/kWh. The calculator always
- * prices the most profitable model that fits — there is no model selection.
- */
 export function useEarningsCalculator() {
   const [selectedChip, setSelectedChip] = useState("M4 Max");
   const [selectedRAM, setSelectedRAM] = useState(48);
-  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
-
-  const elecCostNum = DEFAULT_ELEC_COST_PER_KWH;
+  const [marketState, setMarketState] = useState<EarningsMarketState>("loading");
+  const [market, setMarket] = useState<EarningsMarketResponse | null>(null);
 
   useEffect(() => {
-    Promise.all([
-      fetchModels().catch(() => [] as Model[]),
-      fetchPricing().catch(() => null),
-    ]).then(([models, pricing]) => {
-      setCatalogModels(buildCatalogModels(models, pricing));
-    });
+    let active = true;
+    fetchEarningsMarket()
+      .then((response) => {
+        if (!active) return;
+        setMarket(response);
+        setMarketState("ready");
+      })
+      .catch(() => {
+        if (!active) return;
+        setMarket(null);
+        setMarketState("unavailable");
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const chip = useMemo(
-    () => CHIP_OPTIONS.find((c) => c.chip === selectedChip) ?? CHIP_OPTIONS[0],
+    () => CHIP_OPTIONS.find((option) => option.chip === selectedChip) ?? CHIP_OPTIONS[0],
     [selectedChip],
   );
-
   const availableRAM = chip.ramOptions;
   const effectiveRAM = availableRAM.includes(selectedRAM)
     ? selectedRAM
     : availableRAM[availableRAM.length - 1] ?? 8;
 
-  /**
-   * Every catalog model, fitting models first (ranked by usage earnings),
-   * then non-fitting models by how much memory they'd need.
-   */
   const modelRows = useMemo<ModelRow[]>(() => {
-    const rows = catalogModels.map((model) => {
-      const fits = model.minRAMGB <= effectiveRAM;
+    if (marketState !== "ready" || !market) return [];
+    const rows = market.models.map((model) => {
+      const fits = model.min_ram_gb <= effectiveRAM;
       return {
         model,
         fits,
-        earnings: fits
-          ? calculateModelEarnings(model, chip, ALWAYS_ON_HOURS, elecCostNum)
+        estimate: fits
+          ? calculateModelEstimate(
+              model,
+              chip,
+              effectiveRAM,
+              market.base_rewards,
+              DEFAULT_ELEC_COST_PER_KWH,
+            )
           : null,
       };
     });
     rows.sort((a, b) => {
       if (a.fits !== b.fits) return a.fits ? -1 : 1;
-      if (a.fits && b.fits) return (b.earnings?.monthlyNet ?? 0) - (a.earnings?.monthlyNet ?? 0);
-      return a.model.minRAMGB - b.model.minRAMGB;
+      if (a.fits && b.fits) {
+        if (Boolean(a.estimate) !== Boolean(b.estimate)) return a.estimate ? -1 : 1;
+        const payoutDelta =
+          (b.estimate?.workPayoutUSD ?? 0) - (a.estimate?.workPayoutUSD ?? 0);
+        if (payoutDelta !== 0) return payoutDelta;
+      }
+      if (a.model.min_ram_gb !== b.model.min_ram_gb) {
+        return a.model.min_ram_gb - b.model.min_ram_gb;
+      }
+      return a.model.id.localeCompare(b.model.id);
     });
     return rows;
-  }, [catalogModels, chip, effectiveRAM, elecCostNum]);
+  }, [market, marketState, chip, effectiveRAM]);
 
-  const bestModel = modelRows.find((r) => r.fits)?.model ?? null;
-
-  const result = useMemo(() => {
-    if (!bestModel) return null;
-    return calculatePortfolioEarnings(
-      [bestModel],
-      chip,
-      effectiveRAM,
-      ALWAYS_ON_HOURS,
-      elecCostNum,
-    );
-  }, [bestModel, chip, effectiveRAM, elecCostNum]);
-
-  // Hero range: the base-reward floor is the only committed number; the
-  // full-utilization estimate is the upside.
-  const monthlyFloor = tierFloorUSD(effectiveRAM);
-  const monthlyEstimate = result?.monthlyNet ?? monthlyFloor;
+  const bestRow = modelRows.find((row) => row.fits && row.estimate !== null) ?? null;
 
   return {
     chipOptions: CHIP_OPTIONS,
@@ -106,13 +98,13 @@ export function useEarningsCalculator() {
     availableRAM,
     effectiveRAM,
     selectRAM: setSelectedRAM,
-    elecCostNum,
-    catalogModels,
+    electricityCostPerKWh: DEFAULT_ELEC_COST_PER_KWH,
+    marketState,
+    market,
     modelRows,
-    bestModel,
-    result,
-    monthlyFloor,
-    monthlyEstimate,
+    bestModel: bestRow?.model ?? null,
+    result: bestRow?.estimate ?? null,
+    hasFittingModel: modelRows.some((row) => row.fits),
   };
 }
 

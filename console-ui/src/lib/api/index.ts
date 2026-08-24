@@ -7,6 +7,7 @@ export * from "./types";
 
 export { ApiError, apiErrorFromBody, parseApiErrorBody } from "./errors";
 export { fetchModels } from "./models";
+export { fetchEarningsMarket, parseEarningsMarket } from "./earnings-market";
 export { fetchPricing } from "./pricing";
 export { healthCheck } from "./health";
 export { redeemInviteCode } from "./invite";

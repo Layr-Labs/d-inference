@@ -1,18 +1,9 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import {
-  ASSUMED_UTILIZATION,
-  CONTINUOUS_BATCH_FACTOR,
-  DEFAULT_ELEC_COST_PER_KWH,
-  PROMPT_TO_COMPLETION_RATIO,
-  SINGLE_STREAM_EFFICIENCY,
-  fmtUSD,
-  fmtUSDWhole,
-} from "./calc";
+import { DEFAULT_ELEC_COST_PER_KWH, MONTH_HOURS, fmtTokens, fmtUSD } from "./calc";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
-/** One derivation step: what we compute, how, and the resulting value. */
 function CalcStep({
   label,
   detail,
@@ -43,18 +34,17 @@ function CalcStep({
   );
 }
 
-/**
- * Single collapsed home for everything that qualifies the hero number: the
- * usage/base-reward decomposition, the step-by-step derivation, and the
- * honesty caveats. Replaces the four separate explanation surfaces the old
- * page spread these across.
- */
 export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
-  const { result, chip, effectiveRAM } = calc;
+  const { result, market, chip, effectiveRAM } = calc;
+  if (!result || !market) return null;
 
-  if (!result) return null;
-  const best = result.selectedModels[0];
-  const utilPct = Math.round(ASSUMED_UTILIZATION * 100);
+  const model = result.model;
+  const policy = market.base_rewards;
+  const observedTPSPerBandwidth =
+    model.benchmark_tps / model.benchmark_memory_bandwidth_gbps;
+  const uptimePercent = Math.round(policy.min_uptime_fraction * 100);
+  const basePoolUSD = policy.monthly_pool_micro_usd / 1_000_000;
+  const unattributedPoolUSD = market.audit.unattributed_work_micro_usd / 1_000_000;
 
   return (
     <details className="group rounded-xl bg-bg-secondary mb-6 open:pb-2">
@@ -69,84 +59,104 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
       </summary>
 
       <div className="px-6 pb-4 space-y-5">
-        {/* The honest framing, stated once */}
         <p className="text-sm text-text-secondary">
-          The top of the range assumes healthy, sustained demand: your Mac serves requests{" "}
-          <span className="text-text-primary font-medium">
-            {Math.round(ASSUMED_UTILIZATION * 100)}% of the time
-          </span>{" "}
-          it is online, averaging {CONTINUOUS_BATCH_FACTOR} concurrent requests while active —
-          not a saturated network (the engine can batch more at peak). Live demand fluctuates
-          and can run below this, which is why we show a range: the base reward is what attested
-          machines accrue for staying online regardless of traffic, and usage earnings grow with
-          demand.
+          The model&apos;s settled provider payouts form a fixed trailing 30-day work pool.
+          Your candidate share is its estimated capacity divided by existing capacity plus
+          that candidate. Adding a candidate reallocates the same pool; it does not manufacture
+          new demand.
         </p>
 
-        {/* Decomposition */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div className="rounded-lg bg-bg-tertiary p-3 text-center">
-            <p className="text-xs text-text-secondary mb-1">Usage (at {Math.round(ASSUMED_UTILIZATION * 100)}% util.)</p>
-            <p className="text-lg font-mono text-text-primary">{fmtUSDWhole(result.monthlyUsageNet)}</p>
-            <p className="text-xs text-text-secondary mt-0.5">revenue − electricity</p>
+            <p className="text-xs text-text-secondary mb-1">Candidate work share</p>
+            <p className="text-lg font-mono text-text-primary">{fmtUSD(result.workPayoutUSD)}</p>
+            <p className="text-xs text-text-secondary mt-0.5">from settled demand</p>
           </div>
           <div className="rounded-lg bg-accent-brand/5 border border-accent-brand/20 p-3 text-center">
-            <p className="text-xs text-text-secondary mb-1">Base reward</p>
-            <p className="text-lg font-mono text-accent-brand">+ {fmtUSDWhole(result.monthlyFloor)}</p>
-            <p className="text-xs text-text-secondary mt-0.5">{effectiveRAM} GB tier, online ≥90%</p>
+            <p className="text-xs text-text-secondary mb-1">Base reward maximum</p>
+            <p className="text-lg font-mono text-accent-brand">
+              + {fmtUSD(result.baseRewardPotentialUSD)}
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">eligibility- and pool-capped</p>
+          </div>
+          <div className="rounded-lg bg-bg-tertiary p-3 text-center">
+            <p className="text-xs text-text-secondary mb-1">Electricity</p>
+            <p className="text-lg font-mono text-text-primary">
+              − {fmtUSD(result.electricityUSD)}
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">idle + allocated work</p>
           </div>
           <div className="rounded-lg bg-accent-green/5 border border-accent-green/20 p-3 text-center">
-            <p className="text-xs text-text-secondary mb-1">Top of range / mo</p>
-            <p className="text-lg font-mono text-text-primary">{fmtUSDWhole(result.monthlyNet)}</p>
-            <p className="text-xs text-text-secondary mt-0.5">usage + base reward</p>
+            <p className="text-xs text-text-secondary mb-1">Estimated net / mo</p>
+            <p className="text-lg font-mono text-text-primary">{fmtUSD(result.monthlyNetUSD)}</p>
+            <p className="text-xs text-text-secondary mt-0.5">work + reward − power</p>
           </div>
         </div>
 
-        {/* Step-by-step derivation */}
-        {best && (
-          <div className="rounded-lg border border-border-dim divide-y divide-border-dim">
-            <CalcStep
-              label="Token speed"
-              detail={`${chip.bandwidthGBs} GB/s memory bandwidth ÷ ${best.activeParamsGB} GB active weights × ${SINGLE_STREAM_EFFICIENCY} efficiency, serving ${CONTINUOUS_BATCH_FACTOR} requests at once ${utilPct}% of the time`}
-              value={`${best.decodeTokPerSec.toFixed(0)} tok/s`}
-            />
-            <CalcStep
-              label="Usage revenue"
-              detail={`Those tokens billed at live per-token prices, plus the prompt tokens that come with them (${PROMPT_TO_COMPLETION_RATIO}:1), around the clock`}
-              value={`${fmtUSDWhole(result.monthlyRevenue)} /mo`}
-            />
-            <CalcStep
-              label="Electricity"
-              detail={`${best.marginalWatts}W extra draw during inference at $${DEFAULT_ELEC_COST_PER_KWH.toFixed(2)}/kWh (US average) — only while actively serving`}
-              value={`−${fmtUSD(result.monthlyElec)} /mo`}
-            />
-            <CalcStep
-              label="Usage earnings"
-              detail="Revenue minus electricity"
-              value={`${fmtUSDWhole(result.monthlyUsageNet)} /mo`}
-            />
-            <CalcStep
-              label="Base reward"
-              detail={`${effectiveRAM} GB memory tier, paid for staying online ≥90% of each settlement period`}
-              value={`+${fmtUSDWhole(result.monthlyFloor)} /mo`}
-            />
-            <CalcStep
-              label="Top of range"
-              detail="Usage earnings + base reward"
-              value={`${fmtUSDWhole(result.monthlyNet)} /mo`}
-              emphasize
-            />
-          </div>
-        )}
+        <div className="rounded-lg border border-border-dim divide-y divide-border-dim">
+          <CalcStep
+            label="Trailing settled payout pool"
+            detail={`${model.paid_jobs.toLocaleString()} paid ${model.display_name} jobs and ${fmtTokens(model.paid_tokens)} paid tokens in the fixed 30-day window`}
+            value={`${fmtUSD(result.workPoolUSD)} / 30d`}
+          />
+          <CalcStep
+            label="Competing live capacity"
+            detail={`${model.provider_supply} eligible providers across routable desired/previous builds; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
+            value={`${model.aggregate_tps.toFixed(1)} tok/s`}
+          />
+          <CalcStep
+            label="Candidate capacity"
+            detail={`${model.benchmark_tps.toFixed(1)} observed tok/s ÷ ${model.benchmark_memory_bandwidth_gbps.toFixed(0)} GB/s × this Mac's ${chip.bandwidthGBs} GB/s`}
+            value={`${result.candidateTPS.toFixed(1)} tok/s`}
+          />
+          <CalcStep
+            label="Candidate work payout"
+            detail={`${fmtUSD(result.workPoolUSD)} × c/(S+c), a ${(result.candidateShare * 100).toFixed(2)}% capacity share; existing and candidate shares sum to the same pool`}
+            value={`${fmtUSD(result.workPayoutUSD)} /mo`}
+          />
+          <CalcStep
+            label="Electricity"
+            detail={`${chip.idleWatts}W online idle for ${MONTH_HOURS}h plus ${Math.max(0, chip.inferWatts - chip.idleWatts)}W workload draw for ${result.activeHours.toFixed(2)}h at $${DEFAULT_ELEC_COST_PER_KWH.toFixed(2)}/kWh`}
+            value={`−${fmtUSD(result.electricityUSD)} /mo`}
+          />
+          <CalcStep
+            label="Base reward maximum"
+            detail={
+              policy.enabled
+                ? `${effectiveRAM} GB tier at full-month availability; requires attestation, health, and ≥${uptimePercent}% uptime, then shares the fixed ${fmtUSD(basePoolUSD)} monthly fleet pool`
+                : "Base rewards are currently disabled; tier policy does not create a payout"
+            }
+            value={`+${fmtUSD(result.baseRewardPotentialUSD)} /mo`}
+          />
+          <CalcStep
+            label="Estimated net"
+            detail="Candidate work payout + base reward maximum − idle and workload electricity"
+            value={`${fmtUSD(result.monthlyNetUSD)} /mo`}
+            emphasize
+          />
+        </div>
 
-        {/* Remaining caveats, merged */}
         <ul className="text-xs text-text-secondary space-y-1.5 list-disc pl-4">
           <li>
-            Base rewards are paid to attested machines online ≥90% of each 5-minute settlement
-            period, up to a fixed monthly budget — not a guarantee.
+            Full-month availability is fixed. Power charges all online idle hours, then treats
+            every allocated prompt and completion token as slower decode work and clamps active
+            time to 720 hours.
           </li>
           <li>
-            Actual usage depends on network demand, model popularity, your reputation, and how
-            many other providers serve the same model.
+            Base rewards are separate from work demand. The memory tier is only a maximum before
+            eligibility checks and fixed-pool allocation; it is not committed or guaranteed.
+          </li>
+          <li>
+            The audit reconciles {fmtUSD(market.audit.modeled_work_micro_usd / 1_000_000)} modeled
+            work and {fmtUSD(unattributedPoolUSD)} unattributed work to{" "}
+            {fmtUSD(market.audit.total_settled_work_micro_usd / 1_000_000)} total settled work.
+          </li>
+          <li>
+            Actual routing also depends on uptime, trust, reputation, latency, and request shape.
+          </li>
+          <li>
+            Observed capacity rate: {observedTPSPerBandwidth.toFixed(4)} tok/s per GB/s of memory
+            bandwidth.
           </li>
         </ul>
       </div>

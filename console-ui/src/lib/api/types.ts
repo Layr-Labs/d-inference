@@ -40,6 +40,62 @@ export interface Model {
   supported_sampling_parameters?: string[];
 }
 
+export type EarningsUnavailableReason =
+  | "settled_work_unavailable"
+  | "competing_capacity_unavailable"
+  | "throughput_benchmark_unavailable";
+
+export interface EarningsMarketModel {
+  id: string;
+  display_name: string;
+  min_ram_gb: number;
+  size_bytes: number;
+  size_gb: number;
+  work_payout_micro_usd: number;
+  paid_tokens: number;
+  paid_jobs: number;
+  aggregate_tps: number;
+  aggregate_memory_bandwidth_gbps: number;
+  benchmark_tps: number;
+  benchmark_memory_bandwidth_gbps: number;
+  provider_supply: number;
+  estimate_available: boolean;
+  unavailable_reason?: EarningsUnavailableReason;
+}
+
+export interface EarningsMarketAudit {
+  total_settled_work_micro_usd: number;
+  modeled_work_micro_usd: number;
+  unattributed_work_micro_usd: number;
+  total_paid_tokens: number;
+  modeled_paid_tokens: number;
+  unattributed_paid_tokens: number;
+  total_paid_jobs: number;
+  modeled_paid_jobs: number;
+  unattributed_paid_jobs: number;
+}
+
+export interface BaseRewardTier {
+  min_ram_gb: number;
+  monthly_micro_usd: number;
+}
+
+export interface EarningsMarketBaseRewards {
+  enabled: boolean;
+  monthly_pool_micro_usd: number;
+  min_uptime_fraction: number;
+  tiers: BaseRewardTier[];
+}
+
+export interface EarningsMarketResponse {
+  window_start: string;
+  window_end: string;
+  window_days: number;
+  models: EarningsMarketModel[];
+  audit: EarningsMarketAudit;
+  base_rewards: EarningsMarketBaseRewards;
+}
+
 export interface BalanceResponse {
   balance_micro_usd: number;
   balance_usd: number;

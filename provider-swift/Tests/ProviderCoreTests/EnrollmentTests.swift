@@ -126,7 +126,7 @@ struct EnrollmentTests {
         // helper runs without throwing on a real machine where the
         // listed files may or may not exist -- it's idempotent either
         // way.)
-        LocalDataCleanup.purge(
+        try LocalDataCleanup.purge(
             configDirectory: false,
             legacyKeyFiles: false,
             authToken: false

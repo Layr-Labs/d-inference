@@ -284,8 +284,8 @@ public struct EnrollmentService: Sendable {
 
 public enum LocalDataCleanup: Sendable {
     /// Delete optional pieces of local Darkbloom state. Caller should ask for
-    /// confirmation before invoking. Each removal is best-effort -- missing
-    /// files are not an error.
+    /// confirmation before invoking. Missing files are not errors; every other
+    /// failure is collected after the remaining cleanup steps are attempted.
     ///
     /// `secureEnclaveKey` (default true) also removes the persistent Secure
     /// Enclave attestation signing key. This is what makes un-enroll /
@@ -296,33 +296,65 @@ public enum LocalDataCleanup: Sendable {
         legacyKeyFiles: Bool = true,
         authToken: Bool = true,
         secureEnclaveKey: Bool = true
-    ) {
+    ) throws {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let fm = FileManager.default
+        var failures: [String] = []
+
+        func removeFile(_ url: URL) {
+            guard fm.fileExists(atPath: url.path) else { return }
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                failures.append("\(url.path): \(error.localizedDescription)")
+            }
+        }
 
         if configDirectory {
             for relative in [".config/darkbloom", ".config/eigeninference"] {
-                let dir = home.appendingPathComponent(relative)
-                try? fm.removeItem(at: dir)
+                removeFile(home.appendingPathComponent(relative))
             }
         }
         if legacyKeyFiles {
             let darkbloomDir = home.appendingPathComponent(".darkbloom")
             for name in ["wallet_key", "enclave_key.data", "node_key", "secret_key"] {
-                try? fm.removeItem(at: darkbloomDir.appendingPathComponent(name))
+                removeFile(darkbloomDir.appendingPathComponent(name))
             }
         }
         if authToken {
-            try? AuthTokenStore.delete()
-            ProviderAccountStore.delete()
+            do {
+                try AuthTokenStore.delete()
+            } catch {
+                failures.append("auth token: \(error.localizedDescription)")
+            }
+            do {
+                try ProviderAccountStore.delete()
+            } catch {
+                failures.append("provider account: \(error.localizedDescription)")
+            }
         }
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a
-            // bad/derouted key is regenerated on the next enroll. Best-effort:
-            // missing entitlements or an absent key are not errors. Clear both
-            // the current (v2 = defaultLabel) and the legacy (v1) labels.
-            try? PersistentEnclaveKey.delete()
-            try? PersistentEnclaveKey.delete(label: PersistentEnclaveKey.legacyLabelV1)
+            // bad/derouted key is regenerated on the next enroll. Clear both the
+            // current (v2 = defaultLabel) and the legacy (v1) labels.
+            for label in [nil, PersistentEnclaveKey.legacyLabelV1] {
+                do {
+                    try PersistentEnclaveKey.delete(label: label)
+                } catch {
+                    failures.append("Secure Enclave key: \(error.localizedDescription)")
+                }
+            }
         }
+        if !failures.isEmpty {
+            throw LocalDataCleanupError(failures: failures)
+        }
+    }
+}
+
+public struct LocalDataCleanupError: LocalizedError, Sendable {
+    public let failures: [String]
+
+    public var errorDescription: String? {
+        "local cleanup was incomplete: " + failures.joined(separator: "; ")
     }
 }

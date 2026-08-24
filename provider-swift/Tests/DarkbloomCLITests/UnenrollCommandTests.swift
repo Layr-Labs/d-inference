@@ -1,26 +1,37 @@
 import Foundation
 import Testing
+@testable import darkbloom
 
-@Suite("Unenroll clears every login-state artifact")
+@Suite("Unenroll account cleanup")
 struct UnenrollCommandTests {
-    @Test("forced cleanup removes the linked account alongside the auth token")
-    func forcedCleanupClearsLoginIdentity() throws {
+    @Test("partial account state is removed without a revoke request")
+    @MainActor
+    func partialStateCleanup() async throws {
         let files = try IsolatedLoginFiles.make(
             prefix: "unenroll-test",
-            token: "tok-123",
+            token: nil,
             account: "acct-456"
         )
         defer { try? FileManager.default.removeItem(at: files.directory) }
-
-        let result = try runDarkbloomCLI(
-            arguments: ["unenroll", "--force", "--no-open"],
-            files: files
+        var revokeCount = 0
+        let dependencies = AccountUnlinkDependencies(
+            stopWatchdog: {},
+            stopProviderService: {},
+            terminateRecordedProvider: { true },
+            revokeToken: { _, _ in revokeCount += 1 },
+            deleteToken: {},
+            deleteAccount: {
+                try FileManager.default.removeItem(at: files.accountPath)
+            }
         )
 
-        #expect(result.status == 0)
-        #expect(!FileManager.default.fileExists(atPath: files.tokenPath.path))
+        try await unlinkProviderAccount(
+            token: nil,
+            coordinatorURL: "wss://coordinator.test/ws/provider",
+            dependencies: dependencies
+        )
+
         #expect(!FileManager.default.fileExists(atPath: files.accountPath.path))
-        #expect(result.output.contains("Linked account: ~/.darkbloom/provider_account"))
-        #expect(result.output.contains("Local data cleaned up."))
+        #expect(revokeCount == 0)
     }
 }

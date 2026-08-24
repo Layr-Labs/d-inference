@@ -6,21 +6,29 @@ struct Logout: AsyncParsableCommand {
         abstract: "Remove local account credentials and unlink this machine."
     )
 
+    @OptionGroup var configOptions: ConfigOptions
+
     mutating func run() async throws {
-        let hadToken = AuthTokenStore.load() != nil
+        let token = AuthTokenStore.load()
+        let hadToken = token != nil
         let hadAccount = ProviderAccountStore.load() != nil
+        try await unlinkProviderAccount(
+            token: token,
+            coordinatorURL: accountUnlinkCoordinatorURL(configOptions: configOptions)
+        )
+
         guard hadToken || hadAccount else {
             print("Not currently logged in.")
+            print("Provider services are stopped.")
             return
         }
 
-        try AuthTokenStore.delete()
-        // The account id names the earnings wallet (`darkbloom earnings`,
-        // daemon-state `identity`) — leaving it after unlink would keep
-        // granular surfaces reporting the PREVIOUS account's earnings. Best-
-        // effort like the store's own delete: a missing file is already gone.
-        ProviderAccountStore.delete()
         print("Logged out. This machine is no longer linked to an account.")
+        if hadToken {
+            print("Provider services were stopped and the coordinator token was revoked.")
+        } else {
+            print("Provider services were stopped and stale account state was removed.")
+        }
         print("Provider earnings will use the local wallet until you log in again.")
     }
 }

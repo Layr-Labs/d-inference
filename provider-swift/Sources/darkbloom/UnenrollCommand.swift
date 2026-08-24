@@ -12,6 +12,8 @@ struct Unenroll: AsyncParsableCommand {
         """
     )
 
+    @OptionGroup var configOptions: ConfigOptions
+
     @Flag(help: "Skip the local-data cleanup confirmation and purge anyway.")
     var force = false
 
@@ -65,7 +67,11 @@ struct Unenroll: AsyncParsableCommand {
         }
 
         if proceed {
-            LocalDataCleanup.purge()
+            try await unlinkProviderAccount(
+                token: AuthTokenStore.load(),
+                coordinatorURL: accountUnlinkCoordinatorURL(configOptions: configOptions)
+            )
+            try LocalDataCleanup.purge(authToken: false)
             print("  ✓ Local data cleaned up.")
         } else {
             print("  Skipped local cleanup.")

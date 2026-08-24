@@ -131,23 +131,33 @@ struct KVPoolReclaimerTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
-        let failsafe = DispatchWorkItem { gate.releaseClear() }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + .seconds(2),
-            execute: failsafe)
-        defer {
-            failsafe.cancel()
-            gate.releaseClear()
+        // Launch the sweep, wait for its synchronous clear, sample telemetry,
+        // and release the clear from one non-cooperative GCD worker. The test
+        // task may be starved under full-suite load, but it no longer sits
+        // between "clear started" and the snapshot whose ordering we assert.
+        let probeQueue = DispatchQueue(
+            label: "dev.darkbloom.tests.kv-reclaimer-telemetry",
+            qos: .userInitiated)
+        let (clearStarted, duringClear, snapshotLatency, reclaim):
+            (DispatchTimeoutResult, KVPoolReclaimer.TelemetrySnapshot, Duration, Task<Bool, Never>) =
+            await withCheckedContinuation { continuation in
+                probeQueue.async {
+                    let reclaim = Task.detached { await reclaimer.sweep() }
+                    let clearStarted = gate.waitUntilClearStarted()
+                    let startedAt = ContinuousClock.now
+                    let duringClear = reclaimer.telemetrySnapshot()
+                    let snapshotLatency = ContinuousClock.now - startedAt
+                    gate.releaseClear()
+                    continuation.resume(
+                        returning: (clearStarted, duringClear, snapshotLatency, reclaim))
+                }
+            }
+
+        guard clearStarted == .success else {
+            reclaim.cancel()
+            Issue.record("reclaimer never entered the held clear before the failure timeout")
+            return
         }
-
-        let reclaim = Task.detached { await reclaimer.sweep() }
-        #expect(await gate.waitUntilClearStarted())
-
-        let startedAt = ContinuousClock.now
-        let duringClear = reclaimer.telemetrySnapshot()
-        let snapshotLatency = ContinuousClock.now - startedAt
-        gate.releaseClear()
-        failsafe.cancel()
 
         #expect(snapshotLatency < .milliseconds(100))
         #expect(duringClear.sweepSignals == 1)
@@ -228,27 +238,22 @@ private final class ReclaimSpy: @unchecked Sendable {
 }
 
 private final class BlockingReclaimGate: @unchecked Sendable {
+    /// Generous because this only bounds a broken test setup. The successful
+    /// path is released immediately by the GCD telemetry probe.
+    private static let failureTimeout: DispatchTimeInterval = .seconds(30)
+
+    private let started = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
-    private var clearStarted = false
     private var released = false
 
     func enterClear() {
-        lock.lock()
-        clearStarted = true
-        lock.unlock()
-        _ = release.wait(timeout: .now() + 3)
+        started.signal()
+        _ = release.wait(timeout: .now() + Self.failureTimeout)
     }
 
-    func waitUntilClearStarted() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if hasClearStarted {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(1))
-        }
-        return hasClearStarted
+    func waitUntilClearStarted() -> DispatchTimeoutResult {
+        started.wait(timeout: .now() + Self.failureTimeout)
     }
 
     func releaseClear() {
@@ -257,11 +262,5 @@ private final class BlockingReclaimGate: @unchecked Sendable {
         guard !released else { return }
         released = true
         release.signal()
-    }
-
-    private var hasClearStarted: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return clearStarted
     }
 }

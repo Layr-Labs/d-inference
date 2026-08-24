@@ -1058,6 +1058,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureUsagePublicModelIndex(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureProviderEarningsMarketIndex(ctx); err != nil {
 		return err
 	}
@@ -1097,7 +1100,7 @@ func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) erro
 
 	// A leftover *invalid* index from a previously interrupted CONCURRENTLY build
 	// would make CREATE ... IF NOT EXISTS a silent no-op, so drop it first.
-	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+idxName); err != nil {
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
 		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
 	}
 
@@ -1130,6 +1133,61 @@ func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) erro
 	return nil
 }
 
+// dropInvalidIndexConcurrently removes an interrupted concurrent index build
+// without taking the table-blocking lock of a plain DROP INDEX. Callers use
+// constant internal identifiers and invoke this only after confirming the
+// named index is absent or invalid.
+func (s *PostgresStore) dropInvalidIndexConcurrently(ctx context.Context, idxName string) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+idxName)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("drop concurrently: %w", err)
+	}
+	return nil
+}
+
+// ensureUsagePublicModelIndex supports the unambiguous usage lookup used to
+// attribute settlement rows written before provider_earnings.public_model
+// existed. The partial covering index excludes records that cannot help.
+func (s *PostgresStore) ensureUsagePublicModelIndex(ctx context.Context) error {
+	const idxName = "idx_usage_request_public_model"
+
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT i.indisvalid
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = $1
+		), false)`, idxName).Scan(&valid); err != nil {
+		return fmt.Errorf("store: check %s: %w", idxName, err)
+	}
+	if valid {
+		return nil
+	}
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
+		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
+	}
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn for %s: %w", idxName, err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `
+		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usage_request_public_model
+		ON usage (request_id)
+		INCLUDE (public_model)
+		WHERE request_id <> '' AND public_model <> ''`)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
+	}
+	return nil
+}
+
 // ensureProviderEarningsMarketIndex builds the covering time-leading index used
 // by the bounded earnings-market aggregation. CONCURRENTLY keeps existing
 // settlement writes available while an upgraded database builds it once.
@@ -1148,7 +1206,7 @@ func (s *PostgresStore) ensureProviderEarningsMarketIndex(ctx context.Context) e
 	if valid {
 		return nil
 	}
-	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+idxName); err != nil {
+	if err := s.dropInvalidIndexConcurrently(ctx, idxName); err != nil {
 		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
 	}
 
@@ -1160,7 +1218,7 @@ func (s *PostgresStore) ensureProviderEarningsMarketIndex(ctx context.Context) e
 	mrr := conn.Conn().PgConn().Exec(ctx, `
 		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_provider_earnings_market_window
 		ON provider_earnings (created_at, public_model)
-		INCLUDE (amount_micro_usd, prompt_tokens, completion_tokens)
+		INCLUDE (job_id, amount_micro_usd, prompt_tokens, completion_tokens)
 		WHERE model <> '' AND model <> 'base_reward' AND amount_micro_usd > 0`)
 	if _, err := mrr.ReadAll(); err != nil {
 		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)

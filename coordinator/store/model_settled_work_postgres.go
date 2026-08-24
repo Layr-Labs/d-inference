@@ -7,24 +7,48 @@ import (
 )
 
 // ModelSettledWorkTotals aggregates positive inference settlements by the
-// consumer-requested public model in [since, until). Empty public_model groups
-// preserve legacy payouts for the audit total without guessing an identity.
+// consumer-requested public model in [since, until). Legacy settlement rows use
+// the matching usage record only when its non-empty public identity is
+// unambiguous; anything else stays in the empty audit group.
 func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
+		WITH settled AS (
+			SELECT COALESCE(
+				       NULLIF(earnings.public_model, ''),
+				       NULLIF(usage_model.public_model, ''),
+				       ''
+			       ) AS public_model,
+			       earnings.amount_micro_usd,
+			       earnings.prompt_tokens,
+			       earnings.completion_tokens
+			FROM provider_earnings AS earnings
+			LEFT JOIN LATERAL (
+				SELECT CASE
+					       WHEN MIN(usage.public_model) = MAX(usage.public_model)
+					       THEN MIN(usage.public_model)
+					       ELSE ''
+				       END AS public_model
+				FROM usage
+				WHERE usage.request_id = earnings.job_id
+				  AND usage.public_model <> ''
+			) AS usage_model
+			  ON earnings.public_model = ''
+			 AND earnings.job_id <> ''
+			WHERE earnings.created_at >= $1
+			  AND earnings.created_at < $2
+			  AND earnings.model <> ''
+			  AND earnings.model <> 'base_reward'
+			  AND earnings.amount_micro_usd > 0
+		)
 		SELECT public_model,
 		       COALESCE(SUM(amount_micro_usd), 0),
 		       COALESCE(SUM(prompt_tokens), 0),
 		       COALESCE(SUM(completion_tokens), 0),
 		       COUNT(*)
-		FROM provider_earnings
-		WHERE created_at >= $1
-		  AND created_at < $2
-		  AND model <> ''
-		  AND model <> 'base_reward'
-		  AND amount_micro_usd > 0
+		FROM settled
 		GROUP BY public_model
 		ORDER BY public_model`,
 		since, until,

@@ -14,12 +14,17 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			modelA := uniqueID("a-model")
 			modelB := uniqueID("b-model")
 			legacyBuild := uniqueID("legacy-build")
+			recoverableJob := uniqueID("recoverable-job")
+			unattributedJob := uniqueID("unattributed-job")
+			conflictingJob := uniqueID("conflicting-job")
 
 			entries := []ProviderEarning{
 				{JobID: uniqueID("job"), Model: "build-b", PublicModel: modelB, AmountMicroUSD: 500_000, PromptTokens: 10, CompletionTokens: 5, CreatedAt: start.Add(10 * time.Minute)},
 				{JobID: uniqueID("job"), Model: "build-a-v2", PublicModel: modelA, AmountMicroUSD: 1_250_000, PromptTokens: 20, CompletionTokens: 8, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a-v1", PublicModel: modelA, AmountMicroUSD: 750_000, PromptTokens: 30, CompletionTokens: 7, CreatedAt: start.Add(30 * time.Minute)},
-				{JobID: uniqueID("job"), Model: legacyBuild, AmountMicroUSD: 125_000, PromptTokens: 2, CompletionTokens: 1, CreatedAt: start.Add(20 * time.Minute)},
+				{JobID: recoverableJob, Model: legacyBuild, AmountMicroUSD: 125_000, PromptTokens: 2, CompletionTokens: 1, CreatedAt: start.Add(20 * time.Minute)},
+				{JobID: unattributedJob, Model: legacyBuild, AmountMicroUSD: 25_000, PromptTokens: 1, CompletionTokens: 1, CreatedAt: start.Add(21 * time.Minute)},
+				{JobID: conflictingJob, Model: legacyBuild, AmountMicroUSD: 10_000, PromptTokens: 1, CompletionTokens: 1, CreatedAt: start.Add(22 * time.Minute)},
 				{JobID: uniqueID("job"), Model: "base_reward", AmountMicroUSD: 99_000_000, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
 				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: -1, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
@@ -32,6 +37,18 @@ func TestModelSettledWorkTotals(t *testing.T) {
 					t.Fatalf("RecordProviderEarning: %v", err)
 				}
 			}
+			st.RecordUsageFullWithPublicModel(
+				"provider", "consumer", "", legacyBuild, modelA, recoverableJob,
+				2, 1, 125_000, nil,
+			)
+			st.RecordUsageFullWithPublicModel(
+				"provider", "consumer", "", legacyBuild, modelA, conflictingJob,
+				1, 1, 10_000, nil,
+			)
+			st.RecordUsageFullWithPublicModel(
+				"provider", "consumer", "", legacyBuild, modelB, conflictingJob,
+				1, 1, 10_000, nil,
+			)
 
 			got, err := st.ModelSettledWorkTotals(start, end)
 			if err != nil {
@@ -40,17 +57,17 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			want := []ModelSettledWorkTotal{
 				{
 					PublicModel:        "",
-					WorkPayoutMicroUSD: 125_000,
+					WorkPayoutMicroUSD: 35_000,
 					PromptTokens:       2,
-					CompletionTokens:   1,
-					Jobs:               1,
+					CompletionTokens:   2,
+					Jobs:               2,
 				},
 				{
 					PublicModel:        modelA,
-					WorkPayoutMicroUSD: 2_000_000,
-					PromptTokens:       50,
-					CompletionTokens:   15,
-					Jobs:               2,
+					WorkPayoutMicroUSD: 2_125_000,
+					PromptTokens:       52,
+					CompletionTokens:   16,
+					Jobs:               3,
 				},
 				{
 					PublicModel:        modelB,
@@ -63,8 +80,8 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("totals = %+v, want %+v", got, want)
 			}
-			if got[1].PaidTokens() != 65 {
-				t.Fatalf("PaidTokens = %d, want 65", got[1].PaidTokens())
+			if got[1].PaidTokens() != 68 {
+				t.Fatalf("PaidTokens = %d, want 68", got[1].PaidTokens())
 			}
 		})
 	}

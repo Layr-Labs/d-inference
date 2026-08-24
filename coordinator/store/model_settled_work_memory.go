@@ -13,6 +13,21 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// provider_earnings gained PublicModel after usage already persisted it.
+	// Recover legacy settlement attribution only when every matching usage row
+	// agrees; conflicting or missing history remains explicitly unattributed.
+	publicModelByRequest := make(map[string]string)
+	for _, usage := range s.usage {
+		if usage.RequestID == "" || usage.PublicModel == "" {
+			continue
+		}
+		if existing, seen := publicModelByRequest[usage.RequestID]; !seen {
+			publicModelByRequest[usage.RequestID] = usage.PublicModel
+		} else if existing != usage.PublicModel {
+			publicModelByRequest[usage.RequestID] = ""
+		}
+	}
+
 	byPublicModel := make(map[string]*ModelSettledWorkTotal)
 	for _, earning := range s.providerEarnings {
 		if earning.Model == "" || earning.Model == "base_reward" || earning.AmountMicroUSD <= 0 {
@@ -21,10 +36,14 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 		if earning.CreatedAt.Before(since) || !earning.CreatedAt.Before(until) {
 			continue
 		}
-		total := byPublicModel[earning.PublicModel]
+		publicModel := earning.PublicModel
+		if publicModel == "" && earning.JobID != "" {
+			publicModel = publicModelByRequest[earning.JobID]
+		}
+		total := byPublicModel[publicModel]
 		if total == nil {
-			total = &ModelSettledWorkTotal{PublicModel: earning.PublicModel}
-			byPublicModel[earning.PublicModel] = total
+			total = &ModelSettledWorkTotal{PublicModel: publicModel}
+			byPublicModel[publicModel] = total
 		}
 		total.WorkPayoutMicroUSD += earning.AmountMicroUSD
 		total.PromptTokens += int64(earning.PromptTokens)

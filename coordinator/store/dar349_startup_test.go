@@ -29,6 +29,19 @@ func TestMigrate_NoBootTimeProviderEarningsDedupe(t *testing.T) {
 	}
 }
 
+func TestProviderEarningsIndexRecoveryNeverUsesBlockingDrop(t *testing.T) {
+	src, err := os.ReadFile("postgres.go")
+	if err != nil {
+		t.Fatalf("read postgres.go: %v", err)
+	}
+	if bytes.Contains(src, []byte("DROP INDEX IF EXISTS")) {
+		t.Fatal("provider earnings index recovery uses table-blocking DROP INDEX")
+	}
+	if !bytes.Contains(src, []byte("DROP INDEX CONCURRENTLY IF EXISTS")) {
+		t.Fatal("provider earnings index recovery must drop interrupted builds concurrently")
+	}
+}
+
 // TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
 // builds a valid partial unique index on provider_earnings(job_id) without a
 // dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent
@@ -82,15 +95,41 @@ func TestProviderEarningsJobIndex_BootSafe(t *testing.T) {
 	}
 }
 
+func TestEarningsMarketIndexesBootSafe(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	indexes := []string{
+		"idx_usage_request_public_model",
+		"idx_provider_earnings_market_window",
+	}
+	for _, name := range indexes {
+		if !postgresIndexValid(t, s, name) {
+			t.Fatalf("%s missing or invalid after startup", name)
+		}
+	}
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("re-running migrate (restart): %v", err)
+	}
+	for _, name := range indexes {
+		if !postgresIndexValid(t, s, name) {
+			t.Fatalf("%s invalid after re-running migrate", name)
+		}
+	}
+}
+
 func jobIndexValid(t *testing.T, s *PostgresStore) bool {
+	return postgresIndexValid(t, s, "idx_provider_earnings_job")
+}
+
+func postgresIndexValid(t *testing.T, s *PostgresStore, name string) bool {
 	t.Helper()
 	var valid bool
 	if err := s.pool.QueryRow(context.Background(), `
 		SELECT COALESCE((
 			SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE c.relname = 'idx_provider_earnings_job'
-		), false)`).Scan(&valid); err != nil {
-		t.Fatalf("check idx_provider_earnings_job: %v", err)
+			WHERE c.relname = $1
+		), false)`, name).Scan(&valid); err != nil {
+		t.Fatalf("check %s: %v", name, err)
 	}
 	return valid
 }

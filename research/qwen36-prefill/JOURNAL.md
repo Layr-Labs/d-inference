@@ -491,3 +491,16 @@ prefill, cancellation isolation, identity scoping, accounting, and eviction.
 The exact-only library and root wiring are preserved as ordered patches `060`
 and `061` because this agent cannot push the nested library remote. See
 `notes/060`.
+
+## 2026-08-24T10:04Z — simultaneous exact prompt fork implemented
+
+Added a separate default-off live-row experiment for overlapping Qwen
+requests. CBv2 now detects compatible identical/shared token prefixes before
+planning, runs the prefix on one leader, and forks finalized full-attention K/V
+plus all recurrent owners before independent suffix/decode.
+
+B2/B4 fixtures pin cold-control token checksums, exact saved token-cell
+accounting, follower and leader cancellation, post-fork follower departure,
+independent clone ownership, and zero terminal reservations. The prefill-work
+ceiling is `B / [B - (B - 1)s]`; B4 reaches 2.5x at 80% common-prefix overlap
+and approaches 4x for long identical prompts. See `notes/061`.

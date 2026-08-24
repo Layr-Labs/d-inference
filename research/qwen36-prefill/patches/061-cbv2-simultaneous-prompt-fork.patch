@@ -1,0 +1,1677 @@
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+index c3d0eaf..11ba6fd 100644
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -211,6 +211,9 @@ public struct Qwen35TextConfiguration: Codable, Sendable {
+         // tier restores the complete hybrid boundary: 10 attention K/V rows
+         // plus all 30 request-owned GDN conv/SSM states and frontier logits.
+         capabilities.supportsExactStatePrefixReuse = true
++        // Every ordinary finalized prompt boundary has the same complete
++        // ownership shape, so simultaneous rows may fork there as well.
++        capabilities.supportsPromptStateForking = true
+         capabilities.supportsMTP = true
+         capabilities.supportsCompactRecurrentMTPReplay = true
+         // Rectangular [B, L] prompt cohorts: one recurrent state row per
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2+PromptFork.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2+PromptFork.swift
+new file mode 100644
+index 0000000..504a79f
+--- /dev/null
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2+PromptFork.swift
+@@ -0,0 +1,322 @@
++// EngineLoopV2+PromptFork.swift
++//
++// Finalized-boundary integration for the default-off simultaneous prompt
++// fork experiment. Followers never share mutable request wrappers: they are
++// parked at zero progress, then receive independently registered KV and
++// recurrent state before ordinary scheduling can see them again.
++
++import Foundation
++
++extension EngineLoopV2 {
++    /// Detect cohorts before planning. A running, still-prefilling row wins
++    /// leader selection over waiters so a near-simultaneous arrival can join
++    /// work that has started but has not crossed the chosen boundary.
++    func preparePromptForkCohorts() {
++        guard promptFork.isActive else { return }
++        attachPromptForkFollowers()
++
++        let records = scheduler.running + scheduler.waiting
++        let candidates = records.compactMap {
++            rec -> CBv2PromptForkCandidate? in
++            guard promptForkCandidateEligible(rec),
++                promptFork.cohortsByLeader[rec.id] == nil,
++                promptFork.leaderByFollower[rec.id] == nil
++            else { return nil }
++            return CBv2PromptForkCandidate(
++                id: rec.id,
++                promptTokens: rec.request.promptTokens,
++                priority: rec.request.priority,
++                cacheSalt: rec.request.cacheSalt)
++        }
++
++        for plan in CBv2PromptForkPlanner.plan(
++            candidates, minimumTokens: promptFork.minimumTokens)
++        {
++            guard promptFork.cohortsByLeader[plan.leader] == nil,
++                promptFork.leaderByFollower[plan.leader] == nil,
++                let leader = scheduler.record(for: plan.leader),
++                promptForkCandidateEligible(leader),
++                leader.numComputedTokens <= plan.forkTokens,
++                plan.forkTokens < leader.request.promptTokens.count
++            else { continue }
++
++            var parked: [CBv2RequestID] = []
++            for id in plan.followers {
++                guard promptFork.leaderByFollower[id] == nil,
++                    let follower = scheduler.record(for: id),
++                    promptForkFollowerEligible(follower, boundary: plan.forkTokens),
++                    scheduler.parkPromptForkFollower(id)
++                else { continue }
++                parked.append(id)
++            }
++            guard !parked.isEmpty else { continue }
++
++            leader.promptForkBoundary = plan.forkTokens
++            promptFork.cohortsByLeader[leader.id] = CBv2PromptForkCohort(
++                leader: leader.id, followers: parked, forkTokens: plan.forkTokens)
++            for id in parked { promptFork.leaderByFollower[id] = leader.id }
++            promptFork.recordFormed()
++        }
++    }
++
++    /// Clone every cohort whose leader has reached its exact, committed
++    /// boundary. Called only after the prior in-flight step finalized.
++    func forkReadyPromptForkCohorts() {
++        guard promptFork.isActive else { return }
++        for leaderID in Array(promptFork.cohortsByLeader.keys) {
++            guard let cohort = promptFork.cohortsByLeader[leaderID],
++                let leader = scheduler.record(for: leaderID)
++            else {
++                abandonPromptForkCohort(leaderID, countLiveFollowersAsFallback: true)
++                continue
++            }
++            if leader.numComputedTokens > cohort.forkTokens
++                || leader.generatedTokenCount > 0
++            {
++                abandonPromptForkCohort(leaderID, countLiveFollowersAsFallback: true)
++                continue
++            }
++            guard leader.numComputedTokens == cohort.forkTokens else { continue }
++            forkPromptCohort(cohort, leader: leader)
++        }
++    }
++
++    /// Remove prompt-fork dependency edges before ordinary request teardown.
++    /// A cancelled leader releases its live followers to cold prefill; a
++    /// cancelled follower simply leaves the still-viable cohort.
++    func promptForkRequestWillFinish(_ id: CBv2RequestID) {
++        guard promptFork.isActive else { return }
++        if promptFork.cohortsByLeader[id] != nil {
++            abandonPromptForkCohort(id, countLiveFollowersAsFallback: true)
++            return
++        }
++        guard let leaderID = promptFork.leaderByFollower.removeValue(forKey: id),
++            var cohort = promptFork.cohortsByLeader[leaderID]
++        else { return }
++        cohort.followers.removeAll { $0 == id }
++        if cohort.followers.isEmpty {
++            promptFork.cohortsByLeader.removeValue(forKey: leaderID)
++            scheduler.record(for: leaderID)?.promptForkBoundary = nil
++            promptFork.recordAbandoned()
++        } else {
++            promptFork.cohortsByLeader[leaderID] = cohort
++        }
++    }
++
++    private func promptForkCandidateEligible(_ rec: CBv2ScheduledRequest) -> Bool {
++        guard !rec.cancelRequested, !rec.isPaused, !rec.isPromptForkFollower,
++            rec.pendingSamples == 0, rec.generatedTokenCount == 0,
++            rec.request.prefixCacheEnabled,
++            rec.request.multimodal == nil,
++            rec.request.positionState == nil,
++            rec.prefixReusePlan == nil,
++            exactFrontierLogits[rec.id] == nil,
++            rec.request.promptTokens.count > promptFork.minimumTokens
++        else { return false }
++
++        switch rec.status {
++        case .waiting:
++            return rec.numComputedTokens == 0
++                && kvStates[rec.id] == nil
++                && recurrentStates[rec.id] == nil
++        case .running:
++            return rec.numComputedTokens < rec.request.promptTokens.count
++        case .preempted, .finished(_):
++            return false
++        }
++    }
++
++    private func promptForkFollowerEligible(
++        _ rec: CBv2ScheduledRequest, boundary: Int
++    ) -> Bool {
++        rec.status == .waiting
++            && rec.numComputedTokens == 0
++            && rec.pendingSamples == 0
++            && !rec.cancelRequested
++            && !rec.isPromptForkFollower
++            && rec.request.prefixCacheEnabled
++            && rec.request.multimodal == nil
++            && rec.request.positionState == nil
++            && rec.prefixReusePlan == nil
++            && rec.request.promptTokens.count > boundary
++            && kvStates[rec.id] == nil
++            && recurrentStates[rec.id] == nil
++    }
++
++    /// Admit arrivals into an already-planned cohort when they share the
++    /// cohort's exact boundary and the leader has not crossed it.
++    private func attachPromptForkFollowers() {
++        guard !promptFork.cohortsByLeader.isEmpty else { return }
++        let waiting = scheduler.waiting
++        for leader in scheduler.running + scheduler.waiting {
++            guard var cohort = promptFork.cohortsByLeader[leader.id],
++                leader.numComputedTokens <= cohort.forkTokens
++            else { continue }
++            let prefix = leader.request.promptTokens.prefix(cohort.forkTokens)
++            for follower in waiting {
++                guard promptFork.leaderByFollower[follower.id] == nil,
++                    follower.id != leader.id,
++                    follower.request.priority == leader.request.priority,
++                    follower.request.cacheSalt == leader.request.cacheSalt,
++                    promptForkFollowerEligible(follower, boundary: cohort.forkTokens),
++                    follower.request.promptTokens.starts(with: prefix),
++                    scheduler.parkPromptForkFollower(follower.id)
++                else { continue }
++                cohort.followers.append(follower.id)
++                promptFork.leaderByFollower[follower.id] = leader.id
++            }
++            promptFork.cohortsByLeader[leader.id] = cohort
++        }
++    }
++
++    private func forkPromptCohort(
++        _ cohort: CBv2PromptForkCohort,
++        leader: CBv2ScheduledRequest
++    ) {
++        guard let forkingBackend = backend as? any CBv2ExactKVForkingBackend,
++            let leaderKV = kvStates[leader.id],
++            let leaderRecurrent = recurrentStates[leader.id],
++            leader.pendingSamples == 0
++        else {
++            abandonPromptForkCohort(leader.id, countLiveFollowersAsFallback: true)
++            return
++        }
++
++        let kvSnapshot: CBv2KVForkSnapshot
++        let recurrentSnapshot: CBv2RecurrentStateSnapshot
++        do {
++            kvSnapshot = try forkingBackend.makeForkSnapshot(
++                of: leaderKV, layerKinds: layerKinds)
++            guard kvSnapshot.tokenCount == cohort.forkTokens else {
++                throw CBv2KVError.backendIneligible(
++                    reason: "leader KV does not match prompt-fork boundary")
++            }
++            recurrentSnapshot = try leaderRecurrent.snapshotVisibleState(detaching: false)
++        } catch {
++            abandonPromptForkCohort(leader.id, countLiveFollowersAsFallback: true)
++            return
++        }
++
++        var forked: [CBv2RequestID] = []
++        var fallbackRows = 0
++        var logicalBytes = 0
++        for followerID in cohort.followers {
++            guard let follower = scheduler.record(for: followerID),
++                follower.isPromptForkFollower
++            else { continue }
++
++            var reserved = false
++            var clonedKV: [CBv2SequenceKV?]?
++            var clonedRecurrent: CBv2RecurrentRequestState?
++            do {
++                try capacity?.reserve(
++                    id: followerID, additionalTokens: cohort.forkTokens)
++                reserved = capacity != nil
++
++                let maxLength =
++                    follower.request.promptTokens.count + max(follower.request.maxTokens, 1)
++                let state = try forkingBackend.makeSequenceState(
++                    forking: kvSnapshot,
++                    layerKinds: layerKinds,
++                    maxLength: maxLength)
++                clonedKV = state
++
++                let recurrent = try CBv2RecurrentRequestState(restoring: recurrentSnapshot)
++                clonedRecurrent = recurrent
++                let existingRecurrentBytes = recurrentStates.values.reduce(0) {
++                    cbv2PromptForkSaturatingAdd($0, $1.byteCount)
++                }
++                let combined = cbv2PromptForkSaturatingAdd(
++                    backend.bytesReserved,
++                    cbv2PromptForkSaturatingAdd(existingRecurrentBytes, recurrent.byteCount))
++                guard combined <= backend.bytesCapacity else {
++                    throw CBv2KVError.capacityExhausted(
++                        needed: recurrent.byteCount,
++                        available: max(
++                            0,
++                            backend.bytesCapacity - backend.bytesReserved
++                                - existingRecurrentBytes))
++                }
++
++                kvStates[followerID] = state
++                recurrentStates[followerID] = recurrent
++                guard scheduler.activatePromptForkFollower(
++                    followerID, computedTokens: cohort.forkTokens)
++                else {
++                    kvStates.removeValue(forKey: followerID)
++                    recurrentStates.removeValue(forKey: followerID)
++                    throw CBv2RecurrentStateError.lifecycleViolation(
++                        "prompt-fork follower activation lost its parked record")
++                }
++                clonedKV = nil
++                clonedRecurrent = nil
++                forked.append(followerID)
++                let followerKVBytes = state.reduce(0) {
++                    cbv2PromptForkSaturatingAdd($0, $1?.byteCount ?? 0)
++                }
++                logicalBytes = cbv2PromptForkSaturatingAdd(
++                    logicalBytes,
++                    cbv2PromptForkSaturatingAdd(followerKVBytes, recurrent.byteCount))
++            } catch {
++                if let state = clonedKV { backend.release(state) }
++                if let recurrent = clonedRecurrent {
++                    do { try recurrent.release() } catch {
++                        preconditionFailure(
++                            "CBv2 prompt-fork recurrent cleanup failed: \(error)")
++                    }
++                }
++                if reserved {
++                    capacity?.unreserve(id: followerID, tokens: cohort.forkTokens)
++                }
++                scheduler.abandonPromptForkFollower(followerID)
++                fallbackRows += 1
++            }
++        }
++
++        leader.promptForkBoundary = nil
++        promptFork.cohortsByLeader.removeValue(forKey: leader.id)
++        for id in cohort.followers { promptFork.leaderByFollower.removeValue(forKey: id) }
++        promptFork.recordFallback(rows: fallbackRows)
++        if forked.isEmpty {
++            promptFork.recordAbandoned()
++        } else {
++            promptFork.recordFork(
++                followers: forked.count,
++                tokensSaved: cbv2PromptForkSaturatingMultiply(
++                    cohort.forkTokens, forked.count),
++                logicalBytes: logicalBytes)
++            promptFork.onForkForTesting?(leader.id, forked, cohort.forkTokens)
++        }
++    }
++
++    private func abandonPromptForkCohort(
++        _ leaderID: CBv2RequestID,
++        countLiveFollowersAsFallback: Bool
++    ) {
++        guard let cohort = promptFork.cohortsByLeader.removeValue(forKey: leaderID)
++        else { return }
++        scheduler.record(for: leaderID)?.promptForkBoundary = nil
++        var fallbackRows = 0
++        for id in cohort.followers {
++            promptFork.leaderByFollower.removeValue(forKey: id)
++            if scheduler.record(for: id) != nil {
++                scheduler.abandonPromptForkFollower(id)
++                fallbackRows += 1
++            }
++        }
++        if countLiveFollowersAsFallback {
++            promptFork.recordFallback(rows: fallbackRows)
++        }
++        promptFork.recordAbandoned()
++    }
++}
++
++private func cbv2PromptForkSaturatingAdd(_ lhs: Int, _ rhs: Int) -> Int {
++    let (sum, overflow) = lhs.addingReportingOverflow(rhs)
++    return overflow ? Int.max : sum
++}
++
++private func cbv2PromptForkSaturatingMultiply(_ lhs: Int, _ rhs: Int) -> Int {
++    let (product, overflow) = lhs.multipliedReportingOverflow(by: rhs)
++    return overflow ? Int.max : product
++}
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+index 1774ad0..30d9be9 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+@@ -513,6 +513,10 @@ public final class EngineLoopV2: @unchecked Sendable {
+     /// Non-nil only when prefix caching is active (instance supplied AND
+     /// `CBv2SchedulerConfig.enablePrefixCache`).
+     let prefixCache: CBv2PrefixCache?
++    /// Default-off simultaneous common-prefix coalescing. The coordinator
++    /// owns only cohort metadata/counters; KV and recurrent rows remain
++    /// request-owned by this loop.
++    let promptFork: CBv2PromptForkCoordinator
+     /// MTP (speculative decoding) driver state, or nil (byte-identical
+     /// plain-decode behavior). Round logic lives in EngineLoopV2+MTP.swift.
+     let mtp: CBv2MTPRoundDriver?
+@@ -643,6 +647,12 @@ public final class EngineLoopV2: @unchecked Sendable {
+         }
+     }
+ 
++    /// Capability/configuration and cumulative execution evidence for exact
++    /// simultaneous prompt forking.
++    func promptForkActivity() -> CBv2PromptForkActivity {
++        promptFork.activity()
++    }
++
+     /// Teacher-forced scoring EXECUTION evidence (`teacherForcedTop1`).
+     /// Incremented at the forwards themselves — the prompt's chunked
+     /// prefill and the continuation's one-token decodes — so a witness that
+@@ -701,6 +711,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+         scheduler: SchedulerV2,
+         capacity: CBv2StepCapacity?,
+         prefixCache: CBv2PrefixCache? = nil,
++        promptFork: CBv2PromptForkCoordinator? = nil,
+         mtp: CBv2MTPRoundDriver? = nil,
+         config: CBv2EngineLoopConfig,
+         gauges: CBv2EngineGauges
+@@ -714,6 +725,13 @@ public final class EngineLoopV2: @unchecked Sendable {
+         self.scheduler = scheduler
+         self.capacity = capacity
+         self.prefixCache = prefixCache
++        self.promptFork =
++            promptFork
++            ?? CBv2PromptForkCoordinator(
++                isEnabled: false,
++                isSupported: CBv2PromptForkExperiment.isSupported(
++                    model: model, layerKinds: layerKinds, backend: backend),
++                minimumTokens: 32)
+         self.mtp = mtp
+         self.config = config
+         self.gauges = gauges
+@@ -1253,6 +1271,11 @@ public final class EngineLoopV2: @unchecked Sendable {
+             leasePreemptionsPendingFinalize.removeAll(keepingCapacity: true)
+         }
+ 
++        // Form cohorts only at a quiescent scheduler boundary, then publish
++        // any leader that has just reached its committed fork frontier.
++        preparePromptForkCohorts()
++        forkReadyPromptForkCohorts()
++
+         guard scheduler.hasWork else {
+             // Idle: no future step will rebind the eager caches, so drop
+             // their row bindings now — otherwise the last batch's (retired)
+@@ -2496,6 +2519,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+     // MARK: Request completion
+ 
+     func finishRequest(_ id: CBv2RequestID, reason: CBv2FinishReason) {
++        promptForkRequestWillFinish(id)
+         // Ids are legally reusable after finish: drop the per-id capacity
+         // requeue count on EVERY finish path (including the error-finish
+         // that exhausted it), or a reused id inherits the previous
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
+index fbcc0f6..602c609 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
+@@ -156,6 +156,12 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+         loop.packedPrefillActivity()
+     }
+ 
++    /// Default-off simultaneous prompt-fork capability and cumulative
++    /// execution evidence.
++    public func promptForkActivity() -> CBv2PromptForkActivity {
++        loop.promptForkActivity()
++    }
++
+     /// Cumulative MTP (speculative decoding) counters, or nil when MTP is
+     /// inactive (no drafter, config/kill-switch off, or a model that cannot
+     /// drive rounds). Lock-protected snapshot — safe to poll from any
+@@ -181,6 +187,7 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+         loopConfig: CBv2EngineLoopConfig = CBv2EngineLoopConfig(),
+         admissionConfig: AdmissionV2.Config = AdmissionV2.Config(),
+         prefixCache: CBv2PrefixCache? = nil,
++        promptForkConfig: CBv2PromptForkConfig = CBv2PromptForkConfig(),
+         mtpDrafter: (any CBv2MTPDrafter)? = nil,
+         mtpConfig: CBv2MTPConfig = CBv2MTPConfig()
+     ) {
+@@ -331,6 +338,11 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+             log.info(
+                 "CBv2 mixed-step prefill cap: \(cap, privacy: .public) tokens")
+         }
++        let promptFork = CBv2PromptForkCoordinator(
++            isEnabled: promptForkConfig.enabled,
++            isSupported: CBv2PromptForkExperiment.isSupported(
++                model: model, layerKinds: layerKinds, backend: backend),
++            minimumTokens: promptForkConfig.minimumPrefixTokens)
+         self.loop = EngineLoopV2(
+             model: model,
+             layerKinds: layerKinds,
+@@ -341,6 +353,7 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+             scheduler: scheduler,
+             capacity: admission,
+             prefixCache: activePrefixCache,
++            promptFork: promptFork,
+             mtp: mtpDriver,
+             config: loopConfig,
+             gauges: gauges)
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/PromptForkV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/PromptForkV2.swift
+new file mode 100644
+index 0000000..ce94c9c
+--- /dev/null
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/PromptForkV2.swift
+@@ -0,0 +1,353 @@
++// PromptForkV2.swift
++//
++// Exact, simultaneous prompt-prefix coalescing primitives. This is deliberately
++// separate from the durable prefix cache:
++//  - the donor remains live while every follower is forked;
++//  - the fork happens only at a finalized engine-step boundary;
++//  - every follower receives request-owned KV and recurrent wrappers before it
++//    is allowed to schedule again.
++//
++// The experiment is default-off. Unknown models/backends fail closed.
++
++import Foundation
++import MLX
++
++// MARK: - Exact KV snapshot/fork contract
++
++/// One quiescent request's exact per-layer KV state at a uniform token
++/// boundary. Snapshot arrays are immutable views owned by the live donor until
++/// every destination has been constructed.
++public struct CBv2KVForkSnapshot {
++    public let tokenCount: Int
++    public let layers: [(keys: MLXArray, values: MLXArray, offset: Int)?]
++
++    public init(
++        tokenCount: Int,
++        layers: [(keys: MLXArray, values: MLXArray, offset: Int)?]
++    ) {
++        self.tokenCount = tokenCount
++        self.layers = layers
++    }
++}
++
++/// Optional backend refinement for exact live-row forking. Conformance is an
++/// explicit proof: ordinary `CBv2KVBackend` implementations never inherit
++/// support merely because they expose prefix-cache snapshots.
++public protocol CBv2ExactKVForkingBackend: CBv2KVBackend {
++    /// Capture a uniform, finalized boundary from `state`. Must reject
++    /// layouts whose complete live state cannot be represented exactly.
++    func makeForkSnapshot(
++        of state: [CBv2SequenceKV?],
++        layerKinds: [CBv2LayerKind]
++    ) throws -> CBv2KVForkSnapshot
++
++    /// Construct independent request-owned rows from `snapshot`. A later
++    /// write or release of either donor or destination must not alter the
++    /// other.
++    func makeSequenceState(
++        forking snapshot: CBv2KVForkSnapshot,
++        layerKinds: [CBv2LayerKind],
++        maxLength: Int
++    ) throws -> [CBv2SequenceKV?]
++}
++
++/// Default-off simultaneous prompt coalescing experiment.
++///
++/// `enabled: nil` reads `DARKBLOOM_CBV2_PROMPT_FORK`; an absent or
++/// unrecognized value is false. Tests and controlled callers can pass an
++/// explicit value without mutating process-global environment state.
++public struct CBv2PromptForkConfig: Sendable, Equatable {
++    public var enabled: Bool
++    public var minimumPrefixTokens: Int
++
++    public init(enabled: Bool? = nil, minimumPrefixTokens: Int = 32) {
++        self.enabled = enabled ?? CBv2PromptForkExperiment.environmentEnabled()
++        self.minimumPrefixTokens = max(1, minimumPrefixTokens)
++    }
++}
++
++// MARK: - Experiment capability and activity
++
++public struct CBv2PromptForkActivity: Sendable, Equatable {
++    public let isEnabled: Bool
++    public let isSupported: Bool
++    public let cohortsFormed: Int
++    public let cohortsForked: Int
++    public let cohortsAbandoned: Int
++    public let followerRowsForked: Int
++    public let followerRowsFellBack: Int
++    public let prefillTokensSaved: Int
++    /// Cumulative logical bytes installed into follower-owned KV/recurrent
++    /// wrappers at the fork boundary. Recurrent roots may initially be shared
++    /// immutably, but admission still charges every row's independent future
++    /// generations, so this deliberately reports the conservative logical
++    /// ownership charge.
++    public let logicalStateBytesForked: Int
++
++    public init(
++        isEnabled: Bool,
++        isSupported: Bool,
++        cohortsFormed: Int = 0,
++        cohortsForked: Int = 0,
++        cohortsAbandoned: Int = 0,
++        followerRowsForked: Int = 0,
++        followerRowsFellBack: Int = 0,
++        prefillTokensSaved: Int = 0,
++        logicalStateBytesForked: Int = 0
++    ) {
++        self.isEnabled = isEnabled
++        self.isSupported = isSupported
++        self.cohortsFormed = cohortsFormed
++        self.cohortsForked = cohortsForked
++        self.cohortsAbandoned = cohortsAbandoned
++        self.followerRowsForked = followerRowsForked
++        self.followerRowsFellBack = followerRowsFellBack
++        self.prefillTokensSaved = prefillTokensSaved
++        self.logicalStateBytesForked = logicalStateBytesForked
++    }
++}
++
++enum CBv2PromptForkExperiment {
++    static let environmentKey = "DARKBLOOM_CBV2_PROMPT_FORK"
++
++    static func environmentEnabled(
++        _ environment: [String: String] = ProcessInfo.processInfo.environment
++    ) -> Bool {
++        guard let raw = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
++            .lowercased()
++        else { return false }
++        return ["1", "true", "yes", "on"].contains(raw)
++    }
++
++    static func isSupported(
++        model: CBv2SteppableModel,
++        layerKinds: [CBv2LayerKind],
++        backend: CBv2KVBackend
++    ) -> Bool {
++        guard
++            (model as? any CBv2ModelCapabilityProviding)?
++                .cbv2Capabilities.supportsPromptStateForking == true,
++            (model as? any CBv2RecurrentSteppableModel)?.recurrentStateSpec != nil,
++            backend is any CBv2ExactKVForkingBackend,
++            !layerKinds.isEmpty
++        else { return false }
++
++        // Qwen 3.5/3.6 exposes only its ten owning full-attention rows here;
++        // all other transformer layers live in the recurrent state object.
++        // Refuse windowed and KV-borrowing layouts until their exact live-row
++        // snapshots have an equally explicit fork contract.
++        return layerKinds.allSatisfy { kind in
++            kind.sharesKVWithLayer == nil && kind.attention == .full
++        }
++    }
++}
++
++// MARK: - Pure cohort planning
++
++struct CBv2PromptForkCandidate {
++    let id: CBv2RequestID
++    let promptTokens: [Int]
++    let priority: Int
++    let cacheSalt: String?
++}
++
++struct CBv2PromptForkPlan {
++    let leader: CBv2RequestID
++    let followers: [CBv2RequestID]
++    let forkTokens: Int
++}
++
++enum CBv2PromptForkPlanner {
++    private struct ExactKey: Hashable {
++        let promptTokens: [Int]
++        let priority: Int
++        let cacheSalt: String?
++    }
++
++    /// Deepest-first exact planning:
++    ///  1. identical prompts form their own cohorts at `P - 1`;
++    ///  2. remaining rows greedily take the deepest pairwise common prefix,
++    ///     then absorb every row sharing that same prefix.
++    ///
++    /// Leaving one prompt token after the boundary is load-bearing: followers
++    /// never inherit a sampled token or sampler transaction. They resume with
++    /// their own final/shared-or-divergent prompt token and sample
++    /// independently through the ordinary rectangular decode path.
++    static func plan(
++        _ input: [CBv2PromptForkCandidate],
++        minimumTokens: Int
++    ) -> [CBv2PromptForkPlan] {
++        let minimumTokens = max(1, minimumTokens)
++        var remaining = input
++        var plans: [CBv2PromptForkPlan] = []
++
++        var exact: [ExactKey: [CBv2PromptForkCandidate]] = [:]
++        var exactOrder: [ExactKey] = []
++        for candidate in remaining {
++            let key = ExactKey(
++                promptTokens: candidate.promptTokens,
++                priority: candidate.priority,
++                cacheSalt: candidate.cacheSalt)
++            if exact[key] == nil { exactOrder.append(key) }
++            exact[key, default: []].append(candidate)
++        }
++        var consumed = Set<CBv2RequestID>()
++        for key in exactOrder {
++            guard let group = exact[key], group.count > 1 else { continue }
++            let forkTokens = key.promptTokens.count - 1
++            guard forkTokens >= minimumTokens else { continue }
++            plans.append(
++                CBv2PromptForkPlan(
++                    leader: group[0].id,
++                    followers: group.dropFirst().map(\.id),
++                    forkTokens: forkTokens))
++            consumed.formUnion(group.map(\.id))
++        }
++        remaining.removeAll { consumed.contains($0.id) }
++
++        while remaining.count > 1 {
++            var best: (first: Int, second: Int, tokens: Int)?
++            for first in 0 ..< remaining.count {
++                for second in (first + 1) ..< remaining.count {
++                    guard compatible(remaining[first], remaining[second]) else { continue }
++                    let tokens = forkableCommonPrefix(
++                        remaining[first].promptTokens,
++                        remaining[second].promptTokens)
++                    guard tokens >= minimumTokens else { continue }
++                    if best == nil || tokens > best!.tokens {
++                        best = (first, second, tokens)
++                    }
++                }
++            }
++            guard let best else { break }
++
++            let seed = remaining[best.first]
++            let prefix = Array(seed.promptTokens.prefix(best.tokens))
++            let members = remaining.enumerated().compactMap {
++                index, candidate -> (Int, CBv2PromptForkCandidate)? in
++                guard compatible(seed, candidate),
++                    candidate.promptTokens.count > best.tokens,
++                    candidate.promptTokens.starts(with: prefix)
++                else { return nil }
++                return (index, candidate)
++            }
++            guard members.count > 1 else {
++                // Defensive: the best pair itself must always be present.
++                remaining.remove(at: best.second)
++                continue
++            }
++            plans.append(
++                CBv2PromptForkPlan(
++                    leader: members[0].1.id,
++                    followers: members.dropFirst().map(\.1.id),
++                    forkTokens: best.tokens))
++            let memberIDs = Set(members.map(\.1.id))
++            remaining.removeAll { memberIDs.contains($0.id) }
++        }
++        return plans
++    }
++
++    static func forkableCommonPrefix(_ lhs: [Int], _ rhs: [Int]) -> Int {
++        let upperBound = min(lhs.count, rhs.count)
++        var count = 0
++        while count < upperBound, lhs[count] == rhs[count] { count += 1 }
++        // Every row must retain one ordinary prompt input after the fork.
++        return min(count, max(0, upperBound - 1))
++    }
++
++    static func compatible(
++        _ lhs: CBv2PromptForkCandidate,
++        _ rhs: CBv2PromptForkCandidate
++    ) -> Bool {
++        lhs.priority == rhs.priority && lhs.cacheSalt == rhs.cacheSalt
++    }
++}
++
++// MARK: - Engine-owned cohort state
++
++struct CBv2PromptForkCohort {
++    let leader: CBv2RequestID
++    var followers: [CBv2RequestID]
++    let forkTokens: Int
++}
++
++final class CBv2PromptForkCoordinator: @unchecked Sendable {
++    let isEnabled: Bool
++    let isSupported: Bool
++    let minimumTokens: Int
++
++    // Engine-thread confined.
++    var cohortsByLeader: [CBv2RequestID: CBv2PromptForkCohort] = [:]
++    var leaderByFollower: [CBv2RequestID: CBv2RequestID] = [:]
++    /// Boundary-only test hook. The live path leaves this nil. It runs after
++    /// follower state publication and accounting, before ordinary scheduling
++    /// resumes, so tests can inspect an exact quiescent fork boundary.
++    var onForkForTesting:
++        ((CBv2RequestID, [CBv2RequestID], Int) -> Void)?
++
++    // Cross-thread activity reads.
++    private let activityLock = NSLock()
++    private var cohortsFormed = 0
++    private var cohortsForked = 0
++    private var cohortsAbandoned = 0
++    private var followerRowsForked = 0
++    private var followerRowsFellBack = 0
++    private var prefillTokensSaved = 0
++    private var logicalStateBytesForked = 0
++
++    init(isEnabled: Bool, isSupported: Bool, minimumTokens: Int) {
++        self.isEnabled = isEnabled
++        self.isSupported = isSupported
++        self.minimumTokens = max(1, minimumTokens)
++    }
++
++    var isActive: Bool { isEnabled && isSupported }
++
++    func recordFormed() {
++        activityLock.lock()
++        cohortsFormed += 1
++        activityLock.unlock()
++    }
++
++    func recordFork(followers: Int, tokensSaved: Int, logicalBytes: Int) {
++        activityLock.lock()
++        cohortsForked += 1
++        followerRowsForked += followers
++        prefillTokensSaved = saturatingAdd(prefillTokensSaved, tokensSaved)
++        logicalStateBytesForked = saturatingAdd(logicalStateBytesForked, logicalBytes)
++        activityLock.unlock()
++    }
++
++    func recordFallback(rows: Int) {
++        guard rows > 0 else { return }
++        activityLock.lock()
++        followerRowsFellBack += rows
++        activityLock.unlock()
++    }
++
++    func recordAbandoned() {
++        activityLock.lock()
++        cohortsAbandoned += 1
++        activityLock.unlock()
++    }
++
++    func activity() -> CBv2PromptForkActivity {
++        activityLock.lock()
++        defer { activityLock.unlock() }
++        return CBv2PromptForkActivity(
++            isEnabled: isEnabled,
++            isSupported: isSupported,
++            cohortsFormed: cohortsFormed,
++            cohortsForked: cohortsForked,
++            cohortsAbandoned: cohortsAbandoned,
++            followerRowsForked: followerRowsForked,
++            followerRowsFellBack: followerRowsFellBack,
++            prefillTokensSaved: prefillTokensSaved,
++            logicalStateBytesForked: logicalStateBytesForked)
++    }
++
++    private func saturatingAdd(_ lhs: Int, _ rhs: Int) -> Int {
++        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
++        return overflow ? Int.max : sum
++    }
++}
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
+index 2ba1f5b..3c7f2ec 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
+@@ -17,6 +17,10 @@ public struct CBv2ModelCapabilities: Sendable, Equatable {
+     /// separate from `supportsPrefixReuse`: a recurrent model must never be
+     /// admitted through the historical KV-only cache by accident.
+     public var supportsExactStatePrefixReuse: Bool
++    /// Exact live-row snapshot/fork at an ordinary finalized prompt boundary.
++    /// This is a separate proof from durable full-prompt caching: prompt
++    /// coalescing may fork at any common-prefix boundary before sampling.
++    public var supportsPromptStateForking: Bool
+     public var supportsPagedKV: Bool
+     public var supportsCompiledDecode: Bool
+     public var supportsPackedPrefill: Bool
+@@ -29,6 +33,7 @@ public struct CBv2ModelCapabilities: Sendable, Equatable {
+     public init(
+         supportsPrefixReuse: Bool = true,
+         supportsExactStatePrefixReuse: Bool = false,
++        supportsPromptStateForking: Bool = false,
+         supportsPagedKV: Bool = true,
+         supportsCompiledDecode: Bool = true,
+         supportsPackedPrefill: Bool = true,
+@@ -37,6 +42,7 @@ public struct CBv2ModelCapabilities: Sendable, Equatable {
+     ) {
+         self.supportsPrefixReuse = supportsPrefixReuse
+         self.supportsExactStatePrefixReuse = supportsExactStatePrefixReuse
++        self.supportsPromptStateForking = supportsPromptStateForking
+         self.supportsPagedKV = supportsPagedKV
+         self.supportsCompiledDecode = supportsCompiledDecode
+         self.supportsPackedPrefill = supportsPackedPrefill
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+index f23206b..af55024 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+@@ -73,6 +73,13 @@ public final class CBv2ScheduledRequest {
+     /// cleared on preemption because the adopted state is discarded.
+     internal var prefixReusePlan: CBv2PrefixReusePlan?
+     internal var prefixReplayBoundarySplits = 0
++    /// A simultaneous-prefix leader may not plan past this exact boundary
++    /// until the engine has forked its finalized KV/recurrent state.
++    internal var promptForkBoundary: Int?
++    /// Zero-progress follower parked behind a live leader. This is distinct
++    /// from stream backpressure (`isPaused`) so consumer resume cannot
++    /// accidentally schedule a row before its state exists.
++    internal var isPromptForkFollower = false
+ 
+     public var id: CBv2RequestID { request.id }
+     public var numTokens: Int { tokens.count }
+@@ -113,10 +120,13 @@ public final class CBv2ScheduledRequest {
+     /// Text requests (no blocks) return `proposed` unchanged.
+     func snappedChunkTokens(start: Int, proposed: Int, budget: Int) -> Int {
+         let unclamped = proposed
+-        let proposed = prefixReusePlan?.clampedChunk(start: start, proposed: proposed) ?? proposed
++        var proposed = prefixReusePlan?.clampedChunk(start: start, proposed: proposed) ?? proposed
+         if proposed < unclamped {
+             prefixReplayBoundarySplits += 1
+         }
++        if let boundary = promptForkBoundary, start < boundary {
++            proposed = min(proposed, boundary - start)
++        }
+         guard proposed > 0, !multimodalBlocks.isEmpty else { return proposed }
+         // Chunks never split blocks, so a chunk can never START strictly
+         // inside one (preemption restarts at 0; adoption is excluded for
+@@ -414,7 +424,8 @@ public final class SchedulerV2 {
+         var idx = 0
+         while idx < running.count, budget > 0, !stopScheduling {
+             let rec = running[idx]
+-            if rec.isPaused || rec.cancelRequested || rec.remainingTokens <= 0
++            if rec.isPaused || rec.isPromptForkFollower || rec.cancelRequested
++                || rec.remainingTokens <= 0
+                 || rec.id == deferredAdmittedID
+             {
+                 idx += 1
+@@ -595,7 +606,7 @@ public final class SchedulerV2 {
+                 // optimistic advance) exactly like the running path skips
+                 // paused rows; later waiting rows may still admit (PR#62
+                 // review).
+-                if rec.isPaused {
++                if rec.isPaused || rec.isPromptForkFollower {
+                     wIdx += 1
+                     continue
+                 }
+@@ -850,6 +861,38 @@ public final class SchedulerV2 {
+     public func pause(_ id: CBv2RequestID) { byID[id]?.isPaused = true }
+     public func resume(_ id: CBv2RequestID) { byID[id]?.isPaused = false }
+ 
++    // MARK: Exact simultaneous-prefix parking
++
++    @discardableResult
++    func parkPromptForkFollower(_ id: CBv2RequestID) -> Bool {
++        guard let rec = byID[id],
++            rec.status == .waiting,
++            rec.numComputedTokens == 0,
++            rec.pendingSamples == 0,
++            !rec.cancelRequested,
++            !rec.isPromptForkFollower
++        else { return false }
++        rec.isPromptForkFollower = true
++        return true
++    }
++
++    @discardableResult
++    func activatePromptForkFollower(_ id: CBv2RequestID, computedTokens: Int) -> Bool {
++        guard let rec = byID[id],
++            rec.status == .waiting,
++            rec.isPromptForkFollower,
++            computedTokens > 0,
++            computedTokens < rec.request.promptTokens.count
++        else { return false }
++        rec.numComputedTokens = computedTokens
++        rec.isPromptForkFollower = false
++        return true
++    }
++
++    func abandonPromptForkFollower(_ id: CBv2RequestID) {
++        byID[id]?.isPromptForkFollower = false
++    }
++
+     // MARK: Chained-decode eligibility
+ 
+     /// The exact row set the next `plan()` would schedule IF it is a pure
+@@ -873,6 +916,7 @@ public final class SchedulerV2 {
+         for rec in running {
+             if rec.cancelRequested { return nil }
+             if rec.isPaused { continue }
++            if rec.isPromptForkFollower { return nil }
+             guard rec.isDecodeReady else { return nil }
+             ids.append(rec.id)
+         }
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
+index e74c209..61e9e9a 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
+@@ -41,7 +41,7 @@ public struct CBv2ContiguousBackendConfig: Sendable {
+ /// initial bytes until its actual allocation exceeds it
+ /// (`max(byteCount, reservation)` per row — see `bytesReserved`), and the
+ /// capacity check + registration are a single atomic section.
+-public final class CBv2ContiguousKVBackend: CBv2KVBackend {
++public final class CBv2ContiguousKVBackend: CBv2KVBackend, CBv2ExactKVForkingBackend {
+ 
+     public let config: CBv2ContiguousBackendConfig
+     public var prefixReuseBackend: CBv2PrefixReuseBackend { .contiguousUnquantized }
+@@ -226,6 +226,108 @@ public final class CBv2ContiguousKVBackend: CBv2KVBackend {
+         return state
+     }
+ 
++    // MARK: - Exact live-row fork
++
++    public func makeForkSnapshot(
++        of state: [CBv2SequenceKV?],
++        layerKinds: [CBv2LayerKind]
++    ) throws -> CBv2KVForkSnapshot {
++        try validate(layerKinds: layerKinds)
++        guard state.count == layerKinds.count, !state.isEmpty else {
++            throw CBv2KVError.backendIneligible(
++                reason: "fork state count \(state.count) != layer count \(layerKinds.count)")
++        }
++
++        var boundary: Int?
++        var layers: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
++        layers.reserveCapacity(layerKinds.count)
++        for (index, kind) in layerKinds.enumerated() {
++            guard kind.sharesKVWithLayer == nil, case .full = kind.attention,
++                let row = state[index]
++            else {
++                throw CBv2KVError.backendIneligible(
++                    reason: "exact fork requires storage-owning full layer \(index)")
++            }
++            let snapshot = row.snapshot()
++            guard snapshot.offset > 0,
++                snapshot.keys.ndim == 4, snapshot.values.ndim == 4,
++                snapshot.keys.dim(0) == 1, snapshot.values.dim(0) == 1,
++                snapshot.keys.dim(1) == kind.kvHeads,
++                snapshot.values.dim(1) == kind.kvHeads,
++                snapshot.keys.dim(2) == snapshot.offset,
++                snapshot.values.dim(2) == snapshot.offset,
++                snapshot.keys.dim(3) == kind.headDim,
++                snapshot.values.dim(3) == kind.headDim
++            else {
++                throw CBv2KVError.backendIneligible(
++                    reason: "layer \(index) cannot represent its complete live fork boundary")
++            }
++            if let boundary {
++                guard boundary == snapshot.offset else {
++                    throw CBv2KVError.backendIneligible(
++                        reason: "fork layers disagree on token boundary")
++                }
++            } else {
++                boundary = snapshot.offset
++            }
++            layers.append(snapshot)
++        }
++        guard let boundary else {
++            throw CBv2KVError.backendIneligible(reason: "fork snapshot has no owning rows")
++        }
++        return CBv2KVForkSnapshot(tokenCount: boundary, layers: layers)
++    }
++
++    public func makeSequenceState(
++        forking snapshot: CBv2KVForkSnapshot,
++        layerKinds: [CBv2LayerKind],
++        maxLength: Int
++    ) throws -> [CBv2SequenceKV?] {
++        try validate(layerKinds: layerKinds)
++        guard snapshot.tokenCount > 0, snapshot.tokenCount <= maxLength,
++            snapshot.layers.count == layerKinds.count
++        else {
++            throw CBv2KVError.backendIneligible(reason: "invalid exact fork boundary")
++        }
++
++        let state = try layerKinds.enumerated().map {
++            index, kind -> CBv2SequenceKV? in
++            guard kind.sharesKVWithLayer == nil, case .full = kind.attention,
++                let entry = snapshot.layers[index],
++                entry.offset == snapshot.tokenCount,
++                entry.keys.ndim == 4,
++                entry.values.ndim == 4,
++                entry.keys.dim(0) == 1,
++                entry.values.dim(0) == 1,
++                entry.keys.dim(1) == kind.kvHeads,
++                entry.values.dim(1) == kind.kvHeads,
++                entry.keys.dim(2) == snapshot.tokenCount,
++                entry.values.dim(2) == snapshot.tokenCount,
++                entry.keys.dim(3) == kind.headDim,
++                entry.values.dim(3) == kind.headDim
++            else {
++                throw CBv2KVError.backendIneligible(
++                    reason: "exact fork layer \(index) does not cover the boundary")
++            }
++            let row = CBv2FullSequenceKV(
++                promptLength: snapshot.tokenCount,
++                maxLength: maxLength,
++                kvHeads: kind.kvHeads,
++                headDim: kind.headDim)
++            // `update` writes into this row's own buffers. The source handles
++            // remain immutable views of the finalized donor generation.
++            _ = row.update(keys: entry.keys, values: entry.values)
++            return row
++        }
++        try registerReserving(
++            state,
++            estimates: rowEstimates(
++                layerKinds: layerKinds,
++                promptLength: snapshot.tokenCount,
++                maxLength: maxLength))
++        return state
++    }
++
+     public func release(_ state: [CBv2SequenceKV?]) {
+         lock.lock()
+         defer { lock.unlock() }
+diff --git a/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
+new file mode 100644
+index 0000000..4060f17
+--- /dev/null
++++ b/Tests/MLXLMTests/CBv2PromptForkEngineTests.swift
+@@ -0,0 +1,225 @@
++import Foundation
++import XCTest
++
++@testable import MLXLMCommon
++
++final class CBv2PromptForkEngineTests: XCTestCase {
++    func testB2IdenticalPromptForkMatchesColdTokenChecksums() async throws {
++        let prompt = [2, 3, 5, 7, 11, 13, 17, 19, 23]
++        let prompts = [prompt, prompt]
++
++        let control = CBv2PromptForkHarness(
++            enabled: false, batchSize: 2, enqueueDelayForTesting: 0.01)
++        let controlStreams = try submit(prompts: prompts, maxTokens: 6, to: control.engine)
++        let controlResults = await cbv2PromptForkCollectAll(controlStreams)
++        let controlCells = control.model.tokenCellsExecuted
++        let controlActivity = control.engine.promptForkActivity()
++        await control.engine.shutdown()
++
++        XCTAssertFalse(controlActivity.isEnabled)
++        XCTAssertTrue(controlActivity.isSupported)
++        XCTAssertEqual(controlActivity.cohortsFormed, 0)
++
++        let candidate = CBv2PromptForkHarness(
++            enabled: true, batchSize: 2, enqueueDelayForTesting: 0.01)
++        let candidateStreams = try submit(
++            prompts: prompts, maxTokens: 6, to: candidate.engine)
++        let candidateResults = await cbv2PromptForkCollectAll(candidateStreams)
++        let candidateCells = candidate.model.tokenCellsExecuted
++        let activity = candidate.engine.promptForkActivity()
++        await candidate.engine.shutdown()
++
++        for rawID in 1 ... 2 {
++            let id = CBv2RequestID(UInt64(rawID))
++            XCTAssertEqual(controlResults[id]?.finishReason, .length)
++            XCTAssertEqual(candidateResults[id]?.finishReason, .length)
++            XCTAssertEqual(
++                cbv2PromptForkChecksum(candidateResults[id]?.tokens ?? []),
++                cbv2PromptForkChecksum(controlResults[id]?.tokens ?? []))
++        }
++        XCTAssertEqual(activity.cohortsFormed, 1)
++        XCTAssertEqual(activity.cohortsForked, 1)
++        XCTAssertEqual(activity.followerRowsForked, 1)
++        XCTAssertEqual(activity.prefillTokensSaved, prompt.count - 1)
++        XCTAssertEqual(controlCells - candidateCells, activity.prefillTokensSaved)
++        XCTAssertGreaterThan(activity.logicalStateBytesForked, 0)
++    }
++
++    func testB4SharedPrefixForkAccountsEveryRowAndFollowerCanLeave()
++        async throws
++    {
++        let common = [2, 3, 5, 7, 11, 13]
++        let prompts = [
++            common + [17, 19],
++            common + [23, 29],
++            common + [4, 6],
++            common + [8, 10],
++        ]
++        let maxTokens = 6
++
++        let control = CBv2PromptForkHarness(
++            enabled: false, batchSize: 4, enqueueDelayForTesting: 0.01)
++        let controlResults = await cbv2PromptForkCollectAll(
++            try submit(prompts: prompts, maxTokens: maxTokens, to: control.engine))
++        await control.engine.shutdown()
++
++        let candidate = CBv2PromptForkHarness(
++            enabled: true, batchSize: 4, enqueueDelayForTesting: 0.01)
++        let forkRelease = DispatchSemaphore(value: 0)
++        candidate.engine.loopForTesting.promptFork.onForkForTesting = {
++            _, followers, boundary in
++            XCTAssertEqual(followers.count, 3)
++            XCTAssertEqual(boundary, common.count)
++            _ = forkRelease.wait(timeout: .now() + 10)
++        }
++
++        let candidateStreams = try submit(
++            prompts: prompts, maxTokens: maxTokens, to: candidate.engine)
++        let collection = Task {
++            await cbv2PromptForkCollectAll(candidateStreams)
++        }
++        let didFork = await cbv2SchedWait {
++            candidate.engine.promptForkActivity().followerRowsForked == 3
++        }
++        XCTAssertTrue(didFork)
++
++        // The hook holds the engine at the exact post-publication boundary:
++        // every row owns and is charged for common-prefix state, but no suffix
++        // assignment has reserved another token yet.
++        let perRowLedger =
++            candidate.engine.admissionForTesting.allocatedBytes(forTokens: common.count)
++        XCTAssertEqual(
++            candidate.engine.admissionForTesting.bytesReserved,
++            4 * perRowLedger)
++        let maxLength = prompts[0].count + maxTokens
++        let perRowBackendBytes = maxLength * 2 * MemoryLayout<Float>.size
++        XCTAssertEqual(candidate.backend.bytesReserved, 4 * perRowBackendBytes)
++        XCTAssertEqual(
++            candidate.engine.promptForkActivity().logicalStateBytesForked,
++            3 * (perRowBackendBytes + 8))
++
++        // This follower now owns real rows. Cancelling it before the next
++        // finalization exercises in-flight rollback/release while the leader
++        // and two surviving followers continue independently.
++        candidate.engine.cancel(CBv2RequestID(2))
++        forkRelease.signal()
++        let candidateResults = await collection.value
++        let activity = candidate.engine.promptForkActivity()
++        await candidate.engine.shutdown()
++
++        XCTAssertEqual(candidateResults[CBv2RequestID(2)]?.finishReason, .cancelled)
++        for rawID in [1, 3, 4] {
++            let id = CBv2RequestID(UInt64(rawID))
++            XCTAssertEqual(candidateResults[id]?.finishReason, .length)
++            XCTAssertEqual(
++                cbv2PromptForkChecksum(candidateResults[id]?.tokens ?? []),
++                cbv2PromptForkChecksum(controlResults[id]?.tokens ?? []))
++        }
++        XCTAssertEqual(activity.cohortsForked, 1)
++        XCTAssertEqual(activity.followerRowsForked, 3)
++        XCTAssertEqual(activity.prefillTokensSaved, 3 * common.count)
++        XCTAssertEqual(activity.followerRowsFellBack, 0)
++        XCTAssertEqual(candidate.backend.bytesReserved, 0)
++        XCTAssertEqual(candidate.engine.admissionForTesting.bytesReserved, 0)
++    }
++
++    func testFollowerCancellationBeforeBoundaryAbandonsCohortWithoutFork()
++        async throws
++    {
++        let gate = CBv2PromptForkForwardGate()
++        let harness = CBv2PromptForkHarness(
++            enabled: true,
++            batchSize: 2,
++            chunkSize: 2,
++            gate: gate,
++            enqueueDelayForTesting: 0.02)
++        let prompt = [2, 3, 5, 7, 11, 13, 17, 19]
++        let streams = try submit(
++            prompts: [prompt, prompt], maxTokens: 4, to: harness.engine)
++        let collection = Task {
++            await cbv2PromptForkCollectAll(streams)
++        }
++
++        let didForm = await cbv2SchedWait {
++            harness.engine.promptForkActivity().cohortsFormed == 1
++        }
++        XCTAssertTrue(didForm)
++        harness.engine.cancel(CBv2RequestID(2))
++        gate.release.signal()
++        let results = await collection.value
++        let activity = harness.engine.promptForkActivity()
++        await harness.engine.shutdown()
++
++        XCTAssertEqual(results[CBv2RequestID(1)]?.finishReason, .length)
++        XCTAssertEqual(results[CBv2RequestID(2)]?.finishReason, .cancelled)
++        XCTAssertEqual(activity.cohortsForked, 0)
++        XCTAssertEqual(activity.cohortsAbandoned, 1)
++        XCTAssertEqual(activity.followerRowsForked, 0)
++        XCTAssertEqual(activity.followerRowsFellBack, 0)
++        XCTAssertEqual(harness.backend.bytesReserved, 0)
++        XCTAssertEqual(harness.engine.admissionForTesting.bytesReserved, 0)
++    }
++
++    func testLeaderCancellationBeforeBoundaryReleasesFollowerToColdPrefill()
++        async throws
++    {
++        let prompt = [2, 3, 5, 7, 11, 13, 17, 19]
++        let control = CBv2PromptForkHarness(enabled: false, batchSize: 1)
++        let controlResults = await cbv2PromptForkCollectAll(
++            try submit(prompts: [prompt], maxTokens: 4, to: control.engine))
++        await control.engine.shutdown()
++
++        let gate = CBv2PromptForkForwardGate()
++        let harness = CBv2PromptForkHarness(
++            enabled: true,
++            batchSize: 2,
++            chunkSize: 2,
++            gate: gate,
++            enqueueDelayForTesting: 0.02)
++        let streams = try submit(
++            prompts: [prompt, prompt], maxTokens: 4, to: harness.engine)
++        let collection = Task {
++            await cbv2PromptForkCollectAll(streams)
++        }
++
++        let didForm = await cbv2SchedWait {
++            harness.engine.promptForkActivity().cohortsFormed == 1
++        }
++        XCTAssertTrue(didForm)
++        harness.engine.cancel(CBv2RequestID(1))
++        gate.release.signal()
++        let results = await collection.value
++        let activity = harness.engine.promptForkActivity()
++        await harness.engine.shutdown()
++
++        XCTAssertEqual(results[CBv2RequestID(1)]?.finishReason, .cancelled)
++        XCTAssertEqual(results[CBv2RequestID(2)]?.finishReason, .length)
++        XCTAssertEqual(
++            cbv2PromptForkChecksum(results[CBv2RequestID(2)]?.tokens ?? []),
++            cbv2PromptForkChecksum(controlResults[CBv2RequestID(1)]?.tokens ?? []))
++        XCTAssertEqual(activity.cohortsForked, 0)
++        XCTAssertEqual(activity.cohortsAbandoned, 1)
++        XCTAssertEqual(activity.followerRowsForked, 0)
++        XCTAssertEqual(activity.followerRowsFellBack, 1)
++        XCTAssertEqual(harness.backend.bytesReserved, 0)
++        XCTAssertEqual(harness.engine.admissionForTesting.bytesReserved, 0)
++    }
++
++    private func submit(
++        prompts: [[Int]],
++        maxTokens: Int,
++        to engine: EngineV2
++    ) throws -> [(CBv2RequestID, AsyncStream<CBv2Event>)] {
++        try prompts.enumerated().map { index, prompt in
++            let id = CBv2RequestID(UInt64(index + 1))
++            let stream = try engine.submit(
++                CBv2Request(
++                    id: id,
++                    promptTokens: prompt,
++                    sampling: .init(temperature: 0),
++                    maxTokens: maxTokens,
++                    prefixCacheEnabled: true))
++            return (id, stream)
++        }
++    }
++}
+diff --git a/Tests/MLXLMTests/CBv2PromptForkPrimitiveTests.swift b/Tests/MLXLMTests/CBv2PromptForkPrimitiveTests.swift
+new file mode 100644
+index 0000000..adf892b
+--- /dev/null
++++ b/Tests/MLXLMTests/CBv2PromptForkPrimitiveTests.swift
+@@ -0,0 +1,147 @@
++import MLX
++import XCTest
++
++@testable import MLXLMCommon
++
++final class CBv2PromptForkPrimitiveTests: XCTestCase {
++    func testExperimentDefaultsOffAndRecognizesOnlyExplicitOptIn() {
++        XCTAssertFalse(CBv2PromptForkExperiment.environmentEnabled([:]))
++        XCTAssertFalse(
++            CBv2PromptForkExperiment.environmentEnabled([
++                CBv2PromptForkExperiment.environmentKey: "disabled"
++            ]))
++        XCTAssertTrue(
++            CBv2PromptForkExperiment.environmentEnabled([
++                CBv2PromptForkExperiment.environmentKey: " YES "
++            ]))
++    }
++
++    func testPlannerBuildsDeepestCompatibleSharedPrefixCohort() {
++        let common = [2, 3, 5, 7]
++        let candidates = [
++            CBv2PromptForkCandidate(
++                id: CBv2RequestID(1), promptTokens: common + [11, 13],
++                priority: 0, cacheSalt: "scope-a"),
++            CBv2PromptForkCandidate(
++                id: CBv2RequestID(2), promptTokens: common + [17, 19],
++                priority: 0, cacheSalt: "scope-a"),
++            CBv2PromptForkCandidate(
++                id: CBv2RequestID(3), promptTokens: common + [23, 29],
++                priority: 0, cacheSalt: "scope-b"),
++            CBv2PromptForkCandidate(
++                id: CBv2RequestID(4), promptTokens: common + [31, 37],
++                priority: 1, cacheSalt: "scope-a"),
++        ]
++
++        let plans = CBv2PromptForkPlanner.plan(candidates, minimumTokens: 2)
++
++        XCTAssertEqual(plans.count, 1)
++        XCTAssertEqual(plans[0].leader, CBv2RequestID(1))
++        XCTAssertEqual(plans[0].followers, [CBv2RequestID(2)])
++        XCTAssertEqual(plans[0].forkTokens, common.count)
++    }
++
++    func testContiguousKVForkCreatesIndependentRegisteredRows() throws {
++        let kinds = CBv2PromptForkHarness.layerKinds
++        let backend = CBv2ContiguousKVBackend(
++            config: .init(bytesCapacity: 1 << 20, kvDType: .float32))
++        let donor = try backend.makeSequenceState(
++            layerKinds: kinds, promptLength: 3, maxLength: 8)
++        let keys = MLXArray([Float(1), 2, 3]).reshaped([1, 1, 3, 1])
++        let values = MLXArray([Float(11), 12, 13]).reshaped([1, 1, 3, 1])
++        _ = donor[0]!.update(keys: keys, values: values)
++        eval(donor[0]!.snapshot().keys, donor[0]!.snapshot().values)
++
++        let snapshot = try backend.makeForkSnapshot(
++            of: donor, layerKinds: kinds)
++        XCTAssertEqual(snapshot.tokenCount, 3)
++        XCTAssertEqual(
++            snapshot.layers[0]!.keys.asArray(Float.self),
++            [1, 2, 3])
++
++        let first = try backend.makeSequenceState(
++            forking: snapshot, layerKinds: kinds, maxLength: 8)
++        let second = try backend.makeSequenceState(
++            forking: snapshot, layerKinds: kinds, maxLength: 8)
++        XCTAssertEqual(first[0]!.absoluteOffset, 3)
++        XCTAssertEqual(second[0]!.absoluteOffset, 3)
++        XCTAssertGreaterThan(backend.bytesReserved, 0)
++
++        _ = first[0]!.update(
++            keys: MLXArray([Float(4)]).reshaped([1, 1, 1, 1]),
++            values: MLXArray([Float(14)]).reshaped([1, 1, 1, 1]))
++        eval(first[0]!.snapshot().keys, second[0]!.snapshot().keys)
++        XCTAssertEqual(first[0]!.absoluteOffset, 4)
++        XCTAssertEqual(second[0]!.absoluteOffset, 3)
++        XCTAssertEqual(donor[0]!.absoluteOffset, 3)
++        XCTAssertEqual(
++            second[0]!.snapshot().values.asArray(Float.self),
++            [11, 12, 13])
++
++        backend.release(first)
++        backend.release(second)
++        backend.release(donor)
++        XCTAssertEqual(backend.bytesInUse, 0)
++        XCTAssertEqual(backend.bytesReserved, 0)
++    }
++
++    func testContiguousKVForkRejectsMalformedPublicSnapshot() {
++        let kinds = CBv2PromptForkHarness.layerKinds
++        let backend = CBv2ContiguousKVBackend(
++            config: .init(bytesCapacity: 1 << 20, kvDType: .float32))
++        let malformed = CBv2KVForkSnapshot(
++            tokenCount: 3,
++            layers: [(
++                keys: MLXArray.zeros([1, 2, 3, 1], dtype: .float32),
++                values: MLXArray.zeros([1, 2, 3, 1], dtype: .float32),
++                offset: 3
++            )])
++
++        XCTAssertThrowsError(
++            try backend.makeSequenceState(
++                forking: malformed, layerKinds: kinds, maxLength: 8))
++        XCTAssertEqual(backend.bytesInUse, 0)
++        XCTAssertEqual(backend.bytesReserved, 0)
++    }
++
++    func testRecurrentSnapshotRestoresIndependentRequestOwners() throws {
++        let spec = CBv2RecurrentStateSpec(layers: [
++            CBv2RecurrentLayerStateSpec(
++                modelLayerIndex: 0,
++                convShape: [1, 1, 1], convDType: .float32,
++                ssmShape: [1, 1, 1, 1], ssmDType: .float32)
++        ])
++        let donor = try CBv2RecurrentRequestState(spec: spec)
++        let donorEvaluation = try donor.bind()
++        try donorEvaluation.stage(
++            modelLayerIndex: 0,
++            conv: MLXArray([Float(7)]).reshaped([1, 1, 1]),
++            ssm: MLXArray([Float(17)]).reshaped([1, 1, 1, 1]))
++        _ = try donorEvaluation.evaluate()
++        try donorEvaluation.commit()
++
++        let snapshot = try donor.snapshotVisibleState(detaching: false)
++        XCTAssertEqual(snapshot.byteCount, 8)
++        let first = try CBv2RecurrentRequestState(restoring: snapshot)
++        let second = try CBv2RecurrentRequestState(restoring: snapshot)
++
++        let firstEvaluation = try first.bind()
++        try firstEvaluation.stage(
++            modelLayerIndex: 0,
++            conv: MLXArray([Float(9)]).reshaped([1, 1, 1]),
++            ssm: MLXArray([Float(19)]).reshaped([1, 1, 1, 1]))
++        _ = try firstEvaluation.evaluate()
++        try firstEvaluation.commit()
++
++        XCTAssertEqual(
++            first.state(modelLayerIndex: 0)!.conv!.item(Float.self), 9)
++        XCTAssertEqual(
++            second.state(modelLayerIndex: 0)!.conv!.item(Float.self), 7)
++        XCTAssertEqual(
++            donor.state(modelLayerIndex: 0)!.conv!.item(Float.self), 7)
++
++        try first.release()
++        try second.release()
++        try donor.release()
++    }
++}
+diff --git a/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
+new file mode 100644
+index 0000000..fe15222
+--- /dev/null
++++ b/Tests/MLXLMTests/CBv2PromptForkTestSupport.swift
+@@ -0,0 +1,207 @@
++import Foundation
++import MLX
++
++@testable import MLXLMCommon
++
++final class CBv2PromptForkForwardGate: @unchecked Sendable {
++    private let lock = NSLock()
++    private var armed = true
++    let entered = DispatchSemaphore(value: 0)
++    let release = DispatchSemaphore(value: 0)
++
++    func waitOnce() {
++        lock.lock()
++        let shouldWait = armed
++        armed = false
++        lock.unlock()
++        guard shouldWait else { return }
++        entered.signal()
++        _ = release.wait(timeout: .now() + 10)
++    }
++}
++
++/// Tiny hybrid model whose recurrent scalar is the exact sum of every token
++/// consumed so far. Its greedy logits depend on that scalar, so a missing or
++/// aliased recurrent fork changes the emitted token checksum immediately.
++final class CBv2PromptForkFixtureModel:
++    CBv2RecurrentSteppableModel, CBv2PackedPrefillSteppableModel,
++    @unchecked Sendable
++{
++    let vocabSize = 31
++    let gate: CBv2PromptForkForwardGate?
++    private let lock = NSLock()
++    private var forwardShapesStorage: [[Int]] = []
++
++    init(gate: CBv2PromptForkForwardGate? = nil) {
++        self.gate = gate
++    }
++
++    var cbv2Capabilities: CBv2ModelCapabilities {
++        var capabilities = CBv2ModelCapabilities.initialRecurrentTarget
++        capabilities.supportsPackedPrefill = true
++        capabilities.supportsPromptStateForking = true
++        return capabilities
++    }
++
++    let recurrentStateSpec: CBv2RecurrentStateSpec? = CBv2RecurrentStateSpec(layers: [
++        CBv2RecurrentLayerStateSpec(
++            modelLayerIndex: 0,
++            convShape: [1, 1, 1], convDType: .float32,
++            ssmShape: [1, 1, 1, 1], ssmDType: .float32)
++    ])
++
++    var supportsPackedPrefill: Bool { true }
++
++    var forwardShapes: [[Int]] {
++        lock.lock()
++        defer { lock.unlock() }
++        return forwardShapesStorage
++    }
++
++    var tokenCellsExecuted: Int {
++        forwardShapes.reduce(0) { total, shape in
++            total + shape[0] * shape[1]
++        }
++    }
++
++    func forward(tokens: MLXArray, caches: [CBv2AttendingLayerCache]) -> MLXArray {
++        preconditionFailure("prompt-fork fixture requires recurrent forward")
++    }
++
++    func prefill(
++        tokens: MLXArray,
++        inputEmbeddings: MLXArray?,
++        caches: [CBv2AttendingLayerCache],
++        requirement: CBv2PrefillRequirement
++    ) -> MLXArray {
++        preconditionFailure("recurrent prompt-fork fixture bypasses the non-recurrent seam")
++    }
++
++    func forward(
++        tokens: MLXArray,
++        caches: [CBv2AttendingLayerCache],
++        recurrentState: [CBv2RecurrentStateEvaluation]
++    ) -> MLXArray {
++        gate?.waitOnce()
++        lock.lock()
++        forwardShapesStorage.append(tokens.shape)
++        lock.unlock()
++
++        let batch = tokens.dim(0)
++        let length = tokens.dim(1)
++        precondition(recurrentState.count == batch)
++        let tokenValues = tokens.asType(.float32)
++        let kv = tokenValues[0..., .newAxis, 0..., .newAxis]
++        for cache in caches {
++            _ = cache.updateAndAttend(
++                queries: kv, keys: kv, values: kv, scale: 1, sinks: nil)
++        }
++
++        let previousRows = recurrentState.map { evaluation -> MLXArray in
++            (evaluation.inputState(modelLayerIndex: 0)?.conv
++                ?? MLXArray.zeros([1, 1, 1], dtype: .float32))
++                .reshaped([1, 1])
++        }
++        let previous =
++            previousRows.count == 1
++            ? previousRows[0]
++            : concatenated(previousRows, axis: 0)
++        let cumulative = cumsum(tokenValues, axis: 1) + previous
++        for (index, evaluation) in recurrentState.enumerated() {
++            let final = cumulative[index ..< index + 1, length - 1 ..< length]
++            try! evaluation.stage(
++                modelLayerIndex: 0,
++                conv: final.reshaped([1, 1, 1]),
++                ssm: final.reshaped([1, 1, 1, 1]))
++        }
++
++        let targets =
++            ((cumulative.asType(.int32) + Int32(1)) % Int32(vocabSize))
++            .asType(.float32)
++        let vocabulary = MLXArray((0 ..< vocabSize).map(Float.init))
++            .reshaped([1, 1, vocabSize])
++        let distance = vocabulary - targets[0..., 0..., .newAxis]
++        return -(distance * distance)
++    }
++}
++
++final class CBv2PromptForkHarness {
++    static let layerKinds = [
++        CBv2LayerKind(
++            attention: .full, headDim: 1, kvHeads: 1, queryHeads: 1)
++    ]
++
++    let model: CBv2PromptForkFixtureModel
++    let backend: CBv2ContiguousKVBackend
++    let engine: EngineV2
++
++    init(
++        enabled: Bool,
++        batchSize: Int,
++        chunkSize: Int = 2,
++        gate: CBv2PromptForkForwardGate? = nil,
++        enqueueDelayForTesting: TimeInterval = 0
++    ) {
++        model = CBv2PromptForkFixtureModel(gate: gate)
++        backend = CBv2ContiguousKVBackend(
++            config: .init(bytesCapacity: 8 << 20, kvDType: .float32))
++        engine = EngineV2(
++            model: model,
++            layerKinds: Self.layerKinds,
++            backend: backend,
++            cacheProvider: CBv2LayerCacheBank(layerKinds: Self.layerKinds),
++            sampler: CBv2GreedySampler(),
++            schedulerConfig: .init(
++                maxConcurrentRequests: batchSize,
++                maxBatchedTokensPerStep: max(batchSize * chunkSize, batchSize),
++                prefillChunkSize: chunkSize,
++                maxWaiting: max(8, batchSize * 2)),
++            admissionConfig: .init(
++                watermarkFraction: 0, elementBytes: 4,
++                fixedBytesPerRequest: 0),
++            promptForkConfig: .init(
++                enabled: enabled, minimumPrefixTokens: 1))
++        engine.loopForTesting.enqueueStartDelayForTesting = enqueueDelayForTesting
++    }
++}
++
++struct CBv2PromptForkCollected: Sendable {
++    var tokens: [Int] = []
++    var finishReason: CBv2FinishReason?
++    var usage: CBv2Usage?
++}
++
++func cbv2PromptForkCollectAll(
++    _ streams: [(CBv2RequestID, AsyncStream<CBv2Event>)]
++) async -> [CBv2RequestID: CBv2PromptForkCollected] {
++    await withTaskGroup(
++        of: (CBv2RequestID, CBv2PromptForkCollected).self,
++        returning: [CBv2RequestID: CBv2PromptForkCollected].self
++    ) { group in
++        for (id, stream) in streams {
++            group.addTask {
++                var collected = CBv2PromptForkCollected()
++                for await event in stream {
++                    switch event {
++                    case .delta(_, let tokens, _):
++                        collected.tokens.append(contentsOf: tokens)
++                    case .finished(let reason, let usage):
++                        collected.finishReason = reason
++                        collected.usage = usage
++                        return (id, collected)
++                    }
++                }
++                return (id, collected)
++            }
++        }
++        var output: [CBv2RequestID: CBv2PromptForkCollected] = [:]
++        for await (id, collected) in group { output[id] = collected }
++        return output
++    }
++}
++
++func cbv2PromptForkChecksum(_ tokens: [Int]) -> UInt64 {
++    tokens.reduce(UInt64(0xcbf2_9ce4_8422_2325)) { hash, token in
++        (hash ^ UInt64(bitPattern: Int64(token))) &* 0x0000_0100_0000_01b3
++    }
++}
+diff --git a/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift b/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
+index 192d897..57b925b 100644
+--- a/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
++++ b/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift
+@@ -89,6 +89,7 @@ final class Qwen35CBv2ConfigurationTests: XCTestCase {
+         // all 30 GDN states and the prompt-frontier logits.
+         XCTAssertFalse(capability.supportsPrefixReuse)
+         XCTAssertTrue(capability.supportsExactStatePrefixReuse)
++        XCTAssertTrue(capability.supportsPromptStateForking)
+         XCTAssertFalse(capability.supportsPagedKV)
+         XCTAssertFalse(capability.supportsCompiledDecode)
+         // Packed prefill is now a deliberate Qwen claim (rectangular [B, L]

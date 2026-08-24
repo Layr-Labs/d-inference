@@ -17,6 +17,7 @@ struct DarkbloomApp: App {
     @State private var localAPIStore: LocalAPIStore
     @State private var myMacsStore: MyMacsStore
     @State private var availabilityStore: AvailabilityStore
+    @State private var accountUnlinkStore: AccountUnlinkStore
 
     private var showsPreviewChrome: Bool {
         PreviewChromePresentation.isVisible(
@@ -44,6 +45,52 @@ struct DarkbloomApp: App {
                 previewScenario: productPreview?.providerScenario ?? .online
             )
             : ProviderStore(daemon: DaemonRuntimeService())
+        let modelLibraryStore: ModelLibraryStore
+        let diagnosticsStore: DiagnosticsStore
+        let contributionsStore: ContributionsStore
+        let localAPIStore: LocalAPIStore
+        let myMacsStore: MyMacsStore
+        let availabilityStore: AvailabilityStore
+
+        // Preview captures stay fully deterministic (fixture services, frozen
+        // clock). Real launches wire every product store to its live source:
+        // ProviderStore polls ~/.darkbloom/daemon-state.json and shells out
+        // to the `darkbloom` CLI for lifecycle; the model library drives the
+        // CLI's models commands; diagnostics run `doctor --json`;
+        // availability persists via `config set schedule`; contributions read
+        // `earnings --json`; the local API probes ~/.darkbloom/local.json;
+        // My Macs uses the coordinator-backed account session.
+        if isPreviewSession {
+            modelLibraryStore = ModelLibraryStore(
+                fixture: productPreview?.modelFixture ?? .ready
+            )
+            diagnosticsStore = DiagnosticsStore(
+                fixture: productPreview?.diagnosticsFixture ?? .healthy
+            )
+            contributionsStore = ContributionsStore(
+                fixture: productPreview?.contributionsFixture ?? .active
+            )
+            localAPIStore = LocalAPIStore(
+                fixture: productPreview?.localAPIFixture ?? .active
+            )
+            myMacsStore = MyMacsStore(
+                fixture: productPreview?.myMacsFixture ?? .ready
+            )
+            availabilityStore = AvailabilityStore(
+                fixture: productPreview?.availabilityFixture ?? .always
+            )
+        } else {
+            modelLibraryStore = ModelLibraryStore(live: ProcessModelCatalogCLIRunner())
+            diagnosticsStore = DiagnosticsStore(cli: ProcessDiagnosticsCLIRunner())
+            contributionsStore = ContributionsStore(cli: ProcessContributionsCLI())
+            localAPIStore = LocalAPIStore.live()
+            myMacsStore = MyMacsStore(
+                session: AccountSessionManager(),
+                fleet: FleetClient()
+            )
+            availabilityStore = AvailabilityStore(cli: ProcessAvailabilityCLI())
+        }
+
         _appFlowStore = State(
             initialValue: AppFlowStore(
                 launchOverride: productPreview != nil
@@ -57,66 +104,27 @@ struct DarkbloomApp: App {
             )
         )
         _providerStore = State(initialValue: providerStore)
-        // Preview captures stay fully deterministic (fixture services, frozen
-        // clock). Real launches wire every product store to its live source:
-        // ProviderStore polls ~/.darkbloom/daemon-state.json and shells out
-        // to the `darkbloom` CLI for lifecycle; the model library drives the
-        // CLI's models commands; diagnostics run `doctor --json`;
-        // availability persists via `config set schedule`; contributions read
-        // `earnings --json`; the local API probes ~/.darkbloom/local.json;
-        // My Macs uses the coordinator-backed account session.
-        if isPreviewSession {
-            _modelLibraryStore = State(
-                initialValue: ModelLibraryStore(
-                    fixture: productPreview?.modelFixture ?? .ready
+        _modelLibraryStore = State(initialValue: modelLibraryStore)
+        _diagnosticsStore = State(initialValue: diagnosticsStore)
+        _contributionsStore = State(initialValue: contributionsStore)
+        _localAPIStore = State(initialValue: localAPIStore)
+        _myMacsStore = State(initialValue: myMacsStore)
+        _availabilityStore = State(initialValue: availabilityStore)
+        _accountUnlinkStore = State(initialValue: AccountUnlinkStore(
+            refreshAfterSuccess: {
+                myMacsStore.signOut()
+                async let providerRefresh: Void = providerStore.refresh()
+                async let modelRefresh: Void = modelLibraryStore.refresh()
+                async let contributionsRefresh: Void = contributionsStore.refresh()
+                async let availabilityRefresh: Void = availabilityStore.refresh()
+                _ = await (
+                    providerRefresh,
+                    modelRefresh,
+                    contributionsRefresh,
+                    availabilityRefresh
                 )
-            )
-            _diagnosticsStore = State(
-                initialValue: DiagnosticsStore(
-                    fixture: productPreview?.diagnosticsFixture ?? .healthy
-                )
-            )
-            _contributionsStore = State(
-                initialValue: ContributionsStore(
-                    fixture: productPreview?.contributionsFixture ?? .active
-                )
-            )
-            _localAPIStore = State(
-                initialValue: LocalAPIStore(
-                    fixture: productPreview?.localAPIFixture ?? .active
-                )
-            )
-            _myMacsStore = State(
-                initialValue: MyMacsStore(
-                    fixture: productPreview?.myMacsFixture ?? .ready
-                )
-            )
-            _availabilityStore = State(
-                initialValue: AvailabilityStore(
-                    fixture: productPreview?.availabilityFixture ?? .always
-                )
-            )
-        } else {
-            _modelLibraryStore = State(
-                initialValue: ModelLibraryStore(live: ProcessModelCatalogCLIRunner())
-            )
-            _diagnosticsStore = State(
-                initialValue: DiagnosticsStore(cli: ProcessDiagnosticsCLIRunner())
-            )
-            _contributionsStore = State(
-                initialValue: ContributionsStore(cli: ProcessContributionsCLI())
-            )
-            _localAPIStore = State(initialValue: LocalAPIStore.live())
-            _myMacsStore = State(
-                initialValue: MyMacsStore(
-                    session: AccountSessionManager(),
-                    fleet: FleetClient()
-                )
-            )
-            _availabilityStore = State(
-                initialValue: AvailabilityStore(cli: ProcessAvailabilityCLI())
-            )
-        }
+            }
+        ))
     }
 
     var body: some Scene {
@@ -166,6 +174,7 @@ struct DarkbloomApp: App {
             if appDelegate.installState.isReady {
                 SettingsRootView(
                     providerStore: providerStore,
+                    accountUnlinkStore: accountUnlinkStore,
                     showsPreviewControls: showsPreviewChrome
                 )
             } else {

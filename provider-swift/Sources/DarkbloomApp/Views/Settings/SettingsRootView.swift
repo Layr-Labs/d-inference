@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsRootView: View {
     let providerStore: ProviderStore
+    let accountUnlinkStore: AccountUnlinkStore
     let showsPreviewControls: Bool
 
     @State private var selectedSection = SettingsSection.general
@@ -31,7 +32,10 @@ struct SettingsRootView: View {
             }
             .frame(width: 620, height: 470)
         } else {
-            LiveSettingsView(snapshot: providerStore.snapshot)
+            LiveSettingsView(
+                snapshot: providerStore.snapshot,
+                accountUnlinkStore: accountUnlinkStore
+            )
         }
     }
 }

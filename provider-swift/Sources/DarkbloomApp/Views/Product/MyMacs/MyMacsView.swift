@@ -127,7 +127,7 @@ struct MyMacsView: View {
                 removalRequest = nil
             }
         } message: {
-            Text("This removes the retained Mac from My Macs. Its contribution history remains on your account, and the Mac may appear here again if it reconnects.")
+            Text(MyMacRemovalPresentation.confirmationMessage)
         }
         .navigationTitle("My Macs")
     }
@@ -402,4 +402,9 @@ private struct MyMacRemovalRequest: Identifiable {
     let title: String
 
     var id: String { macID }
+}
+
+enum MyMacRemovalPresentation {
+    static let confirmationMessage =
+        "This removes only the saved My Macs record; it does not unlink a running Mac or clear that Mac’s local credentials. Contribution history remains on your account, and the Mac may appear here again if it reconnects."
 }

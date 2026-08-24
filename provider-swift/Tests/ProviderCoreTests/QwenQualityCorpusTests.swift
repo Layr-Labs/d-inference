@@ -267,6 +267,7 @@ struct QwenQualityCorpusTests {
         let captured = QwenQualityCorpusBenchmark.capturedPolicyEnvironment([
             "DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K": "4",
             "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
+            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL": "1",
             "DARKBLOOM_API_TOKEN": "secret",
             "HOME": "/Users/test",
         ])
@@ -274,6 +275,7 @@ struct QwenQualityCorpusTests {
         #expect(captured == [
             "DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K": "4",
             "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
+            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL": "1",
         ])
     }
 

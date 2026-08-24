@@ -59,7 +59,8 @@ public enum QwenQualityCorpusBenchmark {
         } else {
             baseline = nil
         }
-        let policyEnvironment = capturedPolicyEnvironment()
+        let processEnvironment = ProcessInfo.processInfo.environment
+        let policyEnvironment = capturedPolicyEnvironment(processEnvironment)
 
         log("hashing fixed model artifact \(modelID)")
         guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
@@ -119,7 +120,13 @@ public enum QwenQualityCorpusBenchmark {
                 residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
-        let processEnvironment = ProcessInfo.processInfo.environment
+        let qualityPrefixCache: (any CBv2PrefixCache)? =
+            processEnvironment["DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL"] == "1"
+            ? ExactPrefixCacheV2(config: .init(
+                modelIdentity: "quality-canonical:\(artifactSHA256)",
+                policyIdentity: "quality-canonical-exact-prefill-v1",
+                maxBytes: 1))
+            : nil
         let components = try await container.perform { context -> EngineComponents in
             let preparedCases = try QwenQualityCorpusExecutor.prepare(
                 corpus: loadedCorpus.corpus,
@@ -137,7 +144,7 @@ public enum QwenQualityCorpusBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
-                prefixCache: nil,
+                prefixCache: qualityPrefixCache,
                 kvBackend: kvBackend,
                 maxContextLength: sizing.maxContextLength > 0
                     ? sizing.maxContextLength : nil,
@@ -282,6 +289,7 @@ public enum QwenQualityCorpusBenchmark {
             "DARKBLOOM_CBV2_PREFILL_CHUNK",
             "DARKBLOOM_CBV2_PREFILL_NARROWING",
             "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE",
+            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL",
         ]
         return environment.filter { key, _ in
             key.hasPrefix("DARKBLOOM_QWEN35_PREFILL_")

@@ -88,6 +88,28 @@ index 6d8f568d..01261af9 100644
 @@ -298 +295 @@ final class QwenExactPrefixTrackingCache:
 -            publishedAtNs: publishedAt,
 +            publishedAtNs: DispatchTime.now().uptimeNanoseconds,
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift
+index b8711545..f34676af 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenQualityCorpusBenchmark.swift
+@@ -62 +62,2 @@ public enum QwenQualityCorpusBenchmark {
+-        let policyEnvironment = capturedPolicyEnvironment()
++        let processEnvironment = ProcessInfo.processInfo.environment
++        let policyEnvironment = capturedPolicyEnvironment(processEnvironment)
+@@ -122 +123,7 @@ public enum QwenQualityCorpusBenchmark {
+-        let processEnvironment = ProcessInfo.processInfo.environment
++        let qualityPrefixCache: (any CBv2PrefixCache)? =
++            processEnvironment["DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL"] == "1"
++            ? ExactPrefixCacheV2(config: .init(
++                modelIdentity: "quality-canonical:\(artifactSHA256)",
++                policyIdentity: "quality-canonical-exact-prefill-v1",
++                maxBytes: 1))
++            : nil
+@@ -140 +147 @@ public enum QwenQualityCorpusBenchmark {
+-                prefixCache: nil,
++                prefixCache: qualityPrefixCache,
+@@ -284,0 +292 @@ public enum QwenQualityCorpusBenchmark {
++            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL",
 diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+ExactPrefixCache.swift
 new file mode 100644
 index 00000000..2a3796dc
@@ -361,7 +383,7 @@ index 196b453b..969a3c19 100644
 +        // the backend that will actually serve. Everything else,
 diff --git a/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
 new file mode 100644
-index 00000000..8c8dfb2d
+index 00000000..1c2c21d9
 --- /dev/null
 +++ b/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+ExactPrefixCache.swift
 @@ -0,0 +1,316 @@
@@ -1064,7 +1086,7 @@ index 63f5e6e4..3d6933fe 100644
 +
 diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
 new file mode 100644
-index 00000000..f582c28c
+index 00000000..6635d4a0
 --- /dev/null
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2ExactPrefixCacheTests.swift
 @@ -0,0 +1,393 @@
@@ -1575,3 +1597,11 @@ index 31dfd105..374d87fb 100644
 +        let finalDonation = try #require(cache.donation(for: donorID))
 +        #expect(finalDonation.publishedAtNs > firstDonation.publishedAtNs)
 +        #expect(finalDonation.cacheBytesAfterPublish == at2.byteCount + at4.byteCount)
+diff --git a/provider-swift/Tests/ProviderCoreTests/QwenQualityCorpusTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenQualityCorpusTests.swift
+index cc338f8c..9267ad9f 100644
+--- a/provider-swift/Tests/ProviderCoreTests/QwenQualityCorpusTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/QwenQualityCorpusTests.swift
+@@ -269,0 +270 @@ struct QwenQualityCorpusTests {
++            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL": "1",
+@@ -276,0 +278 @@ struct QwenQualityCorpusTests {
++            "DARKBLOOM_QUALITY_CANONICAL_EXACT_PREFILL": "1",

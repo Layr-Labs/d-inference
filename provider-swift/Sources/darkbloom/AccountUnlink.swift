@@ -9,6 +9,7 @@ struct AccountUnlinkDependencies {
     var deleteToken: () throws -> Void
     var deleteAccount: () throws -> Void
 
+    @MainActor
     static let live = AccountUnlinkDependencies(
         stopWatchdog: WatchdogAgent.stop,
         stopProviderService: LaunchAgent.stop,
@@ -27,6 +28,7 @@ struct AccountUnlinkDependencies {
 }
 
 @discardableResult
+@MainActor
 func unlinkProviderAccount(
     token: String?,
     coordinatorURL: String,

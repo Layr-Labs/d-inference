@@ -189,6 +189,10 @@ same-process stop uses the in-memory virtualization service. After a controller
 restart, `F_GETLK` may prove that another process owns the lock, but that PID is
 never treated as a control capability: stop returns inconclusive and capacity
 stays reserved until an identity-bound owner channel exists or the owner exits.
+The broker also fsyncs a one-per-VM start intent, bound to the ownership
+installation and sandbox generation, before spawning `lume run`. A restarted
+reconciler retains capacity while that intent is unresolved, closing the window
+before the child publishes its own lock and lifecycle marker.
 Legacy markers, replaced inodes, reused PIDs, missing owner locks, and ambiguous
 probes likewise retain capacity. Terminal cleanup clears the marker only while
 holding the original run locks; if emergency framework stop fails, the

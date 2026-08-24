@@ -588,6 +588,130 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(retryResults.isEmpty)
     }
 
+    func testExpiredLeaseReconciliationRetainsCapacityForUnpublishedStart()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "pause-run-before-state-publication"
+        )
+        var startHolder: Process?
+        defer {
+            try? fixture.allowRunToPublishState()
+            try? fixture.forceControlledRunState("stopped")
+            if let process = startHolder, process.isRunning {
+                process.terminate()
+            }
+            fixture.terminateControlledRunIfNeeded()
+            try? fixture.remove()
+        }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let launchedStartHolder =
+            try fixture.launchStartHolderSubprocess(now: now)
+        startHolder = launchedStartHolder
+        let controlledRunProcessIdentifier =
+            try await fixture.waitForControlledRunToLaunch(
+                startHolder: launchedStartHolder
+            )
+
+        try fixture.crashStartHolder()
+        try await fixture.waitForStartHolderCrash(
+            startHolder: launchedStartHolder,
+            controlledRunProcessIdentifier: controlledRunProcessIdentifier
+        )
+        clock.set(lease.expiresAt)
+        let reopenedArbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let reopenedRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: reopenedArbiter
+        )
+
+        let results = try await reopenedRuntime.reconcileExpiredLeases()
+        let leaseCountBeforeStatePublication =
+            try reopenedArbiter.snapshot().leases.count
+        try fixture.allowRunToPublishState()
+        try await fixture.waitForState("running")
+        let leaseCountAfterRunning =
+            try reopenedArbiter.snapshot().leases.count
+        let recoveryResults =
+            try await reopenedRuntime.reconcileExpiredLeases()
+
+        XCTAssertEqual(results.count, 1)
+        let retainedResult = try XCTUnwrap(results.first)
+        if case .retained = retainedResult.outcome {
+            // Expected: a matching unresolved start intent retains capacity.
+        } else {
+            XCTFail(
+                "reconciliation released capacity for an unresolved launched start"
+            )
+        }
+        XCTAssertEqual(
+            leaseCountBeforeStatePublication,
+            1,
+            "capacity must remain reserved before the launched child publishes state"
+        )
+        XCTAssertEqual(
+            leaseCountAfterRunning,
+            1,
+            "a child must not become running after its capacity was released"
+        )
+        XCTAssertEqual(recoveryResults.count, 1)
+        let recoveryResult = try XCTUnwrap(recoveryResults.first)
+        XCTAssertEqual(recoveryResult.outcome, .released)
+        XCTAssertGreaterThan(
+            recoveryResult.lease.scope.fencingToken,
+            retainedResult.lease.scope.fencingToken,
+            "recovery must match the intent after expiry fencing rotates"
+        )
+        XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+        try await fixture.waitForState("stopped")
+        try await fixture.waitForProcessExit(
+            controlledRunProcessIdentifier
+        )
+    }
+
+    func testUnpublishedStartCrashHolderSubprocess() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let fixturePath =
+            environment[FakeLumeFixture.startHolderFixtureEnvironmentKey],
+            let nowValue =
+            environment[FakeLumeFixture.startHolderNowEnvironmentKey],
+            let nowInterval = TimeInterval(nowValue)
+        else {
+            throw XCTSkip("subprocess-only lifecycle crash harness")
+        }
+        let fixture = FakeLumeFixture(
+            existingDirectory: URL(fileURLWithPath: fixturePath)
+        )
+        let clock = LumeTestWallClock(
+            Date(timeIntervalSince1970: nowInterval)
+        )
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try XCTUnwrap(arbiter.snapshot().leases.first)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        try await runtime.start(
+            scope: lease.scope,
+            name: lease.virtualMachineName
+        )
+        XCTFail("the parent test must crash this runtime before start returns")
+    }
+
     func testExpiredLeaseReconciliationRecoversCrashAfterDurableFence()
         async throws
     {
@@ -738,6 +862,62 @@ final class LumeRuntimeFailureTests: XCTestCase {
             name: fixture.virtualMachineName
         )?.state
         XCTAssertEqual(state, .unknown)
+    }
+
+    func testPublicReleaseRetainsUnresolvedStartInUnprovenStates()
+        async throws
+    {
+        for unresolvedState in ["stopped", "unknown", "absent"] {
+            let fixture = try FakeLumeFixture()
+            defer { try? fixture.remove() }
+            let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let clock = LumeTestWallClock(now)
+            let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+            let lease = try arbiter.reserve(
+                sandboxID: SandboxID(),
+                generation: try XCTUnwrap(
+                    SandboxGeneration(rawValue: 1)
+                ),
+                virtualMachineName: fixture.virtualMachineName,
+                resources: try SandboxResourceSpecification.macOSSmall(),
+                expiresAt: now.addingTimeInterval(120)
+            )
+            try fixture.bindOwnership(to: lease.scope)
+            _ = try fixture.persistStartIntent(scope: lease.scope)
+            if unresolvedState == "absent" {
+                try FileManager.default.removeItem(at: fixture.state)
+            } else {
+                try Data("\(unresolvedState)\n".utf8).write(
+                    to: fixture.state
+                )
+            }
+            let runtime = try fixture.makeLeaseFencedRuntime(
+                capacityArbiter: arbiter
+            )
+
+            do {
+                try await runtime.release(
+                    scope: lease.scope,
+                    name: lease.virtualMachineName
+                )
+                XCTFail(
+                    "\(unresolvedState) must retain unresolved start capacity"
+                )
+            } catch let error as SandboxRuntimeError {
+                XCTAssertEqual(
+                    error,
+                    .unsupported(
+                        "VM \(fixture.virtualMachineName) has an unresolved start intent"
+                    )
+                )
+            }
+            XCTAssertEqual(try arbiter.snapshot().leases, [lease])
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: fixture.startIntentFile.path
+                )
+            )
+        }
     }
 
     func testPublicReleaseHoldsFencesThroughCapacityRemoval() async throws {
@@ -1116,6 +1296,143 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 .unsupported("Lume runtime changed after validation")
             )
         }
+    }
+
+    func testStartPersistsIntentBeforeSpawnAndClearsAfterRunningProof()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "credentialed-readiness-start-intent"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 4,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        try await runtime.start(name: fixture.virtualMachineName)
+
+        XCTAssertTrue(fixture.startIntentWasObserved)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+        try await runtime.stop(name: fixture.virtualMachineName)
+    }
+
+    func testFailedStartClearsIntentOnlyAfterProvenStopped() async throws {
+        let fixture = try FakeLumeFixture(
+            behavior: "failed-start-before-state-publication"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 1)
+
+        do {
+            try await runtime.start(name: fixture.virtualMachineName)
+            XCTFail("start must time out before Lume publishes running")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationTimedOut(
+                    "\(fixture.virtualMachineName) -> running"
+                )
+            )
+        }
+
+        XCTAssertTrue(fixture.startIntentWasObserved)
+        XCTAssertEqual(
+            try await runtime.inspect(
+                name: fixture.virtualMachineName
+            )?.state,
+            .stopped
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+    }
+
+    func testSpawnFailureClearsIntentBecauseNoChildExists() async throws {
+        let fixture = try FakeLumeFixture(
+            behavior: "disable-executable-after-list"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        do {
+            try await runtime.start(name: fixture.virtualMachineName)
+            XCTFail("start must fail when the executable disappears before spawn")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .executableNotFound(fixture.executable.path)
+            )
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+    }
+
+    func testStartIntentClearFailureSurfacesAndRetainsCapacity()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "hardlink-start-intent-before-running"
+        )
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+
+        do {
+            try await runtime.start(
+                scope: lease.scope,
+                name: lease.virtualMachineName
+            )
+            XCTFail("unsafe intent authority must fail start and cleanup")
+        } catch let error as SandboxRuntimeError {
+            guard case .cleanupFailed(_, _, let cleanup) = error else {
+                return XCTFail("expected cleanup failure, got \(error)")
+            }
+            XCTAssertTrue(
+                cleanup.contains(
+                    "start intent failed ownership, mode, ACL, link, size, or stability checks"
+                )
+            )
+        }
+
+        XCTAssertEqual(try arbiter.snapshot().leases, [lease])
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+        XCTAssertEqual(
+            try await runtime.inspect(
+                scope: lease.scope,
+                name: lease.virtualMachineName
+            )?.state,
+            .stopped
+        )
     }
 
     func testFailedReadinessStopsNewlyStartedVirtualMachine() async throws {
@@ -1879,6 +2196,62 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertNil(record)
     }
 
+    func testDeleteAndRecreateCannotBypassUnresolvedStartIntent()
+        async throws
+    {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        _ = try fixture.persistStartIntent()
+        let runtime = try fixture.makeRuntime()
+        let expectedError = SandboxRuntimeError.unsupported(
+            "VM \(fixture.virtualMachineName) has an unresolved start intent"
+        )
+
+        do {
+            try await runtime.delete(name: fixture.virtualMachineName)
+            XCTFail("delete must not remove an unresolved start intent")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(error, expectedError)
+        }
+        do {
+            try await runtime.create(
+                SandboxVirtualMachineSpecification(
+                    name: fixture.virtualMachineName,
+                    resources: SandboxResourceSpecification.macOSSmall(),
+                    imageSource: .localTemplate(name: "base"),
+                    diskBytes: 100 * SandboxResourcePolicy.gibibyte
+                )
+            )
+            XCTFail("idempotent create must not bypass a start intent")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(error, expectedError)
+        }
+        XCTAssertNotNil(
+            try await runtime.inspect(name: fixture.virtualMachineName)
+        )
+
+        try FileManager.default.removeItem(at: fixture.state)
+        do {
+            try await runtime.create(
+                SandboxVirtualMachineSpecification(
+                    name: fixture.virtualMachineName,
+                    resources: SandboxResourceSpecification.macOSSmall(),
+                    imageSource: .localTemplate(name: "base"),
+                    diskBytes: 100 * SandboxResourcePolicy.gibibyte
+                )
+            )
+            XCTFail("reforge must not bypass an unlisted start intent")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(error, expectedError)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.startIntentFile.path
+            )
+        )
+        XCTAssertNil(try await runtime.inspect(name: fixture.virtualMachineName))
+    }
+
     func testDeleteRefusesRunningVirtualMachine() async throws {
         let fixture = try FakeLumeFixture(initialState: "running")
         defer { try? fixture.remove() }
@@ -2363,6 +2736,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
 }
 
 private struct FakeLumeFixture {
+    static let startHolderFixtureEnvironmentKey =
+        "DARKBLOOM_LUME_START_HOLDER_FIXTURE"
+    static let startHolderNowEnvironmentKey =
+        "DARKBLOOM_LUME_START_HOLDER_NOW"
+
     let directory: URL
     let runtimeDirectory: URL
     let executable: URL
@@ -2378,6 +2756,13 @@ private struct FakeLumeFixture {
     let guestReadinessProbeProcessIdentifier: URL
     let invalidGuestReadinessProbe: URL
     let guestExecutorProbeObserved: URL
+    let runStarted: URL
+    let runContinue: URL
+    let runProcessIdentifier: URL
+    let startIntentObserved: URL
+    let startHolderCrash: URL
+    let startHolderCrashed: URL
+    let startHolderOutput: URL
     let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
 
@@ -2391,6 +2776,12 @@ private struct FakeLumeFixture {
     var ownershipMarker: URL {
         virtualMachineDirectory.appendingPathComponent(
             LumeVirtualMachineOwnership.fileName
+        )
+    }
+
+    var startIntentFile: URL {
+        virtualMachineDirectory.appendingPathComponent(
+            LumeVirtualMachineStartIntent.fileName
         )
     }
 
@@ -2435,6 +2826,21 @@ private struct FakeLumeFixture {
         )
         guestExecutorProbeObserved = directory.appendingPathComponent(
             "guest-executor-probe-observed"
+        )
+        runStarted = directory.appendingPathComponent("run-started")
+        runContinue = directory.appendingPathComponent("run-continue")
+        runProcessIdentifier = directory.appendingPathComponent("run-pid")
+        startIntentObserved = directory.appendingPathComponent(
+            "start-intent-observed"
+        )
+        startHolderCrash = directory.appendingPathComponent(
+            "start-holder-crash"
+        )
+        startHolderCrashed = directory.appendingPathComponent(
+            "start-holder-crashed"
+        )
+        startHolderOutput = directory.appendingPathComponent(
+            "start-holder-output.log"
         )
         restoreImage = directory.appendingPathComponent("restore.ipsw")
         try FileManager.default.createDirectory(
@@ -2483,6 +2889,55 @@ private struct FakeLumeFixture {
         guard chmod(runtimeDirectory.path, 0o555) == 0 else {
             throw POSIXError(.EACCES)
         }
+    }
+
+    init(existingDirectory directory: URL) {
+        self.directory = directory
+        runtimeDirectory = directory.appendingPathComponent(
+            "runtime",
+            isDirectory: true
+        )
+        executable = runtimeDirectory.appendingPathComponent("lume")
+        storage = directory.appendingPathComponent("vms", isDirectory: true)
+        state = directory.appendingPathComponent("state")
+        behavior = directory.appendingPathComponent("behavior")
+        createStarted = directory.appendingPathComponent("create-started")
+        listStarted = directory.appendingPathComponent("list-started")
+        listContinue = directory.appendingPathComponent("list-continue")
+        guestCommandStarted = directory.appendingPathComponent(
+            "guest-command-started"
+        )
+        guestReadinessProbeAttemptsFile = directory.appendingPathComponent(
+            "guest-readiness-probe-attempts"
+        )
+        guestReadinessProbeStarted = directory.appendingPathComponent(
+            "guest-readiness-probe-started"
+        )
+        guestReadinessProbeProcessIdentifier = directory.appendingPathComponent(
+            "guest-readiness-probe-pid"
+        )
+        invalidGuestReadinessProbe = directory.appendingPathComponent(
+            "invalid-guest-readiness-probe"
+        )
+        guestExecutorProbeObserved = directory.appendingPathComponent(
+            "guest-executor-probe-observed"
+        )
+        runStarted = directory.appendingPathComponent("run-started")
+        runContinue = directory.appendingPathComponent("run-continue")
+        runProcessIdentifier = directory.appendingPathComponent("run-pid")
+        startIntentObserved = directory.appendingPathComponent(
+            "start-intent-observed"
+        )
+        startHolderCrash = directory.appendingPathComponent(
+            "start-holder-crash"
+        )
+        startHolderCrashed = directory.appendingPathComponent(
+            "start-holder-crashed"
+        )
+        startHolderOutput = directory.appendingPathComponent(
+            "start-holder-output.log"
+        )
+        restoreImage = directory.appendingPathComponent("restore.ipsw")
     }
 
     func makeRuntime(
@@ -2556,6 +3011,33 @@ private struct FakeLumeFixture {
         )
     }
 
+    @discardableResult
+    func persistStartIntent(
+        scope: SandboxOperationScope? = nil
+    ) throws -> LumeVirtualMachineStartIntent.Intent {
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        let ownership = try LumeVirtualMachineOwnership.requireOwned(
+            name: virtualMachineName,
+            owner: owner,
+            in: storage
+        )
+        return try LumeVirtualMachineStartIntent.persist(
+            name: virtualMachineName,
+            ownership: ownership,
+            owner: owner,
+            initiatingScope: scope,
+            in: storage
+        )
+    }
+
+    var startIntentWasObserved: Bool {
+        FileManager.default.fileExists(
+            atPath: startIntentObserved.path
+        )
+    }
+
     func waitForState(_ expected: String) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(5))
@@ -2598,6 +3080,184 @@ private struct FakeLumeFixture {
 
     func allowListToContinue() throws {
         try Data().write(to: listContinue)
+    }
+
+    func launchStartHolderSubprocess(now: Date) throws -> Process {
+        let testBundle = Bundle(
+            for: LumeRuntimeFailureTests.self
+        ).bundleURL
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = [
+            "xctest",
+            "-XCTest",
+            "SandboxRuntimeLumeTests.LumeRuntimeFailureTests/testUnpublishedStartCrashHolderSubprocess",
+            testBundle.path,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        let inheritedXCTestKeys = environment.keys.filter {
+            $0.hasPrefix("XCTest")
+        }
+        for key in inheritedXCTestKeys {
+            environment.removeValue(forKey: key)
+        }
+        environment[Self.startHolderFixtureEnvironmentKey] = directory.path
+        environment[Self.startHolderNowEnvironmentKey] =
+            String(now.timeIntervalSince1970)
+        process.environment = environment
+        guard FileManager.default.createFile(
+            atPath: startHolderOutput.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw FakeLumeFixtureError.startHolderOutputUnavailable(
+                startHolderOutput.path
+            )
+        }
+        let output = try FileHandle(forWritingTo: startHolderOutput)
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+        } catch {
+            try? output.close()
+            throw error
+        }
+        try? output.close()
+        return process
+    }
+
+    func waitForControlledRunToLaunch(
+        startHolder: Process
+    ) async throws -> pid_t {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        repeat {
+            if FileManager.default.fileExists(atPath: runStarted.path),
+               let processIdentifier = controlledRunProcessIdentifier,
+               Darwin.kill(processIdentifier, 0) == 0,
+               startHolder.isRunning
+            {
+                return processIdentifier
+            }
+            if !startHolder.isRunning {
+                throw FakeLumeFixtureError.runLaunchTimeout(
+                    startHolderDiagnostics(startHolder)
+                )
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.runLaunchTimeout(
+            startHolderDiagnostics(startHolder)
+        )
+    }
+
+    func crashStartHolder() throws {
+        try Data().write(to: startHolderCrash)
+    }
+
+    func waitForStartHolderCrash(
+        startHolder: Process,
+        controlledRunProcessIdentifier: pid_t
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        repeat {
+            let crashWasSignaled = FileManager.default.fileExists(
+                atPath: startHolderCrashed.path
+            )
+            if crashWasSignaled, !startHolder.isRunning {
+                startHolder.waitUntilExit()
+                guard startHolder.terminationReason == .uncaughtSignal,
+                      startHolder.terminationStatus == SIGKILL
+                else {
+                    throw FakeLumeFixtureError.startHolderCrashTimeout(
+                        startHolderDiagnostics(startHolder)
+                    )
+                }
+                guard Darwin.kill(controlledRunProcessIdentifier, 0) == 0 else {
+                    throw FakeLumeFixtureError.controlledRunExited(
+                        controlledRunProcessIdentifier,
+                        startHolderDiagnostics(startHolder)
+                    )
+                }
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.startHolderCrashTimeout(
+            startHolderDiagnostics(startHolder)
+        )
+    }
+
+    func allowRunToPublishState() throws {
+        try Data().write(to: runContinue)
+    }
+
+    func forceControlledRunState(_ value: String) throws {
+        try Data("\(value)\n".utf8).write(to: state)
+    }
+
+    var controlledRunProcessIdentifier: pid_t? {
+        guard let contents = try? String(
+            contentsOf: runProcessIdentifier,
+            encoding: .utf8
+        ) else {
+            return nil
+        }
+        return pid_t(
+            contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private func startHolderDiagnostics(_ process: Process) -> String {
+        let status: String
+        if process.isRunning {
+            status = "running"
+        } else {
+            process.waitUntilExit()
+            let reason =
+                process.terminationReason == .exit
+                    ? "exit"
+                    : "uncaught-signal"
+            status =
+                "terminated reason=\(reason) status=\(process.terminationStatus)"
+        }
+        let outputData = try? Data(contentsOf: startHolderOutput)
+        let output = outputData.map {
+            String(decoding: $0, as: UTF8.self)
+        } ?? "<unavailable>"
+        return """
+        start holder \(status)
+        command: /usr/bin/xcrun xctest -XCTest SandboxRuntimeLumeTests.LumeRuntimeFailureTests/testUnpublishedStartCrashHolderSubprocess \(Bundle(for: LumeRuntimeFailureTests.self).bundleURL.path)
+        output:
+        \(output.isEmpty ? "<empty>" : output)
+        """
+    }
+
+    func terminateControlledRunIfNeeded() {
+        guard let processIdentifier = controlledRunProcessIdentifier,
+              Darwin.kill(processIdentifier, 0) == 0
+        else {
+            return
+        }
+        _ = Darwin.kill(processIdentifier, SIGKILL)
+    }
+
+    private func waitForMarker(
+        _ marker: URL,
+        timeout: Duration,
+        error: FakeLumeFixtureError
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        repeat {
+            if FileManager.default.fileExists(atPath: marker.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw error
     }
 
     var guestCommandWasStarted: Bool {
@@ -2809,9 +3469,41 @@ private struct FakeLumeFixture {
         printf '[{"name":"sandbox-failure-test","cpuCount":4,'
         printf '"memorySize":8589934592,"diskSize":{"total":107374182400},'
         printf '"status":"%s","sshAvailable":%s}]\\n' "$state" "$ready"
+        if [ "$behavior" = "disable-executable-after-list" ]; then
+          chmod 0444 "$0"
+        fi
         ;;
       run)
         trap 'printf "%s\\n" "stopped" > "$state_file"; exit 0' EXIT HUP INT TERM
+        if [ ! -f "$root/vms/sandbox-failure-test/.darkbloom-start-intent.json" ]; then
+          printf '%s\\n' "missing durable start intent" >&2
+          exit 78
+        fi
+        : > "$root/start-intent-observed"
+        if [ "$behavior" = "hardlink-start-intent-before-running" ]; then
+          /bin/ln \
+            "$root/vms/sandbox-failure-test/.darkbloom-start-intent.json" \
+            "$root/start-intent-alias"
+        fi
+        if [ "$behavior" = "failed-start-before-state-publication" ]; then
+          while :; do
+            /bin/sleep 0.01
+          done
+        fi
+        if [ "$behavior" = "pause-run-before-state-publication" ]; then
+          holder_pid="$PPID"
+          printf '%s\\n' "$$" > "$root/run-pid"
+          : > "$root/run-started"
+          while [ ! -f "$root/start-holder-crash" ]; do
+            /bin/sleep 0.01
+          done
+          kill -KILL "$holder_pid"
+          : > "$root/start-holder-crashed"
+          while [ ! -f "$root/run-continue" ]; do
+            /bin/sleep 0.01
+          done
+          printf '%s\\n' "starting" > "$state_file"
+        fi
         printf '%s\\n' "running" > "$state_file"
         while IFS= read -r current_state < "$state_file"; do
           if [ "$current_state" = "stopped" ]; then
@@ -2996,12 +3688,48 @@ private struct FakeLumeFixture {
     """
 }
 
-private enum FakeLumeFixtureError: Error {
+private enum FakeLumeFixtureError: LocalizedError {
     case stateTimeout(String)
     case createStartTimeout
     case listStartTimeout
+    case runLaunchTimeout(String)
+    case startHolderCrashTimeout(String)
+    case controlledRunExited(pid_t, String)
+    case startHolderOutputUnavailable(String)
     case guestReadinessProbeStartTimeout
     case processExitTimeout(pid_t)
+
+    var errorDescription: String? {
+        switch self {
+        case .stateTimeout(let state):
+            "timed out waiting for fake Lume state \(state)"
+        case .createStartTimeout:
+            "timed out waiting for fake Lume create"
+        case .listStartTimeout:
+            "timed out waiting for fake Lume list"
+        case .runLaunchTimeout(let diagnostics):
+            """
+            controlled fake Lume run never launched
+            \(diagnostics)
+            """
+        case .startHolderCrashTimeout(let diagnostics):
+            """
+            start holder did not terminate with SIGKILL
+            \(diagnostics)
+            """
+        case .controlledRunExited(let processIdentifier, let diagnostics):
+            """
+            controlled fake Lume run \(processIdentifier) exited with its start holder
+            \(diagnostics)
+            """
+        case .startHolderOutputUnavailable(let path):
+            "could not create start-holder output capture at \(path)"
+        case .guestReadinessProbeStartTimeout:
+            "timed out waiting for guest readiness probe"
+        case .processExitTimeout(let processIdentifier):
+            "timed out waiting for process \(processIdentifier) to exit"
+        }
+    }
 }
 
 private final class LumeTestWallClock: @unchecked Sendable {

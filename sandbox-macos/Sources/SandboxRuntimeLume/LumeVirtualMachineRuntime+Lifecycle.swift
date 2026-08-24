@@ -106,8 +106,23 @@ extension LumeVirtualMachineRuntime {
                     "VM \(specification.name) already exists without matching Darkbloom ownership"
                 )
             }
+            let identity = try LumeVirtualMachineOwnership.requireOwned(
+                name: specification.name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: specification.name,
+                ownership: identity,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
             return
         }
+        try requireUnlistedVirtualMachineIsUnowned(
+            name: specification.name,
+            owner: owner
+        )
 
         var sourceOperationName: String?
         var sourceOperationLock: LumeVirtualMachineOperationLock?
@@ -118,8 +133,14 @@ extension LumeVirtualMachineRuntime {
             guard try await inspect(name: template) != nil else {
                 throw SandboxRuntimeError.invalidImageReference
             }
-            _ = try LumeVirtualMachineOwnership.requireOwned(
+            let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
                 name: template,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: template,
+                ownership: sourceIdentity,
                 owner: .baseTemplate,
                 in: configuration.storageDirectory
             )
@@ -170,6 +191,12 @@ extension LumeVirtualMachineRuntime {
             }
             let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
                 name: template,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: template,
+                ownership: sourceIdentity,
                 owner: .baseTemplate,
                 in: configuration.storageDirectory
             )
@@ -273,12 +300,26 @@ extension LumeVirtualMachineRuntime {
                 "cannot start missing VM \(name)"
             )
         }
-        _ = try LumeVirtualMachineOwnership.requireOwned(
+        let ownership = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
             owner: owner,
             in: configuration.storageDirectory
         )
+        let startIntent = try LumeVirtualMachineStartIntent.presence(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
         if existing.state == .running {
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                startIntent,
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: existing.state,
+                in: configuration.storageDirectory
+            )
             try await waitForGuestReady(
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
@@ -291,6 +332,14 @@ extension LumeVirtualMachineRuntime {
                 expected: .running,
                 timeoutSeconds: configuration.commandTimeoutSeconds
             )
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                startIntent,
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: .running,
+                in: configuration.storageDirectory
+            )
             try await waitForGuestReady(
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
@@ -302,9 +351,22 @@ extension LumeVirtualMachineRuntime {
                 "cannot start VM \(name) while state is \(existing.state.rawValue)"
             )
         }
-
+        try LumeVirtualMachineStartIntent.requireAbsent(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
+        let intent = try LumeVirtualMachineStartIntent.persist(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            initiatingScope: scope,
+            in: configuration.storageDirectory
+        )
+        let process: SandboxManagedProcess
         do {
-            let process = try processRunner.start(
+            process = try processRunner.start(
                 executable: configuration.executable,
                 arguments: storageArguments([
                     "run",
@@ -314,13 +376,43 @@ extension LumeVirtualMachineRuntime {
                 ]),
                 environment: workspace.environment
             )
-            runningProcesses[name] = process
+        } catch {
+            do {
+                try LumeVirtualMachineStartIntent.clearAfterSpawnFailure(
+                    intent,
+                    name: name,
+                    ownership: ownership,
+                    owner: owner,
+                    in: configuration.storageDirectory
+                )
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "start \(name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
+        }
+
+        runningProcesses[name] = process
+        var unresolvedIntent: LumeVirtualMachineStartIntent.Intent? = intent
+        do {
             try await waitForState(
                 name: name,
                 expected: .running,
                 timeoutSeconds: configuration.commandTimeoutSeconds,
                 process: process
             )
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                .unresolved(intent),
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: .running,
+                in: configuration.storageDirectory
+            )
+            unresolvedIntent = nil
             try await waitForGuestReady(
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
@@ -329,7 +421,10 @@ extension LumeVirtualMachineRuntime {
             do {
                 try await cleanupFailedStartIgnoringCancellation(
                     name: name,
-                    owner: owner
+                    owner: owner,
+                    ownership: ownership,
+                    process: process,
+                    unresolvedIntent: unresolvedIntent
                 )
             } catch let cleanupError {
                 throw SandboxRuntimeError.cleanupFailed(
@@ -447,10 +542,20 @@ extension LumeVirtualMachineRuntime {
             operationScope: scope
         )
         guard let existing = try await inspect(name: name) else {
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: owner
+            )
             return
         }
-        _ = try LumeVirtualMachineOwnership.requireOwned(
+        let ownership = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
+        try LumeVirtualMachineStartIntent.requireAbsent(
+            name: name,
+            ownership: ownership,
             owner: owner,
             in: configuration.storageDirectory
         )
@@ -494,39 +599,6 @@ extension LumeVirtualMachineRuntime {
         activeOperations.removeValue(forKey: name)
     }
 
-    private func cleanupFailedStartIgnoringCancellation(
-        name: String,
-        owner: LumeVirtualMachineOwnership.Owner
-    ) async throws {
-        let process = runningProcesses.removeValue(forKey: name)
-        let cleanup = Task.detached {
-            try await self.cleanupFailedStart(
-                name: name,
-                owner: owner,
-                process: process
-            )
-        }
-        try await cleanup.value
-    }
-
-    private func cleanupFailedStart(
-        name: String,
-        owner: LumeVirtualMachineOwnership.Owner,
-        process: SandboxManagedProcess?
-    ) async throws {
-        if let process {
-            _ = await process.stop()
-        }
-        let state = try await inspect(name: name)?.state
-        if state != nil && state != .stopped {
-            try await stopWithoutOperationFence(name: name, owner: owner)
-        }
-        try await waitForStoppedOrAbsent(
-            name: name,
-            timeoutSeconds: configuration.commandTimeoutSeconds
-        )
-    }
-
     private func cleanupFailedCreationIgnoringCancellation(
         workspace: LumeCreationWorkspace
     ) async throws {
@@ -545,63 +617,7 @@ extension LumeVirtualMachineRuntime {
         try await cleanup.value
     }
 
-    func stopWithoutOperationFence(
-        name: String,
-        owner: LumeVirtualMachineOwnership.Owner
-    ) async throws {
-        guard let existing = try await inspect(name: name) else {
-            if let process = runningProcesses.removeValue(forKey: name) {
-                _ = await process.stop()
-            }
-            guard owner == .baseTemplate else {
-                throw SandboxRuntimeError.unsupported(
-                    "leased VM \(name) is missing; refusing to release capacity"
-                )
-            }
-            return
-        }
-        _ = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
-        )
-        if existing.state == .stopped {
-            if let process = runningProcesses.removeValue(forKey: name) {
-                _ = await process.stop()
-            }
-            _ = try LumeVirtualMachineOwnership.requireOwned(
-                name: name,
-                owner: owner,
-                in: configuration.storageDirectory
-            )
-            return
-        }
-        _ = try await run(
-            arguments: storageArguments(["stop", name]),
-            timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "stop"
-        )
-        try await waitForState(
-            name: name,
-            expected: .stopped,
-            timeoutSeconds: configuration.commandTimeoutSeconds
-        )
-        if let process = runningProcesses.removeValue(forKey: name) {
-            _ = await process.stop()
-        }
-        guard try await inspect(name: name)?.state == .stopped else {
-            throw SandboxRuntimeError.malformedOutput(
-                "Lume stop completed without a stopped VM record"
-            )
-        }
-        _ = try LumeVirtualMachineOwnership.requireOwned(
-            name: name,
-            owner: owner,
-            in: configuration.storageDirectory
-        )
-    }
-
-    private func waitForState(
+    func waitForState(
         name: String,
         expected: SandboxVirtualMachineState,
         timeoutSeconds: UInt32,
@@ -633,7 +649,7 @@ extension LumeVirtualMachineRuntime {
         )
     }
 
-    private func waitForStoppedOrAbsent(
+    func waitForStoppedOrAbsent(
         name: String,
         timeoutSeconds: UInt32
     ) async throws {

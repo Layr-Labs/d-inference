@@ -14,10 +14,11 @@ Implementation artifact:
 - `research/qwen36-prefill/patches/052-prefill-moe-topk.patch`
 - default behavior is unchanged;
 - `DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K=4` or `2` reduces routed experts only
-  for multi-token forwards;
+  on the dedicated CBv2 TEXT prompt-forward path;
 - `DARKBLOOM_QWEN35_PREFILL_MOE_FULL_LAYERS=0,3-5,39` keeps named layers on
   checkpoint top-8;
-- decode-shaped `T=1` calls and the MTP block always use top-8;
+- ordinary decode, multi-token MTP verification, and the MTP head always use
+  top-8;
 - malformed or non-reducing settings fail closed to top-8;
 - selected scores retain the incumbent renormalization, so omitted router mass
   is redistributed over the retained experts;
@@ -204,7 +205,7 @@ This is the smallest causal experiment:
 - renormalize retained probabilities exactly as the existing block does;
 - leave the shared expert unchanged;
 - select protected layers statically;
-- use top-8 for every `T=1` call.
+- use top-8 for every non-prefill call, including MTP verification.
 
 It drives the current `SwitchGLU` with fewer assignment rows, so it tests real
 end-to-end work deletion without a new kernel or weight format. It is the
@@ -300,8 +301,8 @@ and task scores at unchanged k.
 
 This is the appropriate product boundary for the first experiment:
 
-- large `T>1` prefill can delete work;
-- latency-sensitive `T=1` decode retains trained routing and unchanged decode
+- prompt prefill can delete work;
+- decode and MTP verification retain trained routing and unchanged decode
   throughput behavior;
 - candidate identity is still approximate because prompt state differs.
 
@@ -343,7 +344,8 @@ The patch deliberately changes only Qwen's model layer:
 Qwen35TextModelInner
   -> parse default-off policy once at model construction
   -> pass policy + layer index into each Qwen35SparseMoeBlock
-  -> block chooses checkpoint k or reduced k from (layer, sequence length)
+  -> CBv2RecurrentLanguageModelPrefillForwardable passes an explicit TEXT-prefill bit
+  -> block chooses checkpoint k or reduced k from (layer, engine phase)
   -> existing softmax / argPartition / SwitchGLU / weighted sum
 ```
 
@@ -371,8 +373,9 @@ DARKBLOOM_QWEN35_PREFILL_MOE_FULL_LAYERS=0-3,15,31-39 \
 
 Limitations of the experiment patch:
 
-- `T>1` is a shape gate, not an explicit engine phase. A one-token prompt
-  fragment remains top-8; a multi-token legacy forward is treated as prefill.
+- only `cbv2RecurrentPrefill` with tokenizer-owned embeddings enables the
+  policy. Legacy forwards, decode, MTP verification/capture, and multimodal
+  embedding prefills remain top-8;
 - policy metadata is not yet in benchmark JSON or provider telemetry;
   the wrapper must record both environment keys and binary hash;
 - it implements fixed k only, not ragged token-adaptive k;

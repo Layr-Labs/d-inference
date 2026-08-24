@@ -2,12 +2,12 @@ diff --git a/Libraries/MLXLLM/Models/Qwen35PrefillMoERoutingPolicy.swift b/Libra
 new file mode 100644
 --- /dev/null
 +++ b/Libraries/MLXLLM/Models/Qwen35PrefillMoERoutingPolicy.swift
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,116 @@
 +import Foundation
 +
 +/// Default-off research policy for reducing Qwen3.5 routed-expert work during
-+/// multi-token prompt forwards. Decode-shaped calls and unlabelled MoE blocks
-+/// always retain the checkpoint's configured top-k.
++/// explicitly identified prompt forwards. Decode, MTP verification, and
++/// unlabelled MoE blocks always retain the checkpoint's configured top-k.
 +public struct Qwen35PrefillMoERoutingPolicy: Equatable, Sendable {
 +    public static let topKEnvironmentKey = "DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K"
 +    public static let fullLayersEnvironmentKey =
@@ -55,18 +55,20 @@ new file mode 100644
 +
 +    /// The expert count for one MoE invocation.
 +    ///
-+    /// `sequenceLength == 1` covers ordinary and continuously-batched decode.
-+    /// A missing layer index covers MTP and any standalone block construction;
-+    /// neither is changed by this prefill-only experiment.
++    /// The caller supplies an explicit engine-phase bit rather than inferring
++    /// prefill from tensor shape: MTP verification is also multi-token. A
++    /// missing layer index covers MTP and standalone block construction.
 +    public func routedTopK(
 +        layerIndex: Int?,
-+        sequenceLength: Int,
++        isPrefill: Bool,
 +        modelTopK: Int
 +    ) -> Int {
 +        guard
 +            let reducedTopK,
 +            let layerIndex,
-+            sequenceLength > 1,
++            reducedTopK > 0,
++            reducedTopK < modelTopK,
++            isPrefill,
 +            !fullTopKLayers.contains(layerIndex)
 +        else {
 +            return modelTopK
@@ -148,22 +150,32 @@ diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen
  
          _gate.wrappedValue = Linear(args.hiddenSize, args.numExperts, bias: false)
          _switchMLP.wrappedValue = SwitchGLU(
-@@ -1133,7 +1142,13 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
+@@ -1130,10 +1139,23 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
+     }
+ 
+     func callAsFunction(_ x: MLXArray) -> MLXArray {
++        callAsFunction(x, usePrefillRoutingPolicy: false)
++    }
++
++    func callAsFunction(
++        _ x: MLXArray,
++        usePrefillRoutingPolicy: Bool
++    ) -> MLXArray {
          var gates = gate(x)
          gates = MLX.softmax(gates, axis: -1, precise: true)
  
 -        let k = topK
 +        // The default policy returns the checkpoint's top-k. An explicitly
-+        // enabled experiment may reduce only multi-token trunk calls; T=1
-+        // decode and MTP blocks remain on the original top-k.
++        // enabled experiment may reduce only the dedicated prompt-forward
++        // path; decode and MTP verification remain on the original top-k.
 +        let k = prefillRoutingPolicy.routedTopK(
 +            layerIndex: layerIndex,
-+            sequenceLength: x.dim(-2),
++            isPrefill: usePrefillRoutingPolicy,
 +            modelTopK: topK)
          let kth = gates.dim(-1) - k
          let inds = MLX.argPartition(gates, kth: kth, axis: -1)[.ellipsis, (kth)...]
          var scores = MLX.takeAlong(gates, inds, axis: -1)
-@@ -1164,7 +1179,11 @@ final class Qwen35DecoderLayer: Module {
+@@ -1164,7 +1186,11 @@ final class Qwen35DecoderLayer: Module {
  
      @ModuleInfo(key: "mlp") var mlp: Module
  
@@ -176,7 +188,7 @@ diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen
          self.isLinear = (layerIdx + 1) % args.fullAttentionInterval != 0
  
          if isLinear {
-@@ -1174,7 +1193,10 @@ final class Qwen35DecoderLayer: Module {
+@@ -1174,7 +1200,10 @@ final class Qwen35DecoderLayer: Module {
          }
  
          if args.numExperts > 0 {
@@ -188,7 +200,51 @@ diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen
          } else {
              _mlp.wrappedValue = Qwen3NextMLP(
                  dimensions: args.hiddenSize,
-@@ -1268,8 +1290,14 @@ public class Qwen35TextModelInner: Module {
+@@ -1214,7 +1243,9 @@ final class Qwen35DecoderLayer: Module {
+         }
+ 
+         let h = x + r
+-        return h + (mlp as! UnaryLayer)(postAttentionLayerNorm(h))
++        return h + applyMLP(
++            postAttentionLayerNorm(h),
++            usePrefillRoutingPolicy: false)
+     }
+ 
+     func cbv2Forward(
+@@ -1223,7 +1254,8 @@ final class Qwen35DecoderLayer: Module {
+         attentionCache: (any CBv2AttendingLayerCache)?,
+         recurrentState: [CBv2RecurrentStateEvaluation],
+         positionIds: MLXArray? = nil,
+-        captureRecurrentWindow: Bool = false
++        captureRecurrentWindow: Bool = false,
++        usePrefillMoERoutingPolicy: Bool = false
+     ) -> MLXArray {
+         let r: MLXArray
+         if isLinear {
+@@ -1245,7 +1277,21 @@ final class Qwen35DecoderLayer: Module {
+                 inputLayerNorm(x), cache: attentionCache, positionIds: positionIds)
+         }
+         let h = x + r
+-        return h + (mlp as! UnaryLayer)(postAttentionLayerNorm(h))
++        return h + applyMLP(
++            postAttentionLayerNorm(h),
++            usePrefillRoutingPolicy: usePrefillMoERoutingPolicy)
++    }
++
++    private func applyMLP(
++        _ x: MLXArray,
++        usePrefillRoutingPolicy: Bool
++    ) -> MLXArray {
++        if let sparse = mlp as? Qwen35SparseMoeBlock {
++            return sparse(
++                x,
++                usePrefillRoutingPolicy: usePrefillRoutingPolicy)
++        }
++        return (mlp as! UnaryLayer)(x)
+     }
+ }
+ 
+@@ -1268,8 +1314,14 @@ public class Qwen35TextModelInner: Module {
              dimensions: args.hiddenSize
          )
  
@@ -204,11 +260,41 @@ diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen
          }
  
          self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+@@ -1374,7 +1426,8 @@ public class Qwen35TextModelInner: Module {
+         caches: [any CBv2AttendingLayerCache],
+         recurrentState: [CBv2RecurrentStateEvaluation],
+         positionIds: MLXArray? = nil,
+-        captureRecurrentWindow: Bool = false
++        captureRecurrentWindow: Bool = false,
++        usePrefillMoERoutingPolicy: Bool = false
+     ) -> MLXArray {
+         precondition(
+             caches.count == layers.filter({ !$0.isLinear }).count,
+@@ -1399,7 +1452,8 @@ public class Qwen35TextModelInner: Module {
+                 attentionCache: attentionCache,
+                 recurrentState: recurrentState,
+                 positionIds: positionIds,
+-                captureRecurrentWindow: captureRecurrentWindow)
++                captureRecurrentWindow: captureRecurrentWindow,
++                usePrefillMoERoutingPolicy: usePrefillMoERoutingPolicy)
+         }
+         return hiddenStates
+     }
+@@ -1658,7 +1712,8 @@ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+         }
+         let hidden = model.cbv2Forward(
+             inputs, inputEmbeddings: inputEmbedding, caches: attending,
+-            recurrentState: recurrentState, positionIds: positionIds)
++            recurrentState: recurrentState, positionIds: positionIds,
++            usePrefillMoERoutingPolicy: inputEmbedding == nil)
+         switch requirement {
+         case .evaluationOnly:
+             // Small handle whose graph depends on the whole trunk — forcing
 diff --git a/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift b/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift
 new file mode 100644
 --- /dev/null
 +++ b/Tests/MLXLMTests/Qwen35PrefillMoERoutingPolicyTests.swift
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,90 @@
 +import Testing
 +
 +@testable import MLXLLM
@@ -220,7 +306,7 @@ new file mode 100644
 +
 +        #expect(policy == .disabled)
 +        #expect(
-+            policy.routedTopK(layerIndex: 0, sequenceLength: 2_048, modelTopK: 8)
++            policy.routedTopK(layerIndex: 0, isPrefill: true, modelTopK: 8)
 +                == 8)
 +        #expect(policy.descriptor == "disabled")
 +    }
@@ -238,13 +324,13 @@ new file mode 100644
 +        #expect(policy.reducedTopK == 4)
 +        #expect(policy.fullTopKLayers == Set([0, 3, 4, 5, 39]))
 +        #expect(
-+            policy.routedTopK(layerIndex: 1, sequenceLength: 512, modelTopK: 8)
++            policy.routedTopK(layerIndex: 1, isPrefill: true, modelTopK: 8)
 +                == 4)
 +        #expect(
-+            policy.routedTopK(layerIndex: 3, sequenceLength: 512, modelTopK: 8)
++            policy.routedTopK(layerIndex: 3, isPrefill: true, modelTopK: 8)
 +                == 8)
 +        #expect(
-+            policy.routedTopK(layerIndex: 39, sequenceLength: 512, modelTopK: 8)
++            policy.routedTopK(layerIndex: 39, isPrefill: true, modelTopK: 8)
 +                == 8)
 +    }
 +
@@ -255,13 +341,13 @@ new file mode 100644
 +            layerCount: 40)
 +
 +        #expect(
-+            policy.routedTopK(layerIndex: 12, sequenceLength: 2_048, modelTopK: 8)
++            policy.routedTopK(layerIndex: 12, isPrefill: true, modelTopK: 8)
 +                == 2)
 +        #expect(
-+            policy.routedTopK(layerIndex: 12, sequenceLength: 1, modelTopK: 8)
++            policy.routedTopK(layerIndex: 12, isPrefill: false, modelTopK: 8)
 +                == 8)
 +        #expect(
-+            policy.routedTopK(layerIndex: nil, sequenceLength: 2_048, modelTopK: 8)
++            policy.routedTopK(layerIndex: nil, isPrefill: true, modelTopK: 8)
 +                == 8)
 +    }
 +
@@ -290,7 +376,12 @@ new file mode 100644
 +            #expect(policy == .disabled)
 +            #expect(
 +                policy.routedTopK(
-+                    layerIndex: 1, sequenceLength: 2_048, modelTopK: 8) == 8)
++                    layerIndex: 1, isPrefill: true, modelTopK: 8) == 8)
 +        }
++
++        let invalidDirect = Qwen35PrefillMoERoutingPolicy(reducedTopK: 0)
++        #expect(
++            invalidDirect.routedTopK(
++                layerIndex: 1, isPrefill: true, modelTopK: 8) == 8)
 +    }
 +}

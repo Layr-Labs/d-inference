@@ -650,7 +650,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Backfill earnings_summary from existing provider_earnings rows.
 		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
 		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
+		 SELECT account_id, 'account', COUNT(*) FILTER (WHERE model <> 'base_reward'), COALESCE(SUM(amount_micro_usd), 0),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
 		 FROM provider_earnings
 		 WHERE account_id != ''
@@ -658,12 +658,63 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		 ON CONFLICT (key, key_type) DO NOTHING`,
 
 		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
+		 SELECT provider_key, 'provider', COUNT(*) FILTER (WHERE model <> 'base_reward'), COALESCE(SUM(amount_micro_usd), 0),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
 		 FROM provider_earnings
 		 WHERE provider_key != ''
 		 GROUP BY provider_key
 		 ON CONFLICT (key, key_type) DO NOTHING`,
+
+		// Repair summaries created before base rewards were excluded from job
+		// counts. Money still includes base rewards; only inference work counts as
+		// a job. The schema marker keeps this full historical aggregation one-shot.
+		`DO $$ BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM schema_migrations
+				WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'
+			) THEN
+				INSERT INTO earnings_summary (
+					key, key_type, total_count, total_micro_usd,
+					total_prompt_tokens, total_completion_tokens, updated_at
+				)
+				SELECT account_id, 'account',
+				       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+				       COALESCE(SUM(amount_micro_usd), 0),
+				       COALESCE(SUM(prompt_tokens), 0),
+				       COALESCE(SUM(completion_tokens), 0), NOW()
+				  FROM provider_earnings
+				 WHERE account_id <> ''
+				 GROUP BY account_id
+				ON CONFLICT (key, key_type) DO UPDATE SET
+					total_count = EXCLUDED.total_count,
+					total_micro_usd = EXCLUDED.total_micro_usd,
+					total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+					total_completion_tokens = EXCLUDED.total_completion_tokens,
+					updated_at = NOW();
+
+				INSERT INTO earnings_summary (
+					key, key_type, total_count, total_micro_usd,
+					total_prompt_tokens, total_completion_tokens, updated_at
+				)
+				SELECT provider_key, 'provider',
+				       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+				       COALESCE(SUM(amount_micro_usd), 0),
+				       COALESCE(SUM(prompt_tokens), 0),
+				       COALESCE(SUM(completion_tokens), 0), NOW()
+				  FROM provider_earnings
+				 WHERE provider_key <> ''
+				 GROUP BY provider_key
+				ON CONFLICT (key, key_type) DO UPDATE SET
+					total_count = EXCLUDED.total_count,
+					total_micro_usd = EXCLUDED.total_micro_usd,
+					total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+					total_completion_tokens = EXCLUDED.total_completion_tokens,
+					updated_at = NOW();
+
+				INSERT INTO schema_migrations (id)
+				VALUES ('earnings_summary_exclude_base_reward_jobs_v1');
+			END IF;
+		END $$`,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -5130,6 +5181,59 @@ func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, ser
 		return fmt.Errorf("store: touch provider session: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) ListProviderSessionIdentities(
+	ctx context.Context,
+	accountID string,
+	providerKeys []string,
+) ([]ProviderSessionIdentity, error) {
+	if accountID == "" || len(providerKeys) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		WITH candidates AS (
+			SELECT session_id, provider_key, serial_number, last_seen, 0 AS source_rank
+			  FROM provider_sessions
+			 WHERE account_id = $1
+			   AND provider_key = ANY($2)
+			   AND provider_key <> ''
+			   AND serial_number <> ''
+			UNION ALL
+			SELECT id, public_key, serial_number, last_seen, 1 AS source_rank
+			  FROM providers
+			 WHERE account_id = $1
+			   AND public_key = ANY($2)
+			   AND public_key <> ''
+			   AND serial_number <> ''
+		)
+		SELECT DISTINCT ON (provider_key) session_id, provider_key, serial_number
+		  FROM candidates
+		 ORDER BY provider_key, source_rank, last_seen DESC`,
+		accountID, providerKeys,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider session identities: %w", err)
+	}
+	defer rows.Close()
+
+	identities := make([]ProviderSessionIdentity, 0, len(providerKeys))
+	for rows.Next() {
+		var identity ProviderSessionIdentity
+		if err := rows.Scan(
+			&identity.SessionID,
+			&identity.ProviderKey,
+			&identity.SerialNumber,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan provider session identity: %w", err)
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider session identities: %w", err)
+	}
+	return identities, nil
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Implemented as

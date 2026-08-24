@@ -627,6 +627,11 @@ type ProviderStore interface {
 	// backfills serial/account/provider_key if they were unknown at open time.
 	TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error
 
+	// ListProviderSessionIdentities resolves the requested ephemeral provider
+	// keys to their physical machines for one account. Historical session rows
+	// are authoritative; provider records cover pre-session legacy data.
+	ListProviderSessionIdentities(ctx context.Context, accountID string, providerKeys []string) ([]ProviderSessionIdentity, error)
+
 	// CloseProviderSession marks the open session for sessionID as ended.
 	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error
 

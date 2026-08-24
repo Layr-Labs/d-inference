@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,13 +97,62 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	}
 }
 
+func TestAccountEarningsReflectsWritesImmediately(t *testing.T) {
+	srv, st := testWithdrawServer(t)
+	const accountID = "acct-immediate-earnings"
+
+	credit := func(jobID string, amount int64) {
+		t.Helper()
+		if err := st.CreditProviderAccount(&store.ProviderEarning{
+			AccountID:      accountID,
+			ProviderKey:    "key-immediate",
+			JobID:          jobID,
+			Model:          "qwen3.5-9b",
+			AmountMicroUSD: amount,
+			CreatedAt:      time.Now(),
+		}); err != nil {
+			t.Fatalf("credit %s: %v", jobID, err)
+		}
+	}
+	read := func() apitypes.AccountEarningsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, accountID))
+		w := httptest.NewRecorder()
+		srv.handleAccountEarnings(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		var response apitypes.AccountEarningsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return response
+	}
+
+	credit("job-first", 100_000)
+	first := read()
+	if first.Count != 1 || first.AvailableBalanceMicroUSD != 100_000 {
+		t.Fatalf("first response = %+v", first)
+	}
+
+	credit("job-second", 200_000)
+	second := read()
+	if second.Count != 2 || second.AvailableBalanceMicroUSD != 300_000 {
+		t.Fatalf("second response remained stale: %+v", second)
+	}
+}
+
 func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) {
 	srv, st := testWithdrawServer(t)
 	const (
-		accountID   = "acct-linked-history"
-		rawToken    = "eigeninference-pt-linked-history"
-		providerID  = "provider-session-1"
-		providerKey = "provider-key-1"
+		accountID         = "acct-linked-history"
+		rawToken          = "eigeninference-pt-linked-history"
+		serialNumber      = "SERIAL-HISTORY-1"
+		currentSessionID  = "provider-session-current"
+		currentKey        = "provider-key-current"
+		previousSessionID = "provider-session-previous"
+		previousKey       = "provider-key-previous"
 	)
 
 	tokenHash := sha256.Sum256([]byte(rawToken))
@@ -112,19 +163,58 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create provider token: %v", err)
 	}
+	for _, session := range []struct {
+		id  string
+		key string
+	}{
+		{previousSessionID, previousKey},
+		{currentSessionID, currentKey},
+	} {
+		if err := st.OpenProviderSession(
+			context.Background(),
+			session.id,
+			serialNumber,
+			accountID,
+		); err != nil {
+			t.Fatalf("open provider session %s: %v", session.id, err)
+		}
+		if err := st.TouchProviderSession(
+			context.Background(),
+			session.id,
+			serialNumber,
+			accountID,
+			session.key,
+			time.Now(),
+		); err != nil {
+			t.Fatalf("touch provider session %s: %v", session.id, err)
+		}
+	}
 	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
-		ID:           providerID,
+		ID:           currentSessionID,
 		AccountID:    accountID,
-		PublicKey:    providerKey,
-		SerialNumber: "SERIAL-1",
+		PublicKey:    currentKey,
+		SerialNumber: serialNumber,
 		LastSeen:     time.Now(),
 	}); err != nil {
 		t.Fatalf("upsert provider: %v", err)
 	}
 	if err := st.CreditProviderAccount(&store.ProviderEarning{
 		AccountID:        accountID,
-		ProviderID:       providerID,
-		ProviderKey:      providerKey,
+		ProviderID:       previousSessionID,
+		ProviderKey:      previousKey,
+		JobID:            "job-previous-session",
+		Model:            "qwen3.5-9b",
+		AmountMicroUSD:   100_000,
+		PromptTokens:     40,
+		CompletionTokens: 10,
+		CreatedAt:        time.Now().Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("credit previous provider session: %v", err)
+	}
+	if err := st.CreditProviderAccount(&store.ProviderEarning{
+		AccountID:        accountID,
+		ProviderID:       currentSessionID,
+		ProviderKey:      currentKey,
 		JobID:            "job-linked",
 		Model:            "qwen3.5-9b",
 		AmountMicroUSD:   300_000,
@@ -135,7 +225,7 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 		t.Fatalf("credit provider account: %v", err)
 	}
 	if credited, err := st.SettleProviderFloorDraw(context.Background(), &store.ProviderFloorDraw{
-		ProviderKey:    providerKey,
+		ProviderKey:    currentKey,
 		AccountID:      accountID,
 		EpochID:        "2026-08",
 		AmountMicroUSD: 450_000,
@@ -167,18 +257,25 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 		t.Fatalf("status = %d, want 200", response.StatusCode)
 	}
 
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if strings.Contains(string(body), serialNumber) {
+		t.Fatalf("earnings response exposed hardware serial: %s", body)
+	}
 	var payload apitypes.AccountEarningsResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload.AccountID != accountID {
 		t.Fatalf("account_id = %q, want %q", payload.AccountID, accountID)
 	}
-	if payload.TotalMicroUSD != 750_000 || payload.Count != 1 {
-		t.Fatalf("summary = (%d, %d), want (750000, 1)", payload.TotalMicroUSD, payload.Count)
+	if payload.TotalMicroUSD != 850_000 || payload.Count != 2 {
+		t.Fatalf("summary = (%d, %d), want (850000, 2)", payload.TotalMicroUSD, payload.Count)
 	}
-	if len(payload.Earnings) != 2 {
-		t.Fatalf("earnings length = %d, want 2", len(payload.Earnings))
+	if len(payload.Earnings) != 3 {
+		t.Fatalf("earnings length = %d, want 3", len(payload.Earnings))
 	}
 	var inference, floor *store.ProviderEarning
 	for i := range payload.Earnings {
@@ -195,11 +292,24 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 	if floor == nil || floor.AmountMicroUSD != 450_000 {
 		t.Fatalf("base reward missing from history: %+v", floor)
 	}
-	if len(payload.Providers) != 1 {
-		t.Fatalf("providers length = %d, want 1", len(payload.Providers))
+	if len(payload.Providers) != 2 {
+		t.Fatalf("providers length = %d, want 2", len(payload.Providers))
 	}
-	if got := payload.Providers[0]; got.ProviderID != providerID ||
-		got.ProviderKey != providerKey || got.SerialNumber != "SERIAL-1" {
-		t.Fatalf("provider identity = %+v", got)
+	expectedMachineID := providerMachineID(serialNumber)
+	identityByKey := make(map[string]apitypes.AccountEarningsProvider, len(payload.Providers))
+	for _, identity := range payload.Providers {
+		identityByKey[identity.ProviderKey] = identity
+	}
+	for key, sessionID := range map[string]string{
+		previousKey: previousSessionID,
+		currentKey:  currentSessionID,
+	} {
+		identity, ok := identityByKey[key]
+		if !ok {
+			t.Fatalf("missing provider identity for %q: %+v", key, payload.Providers)
+		}
+		if identity.ProviderID != sessionID || identity.MachineID != expectedMachineID {
+			t.Fatalf("provider identity for %q = %+v", key, identity)
+		}
 	}
 }

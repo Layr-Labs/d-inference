@@ -211,7 +211,7 @@ final class ContributionsStore {
 // MARK: - Live mapping (earnings payload -> snapshot)
 
 /// Maps authenticated account earnings onto privacy-safe app records. The
-/// coordinator includes provider-key/session-to-serial mappings so every
+/// coordinator includes provider-key/session-to-machine mappings so every
 /// ephemeral key from this physical Mac remains in the "This Mac" scope.
 enum ContributionsLiveMapping {
     static let liveMinimumPayout = MicroUSD(1_000_000)
@@ -229,9 +229,9 @@ enum ContributionsLiveMapping {
         if let currentKey = payload.currentProviderKey, !currentKey.isEmpty {
             currentProviderKeys.insert(currentKey)
         }
-        if let currentSerial = payload.currentSerialNumber, !currentSerial.isEmpty {
+        if let currentMachineID = payload.currentMachineID, !currentMachineID.isEmpty {
             currentProviderKeys.formUnion(payload.providers.lazy
-                .filter { $0.serialNumber == currentSerial }
+                .filter { $0.machineID == currentMachineID }
                 .map(\.providerKey)
                 .filter { !$0.isEmpty })
         }
@@ -241,7 +241,7 @@ enum ContributionsLiveMapping {
                 fallbackIndex: index,
                 providersByKey: providersByKey,
                 providersByID: providersByID,
-                currentSerial: payload.currentSerialNumber,
+                currentMachineID: payload.currentMachineID,
                 asOf: asOf
             )
         }
@@ -266,7 +266,7 @@ enum ContributionsLiveMapping {
         fallbackIndex: Int,
         providersByKey: [String: ContributionsEarningsPayload.ProviderIdentity],
         providersByID: [String: ContributionsEarningsPayload.ProviderIdentity],
-        currentSerial: String?,
+        currentMachineID: String?,
         asOf: Date
     ) -> ContributionRecord {
         let id: String
@@ -288,7 +288,10 @@ enum ContributionsLiveMapping {
             timestamp: min(earning.createdAt ?? asOf, asOf),
             providerKey: providerKey,
             providerID: providerID,
-            providerName: providerName(identity: identity, currentSerial: currentSerial),
+            providerName: providerName(
+                identity: identity,
+                currentMachineID: currentMachineID
+            ),
             modelID: modelID,
             modelName: modelID == "base_reward" ? "Base reward" : modelID,
             inputTokens: nonNegativeTokens(earning.promptTokens),
@@ -299,15 +302,15 @@ enum ContributionsLiveMapping {
 
     private static func providerName(
         identity: ContributionsEarningsPayload.ProviderIdentity?,
-        currentSerial: String?
+        currentMachineID: String?
     ) -> String {
-        guard let serial = identity?.serialNumber, !serial.isEmpty else {
+        guard let machineID = identity?.machineID, !machineID.isEmpty else {
             return "Provider"
         }
-        if serial == currentSerial {
+        if machineID == currentMachineID {
             return "This Mac"
         }
-        return "Mac ••••\(serial.suffix(4))"
+        return "Mac ••••\(machineID.suffix(4).uppercased())"
     }
 
     private static func nonNegative(_ value: Int64) -> MicroUSD {

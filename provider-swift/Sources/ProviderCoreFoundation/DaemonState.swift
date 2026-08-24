@@ -106,7 +106,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var operatorAddress: String?
         /// X25519 key advertised for this daemon session. The key is ephemeral
         /// across daemon restarts, so account history also carries a
-        /// key-to-hardware-serial mapping for stable "This Mac" grouping.
+        /// key-to-machine mapping for stable "This Mac" grouping.
         public var providerKey: String?
 
         public init(

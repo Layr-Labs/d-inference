@@ -3340,6 +3340,72 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 	return nil
 }
 
+func (s *MemoryStore) ListProviderSessionIdentities(
+	_ context.Context,
+	accountID string,
+	providerKeys []string,
+) ([]ProviderSessionIdentity, error) {
+	if accountID == "" || len(providerKeys) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	wanted := make(map[string]struct{}, len(providerKeys))
+	for _, key := range providerKeys {
+		if key != "" {
+			wanted[key] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	byKey := make(map[string]ProviderSessionIdentity, len(wanted))
+	for i := range s.providerSessions {
+		session := &s.providerSessions[i]
+		if session.AccountID != accountID || session.SerialNumber == "" {
+			continue
+		}
+		if _, ok := wanted[session.ProviderKey]; !ok {
+			continue
+		}
+		byKey[session.ProviderKey] = ProviderSessionIdentity{
+			SessionID:    session.SessionID,
+			ProviderKey:  session.ProviderKey,
+			SerialNumber: session.SerialNumber,
+		}
+	}
+	for _, record := range s.providerRecords {
+		if record.AccountID != accountID || record.SerialNumber == "" {
+			continue
+		}
+		if _, ok := wanted[record.PublicKey]; !ok {
+			continue
+		}
+		if _, exists := byKey[record.PublicKey]; exists {
+			continue
+		}
+		byKey[record.PublicKey] = ProviderSessionIdentity{
+			SessionID:    record.ID,
+			ProviderKey:  record.PublicKey,
+			SerialNumber: record.SerialNumber,
+		}
+	}
+
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	identities := make([]ProviderSessionIdentity, 0, len(keys))
+	for _, key := range keys {
+		identities = append(identities, byKey[key])
+	}
+	return identities, nil
+}
+
 // CloseProviderSession marks the session for sessionID as ended. Upsert
 // semantics (mirrors postgres): closes an open row; leaves an already-closed row
 // untouched; and if the row is missing (close raced ahead of open) inserts an

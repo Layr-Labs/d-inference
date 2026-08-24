@@ -50,3 +50,12 @@ func providerAccountEarningsWireContract() throws {
         ) == decoded
     )
 }
+
+@Test("provider machine identity matches the coordinator wire contract")
+func providerMachineIdentityContract() {
+    #expect(
+        ProviderMachineIdentity.id(serialNumber: "SERIAL-9")
+            == "63ecd36d8a4ecfab1b8ca32e884921afc9bf303a079cefb06362a6c4c2219ac0"
+    )
+    #expect(ProviderMachineIdentity.id(serialNumber: "") == nil)
+}

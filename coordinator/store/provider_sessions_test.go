@@ -158,6 +158,99 @@ func TestMemoryProviderSessionReconcileFencesFreshSessions(t *testing.T) {
 	}
 }
 
+func TestProviderSessionIdentitiesPreserveHistoricalKeys(t *testing.T) {
+	ctx := context.Background()
+	for backend, st := range storeBackends(t) {
+		t.Run(backend, func(t *testing.T) {
+			accountID := uniqueID("identity-account")
+			otherAccountID := uniqueID("identity-other-account")
+			serial := uniqueID("identity-serial")
+			firstSession := uniqueID("identity-session")
+			secondSession := uniqueID("identity-session")
+			otherSession := uniqueID("identity-session")
+			firstKey := uniqueID("identity-key")
+			secondKey := uniqueID("identity-key")
+			otherKey := uniqueID("identity-key")
+			legacyKey := uniqueID("identity-key")
+
+			for _, input := range []struct {
+				sessionID string
+				accountID string
+				serial    string
+				key       string
+			}{
+				{firstSession, accountID, serial, firstKey},
+				{secondSession, accountID, serial, secondKey},
+				{otherSession, otherAccountID, serial, otherKey},
+			} {
+				if err := st.OpenProviderSession(
+					ctx,
+					input.sessionID,
+					input.serial,
+					input.accountID,
+				); err != nil {
+					t.Fatalf("open %s: %v", input.sessionID, err)
+				}
+				if err := st.TouchProviderSession(
+					ctx,
+					input.sessionID,
+					input.serial,
+					input.accountID,
+					input.key,
+					time.Now(),
+				); err != nil {
+					t.Fatalf("touch %s: %v", input.sessionID, err)
+				}
+			}
+			if err := st.UpsertProvider(ctx, ProviderRecord{
+				ID:           uniqueID("legacy-provider"),
+				AccountID:    accountID,
+				PublicKey:    legacyKey,
+				SerialNumber: serial,
+				LastSeen:     time.Now(),
+			}); err != nil {
+				t.Fatalf("upsert legacy provider: %v", err)
+			}
+
+			identities, err := st.ListProviderSessionIdentities(
+				ctx,
+				accountID,
+				[]string{secondKey, firstKey, otherKey, legacyKey, ""},
+			)
+			if err != nil {
+				t.Fatalf("list identities: %v", err)
+			}
+			if len(identities) != 3 {
+				t.Fatalf("identities = %+v, want three account-owned keys", identities)
+			}
+
+			byKey := make(map[string]ProviderSessionIdentity, len(identities))
+			for _, identity := range identities {
+				byKey[identity.ProviderKey] = identity
+			}
+			for key, sessionID := range map[string]string{
+				firstKey:  firstSession,
+				secondKey: secondSession,
+				legacyKey: "",
+			} {
+				identity, ok := byKey[key]
+				if !ok {
+					t.Fatalf("missing identity for key %q: %+v", key, identities)
+				}
+				if identity.SerialNumber != serial {
+					t.Fatalf("identity %q serial = %q, want %q", key, identity.SerialNumber, serial)
+				}
+				if sessionID != "" && identity.SessionID != sessionID {
+					t.Fatalf("identity %q session = %q, want %q", key, identity.SessionID, sessionID)
+				}
+			}
+			if _, ok := byKey[otherKey]; ok {
+				t.Fatal("identity from another account leaked into results")
+			}
+		})
+	}
+}
+
 // TestPostgresProviderSessionCloseBeforeOpen is the same regression against real
 // Postgres (the ON CONFLICT upsert path).
 func TestPostgresProviderSessionCloseBeforeOpen(t *testing.T) {

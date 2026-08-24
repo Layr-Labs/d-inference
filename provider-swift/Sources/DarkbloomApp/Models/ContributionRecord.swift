@@ -13,7 +13,7 @@ struct ContributionRecord: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var timestamp: Date
     /// X25519 daemon-session key. Account history maps every key back to the
-    /// hardware serial before deciding whether the record belongs to this Mac.
+    /// opaque machine identity before deciding whether it belongs to this Mac.
     var providerKey: String
     /// Ephemeral coordinator session identifier retained only as record metadata.
     /// Never use this value to decide which physical Mac earned a record.

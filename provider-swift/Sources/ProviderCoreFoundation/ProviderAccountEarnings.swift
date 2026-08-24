@@ -92,24 +92,24 @@ public struct ProviderAccountEarningsReport: Codable, Equatable, Sendable {
     public struct ProviderIdentity: Codable, Equatable, Sendable {
         public var providerID: String
         public var providerKey: String
-        public var serialNumber: String
+        public var machineID: String
 
         enum CodingKeys: String, CodingKey {
             case providerID = "provider_id"
             case providerKey = "provider_key"
-            case serialNumber = "serial_number"
+            case machineID = "machine_id"
         }
 
-        public init(providerID: String, providerKey: String, serialNumber: String) {
+        public init(providerID: String, providerKey: String, machineID: String) {
             self.providerID = providerID
             self.providerKey = providerKey
-            self.serialNumber = serialNumber
+            self.machineID = machineID
         }
     }
 
     public var accountID: String
     public var currentProviderKey: String?
-    public var currentSerialNumber: String?
+    public var currentMachineID: String?
     public var earnings: [Earning]
     public var providers: [ProviderIdentity]
     public var totalMicroUSD: Int64
@@ -125,7 +125,7 @@ public struct ProviderAccountEarningsReport: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case accountID = "account_id"
         case currentProviderKey = "current_provider_key"
-        case currentSerialNumber = "current_serial_number"
+        case currentMachineID = "current_machine_id"
         case earnings
         case providers
         case totalMicroUSD = "total_micro_usd"
@@ -142,7 +142,7 @@ public struct ProviderAccountEarningsReport: Codable, Equatable, Sendable {
     public init(
         accountID: String,
         currentProviderKey: String? = nil,
-        currentSerialNumber: String? = nil,
+        currentMachineID: String? = nil,
         earnings: [Earning],
         providers: [ProviderIdentity] = [],
         totalMicroUSD: Int64,
@@ -157,7 +157,7 @@ public struct ProviderAccountEarningsReport: Codable, Equatable, Sendable {
     ) {
         self.accountID = accountID
         self.currentProviderKey = currentProviderKey
-        self.currentSerialNumber = currentSerialNumber
+        self.currentMachineID = currentMachineID
         self.earnings = earnings
         self.providers = providers
         self.totalMicroUSD = totalMicroUSD
@@ -175,7 +175,7 @@ public struct ProviderAccountEarningsReport: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         accountID = try container.decodeIfPresent(String.self, forKey: .accountID) ?? ""
         currentProviderKey = try container.decodeIfPresent(String.self, forKey: .currentProviderKey)
-        currentSerialNumber = try container.decodeIfPresent(String.self, forKey: .currentSerialNumber)
+        currentMachineID = try container.decodeIfPresent(String.self, forKey: .currentMachineID)
         earnings = try container.decodeIfPresent([Earning].self, forKey: .earnings) ?? []
         providers = try container.decodeIfPresent([ProviderIdentity].self, forKey: .providers) ?? []
         totalMicroUSD = try container.decodeIfPresent(Int64.self, forKey: .totalMicroUSD) ?? 0

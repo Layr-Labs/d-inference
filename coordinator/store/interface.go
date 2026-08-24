@@ -904,6 +904,14 @@ type ProviderSession struct {
 	DisconnectReason string     `json:"disconnect_reason"`
 }
 
+// ProviderSessionIdentity maps an ephemeral provider encryption key back to a
+// physical Mac without exposing the full session history to API callers.
+type ProviderSessionIdentity struct {
+	SessionID    string
+	ProviderKey  string
+	SerialNumber string
+}
+
 // ProviderLocation captures approximate geographic location for a provider or
 // request origin. Raw IP addresses are never stored. Populated from GeoIP
 // database lookups or trusted reverse-proxy headers.

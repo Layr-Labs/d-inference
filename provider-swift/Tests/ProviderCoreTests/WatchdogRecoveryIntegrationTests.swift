@@ -4,6 +4,11 @@ import Testing
 
 @Suite("Watchdog update and rollback integration", .serialized)
 struct WatchdogRecoveryIntegrationTests {
+    private static let providerIdentity = ProcessIdentity(
+        pid: 4_242,
+        startTimeMicros: 150_000_000
+    )
+
     @Test("down provider installs signed release before restart")
     func forwardUpdateWhileDown() async throws {
         let fixture = try UpdateRecoveryFixture()
@@ -80,7 +85,8 @@ struct WatchdogRecoveryIntegrationTests {
         defer { Task { await context.mock.shutdown() } }
 
         let firstHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -91,7 +97,8 @@ struct WatchdogRecoveryIntegrationTests {
             now: 200
         )
         let secondHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 261,
             startedAt: 150
@@ -108,6 +115,39 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate == nil)
         #expect(state.current?.version == "2.0.0")
         #expect(state.predecessor?.release.version == "1.0.0")
+    }
+
+    @Test("a reused candidate PID cannot satisfy stabilization")
+    func reusedCandidatePIDDoesNotPromote() async throws {
+        let context = try await installedCandidate(stabilizationSeconds: 0)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let reused = ProcessIdentity(
+            pid: Self.providerIdentity.pid,
+            startTimeMicros: Self.providerIdentity.startTimeMicros + 1
+        )
+        let service = makeService(
+            updater: context.updater,
+            restarts: context.restarts,
+            stabilizationSeconds: 0,
+            readProcessIdentity: { _ in reused }
+        )
+        let heartbeat = DaemonState(
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
+            version: "2.0.0",
+            writtenAt: 200,
+            startedAt: 150
+        )
+
+        let outcome = service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: heartbeat,
+            now: 200
+        )
+
+        #expect(outcome == .stabilizing(since: nil))
+        #expect(try recoveryStore(context.fixture).loadState().candidate != nil)
     }
 
     @Test("installed candidate retries restart without reinstalling")
@@ -584,7 +624,8 @@ struct WatchdogRecoveryIntegrationTests {
         try store.writeState(state)
 
         let oldProviderHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "1.0.0",  // serving OLD version — not the candidate
             writtenAt: 200,
             startedAt: 150
@@ -975,7 +1016,6 @@ struct WatchdogRecoveryIntegrationTests {
                     Thread.sleep(forTimeInterval: 0.8)
                     return true
                 },
-                processAlive: { _ in true },
                 log: { _ in }
             )
         )
@@ -1007,7 +1047,8 @@ struct WatchdogRecoveryIntegrationTests {
         defer { Task { await context.mock.shutdown() } }
 
         let heartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -1349,7 +1390,10 @@ struct WatchdogRecoveryIntegrationTests {
         restarts: RecoveryRestartCounter,
         stabilizationSeconds: Double = 180,
         candidateStartupTimeoutSeconds: Double = 300,
-        isPastTickDeadline: @escaping @Sendable () -> Bool = { false }
+        isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
+        readProcessIdentity: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            $0 == Self.providerIdentity.pid ? Self.providerIdentity : nil
+        }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
@@ -1361,7 +1405,7 @@ struct WatchdogRecoveryIntegrationTests {
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
+                readProcessIdentity: readProcessIdentity,
                 isPastTickDeadline: isPastTickDeadline,
                 log: { _ in }
             ),

@@ -17,7 +17,7 @@ public struct WatchdogRecoveryService: Sendable {
         public var kickstartIfLoaded: @Sendable () throws -> Bool
         public var launchSnapshot: @Sendable () -> ProviderLaunchSnapshot?
         public var providerStillLoaded: @Sendable () -> Bool
-        public var processAlive: @Sendable (Int32) -> Bool
+        public var readProcessIdentity: @Sendable (Int32) -> ProcessIdentity?
         public var terminateStaleLockOwner:
             @Sendable (UpdateProcessLock.Owner) -> Bool
         /// Safe-point tick budget check. Consulted ONLY between complete
@@ -62,7 +62,8 @@ public struct WatchdogRecoveryService: Sendable {
                 LaunchAgent.launchSnapshot()
             },
             providerStillLoaded: @escaping @Sendable () -> Bool = { true },
-            processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
+            readProcessIdentity: @escaping @Sendable (Int32) -> ProcessIdentity? =
+                ProcessIdentity.read(pid:),
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
@@ -77,7 +78,7 @@ public struct WatchdogRecoveryService: Sendable {
             self.kickstartIfLoaded = kickstartIfLoaded
             self.launchSnapshot = launchSnapshot
             self.providerStillLoaded = providerStillLoaded
-            self.processAlive = processAlive
+            self.readProcessIdentity = readProcessIdentity
             self.terminateStaleLockOwner = terminateStaleLockOwner
             self.isPastTickDeadline = isPastTickDeadline
             self.tripKVBackendGuard = tripKVBackendGuard
@@ -625,7 +626,10 @@ public struct WatchdogRecoveryService: Sendable {
                 freshMatchingHeartbeat = providerRunning
                     && daemonState.version == candidate.release.version
                     && !daemonState.isStale(now: now)
-                    && deps.processAlive(daemonState.pid)
+                    && DaemonStateRuntimeTruth.belongsToLiveProcess(
+                        daemonState,
+                        readIdentity: deps.readProcessIdentity
+                    )
             } else {
                 freshMatchingHeartbeat = false
             }

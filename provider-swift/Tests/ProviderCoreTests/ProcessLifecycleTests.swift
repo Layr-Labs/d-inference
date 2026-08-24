@@ -10,15 +10,13 @@ struct ProcessLifecycleTests {
             .appendingPathComponent("test-darkbloom-pid-\(UUID().uuidString).pid")
     }
 
-    @Test("acquire writes our PID")
-    func acquireWritesPID() throws {
+    @Test("acquire writes our exact kernel identity")
+    func acquireWritesIdentity() throws {
         let pidFile = tempPIDFile()
         defer { ProcessLifecycle.releaseSingleInstanceLock(at: pidFile) }
 
         try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
-        let written = try String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == ProcessIdentity.current())
     }
 
     @Test("release deletes the PID file")
@@ -31,20 +29,26 @@ struct ProcessLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: pidFile.path))
     }
 
-    @Test("acquire over a stale PID file overwrites it")
-    func acquireOverStalePIDOverwrites() throws {
+    @Test("legacy PID-only files are overwritten without signaling")
+    func legacyPIDIsNotSignaled() throws {
         let pidFile = tempPIDFile()
-        defer { ProcessLifecycle.releaseSingleInstanceLock(at: pidFile) }
+        let current = ProcessIdentity(pid: 200, startTimeMicros: 2_000)
+        var terminationCount = 0
+        try "123\n".write(to: pidFile, atomically: true, encoding: .utf8)
 
-        // Write a clearly-stale PID: 1 (init) is alive, but won't be us.
-        try "999999\n".write(to: pidFile, atomically: true, encoding: .utf8)
-        // 999999 won't be alive -- kill(999999, 0) returns ESRCH -- so the
-        // acquire path skips the kill and just overwrites.
-        try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
+        try ProcessLifecycle.acquireSingleInstanceLock(
+            at: pidFile,
+            terminationGracePeriod: 0,
+            currentIdentity: current,
+            readIdentity: { _ in ProcessIdentity(pid: 123, startTimeMicros: 1_000) },
+            terminate: { _, _ in
+                terminationCount += 1
+                return true
+            }
+        )
 
-        let written = try String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
+        #expect(terminationCount == 0)
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == current)
     }
 
     @Test("acquire is idempotent for the running process")
@@ -54,10 +58,89 @@ struct ProcessLifecycleTests {
 
         try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
         try ProcessLifecycle.acquireSingleInstanceLock(at: pidFile)
-        // Should not throw, file should still contain our PID.
-        let written = try String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == ProcessIdentity.current())
+    }
+
+    @Test("a reused PID can never authorize termination")
+    func reusedPIDIsNotSignaled() throws {
+        let pidFile = tempPIDFile()
+        let old = ProcessIdentity(pid: 123, startTimeMicros: 1_000)
+        let reused = ProcessIdentity(pid: 123, startTimeMicros: 2_000)
+        let current = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
+        try writeOwner(old, to: pidFile)
+        var terminationCount = 0
+
+        try ProcessLifecycle.acquireSingleInstanceLock(
+            at: pidFile,
+            terminationGracePeriod: 0,
+            currentIdentity: current,
+            readIdentity: { $0 == reused.pid ? reused : nil },
+            terminate: { _, _ in
+                terminationCount += 1
+                return true
+            }
+        )
+
+        #expect(terminationCount == 0)
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == current)
+    }
+
+    @Test("a matching live identity is terminated before takeover")
+    func matchingIdentityIsTerminated() throws {
+        let pidFile = tempPIDFile()
+        let old = ProcessIdentity(pid: 123, startTimeMicros: 1_000)
+        let current = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
+        try writeOwner(old, to: pidFile)
+        var terminated: ProcessIdentity?
+
+        try ProcessLifecycle.acquireSingleInstanceLock(
+            at: pidFile,
+            terminationGracePeriod: 0.25,
+            currentIdentity: current,
+            readIdentity: { $0 == old.pid ? old : nil },
+            terminate: { identity, grace in
+                terminated = identity
+                #expect(grace == 0.25)
+                return true
+            }
+        )
+
+        #expect(terminated == old)
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == current)
+    }
+
+    @Test("failed termination prevents a second provider from starting")
+    func failedTerminationAbortsTakeover() throws {
+        let pidFile = tempPIDFile()
+        let old = ProcessIdentity(pid: 123, startTimeMicros: 1_000)
+        let current = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
+        try writeOwner(old, to: pidFile)
+
+        #expect(throws: ProcessLifecycleError.existingProviderDidNotExit(123)) {
+            try ProcessLifecycle.acquireSingleInstanceLock(
+                at: pidFile,
+                terminationGracePeriod: 0,
+                currentIdentity: current,
+                readIdentity: { _ in old },
+                terminate: { _, _ in false }
+            )
+        }
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == old)
+    }
+
+    @Test("a stale owner cannot remove its successor's record")
+    func staleReleasePreservesSuccessor() throws {
+        let pidFile = tempPIDFile()
+        let old = ProcessIdentity(pid: 123, startTimeMicros: 1_000)
+        let successor = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
+        try writeOwner(successor, to: pidFile)
+
+        ProcessLifecycle.releaseSingleInstanceLock(
+            at: pidFile,
+            currentIdentity: old
+        )
+
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == successor)
     }
 
     @Test("standalone and connected launches share one locked housekeeping pass")
@@ -111,5 +194,22 @@ struct ProcessLifecycleTests {
         }
         #expect(telemetryPurgeCount == 0)
         #expect(videoPurgeCount == 0)
+    }
+
+    private func writeOwner(
+        _ identity: ProcessIdentity,
+        to pidFile: URL
+    ) throws {
+        try FileManager.default.createDirectory(
+            at: pidFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        var data = try encoder.encode(
+            ProcessLifecycle.SingleInstanceOwner(processIdentity: identity)
+        )
+        data.append(0x0A)
+        try data.write(to: pidFile, options: .atomic)
     }
 }

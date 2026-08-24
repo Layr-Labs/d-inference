@@ -1,0 +1,1094 @@
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+index 62f4a2bd295ce213076daaab867f946107749dc9..e407d7342a4c074f55c6332d45f30ccb495cceca 100644
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -605,46 +605,24 @@ final class Qwen35GatedDeltaNet: Module {
+     ) -> MLXArray {
+         let B = inputs.dim(0)
+         let S = inputs.dim(1)
+-        precondition(recurrentState.count == B, "Qwen35 CBv2 recurrent row count mismatch")
+ 
+         let qkv = inProjQKV(inputs)
+         let z = inProjZ(inputs).reshaped(B, S, numVHeads, headVDim)
+         let b = inProjB(inputs)
+         let a = inProjA(inputs)
+-
+-        var convRows: [MLXArray] = []
+-        var ssmRows: [MLXArray] = []
+-        convRows.reserveCapacity(B)
+-        ssmRows.reserveCapacity(B)
+-        for evaluation in recurrentState {
+-            let state = evaluation.inputState(modelLayerIndex: modelLayerIndex)
+-            convRows.append(
+-                state?.conv
+-                    ?? MLXArray.zeros(
+-                        [1, convKernelSize - 1, convDim], dtype: inputs.dtype))
+-            ssmRows.append(
+-                state?.ssm
+-                    ?? MLXArray.zeros(
+-                        [1, numVHeads, headVDim, headKDim], dtype: .float32))
+-        }
+-
+-        let convState = convRows.count == 1 ? convRows[0] : concatenated(convRows, axis: 0)
+-        let ssmState = ssmRows.count == 1 ? ssmRows[0] : concatenated(ssmRows, axis: 0)
++        let (convState, ssmState) = cbv2InputState(
++            inputs: inputs,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState)
+         let (out, newConvState, newSsmState) = processChunk(
+             qkv: qkv, a: a, b: b,
+             convState: convState, ssmState: ssmState, mask: nil)
+-
+-        for (row, evaluation) in recurrentState.enumerated() {
+-            do {
+-                try evaluation.stage(
+-                    modelLayerIndex: modelLayerIndex,
+-                    conv: newConvState[row ..< row + 1],
+-                    ssm: newSsmState[row ..< row + 1])
+-            } catch {
+-                preconditionFailure(
+-                    "Qwen35 CBv2 recurrent stage failed at layer \(modelLayerIndex): \(error)")
+-            }
+-        }
++        cbv2Stage(
++            conv: newConvState,
++            ssm: newSsmState,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState,
++            operation: "full")
+ 
+         let normedOut = norm(out, gate: z)
+         return outProj(normedOut.reshaped(B, S, -1))
+@@ -662,13 +640,90 @@ final class Qwen35GatedDeltaNet: Module {
+         modelLayerIndex: Int,
+         recurrentState: [CBv2RecurrentStateEvaluation]
+     ) {
++        let qkv = inProjQKV(inputs)
++        let b = inProjB(inputs)
++        let a = inProjA(inputs)
++        let (convState, ssmState) = cbv2InputState(
++            inputs: inputs,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState)
++        let (_, newConvState, newSsmState) = processChunk(
++            qkv: qkv, a: a, b: b,
++            convState: convState, ssmState: ssmState, mask: nil)
++        cbv2Stage(
++            conv: newConvState,
++            ssm: newSsmState,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState,
++            operation: "state-only")
++    }
++
++    /// Fold historical rows with the state-only graph, then execute the full
++    /// GDN contribution for the final row from that prefix state. Only the
++    /// post-frontier state is staged, so the final token is consumed once.
++    func cbv2ForwardFrontierFromArtifactHistory(
++        _ inputs: MLXArray,
++        modelLayerIndex: Int,
++        recurrentState: [CBv2RecurrentStateEvaluation]
++    ) -> MLXArray {
+         let B = inputs.dim(0)
+-        precondition(recurrentState.count == B, "Qwen35 CBv2 recurrent row count mismatch")
++        let S = inputs.dim(1)
++        precondition(S > 0, "Qwen35 frontier state river requires a final row")
+ 
+         let qkv = inProjQKV(inputs)
+         let b = inProjB(inputs)
+         let a = inProjA(inputs)
+-
++        let (initialConv, initialSSM) = cbv2InputState(
++            inputs: inputs,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState)
++
++        let frontierConv: MLXArray
++        let frontierSSM: MLXArray
++        if S > 1 {
++            let history = 0 ..< (S - 1)
++            let prefix = processChunk(
++                qkv: qkv[0..., history, 0...],
++                a: a[0..., history, 0...],
++                b: b[0..., history, 0...],
++                convState: initialConv,
++                ssmState: initialSSM,
++                mask: nil)
++            frontierConv = prefix.newConvState
++            frontierSSM = prefix.newSsmState
++        } else {
++            frontierConv = initialConv
++            frontierSSM = initialSSM
++        }
++
++        let final = (S - 1) ..< S
++        let frontier = processChunk(
++            qkv: qkv[0..., final, 0...],
++            a: a[0..., final, 0...],
++            b: b[0..., final, 0...],
++            convState: frontierConv,
++            ssmState: frontierSSM,
++            mask: nil)
++        cbv2Stage(
++            conv: frontier.newConvState,
++            ssm: frontier.newSsmState,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState,
++            operation: "frontier-state-river")
++
++        let z = inProjZ(inputs[0..., final, 0...])
++            .reshaped(B, 1, numVHeads, headVDim)
++        let normedOut = norm(frontier.out, gate: z)
++        return outProj(normedOut.reshaped(B, 1, -1))
++    }
++
++    private func cbv2InputState(
++        inputs: MLXArray,
++        modelLayerIndex: Int,
++        recurrentState: [CBv2RecurrentStateEvaluation]
++    ) -> (conv: MLXArray, ssm: MLXArray) {
++        let B = inputs.dim(0)
++        precondition(recurrentState.count == B, "Qwen35 CBv2 recurrent row count mismatch")
+         var convRows: [MLXArray] = []
+         var ssmRows: [MLXArray] = []
+         convRows.reserveCapacity(B)
+@@ -684,22 +739,27 @@ final class Qwen35GatedDeltaNet: Module {
+                     ?? MLXArray.zeros(
+                         [1, numVHeads, headVDim, headKDim], dtype: .float32))
+         }
++        return (
++            convRows.count == 1 ? convRows[0] : concatenated(convRows, axis: 0),
++            ssmRows.count == 1 ? ssmRows[0] : concatenated(ssmRows, axis: 0))
++    }
+ 
+-        let convState = convRows.count == 1 ? convRows[0] : concatenated(convRows, axis: 0)
+-        let ssmState = ssmRows.count == 1 ? ssmRows[0] : concatenated(ssmRows, axis: 0)
+-        let (_, newConvState, newSsmState) = processChunk(
+-            qkv: qkv, a: a, b: b,
+-            convState: convState, ssmState: ssmState, mask: nil)
+-
++    private func cbv2Stage(
++        conv: MLXArray,
++        ssm: MLXArray,
++        modelLayerIndex: Int,
++        recurrentState: [CBv2RecurrentStateEvaluation],
++        operation: String
++    ) {
+         for (row, evaluation) in recurrentState.enumerated() {
+             do {
+                 try evaluation.stage(
+                     modelLayerIndex: modelLayerIndex,
+-                    conv: newConvState[row ..< row + 1],
+-                    ssm: newSsmState[row ..< row + 1])
++                    conv: conv[row ..< row + 1],
++                    ssm: ssm[row ..< row + 1])
+             } catch {
+                 preconditionFailure(
+-                    "Qwen35 CBv2 recurrent state-only stage failed at layer "
++                    "Qwen35 CBv2 recurrent \(operation) stage failed at layer "
+                         + "\(modelLayerIndex): \(error)")
+             }
+         }
+@@ -1457,6 +1517,76 @@ final class Qwen35DecoderLayer: Module {
+         return x
+     }
+ 
++    /// Build artifacts for every historical row, then run the final row
++    /// through this layer's full attention/GDN, residual, and MLP exactly
++    /// once. Historical hidden rows remain byte-for-byte pass-through values.
++    ///
++    /// Returns nil before mutation when an attention cache cannot expose the
++    /// cache-only prefix write. The caller then fails closed to a full layer.
++    func cbv2PrefillFrontierStateRiver(
++        _ x: MLXArray,
++        modelLayerIndex: Int,
++        attentionCache: (any CBv2AttendingLayerCache)?,
++        recurrentState: [CBv2RecurrentStateEvaluation],
++        positionIds: MLXArray?,
++        usePrefillMoERoutingPolicy: Bool
++    ) -> MLXArray? {
++        precondition(x.ndim == 3 && x.dim(1) > 0)
++        let length = x.dim(1)
++        let final = (length - 1) ..< length
++        let normalized = inputLayerNorm(x)
++
++        let frontierContribution: MLXArray
++        if isLinear {
++            precondition(attentionCache == nil, "Qwen35 recurrent layer received attention KV")
++            frontierContribution = linearAttn!.cbv2ForwardFrontierFromArtifactHistory(
++                normalized,
++                modelLayerIndex: modelLayerIndex,
++                recurrentState: recurrentState)
++        } else {
++            guard
++                let attentionCache,
++                let commitCache = attentionCache as? any CBv2KVCommitOnlyLayerCache
++            else {
++                return nil
++            }
++            if length > 1 {
++                let history = 0 ..< (length - 1)
++                selfAttn!.cbv2CommitKVOnly(
++                    normalized[0..., history, 0...],
++                    cache: commitCache,
++                    positionIds: cbv2PositionSlice(positionIds, range: history))
++            }
++            frontierContribution = selfAttn!.cbv2Forward(
++                normalized[0..., final, 0...],
++                cache: attentionCache,
++                positionIds: cbv2PositionSlice(positionIds, range: final))
++        }
++
++        let frontierInput = x[0..., final, 0...]
++        let frontierResidual = frontierInput + frontierContribution
++        let frontierOutput = frontierResidual + applyMLP(
++            postAttentionLayerNorm(frontierResidual),
++            usePrefillRoutingPolicy: usePrefillMoERoutingPolicy)
++        guard length > 1 else { return frontierOutput }
++        return concatenated([x[0..., 0 ..< (length - 1), 0...], frontierOutput], axis: 1)
++    }
++
++    private func cbv2PositionSlice(
++        _ positionIds: MLXArray?,
++        range: Range<Int>
++    ) -> MLXArray? {
++        guard let positionIds else { return nil }
++        switch positionIds.ndim {
++        case 2:
++            return positionIds[0..., range]
++        case 3:
++            return positionIds[0..., 0..., range]
++        default:
++            preconditionFailure("Qwen35 position ids must be [B,L] or [3,B,L]")
++        }
++    }
++
+     private func applyMLP(
+         _ x: MLXArray,
+         usePrefillRoutingPolicy: Bool
+@@ -1645,17 +1775,34 @@ public class Qwen35TextModelInner: Module {
+                     "Qwen35 CBv2 attention cache mapped to the wrong model layer")
+                 attentionIndex += 1
+             }
+-            if cbv2PrefillLayerPolicy.mode(
+-                layerIndex: modelLayerIndex, phase: phase) == .artifactOnly,
+-                let artifactHidden = layer.cbv2PrefillArtifactOnly(
++            switch cbv2PrefillLayerPolicy.mode(
++                layerIndex: modelLayerIndex, phase: phase)
++            {
++            case .artifactOnly:
++                if let artifactHidden = layer.cbv2PrefillArtifactOnly(
+                     hiddenStates,
+                     modelLayerIndex: modelLayerIndex,
+                     attentionCache: attentionCache,
+                     recurrentState: recurrentState,
+                     positionIds: positionIds)
+-            {
+-                hiddenStates = artifactHidden
+-                continue
++                {
++                    hiddenStates = artifactHidden
++                    continue
++                }
++            case .artifactHistoryWithFullFrontier:
++                if let riverHidden = layer.cbv2PrefillFrontierStateRiver(
++                    hiddenStates,
++                    modelLayerIndex: modelLayerIndex,
++                    attentionCache: attentionCache,
++                    recurrentState: recurrentState,
++                    positionIds: positionIds,
++                    usePrefillMoERoutingPolicy: usePrefillMoERoutingPolicy)
++                {
++                    hiddenStates = riverHidden
++                    continue
++                }
++            case .full:
++                break
+             }
+             hiddenStates = layer.cbv2Forward(
+                 hiddenStates,
+@@ -1898,9 +2045,11 @@ extension Qwen35TextModel: CBv2PositionedRecurrentLanguageModelForwardable,
+ /// CBv2 consumes only the final prompt position, so the prompt path skips
+ /// the [B, L, 248320] vocabulary projection for discarded rows: intermediate
+ /// chunks return a one-element hidden handle, the frontier chunk projects
+-/// exactly one row. The trunk — every K/V write, every recurrent-state
+-/// stage, positions, embeddings — is byte-identical to `positionedForward`;
+-/// final RMSNorm is row-independent, so norm-after-slice equals
++/// exactly one row. With the default-off artifact experiment disabled, the
++/// trunk — every K/V write, every recurrent-state stage, positions, and
++/// embeddings — remains byte-identical to `positionedForward`. When enabled,
++/// the explicit intermediate/frontier phases select the state-river paths
++/// above. Final RMSNorm is row-independent, so norm-after-slice equals
+ /// slice-after-norm for the surviving row. Decode, MTP draft/verify, and
+ /// capture paths keep their existing full contracts.
+ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+@@ -1922,12 +2071,24 @@ extension Qwen35TextModel: CBv2RecurrentLanguageModelPrefillForwardable {
+             }
+             return attending
+         }
++        let phase: Qwen35CBv2ForwardPhase
++        if inputEmbedding != nil {
++            // Vision embedding prefill retains the checkpoint path.
++            phase = .decode
++        } else {
++            switch requirement {
++            case .evaluationOnly:
++                phase = .prefillIntermediate
++            case .lastPositionLogits:
++                phase = .prefillFrontier
++            }
++        }
+         let hidden = model.cbv2Forward(
+             inputs, inputEmbeddings: inputEmbedding, caches: attending,
+             recurrentState: recurrentState, positionIds: positionIds,
+-            // Note 050 registers the approximation for TEXT prompt prefill.
+-            // Vision embedding prefill retains the checkpoint path.
+-            phase: inputEmbedding == nil ? .prefill : .decode,
++            // Notes 050/054 register the approximation for TEXT prompt
++            // prefill only. Decode, MTP, and vision stay on the full path.
++            phase: phase,
+             usePrefillMoERoutingPolicy: inputEmbedding == nil)
+         switch requirement {
+         case .evaluationOnly:
+diff --git a/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift b/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
+index 37cd20e41756caf0960f1a792d8b606663e891a6..c142f6177bd2ba595f4ac22714d561cf36706d1b 100644
+--- a/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
++++ b/Libraries/MLXLLM/Models/Qwen35CBv2PrefillLayerPolicy.swift
+@@ -5,7 +5,12 @@ import Foundation
+ /// Keeping this explicit prevents a multi-token MTP verify from being
+ /// mistaken for prefill based on tensor shape.
+ public enum Qwen35CBv2ForwardPhase: Equatable, Sendable {
+-    case prefill
++    /// A prompt chunk that cannot produce logits. Every skipped layer builds
++    /// only its persistent artifact and passes hidden rows through.
++    case prefillIntermediate
++    /// The terminal prompt chunk. Historical rows remain artifact-only while
++    /// the last row traverses every skipped layer's full checkpoint function.
++    case prefillFrontier
+     case decode
+     case mtp
+ }
+@@ -13,20 +18,24 @@ public enum Qwen35CBv2ForwardPhase: Equatable, Sendable {
+ public enum Qwen35CBv2PrefillLayerMode: Equatable, Sendable {
+     case full
+     case artifactOnly
++    case artifactHistoryWithFullFrontier
+ }
+ 
+-/// Default-off artifact-only experiment for Qwen3.5/3.6 TEXT prefill.
++/// Default-off frontier-state-river experiment for Qwen3.5/3.6 TEXT prefill.
+ ///
+ /// Full layers execute the checkpoint function. Every other layer constructs
+ /// only the persistent artifact decode needs (GDN terminal state or attention
+-/// K/V) and passes its hidden input through. Decode and MTP always execute the
++/// K/V) for historical prompt rows and passes their hidden inputs through. On
++/// the terminal chunk, the final row then executes that skipped layer once
++/// against the constructed prefix artifact. Decode and MTP always execute the
+ /// full checkpoint function.
+ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+     public static let enabledEnvironmentKey =
+         "DARKBLOOM_QWEN35_PREFILL_ARTIFACT_ONLY"
+     public static let fullLayersEnvironmentKey =
+         "DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS"
+-    public static let defaultFullLayerSelection = "0-3,36-39"
++    /// E=4 from note 054. E=8 is selected explicitly with `0-7`.
++    public static let defaultFullLayerSelection = "0-3"
+ 
+     public static let disabled = Qwen35CBv2PrefillLayerPolicy()
+ 
+@@ -49,7 +58,7 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+     /// The explicit enable flag is required. A malformed flag or layer
+     /// selection, including an empty/out-of-range selection, fails closed to
+     /// the full checkpoint. When enabled without an override, the registered
+-    /// 40-layer artifact-eight profile (`0-3,36-39`) is selected.
++    /// 40-layer E=4 state-river profile (`0-3`) is selected.
+     public static func fromEnvironment(
+         _ environment: [String: String] = ProcessInfo.processInfo.environment,
+         layerCount: Int
+@@ -62,8 +71,15 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+             return .disabled
+         }
+ 
+-        let rawLayers =
+-            environment[fullLayersEnvironmentKey] ?? defaultFullLayerSelection
++        let rawLayers: String
++        if let configured = environment[fullLayersEnvironmentKey] {
++            rawLayers = configured
++        } else {
++            // The implicit profile is registered only for the 40-layer Qwen
++            // target. Other geometries must name their full layers explicitly.
++            guard layerCount == 40 else { return .disabled }
++            rawLayers = defaultFullLayerSelection
++        }
+         guard
+             let fullLayers = Qwen35LayerSelectionParser.parse(
+                 rawLayers, layerCount: layerCount, allowsEmpty: false),
+@@ -86,14 +102,20 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+         layerIndex: Int,
+         phase: Qwen35CBv2ForwardPhase
+     ) -> Qwen35CBv2PrefillLayerMode {
+-        guard
+-            isEnabled,
+-            phase == .prefill,
+-            (0 ..< layerCount).contains(layerIndex)
+-        else {
++        guard isEnabled, (0 ..< layerCount).contains(layerIndex) else {
++            return .full
++        }
++        if fullLayers.contains(layerIndex) {
++            return .full
++        }
++        switch phase {
++        case .prefillIntermediate:
++            return .artifactOnly
++        case .prefillFrontier:
++            return .artifactHistoryWithFullFrontier
++        case .decode, .mtp:
+             return .full
+         }
+-        return fullLayers.contains(layerIndex) ? .full : .artifactOnly
+     }
+ 
+     public var skippedLayers: Set<Int> {
+@@ -105,7 +127,7 @@ public struct Qwen35CBv2PrefillLayerPolicy: Equatable, Sendable {
+         guard isEnabled else { return "disabled" }
+         let full = fullLayers.sorted().map(String.init).joined(separator: ",")
+         let artifact = skippedLayers.sorted().map(String.init).joined(separator: ",")
+-        return "artifact_only=1;full=\(full);artifact=\(artifact)"
++        return "frontier_state_river=1;full=\(full);artifact=\(artifact)"
+     }
+ 
+     private static func parseEnabled(_ raw: String) -> Bool {
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
+index 551fa0576aec105ddc156318dc32f3f289661f37..2e8bcd998f45da18d04f74fa58e31987264461df 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
+@@ -7,7 +7,7 @@ import Testing
+ @testable import MLXLLM
+ @testable import MLXLMCommon
+ 
+-private enum TinyArtifactQwen {
++enum TinyArtifactQwen {
+     static func configuration(hiddenLayers: Int = 8) throws -> Qwen35TextConfiguration {
+         let json = """
+             {
+@@ -36,17 +36,51 @@ private enum TinyArtifactQwen {
+     static func cache(
+         kind: CBv2LayerKind, promptLength: Int, maxLength: Int = 32
+     ) -> (CBv2LayerCache, CBv2FullSequenceKV) {
+-        let row = CBv2FullSequenceKV(
+-            promptLength: promptLength,
+-            maxLength: maxLength,
+-            kvHeads: kind.kvHeads,
+-            headDim: kind.headDim)
++        let batch = batchCache(
++            kind: kind, batchSize: 1,
++            promptLength: promptLength, maxLength: maxLength)
++        return (batch.0, batch.1[0])
++    }
++
++    static func batchCache(
++        kind: CBv2LayerKind,
++        batchSize: Int,
++        promptLength: Int,
++        maxLength: Int = 32
++    ) -> (CBv2LayerCache, [CBv2FullSequenceKV]) {
++        let rows = (0 ..< batchSize).map { _ in
++            CBv2FullSequenceKV(
++                promptLength: promptLength,
++                maxLength: maxLength,
++                kvHeads: kind.kvHeads,
++                headDim: kind.headDim)
++        }
+         return (
+             CBv2LayerCache(
+                 layerIndex: kind.modelLayerIndex ?? 0,
+                 kind: kind,
+-                rows: [row]),
+-            row)
++                rows: rows),
++            rows)
++    }
++
++    static func recurrentSpec(
++        _ config: Qwen35TextConfiguration,
++        layers: [Int]
++    ) -> CBv2RecurrentStateSpec {
++        let keyDim = config.linearNumKeyHeads * config.linearKeyHeadDim
++        let valueDim = config.linearNumValueHeads * config.linearValueHeadDim
++        let convDim = 2 * keyDim + valueDim
++        return CBv2RecurrentStateSpec(layers: layers.map {
++            CBv2RecurrentLayerStateSpec(
++                modelLayerIndex: $0,
++                convShape: [1, config.linearConvKernelDim - 1, convDim],
++                convDType: .float32,
++                ssmShape: [
++                    1, config.linearNumValueHeads,
++                    config.linearValueHeadDim, config.linearKeyHeadDim,
++                ],
++                ssmDType: .float32)
++        })
+     }
+ 
+     static func identical(_ lhs: MLXArray, _ rhs: MLXArray) -> Bool {
+@@ -55,6 +89,18 @@ private enum TinyArtifactQwen {
+         eval(same)
+         return same.item(Bool.self)
+     }
++
++    static func close(
++        _ lhs: MLXArray,
++        _ rhs: MLXArray,
++        rtol: Float = 1e-4,
++        atol: Float = 1e-5
++    ) -> Bool {
++        guard lhs.shape == rhs.shape else { return false }
++        let result = allClose(lhs, rhs, rtol: rtol, atol: atol)
++        eval(result)
++        return result.item(Bool.self)
++    }
+ }
+ 
+ @Suite("Qwen artifact-only cache path")
+@@ -239,7 +285,7 @@ struct Qwen35ArtifactOnlyPhaseTests {
+         }
+     }
+ 
+-    @Test func explicitPrefillBuildsEveryCacheAndRecurrentRoot() throws {
++    @Test func intermediateAndFrontierPrefillBuildEveryPersistentArtifact() throws {
+         let config = try TinyArtifactQwen.configuration()
+         let environment = [
+             Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
+@@ -249,11 +295,19 @@ struct Qwen35ArtifactOnlyPhaseTests {
+         let model = Qwen35TextModelInner(config, environment: environment)
+         eval(model)
+ 
+-        let prefill = try run(model: model, config: config, phase: .prefill)
++        let intermediate = try run(
++            model: model, config: config, phase: .prefillIntermediate)
++        let frontier = try run(
++            model: model, config: config, phase: .prefillFrontier)
++        #expect(
++            intermediate.roots.count
++                == 2 * config.cbv2RecurrentStateSpec().layers.count)
+         #expect(
+-            prefill.roots.count
++            frontier.roots.count
+                 == 2 * config.cbv2RecurrentStateSpec().layers.count)
+-        #expect(prefill.recurrent.count == 6)
+-        #expect(prefill.cacheSnapshots.map(\.offset) == [3, 3])
++        #expect(intermediate.recurrent.count == 6)
++        #expect(frontier.recurrent.count == 6)
++        #expect(intermediate.cacheSnapshots.map(\.offset) == [3, 3])
++        #expect(frontier.cacheSnapshots.map(\.offset) == [3, 3])
+     }
+ }
+diff --git a/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift b/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
+index 800a3d00f221f73ff4b2337e2b9b1606956b0039..7635a64882a9272b666e75f7c46ea353587713b8 100644
+--- a/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
++++ b/Tests/MLXLMTests/Qwen35CBv2PrefillLayerPolicyTests.swift
+@@ -16,22 +16,27 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+             let policy = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
+                 environment, layerCount: 40)
+             #expect(policy == .disabled)
+-            #expect(policy.mode(layerIndex: 4, phase: .prefill) == .full)
++            #expect(policy.mode(layerIndex: 4, phase: .prefillIntermediate) == .full)
++            #expect(policy.mode(layerIndex: 4, phase: .prefillFrontier) == .full)
+         }
+     }
+ 
+-    @Test func enabledDefaultIsRegisteredArtifactEightProfile() {
++    @Test func enabledDefaultIsRegisteredFourLayerFrontierRiver() {
+         let policy = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
+             [Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1"],
+             layerCount: 40)
+ 
+         #expect(policy.isEnabled)
+-        #expect(policy.fullLayers == Set([0, 1, 2, 3, 36, 37, 38, 39]))
+-        #expect(policy.skippedLayers.count == 32)
+-        #expect(policy.mode(layerIndex: 3, phase: .prefill) == .full)
+-        #expect(policy.mode(layerIndex: 4, phase: .prefill) == .artifactOnly)
+-        #expect(policy.mode(layerIndex: 35, phase: .prefill) == .artifactOnly)
+-        #expect(policy.mode(layerIndex: 36, phase: .prefill) == .full)
++        #expect(policy.fullLayers == Set([0, 1, 2, 3]))
++        #expect(policy.skippedLayers.count == 36)
++        #expect(policy.mode(layerIndex: 3, phase: .prefillIntermediate) == .full)
++        #expect(policy.mode(layerIndex: 4, phase: .prefillIntermediate) == .artifactOnly)
++        #expect(
++            policy.mode(layerIndex: 4, phase: .prefillFrontier)
++                == .artifactHistoryWithFullFrontier)
++        #expect(
++            policy.descriptor
++                .hasPrefix("frontier_state_river=1;full=0,1,2,3;artifact="))
+     }
+ 
+     @Test func explicitFullLayerRangesAreStrictlyParsed() {
+@@ -48,6 +53,22 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+         #expect(policy.skippedLayers == Set([1, 5, 6]))
+     }
+ 
++    @Test func explicitEightLayerTargetKeepsOnlyTheFirstEightLayersFull() {
++        let policy = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
++            [
++                Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
++                Qwen35CBv2PrefillLayerPolicy.fullLayersEnvironmentKey: "0-7",
++            ],
++            layerCount: 40)
++
++        #expect(policy.fullLayers == Set(0 ... 7))
++        #expect(policy.skippedLayers.count == 32)
++        #expect(policy.mode(layerIndex: 7, phase: .prefillFrontier) == .full)
++        #expect(
++            policy.mode(layerIndex: 8, phase: .prefillFrontier)
++                == .artifactHistoryWithFullFrontier)
++    }
++
+     @Test func malformedSelectionFailsClosedAsOnePolicy() {
+         let invalidSelections = [
+             "", ",", "0,", ",0", "3-", "-3", "5-3", "0--3", "eight", "8",
+@@ -70,7 +91,7 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+                 layerCount: 8) == .disabled)
+     }
+ 
+-    @Test func artifactModeIsIsolatedToExplicitPrefillPhase() {
++    @Test func artifactAndFrontierModesAreIsolatedToTheirExplicitPrefillPhases() {
+         let policy = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
+             [
+                 Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "true",
+@@ -78,10 +99,13 @@ struct Qwen35CBv2PrefillLayerPolicyTests {
+             ],
+             layerCount: 8)
+ 
+-        #expect(policy.mode(layerIndex: 1, phase: .prefill) == .artifactOnly)
++        #expect(policy.mode(layerIndex: 1, phase: .prefillIntermediate) == .artifactOnly)
++        #expect(
++            policy.mode(layerIndex: 1, phase: .prefillFrontier)
++                == .artifactHistoryWithFullFrontier)
+         #expect(policy.mode(layerIndex: 1, phase: .decode) == .full)
+         #expect(policy.mode(layerIndex: 1, phase: .mtp) == .full)
+-        #expect(policy.mode(layerIndex: -1, phase: .prefill) == .full)
+-        #expect(policy.mode(layerIndex: 8, phase: .prefill) == .full)
++        #expect(policy.mode(layerIndex: -1, phase: .prefillIntermediate) == .full)
++        #expect(policy.mode(layerIndex: 8, phase: .prefillFrontier) == .full)
+     }
+ }
+diff --git a/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5f23ddf8c2bbfed814ed416add658f1cd363d84
+--- /dev/null
++++ b/Tests/MLXLMTests/Qwen35FrontierStateRiverLayerTests.swift
+@@ -0,0 +1,147 @@
++import MLX
++import MLXRandom
++import Testing
++
++@testable import MLXLLM
++@testable import MLXLMCommon
++
++@Suite("Qwen frontier state river layer artifacts")
++struct Qwen35FrontierStateRiverLayerTests {
++    @Test func attentionCommitsHistoryAndFrontierKVExactlyOnce() throws {
++        let config = try TinyArtifactQwen.configuration(hiddenLayers: 4)
++        let kind = try #require(config.cbv2LayerKinds.first)
++        let batchSize = 2
++        let length = 5
++        MLXRandom.seed(0xF1_0A)
++        let layer = Qwen35DecoderLayer(config, layerIdx: 3)
++        let input = MLXRandom.normal([batchSize, length, config.hiddenSize])
++        let actual = TinyArtifactQwen.batchCache(
++            kind: kind, batchSize: batchSize, promptLength: length)
++        let reference = TinyArtifactQwen.batchCache(
++            kind: kind, batchSize: batchSize, promptLength: length)
++        let scalarPositions = MLXArray((0 ..< length).map(Int32.init))
++            .reshaped([1, 1, length])
++        let positions = broadcast(scalarPositions, to: [3, batchSize, length])
++        eval(layer, input, positions)
++
++        let river = try #require(layer.cbv2PrefillFrontierStateRiver(
++            input,
++            modelLayerIndex: 3,
++            attentionCache: actual.0,
++            recurrentState: [],
++            positionIds: positions,
++            usePrefillMoERoutingPolicy: false))
++        let full = layer.cbv2Forward(
++            input,
++            modelLayerIndex: 3,
++            attentionCache: reference.0,
++            recurrentState: [],
++            positionIds: positions)
++        eval([river, full] + actual.0.innerState() + reference.0.innerState())
++
++        #expect(
++            TinyArtifactQwen.identical(
++                river[0..., 0 ..< (length - 1), 0...],
++                input[0..., 0 ..< (length - 1), 0...]),
++            "historical hidden rows must pass through")
++        #expect(
++            TinyArtifactQwen.close(
++                river[0..., (length - 1) ..< length, 0...],
++                full[0..., (length - 1) ..< length, 0...]),
++            "the frontier must execute the complete skipped attention layer")
++
++        for (actualRow, referenceRow) in zip(actual.1, reference.1) {
++            let actualSnapshot = actualRow.snapshot()
++            let referenceSnapshot = referenceRow.snapshot()
++            eval(
++                actualSnapshot.keys, actualSnapshot.values,
++                referenceSnapshot.keys, referenceSnapshot.values)
++            #expect(actualSnapshot.offset == length)
++            #expect(referenceSnapshot.offset == length)
++            #expect(TinyArtifactQwen.identical(
++                actualSnapshot.keys, referenceSnapshot.keys))
++            #expect(TinyArtifactQwen.identical(
++                actualSnapshot.values, referenceSnapshot.values))
++        }
++        #expect(actual.0.offset == length, "the final token must not be committed twice")
++        #expect(
++            TinyArtifactQwen.identical(
++                actual.0.positionOffsets,
++                MLXArray(Array(repeating: Int32(length), count: batchSize))))
++    }
++
++    @Test func gdnStagesOnlyThePostFrontierState() throws {
++        let config = try TinyArtifactQwen.configuration(hiddenLayers: 4)
++        let spec = TinyArtifactQwen.recurrentSpec(config, layers: [0])
++        let batchSize = 2
++        let length = 5
++        MLXRandom.seed(0xF1_6D)
++        let layer = Qwen35DecoderLayer(config, layerIdx: 0)
++        let input = MLXRandom.normal([batchSize, length, config.hiddenSize])
++        eval(layer, input)
++
++        let actualStates = try (0 ..< batchSize).map { _ in
++            try CBv2RecurrentRequestState(spec: spec)
++        }
++        let stateOnlyStates = try (0 ..< batchSize).map { _ in
++            try CBv2RecurrentRequestState(spec: spec)
++        }
++        let fullStates = try (0 ..< batchSize).map { _ in
++            try CBv2RecurrentRequestState(spec: spec)
++        }
++        let actualTransactions = try actualStates.map { try $0.bind() }
++        let stateOnlyTransactions = try stateOnlyStates.map { try $0.bind() }
++        let fullTransactions = try fullStates.map { try $0.bind() }
++
++        let river = try #require(layer.cbv2PrefillFrontierStateRiver(
++            input,
++            modelLayerIndex: 0,
++            attentionCache: nil,
++            recurrentState: actualTransactions,
++            positionIds: nil,
++            usePrefillMoERoutingPolicy: false))
++        layer.linearAttn!.cbv2UpdateStateOnly(
++            layer.inputLayerNorm(input),
++            modelLayerIndex: 0,
++            recurrentState: stateOnlyTransactions)
++        let full = layer.cbv2Forward(
++            input,
++            modelLayerIndex: 0,
++            attentionCache: nil,
++            recurrentState: fullTransactions)
++
++        let actualRoots = try actualTransactions.flatMap { try $0.evaluate() }
++        let stateOnlyRoots = try stateOnlyTransactions.flatMap { try $0.evaluate() }
++        let fullRoots = try fullTransactions.flatMap { try $0.evaluate() }
++        eval([river, full] + actualRoots + stateOnlyRoots + fullRoots)
++        for transaction in actualTransactions { try transaction.commit() }
++        for transaction in stateOnlyTransactions { try transaction.commit() }
++        for transaction in fullTransactions { try transaction.commit() }
++
++        #expect(
++            TinyArtifactQwen.identical(
++                river[0..., 0 ..< (length - 1), 0...],
++                input[0..., 0 ..< (length - 1), 0...]),
++            "historical hidden rows must pass through")
++        #expect(
++            TinyArtifactQwen.close(
++                river[0..., (length - 1) ..< length, 0...],
++                full[0..., (length - 1) ..< length, 0...]),
++            "the frontier must execute the complete skipped GDN layer")
++
++        for row in 0 ..< batchSize {
++            let actual = try #require(actualStates[row].state(modelLayerIndex: 0))
++            let stateOnly = try #require(
++                stateOnlyStates[row].state(modelLayerIndex: 0))
++            let full = try #require(fullStates[row].state(modelLayerIndex: 0))
++            #expect(TinyArtifactQwen.identical(
++                try #require(actual.conv), try #require(stateOnly.conv)))
++            #expect(TinyArtifactQwen.close(
++                try #require(actual.ssm), try #require(stateOnly.ssm)))
++            #expect(TinyArtifactQwen.identical(
++                try #require(actual.conv), try #require(full.conv)))
++            #expect(TinyArtifactQwen.close(
++                try #require(actual.ssm), try #require(full.ssm)))
++        }
++    }
++}
+diff --git a/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift b/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..3d61fca6e19926e5de5493c7cc2e2b210143ca17
+--- /dev/null
++++ b/Tests/MLXLMTests/Qwen35FrontierStateRiverTransactionTests.swift
+@@ -0,0 +1,261 @@
++import MLX
++import MLXRandom
++import Testing
++
++@testable import MLXLLM
++@testable import MLXLMCommon
++
++@Suite("Qwen frontier state river transactions")
++struct Qwen35FrontierStateRiverTransactionTests {
++    private struct BatchFixture {
++        let caches: [CBv2LayerCache]
++        let rows: [[CBv2FullSequenceKV]]
++        let recurrent: [CBv2RecurrentRequestState]
++    }
++
++    private struct RecurrentLayerSnapshot {
++        let layerIndex: Int
++        let conv: MLXArray
++        let ssm: MLXArray
++    }
++
++    private struct KVSnapshot {
++        let keys: MLXArray
++        let values: MLXArray
++        let offset: Int
++    }
++
++    private func makeBatchFixture(
++        config: Qwen35TextConfiguration,
++        batchSize: Int,
++        promptLength: Int
++    ) throws -> BatchFixture {
++        let pairs = config.cbv2LayerKinds.map {
++            TinyArtifactQwen.batchCache(
++                kind: $0,
++                batchSize: batchSize,
++                promptLength: promptLength)
++        }
++        let recurrent = try (0 ..< batchSize).map { _ in
++            try CBv2RecurrentRequestState(
++                spec: config.cbv2RecurrentStateSpec(activationDType: .float32))
++        }
++        return BatchFixture(
++            caches: pairs.map(\.0),
++            rows: pairs.map(\.1),
++            recurrent: recurrent)
++    }
++
++    private func execute(
++        model: Qwen35TextModelInner,
++        fixture: BatchFixture,
++        tokens: MLXArray,
++        phase: Qwen35CBv2ForwardPhase
++    ) throws -> [CBv2RecurrentStateEvaluation] {
++        let transactions = try fixture.recurrent.map { try $0.bind() }
++        let caches: [any CBv2AttendingLayerCache] = fixture.caches.map { $0 }
++        let hidden = model.cbv2Forward(
++            tokens,
++            caches: caches,
++            recurrentState: transactions,
++            phase: phase)
++        let roots = try transactions.flatMap { try $0.evaluate() }
++        eval([hidden] + roots + fixture.caches.flatMap { $0.innerState() })
++        #expect(!roots.isEmpty)
++        return transactions
++    }
++
++    private func promptChunk(
++        batchSize: Int,
++        length: Int,
++        seed: Int
++    ) -> MLXArray {
++        let values = (0 ..< batchSize).flatMap { row in
++            (0 ..< length).map { column in
++                Int32(1 + (seed + row * 11 + column * 3) % 63)
++            }
++        }
++        return MLXArray(values).reshaped([batchSize, length])
++    }
++
++    private func recurrentSnapshots(
++        fixture: BatchFixture,
++        layerIndices: [Int]
++    ) throws -> [[RecurrentLayerSnapshot]] {
++        let snapshots = try fixture.recurrent.map { request in
++            try layerIndices.map { layerIndex in
++                let state = try #require(request.state(modelLayerIndex: layerIndex))
++                let conv = try #require(state.conv)
++                let ssm = try #require(state.ssm)
++                return RecurrentLayerSnapshot(
++                    layerIndex: layerIndex,
++                    conv: conv + MLXArray.zeros(conv.shape, dtype: conv.dtype),
++                    ssm: ssm + MLXArray.zeros(ssm.shape, dtype: ssm.dtype))
++            }
++        }
++        eval(snapshots.flatMap { $0 }.flatMap { [$0.conv, $0.ssm] })
++        return snapshots
++    }
++
++    private func survivingKV(
++        rows: [[CBv2FullSequenceKV]],
++        excluding cancelledIndex: Int
++    ) -> [[KVSnapshot]] {
++        let snapshots = rows.map { layerRows in
++            layerRows.enumerated().compactMap { index, row -> KVSnapshot? in
++                guard index != cancelledIndex else { return nil }
++                let snapshot = row.snapshot()
++                eval(snapshot.keys, snapshot.values)
++                return KVSnapshot(
++                    keys: snapshot.keys,
++                    values: snapshot.values,
++                    offset: snapshot.offset)
++            }
++        }
++        return snapshots
++    }
++
++    private func assertFrontierTransactionAndCancellation(
++        batchSize: Int,
++        frontierLength: Int
++    ) throws {
++        let config = try TinyArtifactQwen.configuration()
++        let environment = [
++            Qwen35CBv2PrefillLayerPolicy.enabledEnvironmentKey: "1",
++            Qwen35CBv2PrefillLayerPolicy.fullLayersEnvironmentKey: "0-3",
++        ]
++        let intermediateLength = 3
++        let totalLength = intermediateLength + frontierLength
++        MLXRandom.seed(UInt64(0xB0_00 + batchSize))
++        let model = Qwen35TextModelInner(config, environment: environment)
++        let fixture = try makeBatchFixture(
++            config: config,
++            batchSize: batchSize,
++            promptLength: totalLength)
++        eval(model)
++
++        let intermediate = try execute(
++            model: model,
++            fixture: fixture,
++            tokens: promptChunk(
++                batchSize: batchSize,
++                length: intermediateLength,
++                seed: 5),
++            phase: .prefillIntermediate)
++        for transaction in intermediate { try transaction.commit() }
++        for cacheRows in fixture.rows {
++            #expect(
++                cacheRows.map(\.absoluteOffset)
++                    == Array(repeating: intermediateLength, count: batchSize))
++        }
++
++        let cancelledIndex = batchSize / 2
++        let layerIndices = config.cbv2RecurrentStateSpec().modelLayerIndices
++        let before = try recurrentSnapshots(
++            fixture: fixture,
++            layerIndices: layerIndices)
++
++        let frontier = try execute(
++            model: model,
++            fixture: fixture,
++            tokens: promptChunk(
++                batchSize: batchSize,
++                length: frontierLength,
++                seed: 29),
++            phase: .prefillFrontier)
++
++        // Every layer consumes exactly the intermediate and terminal chunks.
++        // A duplicated full frontier update would report totalLength + 1.
++        for (cache, cacheRows) in zip(fixture.caches, fixture.rows) {
++            #expect(
++                cacheRows.map(\.absoluteOffset)
++                    == Array(repeating: totalLength, count: batchSize))
++            #expect(cache.offset == totalLength)
++            #expect(TinyArtifactQwen.identical(
++                cache.positionOffsets,
++                MLXArray(Array(repeating: Int32(totalLength), count: batchSize))))
++        }
++        let expectedSurvivingKV = survivingKV(
++            rows: fixture.rows,
++            excluding: cancelledIndex)
++
++        for (row, transaction) in frontier.enumerated() {
++            if row == cancelledIndex {
++                try transaction.rollback()
++            } else {
++                try transaction.commit()
++            }
++        }
++
++        // Rollback restores the cancelled row's committed generation. Every
++        // survivor independently commits the post-frontier generation.
++        for row in 0 ..< batchSize {
++            for expected in before[row] {
++                let state = try #require(
++                    fixture.recurrent[row].state(
++                        modelLayerIndex: expected.layerIndex))
++                let conv = try #require(state.conv)
++                let ssm = try #require(state.ssm)
++                if row == cancelledIndex {
++                    #expect(TinyArtifactQwen.identical(conv, expected.conv))
++                    #expect(TinyArtifactQwen.identical(ssm, expected.ssm))
++                } else {
++                    #expect(
++                        !TinyArtifactQwen.identical(conv, expected.conv)
++                            || !TinyArtifactQwen.identical(ssm, expected.ssm),
++                        "surviving recurrent row did not commit frontier state")
++                }
++            }
++        }
++        try fixture.recurrent[cancelledIndex].release()
++        #expect(fixture.recurrent[cancelledIndex].isReleased)
++
++        // Attention cancellation removes only that row. Rows on either side
++        // keep their exact storage and logical offsets.
++        for (layer, cache) in fixture.caches.enumerated() {
++            cache.removeRow(at: cancelledIndex)
++            #expect(cache.rows.count == batchSize - 1)
++            #expect(cache.rows.allSatisfy { $0.absoluteOffset == totalLength })
++            if batchSize == 1 {
++                #expect(cache.positionOffsets.shape == [0])
++            } else {
++                #expect(TinyArtifactQwen.identical(
++                    cache.positionOffsets,
++                    MLXArray(Array(
++                        repeating: Int32(totalLength),
++                        count: batchSize - 1))))
++            }
++
++            for (row, expected) in zip(
++                cache.rows,
++                expectedSurvivingKV[layer])
++            {
++                let actualRow = try #require(row as? CBv2FullSequenceKV)
++                let actual = actualRow.snapshot()
++                eval(actual.keys, actual.values)
++                #expect(actual.offset == expected.offset)
++                #expect(TinyArtifactQwen.identical(actual.keys, expected.keys))
++                #expect(TinyArtifactQwen.identical(actual.values, expected.values))
++            }
++        }
++    }
++
++    @Test func frontierRiverB1TransactionOffsetsAndCancellation() throws {
++        // A one-row terminal chunk exercises the no-history branch.
++        try assertFrontierTransactionAndCancellation(
++            batchSize: 1,
++            frontierLength: 1)
++    }
++
++    @Test func frontierRiverB2TransactionOffsetsAndCancellation() throws {
++        try assertFrontierTransactionAndCancellation(
++            batchSize: 2,
++            frontierLength: 4)
++    }
++
++    @Test func frontierRiverB4TransactionOffsetsAndCancellation() throws {
++        try assertFrontierTransactionAndCancellation(
++            batchSize: 4,
++            frontierLength: 4)
++    }
++}

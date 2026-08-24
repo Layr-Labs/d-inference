@@ -347,7 +347,7 @@ index 47353c2..8c52a9b 100644
 +                    hits[row].tokens,
 +                    controls[row].tokens,
 +                    "B\(width) row \(row) changed its 64-token continuation")
-+                XCTAssertEqual(controls[row].usage?.prefixCacheOutcome, .disabled)
++                XCTAssertEqual(controls[row].usage?.prefixCacheOutcome, .skippedPolicy)
 +                XCTAssertEqual(hits[row].usage?.prefixCacheOutcome, .hit)
 +                XCTAssertEqual(
 +                    hits[row].usage?.prefixCachePrefillTokensSaved,
@@ -368,7 +368,7 @@ index 47353c2..8c52a9b 100644
 +                maxTokens: 1,
 +                prefixCacheEnabled: false)))
 +        XCTAssertEqual(disabled.finishReason, .length)
-+        XCTAssertEqual(disabled.usage?.prefixCacheOutcome, .disabled)
++        XCTAssertEqual(disabled.usage?.prefixCacheOutcome, .skippedPolicy)
 +        XCTAssertEqual(stack.model.prefillShapes, [[1, 4], [1, 4], [1, 2]])
 +
 +        stack.model.resetPrefillShapes()

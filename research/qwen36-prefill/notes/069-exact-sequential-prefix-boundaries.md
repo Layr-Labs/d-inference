@@ -154,10 +154,10 @@ in order:
 3. `065-exact-sequential-prefix-boundaries.patch`
    (`sha256:ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5`);
 4. `073-exact-cache-canonical-prefill-profile.patch`
-   (`sha256:5f4daf4ea35dc5ba39dc68adab03f46f9ed30aa783071cfee9644284f1dd6eda`).
+   (`sha256:3bd28d2ac47e5f7964ab1b8361a0829554b25eeada7cf56efd008c93e9eb1207`).
 
 Replaying that sequence and staging the result yields tree
-`89144dc45bffc60c9bf1debda74c8e349bde31c9`.
+`7c52eca0b3dfea3aee2e7ce04c8483ac37c6b3b3`.
 
 The root provider and benchmark changes are already ordinary tracked files on
 the research branch. Do **not** reapply
@@ -185,7 +185,7 @@ do
 done
 git -C "$tmp" add -A
 test "$(git -C "$tmp" write-tree)" = \
-  89144dc45bffc60c9bf1debda74c8e349bde31c9
+  7c52eca0b3dfea3aee2e7ce04c8483ac37c6b3b3
 ```
 
 Patch 061 is intentionally emitted with zero context so the repository's

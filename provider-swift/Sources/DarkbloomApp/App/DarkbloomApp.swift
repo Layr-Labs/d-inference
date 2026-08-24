@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 @main
@@ -148,8 +147,6 @@ struct DarkbloomApp: App {
                     )
                 case .failed(let failure):
                     AppInstallationFailureView(failure: failure)
-                case .checking:
-                    AppInstallationProgressView(message: "Preparing Darkbloom...")
                 case .handingOff:
                     AppInstallationProgressView(message: "Opening the installed app...")
                 }
@@ -198,23 +195,51 @@ struct DarkbloomApp: App {
 }
 
 @MainActor
-final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
-    @Published fileprivate var installState = AppInstallLaunchState.checking
+final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate {
+    private(set) var installState: AppInstallLaunchState
+
+    override init() {
+        let coordinator = AppInstallCoordinator()
+        installState = Self.resolveInstallState(
+            destinationURL: coordinator.destinationURL,
+            coordinate: coordinator.coordinate
+        )
+        super.init()
+    }
+
+    init(
+        destinationURL: URL,
+        coordinate: () throws -> AppInstallOutcome
+    ) {
+        installState = Self.resolveInstallState(
+            destinationURL: destinationURL,
+            coordinate: coordinate
+        )
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_: Notification) {
-        let coordinator = AppInstallCoordinator()
+        guard case .handingOff = installState else {
+            return
+        }
+        NSApp.terminate(nil)
+    }
+
+    private static func resolveInstallState(
+        destinationURL: URL,
+        coordinate: () throws -> AppInstallOutcome
+    ) -> AppInstallLaunchState {
         do {
-            switch try coordinator.coordinate() {
+            switch try coordinate() {
             case .continueLaunch:
-                installState = .ready
+                return .ready
             case .relocated:
-                installState = .handingOff
-                NSApp.terminate(nil)
+                return .handingOff
             }
         } catch {
-            installState = .failed(AppInstallationFailure(
+            return .failed(AppInstallationFailure(
                 error: error,
-                destination: coordinator.destinationURL
+                destination: destinationURL
             ))
         }
     }
@@ -270,8 +295,7 @@ final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate, ObservableObj
     #endif
 }
 
-private enum AppInstallLaunchState {
-    case checking
+enum AppInstallLaunchState {
     case ready
     case handingOff
     case failed(AppInstallationFailure)
@@ -285,13 +309,13 @@ private enum AppInstallLaunchState {
         switch self {
         case .ready, .failed:
             true
-        case .checking, .handingOff:
+        case .handingOff:
             false
         }
     }
 }
 
-private struct AppInstallationFailure {
+struct AppInstallationFailure {
     let message: String
     let recoverySuggestion: String
     let destination: URL

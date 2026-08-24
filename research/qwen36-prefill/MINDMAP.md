@@ -219,5 +219,10 @@ at B1/B2/B4×8K and 2.64× at B4×2K, with 96.44% blind quality and no new
 fatal failure (`notes/080`). Short B1 remains open: 1.54× at 512 and 2.35×
 at 2K.
 
+E52 privileged counters close the B4 clock-policy anomaly (`notes/081`):
+strict B4×8K sustains 1,374 MHz median and 47.39 W with 100% median active
+residency. The trace's `Medium` label is not downclocking. Scheduling, thermal,
+and frequency lanes are closed; only kernel-internal stalls remain.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

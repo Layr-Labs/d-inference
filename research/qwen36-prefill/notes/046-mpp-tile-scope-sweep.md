@@ -44,6 +44,9 @@ cooperatively for one output tile, matching the Metal execution-scope contract.
 
 The Steel reference is the incumbent FP32 8×8×8
 `simdgroup_multiply_accumulate` schedule. It completes first for every matrix.
+Every Steel and MPP destination is poisoned with an all-ones NaN bit pattern
+immediately before its correctness dispatch, so a partial or no-op kernel
+cannot inherit valid output from a previous candidate.
 Every pipeline-executable MPP candidate must then pass the unchanged ordinary
 QMM `atol=1e-3, rtol=1e-3` gate, BF16-rounded output equality, and the
 non-finite gate on all three deterministic full matrices:

@@ -46,6 +46,11 @@ final class PreparedShape {
         }
     }
 
+    func poisonOutput(for variant: BenchmarkVariant) {
+        let buffer = output(for: variant)
+        memset(buffer.contents(), 0xff, buffer.length)
+    }
+
     func comparison() -> Comparison {
         let steel = steelOutput.contents().bindMemory(
             to: Float.self,

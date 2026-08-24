@@ -240,8 +240,11 @@ private func run() throws {
     }
 
     // Produce each full Steel output before invoking any MPP candidate. Every
-    // executable candidate must then pass every shape before timing begins.
+    // destination is first filled with an all-ones NaN bit pattern so a partial
+    // or no-op dispatch cannot inherit a valid output from a prior candidate.
+    // Every executable candidate must pass every shape before timing begins.
     for prepared in preparedShapes {
+        prepared.poisonOutput(for: .steel)
         _ = try runner.execute(variant: .steel, prepared: prepared)
         print(
             "STEEL_REFERENCE shape=\(prepared.shape.label)"
@@ -261,6 +264,7 @@ private func run() throws {
                 continue
             }
             do {
+                prepared.poisonOutput(for: .mpp(candidate))
                 _ = try runner.execute(
                     variant: .mpp(candidate),
                     prepared: prepared)

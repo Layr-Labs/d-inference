@@ -148,10 +148,10 @@ static K16; dynamic K8 passes existing tolerances. MLX NAX failed because
 its manual cooperative-register mapping is invalid on M3 (`notes/042`).
 Candidate A survives to a Qwen-shape timing gate.
 
-E13 closes Candidate A: strict MPP = 13.72 TFLOPS versus Steel 13.68;
-dynamic K8 = 3.35. At that optimistic arithmetic-only roof, B=4×8K
-linear work alone takes 11.64 s > the full 8.415 s 2.5× target
-(`notes/043`). Same-quality M3 2.5× is physically closed.
+E13 closes the tested M16×N32 Candidate-A schedule: strict MPP = 13.72
+TFLOPS versus Steel 13.68; dynamic K8 = 3.35. If that ceiling applies,
+B=4×8K linears alone take 11.64 s > 8.415 s (`notes/043`). Broad M3
+closure remains pending a bounded MPP tile/scope sweep and counter proof.
 
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

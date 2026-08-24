@@ -1,8 +1,8 @@
-# 043 — E13 strict MPP arithmetic roof: 13.72 TFLOPS, hard stop
+# 043 — E13 tested M16×N32 MPP schedule: 13.72 TFLOPS
 
-Status: **measured hard stop for same-quality 2.5× on M3**
+Status: **measured schedule result; broad hardware roof not yet signed**
 
-## Why this probe is decisive
+## What this probe decides
 
 E12 established the supported Metal 4 path that preserves the incumbent
 contract:
@@ -48,12 +48,13 @@ Static MPP is **1.003×** Steel. Dynamic K8 is 0.245×. The supported
 portable TensorOps fallback uses the same M3 FP32 arithmetic roof; it
 does not expose an M5-class accelerator.
 
-## Binding contradiction
+## Conditional contradiction for this schedule
 
 Note 026's exact B=4×8K linear work is 159.692 TFLOP. The measured
 primary target is 8.4150 s (note 037).
 
-Grant every impossible advantage:
+If every projection were limited to this measured schedule, grant every
+impossible advantage:
 
 - all operands cache-resident;
 - no W4 dequantization;
@@ -74,7 +75,7 @@ The preregistered continue threshold was 22 TFLOPS. E13 misses it by
 37.6%. Even the external 14.2 TFLOPS M3 FP32 specification gives
 11.25 s, still above the complete target.
 
-## Closed escape hatches
+## Tested/rejected implementations
 
 - Wider cohort: +3.4%, checksum mismatch (E2).
 - Persistent BF16 cache/dequant deletion: flat or slower (E3).
@@ -89,14 +90,18 @@ The preregistered continue threshold was 22 TFLOPS. E13 misses it by
 
 ## Verdict
 
-The original 2.5× objective cannot be reached on this M3 Max while
-preserving the current Qwen weights, top-8 semantics, BF16 operand
-rounding, and FP32 accumulation contract.
+This exact supported M16×N32×K16 MPP schedule cannot reach the 2.5×
+objective: it is 1.003× Steel and below the 22 TFLOPS continuation bar.
+Dynamic K8 is slower.
 
-A 2.5× path requires one of:
+This is not yet a universal M3 hardware theorem. A broad physical-closure
+claim still requires:
 
-1. Apple10/M5-class accelerated TensorOps;
-2. an explicitly different lower-precision/approximate model contract;
-3. a lower multiplier.
+1. a bounded MPP tile/execution-scope sweep;
+2. raw sample and thermal/clock/counter saturation evidence;
+3. complete exact-structure/routing audit or a quantified bound;
+4. proof that no legal same-quality schedule exceeds the additive target.
 
-Do not disguise any of those as a same-quality M3 optimization.
+Native uint4 factoring, half accumulation, and the tested structure
+shortcuts are rejected implementations, not proofs against every
+conceivable mixed/blockwise scheme.

@@ -205,6 +205,7 @@ class PhysicalSummaryTests(unittest.TestCase):
         self.assertIn("span_s=0.002000 busy_s=0.001900", lines[0])
         self.assertIn("duty_fraction=0.950000 idle_gap_s=0.000100", lines[0])
         self.assertIn("gap_count=1 gap_median_us=100.000", lines[0])
+        self.assertIn("gaps_over_1ms=0 gaps_over_1ms_s=0.000000", lines[0])
         self.assertIn("start_latency_median_us=150.000", lines[0])
 
 

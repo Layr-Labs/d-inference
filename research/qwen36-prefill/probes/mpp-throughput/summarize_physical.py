@@ -329,6 +329,7 @@ def summarize_gpu_intervals(table: TraceTable) -> Iterable[str]:
             merged[index][0] - merged[index - 1][1]
             for index in range(1, len(merged))
         ]
+        gaps_over_1ms = [gap for gap in gaps if gap > 0.001]
         start_latencies = sorted(interval[2] for interval in intervals)
         channel_counts = collections.Counter(interval[3] for interval in intervals)
         channel_field = ",".join(
@@ -350,6 +351,8 @@ def summarize_gpu_intervals(table: TraceTable) -> Iterable[str]:
             f" gap_p90_us="
             f"{fmt(percentile(gaps, 0.90) * 1e6 if gaps else 0, 3)}"
             f" gap_max_us={fmt(max(gaps) * 1e6 if gaps else 0, 3)}"
+            f" gaps_over_1ms={len(gaps_over_1ms)}"
+            f" gaps_over_1ms_s={fmt(sum(gaps_over_1ms), 6)}"
             f" start_latency_median_us="
             f"{fmt(statistics.median(start_latencies) * 1e6, 3)}"
             f" start_latency_p90_us="

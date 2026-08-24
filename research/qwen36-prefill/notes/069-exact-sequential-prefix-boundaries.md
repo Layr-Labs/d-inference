@@ -159,7 +159,7 @@ in order:
    (`sha256:4bfd65b8c99cf69b71718789c330cd11e4bd20e6862b673cbcd137b264f69cdc`).
 
 Replaying that sequence and staging the result yields tree
-`d542c155f800e4574d7245b6f08b55a2b0ae8573`.
+`c267de0434835bda4a40c1b8c4ddedffbebf1664`.
 
 The root provider and benchmark changes are already ordinary tracked files on
 the research branch. Do **not** reapply
@@ -188,7 +188,7 @@ do
 done
 git -C "$tmp" add -A
 test "$(git -C "$tmp" write-tree)" = \
-  d542c155f800e4574d7245b6f08b55a2b0ae8573
+  c267de0434835bda4a40c1b8c4ddedffbebf1664
 ```
 
 Patch 061 is intentionally emitted with zero context so the repository's

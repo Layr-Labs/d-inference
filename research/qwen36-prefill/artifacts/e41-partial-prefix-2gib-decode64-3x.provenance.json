@@ -12,8 +12,8 @@
   },
   "source": {
     "root_commit": "c7f549b5",
-    "mlx_swift_lm_base": "ab73a827c9dde6f8802507003aa0be71605aab8e",
-    "mlx_swift_lm_patched_tree": "b002398c",
+    "mlx_swift_lm_base": "51ab73febb659660c98ddb1e424f4f46a86ca096",
+    "mlx_swift_lm_patched_tree": "18f5f9e104a24c532a8e6a60d9548ecfa077392c",
     "patches": {
       "060-exact-cbv2-prefix-boundary.patch": "a62a575547ff37e3b5eaf7ec162bd2081af2ace8a76dd9453332afce6add9c3f",
       "061-cbv2-simultaneous-prompt-fork.patch": "2adc40ae8918b04afea7b4dfa651b623fdf792314c5042d4bad11bf50502ab37",

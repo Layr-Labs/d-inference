@@ -159,6 +159,9 @@ public enum EngineV2Factory {
         auxiliaryTokenGranularity: Int = 1,
         auxiliaryTokenAllocationPadding: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
+        exactPrefixCache: ExactPrefixCacheV2? = nil,
+        exactPrefixCacheConfigured: Bool = false,
+        exactPrefixCacheReason: String = "config_disabled",
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -185,6 +188,9 @@ public enum EngineV2Factory {
                 auxiliaryTokenGranularity: auxiliaryTokenGranularity,
                 auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
                 kvBudget: kvBudget,
+                exactPrefixCache: exactPrefixCache,
+                exactPrefixCacheConfigured: exactPrefixCacheConfigured,
+                exactPrefixCacheReason: exactPrefixCacheReason,
                 // SSD offload tier handle (v0.7.5): the bridge drives the
                 // pre-submit staging hook + release backstops + shutdown
                 // over the SAME instance the engine holds as its cache.
@@ -201,6 +207,7 @@ public enum EngineV2Factory {
             // A failed v2 init must not leak the SSD tier's background
             // tasks/registration (the refusal unloads the slot — there is
             // no engine left to drive the tier's shutdown).
+            exactPrefixCache?.evict(toFit: 0)
             ssdPrefixCache?.close()
             emitRefusalTelemetry(
                 modelId: modelId,

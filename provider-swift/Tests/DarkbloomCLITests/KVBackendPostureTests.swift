@@ -98,6 +98,49 @@ struct KVBackendPostureTests {
         #expect(!lines.joined().contains("mtp=disabled"))
     }
 
+    @Test("status reports exact RAM cache opt-in, budget, use, and refusal reason")
+    func statusReportsExactPrefixCache() {
+        let lines = KVBackendPosture.statusLines(
+            state: state(slots: [
+                .init(
+                    model: "qwen-active", kvBackend: "contiguous",
+                    exactPrefixCacheConfigured: true,
+                    exactPrefixCacheActive: true,
+                    exactPrefixCacheReason: "ready",
+                    exactPrefixCacheBudgetBytes: 1_073_741_824,
+                    exactPrefixCacheBytesInUse: 75_371_520,
+                    exactPrefixCacheEntries: 1),
+                .init(
+                    model: "qwen-refused", kvBackend: "contiguous",
+                    exactPrefixCacheConfigured: true,
+                    exactPrefixCacheActive: false,
+                    exactPrefixCacheReason: "weight_hash_unavailable",
+                    exactPrefixCacheBudgetBytes: 0,
+                    exactPrefixCacheBytesInUse: 0,
+                    exactPrefixCacheEntries: 0),
+                .init(
+                    model: "legacy", kvBackend: "contiguous",
+                    exactPrefixCacheConfigured: false,
+                    exactPrefixCacheActive: false,
+                    exactPrefixCacheReason: "config_disabled"),
+            ]),
+            now: 1000,
+            heartbeatIntervalSecs: heartbeat)
+        let text = lines.joined(separator: "\n")
+
+        #expect(
+            text.contains(
+                "qwen-active: kv=contiguous (requested auto) | mtp=disabled | "
+                    + "exact-cache=active (75371520/1073741824 B, entries=1)"))
+        #expect(
+            text.contains(
+                "qwen-refused: kv=contiguous (requested auto) | mtp=disabled | "
+                    + "exact-cache=inactive (weight_hash_unavailable)"))
+        #expect(
+            text.contains(
+                "legacy: kv=contiguous (requested auto) | mtp=disabled | exact-cache=off"))
+    }
+
     @Test("status carries the snapshot age and shouts when it stopped being refreshed")
     func statusSurfacesStaleness() {
         let slots: [DaemonState.SlotPosture] = [

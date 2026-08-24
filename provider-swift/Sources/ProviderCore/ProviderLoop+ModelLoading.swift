@@ -19,9 +19,9 @@ extension ProviderLoop {
     // MARK: - Model Loading
 
     /// One immutable observation of the model artifacts on disk. Capture and
-    /// publication are deliberately separate: reusable SSD loads take two fresh
-    /// cryptographic observations around container loading, then publish only
-    /// after both hashes match.
+    /// publication are deliberately separate: reusable-cache loads take two
+    /// fresh cryptographic observations around container loading, then publish
+    /// only after both hashes match.
     struct WeightHashSnapshot: Sendable {
         let fingerprint: String?
         let hash: String?
@@ -30,8 +30,8 @@ extension ProviderLoop {
 
     /// Capture a hash observation without mutating provider-visible state. The
     /// expensive SHA-256 read runs off-actor so heartbeats and challenges remain
-    /// responsive. Non-SSD loads may reuse an unchanged fingerprint/hash pair;
-    /// reusable SSD loads always request a fresh cryptographic read.
+    /// responsive. Cold-only loads may reuse an unchanged fingerprint/hash
+    /// pair; either reusable cache tier requests a fresh cryptographic read.
     func captureWeightHash(
         modelId: String,
         modelPath: URL,
@@ -123,10 +123,10 @@ extension ProviderLoop {
         }
         if let previous {
             logger.warning(
-                "Weight hash unavailable for \(modelId) — removed stale value \(previous.prefix(16))... and disabled reusable SSD cache")
+                "Weight hash unavailable for \(modelId) — removed stale value \(previous.prefix(16))... and disabled reusable prefix caches")
         } else {
             logger.warning(
-                "Weight hash unavailable for \(modelId) — reusable SSD cache disabled")
+                "Weight hash unavailable for \(modelId) — reusable prefix caches disabled")
         }
         if let client = coordinatorClient {
             await client.updateModelWeightHashes(liveModelHashes)
@@ -150,8 +150,8 @@ extension ProviderLoop {
             : .changed
     }
 
-    /// Complete a reusable SSD load as one fail-closed lifecycle transition.
-    /// A missing observation disables SSD reuse for this load while preserving
+    /// Complete a reusable-cache load as one fail-closed lifecycle transition.
+    /// A missing observation disables reuse for this load while preserving
     /// ordinary cold serving. Two available but different hashes prove artifact
     /// mutation during the load and abort before engine/slot installation.
     func finalizeReusableSSDLoad(
@@ -174,7 +174,7 @@ extension ProviderLoop {
             newcomer.release()
             MLX.Memory.clearCache()
             let message =
-                "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
+                "Model '\(modelId)' changed while loading reusable cache state — unloaded"
             recordModelLoadError(model: modelId, message: message)
             throw InferenceError.modelLoadFailed(message)
         }
@@ -361,12 +361,13 @@ extension ProviderLoop {
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let reusableCacheRequested =
+                EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash()
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
-                requireFreshCryptographicHash: reusableSSDRequested)
-            if !reusableSSDRequested {
+                requireFreshCryptographicHash: reusableCacheRequested)
+            if !reusableCacheRequested {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
 
@@ -392,7 +393,7 @@ extension ProviderLoop {
             // proves artifact mutation and fails before engine construction or
             // slot installation.
             let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
+            if reusableCacheRequested {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,

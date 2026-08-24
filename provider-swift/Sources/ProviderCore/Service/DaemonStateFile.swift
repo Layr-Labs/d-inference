@@ -154,6 +154,15 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// running — including `inert_kv_unsupported`, which is the
         /// enabled-but-inert case and is NOT a load failure.
         public var mtpInactiveReason: String?
+        /// Process-local exact-state RAM cache posture. Optional so a current
+        /// CLI can still decode schema-1 state files written by an older daemon.
+        /// Identities, hashes, prompt tokens, and scopes are deliberately absent.
+        public var exactPrefixCacheConfigured: Bool?
+        public var exactPrefixCacheActive: Bool?
+        public var exactPrefixCacheReason: String?
+        public var exactPrefixCacheBudgetBytes: Int?
+        public var exactPrefixCacheBytesInUse: Int?
+        public var exactPrefixCacheEntries: Int?
         /// Verbatim `DaemonState.ModelLoadError.message` when this entry
         /// exists BECAUSE a load failed. Non-nil ⇒ the slot is not serving.
         public var loadError: String?
@@ -166,6 +175,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
+            exactPrefixCacheConfigured: Bool? = nil,
+            exactPrefixCacheActive: Bool? = nil,
+            exactPrefixCacheReason: String? = nil,
+            exactPrefixCacheBudgetBytes: Int? = nil,
+            exactPrefixCacheBytesInUse: Int? = nil,
+            exactPrefixCacheEntries: Int? = nil,
             loadError: String? = nil
         ) {
             self.model = model
@@ -175,6 +190,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
+            self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
+            self.exactPrefixCacheActive = exactPrefixCacheActive
+            self.exactPrefixCacheReason = exactPrefixCacheReason
+            self.exactPrefixCacheBudgetBytes = exactPrefixCacheBudgetBytes
+            self.exactPrefixCacheBytesInUse = exactPrefixCacheBytesInUse
+            self.exactPrefixCacheEntries = exactPrefixCacheEntries
             self.loadError = loadError
         }
     }
@@ -265,6 +286,12 @@ public enum DaemonSlotPostureBuilder {
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
+        public let exactPrefixCacheConfigured: Bool?
+        public let exactPrefixCacheActive: Bool?
+        public let exactPrefixCacheReason: String?
+        public let exactPrefixCacheBudgetBytes: Int?
+        public let exactPrefixCacheBytesInUse: Int?
+        public let exactPrefixCacheEntries: Int?
 
         public init(
             model: String,
@@ -272,7 +299,13 @@ public enum DaemonSlotPostureBuilder {
             kvBackendFallbackReason: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
-            mtpInactiveReason: String?
+            mtpInactiveReason: String?,
+            exactPrefixCacheConfigured: Bool? = nil,
+            exactPrefixCacheActive: Bool? = nil,
+            exactPrefixCacheReason: String? = nil,
+            exactPrefixCacheBudgetBytes: Int? = nil,
+            exactPrefixCacheBytesInUse: Int? = nil,
+            exactPrefixCacheEntries: Int? = nil
         ) {
             self.model = model
             self.kvBackend = kvBackend
@@ -280,6 +313,12 @@ public enum DaemonSlotPostureBuilder {
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
+            self.exactPrefixCacheConfigured = exactPrefixCacheConfigured
+            self.exactPrefixCacheActive = exactPrefixCacheActive
+            self.exactPrefixCacheReason = exactPrefixCacheReason
+            self.exactPrefixCacheBudgetBytes = exactPrefixCacheBudgetBytes
+            self.exactPrefixCacheBytesInUse = exactPrefixCacheBytesInUse
+            self.exactPrefixCacheEntries = exactPrefixCacheEntries
         }
     }
 
@@ -358,7 +397,13 @@ public enum DaemonSlotPostureBuilder {
                 kvBackendFallbackReason: $0.kvBackendFallbackReason,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
-                mtpInactiveReason: $0.mtpInactiveReason)
+                mtpInactiveReason: $0.mtpInactiveReason,
+                exactPrefixCacheConfigured: $0.exactPrefixCacheConfigured,
+                exactPrefixCacheActive: $0.exactPrefixCacheActive,
+                exactPrefixCacheReason: $0.exactPrefixCacheReason,
+                exactPrefixCacheBudgetBytes: $0.exactPrefixCacheBudgetBytes,
+                exactPrefixCacheBytesInUse: $0.exactPrefixCacheBytesInUse,
+                exactPrefixCacheEntries: $0.exactPrefixCacheEntries)
         }
         if let failure = lastModelLoadError,
             !live.contains(where: { $0.model == failure.model }),

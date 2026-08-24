@@ -336,12 +336,11 @@ extension EngineV2Factory {
     ///   - tokenizer: the model's tokenizer, for incremental detokenization.
     ///   - kvBytesCapacity: admission ceiling for live sequence KV, in bytes
     ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`).
-    ///   - prefixCache: the provider's encrypted `SSDPrefixCache`, with
-    ///     per-donation benefit gating and zero serving-memory carve.
-    ///     Widened to the existential (`any CBv2PrefixCache`) so
-    ///     provider-side conformers plug in with ZERO mlx-swift-lm
-    ///     changes (the engine already stores the cache existentially).
-    ///     The local kill switch and construction are the caller's job.
+    ///   - prefixCache: either the provider's encrypted `SSDPrefixCache`
+    ///     (per-donation benefit gating, zero fixed serving-memory carve) or
+    ///     its opt-in exact-state RAM cache. Widened to the existential
+    ///     (`any CBv2PrefixCache`) so the concrete tier remains a caller
+    ///     decision. The local policy and construction are the caller's job.
     ///     Non-nil ⇒ the engine runs with `enablePrefixCache: true`
     ///     (lookup/adopt on submit, donate on finish, per-request
     ///     `cacheSalt` tenant scoping live). nil means cache unavailable or
@@ -503,6 +502,37 @@ extension EngineV2Factory {
                 self.backend = nil
                 self.caches = nil
                 return (backend, caches)
+            }
+        }
+
+        /// Tighten a prepared contiguous backend before it is consumed by the
+        /// engine. Exact-state RAM caching is decided only after backend
+        /// resolution (capability and backend identity are both inputs), so
+        /// its fixed budget is carved at this single pre-consume seam.
+        func resizeContiguousCapacity(_ bytes: Int) throws {
+            try lock.withLock {
+                guard kind == .contiguous else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "only a contiguous backend supports exact-state cache carving")
+                }
+                guard let backend else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend was already consumed")
+                }
+                backend.updateBytesCapacity(max(0, bytes))
+            }
+        }
+
+        /// The resolved backend's current physical/logical ceiling before
+        /// exact-cache carving. This preserves `clampKVBytesCapacity` as the
+        /// single upper-bound guard for a malformed upstream grant.
+        func bytesCapacity() throws -> Int {
+            try lock.withLock {
+                guard let backend else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend was already consumed")
+                }
+                return max(0, backend.bytesCapacity)
             }
         }
     }
@@ -972,6 +1002,21 @@ extension EngineV2Factory {
         }
     }
 
+    /// Pair each cache contract with the model capability that proves it safe.
+    /// Recurrent exact-state caches must never inherit the weaker historical
+    /// KV-only gate, and attention-only models must not accept an exact cache
+    /// merely because they support ordinary prefix reuse.
+    static func prefixCacheIsSupported(
+        capabilities: CBv2ModelCapabilities,
+        prefixCache: (any CBv2PrefixCache)?
+    ) -> Bool {
+        guard let prefixCache else { return false }
+        if prefixCache is any CBv2ExactStatePrefixCache {
+            return capabilities.supportsExactStatePrefixReuse
+        }
+        return capabilities.supportsPrefixReuse
+    }
+
     /// Final engine assembly over an already resolved backend. This method has
     /// no backend fallback path, so its cache capability cannot drift, and it
     /// builds no scheduler config of its own — it runs the engine on the very
@@ -988,14 +1033,17 @@ extension EngineV2Factory {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
-        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
+        let effectivePrefixCache =
+            Self.prefixCacheIsSupported(
+                capabilities: preparedBackend.modelCapabilities,
+                prefixCache: prefixCache)
             ? prefixCache : nil
         // The ONE config, read back off the preparation. `consume` has
         // already refused a `maxConcurrentRequests` that differs from the
         // prepared one, so the only field this phase may decide is
-        // `enablePrefixCache` — SSD cache construction deliberately runs
-        // AFTER backend preparation, because the cache's replay capability
-        // follows the backend that will actually serve. Everything else,
+        // `enablePrefixCache` — cache construction deliberately runs AFTER
+        // backend preparation, because both tiers' reuse capability follows
+        // the backend that will actually serve. Everything else,
         // `prefillChunkSize` above all, reaches the engine byte-identical
         // to what the paged pool's `maxPrefillChunk` was sized from.
         var schedulerConfig = preparedBackend.schedulerConfig

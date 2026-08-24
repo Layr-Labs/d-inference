@@ -236,7 +236,8 @@ public enum SandboxControlCodec {
         guard validIdentifier(payload.idempotencyKey),
               (1...256).contains(payload.arguments.count),
               (1...900).contains(payload.timeoutSeconds),
-              (payload.environment?.count ?? 0) <= 128
+              (payload.environment?.count ?? 0) <= 128,
+              payload.environment?.isEmpty != true
         else {
             return false
         }
@@ -248,10 +249,7 @@ public enum SandboxControlCodec {
             totalBytes += argument.utf8.count
         }
         for (key, value) in payload.environment ?? [:] {
-            guard key.range(
-                of: #"^[A-Za-z_][A-Za-z0-9_]{0,127}$"#,
-                options: .regularExpression
-            ) != nil,
+            guard validEnvironmentKey(key),
                   !value.contains("\0")
             else {
                 return false
@@ -287,10 +285,37 @@ public enum SandboxControlCodec {
     }
 
     private static func validIdentifier(_ value: String) -> Bool {
-        value.range(
-            of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#,
-            options: .regularExpression
-        ) != nil
+        let bytes = Array(value.utf8)
+        guard (1...128).contains(bytes.count),
+              let first = bytes.first,
+              isASCIIAlphanumeric(first)
+        else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == 0x2e || $0 == 0x5f || $0 == 0x2d
+        }
+    }
+
+    private static func validEnvironmentKey(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1...128).contains(bytes.count),
+              let first = bytes.first,
+              isASCIIAlpha(first) || first == 0x5f
+        else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == 0x5f
+        }
+    }
+
+    private static func isASCIIAlpha(_ value: UInt8) -> Bool {
+        (0x41...0x5a).contains(value) || (0x61...0x7a).contains(value)
+    }
+
+    private static func isASCIIAlphanumeric(_ value: UInt8) -> Bool {
+        isASCIIAlpha(value) || (0x30...0x39).contains(value)
     }
 
     private static func validTimestamp(_ value: String) -> Bool {

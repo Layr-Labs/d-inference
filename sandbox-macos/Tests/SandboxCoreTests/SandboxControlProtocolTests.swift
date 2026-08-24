@@ -135,6 +135,16 @@ final class SandboxControlProtocolTests: XCTestCase {
         let payload = try XCTUnwrap(object["payload"] as? [String: Any])
         XCTAssertNil(payload["environment"])
         XCTAssertNil(payload["working_directory"])
+
+        let normalized = SandboxWireCommand(
+            commandID: envelope.payload.commandID,
+            idempotencyKey: envelope.payload.idempotencyKey,
+            scope: envelope.payload.scope,
+            arguments: envelope.payload.arguments,
+            environment: [:],
+            timeoutSeconds: envelope.payload.timeoutSeconds
+        )
+        XCTAssertNil(normalized.environment)
     }
 
     func testStrictCodecDecodesCoordinatorCommand() throws {
@@ -179,6 +189,10 @@ final class SandboxControlProtocolTests: XCTestCase {
                 of: #""working_directory":"/workspace""#,
                 with: #""working_directory":"""#
             ),
+            valid.replacingOccurrences(
+                of: #""working_directory":"/workspace""#,
+                with: #""environment":{},"working_directory":"/workspace""#
+            ),
         ]
         for mutation in mutations {
             XCTAssertThrowsError(
@@ -217,6 +231,56 @@ final class SandboxControlProtocolTests: XCTestCase {
         XCTAssertEqual(
             decoded.payload.environment,
             ["FOO": "upper", "foo": "lower"]
+        )
+    }
+
+    func testStrictCodecRejectsLineTerminatedIdentifiers() throws {
+        let command = try commandEnvelope()
+        for payload in [
+            SandboxWireCommand(
+                commandID: command.payload.commandID,
+                idempotencyKey: "key\n",
+                scope: command.payload.scope,
+                arguments: command.payload.arguments,
+                timeoutSeconds: command.payload.timeoutSeconds
+            ),
+            SandboxWireCommand(
+                commandID: command.payload.commandID,
+                idempotencyKey: command.payload.idempotencyKey,
+                scope: command.payload.scope,
+                arguments: command.payload.arguments,
+                environment: ["FOO\n": "value"],
+                timeoutSeconds: command.payload.timeoutSeconds
+            ),
+        ] {
+            let envelope = SandboxControlEnvelope(
+                type: SandboxControlMessageType.command,
+                hostID: command.hostID,
+                connectionEpoch: command.connectionEpoch,
+                sequence: command.sequence,
+                payload: payload
+            )
+            XCTAssertThrowsError(
+                try SandboxControlCodec.decodeCoordinatorMessage(
+                    JSONEncoder().encode(envelope)
+                )
+            )
+        }
+    }
+
+    func testWireResourcesRejectIntermediateWorkspaceSize() throws {
+        let specification = try SandboxResourceSpecification(
+            cpuCount: 4,
+            memoryBytes: 8 * SandboxResourcePolicy.gibibyte,
+            workspaceBytes: 30 * SandboxResourcePolicy.gibibyte,
+            commandTimeoutSeconds: 900
+        )
+        XCTAssertNil(
+            SandboxWireResources(specification: specification, gpu: false)
+        )
+        let supported = try SandboxResourceSpecification.macOSSmall()
+        XCTAssertNotNil(
+            SandboxWireResources(specification: supported, gpu: false)
         )
     }
 

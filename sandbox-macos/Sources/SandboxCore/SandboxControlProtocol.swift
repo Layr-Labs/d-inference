@@ -190,7 +190,17 @@ public struct SandboxWireResources: Codable, Equatable, Sendable {
         self.gpu = gpu
     }
 
-    public init(specification: SandboxResourceSpecification, gpu: Bool) {
+    public init?(
+        specification: SandboxResourceSpecification,
+        gpu: Bool
+    ) {
+        guard specification.workspaceBytes
+                == 25 * SandboxResourcePolicy.gibibyte
+                || specification.workspaceBytes
+                == 50 * SandboxResourcePolicy.gibibyte
+        else {
+            return nil
+        }
         self.init(
             cpuCount: specification.cpuCount,
             memoryBytes: specification.memoryBytes,
@@ -442,7 +452,7 @@ public struct SandboxWireCommand: Codable, Equatable, Sendable {
         self.idempotencyKey = idempotencyKey
         self.scope = scope
         self.arguments = arguments
-        self.environment = environment
+        self.environment = environment?.isEmpty == true ? nil : environment
         self.workingDirectory = workingDirectory
         self.timeoutSeconds = timeoutSeconds
     }

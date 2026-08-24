@@ -129,6 +129,9 @@ func decodeSandboxEnvelope(
 			"sandbox frame is not valid UTF-8",
 		)
 	}
+	if err := rejectInvalidSandboxUnicodeEscapes(data); err != nil {
+		return rawSandboxEnvelope{}, SandboxMessageHeader{}, err
+	}
 	if err := rejectDuplicateSandboxJSONKeys(data); err != nil {
 		return rawSandboxEnvelope{}, SandboxMessageHeader{}, err
 	}
@@ -288,8 +291,11 @@ func requireExactSandboxJSONFields(data []byte, targetType reflect.Type) error {
 
 func rejectDuplicateSandboxJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	var walk func() error
-	walk = func() error {
+	var walk func(int) error
+	walk = func(depth int) error {
+		if depth > 64 {
+			return errors.New("sandbox JSON nesting exceeds 64 levels")
+		}
 		token, err := decoder.Token()
 		if err != nil {
 			return err
@@ -314,7 +320,7 @@ func rejectDuplicateSandboxJSONKeys(data []byte) error {
 					return fmt.Errorf("duplicate JSON key %q", key)
 				}
 				seen[key] = struct{}{}
-				if err := walk(); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -322,7 +328,7 @@ func rejectDuplicateSandboxJSONKeys(data []byte) error {
 			return err
 		case '[':
 			for decoder.More() {
-				if err := walk(); err != nil {
+				if err := walk(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -332,13 +338,79 @@ func rejectDuplicateSandboxJSONKeys(data []byte) error {
 			return errors.New("unexpected JSON delimiter")
 		}
 	}
-	if err := walk(); err != nil {
+	if err := walk(0); err != nil {
 		return fmt.Errorf("invalid sandbox JSON: %w", err)
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("sandbox frame contains trailing JSON")
 	}
 	return nil
+}
+
+func rejectInvalidSandboxUnicodeEscapes(data []byte) error {
+	for index := 0; index < len(data); index++ {
+		if data[index] != '"' {
+			continue
+		}
+		index++
+		for index < len(data) && data[index] != '"' {
+			if data[index] != '\\' {
+				index++
+				continue
+			}
+			index++
+			if index >= len(data) {
+				return errors.New("unterminated sandbox JSON escape")
+			}
+			if data[index] != 'u' {
+				index++
+				continue
+			}
+			codeUnit, ok := sandboxHexCodeUnit(data, index+1)
+			if !ok {
+				return errors.New("invalid sandbox JSON Unicode escape")
+			}
+			index += 4
+			switch {
+			case codeUnit >= 0xD800 && codeUnit <= 0xDBFF:
+				if index+6 >= len(data) ||
+					data[index+1] != '\\' ||
+					data[index+2] != 'u' {
+					return errors.New("unpaired sandbox JSON high surrogate")
+				}
+				low, ok := sandboxHexCodeUnit(data, index+3)
+				if !ok || low < 0xDC00 || low > 0xDFFF {
+					return errors.New("unpaired sandbox JSON high surrogate")
+				}
+				index += 6
+			case codeUnit >= 0xDC00 && codeUnit <= 0xDFFF:
+				return errors.New("unpaired sandbox JSON low surrogate")
+			}
+			index++
+		}
+	}
+	return nil
+}
+
+func sandboxHexCodeUnit(data []byte, start int) (uint16, bool) {
+	if start < 0 || start+4 > len(data) {
+		return 0, false
+	}
+	var value uint16
+	for _, character := range data[start : start+4] {
+		value <<= 4
+		switch {
+		case character >= '0' && character <= '9':
+			value += uint16(character - '0')
+		case character >= 'a' && character <= 'f':
+			value += uint16(character-'a') + 10
+		case character >= 'A' && character <= 'F':
+			value += uint16(character-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
 }
 
 func validateSandboxHostPayload(messageType string, payload any) error {
@@ -399,9 +471,11 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 			return errors.New("terminal sandbox command is missing exit code")
 		}
 	case *SandboxHostFailurePayload:
-		if (value.OperationID == "" && value.CommandID == "") ||
-			(value.OperationID != "" && !validCanonicalSandboxUUID(value.OperationID)) ||
-			(value.CommandID != "" && !validCanonicalSandboxUUID(value.CommandID)) ||
+		if (value.OperationID == nil && value.CommandID == nil) ||
+			(value.OperationID != nil &&
+				!validCanonicalSandboxUUID(*value.OperationID)) ||
+			(value.CommandID != nil &&
+				!validCanonicalSandboxUUID(*value.CommandID)) ||
 			(value.Scope != nil && validateSandboxScope(*value.Scope) != nil) ||
 			!sandboxErrorCodePattern.MatchString(value.ErrorCode) {
 			return errors.New("sandbox host failure is invalid")
@@ -497,6 +571,7 @@ func validateSandboxCommand(command *SandboxCommandPayload) error {
 		len(command.Arguments) == 0 ||
 		len(command.Arguments) > maxSandboxCommandArguments ||
 		len(command.Environment) > maxSandboxEnvironmentEntries ||
+		(command.Environment != nil && len(command.Environment) == 0) ||
 		command.TimeoutSeconds == 0 ||
 		command.TimeoutSeconds > sandboxMaximumTimeout {
 		return errors.New("sandbox command payload is invalid")

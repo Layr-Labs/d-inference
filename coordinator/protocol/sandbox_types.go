@@ -131,8 +131,8 @@ type SandboxCommandStatePayload struct {
 }
 
 type SandboxHostFailurePayload struct {
-	OperationID string        `json:"operation_id,omitempty"`
-	CommandID   string        `json:"command_id,omitempty"`
+	OperationID *string       `json:"operation_id,omitempty"`
+	CommandID   *string       `json:"command_id,omitempty"`
 	Scope       *SandboxScope `json:"scope,omitempty"`
 	ErrorCode   string        `json:"error_code"`
 }

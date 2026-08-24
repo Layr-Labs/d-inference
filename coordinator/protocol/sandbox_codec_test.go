@@ -197,6 +197,26 @@ func TestSandboxCodecPreservesCaseSensitiveEnvironment(t *testing.T) {
 	}
 }
 
+func TestSandboxCodecNormalizesAndRejectsEmptyEnvironment(t *testing.T) {
+	frame := validSandboxCommandEnvelope()
+	frame.Payload.Environment = map[string]string{}
+	encoded := string(marshalSandboxFrame(t, frame))
+	if strings.Contains(encoded, `"environment"`) {
+		t.Fatalf("empty environment was serialized: %s", encoded)
+	}
+	withEmptyEnvironment := strings.Replace(
+		encoded,
+		`"working_directory":"/workspace"`,
+		`"environment":{},"working_directory":"/workspace"`,
+		1,
+	)
+	if _, err := DecodeSandboxCoordinatorMessage(
+		[]byte(withEmptyEnvironment),
+	); err == nil {
+		t.Fatal("explicit empty environment was accepted")
+	}
+}
+
 func TestSandboxCodecRequiresZeroValuedAndCollectionFields(t *testing.T) {
 	prepare := SandboxEnvelope[SandboxPreparePayload]{
 		Type:            SandboxTypePrepare,
@@ -279,6 +299,29 @@ func TestSandboxCodecRejectsInvalidUTF8(t *testing.T) {
 	frame[index] = 0xff
 	if _, err := DecodeSandboxCoordinatorMessage(frame); err == nil {
 		t.Fatal("frame with invalid UTF-8 was accepted")
+	}
+}
+
+func TestSandboxCodecRejectsUnpairedSurrogateAndExcessiveDepth(t *testing.T) {
+	valid := string(marshalSandboxFrame(t, validSandboxCommandEnvelope()))
+	unpaired := strings.Replace(valid, `"hello"`, `"\ud800"`, 1)
+	if _, err := DecodeSandboxCoordinatorMessage([]byte(unpaired)); err == nil {
+		t.Fatal("unpaired Unicode surrogate was accepted")
+	}
+	deep := []byte(strings.Repeat("[", 66) + "0" + strings.Repeat("]", 66))
+	if _, err := DecodeSandboxCoordinatorMessage(deep); err == nil {
+		t.Fatal("excessively nested JSON was accepted")
+	}
+}
+
+func TestSandboxHostFailureRejectsExplicitEmptyOptionalID(t *testing.T) {
+	frame := `{"type":"sandbox_host_failure","protocol_version":1,` +
+		`"host_id":"` + testSandboxHostID + `",` +
+		`"connection_epoch":"` + testSandboxEpoch + `","sequence":1,` +
+		`"payload":{"operation_id":"","command_id":"` + testSandboxCommand +
+		`","error_code":"host.failure"}}`
+	if _, err := DecodeSandboxHostMessage([]byte(frame)); err == nil {
+		t.Fatal("explicit empty optional operation ID was accepted")
 	}
 }
 

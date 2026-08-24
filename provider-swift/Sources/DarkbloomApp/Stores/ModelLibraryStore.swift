@@ -112,6 +112,16 @@ final class ModelLibraryStore {
         await refreshCatalog(using: liveCLI, preserveCatalogStateOnError: true)
     }
 
+    /// Force a live catalog/local-state reread after an external CLI
+    /// transaction (for example, account unlink). Fixture stores are a no-op.
+    func refresh() async {
+        guard let liveCLI else { return }
+        refreshTask?.cancel()
+        refreshTask = nil
+        started = true
+        await refreshCatalog(using: liveCLI, preserveCatalogStateOnError: true)
+    }
+
     private func refreshCatalog(
         using cli: any ModelCatalogCLIRunning,
         preserveCatalogStateOnError: Bool = false

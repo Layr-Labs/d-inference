@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LiveSettingsView: View {
     let snapshot: ProviderSnapshot
+    let accountUnlinkStore: AccountUnlinkStore
 
     var body: some View {
         Form {
@@ -28,6 +29,10 @@ struct LiveSettingsView: View {
                 Text("Run the command in Terminal to check for and install a signed provider update.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Account & provider link") {
+                AccountUnlinkControl(store: accountUnlinkStore)
             }
         }
         .formStyle(.grouped)

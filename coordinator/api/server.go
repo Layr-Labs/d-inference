@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 )
@@ -175,6 +176,8 @@ func (s *Server) latestReleasedVersion() string {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	registry                      *registry.Registry
+	sandboxHosts                  *sandboxhost.Registry
+	sandboxHostAuth               *sandboxhost.Authenticator
 	store                         store.Store
 	ledger                        *payments.Ledger
 	billing                       *billing.Service
@@ -713,9 +716,22 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	if cfg.MediaFetch != nil {
 		mediaFetchCfg = *cfg.MediaFetch
 	}
+	sandboxHostAuth, sandboxHostAuthError := sandboxhost.NewAuthenticator(
+		cfg.SandboxHostAuth,
+	)
+	if sandboxHostAuthError != nil {
+		logger.Error(
+			"invalid sandbox host authentication config; endpoint disabled",
+			"error",
+			sandboxHostAuthError,
+		)
+		sandboxHostAuth, _ = sandboxhost.NewAuthenticator(sandboxhost.AuthConfig{})
+	}
 
 	s := &Server{
 		registry:             reg,
+		sandboxHosts:         sandboxhost.NewRegistry(nil),
+		sandboxHostAuth:      sandboxHostAuth,
 		store:                st,
 		ledger:               payments.NewLedger(st),
 		logger:               logger,
@@ -1736,6 +1752,9 @@ func (s *Server) routes() {
 
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
+	// Sandbox hosts use dedicated per-host bearer credentials and a separate
+	// protocol/registry from inference providers.
+	s.mux.HandleFunc("GET /ws/sandbox-host", s.handleSandboxHostWS)
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).
@@ -2145,7 +2164,9 @@ func (s *Server) Handler() http.Handler {
 // messages (bounded separately), not r.Body.
 func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil && r.URL.Path != "/ws/provider" {
+		if r.Body != nil &&
+			r.URL.Path != "/ws/provider" &&
+			r.URL.Path != "/ws/sandbox-host" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		}
 		next.ServeHTTP(w, r)

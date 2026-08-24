@@ -5,7 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${DARKBLOOM_LUME_PYTHON:-$(command -v python3)}"
 POLICY_CHECKER="$SCRIPT_DIR/check-lume-publication-cleanup-policy.py"
-PUBLICATION_HELPER="$SCRIPT_DIR/lume-runtime-publication.py"
 TEST_LOG="$(mktemp "${TMPDIR:-/tmp}/darkbloom-lume-publication-tests.XXXXXX")"
 
 cleanup() {
@@ -19,11 +18,24 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-"$PYTHON" "$POLICY_CHECKER" --self-test
-"$PYTHON" "$POLICY_CHECKER" \
-    --python-helper "$PUBLICATION_HELPER" \
-    --build-script "$SCRIPT_DIR/build-pinned-lume.sh" \
-    --quarantine-script "$SCRIPT_DIR/quarantine-sealed-lume-staging.sh"
+POLICY_OUTPUT="$(
+    "$PYTHON" "$POLICY_CHECKER" \
+        --self-test \
+        --scripts-directory "$SCRIPT_DIR"
+)"
+EXPECTED_POLICY_OUTPUT=$(
+    printf '%s\n%s' \
+        'lume_publication_cleanup_policy_self_test=exact:6' \
+        'lume_publication_cleanup_policy=exact:3'
+)
+if [[ "$POLICY_OUTPUT" != "$EXPECTED_POLICY_OUTPUT" ]]; then
+    echo "publication cleanup policy tripwire mismatch" >&2
+    printf 'expected:\n%s\nactual:\n%s\n' \
+        "$EXPECTED_POLICY_OUTPUT" \
+        "$POLICY_OUTPUT" >&2
+    exit 1
+fi
+printf '%s\n' "$POLICY_OUTPUT"
 
 /bin/bash "$SCRIPT_DIR/test-lume-runtime-publication.sh" 2>&1 \
     | tee "$TEST_LOG"

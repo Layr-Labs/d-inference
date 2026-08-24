@@ -201,9 +201,18 @@ cap at every requested M:
 | 2,048 | 5 layers | useful |
 | 8,192 | 1 GDN layer | no cross-layer batch |
 
-For the short-B1 target, cap-adaptive chunking is safest: all 36 layers fit at
-the actual `M=320`; split at layer boundaries above that; fall back to the
-sequential path when fewer than two same-family matrices fit.
+For the short-B1 target, the estimator admits all 36 layers at `M=320`, but
+that is not a peak-memory proof: 186.680 MiB leaves only 5.320 MiB under the
+192 MiB planning cap before allocator/QMM scratch. Use the full 27-GDN/9-
+attention geometry only for the isolated optimistic ceiling probe.
+
+For the first live serving cell, use a **128 MiB adaptive cap**. At `M=320`
+that selects a 24-layer prefix (18 GDN + 6 attention, 124.453 MiB nominal),
+then the remaining 12 layers (9 GDN + 3 attention, 62.227 MiB nominal). It
+retains cross-layer work in both chunks and reserves 67.547 MiB against the
+192 MiB envelope for unmodeled transients. Increase it only after measuring
+active/peak memory and Metal faults. At larger M, split at layer boundaries
+and fall back to sequential when fewer than two same-family matrices fit.
 
 If one fixed useful chunk is required across M=512/2048/8192, use **two
 same-type layers**. At M=8192 two GDN layers require about **322 MiB** for both
@@ -256,10 +265,11 @@ The incumbent emits 99 projection QMM nodes:
 
 A whole-run five-family graph can reduce that to five nodes (or three with the
 optional row concatenations), but Metal still executes the same output tiles
-and weight decode. The wide QKV call at actual M=320 already exposes roughly
-`ceil(320/32) * ceil(8192/32) = 2,560` ordinary M3 threadgroups per layer.
-Grid occupancy is not created by stacking layers; only encoder/launch overhead
-and kernel-route details can improve.
+and weight decode. At actual `M=320`, one wide QKV layer exposes 640
+threadgroups on the M3 NAX 64x64 path
+(`ceil(320/64) * ceil(8192/64)`) or 2,560 on the generic 32x32 path. Either is
+already hundreds of threadgroups per layer. Stacking does not create grid
+occupancy; only encoder/launch overhead and kernel-route details can improve.
 
 Locked B1x512 arithmetic:
 
@@ -312,6 +322,7 @@ for d in "$BIN"/*.xctest/Contents/MacOS; do
 done
 
 # Exact E51 B1x512 history and actual serving bank/assignment geometry.
+unset DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH_LAYERS
 DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH=1 \
 DARKBLOOM_QWEN35_ARTIFACT_BATCH_BENCH_M=320 \
   swift test -c release --skip-build \
@@ -347,7 +358,7 @@ export DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS=0-3
 export DARKBLOOM_QWEN35_PREFILL_FRONTIER_TOKENS=192
 export DARKBLOOM_QWEN35_PREFILL_MOE_TOP_K=4
 export DARKBLOOM_QWEN35_PREFILL_ARTIFACT_PROJECTION_BATCH=1
-export DARKBLOOM_QWEN35_PREFILL_ARTIFACT_PROJECTION_BATCH_MIB=192
+export DARKBLOOM_QWEN35_PREFILL_ARTIFACT_PROJECTION_BATCH_MIB=128
 
 .build/release/darkbloom benchmark \
   --model qwen3.6-35b-a3b-vl-mtp-mxfp8 \

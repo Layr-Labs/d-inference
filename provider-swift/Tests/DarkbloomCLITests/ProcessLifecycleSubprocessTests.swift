@@ -10,11 +10,6 @@ struct ProcessLifecycleSubprocessTests {
     private struct OwnerRecord: Decodable {
         let schema: Int
         let processIdentity: ProcessIdentity
-
-        enum CodingKeys: String, CodingKey {
-            case schema
-            case processIdentity = "process_identity"
-        }
     }
 
     private var binary: URL {
@@ -104,7 +99,9 @@ struct ProcessLifecycleSubprocessTests {
         #expect(!owner.isRunning)
         #expect(successor.isRunning)
         let ownerData = try Data(contentsOf: fixture.pidFile)
-        let record = try JSONDecoder().decode(OwnerRecord.self, from: ownerData)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let record = try decoder.decode(OwnerRecord.self, from: ownerData)
         let successorIdentity = try #require(
             ProcessIdentity.read(pid: Int32(successor.processIdentifier))
         )

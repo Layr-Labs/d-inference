@@ -127,21 +127,26 @@ requires all leases to be released before returning to inference mode. Every
 reservation receives a monotonically increasing fencing token. A bounded,
 durable per-sandbox generation high-water mark survives release and restart;
 equal or older generations fail closed instead of reclaiming prior authority.
-Schema-v1 state with active leases migrates conservatively; an empty v1 state is
-quarantined because its released-generation history cannot be reconstructed.
+Capacity state also binds the canonical runtime storage path, directory inode,
+and device. All pre-v3 state is quarantined because neither complete released
+generation history nor the runtime storage identity can be reconstructed.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
-create, start, inspect, stop, and delete carry the complete operation scope.
+create, start, inspect, stop, delete, and release carry the complete operation
+scope. Release stops and verifies the owned VM before its package-internal
+capacity release; callers cannot remove capacity directly.
 Guest execution is absent until the signed guest-control agent replaces Lume's
 shared bootstrap identity. The underlying Lume actor is package-only, validates
-the scope while holding the per-VM operation lock, and binds create
-authorization to the reserved CPU, memory, workspace, and boot-disk bytes.
-Mutations hold a per-sandbox inter-process lease lock. Inspection instead
-authorizes immediately before and after its VM-locked Lume observation, so
-renewal and release do not wait on external I/O and any observation made under
-a rotated or released token is discarded. Expired or draining leases may only
-stop or delete their own VM; they cannot start additional work.
+the scope before creating a per-VM operation lock and again while holding it,
+and binds create authorization to the reserved CPU, memory, workspace, and
+boot-disk bytes. Mutations use a deterministic fixed set of 64 inter-process
+lease-lock slots, so attacker-selected identifiers cannot grow authority
+storage without bound. Inspection authorizes immediately before and after its
+VM-locked Lume observation, so renewal and release do not wait on external I/O
+and any observation made under a rotated or released token is discarded.
+Expired or draining leases may only stop or delete their own VM; they cannot
+start additional work.
 Each workload VM also carries a fail-closed ownership marker binding its
 installation to the sandbox ID and generation plus its CPU, memory, disk, and
 image source. Renewed fencing tokens retain access to that same generation, but
@@ -155,14 +160,16 @@ boot disk at 100 GiB, and reserves each clone's worst-case boot-disk CoW growth,
 25/50 GiB workspace, and 1 GiB host overhead. Aggregate CPU, memory, and growth
 admission runs under an inter-process `flock` on the already-bound state
 directory inode. Reservation and VM creation both require the configured
-storage volume's live important-usage capacity to cover all reserved growth plus
-operator-configured headroom. This host reservation is not yet a guest-visible
-disk quota; production quota enforcement still requires the signed guest-control
-agent and a separately bounded workspace volume. Expiry reconciliation first
-persists a new fencing token, then stops and verifies the owned VM before
-releasing that exact token. Stop or ownership failures retain the fenced lease
-for retry or host quarantine, preventing a stalled control plane from
-overbooking a host whose guest may still be running.
+storage directory's live descriptor-bound filesystem capacity to cover all
+reserved growth plus operator-configured headroom. Every fenced operation
+revalidates that the configured path still resolves to the persisted directory
+identity. This host reservation is not yet a guest-visible disk quota;
+production quota enforcement still requires the signed guest-control agent and
+a separately bounded workspace volume. Expiry reconciliation first persists a
+new fencing token, then stops and verifies the owned VM before releasing that
+exact token. A missing VM, replaced storage path, stop failure, or ownership
+failure retains the fenced lease for retry or host quarantine, preventing a
+stalled control plane from overbooking a host whose guest may still be running.
 
 ## Pinned Lume substrate
 

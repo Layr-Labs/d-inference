@@ -114,20 +114,20 @@ enum DaemonSnapshotMapping {
             if inputs.serviceIsLoaded {
                 switch scheduleState {
                 case .off: return .scheduledOff
-                case .expired: return .stale
-                case .unreported, .always, .active, .unknown: break
+                case .unreported, .always, .active, .expired, .unknown:
+                    return .stale
                 }
             }
             return .paused
-        }
-        if state.isStale(now: now) {
-            return .stale
         }
         if case .expired = scheduleState {
             return .stale
         }
         if case .off = scheduleState {
             return .scheduledOff
+        }
+        if state.isStale(now: now) {
+            return .stale
         }
         if state.inferenceActive {
             return .serving

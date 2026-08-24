@@ -30,6 +30,21 @@ struct DaemonSnapshotMappingTests {
         )
     }
 
+    private func scheduledOffState(
+        age: TimeInterval = 2,
+        nextChangeOffset: TimeInterval? = 3_600
+    ) -> DaemonState {
+        var state = freshState(schedule: .init(
+            mode: "scheduled-off",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: nextChangeOffset.map {
+                referenceNow.timeIntervalSince1970 + $0
+            }
+        ))
+        state.writtenAt = referenceNow.timeIntervalSince1970 - age
+        return state
+    }
+
     private func inputs(
         state: DaemonState?,
         alive: Bool,
@@ -65,12 +80,21 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.sampledAt == snapshot.sourceUpdatedAt)
     }
 
-    @Test("A state file whose pid is gone → paused (stale pid cleanup case)")
-    func deadPidMapsPaused() {
-        let snapshot = DaemonSnapshotMapping.map(inputs(state: freshState(), alive: false))
-        #expect(snapshot.runState == .paused)
-        #expect(snapshot.pid == nil)
-        #expect(snapshot.uptime == nil)
+    @Test("A dead process is stale while managed and paused after unload")
+    func deadPidUsesLaunchdOwnership() {
+        let managed = DaemonSnapshotMapping.map(
+            inputs(state: freshState(), alive: false, loaded: true)
+        )
+        #expect(managed.runState == .stale)
+        #expect(managed.pid == nil)
+        #expect(managed.uptime == nil)
+
+        let stopped = DaemonSnapshotMapping.map(
+            inputs(state: freshState(), alive: false, loaded: false)
+        )
+        #expect(stopped.runState == .paused)
+        #expect(stopped.pid == nil)
+        #expect(stopped.uptime == nil)
     }
 
     @Test("Fresh idle daemon → online with full detail")
@@ -119,11 +143,7 @@ struct DaemonSnapshotMappingTests {
     @Test("Outside scheduled hours is not reported as manually paused")
     func scheduledOffMapsWithoutLiveProcess() {
         let nextChange = referenceNow.timeIntervalSince1970 + 3_600
-        let state = freshState(schedule: .init(
-            mode: "scheduled-off",
-            summary: "Mon-Fri 09:00-17:00",
-            nextChangeAtEpoch: nextChange
-        ))
+        let state = scheduledOffState()
         let snapshot = DaemonSnapshotMapping.map(inputs(state: state, alive: false))
 
         #expect(snapshot.runState == .scheduledOff)
@@ -133,19 +153,60 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.availability.nextChangeAt == Date(timeIntervalSince1970: nextChange))
     }
 
+    @Test("A future off boundary remains authoritative while its heartbeat ages")
+    func scheduledOffBoundaryOutranksGenericStaleness() {
+        let state = scheduledOffState(age: 120)
+        for (alive, loaded) in [(true, true), (true, false), (false, true)] {
+            let snapshot = DaemonSnapshotMapping.map(
+                inputs(state: state, alive: alive, loaded: loaded)
+            )
+
+            #expect(snapshot.runState == .scheduledOff)
+            #expect(snapshot.availability.state == .scheduledOff)
+            #expect(snapshot.availability.nextChangeAt
+                == referenceNow.addingTimeInterval(3_600))
+            #expect(snapshot.lastProblem == nil)
+            #expect(snapshot.currentModel == nil)
+            #expect(snapshot.capacity == nil)
+        }
+    }
+
     @Test("An unloaded service cannot inherit retained scheduled-off posture")
     func stoppedServiceMapsPaused() {
-        let state = freshState(schedule: .init(
-            mode: "scheduled-off",
-            summary: "Mon-Fri 09:00-17:00",
-            nextChangeAtEpoch: referenceNow.timeIntervalSince1970 + 3_600
-        ))
-        let snapshot = DaemonSnapshotMapping.map(
-            inputs(state: state, alive: false, loaded: false)
-        )
+        for age in [2.0, 120.0] {
+            let snapshot = DaemonSnapshotMapping.map(
+                inputs(
+                    state: scheduledOffState(age: age),
+                    alive: false,
+                    loaded: false
+                )
+            )
 
-        #expect(snapshot.runState == .paused)
-        #expect(snapshot.availability.state == .paused)
+            #expect(snapshot.runState == .paused)
+            #expect(snapshot.availability.state == .paused)
+        }
+    }
+
+    @Test("A missing off boundary expires only after the heartbeat age limit")
+    func scheduledOffWithoutBoundaryUsesFreshness() {
+        let atLimit = DaemonSnapshotMapping.map(
+            inputs(
+                state: scheduledOffState(age: 90, nextChangeOffset: nil),
+                alive: true
+            )
+        )
+        #expect(atLimit.runState == .scheduledOff)
+        #expect(atLimit.availability.state == .scheduledOff)
+
+        let expired = DaemonSnapshotMapping.map(
+            inputs(
+                state: scheduledOffState(age: 90.001, nextChangeOffset: nil),
+                alive: true
+            )
+        )
+        #expect(expired.runState == .stale)
+        #expect(expired.availability.state == .unknown)
+        #expect(expired.availability.nextChangeAt == nil)
     }
 
     @Test("Schedule boundaries expire at equality for active and off postures")
@@ -165,7 +226,41 @@ struct DaemonSnapshotMappingTests {
                 #expect(snapshot.availability.state == .unknown)
                 #expect(snapshot.availability.nextChangeAt == nil)
                 #expect(snapshot.currentModel == nil)
+
+                let managedDown = DaemonSnapshotMapping.map(
+                    inputs(state: state, alive: false, loaded: true)
+                )
+                #expect(managedDown.runState == .stale)
+                #expect(managedDown.availability.state == .unknown)
+
+                let manuallyStopped = DaemonSnapshotMapping.map(
+                    inputs(state: state, alive: false, loaded: false)
+                )
+                #expect(manuallyStopped.runState == .paused)
+                #expect(manuallyStopped.availability.state == .paused)
             }
+        }
+    }
+
+    @Test("A loaded job with a dead process is failed, not manually paused")
+    func loadedDeadProviderMapsStale() {
+        let active = freshState(schedule: .init(
+            mode: "scheduled-active",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: referenceNow.timeIntervalSince1970 + 3_600
+        ))
+        let always = freshState(schedule: .init(
+            mode: "always",
+            summary: "always available",
+            nextChangeAtEpoch: nil
+        ))
+
+        for state in [active, always] {
+            let snapshot = DaemonSnapshotMapping.map(
+                inputs(state: state, alive: false, loaded: true)
+            )
+            #expect(snapshot.runState == .stale)
+            #expect(snapshot.lastProblem?.id == "provider-state-stale")
         }
     }
 

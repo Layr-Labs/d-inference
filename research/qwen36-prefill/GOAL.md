@@ -77,6 +77,27 @@ contract as a physical boundary:
 Safety remains non-negotiable: no crashes, memory corruption, silent
 failures, accounting drift, or unreported quality changes.
 
+## 2026-08-24 measured state-construction success
+
+Working backward from the required K/V + GDN boundary produced exact
+hybrid-state reuse:
+
+- warm full-prompt B1/B2/B4 at 8K: **184× / 304× / 419×**;
+- cold simultaneous B4 identical 8K: **3.357×**;
+- cold simultaneous B4 90%-common 8K: **2.628×**;
+- sequential B4 75%-common 8K: **3.635×**;
+- sequential B4 87.5%-common 8K: **7.066×**.
+
+These are three-run medians. Every cached/forked object includes all ten
+attention K/V rows, all thirty recurrent states/tails, position, and
+frontier logits where applicable. Partial suffix outputs match cold
+controls exactly.
+
+This satisfies the 2.5× objective for reuse-bearing workloads without
+changing weights or quality. The distinct, unrelated cold-prompt cell
+remains the next optimization target and must not be conflated with the
+measured reuse profiles.
+
 ## Architecture facts (do not rediscover)
 
 Qwen 3.6 35B A3B on this snapshot is a **Qwen3.5-MoE hybrid**:

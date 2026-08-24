@@ -8,7 +8,8 @@ BINARY="${DARKBLOOM_BENCH_BINARY:-/Users/gaj/work/d-inference/provider-swift/.bu
 MODEL="${DARKBLOOM_BENCH_MODEL:-qwen3.6-35b-a3b-vl-mtp-mxfp8}"
 PROMPT_TOKENS="${DARKBLOOM_PREFILL_PROFILE_TOKENS:-8192}"
 ITERATIONS="${DARKBLOOM_PREFILL_PROFILE_ITERATIONS:-3}"
-TRACE_WINDOW="${DARKBLOOM_PREFILL_TRACE_WINDOW:-20s}"
+TRACE_SECONDS="${DARKBLOOM_PREFILL_TRACE_SECONDS:-5}"
+TRACE_ITERATIONS="${DARKBLOOM_PREFILL_TRACE_ITERATIONS:-1}"
 BATCHES_RAW="${DARKBLOOM_PREFILL_PROFILE_BATCHES:-1,2,4}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwen-prefill-physical.XXXXXX")"
 SAMPLER_PID=""
@@ -23,10 +24,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for value in "$PROMPT_TOKENS" "$ITERATIONS"; do
+for value in "$PROMPT_TOKENS" "$ITERATIONS" "$TRACE_SECONDS" "$TRACE_ITERATIONS"; do
     case "$value" in
         *[!0-9]* | 0 | "")
-            echo "fatal: prompt tokens and iterations must be positive integers" >&2
+            echo "fatal: prompt, iteration, and trace values must be positive integers" >&2
             exit 2
             ;;
     esac
@@ -139,7 +140,8 @@ record_header() {
     echo "KV_BACKEND=contiguous"
     echo "PREFIX_CACHE=off"
     echo "NUMERICAL_POSTURE=strict-default-top8"
-    echo "TRACE_WINDOW=$TRACE_WINDOW"
+    echo "TRACE_SECONDS=$TRACE_SECONDS"
+    echo "TRACE_ITERATIONS=$TRACE_ITERATIONS"
     echo "BINARY=$BINARY"
     echo "BINARY_SHA256=$(shasum -a 256 "$BINARY" | awk '{print $1}')"
     if [[ -e "$(dirname "$BINARY")/mlx.metallib" ]]; then
@@ -224,6 +226,36 @@ for batch in "${PROFILE_BATCHES[@]}"; do
     fi
     capture_power >"$cell/power-before.txt"
     capture_processes >"$cell/processes-before.txt"
+
+    # Keep the throughput posture free of profiler overhead. A second,
+    # identical strict engine supplies a bounded physical trace: recording the
+    # complete multi-pattern harness makes Xcode retain hundreds of gigabytes
+    # of temporary AGX profile objects even when --window is requested.
+    set +e
+    "$BINARY" benchmark \
+        --model "$MODEL" \
+        --arrival-invariance \
+        --arrival-batch-size "$batch" \
+        --arrival-prompt-tokens "$PROMPT_TOKENS" \
+        --arrival-decode-tokens 2 \
+        --arrival-iterations "$ITERATIONS" \
+        --kv-backend contiguous \
+        >"$cell/performance-output.txt" 2>&1
+    performance_status=$?
+    set -e
+    if [[ "$performance_status" -ne 0 ]]; then
+        echo "fatal: untraced benchmark failed for B$batch" >&2
+        exit 1
+    fi
+    if ! power_gate_passes; then
+        echo "fatal: power posture changed after B$batch performance run" >&2
+        exit 1
+    fi
+    if competing_workload; then
+        echo "fatal: competing workload appeared before B$batch trace run" >&2
+        exit 1
+    fi
+
     python3 "$TELEMETRY_DIR/agx_metrics.py" once --phase before \
         >"$cell/agx-samples.jsonl"
 
@@ -239,24 +271,34 @@ for batch in "${PROFILE_BATCHES[@]}"; do
     SAMPLER_PID=$!
 
     trace="$cell/cold-strict-b$batch.trace"
-    set +e
-    xcrun xctrace record \
-        --template "Metal System Trace" \
-        --window "$TRACE_WINDOW" \
-        --no-prompt \
-        --output "$trace" \
-        --target-stdout "$cell/target-output.txt" \
-        --launch -- \
-        "$BINARY" benchmark \
+    "$BINARY" benchmark \
         --model "$MODEL" \
         --arrival-invariance \
         --arrival-batch-size "$batch" \
         --arrival-prompt-tokens "$PROMPT_TOKENS" \
         --arrival-decode-tokens 2 \
-        --arrival-iterations "$ITERATIONS" \
+        --arrival-iterations "$TRACE_ITERATIONS" \
         --kv-backend contiguous \
+        >"$cell/trace-target-output.txt" 2>&1 &
+    target_pid=$!
+    sleep 3
+    if ! kill -0 "$target_pid" 2>/dev/null; then
+        wait "$target_pid" || true
+        echo "fatal: B$batch trace target exited before attachment" >&2
+        exit 1
+    fi
+
+    set +e
+    xcrun xctrace record \
+        --template "Metal System Trace" \
+        --time-limit "${TRACE_SECONDS}s" \
+        --no-prompt \
+        --output "$trace" \
+        --attach "$target_pid" \
         >"$cell/xctrace-record.txt" 2>&1
-    record_status=$?
+    trace_status=$?
+    wait "$target_pid"
+    target_status=$?
     set -e
 
     printf 'after\n' >"$phase_file"
@@ -268,8 +310,8 @@ for batch in "${PROFILE_BATCHES[@]}"; do
     capture_power >"$cell/power-after.txt"
     capture_processes >"$cell/processes-after.txt"
 
-    if [[ "$record_status" -ne 0 ]]; then
-        echo "fatal: xctrace/benchmark failed for B$batch" >&2
+    if [[ "$trace_status" -ne 0 || "$target_status" -ne 0 ]]; then
+        echo "fatal: physical trace or target failed for B$batch" >&2
         exit 1
     fi
     xcrun xctrace export \
@@ -286,7 +328,7 @@ for batch in "${PROFILE_BATCHES[@]}"; do
             >"$cell/trace-export/$schema_name.stderr.txt" 2>&1
     done
     python3 "$SCRIPT_DIR/summarize_prefill.py" \
-        "$cell/target-output.txt" \
+        "$cell/performance-output.txt" \
         --write-json "$cell/report.json" \
         >"$cell/prefill-summary.txt"
     python3 "$TELEMETRY_DIR/summarize_physical.py" \

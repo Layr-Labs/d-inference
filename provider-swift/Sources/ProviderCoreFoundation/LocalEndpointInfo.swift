@@ -33,6 +33,25 @@ public struct LocalEndpointInfo: Codable, Sendable, Equatable {
         case updatedAt = "updated_at"
     }
 
+    private struct ProcessIdentityWire: Codable {
+        let pid: Int32
+        let startTimeMicros: UInt64
+
+        enum CodingKeys: String, CodingKey {
+            case pid
+            case startTimeMicros = "start_time_micros"
+        }
+
+        init(_ identity: ProcessIdentity) {
+            pid = identity.pid
+            startTimeMicros = identity.startTimeMicros
+        }
+
+        var value: ProcessIdentity {
+            ProcessIdentity(pid: pid, startTimeMicros: startTimeMicros)
+        }
+    }
+
     public init(
         host: String,
         port: UInt16,
@@ -53,6 +72,36 @@ public struct LocalEndpointInfo: Codable, Sendable, Equatable {
         self.processIdentity = processIdentity
         self.version = version
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        baseURL = try container.decode(String.self, forKey: .baseURL)
+        apiKey = try container.decode(String.self, forKey: .apiKey)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decode(UInt16.self, forKey: .port)
+        pid = try container.decode(Int32.self, forKey: .pid)
+        processIdentity = try container.decodeIfPresent(
+            ProcessIdentityWire.self,
+            forKey: .processIdentity
+        )?.value
+        version = try container.decode(String.self, forKey: .version)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(baseURL, forKey: .baseURL)
+        try container.encode(apiKey, forKey: .apiKey)
+        try container.encode(host, forKey: .host)
+        try container.encode(port, forKey: .port)
+        try container.encode(pid, forKey: .pid)
+        try container.encodeIfPresent(
+            processIdentity.map(ProcessIdentityWire.init),
+            forKey: .processIdentity
+        )
+        try container.encode(version, forKey: .version)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 

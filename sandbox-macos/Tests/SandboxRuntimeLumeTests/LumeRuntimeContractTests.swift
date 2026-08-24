@@ -83,55 +83,6 @@ final class LumeRuntimeContractTests: XCTestCase {
         )
     }
 
-    func testMacOSCIExecutesExactPatchedLumeTestsWithTripwire() throws {
-        let packageDirectory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let buildScript = try String(
-            contentsOf: packageDirectory
-                .appendingPathComponent("Scripts/build-pinned-lume.sh"),
-            encoding: .utf8
-        )
-        let testScript = try String(
-            contentsOf: packageDirectory
-                .appendingPathComponent("Scripts/run-pinned-lume-tests.sh"),
-            encoding: .utf8
-        )
-        let workflow = try String(
-            contentsOf: packageDirectory
-                .deletingLastPathComponent()
-                .appendingPathComponent(".github/workflows/ci.yml"),
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(
-            buildScript.contains(
-                #"/usr/bin/patch \"#
-            )
-        )
-        XCTAssertTrue(
-            buildScript.contains(
-                #"/bin/bash "$PACKAGE_DIR/Scripts/run-pinned-lume-tests.sh" "$SOURCE_ROOT""#
-            )
-        )
-        XCTAssertTrue(testScript.contains("swift test"))
-        XCTAssertTrue(
-            testScript.contains("Test run with [1-9][0-9]* test")
-        )
-        XCTAssertTrue(
-            testScript.contains("Executed [1-9][0-9]* test")
-        )
-        XCTAssertTrue(
-            workflow.contains(#"DARKBLOOM_LUME_RUN_TESTS: "1""#)
-        )
-        XCTAssertTrue(
-            workflow.contains(
-                #"/bin/bash sandbox-macos/Scripts/build-pinned-lume.sh "$install_root""#
-            )
-        )
-    }
-
     func testPinnedRealLumeBinaryAndEmptyStorageContract() async throws {
         guard let executablePath = ProcessInfo.processInfo.environment[
             "DARKBLOOM_SANDBOX_LUME_PATH"

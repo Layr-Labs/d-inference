@@ -11,9 +11,12 @@ final class ProcessExecution: @unchecked Sendable {
     private let standardOutput: BoundedProcessOutput
     private let standardError: BoundedProcessOutput
     private let cooperativeControl: ProcessControlChannel?
+    private let testHooks: ProcessExecutionTestHooks
     private let lock = NSLock()
     private var started = false
     private var processIdentifier: pid_t = 0
+    private var directChildExitObserved = false
+    private var signalAttemptsEnabled = false
     private var exitCode: Int32?
 
     init(
@@ -23,7 +26,8 @@ final class ProcessExecution: @unchecked Sendable {
         currentDirectory: URL?,
         maximumOutputBytes: Int,
         cooperativeControl configuration:
-            SandboxCooperativeProcessControl? = nil
+            SandboxCooperativeProcessControl? = nil,
+        testHooks: ProcessExecutionTestHooks = .none
     ) throws {
         let standardOutput = try BoundedProcessOutput(
             maximumBytes: maximumOutputBytes
@@ -59,6 +63,7 @@ final class ProcessExecution: @unchecked Sendable {
         self.arguments = arguments
         self.environment = childEnvironment
         self.currentDirectory = currentDirectory
+        self.testHooks = testHooks
     }
 
     var terminationStatus: Int32 {
@@ -66,7 +71,13 @@ final class ProcessExecution: @unchecked Sendable {
     }
 
     var isRunning: Bool {
-        lock.withLock { started && exitCode == nil }
+        lock.withLock {
+            started && !directChildExitObserved && exitCode == nil
+        }
+    }
+
+    var processIdentifierForTesting: pid_t {
+        lock.withLock { processIdentifier }
     }
 
     func start() throws {
@@ -149,6 +160,7 @@ final class ProcessExecution: @unchecked Sendable {
         lock.withLock {
             started = true
             processIdentifier = child
+            signalAttemptsEnabled = true
         }
         let spawnedChild = child
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -334,18 +346,43 @@ final class ProcessExecution: @unchecked Sendable {
     }
 
     private func send(signal: Int32) {
-        let pid = lock.withLock {
-            started && exitCode == nil ? processIdentifier : 0
-        }
+        lock.lock()
+        defer { lock.unlock() }
+        let pid =
+            started && signalAttemptsEnabled && exitCode == nil
+                ? processIdentifier
+                : 0
         guard pid > 0 else {
             return
         }
-        if Darwin.kill(-pid, signal) != 0 {
-            _ = Darwin.kill(pid, signal)
-        }
+        signalProcessGroupLocked(pid, signal: signal)
     }
 
     private func reap(processIdentifier: pid_t) {
+        var information = siginfo_t()
+        var observationResult: Int32
+        repeat {
+            observationResult = waitid(
+                P_PID,
+                id_t(processIdentifier),
+                &information,
+                WEXITED | WNOWAIT
+            )
+        } while observationResult < 0 && errno == EINTR
+
+        let observedDirectChildExit = observationResult == 0
+        if observedDirectChildExit {
+            testHooks.didObserveDirectChildExit?()
+        }
+
+        lock.lock()
+        directChildExitObserved = observedDirectChildExit
+        signalAttemptsEnabled = false
+        testHooks.didDisableSignalAttempts?()
+        if observedDirectChildExit {
+            terminateRemainingProcessGroupLocked(processIdentifier)
+        }
+
         var status: Int32 = 0
         var result: pid_t
         repeat {
@@ -361,27 +398,23 @@ final class ProcessExecution: @unchecked Sendable {
         } else {
             code = 255
         }
-        terminateRemainingProcessGroup(processIdentifier)
+        directChildExitObserved = true
+        exitCode = code
+        lock.unlock()
+
         cooperativeControl?.closeParentEndpoint()
         cooperativeControl?.closeChildSourceEndpoint()
-        lock.withLock {
-            exitCode = code
-        }
         exitSignal.signal()
     }
 
-    private func terminateRemainingProcessGroup(_ group: pid_t) {
-        guard Darwin.kill(-group, 0) == 0 else {
-            return
-        }
-        _ = Darwin.kill(-group, SIGTERM)
-        for _ in 0..<20 {
-            if Darwin.kill(-group, 0) != 0, errno == ESRCH {
-                return
-            }
-            usleep(50_000)
-        }
-        _ = Darwin.kill(-group, SIGKILL)
+    private func terminateRemainingProcessGroupLocked(_ group: pid_t) {
+        signalProcessGroupLocked(group, signal: SIGTERM)
+        signalProcessGroupLocked(group, signal: SIGKILL)
+    }
+
+    private func signalProcessGroupLocked(_ group: pid_t, signal: Int32) {
+        testHooks.willSignalProcessGroup?(group, signal)
+        _ = Darwin.kill(-group, signal)
     }
 
     private static func withCStringArray<T>(
@@ -422,6 +455,25 @@ final class ProcessExecution: @unchecked Sendable {
         case cooperativeDeadline
         case signalDeadline
     }
+}
+
+struct ProcessExecutionTestHooks: @unchecked Sendable {
+    let didObserveDirectChildExit: (@Sendable () -> Void)?
+    let didDisableSignalAttempts: (@Sendable () -> Void)?
+    let willSignalProcessGroup: (@Sendable (pid_t, Int32) -> Void)?
+
+    init(
+        didObserveDirectChildExit: (@Sendable () -> Void)? = nil,
+        didDisableSignalAttempts: (@Sendable () -> Void)? = nil,
+        willSignalProcessGroup:
+            (@Sendable (pid_t, Int32) -> Void)? = nil
+    ) {
+        self.didObserveDirectChildExit = didObserveDirectChildExit
+        self.didDisableSignalAttempts = didDisableSignalAttempts
+        self.willSignalProcessGroup = willSignalProcessGroup
+    }
+
+    static let none = ProcessExecutionTestHooks()
 }
 
 private final class ProcessExitSignal: @unchecked Sendable {

@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SandboxRuntime
+@testable import SandboxRuntime
 import XCTest
 
 final class SandboxProcessRunnerTests: XCTestCase {
@@ -197,6 +197,29 @@ final class SandboxProcessRunnerTests: XCTestCase {
         XCTAssertFalse(fixture.signalMarkerExists)
     }
 
+    func testManagedProcessDeinitEscalatesForUncooperativeChild() async throws {
+        let fixture = try ProcessControlFixture()
+        defer { fixture.remove() }
+        var process: SandboxManagedProcess? =
+            try fixture.startUncooperativeProcess(
+                deinitStopPolicy: SandboxManagedProcessStopPolicy(
+                    cooperativeGracePeriod: .milliseconds(100),
+                    signalGracePeriod: .milliseconds(100)
+                )
+            )
+        try await fixture.waitUntilReady()
+        let identity = try XCTUnwrap(fixture.childIdentity)
+        let started = ContinuousClock.now
+
+        process = nil
+        _ = process
+        try await fixture.waitUntilIdentityIsGone(identity)
+
+        XCTAssertNotEqual(ProcessBirthIdentity.read(identity.pid), identity)
+        XCTAssertTrue(fixture.signalMarkerExists)
+        XCTAssertLessThan(started.duration(to: .now), .seconds(3))
+    }
+
     func testDoesNotLeakParentEnvironment() async throws {
         let secretKey = "DARKBLOOM_PROCESS_RUNNER_PARENT_SECRET"
         setenv(secretKey, "must-not-leak", 1)
@@ -301,6 +324,7 @@ private struct ProcessControlFixture {
     let ready: URL
     let signal: URL
     let cooperativeExit: URL
+    let childPID: URL
 
     init() throws {
         directory = FileManager.default.temporaryDirectory
@@ -313,6 +337,7 @@ private struct ProcessControlFixture {
         cooperativeExit = directory.appendingPathComponent(
             "cooperative-exit"
         )
+        childPID = directory.appendingPathComponent("child.pid")
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: false
@@ -351,23 +376,56 @@ private struct ProcessControlFixture {
         )
     }
 
-    func startUncooperativeProcess() throws -> SandboxManagedProcess {
-        try SandboxProcessRunner().start(
-            executable: URL(fileURLWithPath: "/bin/sh"),
-            arguments: [
-                "-c",
-                """
-                trap 'printf signal > "$2"' TERM
-                printf ready > "$1"
-                while :; do :; done
-                """,
-                "darkbloom-process-control",
-                ready.path,
-                signal.path,
-            ],
-            cooperativeControl: SandboxCooperativeProcessControl(
-                environmentVariable: Self.environmentVariable
+    func startUncooperativeProcess(
+        deinitStopPolicy: SandboxManagedProcessStopPolicy? = nil
+    ) throws -> SandboxManagedProcess {
+        let executable = URL(fileURLWithPath: "/bin/sh")
+        let arguments = [
+            "-c",
+            """
+            trap 'printf signal > "$2"' TERM
+            printf '%s' "$$" > "$3"
+            printf ready > "$1"
+            while :; do :; done
+            """,
+            "darkbloom-process-control",
+            ready.path,
+            signal.path,
+            childPID.path,
+        ]
+        let cooperativeControl = SandboxCooperativeProcessControl(
+            environmentVariable: Self.environmentVariable
+        )
+        guard let deinitStopPolicy else {
+            return try SandboxProcessRunner().start(
+                executable: executable,
+                arguments: arguments,
+                cooperativeControl: cooperativeControl
             )
+        }
+        let execution = try ProcessExecution(
+            executable: executable,
+            arguments: arguments,
+            environment: [
+                "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                "LANG": "en_US.UTF-8",
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "TMPDIR": NSTemporaryDirectory(),
+            ],
+            currentDirectory: nil,
+            maximumOutputBytes:
+                SandboxProcessRunner.defaultMaximumOutputBytes,
+            cooperativeControl: cooperativeControl
+        )
+        do {
+            try execution.start()
+        } catch {
+            execution.cleanup()
+            throw error
+        }
+        return SandboxManagedProcess(
+            execution: execution,
+            deinitStopPolicy: deinitStopPolicy
         )
     }
 
@@ -377,6 +435,27 @@ private struct ProcessControlFixture {
 
     func waitUntilExitedCooperatively() async throws {
         try await waitForMarker(cooperativeExit)
+    }
+
+    var childIdentity: ProcessBirthIdentity? {
+        guard let value = try? String(
+            contentsOf: childPID,
+            encoding: .utf8
+        ), let pid = pid_t(value) else {
+            return nil
+        }
+        return ProcessBirthIdentity.read(pid)
+    }
+
+    func waitUntilIdentityIsGone(_ identity: ProcessBirthIdentity) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while ProcessBirthIdentity.read(identity.pid) == identity {
+            guard clock.now < deadline else {
+                throw SandboxRuntimeError.operationTimedOut("child identity")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     func remove() {
@@ -394,5 +473,27 @@ private struct ProcessControlFixture {
             }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+struct ProcessBirthIdentity: Equatable {
+    let pid: pid_t
+    let startTimeMicroseconds: UInt64
+
+    static func read(_ pid: pid_t) -> ProcessBirthIdentity? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        let count = withUnsafeMutablePointer(to: &info) {
+            proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, $0, size)
+        }
+        guard count == size else {
+            return nil
+        }
+        return ProcessBirthIdentity(
+            pid: pid,
+            startTimeMicroseconds:
+                UInt64(info.pbi_start_tvsec) * 1_000_000
+                + UInt64(info.pbi_start_tvusec)
+        )
     }
 }

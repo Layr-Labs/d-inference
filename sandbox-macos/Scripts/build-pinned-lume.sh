@@ -53,14 +53,21 @@ PRODUCTION_PROVENANCE_REQUIREMENT='anchor apple generic and identifier "io.darkb
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
+INSTALL_PARENT=""
 STAGING_DIR=""
+
+remove_staging_tree() {
+    /bin/bash "$SCRIPT_DIR/remove-sealed-lume-staging.sh" \
+        "$INSTALL_PARENT" \
+        "$1"
+}
 
 cleanup() {
     if [[ -n "$BUILD_ROOT" ]]; then
         rm -rf "$BUILD_ROOT"
     fi
     if [[ -n "$STAGING_DIR" ]]; then
-        rm -rf "$STAGING_DIR"
+        remove_staging_tree "$STAGING_DIR"
     fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -129,6 +136,8 @@ mkdir -p "$INSTALL_PARENT"
 INSTALL_PARENT="$(cd "$INSTALL_PARENT" && pwd -P)"
 INSTALL_DIR="$INSTALL_PARENT/$(basename "$INSTALL_DIR")"
 STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
+/bin/chmod -N "$STAGING_DIR"
+/bin/chmod 0700 "$STAGING_DIR"
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
 git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \
@@ -276,6 +285,7 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
 fi
 /usr/bin/codesign "${PROVENANCE_CODESIGN_ARGUMENTS[@]}" "$PROVENANCE_FILE"
 
+/bin/chmod -RN "$STAGING_DIR"
 "$PYTHON" - "$STAGING_DIR" <<'PY'
 import os
 import stat

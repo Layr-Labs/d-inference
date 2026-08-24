@@ -32,6 +32,11 @@ The development bootstrap executor captures stdout and stderr independently,
 drains both streams without retaining unbounded data, and returns at most 1 MiB
 per stream in a versioned result envelope with explicit truncation flags. Host
 child processes also start with close-on-exec-by-default descriptor isolation.
+Managed-process release starts a detached bounded cooperative, `SIGTERM`, then
+`SIGKILL` shutdown and retains its execution authority until the child exits.
+The reaper observes direct-child exit without reaping, disables concurrent
+signals under the same lock, cleans the reserved process group, and only then
+reaps the leader, so PID/PGID reuse cannot redirect a later signal.
 
 Artifact authentication binds sandbox generation, disk role, and a random
 per-encryption revision ID, so chunks from separate revisions cannot be spliced.
@@ -200,12 +205,16 @@ same-process stop uses the in-memory virtualization service. Before spawning
 `lume run`, the broker creates a private socketpair and gives the child one
 endpoint. Closing the broker endpoint requests same-process `VM.stop`; EOF is
 sticky even if the broker dies before the child begins monitoring, acquires run
-locks, or publishes its marker. The owner exits only after the virtualization
-service reaches a terminal state and clears the marker while still holding the
-run locks. `F_GETLK` PIDs remain observations, never control capabilities, so a
-foreign owner or failed cooperative stop remains inconclusive and keeps capacity
-reserved. SIGTERM/SIGKILL are bounded emergency fallbacks and do not authorize
-release without an independently observed stopped state.
+locks, or publishes its marker. EOF also arms a non-MainActor 15-second
+fail-stop watchdog before registration; production calls `_exit` if startup,
+MainActor dispatch, or stop remains wedged. Only proof that registration never
+occurred or completed terminal cleanup cancels that watchdog. The owner exits
+normally only after the virtualization service reaches a terminal state and
+clears the marker while still holding the run locks. `F_GETLK` PIDs remain
+observations, never control capabilities, so a foreign owner or failed
+cooperative stop remains inconclusive and keeps capacity reserved.
+SIGTERM/SIGKILL are bounded emergency fallbacks and do not authorize release
+without an independently observed stopped state.
 The broker also fsyncs a one-per-VM start intent, bound to the ownership
 installation, sandbox generation, and inherited lifecycle capability contract,
 before spawning `lume run`. A restarted reconciler may clear that intent only
@@ -235,6 +244,10 @@ resource bytes to the release identity instead of trusting a self-authenticated
 digest list. Production validation requires Apple-designated requirements for
 both the executable and manifest under team `SLDQ2GJ6TL`; the
 `--development-ad-hoc-lume` daemon flag is an explicit local-only bypass.
+Publication seals a staging tree beside the destination and atomically renames
+it. CI supplies a private ACL-free publication parent; failure cleanup restores
+permissions only inside the owned staging tree and never edits caller-owned
+parent ACLs.
 Before executing Lume, the adapter requires the complete immutable directory
 tree and provenance to match the audited lock; it rejects added, removed,
 replaced, or modified runtime entries. The production installation must be

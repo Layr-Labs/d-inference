@@ -22,16 +22,38 @@ public struct SandboxProcessResult: Sendable {
     }
 }
 
+struct SandboxManagedProcessStopPolicy: Sendable {
+    let cooperativeGracePeriod: Duration
+    let signalGracePeriod: Duration
+
+    static let deinitialization = SandboxManagedProcessStopPolicy(
+        cooperativeGracePeriod: .seconds(30),
+        signalGracePeriod: .seconds(2)
+    )
+}
+
 public final class SandboxManagedProcess: @unchecked Sendable {
     private let execution: ProcessExecution
+    private let deinitStopPolicy: SandboxManagedProcessStopPolicy
 
-    fileprivate init(execution: ProcessExecution) {
+    init(
+        execution: ProcessExecution,
+        deinitStopPolicy: SandboxManagedProcessStopPolicy = .deinitialization
+    ) {
         self.execution = execution
+        self.deinitStopPolicy = deinitStopPolicy
     }
 
     deinit {
-        if !execution.requestCooperativeStop() {
-            execution.forceStop()
+        let retainedExecution = execution
+        _ = retainedExecution.requestCooperativeStop()
+        let policy = deinitStopPolicy
+        Task.detached(priority: .utility) {
+            await retainedExecution.stop(
+                cooperativeGracePeriod: policy.cooperativeGracePeriod,
+                signalGracePeriod: policy.signalGracePeriod
+            )
+            retainedExecution.cleanup()
         }
     }
 

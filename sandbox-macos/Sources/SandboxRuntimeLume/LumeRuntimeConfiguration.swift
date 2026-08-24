@@ -31,7 +31,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedBrokerLifecyclePatchPath =
         "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch"
     public static let pinnedBrokerLifecyclePatchSHA256 =
-        "4f6f6a5d30f67d4e05ccc30a1a8746fb29e2e737cfb9353363efb13e329ba653"
+        "622b7ccee3a2d842e8aad83fe26ce4e1ab4027bd585a10ffddc40d416e288026"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,

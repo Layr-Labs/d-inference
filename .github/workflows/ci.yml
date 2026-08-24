@@ -112,7 +112,11 @@ jobs:
         env:
           DARKBLOOM_LUME_RUN_TESTS: "1"
         run: |
-          install_root="$RUNNER_TEMP/darkbloom-pinned-lume"
+          umask 077
+          publication_parent="$(mktemp -d /private/tmp/darkbloom-lume-publication.XXXXXX)"
+          /bin/chmod -N "$publication_parent"
+          /bin/chmod 0700 "$publication_parent"
+          install_root="$publication_parent/darkbloom-pinned-lume"
           /bin/bash sandbox-macos/Scripts/build-pinned-lume.sh "$install_root"
           echo "DARKBLOOM_SANDBOX_LUME_PATH=$install_root/lume" >> "$GITHUB_ENV"
       - name: Build isolated sandbox host runtime

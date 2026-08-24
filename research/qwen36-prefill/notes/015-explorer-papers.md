@@ -346,4 +346,3 @@ materially.
   Guide](https://developer.apple.com/download/files/Metal-Performance-Primitives-Programming-Guide.pdf)
   — occupancy/tile tuning and Apple GPU memory hierarchy. Its Metal 4
   TensorOps examples target newer hardware, not the M3 Max.
-

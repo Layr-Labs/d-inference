@@ -32,7 +32,7 @@ METAL_FUNC auto full_b_transposed_tensor(device bfloat* values) {
   return metal::tensor(
       values,
       ProbeBTransposedExtents{},
-      metal::array<int, 2>{probeN, 1});
+      metal::array<int, 2>{1, probeK});
 }
 
 METAL_FUNC auto output_tensor(device float* values) {
@@ -217,8 +217,8 @@ kernel void mpp_static_k16_nt_macc_mlx_manual_inputs_and_output(
     const int row = base.y + int(i >> 2) * 8;
     const int column = base.x + int(i & 3);
     cooperative_a[i] = a[row * probeK + column];
-    cooperative_b[i] = b[column * probeN + row];
-    cooperative_b[8 + i] = b[column * probeN + 16 + row];
+    cooperative_b[i] = b[row * probeK + column];
+    cooperative_b[8 + i] = b[(16 + row) * probeK + column];
   }
 #pragma clang loop unroll(full)
   for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {

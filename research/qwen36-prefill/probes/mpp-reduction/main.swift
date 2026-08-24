@@ -28,6 +28,19 @@ private struct Variant {
     let label: String
     let function: String
     let usesPaddedInputs: Bool
+    let usesTransposedB: Bool
+
+    init(
+        label: String,
+        function: String,
+        usesPaddedInputs: Bool = false,
+        usesTransposedB: Bool = false
+    ) {
+        self.label = label
+        self.function = function
+        self.usesPaddedInputs = usesPaddedInputs
+        self.usesTransposedB = usesTransposedB
+    }
 }
 
 private func bfloatBits(_ value: Float) -> UInt16 {
@@ -131,6 +144,16 @@ private func makePaddedInputs(_ testCase: ProbeCase) -> ([UInt16], [UInt16], [UI
         }
     }
     return (a0, b0, a1, b1)
+}
+
+private func makeTransposedB(_ values: [UInt16]) -> [UInt16] {
+    var result = [UInt16](repeating: 0, count: n * k)
+    for inner in 0..<k {
+        for column in 0..<n {
+            result[column * k + inner] = values[inner * n + column]
+        }
+    }
+    return result
 }
 
 private func makeBuffer(device: MTLDevice, values: [UInt16]) throws -> MTLBuffer {
@@ -309,11 +332,11 @@ private func run() throws {
         Variant(
             label: "mpp-static-k16-nt-macc-cooperative-inputs",
             function: "mpp_static_k16_nt_macc_cooperative_inputs",
-            usesPaddedInputs: false),
+            usesTransposedB: true),
         Variant(
             label: "mpp-static-k16-nt-macc-mlx-manual-both",
             function: "mpp_static_k16_nt_macc_mlx_manual_inputs_and_output",
-            usesPaddedInputs: false),
+            usesTransposedB: true),
         Variant(
             label: "mpp-static-k16-macc-mlx-manual-inputs",
             function: "mpp_static_k16_macc_mlx_manual_inputs",
@@ -353,6 +376,8 @@ private func run() throws {
         print("CASE=\(testCase.name)")
         let aBuffer = try makeBuffer(device: runner.device, values: testCase.a)
         let bBuffer = try makeBuffer(device: runner.device, values: testCase.b)
+        let bTransposedBuffer = try makeBuffer(
+            device: runner.device, values: makeTransposedB(testCase.b))
         let reference = try runner.run(
             function: "steel_k8x2_reference",
             inputs: [aBuffer, bBuffer],
@@ -368,7 +393,14 @@ private func run() throws {
         ]
         for variant in variants {
             do {
-                let inputs = variant.usesPaddedInputs ? paddedBuffers : [aBuffer, bBuffer]
+                let inputs: [MTLBuffer]
+                if variant.usesPaddedInputs {
+                    inputs = paddedBuffers
+                } else if variant.usesTransposedB {
+                    inputs = [aBuffer, bTransposedBuffer]
+                } else {
+                    inputs = [aBuffer, bBuffer]
+                }
                 let actual = try runner.run(function: variant.function, inputs: inputs)
                 print(comparison(label: variant.label, reference: reference, actual: actual))
             } catch {

@@ -105,9 +105,9 @@ its makespan.
 
 The durable benchmark reserved 19,477,509,628 bytes for the cache and
 retained 4,829,189,120 bytes after its 32-boundary donor. This is bounded
-and charged, but it is not the default deployment posture: the
-default-off serving candidate defaults to a 1 GiB hard ceiling. The
-measured partial-prefix hit mix therefore needs a deployment-budget rerun.
+and charged, but it is not the default deployment posture. E41 reruns the
+matrix at the default-off 2 GiB hard ceiling: 75%/87.5% boundaries remain
+hits above 2.5× while 25%/50% boundaries are evicted and miss.
 
 The fork report records cache misses but no prompt-fork activity counters,
 and its `policyEnvironment` omits both activation flags. Its timing is

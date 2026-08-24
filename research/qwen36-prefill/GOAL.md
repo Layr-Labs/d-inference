@@ -106,8 +106,10 @@ Cache construction is reported separately and costs ~8 s at 8K when all
 or live-fork makespans, not construction-inclusive single-hit claims.
 The partial-prefix benchmark carved 19,477,509,628 bytes and retained
 4,829,189,120 bytes after construction. The default-off deployment
-candidate defaults to a 1 GiB cache ceiling, so retention of the measured
-75%/87.5% boundaries is not yet established under its default budget.
+candidate now defaults to a 2 GiB cache ceiling. E41 pins that exact
+ceiling: 75% and 87.5% remain direct hits at 3.633×/7.103× first-token
+speed (3.140×/5.196× over the full 64-token makespan); 25%/50% correctly
+miss after LRU eviction.
 
 This clears the 2.5× performance threshold for the named reuse-bearing
 workloads without changing weights. It does **not** yet satisfy the full

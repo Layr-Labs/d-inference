@@ -608,3 +608,16 @@ exact, but changed decode timing/batching produces user-visible
 continuation divergence. Performance passes; completion quality remains
 an explicit shipping blocker. E40 has a separate code/artifact/system
 provenance sidecar.
+
+## 2026-08-24T14:50Z — 2 GiB deployment budget validated
+
+E41 pins the exact cache to 2,147,483,648 bytes and captures the control
+in its report. Over three 8K/64-token iterations:
+
+- 75% exact prefix: **3.633× first-token**, 3.140× total makespan;
+- 87.5%: **7.103× first-token**, 5.196× total makespan;
+- 25%/50% boundaries are evicted and honestly miss.
+
+The target >2.5× boundaries therefore survive the deployed default
+budget. Completion equality remains 75%, so the quality blocker is
+unchanged.

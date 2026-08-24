@@ -269,10 +269,11 @@ neither result can be mistaken for the other.
 
 Memory posture is also benchmark-scoped. The report carves
 19,477,509,628 bytes and retains 4,829,189,120 bytes after construction.
-The default-off deployment candidate defaults to a 1 GiB hard cache
-ceiling; its LRU remains bounded, but that ceiling cannot retain the same
-32-boundary set. The 75%/87.5% profile therefore needs a rerun with the
-actual deployment budget (or an explicitly justified larger operator cap).
+The default-off deployment candidate now defaults to a 2 GiB hard cache
+ceiling. Its LRU remains bounded and observed snapshot sizes put the
+6,144/7,168-token boundaries under that ceiling, but it cannot retain the
+same 32-boundary set. The 75%/87.5% profile still needs a rerun with the
+actual deployment budget.
 
 Apple-Silicon validation after the measured patch:
 
@@ -280,6 +281,9 @@ Apple-Silicon validation after the measured patch:
 - exact engine full/partial B1/B2/B4 and cancellation: 5/5 pass;
 - provider benchmark/report/schema tests: 9/9 pass;
 - provider usage/wiring tests: 7/7 pass;
+- prompt-fork planner/state/cancellation tests: 9/9 pass;
+- serving exact-cache policy/wiring/telemetry/launch/CLI tests: 70/70 pass;
+- full provider suite after serving wiring: 2,215 tests / 231 suites pass;
 - release build: pass.
 
 ## 64-token continuation gate
@@ -309,6 +313,30 @@ Artifacts:
 
 - `artifacts/e40-partial-prefix-8192-decode64-3x.json.gz`
 - `artifacts/e40-partial-prefix-8192-decode64-3x.provenance.json`
+
+## 2 GiB deployment-equivalent rerun
+
+E41 pins the benchmark cache to the default-off deployment ceiling
+(`DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES=2147483648`) and captures that
+control in the report:
+
+| Profile | Cache outcome | First-token speedup | 64-token makespan speedup |
+|---|---|---:|---:|
+| B4 25% partial | miss | 0.955× | 0.957× |
+| B4 50% partial | miss | 0.960× | 0.962× |
+| B4 75% partial | hit | **3.633×** | **3.140×** |
+| B4 87.5% partial | hit | **7.103×** | **5.196×** |
+
+The 2 GiB LRU therefore retains the two target boundaries and resolves
+the deployment-budget equivalence gap for the measured >2.5× profiles.
+It deliberately evicts 25%/50% boundaries after the full donor. First-token
+parity remains 100%; the existing long-continuation parity blocker remains
+unchanged.
+
+Artifacts:
+
+- `artifacts/e41-partial-prefix-2gib-decode64-3x.json.gz`
+- `artifacts/e41-partial-prefix-2gib-decode64-3x.provenance.json`
 
 Those tests ran in the patched nested worktree. They do not prove that an
 ordinary recursive checkout works; the gitlink still points at the unpatched

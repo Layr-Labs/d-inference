@@ -1,0 +1,45 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.27s)
+Test Suite 'Selected tests' started at 2026-08-24 07:35:08.315.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 07:35:08.315.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 07:35:08.315.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 07:35:08.315.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "MTP + paged-pool posture telemetry" started.
+◇ Test "unknown pool capacity omits utilization rather than reporting empty" started.
+◇ Test "posture keeps engine identity and KV storage kind on separate keys" started.
+◇ Test "every slot emits posture on the periodic sampler, MTP or not" started.
+◇ Test "pool_utilization is occupied over total pool bytes" started.
+◇ Test "inert is distinct from engine_inactive" started.
+◇ Test "zero rounds without kv_unsupported skips is not inert" started.
+◇ Test "every posture field survives the client-side allowlist filter" started.
+◇ Test "paged slot with zero MTP rounds reports inert_kv_unsupported" started.
+◇ Test "a slot that ran rounds stays active even after kv_unsupported skips" started.
+◇ Test "exact RAM cache posture exposes aggregate status without identities" started.
+◇ Test "contiguous slots report kv_backend and omit pool utilization" started.
+◇ Test "a zero interval disables the sampler entirely" started.
+◇ Test "a slot torn down inside its first interval still reports exactly once" started.
+◇ Test "shutdown stops the sampler" started.
+✔ Test "inert is distinct from engine_inactive" passed after 0.001 seconds.
+✔ Test "zero rounds without kv_unsupported skips is not inert" passed after 0.001 seconds.
+✔ Test "pool_utilization is occupied over total pool bytes" passed after 0.002 seconds.
+✔ Test "every posture field survives the client-side allowlist filter" passed after 0.002 seconds.
+✔ Test "paged slot with zero MTP rounds reports inert_kv_unsupported" passed after 0.002 seconds.
+✔ Test "posture keeps engine identity and KV storage kind on separate keys" passed after 0.003 seconds.
+✔ Test "contiguous slots report kv_backend and omit pool utilization" passed after 0.002 seconds.
+✔ Test "a slot that ran rounds stays active even after kv_unsupported skips" passed after 0.003 seconds.
+✔ Test "unknown pool capacity omits utilization rather than reporting empty" passed after 0.003 seconds.
+✔ Test "exact RAM cache posture exposes aggregate status without identities" passed after 0.003 seconds.
+✔ Test "every slot emits posture on the periodic sampler, MTP or not" passed after 0.063 seconds.
+✔ Test "a zero interval disables the sampler entirely" passed after 0.130 seconds.
+✔ Test "a slot torn down inside its first interval still reports exactly once" passed after 0.130 seconds.
+✔ Test "shutdown stops the sampler" passed after 0.276 seconds.
+✔ Suite "MTP + paged-pool posture telemetry" passed after 0.277 seconds.
+✔ Test run with 14 tests in 1 suite passed after 0.277 seconds.

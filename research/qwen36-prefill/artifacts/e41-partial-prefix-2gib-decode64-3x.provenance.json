@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "benchmark_report": {
+    "path": "research/qwen36-prefill/artifacts/e41-partial-prefix-2gib-decode64-3x.json.gz",
+    "compression": "gzip",
+    "archive_sha256": "9e0b1e9708c868a411a3ef1d6cc0d81e64476486283a83710cff8b502fdd62a7",
+    "sanitized_uncompressed_sha256": "7f7b584a1af34f7de152f6396699012b5c08d97536d20e2c0b015171fe3aeeca",
+    "created_at_utc": "2026-08-24T14:50:48.377Z",
+    "redactions": [
+      "Absolute benchmark-user home paths were replaced with /Users/benchmark before archival."
+    ]
+  },
+  "source": {
+    "root_commit": "c7f549b5",
+    "mlx_swift_lm_base": "ab73a827c9dde6f8802507003aa0be71605aab8e",
+    "mlx_swift_lm_patched_tree": "b002398c",
+    "patches": {
+      "060-exact-cbv2-prefix-boundary.patch": "a62a575547ff37e3b5eaf7ec162bd2081af2ace8a76dd9453332afce6add9c3f",
+      "061-cbv2-simultaneous-prompt-fork.patch": "2adc40ae8918b04afea7b4dfa651b623fdf792314c5042d4bad11bf50502ab37",
+      "065-exact-sequential-prefix-boundaries.patch": "ed2383097a1adec216d716ffd08aa3d8ded2e4a42969654b1d9e85233aa09ad5",
+      "061-provider-exact-prefix-wiring.patch": "03fd626d357d73361fbb859fb8ef5f673ae497ba6f53e07ae5a85e845c33f493",
+      "062-provider-exact-prefix-benchmark.patch": "e8a77b73e5f9de2ed9edc453baf4c7cb195b3ed621c580c283b4404f5e174aed"
+    }
+  },
+  "artifacts": {
+    "darkbloom_sha256": "ae21ded82ec243210fab50ebfc8d1821aaa5af246cb3bd7abd8910e492105a2c",
+    "mlx_metallib_sha256": "08c48889aee7a8d126e47b12528e8f3e2c43f45866de938be11a8777a952b033",
+    "model_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "corpus_sha256": "f49f82b2e19724d7535b4f7e06f06b159887f3fe48f4ae6ecb2599ab87d724f1"
+  },
+  "host": {
+    "label": "m3-max-128gb-2",
+    "os": "macOS 26.4 (25E246)",
+    "swift": "Apple Swift 6.3.2; target arm64-apple-macosx26.0",
+    "power_source_post_run": "AC Power",
+    "power_mode_post_run": 2,
+    "battery_post_run": "94% charging"
+  },
+  "controls": {
+    "kv_backend": "contiguous",
+    "prompt_tokens_per_request": 8192,
+    "decode_tokens": 64,
+    "iterations": 3,
+    "max_concurrent_requests": 4,
+    "prefix_cache": "ExactPrefixCacheV2",
+    "cache_budget_bytes": 2147483648,
+    "cache_block_tokens": 256,
+    "prompt_fork_enabled": false,
+    "force_fork_miss": false
+  },
+  "limitations": [
+    "Power posture was captured immediately after, not inside, the benchmark report.",
+    "The nested library tree is represented by a pinned base plus patch hashes because the agent cannot push that remote.",
+    "Full 64-token sequence equality remains below the shipping gate despite exact first-token parity."
+  ]
+}

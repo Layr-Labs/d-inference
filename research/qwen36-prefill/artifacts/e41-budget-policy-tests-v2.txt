@@ -1,0 +1,706 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/benchmark/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/16] Write sources
+[6/21] Copying pagedattention.metal
+[6/21] Write sources
+[10/21] Write swift-version--58304C5D6DBC2206.txt
+[12/44] Emitting module MLXHuggingFaceMacros
+[13/44] Compiling MLXHuggingFaceMacros HuggingFaceIntegrationMacros.swift
+[14/133] Compiling MLXLMCommon ModelContainer.swift
+[15/133] Compiling MLXLMCommon ModelFactory.swift
+[16/133] Compiling MLXLMCommon Gemma.swift
+[17/133] Compiling MLXLMCommon Module+Extensions.swift
+[18/133] Compiling MLXLMCommon AbstractModelRegistry.swift
+[19/133] Compiling MLXLMCommon ModelTypeRegistry.swift
+[20/133] Compiling MLXLMCommon ProcessorTypeRegistry.swift
+[21/140] Compiling MLXLMCommon DoRA+Layers.swift
+[22/140] Compiling MLXLMCommon LoRA+Layers.swift
+[23/140] Compiling MLXLMCommon LoRAContainer.swift
+[24/140] Compiling MLXLMCommon LoRAModel.swift
+[25/140] Compiling MLXLMCommon ModelAdapter.swift
+[26/140] Compiling MLXLMCommon ModelAdapterFactory.swift
+[27/140] Compiling MLXLMCommon ModelAdapterTypeRegistry.swift
+[28/140] Compiling MLXLMCommon AttentionUtils.swift
+[29/140] Compiling MLXLMCommon MistralToolCallParser.swift
+[30/140] Compiling MLXLMCommon ParserUtilities.swift
+[31/140] Compiling MLXLMCommon PythonicToolCallParser.swift
+[32/140] Compiling MLXLMCommon XMLFunctionParser.swift
+[33/140] Compiling MLXLMCommon Tool.swift
+[34/140] Compiling MLXLMCommon ToolCall.swift
+[35/140] Compiling MLXLMCommon ToolCallFormat.swift
+[36/140] Compiling MLXLMCommon GLM4ToolCallParser.swift
+[37/140] Compiling MLXLMCommon GemmaFunctionParser.swift
+[38/140] Compiling MLXLMCommon HarmonyToolCallParser.swift
+[39/140] Compiling MLXLMCommon JSONToolCallParser.swift
+[40/140] Compiling MLXLMCommon KimiK2ToolCallParser.swift
+[41/140] Compiling MLXLMCommon Llama3ToolCallParser.swift
+[42/140] Compiling MLXLMCommon MiniMaxM2ToolCallParser.swift
+[43/140] Compiling MLXLMCommon ToolCallProcessor.swift
+[44/140] Compiling MLXLMCommon ToolParameter.swift
+[45/140] Compiling MLXLMCommon Value.swift
+[46/140] Compiling MLXLMCommon UserInput.swift
+[47/140] Compiling MLXLMCommon SerialAccessContainer.swift
+[48/140] Compiling MLXLMCommon WiredMemoryPolicies.swift
+[49/140] Compiling MLXLMCommon WiredMemoryUtils.swift
+[50/140] Emitting module MLXLMCommon
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[51/140] Compiling MLXLMCommon CBv2MTPDepthController.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[52/140] Compiling MLXLMCommon CBv2MTPRoundDriver.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[53/140] Compiling MLXLMCommon EngineLoopV2+MTP.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[54/140] Compiling MLXLMCommon EngineLoopV2+MTPExecution.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[55/140] Compiling MLXLMCommon EngineLoopV2+MTPFinalize.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[56/140] Compiling MLXLMCommon EngineLoopV2+MTPMeasurement.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[57/140] Compiling MLXLMCommon EngineLoopV2+MTPPlanning.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[58/140] Compiling MLXLMCommon EngineLoopV2+MTPTargetVerification.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:252:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+250 |                 let allTokens = kept
+251 |                 detokQueue.async {
+252 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+253 |                     stream?.emit(
+254 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:219:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[59/140] Compiling MLXLMCommon RoPEApplication.swift
+[60/140] Compiling MLXLMCommon RoPEUtils.swift
+[61/140] Compiling MLXLMCommon SequenceStateMachine.swift
+[62/140] Compiling MLXLMCommon SuScaledRoPE.swift
+[63/140] Compiling MLXLMCommon SwitchLayers.swift
+[64/140] Compiling MLXLMCommon Tokenizer.swift
+[65/140] Compiling MLXLMCommon TokenizerLoader.swift
+[66/140] Compiling MLXLMCommon PrefillOutputV2.swift
+[67/140] Compiling MLXLMCommon PrefixCacheV2.swift
+[68/140] Compiling MLXLMCommon PrefixReusePlan.swift
+[69/140] Compiling MLXLMCommon PromptForkV2.swift
+[70/140] Compiling MLXLMCommon RecurrentStateV2.swift
+[71/140] Compiling MLXLMCommon SamplerV2.swift
+[72/140] Compiling MLXLMCommon SchedulerV2.swift
+[73/140] Compiling MLXLMCommon ContiguousKVBackend.swift
+[74/140] Compiling MLXLMCommon Downloader.swift
+[75/140] Compiling MLXLMCommon DynamicSlice.swift
+[76/140] Compiling MLXLMCommon Evaluate.swift
+[77/140] Compiling MLXLMCommon Encodable+toolResult.swift
+[78/140] Compiling MLXLMCommon JSONDecoder+JSON5.swift
+[79/140] Compiling MLXLMCommon GenerationConfigFile.swift
+[80/140] Compiling MLXLMCommon InterpolationUtils.swift
+[81/140] Compiling MLXLMCommon JSONDecodingTypes.swift
+[82/140] Compiling MLXLMCommon KVCache.swift
+[83/140] Compiling MLXLMCommon LanguageModel.swift
+[84/140] Compiling MLXLMCommon Load.swift
+[85/140] Compiling MLXLMCommon MLXHardwareInfo.swift
+[86/140] Compiling MLXLMCommon MemoryBackedVideoAsset.swift
+[87/140] Compiling MLXLMCommon ModelConfiguration.swift
+[88/140] Compiling MLXLMCommon BaseConfiguration.swift
+[89/140] Compiling MLXLMCommon Chat.swift
+[90/140] Compiling MLXLMCommon ChatSession.swift
+[91/140] Compiling MLXLMCommon CompilableKVCache.swift
+[92/140] Compiling MLXLMCommon CompilableRotatingKVCache.swift
+[93/140] Compiling MLXLMCommon AdmissionV2.swift
+[94/140] Compiling MLXLMCommon AttentionV1.swift
+[95/140] Compiling MLXLMCommon BlockHasher.swift
+[96/140] Compiling MLXLMCommon EngineV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[97/140] Compiling MLXLMCommon ExactPrefixCacheV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[98/140] Compiling MLXLMCommon LastQueryPrefillV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[99/140] Compiling MLXLMCommon LayerCacheBankV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[100/140] Compiling MLXLMCommon LayerCacheV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[101/140] Compiling MLXLMCommon LayerKindDerivation.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[102/140] Compiling MLXLMCommon LogitsPipelineV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[103/140] Compiling MLXLMCommon CBv2MTPCaptureFence.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift:21:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 19 | enum CBv2ExactSnapshotStorage {
+ 20 |     static func detached(_ array: MLXArray) -> MLXArray {
+ 21 |         var result = MLXArray.zeros(array.shape, dtype: array.dtype)
+    |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+ 22 |         result[.ellipsis] = array
+ 23 |         return result
+[104/140] Compiling MLXLMCommon PagedDecodeProfiler.swift
+[105/140] Compiling MLXLMCommon PagedKVBackend.swift
+[106/140] Compiling MLXLMCommon PagedKVPool.swift
+[107/140] Compiling MLXLMCommon PagedKVResidency.swift
+[108/140] Compiling MLXLMCommon PagedKVSlabCommitment.swift
+[109/140] Compiling MLXLMCommon PagedLayerCache.swift
+[110/140] Compiling MLXLMCommon PagedSeamContract.swift
+[111/140] Compiling MLXLMCommon PagedSequenceKV.swift
+[112/140] Compiling MLXLMCommon CBv2Contracts.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[113/140] Compiling MLXLMCommon CBv2DeadlineLeases.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[114/140] Compiling MLXLMCommon CBv2SlidingWindowDonation.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[115/140] Compiling MLXLMCommon DefaultSamplerV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[116/140] Compiling MLXLMCommon DetokenizerBridgeV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[117/140] Compiling MLXLMCommon DetokenizerV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[118/140] Compiling MLXLMCommon EngineLoopV2+PromptFork.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[119/140] Compiling MLXLMCommon EngineLoopV2.swift
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2437:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2435 |                 stream?.reserveEmission()
+2436 |                 detokQueue.async {
+2437 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2438 |                     stream?.emit(
+2439 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:2625:32: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 217 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 218 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 219 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 220 |     /// Append confirmed tokens; returns text now safe to emit.
+ 221 |     func push(_ tokens: [Int]) -> String
+     :
+2623 |         if rec.request.stopStrings.isEmpty {
+2624 |             detokQueue.async {
+2625 |                 let trailing = detokenizer?.flush() ?? ""
+     |                                `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+2626 |                 if !trailing.isEmpty {
+2627 |                     stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[120/140] Compiling MLXLMCommon FrozenReplayFullSequenceKV.swift
+[121/140] Compiling MLXLMCommon FullSequenceKV.swift
+[122/140] Compiling MLXLMCommon WindowedSequenceKV.swift
+[123/140] Compiling MLXLMCommon StepProfilerV2.swift
+[124/140] Compiling MLXLMCommon SteppableAdapterV2.swift
+[125/140] Compiling MLXLMCommon StopHoldback.swift
+[126/140] Compiling MLXLMCommon TokenConstraintSamplerV2.swift
+[127/140] Compiling MLXLMCommon ToolConstraintV2.swift
+[128/140] Compiling MLXLMCommon MTPContractsV2.swift
+[129/140] Compiling MLXLMCommon MultimodalV2.swift
+[130/140] Compiling MLXLMCommon OutputStreamV2.swift
+[131/140] Compiling MLXLMCommon PagedAttentionKernel.swift
+[132/140] Compiling MLXLMCommon PagedAttentionKernelSmoke.swift
+[133/140] Compiling MLXLMCommon PagedAttentionReference.swift
+[134/140] Compiling MLXLMCommon PagedAttentionResources.swift
+[135/140] Compiling MLXLMCommon PagedBackendBenchmark.swift
+[136/142] Emitting module MLXLLM
+[137/142] Compiling MLXLLM Qwen35.swift
+[138/157] Compiling ProviderCore EngineV2Config.swift
+[139/157] Compiling ProviderCore EngineV2SlotFactory.swift
+[140/157] Compiling ProviderCore ProviderLoop+EngineV2.swift
+[141/157] Compiling ProviderCore StandaloneServer.swift
+/Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1035:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+1033 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+1034 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1035 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+1036 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+1037 |             reserveBytes: reserve,
+
+/Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1036:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1034 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1035 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+1036 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+1037 |             reserveBytes: reserve,
+1038 |             outstandingReservationBytes: outstanding)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[142/157] Compiling ProviderCore TelemetryEvent.swift
+[143/157] Compiling ProviderCore EngineV2Bridge.swift
+[144/157] Emitting module ProviderCore
+[145/157] Compiling ProviderCore EngineV2Bridge+PrefixCache.swift
+[146/157] Compiling ProviderCore EngineV2Bridge+ExactPrefixCache.swift
+[147/157] Compiling ProviderCore EngineV2Bridge+MTP.swift
+[148/157] Compiling ProviderCore EngineV2SlotFactory+ExactPrefixCache.swift
+[149/157] Compiling ProviderCore LaunchAgent.swift
+[150/157] Compiling ProviderCore EngineV2Factory+Serving.swift
+[151/157] Compiling ProviderCore ProviderLoop+ModelLoading.swift
+/Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:844:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+ 842 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+ 843 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 844 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+ 845 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+ 846 |             reserveBytes: reserve,
+
+/Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:845:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+ 843 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 844 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+ 845 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+ 846 |             reserveBytes: reserve,
+ 847 |             outstandingReservationBytes: outstanding)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[152/157] Compiling ProviderCore DaemonStateFile.swift
+[153/159] Compiling ProviderCore EngineHealthEvent.swift
+[154/159] Compiling ProviderCore EngineV2VisionPrefill.swift
+[154/162] Write Objects.LinkFileList
+[156/165] Compiling ProviderBenchmark QwenPrefixReuseBenchmark.swift
+[157/165] Emitting module ProviderBenchmark
+[158/165] Compiling ProviderBenchmark QwenPrefixTrackingCache.swift
+[159/174] Emitting module darkbloom
+[160/174] Compiling darkbloom BenchmarkCommand.swift
+[161/174] Compiling darkbloom BenchmarkCommand+QwenPrefixReuse.swift
+[162/174] Compiling darkbloom KVBackendPosture.swift
+[162/174] Write Objects.LinkFileList
+[163/174] Linking darkbloom-enclave
+[164/174] Applying darkbloom-enclave
+[165/174] Linking darkbloom
+[166/174] Applying darkbloom
+[168/177] Compiling DarkbloomCLITests KVBackendPostureTests.swift
+[169/177] Compiling DarkbloomCLITests BootSecurityWarningTests.swift
+[170/177] Emitting module DarkbloomCLITests
+[171/177] Compiling ProviderCoreTests MTPPostureTelemetryTests.swift
+[172/177] Compiling ProviderCoreTests QwenPrefixReuseTests.swift
+[173/177] Compiling ProviderCoreTests EngineV2ExactPrefixCacheTests.swift
+[174/177] Emitting module ProviderCoreTests
+[175/177] Compiling ProviderCoreTests LaunchAgentRestartTests.swift
+[175/177] Write Objects.LinkFileList
+[176/177] Linking DarkbloomProviderPackageTests
+Build complete! (34.18s)
+Test Suite 'Selected tests' started at 2026-08-24 07:35:05.726.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 07:35:05.727.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 07:35:05.727.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 07:35:05.727.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 exact prefix cache deployment policy" started.
+◇ Test "exact opt-in independently requires verified load-bracket weights" started.
+◇ Test "exact cache is default-off and unrecognized enable values fail closed" started.
+◇ Test "cache carve remains part of total admission through re-slicing" started.
+◇ Test "exact-capable Qwen selects only the stronger cache" started.
+◇ Test "enabled malformed budgets fail closed without a carve" started.
+◇ Test "slot factory installs exact Qwen cache and carves its grant" started.
+◇ Test "re-slice floor is evaluated after the fixed exact-cache carve" started.
+◇ Test "artifact, policy, backend, and dtype changes invalidate identities" started.
+◇ Test "legacy attention cache remains isolated from exact-state policy" started.
+◇ Test "hard byte and fraction ceilings are carved from the slot grant" started.
+✔ Test "exact opt-in independently requires verified load-bracket weights" passed after 0.001 seconds.
+✔ Test "enabled malformed budgets fail closed without a carve" passed after 0.001 seconds.
+✔ Test "exact cache is default-off and unrecognized enable values fail closed" passed after 0.001 seconds.
+✔ Test "legacy attention cache remains isolated from exact-state policy" passed after 0.001 seconds.
+✔ Test "re-slice floor is evaluated after the fixed exact-cache carve" passed after 0.001 seconds.
+✔ Test "exact-capable Qwen selects only the stronger cache" passed after 0.001 seconds.
+✔ Test "hard byte and fraction ceilings are carved from the slot grant" passed after 0.001 seconds.
+✔ Test "cache carve remains part of total admission through re-slicing" passed after 0.001 seconds.
+✔ Test "artifact, policy, backend, and dtype changes invalidate identities" passed after 0.001 seconds.
+✔ Test "slot factory installs exact Qwen cache and carves its grant" passed after 0.072 seconds.
+✔ Suite "EngineV2 exact prefix cache deployment policy" passed after 0.072 seconds.
+✔ Test run with 10 tests in 1 suite passed after 0.072 seconds.

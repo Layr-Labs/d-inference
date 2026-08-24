@@ -1,0 +1,35 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 07:59:12.443.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-08-24 07:59:12.444.
+Test Suite 'CBv2PromptForkEngineTests' started at 2026-08-24 07:59:12.444.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testB2IdenticalPromptForkMatchesColdTokenChecksums]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testB2IdenticalPromptForkMatchesColdTokenChecksums]' passed (0.319 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testB4SharedPrefixForkAccountsEveryRowAndFollowerCanLeave]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testB4SharedPrefixForkAccountsEveryRowAndFollowerCanLeave]' passed (0.259 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testFollowerCancellationBeforeBoundaryAbandonsCohortWithoutFork]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testFollowerCancellationBeforeBoundaryAbandonsCohortWithoutFork]' passed (0.080 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testLeaderCancellationBeforeBoundaryReleasesFollowerToColdPrefill]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testLeaderCancellationBeforeBoundaryReleasesFollowerToColdPrefill]' passed (0.101 seconds).
+Test Suite 'CBv2PromptForkEngineTests' passed at 2026-08-24 07:59:13.205.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.760 (0.761) seconds
+Test Suite 'CBv2PromptForkPrimitiveTests' started at 2026-08-24 07:59:13.205.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testContiguousKVForkCreatesIndependentRegisteredRows]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testContiguousKVForkCreatesIndependentRegisteredRows]' passed (0.007 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testContiguousKVForkRejectsMalformedPublicSnapshot]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testContiguousKVForkRejectsMalformedPublicSnapshot]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testExperimentDefaultsOffAndRecognizesOnlyExplicitOptIn]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testExperimentDefaultsOffAndRecognizesOnlyExplicitOptIn]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testPlannerBuildsDeepestCompatibleSharedPrefixCohort]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testPlannerBuildsDeepestCompatibleSharedPrefixCohort]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testRecurrentSnapshotRestoresIndependentRequestOwners]' started.
+Test Case '-[MLXLMTests.CBv2PromptForkPrimitiveTests testRecurrentSnapshotRestoresIndependentRequestOwners]' passed (0.002 seconds).
+Test Suite 'CBv2PromptForkPrimitiveTests' passed at 2026-08-24 07:59:13.217.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.011 (0.012) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-08-24 07:59:13.217.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.771 (0.773) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 07:59:13.217.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.771 (0.774) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

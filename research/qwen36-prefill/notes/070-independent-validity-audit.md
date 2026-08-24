@@ -41,12 +41,12 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | First/full token parity | FAIL for decision grade | First-token parity is 100%; partial/B4 two-token sequences match. Identical B2 reports `fullTokenEqualityRate = 0`, and all decision artifacts use only `decodeTokens = 2`, not the documented 64. |
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
-| Code/run provenance | FAIL | No root/submodule commit or patch hashes, no OS/Swift/power fields, and archived reports use a different factory identity from the checked-in v1 schema. |
+| Code/run provenance | PARTIAL after E41 | Sidecar binds the exact root commit, nested base/tree and patch hashes, binary/metallib/model/corpus hashes, OS and Swift; power posture is post-run, and older reports retain schema drift. |
 | RAM/LRU/pinning | PASS for boundedness | Exact `nbytes` accounting, pre-insert eviction, hard ceiling, deterministic LRU, request-correlated pins, and cancellation release are implemented and tested. |
-| Deployment budget equivalence | FAIL | Benchmark cache budget is 19,477,509,628 B and post-donor residency is 4,829,189,120 B; deployment defaults to a 1 GiB ceiling, which cannot retain the measured 32-boundary set. |
+| Deployment budget equivalence | PASS after E41 | At the exact 2 GiB deployment ceiling, 6,144/7,168-token boundaries remain hits above 2.5×; 2,048/4,096-token boundaries are honestly evicted and miss. |
 | Replayable handoff | PARTIAL | The three nested patches replay from `ab73a827...` to tree `b002398c...`; the gitlink still points at the unpatched base, so a normal recursive clone is not buildable without manual patching. |
-| Deployment integration | PARTIAL | A default-off exact-cache slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, and daemon knobs now exist. The nested tree is unpublished and the deployment-budget profile is unmeasured. |
-| Tests/build | FAIL as a complete gate | Archived exact cache/engine, provider report/usage, full provider suite, and release build pass. The archived prompt-fork selection aborts on a missing `metallib`; the new deployment slot wiring has not been run on a Swift-capable host. |
+| Deployment integration | PARTIAL | Default-off slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, daemon knobs, and a 2 GiB-equivalent performance run now exist. The nested tree is unpublished. |
+| Tests/build | PARTIAL | Serving wiring runs on Apple Silicon (focused suites, release build, 2,215-test full provider suite), plus Go/UI pass. Fresh-clone CI and a valid archived prompt-fork suite remain missing. |
 
 Current-schema validation makes the drift concrete: the partial-prefix report
 fails only the factory-identity constraint. The earlier exact-hit and live-fork
@@ -81,11 +81,10 @@ self-proving.
 3. Publish the nested library changes to a writable remote, update the
    submodule gitlink, and run the documented tests plus release build from a
    fresh recursive clone.
-4. Rerun durable partial-prefix scenarios with the actual production cache
-   ceiling. If the measured 75%/87.5% retention requires ~4.83 GB, justify and
-   configure that carve rather than citing the 1 GiB default.
-5. Rerun the prompt-fork planner/ownership/cancellation suite with the correct
-   `mlx.metallib`; archive a terminal test summary.
+4. Rerun durable partial-prefix scenarios with the actual deployment cache
+   ceiling. E41 completes this at 2 GiB.
+5. ~~Rerun the prompt-fork planner/ownership/cancellation suite with the
+   correct metallib.~~ E41 passes 9/9 and archives the terminal summary.
 6. Version or reconcile the report schema. Do not edit historical artifact
    provenance strings to make old JSON pass a newer validator.
 
@@ -105,14 +104,19 @@ Completed after the initial verdict:
   wiring, telemetry, launch, and CLI tests pass; the release build passes;
   the complete provider suite passes 2,215 tests in 231 suites.
 - Coordinator API tests and all 498 console tests pass.
+- E41 pins the deployed 2 GiB ceiling: 75%/87.5% boundaries remain hits
+  above 2.5×; 25%/50% boundaries are evicted and miss.
+- Cache telemetry now names pre-adoption counters as lookup hits/misses and
+  matched tokens rather than claiming successful saved work.
+- Prompt-fork planner, independent-state, and cancellation coverage passes
+  9/9 with a valid metallib.
 
 Still open:
 
 - completion-quality parity or a replay posture that preserves the cold decode
   schedule;
 - self-reported live-fork activity in a new fork performance artifact;
-- a deployment-budget-equivalent 75%/87.5% rerun (the measured cache retained
-  ~4.83 GB versus the 1 GiB default);
+- completion-quality parity despite the now budget-equivalent E41 speed pass;
 - publishing the nested library tree and updating the gitlink;
 - replacing, not rewriting, historical reports whose schema identity drifted.
 

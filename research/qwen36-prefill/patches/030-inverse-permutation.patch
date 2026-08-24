@@ -1,0 +1,67 @@
+diff --git a/Libraries/MLXLMCommon/SwitchLayers.swift b/Libraries/MLXLMCommon/SwitchLayers.swift
+index ca5bd7a..4f023e3 100644
+--- a/Libraries/MLXLMCommon/SwitchLayers.swift
++++ b/Libraries/MLXLMCommon/SwitchLayers.swift
+@@ -240,7 +240,13 @@ public func gatherSort(x: MLXArray, indices: MLXArray) -> (MLXArray, MLXArray, M
+     let m = indices.dim(-1)
+     let indices = indices.flattened()
+     let order = argSort(indices)
+-    let inverseOrder = argSort(order)
++    // `order` is a permutation, so its inverse is the exact integer scatter
++    // inverse[order[i]] = i. Sorting that permutation again computes the same
++    // array with O(n log n) ordering work on every MoE layer.
++    let inverseOrder = putAlong(
++        MLXArray.zeros(like: order),
++        order,
++        values: MLXArray(0 ..< order.size).asType(order.dtype))
+ 
+     return (
+         x.flattened(start: 0, end: -3)[order.floorDivide(m)],
+diff --git a/Tests/MLXLMTests/SwitchGLUTests.swift b/Tests/MLXLMTests/SwitchGLUTests.swift
+index 41a7350..b04450c 100644
+--- a/Tests/MLXLMTests/SwitchGLUTests.swift
++++ b/Tests/MLXLMTests/SwitchGLUTests.swift
+@@ -33,6 +33,43 @@ struct SwitchGLUTests {
+         }
+     }
+ 
++    @Test func gatherSortScatterInverseExactlyMatchesLegacySecondSort() {
++        let topK = 8
++        let hidden = 4
++
++        // Cover the sorted-dispatch threshold, an irregular assignment
++        // count, and the target 2,048-token / 16,384-assignment shape.
++        for tokens in [8, 17, 2_048] {
++            let assignments = tokens * topK
++            let indices = MLXArray(
++                (0 ..< assignments).map {
++                    UInt32(($0 * 37 + ($0 / topK) * 11 + tokens) % 256)
++                }
++            ).reshaped(tokens, topK)
++            let x = MLXArray(0 ..< tokens * hidden)
++                .asType(.float32).reshaped(tokens, hidden)
++
++            let (_, _, inverseOrder) = gatherSort(
++                x: MLX.expandedDimensions(x, axes: [-2, -3]),
++                indices: indices)
++
++            // The removed implementation was `argSort(order)`. Keep it as
++            // the independent oracle and require exact integer equality.
++            let order = argSort(indices.flattened())
++            let legacyInverseOrder = argSort(order)
++
++            // Pin the actual consumer contract too: indexing sorted rows by
++            // the returned inverse restores original assignment order.
++            let original = MLXArray(0 ..< assignments * hidden)
++                .asType(.int32).reshaped(assignments, hidden)
++            let restored = scatterUnsort(x: original[order], invOrder: inverseOrder)
++            eval(inverseOrder, legacyInverseOrder, restored)
++
++            #expect(MLX.all(inverseOrder .== legacyInverseOrder).item(Bool.self))
++            #expect(MLX.all(restored .== original).item(Bool.self))
++        }
++    }
++
+     @Test func weightedExpertUnsortMatchesLegacyForB1B2B4PrefillReorderings() {
+         let topK = 8
+         let hidden = 2816

@@ -175,3 +175,21 @@ ALU roof. E2 is now a test of 011, not a 2.5× attempt by widening the
 cohort. If it lands ~1.1×, escalate: 2.5× needs a faster gathered
 4-bit QMM, not a bigger step budget.
 
+## 2026-08-24T05:55Z — E2 wide cohort dead
+
+Rebuilt binary control (B=4×2,048, chunk 512 / budget 2,048) reproduced
+at **1,641.9 tok/s**, 1.1% from the locked baseline. E2 `[4,1024]`
+(chunk 1,024 / budget 4,096) produced **1,698.4 tok/s = 1.034×** the
+adjacent control.
+
+Worse: greedy checksums changed on rows 0 and 3. Stable within each arm,
+different across arms. Automatic correctness veto. Do not run
+`[4,2048]`; same mechanism, larger M. See `notes/027`.
+
+The new harness also measured the missing B=2 default baseline:
+**1,626.4 tok/s**, 2,517.2 ms prefill makespan.
+
+Next: remove the now-dead serving chunk/budget knobs while retaining the
+B=1/B=2/B=4 measurement harness. Move exclusively to arithmetic-equivalent
+gathered W4 QMM kernel experiments at the existing geometry.
+

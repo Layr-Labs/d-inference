@@ -16,6 +16,10 @@ e1-correctness	2026-08-24T05:40:25Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	
 e1-tflops-t2048	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	2048	1	tflops	10.5	TFLOPS	n/a	meta	2*M*N*K / tile_ms; confirms 011 ALU roof
 e1-tflops-t4096	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	4096	1	tflops	11.0	TFLOPS	n/a	meta	linear in M
 e1-tflops-t8192	2026-08-24T05:40:30Z	m3-max-128gb-2	allowlist-e1	mlx-swift-tests	2	yes	E1-tflops	tile-qmm	8192	1	tflops	11.2	TFLOPS	n/a	meta	not 24 TFLOPS; 2.5x packing illegal
+e2-control-b4-2048	2026-08-24T05:53:16Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E2-control	default-chunk-budget	2048	4	prefill_tps	1641.9	tok/s	0.988x_old_baseline	baseline	schema5 L-1 metric; makespan_ms=4992.9; checksums stable
+e2-wide-b4-2048	2026-08-24T05:54:32Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E2-wide-cohort	chunk1024-budget4096	2048	4	prefill_tps	1698.4	tok/s	1.034x_adjacent_control	no	checksum mismatch rows 0 and 3; throughput far below 2.5x
+e2-wide-b4-2048	2026-08-24T05:54:32Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	E2-wide-cohort	chunk1024-budget4096	2048	4	correctness	0	pass	0.5x_rows_match	no	2 of 4 row token checksums changed
+b2-2048-baseline	2026-08-24T05:56:00Z	m3-max-128gb-2	12c0834e	ead0d577	2	yes	H0-b2-baseline	default-chunk-budget	2048	2	prefill_tps	1626.4	tok/s	1.00	baseline	schema5 harness; makespan_ms=2517.2; checksums stable
 
 
 

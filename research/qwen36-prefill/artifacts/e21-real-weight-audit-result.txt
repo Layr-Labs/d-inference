@@ -1,16 +1,15 @@
 PROBE=qwen36-real-weight-structure-audit
-DATE_UTC=2026-08-24T08:56:47Z
+DATE_UTC=2026-08-24T09:04:55Z
 HOST=gaj’s MacBook Pro
 HW_MODEL=Mac15,9
 HW_MEMSIZE=137438953472
 OS=26.4
 OS_BUILD=25E246
-SWIFT=Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101);Target: arm64-apple-macosx26.0;
-ROOT_GIT_SHA=f0340da2f09f975f221a7148d033528780d5db3f
+ROOT_GIT_SHA=96eb2bac9542e7fd627ed5741aeb70b047d0acbd
 PINNED_MLX_GITLINK=0a725e3000edabc4911cde345270ca950bfa152f
-SOURCE_SET_SHA256=361fee22e1c30a3877057de88983f3a0844933dd0143df34ad435944a748465f
+SOURCE_SET_SHA256=b9c2119b39ca1fe90aa7729d6a418e9aba3c2d47773c32154062b623b62de29d
 SNAPSHOT=/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
-STREAMING_CONTRACT=one-tensor-mmap-at-a-time;no-MLX-model-load;no-mocks
+STREAMING_CONTRACT=one-tensor-mmap-at-a-time-fixed-16MiB-shard-hash-buffer-no-MLX-model-load-no-mocks
 PROBE_EXIT=0
 SELF_TEST_BEGIN
 SELF_TEST=pass
@@ -29,244 +28,22 @@ VERDICT=model-wide-rank-factor->=39%-deletion-ruled-out exact_finite_field=true 
 LIMITS=rank-stops-at-required-plus-64-unless-exact-upper-reached;near-rank-not-shippable;real-routing-separate
 SUMMARY_END
 RESOURCE_USAGE_BEGIN
-2026-08-24T08:56:47Z COVERAGE quantized_tensors=522 expert_tensors=123 dense_tensors=399
-2026-08-24T08:56:47Z TENSOR_BEGIN ordinal=1/522 name=language_model.lm_head matrices=1 shape=248320x2048 mode=affine
-2026-08-24T08:57:11Z TENSOR_END ordinal=1/522 name=language_model.lm_head rank_pass=1/1
-2026-08-24T08:57:11Z TENSOR_BEGIN ordinal=2/522 name=language_model.model.embed_tokens matrices=1 shape=248320x2048 mode=affine
-2026-08-24T08:57:32Z TENSOR_END ordinal=2/522 name=language_model.model.embed_tokens rank_pass=1/1
-2026-08-24T08:57:32Z TENSOR_BEGIN ordinal=3/522 name=language_model.model.layers.0.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:32Z TENSOR_END ordinal=3/522 name=language_model.model.layers.0.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:57:32Z TENSOR_BEGIN ordinal=4/522 name=language_model.model.layers.0.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:32Z TENSOR_END ordinal=4/522 name=language_model.model.layers.0.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:57:32Z TENSOR_BEGIN ordinal=5/522 name=language_model.model.layers.0.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:57:33Z TENSOR_END ordinal=5/522 name=language_model.model.layers.0.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:57:33Z TENSOR_BEGIN ordinal=6/522 name=language_model.model.layers.0.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:57:33Z TENSOR_END ordinal=6/522 name=language_model.model.layers.0.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:57:33Z TENSOR_BEGIN ordinal=7/522 name=language_model.model.layers.0.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=7/522 name=language_model.model.layers.0.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=8/522 name=language_model.model.layers.0.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=8/522 name=language_model.model.layers.0.mlp.gate rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=9/522 name=language_model.model.layers.0.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=9/522 name=language_model.model.layers.0.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=10/522 name=language_model.model.layers.0.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=10/522 name=language_model.model.layers.0.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=11/522 name=language_model.model.layers.0.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=11/522 name=language_model.model.layers.0.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=12/522 name=language_model.model.layers.0.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:57:34Z TENSOR_END ordinal=12/522 name=language_model.model.layers.0.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:57:34Z TENSOR_BEGIN ordinal=13/522 name=language_model.model.layers.0.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:57:35Z TENSOR_END ordinal=13/522 name=language_model.model.layers.0.mlp.switch_mlp.down_proj rank_pass=197/256
-2026-08-24T08:57:35Z TENSOR_BEGIN ordinal=14/522 name=language_model.model.layers.0.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:36Z TENSOR_END ordinal=14/522 name=language_model.model.layers.0.mlp.switch_mlp.gate_proj rank_pass=189/256
-2026-08-24T08:57:36Z TENSOR_BEGIN ordinal=15/522 name=language_model.model.layers.0.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:37Z TENSOR_END ordinal=15/522 name=language_model.model.layers.0.mlp.switch_mlp.up_proj rank_pass=189/256
-2026-08-24T08:57:37Z TENSOR_BEGIN ordinal=16/522 name=language_model.model.layers.1.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:37Z TENSOR_END ordinal=16/522 name=language_model.model.layers.1.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:57:37Z TENSOR_BEGIN ordinal=17/522 name=language_model.model.layers.1.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:37Z TENSOR_END ordinal=17/522 name=language_model.model.layers.1.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:57:37Z TENSOR_BEGIN ordinal=18/522 name=language_model.model.layers.1.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:57:38Z TENSOR_END ordinal=18/522 name=language_model.model.layers.1.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:57:38Z TENSOR_BEGIN ordinal=19/522 name=language_model.model.layers.1.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:57:38Z TENSOR_END ordinal=19/522 name=language_model.model.layers.1.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:57:38Z TENSOR_BEGIN ordinal=20/522 name=language_model.model.layers.1.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=20/522 name=language_model.model.layers.1.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=21/522 name=language_model.model.layers.1.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=21/522 name=language_model.model.layers.1.mlp.gate rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=22/522 name=language_model.model.layers.1.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=22/522 name=language_model.model.layers.1.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=23/522 name=language_model.model.layers.1.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=23/522 name=language_model.model.layers.1.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=24/522 name=language_model.model.layers.1.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=24/522 name=language_model.model.layers.1.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=25/522 name=language_model.model.layers.1.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:57:39Z TENSOR_END ordinal=25/522 name=language_model.model.layers.1.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:57:39Z TENSOR_BEGIN ordinal=26/522 name=language_model.model.layers.1.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:57:40Z TENSOR_END ordinal=26/522 name=language_model.model.layers.1.mlp.switch_mlp.down_proj rank_pass=255/256
-2026-08-24T08:57:40Z TENSOR_BEGIN ordinal=27/522 name=language_model.model.layers.1.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:41Z TENSOR_END ordinal=27/522 name=language_model.model.layers.1.mlp.switch_mlp.gate_proj rank_pass=255/256
-2026-08-24T08:57:41Z TENSOR_BEGIN ordinal=28/522 name=language_model.model.layers.1.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:43Z TENSOR_END ordinal=28/522 name=language_model.model.layers.1.mlp.switch_mlp.up_proj rank_pass=255/256
-2026-08-24T08:57:43Z TENSOR_BEGIN ordinal=29/522 name=language_model.model.layers.10.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:43Z TENSOR_END ordinal=29/522 name=language_model.model.layers.10.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:57:43Z TENSOR_BEGIN ordinal=30/522 name=language_model.model.layers.10.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:43Z TENSOR_END ordinal=30/522 name=language_model.model.layers.10.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:57:43Z TENSOR_BEGIN ordinal=31/522 name=language_model.model.layers.10.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:57:43Z TENSOR_END ordinal=31/522 name=language_model.model.layers.10.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:57:43Z TENSOR_BEGIN ordinal=32/522 name=language_model.model.layers.10.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=32/522 name=language_model.model.layers.10.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=33/522 name=language_model.model.layers.10.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=33/522 name=language_model.model.layers.10.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=34/522 name=language_model.model.layers.10.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=34/522 name=language_model.model.layers.10.mlp.gate rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=35/522 name=language_model.model.layers.10.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=35/522 name=language_model.model.layers.10.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=36/522 name=language_model.model.layers.10.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=36/522 name=language_model.model.layers.10.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=37/522 name=language_model.model.layers.10.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=37/522 name=language_model.model.layers.10.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=38/522 name=language_model.model.layers.10.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:57:44Z TENSOR_END ordinal=38/522 name=language_model.model.layers.10.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:57:44Z TENSOR_BEGIN ordinal=39/522 name=language_model.model.layers.10.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:57:46Z TENSOR_END ordinal=39/522 name=language_model.model.layers.10.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:57:46Z TENSOR_BEGIN ordinal=40/522 name=language_model.model.layers.10.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:47Z TENSOR_END ordinal=40/522 name=language_model.model.layers.10.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:57:47Z TENSOR_BEGIN ordinal=41/522 name=language_model.model.layers.10.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:48Z TENSOR_END ordinal=41/522 name=language_model.model.layers.10.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:57:48Z TENSOR_BEGIN ordinal=42/522 name=language_model.model.layers.11.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:57:48Z TENSOR_END ordinal=42/522 name=language_model.model.layers.11.mlp.gate rank_pass=1/1
-2026-08-24T08:57:48Z TENSOR_BEGIN ordinal=43/522 name=language_model.model.layers.11.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:57:48Z TENSOR_END ordinal=43/522 name=language_model.model.layers.11.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:57:48Z TENSOR_BEGIN ordinal=44/522 name=language_model.model.layers.11.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:48Z TENSOR_END ordinal=44/522 name=language_model.model.layers.11.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:57:48Z TENSOR_BEGIN ordinal=45/522 name=language_model.model.layers.11.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:49Z TENSOR_END ordinal=45/522 name=language_model.model.layers.11.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:57:49Z TENSOR_BEGIN ordinal=46/522 name=language_model.model.layers.11.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:57:49Z TENSOR_END ordinal=46/522 name=language_model.model.layers.11.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:57:49Z TENSOR_BEGIN ordinal=47/522 name=language_model.model.layers.11.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:57:50Z TENSOR_END ordinal=47/522 name=language_model.model.layers.11.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:57:50Z TENSOR_BEGIN ordinal=48/522 name=language_model.model.layers.11.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:51Z TENSOR_END ordinal=48/522 name=language_model.model.layers.11.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:57:51Z TENSOR_BEGIN ordinal=49/522 name=language_model.model.layers.11.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:52Z TENSOR_END ordinal=49/522 name=language_model.model.layers.11.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:57:52Z TENSOR_BEGIN ordinal=50/522 name=language_model.model.layers.11.self_attn.k_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:52Z TENSOR_END ordinal=50/522 name=language_model.model.layers.11.self_attn.k_proj rank_pass=1/1
-2026-08-24T08:57:52Z TENSOR_BEGIN ordinal=51/522 name=language_model.model.layers.11.self_attn.o_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:57:53Z TENSOR_END ordinal=51/522 name=language_model.model.layers.11.self_attn.o_proj rank_pass=1/1
-2026-08-24T08:57:53Z TENSOR_BEGIN ordinal=52/522 name=language_model.model.layers.11.self_attn.q_proj matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:57:54Z TENSOR_END ordinal=52/522 name=language_model.model.layers.11.self_attn.q_proj rank_pass=1/1
-2026-08-24T08:57:54Z TENSOR_BEGIN ordinal=53/522 name=language_model.model.layers.11.self_attn.v_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:54Z TENSOR_END ordinal=53/522 name=language_model.model.layers.11.self_attn.v_proj rank_pass=1/1
-2026-08-24T08:57:54Z TENSOR_BEGIN ordinal=54/522 name=language_model.model.layers.12.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:54Z TENSOR_END ordinal=54/522 name=language_model.model.layers.12.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:57:54Z TENSOR_BEGIN ordinal=55/522 name=language_model.model.layers.12.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:54Z TENSOR_END ordinal=55/522 name=language_model.model.layers.12.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:57:54Z TENSOR_BEGIN ordinal=56/522 name=language_model.model.layers.12.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:57:54Z TENSOR_END ordinal=56/522 name=language_model.model.layers.12.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:57:54Z TENSOR_BEGIN ordinal=57/522 name=language_model.model.layers.12.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=57/522 name=language_model.model.layers.12.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=58/522 name=language_model.model.layers.12.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=58/522 name=language_model.model.layers.12.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=59/522 name=language_model.model.layers.12.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=59/522 name=language_model.model.layers.12.mlp.gate rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=60/522 name=language_model.model.layers.12.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=60/522 name=language_model.model.layers.12.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=61/522 name=language_model.model.layers.12.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=61/522 name=language_model.model.layers.12.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=62/522 name=language_model.model.layers.12.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=62/522 name=language_model.model.layers.12.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=63/522 name=language_model.model.layers.12.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:57:55Z TENSOR_END ordinal=63/522 name=language_model.model.layers.12.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:57:55Z TENSOR_BEGIN ordinal=64/522 name=language_model.model.layers.12.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:57:57Z TENSOR_END ordinal=64/522 name=language_model.model.layers.12.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:57:57Z TENSOR_BEGIN ordinal=65/522 name=language_model.model.layers.12.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:58Z TENSOR_END ordinal=65/522 name=language_model.model.layers.12.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:57:58Z TENSOR_BEGIN ordinal=66/522 name=language_model.model.layers.12.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:57:59Z TENSOR_END ordinal=66/522 name=language_model.model.layers.12.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:57:59Z TENSOR_BEGIN ordinal=67/522 name=language_model.model.layers.13.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:59Z TENSOR_END ordinal=67/522 name=language_model.model.layers.13.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:57:59Z TENSOR_BEGIN ordinal=68/522 name=language_model.model.layers.13.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:57:59Z TENSOR_END ordinal=68/522 name=language_model.model.layers.13.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:57:59Z TENSOR_BEGIN ordinal=69/522 name=language_model.model.layers.13.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:58:00Z TENSOR_END ordinal=69/522 name=language_model.model.layers.13.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:58:00Z TENSOR_BEGIN ordinal=70/522 name=language_model.model.layers.13.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:58:00Z TENSOR_END ordinal=70/522 name=language_model.model.layers.13.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:58:00Z TENSOR_BEGIN ordinal=71/522 name=language_model.model.layers.13.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=71/522 name=language_model.model.layers.13.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=72/522 name=language_model.model.layers.13.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=72/522 name=language_model.model.layers.13.mlp.gate rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=73/522 name=language_model.model.layers.13.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=73/522 name=language_model.model.layers.13.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=74/522 name=language_model.model.layers.13.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=74/522 name=language_model.model.layers.13.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=75/522 name=language_model.model.layers.13.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=75/522 name=language_model.model.layers.13.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=76/522 name=language_model.model.layers.13.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:58:01Z TENSOR_END ordinal=76/522 name=language_model.model.layers.13.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:58:01Z TENSOR_BEGIN ordinal=77/522 name=language_model.model.layers.13.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:58:02Z TENSOR_END ordinal=77/522 name=language_model.model.layers.13.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:58:02Z TENSOR_BEGIN ordinal=78/522 name=language_model.model.layers.13.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:04Z TENSOR_END ordinal=78/522 name=language_model.model.layers.13.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:58:04Z TENSOR_BEGIN ordinal=79/522 name=language_model.model.layers.13.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:05Z TENSOR_END ordinal=79/522 name=language_model.model.layers.13.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:58:05Z TENSOR_BEGIN ordinal=80/522 name=language_model.model.layers.14.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:05Z TENSOR_END ordinal=80/522 name=language_model.model.layers.14.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:58:05Z TENSOR_BEGIN ordinal=81/522 name=language_model.model.layers.14.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:05Z TENSOR_END ordinal=81/522 name=language_model.model.layers.14.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:58:05Z TENSOR_BEGIN ordinal=82/522 name=language_model.model.layers.14.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:58:06Z TENSOR_END ordinal=82/522 name=language_model.model.layers.14.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:58:06Z TENSOR_BEGIN ordinal=83/522 name=language_model.model.layers.14.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:58:06Z TENSOR_END ordinal=83/522 name=language_model.model.layers.14.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:58:06Z TENSOR_BEGIN ordinal=84/522 name=language_model.model.layers.14.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=84/522 name=language_model.model.layers.14.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=85/522 name=language_model.model.layers.14.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=85/522 name=language_model.model.layers.14.mlp.gate rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=86/522 name=language_model.model.layers.14.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=86/522 name=language_model.model.layers.14.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=87/522 name=language_model.model.layers.14.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=87/522 name=language_model.model.layers.14.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=88/522 name=language_model.model.layers.14.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=88/522 name=language_model.model.layers.14.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=89/522 name=language_model.model.layers.14.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:58:07Z TENSOR_END ordinal=89/522 name=language_model.model.layers.14.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:58:07Z TENSOR_BEGIN ordinal=90/522 name=language_model.model.layers.14.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:58:08Z TENSOR_END ordinal=90/522 name=language_model.model.layers.14.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:58:08Z TENSOR_BEGIN ordinal=91/522 name=language_model.model.layers.14.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:09Z TENSOR_END ordinal=91/522 name=language_model.model.layers.14.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:58:09Z TENSOR_BEGIN ordinal=92/522 name=language_model.model.layers.14.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=92/522 name=language_model.model.layers.14.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=93/522 name=language_model.model.layers.15.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=93/522 name=language_model.model.layers.15.mlp.gate rank_pass=1/1
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=94/522 name=language_model.model.layers.15.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=94/522 name=language_model.model.layers.15.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=95/522 name=language_model.model.layers.15.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=95/522 name=language_model.model.layers.15.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=96/522 name=language_model.model.layers.15.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=96/522 name=language_model.model.layers.15.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=97/522 name=language_model.model.layers.15.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:58:11Z TENSOR_END ordinal=97/522 name=language_model.model.layers.15.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:58:11Z TENSOR_BEGIN ordinal=98/522 name=language_model.model.layers.15.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:58:12Z TENSOR_END ordinal=98/522 name=language_model.model.layers.15.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:58:12Z TENSOR_BEGIN ordinal=99/522 name=language_model.model.layers.15.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:13Z TENSOR_END ordinal=99/522 name=language_model.model.layers.15.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:58:13Z TENSOR_BEGIN ordinal=100/522 name=language_model.model.layers.15.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:15Z TENSOR_END ordinal=100/522 name=language_model.model.layers.15.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:58:15Z TENSOR_BEGIN ordinal=101/522 name=language_model.model.layers.15.self_attn.k_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:15Z TENSOR_END ordinal=101/522 name=language_model.model.layers.15.self_attn.k_proj rank_pass=1/1
-2026-08-24T08:58:15Z TENSOR_BEGIN ordinal=102/522 name=language_model.model.layers.15.self_attn.o_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:58:15Z TENSOR_END ordinal=102/522 name=language_model.model.layers.15.self_attn.o_proj rank_pass=1/1
-2026-08-24T08:58:15Z TENSOR_BEGIN ordinal=103/522 name=language_model.model.layers.15.self_attn.q_proj matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:58:16Z TENSOR_END ordinal=103/522 name=language_model.model.layers.15.self_attn.q_proj rank_pass=1/1
-2026-08-24T08:58:16Z TENSOR_BEGIN ordinal=104/522 name=language_model.model.layers.15.self_attn.v_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:16Z TENSOR_END ordinal=104/522 name=language_model.model.layers.15.self_attn.v_proj rank_pass=1/1
-2026-08-24T08:58:16Z TENSOR_BEGIN ordinal=105/522 name=language_model.model.layers.16.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:16Z TENSOR_END ordinal=105/522 name=language_model.model.layers.16.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:58:16Z TENSOR_BEGIN ordinal=106/522 name=language_model.model.layers.16.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:16Z TENSOR_END ordinal=106/522 name=language_model.model.layers.16.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:58:16Z TENSOR_BEGIN ordinal=107/522 name=language_model.model.layers.16.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
-2026-08-24T08:58:17Z TENSOR_END ordinal=107/522 name=language_model.model.layers.16.linear_attn.in_proj_qkv rank_pass=1/1
-2026-08-24T08:58:17Z TENSOR_BEGIN ordinal=108/522 name=language_model.model.layers.16.linear_attn.in_proj_z matrices=1 shape=4096x2048 mode=affine
-2026-08-24T08:58:17Z TENSOR_END ordinal=108/522 name=language_model.model.layers.16.linear_attn.in_proj_z rank_pass=1/1
-2026-08-24T08:58:17Z TENSOR_BEGIN ordinal=109/522 name=language_model.model.layers.16.linear_attn.out_proj matrices=1 shape=2048x4096 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=109/522 name=language_model.model.layers.16.linear_attn.out_proj rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=110/522 name=language_model.model.layers.16.mlp.gate matrices=1 shape=256x2048 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=110/522 name=language_model.model.layers.16.mlp.gate rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=111/522 name=language_model.model.layers.16.mlp.shared_expert.down_proj matrices=1 shape=2048x512 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=111/522 name=language_model.model.layers.16.mlp.shared_expert.down_proj rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=112/522 name=language_model.model.layers.16.mlp.shared_expert.gate_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=112/522 name=language_model.model.layers.16.mlp.shared_expert.gate_proj rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=113/522 name=language_model.model.layers.16.mlp.shared_expert.up_proj matrices=1 shape=512x2048 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=113/522 name=language_model.model.layers.16.mlp.shared_expert.up_proj rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=114/522 name=language_model.model.layers.16.mlp.shared_expert_gate matrices=1 shape=1x2048 mode=affine
-2026-08-24T08:58:18Z TENSOR_END ordinal=114/522 name=language_model.model.layers.16.mlp.shared_expert_gate rank_pass=1/1
-2026-08-24T08:58:18Z TENSOR_BEGIN ordinal=115/522 name=language_model.model.layers.16.mlp.switch_mlp.down_proj matrices=256 shape=2048x512 mode=affine
-2026-08-24T08:58:19Z TENSOR_END ordinal=115/522 name=language_model.model.layers.16.mlp.switch_mlp.down_proj rank_pass=256/256
-2026-08-24T08:58:19Z TENSOR_BEGIN ordinal=116/522 name=language_model.model.layers.16.mlp.switch_mlp.gate_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:20Z TENSOR_END ordinal=116/522 name=language_model.model.layers.16.mlp.switch_mlp.gate_proj rank_pass=256/256
-2026-08-24T08:58:20Z TENSOR_BEGIN ordinal=117/522 name=language_model.model.layers.16.mlp.switch_mlp.up_proj matrices=256 shape=512x2048 mode=affine
-2026-08-24T08:58:22Z TENSOR_END ordinal=117/522 name=language_model.model.layers.16.mlp.switch_mlp.up_proj rank_pass=256/256
-2026-08-24T08:58:22Z TENSOR_BEGIN ordinal=118/522 name=language_model.model.layers.17.linear_attn.in_proj_a matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:22Z TENSOR_END ordinal=118/522 name=language_model.model.layers.17.linear_attn.in_proj_a rank_pass=1/1
-2026-08-24T08:58:22Z TENSOR_BEGIN ordinal=119/522 name=language_model.model.layers.17.linear_attn.in_proj_b matrices=1 shape=32x2048 mode=affine
-2026-08-24T08:58:22Z TENSOR_END ordinal=119/522 name=language_model.model.layers.17.linear_attn.in_proj_b rank_pass=1/1
-2026-08-24T08:58:22Z TENSOR_BEGIN ordinal=120/522 name=language_model.model.layers.17.linear_attn.in_proj_qkv matrices=1 shape=8192x2048 mode=affine
+      327.50 real      2468.88 user         7.76 sys
+           764575744  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             1296151  page reclaims
+                   1  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                  16  voluntary context switches
+              247204  involuntary context switches
+      34186021414300  instructions retired
+       8233805072161  cycles elapsed
+           434275264  peak memory footprint
 RESOURCE_USAGE_END

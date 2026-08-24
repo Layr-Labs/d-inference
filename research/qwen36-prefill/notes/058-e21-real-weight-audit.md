@@ -2,6 +2,11 @@
 
 Status: **complete; exact shortcuts bounded, approximate policies remain open**
 
+The complete hostile-review method, finite-field proof, bounded-memory
+resource record, and claim limits are in
+`047-exact-real-weight-structure-audit.md`; this note is the E21 decision
+summary.
+
 The streaming scanner read the immutable 20 GB snapshot directly:
 
 | Coverage | Count |

@@ -1,8 +1,9 @@
 # Qwen 3.6 real-weight structure audit
 
-This probe reads the named safetensors snapshot directly with bounded `mmap`
-windows. It never constructs an MLX model and never retains more than one
-quantized tensor triplet (`weight`, `scales`, `biases`) at once.
+This probe reads the named safetensors snapshot directly with one
+page-demanded `mmap` tensor triplet at a time. It never constructs an MLX
+model, never retains more than one quantized tensor triplet (`weight`,
+`scales`, `biases`), and hashes full shards through one fixed 16 MiB buffer.
 
 It covers every `U32` packed weight in the snapshot:
 
@@ -55,3 +56,6 @@ research/qwen36-prefill/probes/real-weight-audit/run.sh \
 The output directory contains human-readable `result.txt`/`summary.txt`,
 machine-readable JSON/JSONL, archived model config/index, full shard hashes,
 and `raw-results.tar.gz`.
+
+The pinned M3 result, proof, limits, and artifact hashes are documented in
+`notes/047-exact-real-weight-structure-audit.md`.

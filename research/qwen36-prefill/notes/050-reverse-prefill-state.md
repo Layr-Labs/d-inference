@@ -560,6 +560,35 @@ or WY scan as standalone target attempts. Their quantified ceilings are too
 small. They become useful only after one structural experiment supplies the
 main multiplier.
 
+## 7. Artifact-eight implementation handoff
+
+The default-off implementation is preserved as two ordered root-repository
+patches because the agent identity cannot push the `mlx-swift-lm` submodule:
+
+```text
+research/qwen36-prefill/patches/053-cbv2-prefill-layer-skip.patch
+research/qwen36-prefill/patches/054-cbv2-artifact-eight-state-cache-only.patch
+```
+
+Apply `053`, then `054`, to submodule base
+`ab73a827c9dde6f8802507003aa0be71605aab8e`. The resulting local submodule
+commits are `bfcf71c`, `23d3b16`, and `bd81d9e`; the final tree is the
+artifact-construction implementation, while the first commit is retained only
+as the patch-series base.
+
+The registered run arm is:
+
+```bash
+env DARKBLOOM_QWEN35_PREFILL_ARTIFACT_ONLY=1 \
+    DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS=0-3,36-39 \
+    "$BIN" benchmark ...
+```
+
+Omitting `DARKBLOOM_QWEN35_PREFILL_FULL_LAYERS` selects that same eight-layer
+set. The enable flag remains mandatory. This handoff records implementation
+and tests only; it makes no throughput or quality claim. The Mac benchmark and
+Q0–Q4 decision remain pending.
+
 ## Sources
 
 Repository:

@@ -143,5 +143,10 @@ Native uint4 MPP executes on M3, but affine factoring changes the
 per-weight BF16 rounding boundary and failed 512/512 adversarial outputs
 (note 041). TensorOps Candidate B is closed before timing.
 
+E12 found supported MPP cooperative load/store is bit-identical at
+static K16; dynamic K8 passes existing tolerances. MLX NAX failed because
+its manual cooperative-register mapping is invalid on M3 (`notes/042`).
+Candidate A survives to a Qwen-shape timing gate.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

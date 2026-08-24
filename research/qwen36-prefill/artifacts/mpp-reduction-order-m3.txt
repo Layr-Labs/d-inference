@@ -1,0 +1,54 @@
+PROBE=mpp-reduction-order
+DATE_UTC=2026-08-24T07:01:28Z
+HOST=gaj’s MacBook Pro
+HW_MODEL=Mac15,9
+OS=26.4
+XCODE=Xcode 26.5;Build version 17F42;
+METAL=Apple metal version 32023.883 (metalfe-32023.883);Target: air64-apple-darwin25.4.0;Thread model: posix;InstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin;
+SOURCE_SHA256=3fb88825fe8c9fd8b0c08181339244a5a494d4893e6912f6fcc59edadd7830ed  /Users/gaj/work/mpp-reduction-probe-95ff/probe.metal;52079abc84fb965b96e5be3a4666cab6d43da80eba27b205fb671edad0f0fade  /Users/gaj/work/mpp-reduction-probe-95ff/main.swift;
+STATIC_K8_COMPILE=reject
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk/System/Library/Frameworks/MetalPerformancePrimitives.framework/Headers/__impl/MPPTensorOpsMatMul2dImpl.h:4272:9: error: static_assert failed due to requirement '(mpp::tensor_ops::matmul2d_descriptor{16, 32, 8, false, false, false, 0}.k % 16) == 0' "K must be dynamic or a multiple of 16"
+        static_assert((descriptor.k % 16) == 0, "K must be dynamic or a multiple of 16");
+DEVICE=Apple M3 Max
+OS=Version 26.4 (Build 25E246)
+SHAPE=M16xN32xK16 incumbent=two-K8-Steel-calls strict=true
+CASE=qmm-scale
+REFERENCE=steel-k8x2 status=ok hash=c5207d034ea744f0
+VARIANT=mpp-static-k16-macc-cooperative-inputs status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-cooperative-inputs status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-mlx-manual-both status=ok hash=229ac1a2357490ee fp32_changed=512/512 bf16_changed=511/512 max_abs=42.5933228 max_ulp=2199772845 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-inputs status=ok hash=40998a9d9ad061bf fp32_changed=512/512 bf16_changed=511/512 max_abs=57.215332 max_ulp=2210555457 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-output status=ok hash=4f6e8a15351b9580 fp32_changed=448/512 bf16_changed=448/512 max_abs=41.1590195 max_ulp=2202361193 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-both status=ok hash=0c49ac7df3e0d04b fp32_changed=512/512 bf16_changed=510/512 max_abs=43.960907 max_ulp=2204086257 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-tensor-inputs status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-multiply status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-staged-macc status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-multiply-explicit-add status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-zero-padded-multiply-explicit-add status=ok hash=c5207d034ea744f0 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+CASE=mixed-exponent
+REFERENCE=steel-k8x2 status=ok hash=7efb8307a090da51
+VARIANT=mpp-static-k16-macc-cooperative-inputs status=ok hash=7efb8307a090da51 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-cooperative-inputs status=ok hash=7efb8307a090da51 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-mlx-manual-both status=ok hash=44ee6fb8a4c50c7a fp32_changed=512/512 bf16_changed=512/512 max_abs=66645.0859 max_ulp=2375318785 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-inputs status=ok hash=7013608727b0e9dc fp32_changed=512/512 bf16_changed=511/512 max_abs=74535.6875 max_ulp=2382089591 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-output status=ok hash=c8b69d6fc45332c9 fp32_changed=448/512 bf16_changed=448/512 max_abs=79729.2734 max_ulp=2385793779 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-both status=ok hash=80fb5b7499f233f8 fp32_changed=512/512 bf16_changed=512/512 max_abs=66108.3125 max_ulp=2378630958 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-tensor-inputs status=ok hash=7efb8307a090da51 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-multiply status=ok hash=7efb8307a090da51 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-staged-macc status=ok hash=537ebbbaa5ac407f fp32_changed=171/512 bf16_changed=0/512 max_abs=0.00390625 max_ulp=45 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-multiply-explicit-add status=ok hash=537ebbbaa5ac407f fp32_changed=171/512 bf16_changed=0/512 max_abs=0.00390625 max_ulp=45 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-zero-padded-multiply-explicit-add status=ok hash=537ebbbaa5ac407f fp32_changed=171/512 bf16_changed=0/512 max_abs=0.00390625 max_ulp=45 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+CASE=cancellation
+REFERENCE=steel-k8x2 status=ok hash=27cb8ea3900d0125
+VARIANT=mpp-static-k16-macc-cooperative-inputs status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-cooperative-inputs status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-nt-macc-mlx-manual-both status=ok hash=d50f9b70cc6c8475 fp32_changed=512/512 bf16_changed=512/512 max_abs=819180 max_ulp=2325479169 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-inputs status=ok hash=f52cf1e8b72feae5 fp32_changed=448/512 bf16_changed=448/512 max_abs=262168.25 max_ulp=2321545473 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-output status=ok hash=65258a92a290a925 fp32_changed=256/512 bf16_changed=256/512 max_abs=24.25 max_ulp=24117248 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-mlx-manual-both status=ok hash=81599ee8912afa25 fp32_changed=384/512 bf16_changed=384/512 max_abs=262144 max_ulp=2321545473 qmm_1e-3=fail qwen_existing=fail nonfinite=0
+VARIANT=mpp-static-k16-macc-tensor-inputs status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-multiply status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-staged-macc status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-dynamic-k8-multiply-explicit-add status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+VARIANT=mpp-static-k16-zero-padded-multiply-explicit-add status=ok hash=27cb8ea3900d0125 fp32_changed=0/512 bf16_changed=0/512 max_abs=0 max_ulp=0 qmm_1e-3=pass qwen_existing=pass nonfinite=0
+RESULT=complete runtime_errors=0

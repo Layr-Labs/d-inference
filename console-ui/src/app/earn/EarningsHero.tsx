@@ -38,35 +38,37 @@ export function EarningsHero({
 
   return (
     <div className="rounded-xl bg-bg-secondary p-6 sm:p-8 mb-6 text-center">
-      <p className="text-xs uppercase tracking-wider text-text-secondary mb-2">
-        Estimated annual net earnings
-      </p>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <p className="text-xs uppercase tracking-wider text-text-secondary mb-2">
+          Estimated annual net earnings
+        </p>
 
-      {loading && (
-        <>
-          <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-2">…</p>
-          <p className="text-sm text-text-secondary">Loading the trailing market window…</p>
-        </>
-      )}
-      {!loading && result && (
-        <>
-          <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-1">
-            {fmtUSD(result.annualNetUSD)}
-            <span className="text-lg font-normal text-text-secondary"> /yr</span>
-          </p>
-          <p className="text-sm text-text-secondary mt-1">
-            {fmtUSD(result.monthlyNetUSD)} per month after electricity
-          </p>
-        </>
-      )}
-      {!loading && !result && (
-        <>
-          <p className="text-3xl sm:text-4xl font-bold text-text-primary py-2">
-            Estimate unavailable
-          </p>
-          <p className="text-sm text-text-secondary">{unavailableDetail}</p>
-        </>
-      )}
+        {loading && (
+          <>
+            <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-2">…</p>
+            <p className="text-sm text-text-secondary">Loading the trailing market window…</p>
+          </>
+        )}
+        {!loading && result && (
+          <>
+            <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-1">
+              {fmtUSD(result.annualNetUSD)}
+              <span className="text-lg font-normal text-text-secondary"> /yr</span>
+            </p>
+            <p className="text-sm text-text-secondary mt-1">
+              {fmtUSD(result.monthlyNetUSD)} per month after electricity
+            </p>
+          </>
+        )}
+        {!loading && !result && (
+          <>
+            <p className="text-3xl sm:text-4xl font-bold text-text-primary py-2">
+              Estimate unavailable
+            </p>
+            <p className="text-sm text-text-secondary">{unavailableDetail}</p>
+          </>
+        )}
+      </div>
 
       {result && bestModel && (
         <div className="mt-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2 sm:gap-3">
@@ -85,7 +87,7 @@ export function EarningsHero({
                 <span className="font-mono font-medium">
                   {fmtUSD(result.baseRewardPotentialUSD)}/mo
                 </span>{" "}
-                base reward before eligibility and pool allocation
+                base reward maximum after configured policy caps
               </span>
             </div>
           )}

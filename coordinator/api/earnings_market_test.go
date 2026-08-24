@@ -91,14 +91,16 @@ func registerEarningsCapacity(
 	p.Mu().Unlock()
 }
 
-func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
+func TestEarningsMarketHandlerAttributesPublicDemandAndUsesRoutedCapacity(t *testing.T) {
 	logger := quietLogger()
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
 	cfg := ServerConfig{BaseRewards: BaseRewardsConfig{
-		Enabled:       true,
-		FloorPoolB:    9_000_000_000,
-		MinUptimeFrac: 0.90,
+		Enabled:        true,
+		ReductionK:     0.25,
+		FloorPoolB:     9_000_000_000,
+		MinUptimeFrac:  0.90,
+		AccountCapFrac: 0.05,
 	}}
 	srv := NewServer(reg, st, cfg, logger)
 
@@ -143,17 +145,17 @@ func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
 
 	now := time.Now()
 	earnings := []store.ProviderEarning{
-		{JobID: "desired-job", Model: desired, AmountMicroUSD: 10_000_000, PromptTokens: 100, CompletionTokens: 10, CreatedAt: now},
-		{JobID: "previous-job", Model: previous, AmountMicroUSD: 20_000_000, PromptTokens: 200, CompletionTokens: 20, CreatedAt: now},
-		{JobID: "retired-job", Model: retired, AmountMicroUSD: 30_000_000, PromptTokens: 300, CompletionTokens: 30, CreatedAt: now},
-		{JobID: "alias-job", Model: aliasID, AmountMicroUSD: 4_000_000, PromptTokens: 40, CompletionTokens: 4, CreatedAt: now},
-		{JobID: "standalone-job", Model: standalone, AmountMicroUSD: 5_000_000, PromptTokens: 50, CompletionTokens: 5, CreatedAt: now},
+		{JobID: "desired-job", Model: desired, PublicModel: aliasID, AmountMicroUSD: 10_000_000, PromptTokens: 100, CompletionTokens: 10, CreatedAt: now},
+		{JobID: "previous-job", Model: previous, PublicModel: aliasID, AmountMicroUSD: 20_000_000, PromptTokens: 200, CompletionTokens: 20, CreatedAt: now},
+		{JobID: "retired-job", Model: retired, PublicModel: aliasID, AmountMicroUSD: 30_000_000, PromptTokens: 300, CompletionTokens: 30, CreatedAt: now},
+		{JobID: "alias-job", Model: aliasID, PublicModel: aliasID, AmountMicroUSD: 4_000_000, PromptTokens: 40, CompletionTokens: 4, CreatedAt: now},
+		{JobID: "standalone-job", Model: standalone, PublicModel: standalone, AmountMicroUSD: 5_000_000, PromptTokens: 50, CompletionTokens: 5, CreatedAt: now},
 		{JobID: "unknown-job", Model: "unknown-history", AmountMicroUSD: 7_000_000, PromptTokens: 70, CompletionTokens: 7, CreatedAt: now},
-		{JobID: "clone-job", Model: clone, AmountMicroUSD: 8_000_000, PromptTokens: 80, CompletionTokens: 8, CreatedAt: now},
+		{JobID: "clone-job", Model: clone, PublicModel: clone, AmountMicroUSD: 8_000_000, PromptTokens: 80, CompletionTokens: 8, CreatedAt: now},
 		{JobID: "base-job", Model: "base_reward", AmountMicroUSD: 100_000_000, CreatedAt: now},
-		{JobID: "zero-job", Model: desired, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: now},
-		{JobID: "negative-job", Model: desired, AmountMicroUSD: -1, CreatedAt: now},
-		{JobID: "old-job", Model: desired, AmountMicroUSD: 200_000_000, CreatedAt: now.Add(-31 * 24 * time.Hour)},
+		{JobID: "zero-job", Model: desired, PublicModel: aliasID, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: now},
+		{JobID: "negative-job", Model: desired, PublicModel: aliasID, AmountMicroUSD: -1, CreatedAt: now},
+		{JobID: "old-job", Model: desired, PublicModel: aliasID, AmountMicroUSD: 200_000_000, CreatedAt: now.Add(-31 * 24 * time.Hour)},
 	}
 	for i := range earnings {
 		if err := st.RecordProviderEarning(&earnings[i]); err != nil {
@@ -192,10 +194,10 @@ func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
 		aliased.PaidJobs != 4 {
 		t.Fatalf("aliased model = %+v", aliased)
 	}
-	if aliased.AggregateTPS != 150 || aliased.AggregateMemoryBandwidthGBs != 600 ||
-		aliased.BenchmarkTPS != 150 || aliased.BenchmarkMemoryBandwidthGBs != 600 ||
-		aliased.ProviderSupply != 2 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
-		t.Fatalf("aliased capacity = %+v, want estimable 150 TPS / 600 GB/s / 2 providers", aliased)
+	if aliased.AggregateTPS != 100 || aliased.AggregateMemoryBandwidthGBs != 400 ||
+		aliased.BenchmarkTPS != 100 || aliased.BenchmarkMemoryBandwidthGBs != 400 ||
+		aliased.ProviderSupply != 1 || !aliased.EstimateAvailable || aliased.UnavailableReason != "" {
+		t.Fatalf("aliased capacity = %+v, want desired-build-only 100 TPS / 400 GB/s / 1 provider", aliased)
 	}
 	standaloneModel := models[standalone]
 	if standaloneModel.WorkPayoutMicroUSD != 5_000_000 || standaloneModel.PaidTokens != 55 ||
@@ -222,8 +224,65 @@ func TestEarningsMarketHandlerReconcilesLineageAndCapacity(t *testing.T) {
 		t.Fatalf("audit = %+v, want %+v", response.Audit, wantAudit)
 	}
 	if !response.BaseRewards.Enabled || response.BaseRewards.MonthlyPoolMicroUSD != 9_000_000_000 ||
-		response.BaseRewards.MinUptimeFraction != 0.90 || len(response.BaseRewards.Tiers) == 0 {
+		response.BaseRewards.MinUptimeFraction != 0.90 || response.BaseRewards.ReductionK != 0.25 ||
+		response.BaseRewards.AccountCapFraction != 0.05 || len(response.BaseRewards.Tiers) == 0 {
 		t.Fatalf("base reward policy = %+v", response.BaseRewards)
+	}
+}
+
+func TestBuildEarningsMarketAllowsSharedBuildWithoutCrossAttribution(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	const shared = "shared-build"
+	addActiveEarningsModel(t, st, shared, "Shared build", 32, 20_000_000_000)
+	records, err := st.ListActiveModelRegistryWithError()
+	if err != nil {
+		t.Fatalf("ListActiveModelRegistryWithError: %v", err)
+	}
+	aliases := []store.ModelAlias{
+		{AliasID: "market-a", DisplayName: "Market A", DesiredBuild: shared, Active: true},
+		{AliasID: "market-b", DisplayName: "Market B", PreviousBuild: shared, DesiredBuild: "inactive-build", Active: true},
+	}
+	work := []store.ModelSettledWorkTotal{
+		{PublicModel: "market-a", WorkPayoutMicroUSD: 10_000_000, PromptTokens: 10, CompletionTokens: 5, Jobs: 1},
+		{PublicModel: "market-b", WorkPayoutMicroUSD: 20_000_000, PromptTokens: 20, CompletionTokens: 10, Jobs: 2},
+		{PublicModel: "", WorkPayoutMicroUSD: 30_000_000, PromptTokens: 30, CompletionTokens: 15, Jobs: 3},
+	}
+	start := time.Now().UTC().Add(-earningsMarketWindow)
+	response, err := buildEarningsMarketResponse(
+		records,
+		aliases,
+		[]registry.ModelCapacity{{
+			ModelID:                     shared,
+			EligibleProviders:           1,
+			AggregateTPS:                100,
+			AggregateMemoryBandwidthGBs: 400,
+			BenchmarkTPS:                100,
+			BenchmarkMemoryBandwidthGBs: 400,
+		}},
+		work,
+		start,
+		start.Add(earningsMarketWindow),
+		BaseRewardsConfig{},
+	)
+	if err != nil {
+		t.Fatalf("buildEarningsMarketResponse: %v", err)
+	}
+	if len(response.Models) != 2 {
+		t.Fatalf("models = %+v, want both public markets", response.Models)
+	}
+	got := map[string]earningsMarketModel{}
+	for _, model := range response.Models {
+		got[model.ID] = model
+	}
+	if got["market-a"].WorkPayoutMicroUSD != 10_000_000 ||
+		got["market-b"].WorkPayoutMicroUSD != 20_000_000 {
+		t.Fatalf("shared-build work crossed market identities: %+v", got)
+	}
+	if got["market-a"].AggregateTPS != 100 || got["market-b"].AggregateTPS != 100 {
+		t.Fatalf("shared-build capacity missing from a market: %+v", got)
+	}
+	if response.Audit.UnattributedWorkMicroUSD != 30_000_000 {
+		t.Fatalf("legacy unattributed work = %d, want 30000000", response.Audit.UnattributedWorkMicroUSD)
 	}
 }
 
@@ -239,6 +298,7 @@ func TestEarningsMarketHandlerMarksMissingObservedBenchmarkUnavailable(t *testin
 	if err := st.RecordProviderEarning(&store.ProviderEarning{
 		JobID:            "unbenchmarked-job",
 		Model:            modelID,
+		PublicModel:      modelID,
 		AmountMicroUSD:   1_000_000,
 		PromptTokens:     100,
 		CompletionTokens: 10,

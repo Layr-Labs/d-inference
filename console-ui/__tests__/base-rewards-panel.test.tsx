@@ -7,6 +7,8 @@ const policy: EarningsMarketBaseRewards = {
   enabled: true,
   monthly_pool_micro_usd: 9_000_000_000,
   min_uptime_fraction: 0.9,
+  reduction_k: 0,
+  account_cap_fraction: 0,
   tiers: [
     { min_ram_gb: 64, monthly_micro_usd: 18_000_000 },
     { min_ram_gb: 48, monthly_micro_usd: 16_000_000 },

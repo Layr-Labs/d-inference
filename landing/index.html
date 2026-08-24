@@ -1407,22 +1407,20 @@ response = client.chat.completions.create(
     <div class="container">
       <div class="rv">
         <div class="sec-label">06 - Pricing</div>
-        <h2>50% lower cost, comparable performance</h2>
-        <p class="sec-desc">Idle Apple Silicon keeps the cost structure simple. Pay per token with no subscription or minimum, with selected model prices set around 50% below typical API-provider rates for comparable models.</p>
+        <h2>Usage-based pricing</h2>
+        <p class="sec-desc">Pay per token with no subscription or minimum. Current model prices load directly from the coordinator.</p>
       </div>
       <div class="rv" style="overflow-x:auto;">
         <table class="ptable">
-          <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Typical API</th><th>vs typical API</th></tr></thead>
+          <thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead>
           <!-- Rows are populated live from the coordinator's public model
-               catalog + pricing on load (see the LIVE MODEL LINEUP script).
-               The static rows below are a fallback if that fetch fails. -->
+               catalog + pricing on load (see the LIVE MODEL LINEUP script). -->
           <tbody id="pricing-rows">
-            <tr><td class="mc">Gemma 4 26B<small>MoE · 128K context</small></td><td class="op">$0.03</td><td class="op">$0.165</td><td class="cp">$0.33</td><td><span class="stag">50% lower</span></td></tr>
-            <tr><td class="mc">GPT-OSS 20B<small>MoE · 128K context</small></td><td class="op">$0.015</td><td class="op">$0.07</td><td class="cp">$0.14</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td colspan="3" role="status">Loading live pricing…</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="pnote">Prices per million tokens. Typical API means published list rates for comparable models from major API providers.</p>
+      <p class="pnote">Prices per million tokens.</p>
     </div>
   </section>
 
@@ -1467,11 +1465,13 @@ response = client.chat.completions.create(
 
         <!-- Results-first hero -->
         <div class="calc-hero">
-          <p class="calc-net-label">Estimated annual net earnings</p>
-          <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit" id="calc-hero-unit" style="display:none;"> /yr</span></p>
-          <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <p class="calc-net-label">Estimated annual net earnings</p>
+            <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit" id="calc-hero-unit" style="display:none;"> /yr</span></p>
+            <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
+          </div>
           <div class="calc-hero-chips">
-            <span class="calc-chip floor" id="calc-chip-floor" style="display:none;"><span class="amt" id="calc-chip-floor-amt">$0/mo</span>&nbsp;base reward before eligibility and pool allocation</span>
+            <span class="calc-chip floor" id="calc-chip-floor" style="display:none;"><span class="amt" id="calc-chip-floor-amt">$0/mo</span>&nbsp;base-reward maximum after configured policy caps</span>
             <span class="calc-chip usage" id="calc-chip-usage" style="display:none;"><span id="calc-chip-usage-txt"></span></span>
           </div>
           <div class="calc-nofit" id="calc-nofit" style="display:none;">
@@ -1482,13 +1482,13 @@ response = client.chat.completions.create(
           <p class="calc-disc-box">This uses a fixed trailing 30-day settled work pool and full-month availability; it is not a promise. Adding capacity reallocates that pool rather than creating demand. Base rewards are eligibility-gated and shared from a fixed fleet pool, so memory-tier amounts are maxima, not guaranteed income.</p>
         </div>
 
-        <!-- Inputs: chip + memory only -->
+        <!-- Inputs: exact Mac/chip profile + memory -->
         <div class="csec">
           <label class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</label>
           <div class="calc-selects">
             <div>
-              <label class="clabel" for="chip-select">Chip</label>
-              <select id="chip-select" class="calc-select"></select>
+              <label class="clabel" for="hardware-select">Mac model and chip</label>
+              <select id="hardware-select" class="calc-select"></select>
             </div>
             <div>
               <label class="clabel" for="ram-select">Unified memory</label>
@@ -1500,7 +1500,7 @@ response = client.chat.completions.create(
         <!-- Read-only model support list -->
         <div class="csec">
           <label class="clabel">What your Mac can run</label>
-          <p class="calc-hint">Active public models rank by your conserved share of their trailing 30-day work pool.</p>
+          <p class="calc-hint">Active public models rank by estimated monthly net after policy caps and electricity.</p>
           <div class="calc-model-list" id="model-list"></div>
         </div>
 
@@ -1515,7 +1515,7 @@ response = client.chat.completions.create(
             </table>
             <ul class="calc-caveats">
               <li id="calc-base-eligibility">Eligibility and uptime requirements load with the policy.</li>
-              <li>Settled inference work is separate and paid on top of any allocated reward.</li>
+              <li>Settled inference work and any configured reward offset are shown in the estimate.</li>
               <li id="calc-base-enabled">The program status loads with the policy.</li>
             </ul>
           </div>
@@ -1581,7 +1581,7 @@ response = client.chat.completions.create(
 <!-- ============ LIVE MODEL LINEUP + PRICING ============ -->
 <!-- Sources the pricing table from the coordinator's public, registry-backed
      catalog (/v1/models/catalog) + platform pricing (/v1/pricing) so the model
-     lineup is never stale. Falls back silently to the static rows on any error. -->
+     lineup is never stale. Missing data is shown explicitly, never fabricated. -->
 <script>
 (function(){
   var API = "https://api.darkbloom.dev";
@@ -1605,11 +1605,17 @@ response = client.chat.completions.create(
     return fetch(API + path, { headers: { "Accept": "application/json" } })
       .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error(path + " " + r.status)); });
   }
+  function renderUnavailable(){
+    tbody.innerHTML = "<tr><td colspan=\"3\" role=\"status\">Live pricing unavailable.</td></tr>";
+  }
 
   Promise.all([getJSON("/v1/models/catalog"), getJSON("/v1/pricing")]).then(function(res){
     var models = (res[0] && res[0].models) || [];
     var pricing = res[1] || {};
-    if (!models.length) return; // keep the static fallback rows
+    if (!models.length) {
+      renderUnavailable();
+      return;
+    }
 
     var priceByModel = {};
     (pricing.prices || []).forEach(function(p){ priceByModel[p.model] = p; });
@@ -1626,12 +1632,11 @@ response = client.chat.completions.create(
       return "<tr><td class=\"mc\">" + escapeHtml(m.display_name || m.id) +
         (sub ? "<small>" + escapeHtml(sub) + "</small>" : "") + "</td>" +
         "<td class=\"op\">" + usd(inP) + "</td>" +
-        "<td class=\"op\">" + usd(outP) + "</td>" +
-        "<td class=\"cp\">" + usd(outP * 2) + "</td>" +
-        "<td><span class=\"stag\">50% lower</span></td></tr>";
+        "<td class=\"op\">" + usd(outP) + "</td></tr>";
     }).join("");
     if (rows) tbody.innerHTML = rows;
-  }).catch(function(){ /* offline / API down — keep the static fallback rows */ });
+    else renderUnavailable();
+  }).catch(renderUnavailable);
 })();
 </script>
 

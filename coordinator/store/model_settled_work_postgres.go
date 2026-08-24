@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-// ModelSettledWorkTotals aggregates positive inference settlements in
-// [since, until). This intentionally uses the existing provider_earnings table
-// without adding a startup-time migration or blocking index build.
+// ModelSettledWorkTotals aggregates positive inference settlements by the
+// consumer-requested public model in [since, until). Empty public_model groups
+// preserve legacy payouts for the audit total without guessing an identity.
 func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT model,
+		SELECT public_model,
 		       COALESCE(SUM(amount_micro_usd), 0),
 		       COALESCE(SUM(prompt_tokens), 0),
 		       COALESCE(SUM(completion_tokens), 0),
@@ -25,8 +25,8 @@ func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelS
 		  AND model <> ''
 		  AND model <> 'base_reward'
 		  AND amount_micro_usd > 0
-		GROUP BY model
-		ORDER BY model`,
+		GROUP BY public_model
+		ORDER BY public_model`,
 		since, until,
 	)
 	if err != nil {
@@ -38,7 +38,7 @@ func (s *PostgresStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelS
 	for rows.Next() {
 		var total ModelSettledWorkTotal
 		if err := rows.Scan(
-			&total.Model,
+			&total.PublicModel,
 			&total.WorkPayoutMicroUSD,
 			&total.PromptTokens,
 			&total.CompletionTokens,

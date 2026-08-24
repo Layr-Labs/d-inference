@@ -114,6 +114,9 @@
       !isNonNegativeInteger(policy.monthly_pool_micro_usd) ||
       !isNonNegativeNumber(policy.min_uptime_fraction) ||
       policy.min_uptime_fraction > 1 ||
+      !isNonNegativeNumber(policy.reduction_k) ||
+      !isNonNegativeNumber(policy.account_cap_fraction) ||
+      policy.account_cap_fraction > 1 ||
       !Array.isArray(policy.tiers) ||
       !policy.tiers.length
     ) {
@@ -212,8 +215,22 @@
     };
   }
 
-  function baseRewardPotentialUSD(policy, memoryGB) {
-    if (!policy.enabled) return 0;
+  function baseRewardPotentialUSD(policy, memoryGB, workPayoutUSD) {
+    if (workPayoutUSD === undefined) workPayoutUSD = 0;
+    if (
+      !policy.enabled ||
+      !Number.isFinite(memoryGB) ||
+      !Number.isFinite(workPayoutUSD) ||
+      !Number.isFinite(policy.reduction_k) ||
+      !Number.isFinite(policy.account_cap_fraction) ||
+      memoryGB < 0 ||
+      workPayoutUSD < 0 ||
+      policy.reduction_k < 0 ||
+      policy.account_cap_fraction < 0 ||
+      policy.account_cap_fraction > 1
+    ) {
+      return 0;
+    }
     let selected = 0;
     let selectedMinRAM = -1;
     policy.tiers.forEach(function (tier) {
@@ -222,17 +239,27 @@
         selectedMinRAM = tier.min_ram_gb;
       }
     });
-    // A per-machine display must still obey the allocator's fleet-wide cap.
-    // Competition from other eligible machines can reduce the real grant.
-    return Math.min(selected, policy.monthly_pool_micro_usd / 1e6);
+    const poolUSD = policy.monthly_pool_micro_usd / 1e6;
+    const reduced = Math.max(0, selected - policy.reduction_k * workPayoutUSD);
+    const accountCap =
+      policy.account_cap_fraction > 0
+        ? poolUSD * policy.account_cap_fraction
+        : poolUSD;
+    return Math.min(reduced, poolUSD, accountCap);
   }
 
   function calculateModelEstimate(model, hardware, memoryGB, baseRewards, electricityCostPerKWh) {
     if (
       memoryGB < model.min_ram_gb ||
       !model.estimate_available ||
+      model.work_payout_micro_usd <= 0 ||
+      model.paid_tokens <= 0 ||
+      model.paid_jobs <= 0 ||
       model.aggregate_tps <= 0 ||
       model.provider_supply <= 0 ||
+      !Number.isFinite(hardware.idleWatts) ||
+      !Number.isFinite(hardware.inferWatts) ||
+      !Number.isFinite(electricityCostPerKWh) ||
       hardware.idleWatts < 0 ||
       hardware.inferWatts < 0 ||
       electricityCostPerKWh < 0
@@ -254,7 +281,7 @@
       activeHours *
       electricityCostPerKWh;
     const electricityUSD = idleElectricityUSD + workloadElectricityUSD;
-    const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB);
+    const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB, payout.candidate);
     const monthlyNetUSD = payout.candidate + baseReward - electricityUSD;
     return {
       model: model,
@@ -295,10 +322,10 @@
       if (a.fits !== b.fits) return a.fits ? -1 : 1;
       if (a.fits && b.fits) {
         if (Boolean(a.estimate) !== Boolean(b.estimate)) return a.estimate ? -1 : 1;
-        const payoutDelta =
-          (b.estimate ? b.estimate.workPayoutUSD : 0) -
-          (a.estimate ? a.estimate.workPayoutUSD : 0);
-        if (payoutDelta !== 0) return payoutDelta;
+        const netDelta =
+          (b.estimate ? b.estimate.monthlyNetUSD : 0) -
+          (a.estimate ? a.estimate.monthlyNetUSD : 0);
+        if (netDelta !== 0) return netDelta;
       }
       if (a.model.min_ram_gb !== b.model.min_ram_gb) {
         return a.model.min_ram_gb - b.model.min_ram_gb;

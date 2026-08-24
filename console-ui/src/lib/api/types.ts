@@ -84,6 +84,8 @@ export interface EarningsMarketBaseRewards {
   enabled: boolean;
   monthly_pool_micro_usd: number;
   min_uptime_fraction: number;
+  reduction_k: number;
+  account_cap_fraction: number;
   tiers: BaseRewardTier[];
 }
 

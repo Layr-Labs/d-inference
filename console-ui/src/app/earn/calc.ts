@@ -56,11 +56,6 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MAC_PRO, chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
 ];
 
-export interface ChipOption extends HardwareProfile {
-  chip: string;
-  ramOptions: number[];
-}
-
 const CHIP_ORDER = [
   "M1", "M1 Pro", "M1 Max", "M1 Ultra",
   "M2", "M2 Pro", "M2 Max", "M2 Ultra",
@@ -69,31 +64,28 @@ const CHIP_ORDER = [
   "M5", "M5 Pro", "M5 Max",
 ];
 
-export function buildChipOptions(configs: MacConfig[] = MAC_CONFIGS): ChipOption[] {
-  const byChip = new Map<string, ChipOption>();
-  for (const config of configs) {
-    const existing = byChip.get(config.chip);
-    if (!existing) {
-      byChip.set(config.chip, {
-        chip: config.chip,
-        ramOptions: [...config.ramOptions],
-        bandwidthGBs: config.bandwidthGBs,
-        idleWatts: config.idleWatts,
-        inferWatts: config.inferWatts,
-      });
-      continue;
-    }
-    for (const ram of config.ramOptions) {
-      if (!existing.ramOptions.includes(ram)) existing.ramOptions.push(ram);
-    }
-  }
-  const options = [...byChip.values()];
-  for (const option of options) option.ramOptions.sort((a, b) => a - b);
-  options.sort((a, b) => CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip));
+export interface HardwareOption extends MacConfig {
+  id: string;
+}
+
+const MAC_TYPE_ORDER = [MACBOOK_AIR, MACBOOK_PRO, MAC_MINI, MAC_STUDIO, MAC_PRO];
+
+export function buildHardwareOptions(configs: MacConfig[] = MAC_CONFIGS): HardwareOption[] {
+  const options = configs.map((config) => ({
+    ...config,
+    id: `${config.macType}:${config.chip}`,
+    ramOptions: [...config.ramOptions].sort((a, b) => a - b),
+  }));
+  options.sort((a, b) => {
+    const chipDelta = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
+    if (chipDelta !== 0) return chipDelta;
+    return MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
+  });
   return options;
 }
 
-export const CHIP_OPTIONS = buildChipOptions();
+export const HARDWARE_OPTIONS = buildHardwareOptions();
+export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:M4 Max`;
 export const DEFAULT_ELEC_COST_PER_KWH = 0.15;
 export const MONTH_HOURS = 30 * 24;
 
@@ -162,8 +154,22 @@ export function conservedCandidatePayout(
 export function baseRewardPotentialUSD(
   policy: EarningsMarketBaseRewards,
   memoryGB: number,
+  workPayoutUSD = 0,
 ): number {
-  if (!policy.enabled) return 0;
+  if (
+    !policy.enabled ||
+    !Number.isFinite(memoryGB) ||
+    !Number.isFinite(workPayoutUSD) ||
+    !Number.isFinite(policy.reduction_k) ||
+    !Number.isFinite(policy.account_cap_fraction) ||
+    memoryGB < 0 ||
+    workPayoutUSD < 0 ||
+    policy.reduction_k < 0 ||
+    policy.account_cap_fraction < 0 ||
+    policy.account_cap_fraction > 1
+  ) {
+    return 0;
+  }
   let selected = 0;
   let selectedMinRAM = -1;
   for (const tier of policy.tiers) {
@@ -172,9 +178,15 @@ export function baseRewardPotentialUSD(
       selectedMinRAM = tier.min_ram_gb;
     }
   }
-  // Even one machine cannot receive more than the allocator's entire monthly
-  // pool. Actual allocation may be lower when other eligible machines share it.
-  return Math.min(selected, policy.monthly_pool_micro_usd / 1_000_000);
+  const poolUSD = policy.monthly_pool_micro_usd / 1_000_000;
+  const reduced = Math.max(0, selected - policy.reduction_k * workPayoutUSD);
+  const accountCap =
+    policy.account_cap_fraction > 0
+      ? poolUSD * policy.account_cap_fraction
+      : poolUSD;
+  // Actual allocation may be lower when other eligible machines share the
+  // fleet pool or this payout account has already consumed its cap.
+  return Math.min(reduced, poolUSD, accountCap);
 }
 
 export function calculateModelEstimate(
@@ -219,7 +231,7 @@ export function calculateModelEstimate(
     activeHours *
     electricityCostPerKWh;
   const electricityUSD = idleElectricityUSD + workloadElectricityUSD;
-  const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB);
+  const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB, payout.candidate);
   const monthlyNetUSD = payout.candidate + baseReward - electricityUSD;
 
   return {

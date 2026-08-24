@@ -13,7 +13,7 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	byModel := make(map[string]*ModelSettledWorkTotal)
+	byPublicModel := make(map[string]*ModelSettledWorkTotal)
 	for _, earning := range s.providerEarnings {
 		if earning.Model == "" || earning.Model == "base_reward" || earning.AmountMicroUSD <= 0 {
 			continue
@@ -21,10 +21,10 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 		if earning.CreatedAt.Before(since) || !earning.CreatedAt.Before(until) {
 			continue
 		}
-		total := byModel[earning.Model]
+		total := byPublicModel[earning.PublicModel]
 		if total == nil {
-			total = &ModelSettledWorkTotal{Model: earning.Model}
-			byModel[earning.Model] = total
+			total = &ModelSettledWorkTotal{PublicModel: earning.PublicModel}
+			byPublicModel[earning.PublicModel] = total
 		}
 		total.WorkPayoutMicroUSD += earning.AmountMicroUSD
 		total.PromptTokens += int64(earning.PromptTokens)
@@ -32,10 +32,10 @@ func (s *MemoryStore) ModelSettledWorkTotals(since, until time.Time) ([]ModelSet
 		total.Jobs++
 	}
 
-	out := make([]ModelSettledWorkTotal, 0, len(byModel))
-	for _, total := range byModel {
+	out := make([]ModelSettledWorkTotal, 0, len(byPublicModel))
+	for _, total := range byPublicModel {
 		out = append(out, *total)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	sort.Slice(out, func(i, j int) bool { return out[i].PublicModel < out[j].PublicModel })
 	return out, nil
 }

@@ -145,6 +145,9 @@ function isBaseRewards(value: unknown): value is EarningsMarketBaseRewards {
     !isNonNegativeInteger(policy.monthly_pool_micro_usd) ||
     !isNonNegativeNumber(policy.min_uptime_fraction) ||
     policy.min_uptime_fraction > 1 ||
+    !isNonNegativeNumber(policy.reduction_k) ||
+    !isNonNegativeNumber(policy.account_cap_fraction) ||
+    policy.account_cap_fraction > 1 ||
     !Array.isArray(policy.tiers) ||
     policy.tiers.length === 0 ||
     !policy.tiers.every(isBaseRewardTier)

@@ -10,7 +10,7 @@ export async function GET() {
     status: response.status,
     headers: {
       "Content-Type": response.headers.get("Content-Type") || "application/json",
-      "Cache-Control": cacheControl(60, 300),
+      "Cache-Control": response.ok ? cacheControl(60, 300) : "no-store",
     },
   });
 }

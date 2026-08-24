@@ -1,10 +1,12 @@
 package store
 
 // ModelSettledWorkTotal is the realized, positive inference payout and paid
-// workload recorded for one concrete model during a bounded settlement window.
+// workload recorded for one consumer-requested market identity during a bounded
+// settlement window. PublicModel is empty for legacy rows whose requested
+// identity was not persisted; callers must leave those rows unattributed.
 // Base rewards are not work and never appear in these rows.
 type ModelSettledWorkTotal struct {
-	Model              string `json:"model"`
+	PublicModel        string `json:"public_model"`
 	WorkPayoutMicroUSD int64  `json:"work_payout_micro_usd"`
 	PromptTokens       int64  `json:"prompt_tokens"`
 	CompletionTokens   int64  `json:"completion_tokens"`

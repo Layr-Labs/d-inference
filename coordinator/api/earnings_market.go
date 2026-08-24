@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -47,6 +48,8 @@ type earningsMarketBaseRewards struct {
 	Enabled             bool               `json:"enabled"`
 	MonthlyPoolMicroUSD int64              `json:"monthly_pool_micro_usd"`
 	MinUptimeFraction   float64            `json:"min_uptime_fraction"`
+	ReductionK          float64            `json:"reduction_k"`
+	AccountCapFraction  float64            `json:"account_cap_fraction"`
 	Tiers               []baserewards.Tier `json:"tiers"`
 }
 
@@ -126,8 +129,7 @@ func buildEarningsMarketResponse(
 	windowStart, windowEnd time.Time,
 	baseRewardsConfig BaseRewardsConfig,
 ) (earningsMarketResponse, error) {
-	catalog, canonicalByHistory, err := buildEarningsCatalog(records, aliases)
-	if err != nil {
+	if err := validateEarningsBaseRewardsConfig(baseRewardsConfig); err != nil {
 		return earningsMarketResponse{}, err
 	}
 	capacityByModel := make(map[string]registry.ModelCapacity, len(capacities))
@@ -140,16 +142,16 @@ func buildEarningsMarketResponse(
 		}
 		capacityByModel[capacity.ModelID] = capacity
 	}
+	catalog, err := buildEarningsCatalog(records, aliases, capacityByModel)
+	if err != nil {
+		return earningsMarketResponse{}, err
+	}
 
 	modelIndex := make(map[string]int, len(catalog))
 	models := make([]earningsMarketModel, len(catalog))
 	for i, entry := range catalog {
 		model := entry.model
-		for _, member := range entry.capacityMembers {
-			capacity, ok := capacityByModel[member]
-			if !ok {
-				continue
-			}
+		if capacity, ok := capacityByModel[entry.capacityMember]; ok {
 			model.AggregateTPS += capacity.AggregateTPS
 			model.AggregateMemoryBandwidthGBs += capacity.AggregateMemoryBandwidthGBs
 			model.BenchmarkTPS += capacity.BenchmarkTPS
@@ -167,11 +169,7 @@ func buildEarningsMarketResponse(
 		audit.TotalPaidTokens += paidTokens
 		audit.TotalPaidJobs += total.Jobs
 
-		canonical, ok := canonicalByHistory[total.Model]
-		if !ok {
-			continue
-		}
-		index, ok := modelIndex[canonical]
+		index, ok := modelIndex[total.PublicModel]
 		if !ok {
 			continue
 		}
@@ -200,9 +198,23 @@ func buildEarningsMarketResponse(
 			Enabled:             baseRewardsConfig.Enabled,
 			MonthlyPoolMicroUSD: baseRewardsConfig.FloorPoolB,
 			MinUptimeFraction:   baseRewardsConfig.MinUptimeFrac,
+			ReductionK:          baseRewardsConfig.ReductionK,
+			AccountCapFraction:  baseRewardsConfig.AccountCapFrac,
 			Tiers:               baserewards.Tiers(),
 		},
 	}, nil
+}
+
+func validateEarningsBaseRewardsConfig(config BaseRewardsConfig) error {
+	if config.FloorPoolB < 0 ||
+		config.MinUptimeFrac < 0 || config.MinUptimeFrac > 1 ||
+		math.IsNaN(config.MinUptimeFrac) || math.IsInf(config.MinUptimeFrac, 0) ||
+		config.ReductionK < 0 || math.IsNaN(config.ReductionK) || math.IsInf(config.ReductionK, 0) ||
+		config.AccountCapFrac < 0 || config.AccountCapFrac > 1 ||
+		math.IsNaN(config.AccountCapFrac) || math.IsInf(config.AccountCapFrac, 0) {
+		return fmt.Errorf("invalid base reward policy")
+	}
+	return nil
 }
 
 func earningsEstimateAvailability(model earningsMarketModel) (bool, string) {

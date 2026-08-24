@@ -7,8 +7,9 @@ import {
   type EarningsMarketResponse,
 } from "@/lib/api";
 import {
-  CHIP_OPTIONS,
+  DEFAULT_HARDWARE_ID,
   DEFAULT_ELEC_COST_PER_KWH,
+  HARDWARE_OPTIONS,
   calculateModelEstimate,
   type ModelEarningsEstimate,
 } from "./calc";
@@ -22,7 +23,7 @@ export interface ModelRow {
 }
 
 export function useEarningsCalculator() {
-  const [selectedChip, setSelectedChip] = useState("M4 Max");
+  const [selectedHardwareID, setSelectedHardwareID] = useState(DEFAULT_HARDWARE_ID);
   const [selectedRAM, setSelectedRAM] = useState(48);
   const [marketState, setMarketState] = useState<EarningsMarketState>("loading");
   const [market, setMarket] = useState<EarningsMarketResponse | null>(null);
@@ -47,11 +48,13 @@ export function useEarningsCalculator() {
     };
   }, []);
 
-  const chip = useMemo(
-    () => CHIP_OPTIONS.find((option) => option.chip === selectedChip) ?? CHIP_OPTIONS[0],
-    [selectedChip],
+  const hardware = useMemo(
+    () =>
+      HARDWARE_OPTIONS.find((option) => option.id === selectedHardwareID) ??
+      HARDWARE_OPTIONS[0],
+    [selectedHardwareID],
   );
-  const availableRAM = chip.ramOptions;
+  const availableRAM = hardware.ramOptions;
   const effectiveRAM = availableRAM.includes(selectedRAM)
     ? selectedRAM
     : availableRAM[availableRAM.length - 1] ?? 8;
@@ -66,7 +69,7 @@ export function useEarningsCalculator() {
         estimate: fits
           ? calculateModelEstimate(
               model,
-              chip,
+              hardware,
               effectiveRAM,
               market.base_rewards,
               DEFAULT_ELEC_COST_PER_KWH,
@@ -78,9 +81,9 @@ export function useEarningsCalculator() {
       if (a.fits !== b.fits) return a.fits ? -1 : 1;
       if (a.fits && b.fits) {
         if (Boolean(a.estimate) !== Boolean(b.estimate)) return a.estimate ? -1 : 1;
-        const payoutDelta =
-          (b.estimate?.workPayoutUSD ?? 0) - (a.estimate?.workPayoutUSD ?? 0);
-        if (payoutDelta !== 0) return payoutDelta;
+        const netDelta =
+          (b.estimate?.monthlyNetUSD ?? 0) - (a.estimate?.monthlyNetUSD ?? 0);
+        if (netDelta !== 0) return netDelta;
       }
       if (a.model.min_ram_gb !== b.model.min_ram_gb) {
         return a.model.min_ram_gb - b.model.min_ram_gb;
@@ -88,15 +91,15 @@ export function useEarningsCalculator() {
       return a.model.id.localeCompare(b.model.id);
     });
     return rows;
-  }, [market, marketState, chip, effectiveRAM]);
+  }, [market, marketState, hardware, effectiveRAM]);
 
   const bestRow = modelRows.find((row) => row.fits && row.estimate !== null) ?? null;
 
   return {
-    chipOptions: CHIP_OPTIONS,
-    chip,
-    selectedChip: chip.chip,
-    selectChip: setSelectedChip,
+    hardwareOptions: HARDWARE_OPTIONS,
+    hardware,
+    selectedHardwareID: hardware.id,
+    selectHardware: setSelectedHardwareID,
     availableRAM,
     effectiveRAM,
     selectRAM: setSelectedRAM,

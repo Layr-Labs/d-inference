@@ -1771,9 +1771,9 @@ func (r *Registry) SetModelAliases(aliases map[string]AliasTarget) {
 // PublicNameForBuild returns the public alias a concrete build is exposed under
 // (the consumer-facing name), or the build id unchanged if it isn't the desired
 // or previous build of any alias. This lets consumer-facing surfaces (e.g. usage
-// history) show the alias while billing/stats/earnings keep storing the concrete
-// build. If several aliases map to the build, the lexicographically-first is
-// returned for stability.
+// history) show the alias while routing and billing retain the concrete build.
+// If several aliases map to the build, the lexicographically-first is returned
+// for stability.
 func (r *Registry) PublicNameForBuild(buildID string) string {
 	if buildID == "" {
 		return buildID

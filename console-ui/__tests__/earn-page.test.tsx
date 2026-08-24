@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EarningsMarketResponse } from "@/lib/api/types";
 import {
-  CHIP_OPTIONS,
   DEFAULT_ELEC_COST_PER_KWH,
+  HARDWARE_OPTIONS,
   baseRewardPotentialUSD,
   calculateModelEstimate,
   conservedCandidatePayout,
@@ -105,6 +105,8 @@ const marketFixture: EarningsMarketResponse = {
     enabled: true,
     monthly_pool_micro_usd: 9_000_000_000,
     min_uptime_fraction: 0.9,
+    reduction_k: 0,
+    account_cap_fraction: 0,
     tiers: [
       { min_ram_gb: 64, monthly_micro_usd: 18_000_000 },
       { min_ram_gb: 48, monthly_micro_usd: 16_000_000 },
@@ -129,11 +131,47 @@ describe("market-conserving earnings math", () => {
     expect(payout!.candidate).toBeLessThanOrEqual(100);
   });
 
+  it("bounds the reported M4 Max case to the realized per-provider run rate", () => {
+    const hardware = HARDWARE_OPTIONS.find(
+      (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max",
+    )!;
+    const candidateTPS = 0.25 * hardware.bandwidthGBs;
+    const model = {
+      ...marketFixture.models[0],
+      id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      display_name: "Qwen 3.6 35B A3B",
+      work_payout_micro_usd: 481_450_000 * 30,
+      paid_tokens: 1_000_000_000 * 30,
+      paid_jobs: 10_000 * 30,
+      aggregate_tps: candidateTPS * 787,
+      aggregate_memory_bandwidth_gbps: hardware.bandwidthGBs * 787,
+      benchmark_tps: candidateTPS,
+      benchmark_memory_bandwidth_gbps: hardware.bandwidthGBs,
+      provider_supply: 787,
+    };
+
+    const estimate = calculateModelEstimate(
+      model,
+      hardware,
+      48,
+      marketFixture.base_rewards,
+      DEFAULT_ELEC_COST_PER_KWH,
+    );
+
+    expect(estimate).not.toBeNull();
+    expect(estimate!.candidateShare).toBeCloseTo(1 / 788, 12);
+    expect(estimate!.workPayoutUSD).toBeCloseTo((481.45 * 30) / 788, 8);
+    expect(estimate!.monthlyNetUSD).toBeLessThan(40);
+    expect(estimate!.annualNetUSD).toBeLessThan(500);
+  });
+
   it("charges full-month idle power plus realized allocated workload", () => {
-    const chip = CHIP_OPTIONS.find((option) => option.chip === "M4 Max")!;
+    const hardware = HARDWARE_OPTIONS.find(
+      (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max",
+    )!;
     const estimate = calculateModelEstimate(
       marketFixture.models[0],
-      chip,
+      hardware,
       48,
       marketFixture.base_rewards,
       DEFAULT_ELEC_COST_PER_KWH,
@@ -154,16 +192,44 @@ describe("market-conserving earnings math", () => {
           enabled: true,
           monthly_pool_micro_usd: 5_000_000,
           min_uptime_fraction: 0.9,
+          reduction_k: 0,
+          account_cap_fraction: 0,
           tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
         },
         24,
       ),
     ).toBe(5);
   });
+
+  it("applies configured work reduction and per-account reward caps", () => {
+    const policy = {
+      enabled: true,
+      monthly_pool_micro_usd: 100_000_000,
+      min_uptime_fraction: 0.9,
+      reduction_k: 0.25,
+      account_cap_fraction: 0,
+      tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
+    };
+    expect(baseRewardPotentialUSD(policy, 24, 8)).toBe(8);
+    expect(
+      baseRewardPotentialUSD({ ...policy, account_cap_fraction: 0.05 }, 24, 8),
+    ).toBe(5);
+  });
+
+  it("keeps form-factor-specific power profiles separate", () => {
+    const m4Max = HARDWARE_OPTIONS.filter((option) => option.chip === "M4 Max");
+    const macBook = m4Max.find((option) => option.macType === "MacBook Pro");
+    const studio = m4Max.find((option) => option.macType === "Mac Studio");
+
+    expect(macBook?.id).toBe("MacBook Pro:M4 Max");
+    expect(studio?.id).toBe("Mac Studio:M4 Max");
+    expect(macBook?.idleWatts).toBe(20);
+    expect(studio?.idleWatts).toBe(25);
+  });
 });
 
 describe("EarnPage", () => {
-  it("ranks fitting models by conserved candidate work payout", async () => {
+  it("ranks fitting models by estimated net earnings", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
 
@@ -173,6 +239,26 @@ describe("EarnPage", () => {
     expect(screen.getByText("Supply benchmark unavailable")).toBeInTheDocument();
     expect(screen.getByText("Trailing settled payout pool")).toBeInTheDocument();
     expect(screen.getByText("Competing live capacity")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("does not label the highest gross-work model as best when its net is lower", async () => {
+    const market = structuredClone(marketFixture);
+    market.models[0].work_payout_micro_usd = 75_000_000;
+    market.models[0].paid_tokens = 1_000_000_000_000;
+    market.audit.total_settled_work_micro_usd = 135_000_000;
+    market.audit.modeled_work_micro_usd = 135_000_000;
+    market.audit.total_paid_tokens = market.models.reduce(
+      (sum, model) => sum + model.paid_tokens,
+      0,
+    );
+    market.audit.modeled_paid_tokens = market.audit.total_paid_tokens;
+    apiMocks.fetchEarningsMarket.mockResolvedValueOnce(market);
+
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+
+    expect(await screen.findByText(/candidate share for Beta/)).toBeInTheDocument();
   });
 
   it("renders a rejected market fetch as terminally unavailable", async () => {
@@ -192,7 +278,9 @@ describe("EarnPage", () => {
     render(<EarnPage />);
     await screen.findAllByText(/Runs in your 48 GB/);
 
-    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
+    fireEvent.change(screen.getByLabelText("Mac model and chip"), {
+      target: { value: "MacBook Air:M1" },
+    });
     fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
 
     expect(await screen.findByText("No active public model fits in 16 GB.")).toBeInTheDocument();

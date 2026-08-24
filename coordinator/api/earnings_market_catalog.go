@@ -10,25 +10,27 @@ import (
 )
 
 type earningsCatalogModel struct {
-	model           earningsMarketModel
-	capacityMembers []string
+	model          earningsMarketModel
+	capacityMember string
 }
 
 // buildEarningsCatalog collapses each active standard alias's full historical
-// lineage into one public calculator row. Only active desired/previous builds
-// can contribute live capacity; retired builds are payout-history-only.
+// lineage into one public calculator row. Live capacity follows routing's
+// desired-then-previous preference and uses exactly one concrete build. Work is
+// attributed separately by the public identity persisted with each settlement.
 func buildEarningsCatalog(
 	records []store.ModelRegistryRecord,
 	aliases []store.ModelAlias,
-) ([]earningsCatalogModel, map[string]string, error) {
+	capacityByModel map[string]registry.ModelCapacity,
+) ([]earningsCatalogModel, error) {
 	recordsByID := make(map[string]store.ModelRegistryRecord, len(records))
 	for _, record := range records {
 		if record.ID == "" || record.ActiveVersion == nil || record.ActiveVersion.TotalSizeBytes <= 0 ||
 			record.MinRAMGB <= 0 {
-			return nil, nil, fmt.Errorf("active model %q is missing calculator metadata", record.ID)
+			return nil, fmt.Errorf("active model %q is missing calculator metadata", record.ID)
 		}
 		if _, duplicate := recordsByID[record.ID]; duplicate {
-			return nil, nil, fmt.Errorf("duplicate active model %q", record.ID)
+			return nil, fmt.Errorf("duplicate active model %q", record.ID)
 		}
 		recordsByID[record.ID] = record
 	}
@@ -37,7 +39,6 @@ func buildEarningsCatalog(
 	hiddenBuilds := make(map[string]struct{})
 	publicAliasIDs := make(map[string]struct{})
 	openRouterAliasIDs := make(map[string]struct{})
-	canonicalByHistory := make(map[string]string)
 	out := make([]earningsCatalogModel, 0, len(records))
 
 	for _, alias := range aliases {
@@ -55,26 +56,17 @@ func buildEarningsCatalog(
 			alias.RetiredBuilds...,
 		))
 		for _, member := range historyMembers {
-			if claimedBy, claimed := canonicalByHistory[member]; claimed && claimedBy != alias.AliasID {
-				return nil, nil, fmt.Errorf(
-					"model history %q is claimed by aliases %q and %q",
-					member,
-					claimedBy,
-					alias.AliasID,
-				)
-			}
 			if member != alias.AliasID {
 				hiddenBuilds[member] = struct{}{}
 			}
-			canonicalByHistory[member] = alias.AliasID
 		}
 		publicAliasIDs[alias.AliasID] = struct{}{}
 
-		capacityMembers := activeAliasMembers(alias, recordsByID)
-		if len(capacityMembers) == 0 {
+		capacityMember := activeAliasMember(alias, recordsByID, capacityByModel)
+		if capacityMember == "" {
 			continue
 		}
-		primary := recordsByID[capacityMembers[0]]
+		primary := recordsByID[capacityMember]
 		displayName := alias.DisplayName
 		if displayName == "" {
 			displayName = primary.DisplayName
@@ -90,7 +82,7 @@ func buildEarningsCatalog(
 				SizeBytes:   primary.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(primary.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMembers: capacityMembers,
+			capacityMember: capacityMember,
 		})
 	}
 
@@ -109,14 +101,6 @@ func buildEarningsCatalog(
 		if displayName == "" {
 			displayName = record.ID
 		}
-		if claimedBy, claimed := canonicalByHistory[record.ID]; claimed && claimedBy != record.ID {
-			return nil, nil, fmt.Errorf(
-				"standalone model %q conflicts with alias %q",
-				record.ID,
-				claimedBy,
-			)
-		}
-		canonicalByHistory[record.ID] = record.ID
 		out = append(out, earningsCatalogModel{
 			model: earningsMarketModel{
 				ID:          record.ID,
@@ -125,17 +109,18 @@ func buildEarningsCatalog(
 				SizeBytes:   record.ActiveVersion.TotalSizeBytes,
 				SizeGB:      float64(record.ActiveVersion.TotalSizeBytes) / 1_000_000_000,
 			},
-			capacityMembers: []string{record.ID},
+			capacityMember: record.ID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].model.ID < out[j].model.ID })
-	return out, canonicalByHistory, nil
+	return out, nil
 }
 
-func activeAliasMembers(
+func activeAliasMember(
 	alias store.ModelAlias,
 	recordsByID map[string]store.ModelRegistryRecord,
-) []string {
+	capacityByModel map[string]registry.ModelCapacity,
+) string {
 	members := make([]string, 0, 2)
 	for _, build := range []string{alias.DesiredBuild, alias.PreviousBuild} {
 		if build == "" {
@@ -145,7 +130,19 @@ func activeAliasMembers(
 			members = append(members, build)
 		}
 	}
-	return uniqueNonemptyStrings(members)
+	members = uniqueNonemptyStrings(members)
+	for _, build := range members {
+		if capacity, ok := capacityByModel[build]; ok && capacity.EligibleProviders > 0 {
+			return build
+		}
+	}
+	if len(members) == 0 {
+		return ""
+	}
+	// ResolveModel queues against Desired when neither build is currently
+	// routable. Preserve that first-member fallback so the public row remains
+	// visible with an explicit competing-capacity-unavailable state.
+	return members[0]
 }
 
 func uniqueNonemptyStrings(values []string) []string {

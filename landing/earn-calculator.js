@@ -46,30 +46,18 @@
     "M4", "M4 Pro", "M4 Max",
     "M5", "M5 Pro", "M5 Max",
   ];
-  const CHIP_OPTIONS = (function () {
-    const byChip = new Map();
-    MAC_CONFIGS.forEach(function (config) {
-      const existing = byChip.get(config.chip);
-      if (!existing) {
-        byChip.set(config.chip, {
-          chip: config.chip,
-          ramOptions: config.ramOptions.slice(),
-          bandwidthGBs: config.bandwidthGBs,
-          idleWatts: config.idleWatts,
-          inferWatts: config.inferWatts,
-        });
-        return;
-      }
-      config.ramOptions.forEach(function (ram) {
-        if (!existing.ramOptions.includes(ram)) existing.ramOptions.push(ram);
+  const MAC_TYPE_ORDER = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
+  const HARDWARE_OPTIONS = (function () {
+    const options = MAC_CONFIGS.map(function (config) {
+      return Object.assign({}, config, {
+        id: config.macType + ":" + config.chip,
+        ramOptions: config.ramOptions.slice().sort(function (a, b) { return a - b; }),
       });
     });
-    const options = Array.from(byChip.values());
-    options.forEach(function (option) {
-      option.ramOptions.sort(function (a, b) { return a - b; });
-    });
     options.sort(function (a, b) {
-      return CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
+      const chipDelta = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
+      if (chipDelta !== 0) return chipDelta;
+      return MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
     });
     return options;
   })();
@@ -78,7 +66,7 @@
   const ELECTRICITY_USD_PER_KWH = 0.15;
   const locale = navigator.language || "en-US";
   const state = {
-    chip: "M4 Max",
+    hardwareID: "MacBook Pro:M4 Max",
     ram: 48,
     marketState: "loading",
     market: null,
@@ -97,10 +85,10 @@
     return Math.round(value).toLocaleString(locale);
   }
 
-  function chipOption(chip) {
-    return CHIP_OPTIONS.find(function (option) {
-      return option.chip === chip;
-    }) || CHIP_OPTIONS[0];
+  function hardwareOption(id) {
+    return HARDWARE_OPTIONS.find(function (option) {
+      return option.id === id;
+    }) || HARDWARE_OPTIONS[0];
   }
 
   function setText(id, text) {
@@ -114,17 +102,17 @@
   }
 
   function renderSelectors(config, effectiveRAM) {
-    const chipSelect = document.getElementById("chip-select");
-    if (chipSelect && chipSelect.options.length !== CHIP_OPTIONS.length) {
-      chipSelect.innerHTML = "";
-      CHIP_OPTIONS.forEach(function (option) {
+    const hardwareSelect = document.getElementById("hardware-select");
+    if (hardwareSelect && hardwareSelect.options.length !== HARDWARE_OPTIONS.length) {
+      hardwareSelect.innerHTML = "";
+      HARDWARE_OPTIONS.forEach(function (option) {
         const item = document.createElement("option");
-        item.value = option.chip;
-        item.textContent = "Apple " + option.chip;
-        chipSelect.appendChild(item);
+        item.value = option.id;
+        item.textContent = option.macType + " · Apple " + option.chip;
+        hardwareSelect.appendChild(item);
       });
     }
-    if (chipSelect) chipSelect.value = config.chip;
+    if (hardwareSelect) hardwareSelect.value = config.id;
 
     const ramSelect = document.getElementById("ram-select");
     if (ramSelect) {
@@ -184,7 +172,7 @@
         const amount = document.createElement("span");
         amount.className = "calc-model-net";
         amount.textContent = entry.estimate
-          ? fmtUSD(entry.estimate.workPayoutUSD) + "/mo work"
+          ? fmtUSD(entry.estimate.monthlyNetUSD) + "/mo net"
           : Core.unavailableReasonLabel(model.unavailable_reason);
         row.appendChild(amount);
       }
@@ -268,7 +256,14 @@
       "Base reward maximum",
       policy.enabled
         ? ramGB + " GB tier at full availability; ≥" + uptimePercent +
-          "% uptime eligibility, then fixed fleet-pool allocation"
+          "% uptime eligibility" +
+          (policy.reduction_k > 0
+            ? ", reduced by " + policy.reduction_k.toFixed(2) + "× work earnings"
+            : "") +
+          ", then fixed fleet-pool allocation" +
+          (policy.account_cap_fraction > 0
+            ? " with a " + (policy.account_cap_fraction * 100).toFixed(1) + "% account cap"
+            : "")
         : "Base rewards are currently disabled",
       "+" + fmtUSD(result.baseRewardPotentialUSD) + " /mo",
     );
@@ -297,7 +292,7 @@
     const policy = market.base_rewards;
     setText(
       "calc-base-intro",
-      "Maximum per-machine tiers at full availability, before eligibility and allocation. " +
+      "Maximum per-machine tiers at full availability, before work offsets, eligibility, and allocation. " +
         "All eligible machines share one fixed " +
         fmtUSD(policy.monthly_pool_micro_usd / 1e6) +
         " monthly pool; tier amounts are not guaranteed.",
@@ -306,7 +301,15 @@
       "calc-base-eligibility",
       "Requires attestation, health, and at least " +
         Math.round(policy.min_uptime_fraction * 100) +
-        "% uptime; full tier credit requires full availability.",
+        "% uptime; full tier credit requires full availability." +
+        (policy.reduction_k > 0
+          ? " Reward draws are reduced by " + policy.reduction_k.toFixed(2) + "× work earnings."
+          : "") +
+        (policy.account_cap_fraction > 0
+          ? " Each payout account is capped at " +
+            (policy.account_cap_fraction * 100).toFixed(1) +
+            "% of the pool."
+          : ""),
     );
     setText(
       "calc-base-enabled",
@@ -353,8 +356,8 @@
   }
 
   function render() {
-    const config = chipOption(state.chip);
-    state.chip = config.chip;
+    const config = hardwareOption(state.hardwareID);
+    state.hardwareID = config.id;
     const ramOptions = config.ramOptions;
     const effectiveRAM = ramOptions.includes(state.ram)
       ? state.ram
@@ -437,32 +440,11 @@
     renderSteps(result, config, effectiveRAM, state.market);
   }
 
-  function initPricingTableCurrency() {
-    const format = function (number, min, max) {
-      return new Intl.NumberFormat(locale, {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: min === undefined ? 2 : min,
-        maximumFractionDigits: max === undefined ? (min === undefined ? 2 : min) : max,
-      }).format(number);
-    };
-    document.querySelectorAll(".op,.cp").forEach(function (element) {
-      const match = element.textContent.trim().match(/^\$?([\d.]+)$/);
-      if (match) element.textContent = format(Number(match[1]), 2, 4);
-    });
-    document.querySelectorAll(".pmini .val").forEach(function (element) {
-      const raw = element.textContent.trim();
-      if (raw === "0%") return;
-      const match = raw.match(/^\$?([\d.]+)$/);
-      if (match) element.textContent = format(Number(match[1]), 4);
-    });
-  }
-
   document.addEventListener("DOMContentLoaded", function () {
-    const chipSelect = document.getElementById("chip-select");
-    if (chipSelect) {
-      chipSelect.addEventListener("change", function () {
-        state.chip = chipSelect.value;
+    const hardwareSelect = document.getElementById("hardware-select");
+    if (hardwareSelect) {
+      hardwareSelect.addEventListener("change", function () {
+        state.hardwareID = hardwareSelect.value;
         render();
       });
     }
@@ -479,13 +461,17 @@
         if (window.va) {
           window.va("event", {
             name: "small_models_interest_click",
-            data: { source: "landing_earn_calc", chip: state.chip, ram_gb: state.ram },
+            data: {
+              source: "landing_earn_calc",
+              mac_type: hardwareOption(state.hardwareID).macType,
+              chip: hardwareOption(state.hardwareID).chip,
+              ram_gb: state.ram,
+            },
           });
         }
       });
     }
 
-    initPricingTableCurrency();
     render();
     if (!Core || !window.fetch) {
       state.marketState = "unavailable";

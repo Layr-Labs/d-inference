@@ -35,7 +35,7 @@ function CalcStep({
 }
 
 export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
-  const { result, market, chip, effectiveRAM } = calc;
+  const { result, market, hardware, effectiveRAM } = calc;
   if (!result || !market) return null;
 
   const model = result.model;
@@ -45,6 +45,14 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
   const uptimePercent = Math.round(policy.min_uptime_fraction * 100);
   const basePoolUSD = policy.monthly_pool_micro_usd / 1_000_000;
   const unattributedPoolUSD = market.audit.unattributed_work_micro_usd / 1_000_000;
+  const reductionDetail =
+    policy.reduction_k > 0
+      ? `; reduced by ${policy.reduction_k.toFixed(2)}× candidate work earnings`
+      : "";
+  const accountCapDetail =
+    policy.account_cap_fraction > 0
+      ? `; ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
+      : "";
 
   return (
     <details className="group rounded-xl bg-bg-secondary mb-6 open:pb-2">
@@ -101,12 +109,12 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           />
           <CalcStep
             label="Competing live capacity"
-            detail={`${model.provider_supply} eligible providers across routable desired/previous builds; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
+            detail={`${model.provider_supply} eligible providers on the currently routed build; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
             value={`${model.aggregate_tps.toFixed(1)} tok/s`}
           />
           <CalcStep
             label="Candidate capacity"
-            detail={`${model.benchmark_tps.toFixed(1)} observed tok/s ÷ ${model.benchmark_memory_bandwidth_gbps.toFixed(0)} GB/s × this Mac's ${chip.bandwidthGBs} GB/s`}
+            detail={`${model.benchmark_tps.toFixed(1)} observed tok/s ÷ ${model.benchmark_memory_bandwidth_gbps.toFixed(0)} GB/s × this Mac's ${hardware.bandwidthGBs} GB/s`}
             value={`${result.candidateTPS.toFixed(1)} tok/s`}
           />
           <CalcStep
@@ -116,14 +124,14 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           />
           <CalcStep
             label="Electricity"
-            detail={`${chip.idleWatts}W online idle for ${MONTH_HOURS}h plus ${Math.max(0, chip.inferWatts - chip.idleWatts)}W workload draw for ${result.activeHours.toFixed(2)}h at $${DEFAULT_ELEC_COST_PER_KWH.toFixed(2)}/kWh`}
+            detail={`${hardware.idleWatts}W online idle for ${MONTH_HOURS}h plus ${Math.max(0, hardware.inferWatts - hardware.idleWatts)}W workload draw for ${result.activeHours.toFixed(2)}h at $${DEFAULT_ELEC_COST_PER_KWH.toFixed(2)}/kWh`}
             value={`−${fmtUSD(result.electricityUSD)} /mo`}
           />
           <CalcStep
             label="Base reward maximum"
             detail={
               policy.enabled
-                ? `${effectiveRAM} GB tier at full-month availability; requires attestation, health, and ≥${uptimePercent}% uptime, then shares the fixed ${fmtUSD(basePoolUSD)} monthly fleet pool`
+                ? `${effectiveRAM} GB tier at full-month availability${reductionDetail}; requires attestation, health, and ≥${uptimePercent}% uptime, then shares the fixed ${fmtUSD(basePoolUSD)} monthly fleet pool${accountCapDetail}`
                 : "Base rewards are currently disabled; tier policy does not create a payout"
             }
             value={`+${fmtUSD(result.baseRewardPotentialUSD)} /mo`}
@@ -144,7 +152,8 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           </li>
           <li>
             Base rewards are separate from work demand. The memory tier is only a maximum before
-            eligibility checks and fixed-pool allocation; it is not committed or guaranteed.
+            configured work reduction, account caps, eligibility checks, and fixed-pool
+            allocation; it is not committed or guaranteed.
           </li>
           <li>
             The audit reconciles {fmtUSD(market.audit.modeled_work_micro_usd / 1_000_000)} modeled

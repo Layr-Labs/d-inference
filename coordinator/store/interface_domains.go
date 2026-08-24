@@ -519,8 +519,10 @@ type ProviderEarningsStore interface {
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
 	// ModelSettledWorkTotals returns positive, settled inference earnings grouped
-	// by the concrete model recorded at settlement time in [since, until).
-	// Base-reward rows are excluded. Results are ordered by model.
+	// by the consumer-requested public model recorded at settlement time in
+	// [since, until). Legacy rows with no public identity form an empty-key
+	// group so callers can audit but not guess their attribution. Base-reward
+	// rows are excluded. Results are ordered by public model.
 	ModelSettledWorkTotals(since, until time.Time) ([]ModelSettledWorkTotal, error)
 
 	// RecordProviderPayout stores a payout record for a provider wallet.

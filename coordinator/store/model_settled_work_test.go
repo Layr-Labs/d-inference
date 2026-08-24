@@ -13,16 +13,18 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			end := start.Add(time.Hour)
 			modelA := uniqueID("a-model")
 			modelB := uniqueID("b-model")
+			legacyBuild := uniqueID("legacy-build")
 
 			entries := []ProviderEarning{
-				{JobID: uniqueID("job"), Model: modelB, AmountMicroUSD: 500_000, PromptTokens: 10, CompletionTokens: 5, CreatedAt: start.Add(10 * time.Minute)},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: 1_250_000, PromptTokens: 20, CompletionTokens: 8, CreatedAt: start},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: 750_000, PromptTokens: 30, CompletionTokens: 7, CreatedAt: start.Add(30 * time.Minute)},
+				{JobID: uniqueID("job"), Model: "build-b", PublicModel: modelB, AmountMicroUSD: 500_000, PromptTokens: 10, CompletionTokens: 5, CreatedAt: start.Add(10 * time.Minute)},
+				{JobID: uniqueID("job"), Model: "build-a-v2", PublicModel: modelA, AmountMicroUSD: 1_250_000, PromptTokens: 20, CompletionTokens: 8, CreatedAt: start},
+				{JobID: uniqueID("job"), Model: "build-a-v1", PublicModel: modelA, AmountMicroUSD: 750_000, PromptTokens: 30, CompletionTokens: 7, CreatedAt: start.Add(30 * time.Minute)},
+				{JobID: uniqueID("job"), Model: legacyBuild, AmountMicroUSD: 125_000, PromptTokens: 2, CompletionTokens: 1, CreatedAt: start.Add(20 * time.Minute)},
 				{JobID: uniqueID("job"), Model: "base_reward", AmountMicroUSD: 99_000_000, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: -1, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: 88_000_000, CreatedAt: start.Add(-time.Second)},
-				{JobID: uniqueID("job"), Model: modelA, AmountMicroUSD: 77_000_000, CreatedAt: end},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 0, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: -1, PromptTokens: 999, CompletionTokens: 999, CreatedAt: start},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 88_000_000, CreatedAt: start.Add(-time.Second)},
+				{JobID: uniqueID("job"), Model: "build-a", PublicModel: modelA, AmountMicroUSD: 77_000_000, CreatedAt: end},
 				{JobID: uniqueID("job"), Model: "", AmountMicroUSD: 66_000_000, CreatedAt: start},
 			}
 			for i := range entries {
@@ -37,14 +39,21 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			}
 			want := []ModelSettledWorkTotal{
 				{
-					Model:              modelA,
+					PublicModel:        "",
+					WorkPayoutMicroUSD: 125_000,
+					PromptTokens:       2,
+					CompletionTokens:   1,
+					Jobs:               1,
+				},
+				{
+					PublicModel:        modelA,
 					WorkPayoutMicroUSD: 2_000_000,
 					PromptTokens:       50,
 					CompletionTokens:   15,
 					Jobs:               2,
 				},
 				{
-					Model:              modelB,
+					PublicModel:        modelB,
 					WorkPayoutMicroUSD: 500_000,
 					PromptTokens:       10,
 					CompletionTokens:   5,
@@ -54,8 +63,8 @@ func TestModelSettledWorkTotals(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("totals = %+v, want %+v", got, want)
 			}
-			if got[0].PaidTokens() != 65 {
-				t.Fatalf("PaidTokens = %d, want 65", got[0].PaidTokens())
+			if got[1].PaidTokens() != 65 {
+				t.Fatalf("PaidTokens = %d, want 65", got[1].PaidTokens())
 			}
 		})
 	}

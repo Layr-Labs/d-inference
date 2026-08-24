@@ -39,9 +39,10 @@ export function BaseRewardsPanel({
           <>
             <p className="text-sm text-text-secondary mb-4">
               The table shows each machine&apos;s maximum monthly tier at full availability,
-              before attestation, health, uptime, and allocator checks. All eligible machines
-              share one fixed {fmtUSD(policy.monthly_pool_micro_usd / 1_000_000)} monthly pool,
-              so a tier amount is not guaranteed.
+              before work offsets, attestation, health, uptime, and allocator checks. All
+              eligible machines share one fixed{" "}
+              {fmtUSD(policy.monthly_pool_micro_usd / 1_000_000)} monthly pool, so a tier
+              amount is not guaranteed.
             </p>
 
             <div className="overflow-hidden rounded-lg border border-border-subtle">
@@ -90,13 +91,21 @@ export function BaseRewardsPanel({
               </div>
               <div className="flex items-start gap-2 text-xs text-text-secondary">
                 <TrendingUp size={13} className="shrink-0 mt-0.5" />
-                <span>Settled inference work is separate and paid on top of any allocated reward.</span>
+                <span>
+                  {policy.reduction_k === 0
+                    ? "Settled inference work is paid on top of any allocated reward."
+                    : `The reward draw is reduced by ${policy.reduction_k.toFixed(2)}× settled inference earnings before allocation.`}
+                </span>
               </div>
               <div className="flex items-start gap-2 text-xs text-text-secondary">
                 <Info size={13} className="shrink-0 mt-0.5" />
                 <span>
                   {policy.enabled
-                    ? "The program is enabled, but each amount remains subject to eligibility and the fleet-wide pool cap."
+                    ? `The program is enabled; each amount remains subject to eligibility, the fleet-wide pool${
+                        policy.account_cap_fraction > 0
+                          ? `, and a ${(policy.account_cap_fraction * 100).toFixed(1)}% per-account pool cap`
+                          : ""
+                      }.`
                     : "The program is currently disabled; the policy table does not create a payout."}
                 </span>
               </div>

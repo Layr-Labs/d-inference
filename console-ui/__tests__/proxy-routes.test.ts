@@ -23,6 +23,20 @@ describe("GET /api/earnings/market", () => {
     );
     expect(res.headers.get("Cache-Control")).toContain("s-maxage=60");
   });
+
+  it("never CDN-caches a transient coordinator failure", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "temporarily unavailable" } }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { GET } = await import("@/app/api/earnings/market/route");
+    const res = await GET();
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
 });
 
 describe("GET /api/me/earnings", () => {

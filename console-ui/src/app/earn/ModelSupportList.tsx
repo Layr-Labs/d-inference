@@ -20,7 +20,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
         <h3 className="text-sm font-medium text-text-primary">What your Mac can run</h3>
       </div>
       <p className="text-xs text-text-secondary mb-4">
-        Active public models rank by your conserved share of their trailing 30-day work pool.
+        Active public models rank by estimated monthly net after policy caps and electricity.
       </p>
 
       {marketState === "loading" && (
@@ -63,7 +63,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
 
                 {fits && estimate && (
                   <span className="text-sm font-mono tabular-nums whitespace-nowrap text-text-secondary">
-                    {fmtUSD(estimate.workPayoutUSD)}/mo work
+                    {fmtUSD(estimate.monthlyNetUSD)}/mo net
                   </span>
                 )}
                 {fits && !estimate && (

@@ -31,14 +31,16 @@ export function useEarningsCalculator() {
     let active = true;
     fetchEarningsMarket()
       .then((response) => {
-        if (!active) return;
+        if (!active) return undefined;
         setMarket(response);
         setMarketState("ready");
+        return undefined;
       })
       .catch(() => {
-        if (!active) return;
+        if (!active) return undefined;
         setMarket(null);
         setMarketState("unavailable");
+        return undefined;
       });
     return () => {
       active = false;

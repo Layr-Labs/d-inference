@@ -29,11 +29,13 @@ export function BaseRewardsPanel({
       </summary>
 
       <div className="px-6 pb-4">
-        {state === "loading" ? (
+        {state === "loading" && (
           <p className="text-sm text-text-secondary">Loading configured reward policy…</p>
-        ) : state === "unavailable" || !policy ? (
+        )}
+        {state !== "loading" && (state === "unavailable" || !policy) && (
           <p className="text-sm text-text-secondary">Reward policy unavailable.</p>
-        ) : (
+        )}
+        {state === "ready" && policy && (
           <>
             <p className="text-sm text-text-secondary mb-4">
               The table shows each machine&apos;s maximum monthly tier at full availability,

@@ -42,12 +42,13 @@ export function EarningsHero({
         Estimated annual net earnings
       </p>
 
-      {loading ? (
+      {loading && (
         <>
           <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-2">…</p>
           <p className="text-sm text-text-secondary">Loading the trailing market window…</p>
         </>
-      ) : result ? (
+      )}
+      {!loading && result && (
         <>
           <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-1">
             {fmtUSD(result.annualNetUSD)}
@@ -57,7 +58,8 @@ export function EarningsHero({
             {fmtUSD(result.monthlyNetUSD)} per month after electricity
           </p>
         </>
-      ) : (
+      )}
+      {!loading && !result && (
         <>
           <p className="text-3xl sm:text-4xl font-bold text-text-primary py-2">
             Estimate unavailable

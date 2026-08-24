@@ -237,3 +237,8 @@ jq -e '
         | .replayTokens] | max) == 0
 ' /tmp/e46-exact-cache-profile.json
 ```
+
+E46 executes that clean workflow for three 8K/64-token iterations. Every
+scenario passes first/full-token equality. Against the locked native baseline,
+the 75%/87.5% partial-prefix cells retain **2.629×/5.076×** first-token
+speedups; full B1/B2/B4 hits retain **337.8×/531.0×/697.2×**.

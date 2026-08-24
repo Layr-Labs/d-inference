@@ -678,3 +678,19 @@ disabled. No exact cache leaves the existing path unchanged. The serving policy
 identity advances to `darkbloom.cbv2-exact-prompt-state-v3`; ordered patch 073
 pins B1/B2/B4 64-token parity, chunk geometry, and the packed gate. Temporary
 NDJSON instrumentation and control overrides were removed. See `notes/072`.
+
+## 2026-08-24T18:19Z — E46 final canonical profile passes
+
+The clean ordered-patch build, 2 GiB cache, 8K prompts, 64-token decode,
+and three iterations produce 100% first/full-token equality in every
+B1/B2/B4 full/partial cell.
+
+Against the locked native baseline:
+
+- B4 75% exact prefix: **2.629× prefill**;
+- B4 87.5%: **5.076× prefill**;
+- full B1/B2/B4 hits: **337.8× / 531.0× / 697.2×**.
+
+Cache-free engines are unchanged. Exact-cache cold misses use canonical
+256-token unpacked prefill and are slower; the feature remains explicit
+opt-in for reuse-heavy workloads.

@@ -38,7 +38,7 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | Warm/full/partial semantics | PASS | Full hits restore frontier logits and run zero prompt forward; partial hits restore only a boundary and execute the distinct suffix. |
 | Cold fork semantics | INCOMPLETE | Candidate timing includes leader/fork work and cache rows are misses, but the report has no fork activity counters and omits both fork activation flags. |
 | Exact state | PASS by code/tests | Atomic snapshots contain all owning full-attention K/V, every GDN conv tail/FP32 SSM state, scalar position, and frontier logits only at a full prompt. |
-| First/full token parity | FAIL for decision grade | First-token parity is 100%; partial/B4 two-token sequences match. Identical B2 reports `fullTokenEqualityRate = 0`, and all decision artifacts use only `decodeTokens = 2`, not the documented 64. |
+| First/full token parity | PASS after E46 | Canonical block-sized singleton prefill restores 100% first-token and complete 64-token equality for every B1/B2/B4 full/partial cell. |
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
 | Code/run provenance | PARTIAL after E41 | Sidecar binds the exact root commit, nested base/tree and patch hashes, binary/metallib/model/corpus hashes, OS and Swift; power posture is post-run, and older reports retain schema drift. |
@@ -107,11 +107,13 @@ Completed after the initial verdict:
   matched tokens rather than claiming successful saved work.
 - Prompt-fork planner, independent-state, and cancellation coverage passes
   9/9 with a valid metallib.
+- E43 traces divergence to donor/control chunk and packed-prefill geometry;
+  E45 proves causality; E46 runs the clean canonical profile for three
+  iterations and restores 100% complete 64-token parity while retaining
+  2.629×/5.076× native-relative first-token speed at 75%/87.5%.
 
 Still open:
 
-- completion-quality parity or a replay posture that preserves the cold decode
-  schedule;
 - self-reported live-fork activity in a new fork performance artifact;
 - bounding or reserving detached in-flight donation copies before evaluation;
 - publishing the nested library tree and updating the gitlink;
@@ -119,6 +121,10 @@ Still open:
   identifiers;
 - replacing, not rewriting, historical reports whose schema identity drifted.
 
-Until these are complete, the correct statement is: **2.5× is measured for
-specific exact-reuse workloads; unrelated cold prompts are unchanged; the
-research is not yet decision-grade or merge-ready.**
+The scoped durable-reuse result is now decision-grade: **2.5×+ prefill and
+100% 64-token parity are measured for the 75%/87.5% exact-prefix workloads.**
+The branch is still not merge-ready because the nested tree is unpublished,
+transient donation memory is not hard-reserved, legacy artifacts/history retain
+private identifiers, and live-fork performance is not self-proving. Cache-free
+unrelated prompts are unchanged; exact-cache cold misses use a slower canonical
+posture.

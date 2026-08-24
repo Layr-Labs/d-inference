@@ -384,6 +384,32 @@ Artifacts:
 - `artifacts/e41-partial-prefix-2gib-decode64-3x.json.gz`
 - `artifacts/e41-partial-prefix-2gib-decode64-3x.provenance.json`
 
+## Final canonical-profile result
+
+E46 applies patch 073 without diagnostic overrides. It compares the reuse
+profile to the locked native E41 cold baseline:
+
+| Workload | Native-relative first-token speedup | Native-relative 64-token speedup | First token | Full 64-token equality |
+|---|---:|---:|---:|---:|
+| B1 full hit | **337.827×** | **8.768×** | 100% | **100%** |
+| B2 full hit | **531.029×** | **13.425×** | 100% | **100%** |
+| B4 full hit | **697.223×** | **17.497×** | 100% | **100%** |
+| B4 25% partial | 0.687× | 0.700× | 100% | **100%** |
+| B4 50% partial | 0.681× | 0.694× | 100% | **100%** |
+| B4 75% partial | **2.629×** | 2.393× | 100% | **100%** |
+| B4 87.5% partial | **5.076×** | **4.064×** | 100% | **100%** |
+
+The target 75%/87.5% cells now satisfy both the aggregate prefill gate and
+the complete 64-token parity gate. Cache-free engines retain the native
+posture. An explicitly enabled exact-cache engine canonicalizes cold misses
+too, making 25%/50% misses about 1.5× slower; the opt-in is appropriate only
+for workloads whose reuse clears that cost.
+
+Artifacts:
+
+- `artifacts/e46-canonical-2gib-decode64-3x.json.gz`
+- `artifacts/e46-canonical-2gib-decode64-3x.provenance.json`
+
 Those tests ran in the patched nested worktree. They do not prove that an
 ordinary recursive checkout works; the gitlink still points at the unpatched
 base above.

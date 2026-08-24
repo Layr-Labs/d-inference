@@ -94,12 +94,13 @@ tokens) / burst makespan`) as the denominator. Every cached/forked object
 includes all ten attention K/V rows, all thirty recurrent states/tails,
 position, and frontier logits where applicable.
 
-The 64-token E40 rerun keeps the performance result (B4 75% = 3.144×,
-87.5% = 5.194×) and first-token parity is 100%. It rejects a stronger
-parity claim: full-prompt hits have 0% complete-sequence equality and
-partial B4 hits have 75%, consistent with decode batching/timing
-divergence after an identical boundary. Boundary ownership is exact by
-code/tests; user-visible continuation parity is not.
+E43–E45 traced E40's continuation divergence to mismatched finite-precision
+prefill geometry: cache donors used 256-token boundaries while controls used
+2,048/512-token and packed prefills. The final exact-cache profile clamps every
+text row to 256 and disables packed prefill. E46 restores 100% first-token and
+full 64-token equality in every B1/B2/B4 full/partial cell. Against the locked
+native baseline, B4 75%/87.5% remain above target at **2.629×/5.076×** prefill
+speed; full B1/B2/B4 hits are **338×/531×/697×**.
 
 Cache construction is reported separately and costs ~8 s at 8K when all
 32 exact boundaries are materialized; the stated reuse speedups are warm
@@ -113,10 +114,11 @@ miss after LRU eviction.
 
 This clears the 2.5× performance threshold for the named reuse-bearing
 workloads without changing weights. It does **not** yet satisfy the full
-merge/ship objective: completion-quality parity, fork execution evidence,
-a clean submodule commit, and transient donation-copy accounting remain
-open. The distinct, unrelated cold-prompt cell remains the next optimization
-target and must not be conflated with the measured reuse profiles.
+merge/ship objective: fork execution evidence, a clean submodule commit,
+transient donation-copy accounting, and private-history sanitization remain
+open. Exact-cache cold misses use the slower canonical posture; cache-free
+unrelated prompts remain byte-identical to the native engine and are not
+accelerated.
 
 ## Architecture facts (do not rediscover)
 

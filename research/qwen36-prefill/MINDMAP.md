@@ -114,5 +114,9 @@ E5 forced half accumulation to access that nominal lane and failed 30
 correctness cases before timing (`notes/033`). FP32 accumulation is a
 model contract, not removable overhead.
 
+E6 forced MLX's existing portable MPP/NAX path onto M3. It executed but
+failed 11 QMM/Qwen correctness cases before timing (`notes/034`). A
+custom byte-identical MPP loader is the only remaining TensorOps variant.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

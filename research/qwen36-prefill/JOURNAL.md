@@ -229,3 +229,14 @@ Per preregistration, no timing run. Patch reversed; canonical source and
 baseline metallib restored. The nominal 2× half-accumulator lane cannot
 preserve the model contract. See `notes/033`.
 
+## 2026-08-24T06:20Z — E6 portable MPP/NAX fallback veto
+
+Forced MLX's existing Metal 4 MPP/NAX kernels past the generation-17
+gate on this generation-15 M3. The API and shader fallback executed,
+but `SortedGatherQuantizedMMTests` failed **11** cases: ordinary QMM,
+Qwen random gate/down, and sorted boundaries (max errors 3–14).
+
+No timing run. Override reversed and test host rebuilt. This closes the
+shortcut “reuse existing NAX on M3”; a brand-new byte-identical MPP
+dequant kernel remains conceptually open. See `notes/034`.
+

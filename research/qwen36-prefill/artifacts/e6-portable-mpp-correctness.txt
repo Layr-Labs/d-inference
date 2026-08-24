@@ -1,0 +1,47 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-23 23:19:31.490.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-23 23:19:31.491.
+Test Suite 'SortedGatherQuantizedMMTests' started at 2026-08-23 23:19:31.491.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemma4ExpertQMMDiagnosticsReflectProcessConfigurationAndArmState]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemma4ExpertQMMDiagnosticsReflectProcessConfigurationAndArmState]' passed (0.047 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaGateUpSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaGateUpSortedAffineGatherQuantizedMMExpertSlices]' passed (0.394 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSelectorRejectsNonAllowlistedAssignmentCount]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSelectorRejectsNonAllowlistedAssignmentCount]' passed (0.008 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSortedAffineGatherQuantizedMMExpertSlices]' passed (0.248 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testOrdinaryQuantizedMMPreservesGlobalQMM]' started.
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:681: error: -[MLXTests.SortedGatherQuantizedMMTests testOrdinaryQuantizedMMPreservesGlobalQMM] : XCTAssertTrue failed - ordinary QMM changed for row count 33; max absolute error 14.0
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testOrdinaryQuantizedMMPreservesGlobalQMM]' failed (0.527 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSelectorRejectsNonAllowlistedAssignmentCount]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSelectorRejectsNonAllowlistedAssignmentCount]' passed (0.015 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedAffineGatherQuantizedMMExpertSlices]' passed (0.437 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors]' started.
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:409: error: -[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors] : XCTAssertTrue failed - tile route and legacy gather-QMM differ for fused gate_up K2048 N1024; max absolute error 5.03125
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:417: error: -[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors] : XCTAssertTrue failed - tile route drifted from dequantized reference for fused gate_up K2048 N1024; max absolute error 5.0
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:409: error: -[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors] : XCTAssertTrue failed - tile route and legacy gather-QMM differ for down K512 N2048; max absolute error 6.75
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:417: error: -[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors] : XCTAssertTrue failed - tile route drifted from dequantized reference for down K512 N2048; max absolute error 6.75
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors]' failed (69.677 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortednessViolationRetractsToLegacyRoute]' started.
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:435: -[MLXTests.SortedGatherQuantizedMMTests testQwenSortednessViolationRetractsToLegacyRoute] : Test skipped - retract coverage requires the AOT tile kernels on a non-NAX device
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortednessViolationRetractsToLegacyRoute]' skipped (0.000 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries]' started.
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:621: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted and unsorted gather-QMM differ for all experts, aligned, divisible M; max absolute error 3.28125
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:626: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted gather-QMM selected incorrect expert rows for all experts, aligned, divisible M; max absolute error 3.28125
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:621: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted and unsorted gather-QMM differ for all experts, unaligned, multiple boundaries, divisible M; max absolute error 3.0
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:626: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted gather-QMM selected incorrect expert rows for all experts, unaligned, multiple boundaries, divisible M; max absolute error 3.0
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:621: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted and unsorted gather-QMM differ for empty experts, unaligned, multiple boundaries, partial M; max absolute error 3.5
+/Users/gaj/work/d-inference/libs/mlx-swift/Tests/MLXTests/SortedGatherQuantizedMMTests.swift:626: error: -[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries] : XCTAssertTrue failed - sorted gather-QMM selected incorrect expert rows for empty experts, unaligned, multiple boundaries, partial M; max absolute error 3.5
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries]' failed (0.178 seconds).
+Test Suite 'SortedGatherQuantizedMMTests' failed at 2026-08-23 23:20:43.022.
+	 Executed 10 tests, with 1 test skipped and 11 failures (0 unexpected) in 71.531 (71.531) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' failed at 2026-08-23 23:20:43.022.
+	 Executed 10 tests, with 1 test skipped and 11 failures (0 unexpected) in 71.531 (71.531) seconds
+Test Suite 'Selected tests' failed at 2026-08-23 23:20:43.022.
+	 Executed 10 tests, with 1 test skipped and 11 failures (0 unexpected) in 71.531 (71.532) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

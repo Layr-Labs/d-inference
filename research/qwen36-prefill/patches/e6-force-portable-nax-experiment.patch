@@ -1,0 +1,18 @@
+diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -966,6 +966,14 @@ bool is_nax_available() {
+ #ifdef MLX_METAL_NO_NAX
+   return false;
+ #else
++  // EXPERIMENT ONLY: Metal 4 exposes portable MPP TensorOps on macOS 26.2+.
++  // The shipping gate requires Apple10/M5-era hardware; this override
++  // measures the optimized-shader fallback on generation-15 M3 without
++  // weakening the default.
++  if (env::get_var("MLX_FORCE_NAX_EXPERIMENT", "") == "1") {
++    return __builtin_available(
++        macOS 26.2, iOS 26.2, tvOS 26.2, visionOS 26.2, *);
++  }
+   auto _check_nax = []() {
+     bool can_use_nax = false;
+     if (__builtin_available(

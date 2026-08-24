@@ -1422,6 +1422,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	parsed := prelude.parsed
 	model := prelude.model
 	_, reasoningProvided := parsed["reasoning"]
+	reasoningEffort := effortString(parsed)
 
 	// Accept either chat completions format (messages) or Responses API format
 	// (input). Responses requests are lowered before the provider body is sealed.
@@ -1555,8 +1556,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	serviceChatConsumer := r.URL.Path == "/v1/chat/completions" &&
 		user != nil && user.Role == store.RoleService
+	if serviceChatConsumer && model == serviceReasoningOptInModel {
+		logServiceReasoningShape(s.logger, parsed, model)
+	}
 	rawBody, _, err = applyResolvedModelReasoningPolicy(
-		parsed, rawBody, model, serviceChatConsumer, reasoningProvided)
+		parsed, rawBody, model, serviceChatConsumer, reasoningProvided, reasoningEffort)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse(
 			"server_error", "failed to prepare inference request"))
@@ -1660,7 +1664,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
 		if marshalErr == nil {
 			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
-				candidateParsed, candidateBody, candidateModel, serviceChatConsumer, reasoningProvided)
+				candidateParsed, candidateBody, candidateModel, serviceChatConsumer, reasoningProvided, reasoningEffort)
 		}
 		if marshalErr == nil && isResponsesAPI {
 			candidateBody, marshalErr = promptcontract.LowerProviderBody(
@@ -1869,7 +1873,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	onModelFallback := func(newModel string) bool {
 		body, _ := marshalForwardBody(parsed)
 		body, _, _ = applyResolvedModelReasoningPolicy(
-			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
+			parsed, body, newModel, serviceChatConsumer, reasoningProvided, reasoningEffort)
 		return refreshForwardBody(body, newModel)
 	}
 	var preflightHandled bool

@@ -104,6 +104,42 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var arrivalBatchSize = 4
 
+    // MARK: - Fixed-weight Qwen quality-corpus mode
+
+    @Option(name: .long, help: """
+        Run the benchmark-only Qwen quality harness over this JSON corpus. \
+        Requires an explicit --model, loads it once, applies its normal chat \
+        template, and emits one versioned JSON report to stdout.
+        """)
+    var qualityCorpus: String?
+
+    @Option(name: .long, help: """
+        Quality corpus: fixed greedy tokens generated per case (default 64; \
+        required range 32...4096). Stop tokens are intentionally disabled so \
+        every case has the same comparison window.
+        """)
+    var qualityMaxTokens = QwenQualityCorpusBenchmark.defaultMaximumTokens
+
+    @Option(name: .long, help: """
+        Quality corpus: label recorded in the report (for example baseline or \
+        top4-layer39).
+        """)
+    var qualityRunLabel = QwenQualityCorpusBenchmark.defaultRunLabel
+
+    @Option(name: .long, help: """
+        Quality corpus: baseline report JSON to compare with this run. The \
+        output includes per-case exact agreement and first mismatch positions; \
+        token disagreement does not make the command fail.
+        """)
+    var qualityBaselineReport: String?
+
+    @Option(name: .long, help: """
+        Quality corpus: write the JSON report atomically to this path instead \
+        of stdout. Recommended for real-model runs so third-party model-loader \
+        diagnostics cannot contaminate the JSON artifact.
+        """)
+    var qualityOutput: String?
+
     // MARK: - Gate G2 parity mode (paged vs contiguous, PASS/FAIL per criterion)
 
     @Flag(name: .long, help: """
@@ -135,6 +171,48 @@ struct Benchmark: AsyncParsableCommand {
     mutating func validate() throws {
         guard ArrivalPrefillAccounting.allowedBatchSizes.contains(arrivalBatchSize) else {
             throw ValidationError("--arrival-batch-size must be 1, 2, or 4")
+        }
+        if qualityCorpus != nil {
+            guard qualityCorpus?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false
+            else {
+                throw ValidationError("--quality-corpus path must not be empty")
+            }
+            guard !sweep, !schedulerPrefill, !arrivalInvariance, !parity else {
+                throw ValidationError(
+                    "--quality-corpus cannot be combined with --sweep, "
+                        + "--scheduler-prefill, --arrival-invariance, or --parity")
+            }
+            guard model != nil else {
+                throw ValidationError("--quality-corpus requires an explicit --model")
+            }
+            guard (QwenQualityCorpusExecutor.minimumGenerationTokens
+                ... QwenQualityCorpusExecutor.maximumGenerationTokens)
+                .contains(qualityMaxTokens)
+            else {
+                throw ValidationError(
+                    "--quality-max-tokens must be in "
+                        + "\(QwenQualityCorpusExecutor.minimumGenerationTokens)..."
+                        + "\(QwenQualityCorpusExecutor.maximumGenerationTokens)")
+            }
+            let label = qualityRunLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty, label.utf8.count <= 128 else {
+                throw ValidationError(
+                    "--quality-run-label must contain 1...128 UTF-8 bytes")
+            }
+            for (name, path) in [
+                ("--quality-baseline-report", qualityBaselineReport),
+                ("--quality-output", qualityOutput),
+            ] {
+                if let path,
+                   path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    throw ValidationError("\(name) path must not be empty")
+                }
+            }
+        } else if qualityBaselineReport != nil || qualityOutput != nil {
+            throw ValidationError(
+                "--quality-baseline-report and --quality-output require --quality-corpus")
         }
     }
 
@@ -199,6 +277,15 @@ struct Benchmark: AsyncParsableCommand {
         guard let modelPath = ModelScanner.resolveLocalPath(modelID: selectedModel.id) else {
             printError("could not resolve local path for model '\(selectedModel.id)'")
             throw ExitCode.failure
+        }
+
+        if let qualityCorpus {
+            try await runQwenQualityCorpus(
+                modelID: selectedModel.id,
+                modelDirectory: modelPath,
+                corpusPath: qualityCorpus,
+                hardware: hardware)
+            return
         }
 
         if parity {

@@ -48,79 +48,73 @@ extension LumeVirtualMachineRuntime {
         let owner = LumeVirtualMachineOwnership.Owner(
             operationScope: scope
         )
-        guard let observed = try await inspect(name: name) else {
-            throw SandboxRuntimeError.unsupported(
-                "guest commands require an existing VM"
-            )
-        }
         let ownership =
             try LumeVirtualMachineOwnership.requireResourceCommitment(
                 name: name,
                 owner: owner,
                 in: configuration.storageDirectory
             )
-        try LumeVirtualMachineResourceCommitment.requireMatch(
-            observed: observed,
-            ownership: ownership,
-            lease: leaseAuthorization?.lease
-        )
         let identity = ownership.identity
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
-        switch commandJournal.replay(
-            installationID: identity.installationID,
-            request: request
-        ) {
-        case .unclaimed:
-            break
-        case .indeterminate:
-            let unavailable = LumeGuestCommandJournal.outcomeUnavailable()
-            try await stopGuestForReplayFailure(
-                name: name,
-                owner: owner,
-                expectedLease: leaseAuthorization?.lease,
-                primary: unavailable
-            )
-            throw unavailable
-        case .completed(let replay):
-            if replay.timedOut {
-                let timeout = SandboxRuntimeError.operationTimedOut(
-                    "\(name) guest command"
-                )
-                try await stopGuestForReplayFailure(
-                    name: name,
-                    owner: owner,
-                    expectedLease: leaseAuthorization?.lease,
-                    primary: timeout
-                )
-                throw timeout
-            }
-            return replay
-        case .conflictingCompleted(let replay):
-            let conflict = LumeGuestCommandJournal.idempotencyConflict()
-            if replay.timedOut {
-                try await stopGuestForReplayFailure(
-                    name: name,
-                    owner: owner,
-                    expectedLease: leaseAuthorization?.lease,
-                    primary: conflict
-                )
-            }
-            throw conflict
-        }
         var guestCommandMayBeRunning = false
         var requiresVMStop = false
         do {
-            let preflight = try await inspect(name: name)
-            guard let preflight, preflight.state == .running else {
+            guard let observed = try await inspect(name: name) else {
+                throw SandboxRuntimeError.unsupported(
+                    "guest commands require an existing VM"
+                )
+            }
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: observed,
+                ownership: ownership,
+                lease: leaseAuthorization?.lease
+            )
+            switch commandJournal.replay(
+                installationID: identity.installationID,
+                request: request
+            ) {
+            case .unclaimed:
+                break
+            case .indeterminate:
+                let unavailable = LumeGuestCommandJournal.outcomeUnavailable()
+                try await stopGuestForReplayFailure(
+                    name: name,
+                    owner: owner,
+                    expectedLease: leaseAuthorization?.lease,
+                    primary: unavailable
+                )
+                throw unavailable
+            case .completed(let replay):
+                if replay.timedOut {
+                    let timeout = SandboxRuntimeError.operationTimedOut(
+                        "\(name) guest command"
+                    )
+                    try await stopGuestForReplayFailure(
+                        name: name,
+                        owner: owner,
+                        expectedLease: leaseAuthorization?.lease,
+                        primary: timeout
+                    )
+                    throw timeout
+                }
+                return replay
+            case .conflictingCompleted(let replay):
+                let conflict = LumeGuestCommandJournal.idempotencyConflict()
+                if replay.timedOut {
+                    try await stopGuestForReplayFailure(
+                        name: name,
+                        owner: owner,
+                        expectedLease: leaseAuthorization?.lease,
+                        primary: conflict
+                    )
+                }
+                throw conflict
+            }
+            guard observed.state == .running else {
                 throw SandboxRuntimeError.unsupported(
                     "guest commands require a running VM"
                 )
             }
-            try LumeVirtualMachineResourceCommitment.requireMatch(
-                observed: preflight,
-                ownership: ownership,
-                lease: leaseAuthorization?.lease
-            )
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(

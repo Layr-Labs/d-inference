@@ -1,0 +1,16 @@
+[1/1] Compiling plugin BenchRevisionStamp
+[2/2] Compiling plugin CudaBuild
+[3/3] Compiling plugin GenerateManual
+[4/4] Compiling plugin GenerateDoccReference
+Building for debugging...
+[4/15] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.27s)
+Test Suite 'Selected tests' started at 2026-08-24 03:57:25.815.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-08-24 03:57:25.815.
+Test Suite 'CBv2PromptForkEngineTests' started at 2026-08-24 03:57:25.815.
+Test Case '-[MLXLMTests.CBv2PromptForkEngineTests testB2IdenticalPromptForkMatchesColdTokenChecksums]' started.
+MLX error: Failed to load the default metallib. library not found library not found library not found library not found  at /Users/gaj/work/d-inference/libs/mlx-swift-lm/.build/checkouts/mlx-swift/Source/Cmlx/mlx-c/mlx/c/array.cpp:232
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

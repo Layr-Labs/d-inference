@@ -1,0 +1,44 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (3.72s)
+Test Suite 'Selected tests' started at 2026-08-24 03:59:30.853.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 03:59:30.854.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 03:59:30.854.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 03:59:30.854.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 prefix cache: usage detail" started.
+◇ Suite "EngineV2 fp32 paged pages: KV rate wiring" started.
+◇ Test "bridge emits content-free frozen replay plan telemetry" started.
+◇ Test "injectCachedTokens: non-usage frames and zero hits pass through untouched" started.
+◇ Test "injectCachedTokens: splices prompt_tokens_details into a usage frame" started.
+◇ Test "recurrent models accept only the stronger exact-state cache" started.
+◇ Test "processKVBytesPerToken doubles on fp32 pages and only there" started.
+◇ Test "the slot rate follows the CONSTRUCTED pool's dtype, not the request" started.
+◇ Test "bridge records prefixCacheHitTokens into the per-request signal at the terminal" started.
+◇ Test "injectCachedTokens: merges into an existing prompt_tokens_details object" started.
+◇ Test "native contiguous rate includes fp32 owning-full rows without staging" started.
+◇ Test "a doubled rate halves the heartbeat's advertised token budget" started.
+✔ Test "native contiguous rate includes fp32 owning-full rows without staging" passed after 0.001 seconds.
+✔ Test "processKVBytesPerToken doubles on fp32 pages and only there" passed after 0.001 seconds.
+✔ Test "recurrent models accept only the stronger exact-state cache" passed after 0.001 seconds.
+✔ Test "the slot rate follows the CONSTRUCTED pool's dtype, not the request" passed after 0.001 seconds.
+✔ Test "a doubled rate halves the heartbeat's advertised token budget" passed after 0.001 seconds.
+✔ Suite "EngineV2 fp32 paged pages: KV rate wiring" passed after 0.001 seconds.
+✔ Test "injectCachedTokens: non-usage frames and zero hits pass through untouched" passed after 0.001 seconds.
+✔ Test "bridge records prefixCacheHitTokens into the per-request signal at the terminal" passed after 0.001 seconds.
+✔ Test "bridge emits content-free frozen replay plan telemetry" passed after 0.002 seconds.
+✔ Test "injectCachedTokens: splices prompt_tokens_details into a usage frame" passed after 0.003 seconds.
+✔ Test "injectCachedTokens: merges into an existing prompt_tokens_details object" passed after 0.003 seconds.
+✔ Suite "EngineV2 prefix cache: usage detail" passed after 0.003 seconds.
+✔ Test run with 10 tests in 2 suites passed after 0.003 seconds.

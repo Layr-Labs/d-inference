@@ -520,3 +520,26 @@ cache/engine tests and eight provider benchmark tests. The prompt-512 M3 run
 now observes 75,371,520-byte donations and exact B1/B2/B4 hits with full output
 equality; distinct-suffix partial-prefix arms remain misses. See `notes/060`
 and `notes/062`.
+
+## 2026-08-24T12:49Z — exact hybrid-state reuse measured
+
+Warm full-prompt B1/B2/B4 speedups:
+
+- 512: **15.3× / 23.8× / 33.6×**;
+- 2K: **50.4× / 86.6× / 122.2×**;
+- 8K: **186.8× / 320.2× / 402.9×**.
+
+Every hit restores independent K/V, GDN state/tails, position, and
+frontier logits. First-token parity is exact.
+
+## 2026-08-24T12:58Z — exact cold prompt fork crosses primary
+
+With no prior cache entry, one leader computes and forks state:
+
+- B4 identical: **3.013× at 512**, **3.254× at 8K**;
+- B4 90% common at 8K: **2.627×**;
+- B4 75% common at 8K: 2.017×.
+
+The 2.5× objective is reached through correct KV+GDN construction, not a
+faster wrong kernel. Distinct cold prompts remain an active target;
+partial durable-prefix reuse is next. See `notes/068`.

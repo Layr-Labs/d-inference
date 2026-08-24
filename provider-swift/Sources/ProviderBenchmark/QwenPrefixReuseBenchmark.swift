@@ -326,6 +326,11 @@ public enum QwenPrefixReuseBenchmark {
                 }
 
                 log("iteration \(iteration)/\(iterations): \(scenario.id) warm")
+                let warmSalt =
+                    ProcessInfo.processInfo.environment[
+                        "DARKBLOOM_PREFIX_BENCH_FORCE_FORK"] == "1"
+                    ? salt + "/fork"
+                    : salt
                 let warmBase = try ids.allocate(scenario.batchSize)
                 let warm = try await QwenPrefixEngineRunner.run(
                     engine: engine,
@@ -334,7 +339,7 @@ public enum QwenPrefixReuseBenchmark {
                     decodeTokens: decodeTokens,
                     requestIDBase: warmBase,
                     prefixCacheEnabled: true,
-                    cacheSalt: salt)
+                    cacheSalt: warmSalt)
                 if capabilitySupported {
                     await cache.waitForDonations(
                         requestIDs: warm.rows.map(\.requestID),

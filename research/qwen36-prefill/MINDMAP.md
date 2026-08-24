@@ -194,5 +194,10 @@ layer skipping fails quality (`notes/065`). Top-k4 is the quality-passing
 while 0–3 is 2.6% (`notes/066`). Exact prefix-state reuse is now the
 quality-preserving multiplier.
 
+Exact state reuse (`notes/068`) crosses the goal without quality loss:
+warm full-prompt B1/B2/B4 = 15×–403×; cold simultaneous B4 identical
+prompts = 3.01×/3.25× at 512/8K; B4 90% common-prefix 8K = 2.627×.
+The cached/forked object is complete K/V + GDN state + position + logits.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

@@ -1,0 +1,24 @@
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+@@ -340,6 +340,11 @@ public enum QwenPrefixReuseBenchmark {
+                 }
+ 
+                 log("iteration \(iteration)/\(iterations): \(scenario.id) warm")
++                let warmSalt =
++                    ProcessInfo.processInfo.environment[
++                        "DARKBLOOM_PREFIX_BENCH_FORCE_FORK"] == "1"
++                    ? salt + "/fork"
++                    : salt
+                 let warmBase = try ids.allocate(scenario.batchSize)
+                 let warm = try await QwenPrefixEngineRunner.run(
+                     engine: engine,
+@@ -349,7 +354,7 @@ public enum QwenPrefixReuseBenchmark {
+                     decodeTokens: decodeTokens,
+                     requestIDBase: warmBase,
+                     prefixCacheEnabled: true,
+-                    cacheSalt: salt)
++                    cacheSalt: warmSalt)
+                 if capabilitySupported {
+                     await cache.waitForDonations(
+                         requestIDs: warm.rows.compactMap {

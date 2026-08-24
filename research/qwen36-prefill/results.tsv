@@ -1,0 +1,2 @@
+run_id	ts_utc	host	git_sha	binary	powermode	ac	hypothesis	change	prompt_tokens	B	metric	value	unit	vs_baseline	keep	notes
+# append one row per measured cell. header is documentation. first real rows come from baseline.

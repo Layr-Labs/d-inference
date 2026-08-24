@@ -145,6 +145,18 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 			`"working_directory":"workspace"`,
 			1,
 		),
+		"empty working directory": strings.Replace(
+			valid,
+			`"working_directory":"/workspace"`,
+			`"working_directory":""`,
+			1,
+		),
+		"null optional environment": strings.Replace(
+			valid,
+			`"working_directory":"/workspace"`,
+			`"environment":null,"working_directory":"/workspace"`,
+			1,
+		),
 		"timeout exceeds lease contract": strings.Replace(
 			valid,
 			`"timeout_seconds":900`,
@@ -165,6 +177,23 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 				t.Fatal("invalid frame was accepted")
 			}
 		})
+	}
+}
+
+func TestSandboxCodecPreservesCaseSensitiveEnvironment(t *testing.T) {
+	frame := validSandboxCommandEnvelope()
+	frame.Payload.Environment = map[string]string{
+		"FOO": "upper",
+		"foo": "lower",
+	}
+	decoded, err := DecodeSandboxCoordinatorMessage(marshalSandboxFrame(t, frame))
+	if err != nil {
+		t.Fatalf("case-sensitive environment rejected: %v", err)
+	}
+	payload := decoded.Payload.(*SandboxCommandPayload)
+	if payload.Environment["FOO"] != "upper" ||
+		payload.Environment["foo"] != "lower" {
+		t.Fatalf("environment changed: %#v", payload.Environment)
 	}
 }
 
@@ -310,6 +339,7 @@ func TestSandboxCodecRejectsOversizedFrame(t *testing.T) {
 }
 
 func validSandboxCommandEnvelope() SandboxEnvelope[SandboxCommandPayload] {
+	workingDirectory := "/workspace"
 	return SandboxEnvelope[SandboxCommandPayload]{
 		Type:            SandboxTypeCommand,
 		ProtocolVersion: SandboxProtocolVersion,
@@ -325,7 +355,7 @@ func validSandboxCommandEnvelope() SandboxEnvelope[SandboxCommandPayload] {
 				FencingToken: 7,
 			},
 			Arguments:        []string{"/usr/bin/printf", "hello"},
-			WorkingDirectory: "/workspace",
+			WorkingDirectory: &workingDirectory,
 			TimeoutSeconds:   900,
 		},
 	}

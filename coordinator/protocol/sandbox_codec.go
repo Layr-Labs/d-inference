@@ -310,11 +310,10 @@ func rejectDuplicateSandboxJSONKeys(data []byte) error {
 				if !ok {
 					return errors.New("JSON object key is not a string")
 				}
-				normalizedKey := strings.ToLower(key)
-				if _, exists := seen[normalizedKey]; exists {
+				if _, exists := seen[key]; exists {
 					return fmt.Errorf("duplicate JSON key %q", key)
 				}
-				seen[normalizedKey] = struct{}{}
+				seen[key] = struct{}{}
 				if err := walk(); err != nil {
 					return err
 				}
@@ -516,13 +515,14 @@ func validateSandboxCommand(command *SandboxCommandPayload) error {
 		}
 		totalBytes += len(key) + len(value)
 	}
-	if command.WorkingDirectory != "" {
-		if !path.IsAbs(command.WorkingDirectory) ||
-			path.Clean(command.WorkingDirectory) != command.WorkingDirectory ||
-			strings.ContainsRune(command.WorkingDirectory, '\x00') {
+	if command.WorkingDirectory != nil {
+		workingDirectory := *command.WorkingDirectory
+		if !path.IsAbs(workingDirectory) ||
+			path.Clean(workingDirectory) != workingDirectory ||
+			strings.ContainsRune(workingDirectory, '\x00') {
 			return errors.New("sandbox command working directory is invalid")
 		}
-		totalBytes += len(command.WorkingDirectory)
+		totalBytes += len(workingDirectory)
 	}
 	if totalBytes > maxSandboxCommandInputBytes {
 		return errors.New("sandbox command input is too large")

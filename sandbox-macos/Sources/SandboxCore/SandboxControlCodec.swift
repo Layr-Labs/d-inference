@@ -324,6 +324,9 @@ public enum SandboxControlCodec {
         else {
             throw SandboxControlCodecError.unknownOrMissingFields
         }
+        guard keys.allSatisfy({ !(object[$0] is NSNull) }) else {
+            throw SandboxControlCodecError.invalidPayload
+        }
     }
 
     private static func requireScopeFields(

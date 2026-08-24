@@ -169,6 +169,14 @@ final class SandboxControlProtocolTests: XCTestCase {
                 of: #""fencing_token":7"#,
                 with: #""fencing_token":7,"authority":"forbidden""#
             ),
+            valid.replacingOccurrences(
+                of: #""working_directory":"/workspace""#,
+                with: #""environment":null,"working_directory":"/workspace""#
+            ),
+            valid.replacingOccurrences(
+                of: #""working_directory":"/workspace""#,
+                with: #""working_directory":"""#
+            ),
         ]
         for mutation in mutations {
             XCTAssertThrowsError(
@@ -178,6 +186,36 @@ final class SandboxControlProtocolTests: XCTestCase {
                 "accepted mutated frame: \(mutation)"
             )
         }
+    }
+
+    func testStrictCodecPreservesCaseSensitiveEnvironment() throws {
+        let command = try commandEnvelope()
+        let withEnvironment = SandboxControlEnvelope(
+            type: SandboxControlMessageType.command,
+            hostID: command.hostID,
+            connectionEpoch: command.connectionEpoch,
+            sequence: command.sequence,
+            payload: SandboxWireCommand(
+                commandID: command.payload.commandID,
+                idempotencyKey: command.payload.idempotencyKey,
+                scope: command.payload.scope,
+                arguments: command.payload.arguments,
+                environment: ["FOO": "upper", "foo": "lower"],
+                workingDirectory: command.payload.workingDirectory,
+                timeoutSeconds: command.payload.timeoutSeconds
+            )
+        )
+        guard case .command(let decoded) =
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(withEnvironment)
+            )
+        else {
+            return XCTFail("expected command")
+        }
+        XCTAssertEqual(
+            decoded.payload.environment,
+            ["FOO": "upper", "foo": "lower"]
+        )
     }
 
     func testStrictCodecRejectsDirectionAndLeaseViolations() throws {

@@ -157,7 +157,7 @@ type SandboxCommandPayload struct {
 	Scope            SandboxScope      `json:"scope"`
 	Arguments        []string          `json:"arguments"`
 	Environment      map[string]string `json:"environment,omitempty"`
-	WorkingDirectory string            `json:"working_directory,omitempty"`
+	WorkingDirectory *string           `json:"working_directory,omitempty"`
 	TimeoutSeconds   uint32            `json:"timeout_seconds"`
 }
 

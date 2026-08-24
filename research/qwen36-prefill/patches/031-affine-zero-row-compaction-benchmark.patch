@@ -2,7 +2,7 @@ diff --git a/Tests/MLXTests/QwenAffineZeroRowCompactionPerfTests.swift b/Tests/M
 new file mode 100644
 --- /dev/null
 +++ b/Tests/MLXTests/QwenAffineZeroRowCompactionPerfTests.swift
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,197 @@
 +// Copyright © 2026 Eigen Labs.
 +//
 +// Exact arithmetic-roof experiment for affine W4/g64 expert output rows that
@@ -132,8 +132,10 @@ new file mode 100644
 +        eval(fullOutput, restoredOutput)
 +
 +        XCTAssertEqual(fullOutput.shape, restoredOutput.shape)
-+        XCTAssertTrue(
-+            (fullOutput .== restoredOutput).all().item(Bool.self),
++        let fullBytes = fullOutput.asData(access: .copy).data
++        let restoredBytes = restoredOutput.asData(access: .copy).data
++        XCTAssertEqual(
++            fullBytes, restoredBytes,
 +            "omitting affine rows with q=0 and bias=0 must be bitwise exact")
 +
 +        let routes: [(name: String, outputRows: Int, run: () -> MLXArray)] = [

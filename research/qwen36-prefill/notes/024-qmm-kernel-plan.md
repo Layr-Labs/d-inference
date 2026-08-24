@@ -368,10 +368,14 @@ Static checks completed:
 - patch 0003 applies cleanly to the nested AOT source tree;
 - patches 0004 and 0005 reverse-apply to the modified MLX-Swift tree;
 - canonical and generated `quantized.h` are byte-identical after the prepared
-  changes.
+  changes;
+- Swift 6.3.2 parses both the new regression and extended benchmark sources.
 
 No Metal runtime result is claimed. This cloud host cannot compile or execute
-Metal. The source-matched Mac sequence is:
+Metal. A CPU-only `swift test` build was also attempted, but the package fails
+before test execution in pre-existing Linux-only `MLXFast` declarations after
+Metal sources are excluded; the candidate code is not implicated or exercised
+by that failure. The source-matched Mac sequence is:
 
 1. apply E1 patch 0001 then patch 0003 to
    `libs/mlx-swift/Source/Cmlx/mlx`;

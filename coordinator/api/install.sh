@@ -207,9 +207,8 @@ existing_bundle_is_ours() {
     esac
 }
 
-preserve_foreign_bundle() {
-    local destination=$1
-    local install_dir=$2
+foreign_bundle_destination() {
+    local install_dir=$1
     local base
     base="$install_dir/Darkbloom.app.foreign-$(date +%Y%m%d-%H%M%S)"
     local preserved=$base
@@ -218,9 +217,90 @@ preserve_foreign_bundle() {
         preserved="${base}-${suffix}"
         suffix=$((suffix + 1))
     done
-    echo "  ⚠ $destination is not a Darkbloom build — preserving it at:"
-    echo "      $preserved"
-    mv "$destination" "$preserved"
+    printf '%s\n' "$preserved"
+}
+
+install_test_fault() {
+    local point=$1
+    [ "$INSTALL_TEST_MODE" = "1" ] \
+        && [ "${DARKBLOOM_INSTALL_TEST_FAIL_POINT:-}" = "$point" ]
+}
+
+install_path_exists() {
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
+restore_backed_up_links() {
+    local backup_bin=$1
+    local bin_dir=$2
+    local name
+    local failed=0
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        if install_path_exists "$backup_bin/$name"; then
+            if ! rm -rf "$bin_dir/$name" 2>/dev/null; then
+                failed=1
+                continue
+            fi
+            mv "$backup_bin/$name" "$bin_dir/$name" 2>/dev/null || failed=1
+        fi
+    done
+    return "$failed"
+}
+
+backup_managed_links() {
+    local backup_bin=$1
+    local bin_dir=$2
+    local name
+    mkdir -p "$backup_bin" || return 1
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        if install_path_exists "$bin_dir/$name"; then
+            if ! mv "$bin_dir/$name" "$backup_bin/$name"; then
+                restore_backed_up_links "$backup_bin" "$bin_dir" || true
+                return 1
+            fi
+        fi
+    done
+}
+
+restore_managed_links() {
+    local backup_bin=$1
+    local bin_dir=$2
+    local name
+    local failed=0
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        rm -rf "$bin_dir/$name" 2>/dev/null || failed=1
+    done
+    restore_backed_up_links "$backup_bin" "$bin_dir" || failed=1
+    return "$failed"
+}
+
+rollback_staged_app_commit() {
+    local destination=$1
+    local previous_app=$2
+    local had_previous=$3
+    local backup_bin=$4
+    local bin_dir=$5
+    local links_touched=$6
+    local failed=0
+
+    if [ "$links_touched" -eq 1 ]; then
+        restore_managed_links "$backup_bin" "$bin_dir" || failed=1
+    fi
+    rm -rf "$destination" 2>/dev/null || failed=1
+    if [ "$had_previous" -eq 1 ] && ! install_path_exists "$destination"; then
+        mv "$previous_app" "$destination" 2>/dev/null || failed=1
+    fi
+    rmdir "$backup_bin" 2>/dev/null || true
+    rmdir "${backup_bin%/bin}" 2>/dev/null || true
+    return "$failed"
+}
+
+create_managed_link() {
+    local target=$1
+    local link=$2
+    local fault_point=$3
+    install_test_fault "$fault_point" && return 1
+    ln -s "$target" "$link"
 }
 
 ensure_user_app_shortcut() {
@@ -265,44 +345,88 @@ commit_staged_app() {
     local install_dir=$2
     local backup="$install_dir/.install-backup-$$-$RANDOM"
     local destination="$install_dir/Darkbloom.app"
+    local bin_dir="$install_dir/bin"
+    local previous_app="$backup/Darkbloom.app"
     local had_previous=0
-    mkdir -p "$backup" "$install_dir/bin"
-
-    if [ -e "$destination" ] || [ -L "$destination" ]; then
-        if existing_bundle_is_ours "$destination"; then
-            mv "$destination" "$backup/Darkbloom.app" || {
-                rm -rf "$backup"
-                return 1
-            }
-            had_previous=1
-        else
-            preserve_foreign_bundle "$destination" "$install_dir" || {
-                rm -rf "$backup"
-                return 1
-            }
-        fi
-    fi
-    if ! mv "$staged_app" "$destination"; then
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+    local previous_was_foreign=0
+    local links_touched=0
+    mkdir -p "$backup" "$bin_dir" || {
         rm -rf "$backup"
         return 1
+    }
+
+    if install_path_exists "$destination"; then
+        existing_bundle_is_ours "$destination" || previous_was_foreign=1
+        if ! mv "$destination" "$previous_app"; then
+            rm -rf "$backup"
+            return 1
+        fi
+        had_previous=1
     fi
+    if install_test_fault "staged-app-move" \
+        || ! mv "$staged_app" "$destination"
+    then
+        rollback_staged_app_commit \
+            "$destination" "$previous_app" "$had_previous" \
+            "$backup/bin" "$bin_dir" "$links_touched" || true
+        return 1
+    fi
+
+    if ! backup_managed_links "$backup/bin" "$bin_dir"; then
+        rollback_staged_app_commit \
+            "$destination" "$previous_app" "$had_previous" \
+            "$backup/bin" "$bin_dir" "$links_touched" || true
+        return 1
+    fi
+    links_touched=1
 
     local app_bin="$destination/Contents/MacOS"
-    if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
-        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
+    if ! create_managed_link \
+        "../Darkbloom.app/Contents/MacOS/darkbloom" \
+        "$bin_dir/darkbloom" "link-darkbloom" \
+        || ! create_managed_link \
+            "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" \
+            "$bin_dir/darkbloom-enclave" "link-darkbloom-enclave" \
+        || ! create_managed_link \
+            "../Darkbloom.app/Contents/MacOS/mlx.metallib" \
+            "$bin_dir/mlx.metallib" "link-metallib" \
+        || ! create_managed_link \
+            "darkbloom-enclave" \
+            "$bin_dir/eigeninference-enclave" "link-legacy-enclave"
     then
-        rm -rf "$destination"
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
-        rm -rf "$backup"
+        rollback_staged_app_commit \
+            "$destination" "$previous_app" "$had_previous" \
+            "$backup/bin" "$bin_dir" "$links_touched" || true
         return 1
     fi
-    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
-    rm -rf "$backup"
+    if install_test_fault "app-chmod" \
+        || ! chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
+    then
+        rollback_staged_app_commit \
+            "$destination" "$previous_app" "$had_previous" \
+            "$backup/bin" "$bin_dir" "$links_touched" || true
+        return 1
+    fi
+
+    if [ "$previous_was_foreign" -eq 1 ]; then
+        local preserved
+        preserved=$(foreign_bundle_destination "$install_dir")
+        if ! mv "$previous_app" "$preserved"; then
+            rollback_staged_app_commit \
+                "$destination" "$previous_app" "$had_previous" \
+                "$backup/bin" "$bin_dir" "$links_touched" || true
+            return 1
+        fi
+        echo "  ⚠ $destination is not a Darkbloom build — preserving it at:"
+        echo "      $preserved"
+    fi
+
+    # No rollback path is needed past this point: the app, every managed link,
+    # executable modes, and any permanent foreign-bundle preservation have all
+    # committed successfully.
+    rm -rf "$backup" || {
+        echo "  ⚠ Installed successfully, but could not remove transaction backup $backup." >&2
+    }
 }
 
 commit_staged_flat_bundle() {

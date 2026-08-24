@@ -351,4 +351,3 @@ linear work alone needs 159.692/13.72 = **11.64 s**, above the entire
 2.5× target of **8.415 s**, even with every non-linear operation free.
 
 Same-quality 2.5× on M3 is physically closed. See `notes/043`.
-

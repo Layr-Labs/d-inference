@@ -1,7 +1,7 @@
 # 016 — Reviewer merge gate: no kernel gets a free pass
 
-Status: binding gate  
-Owner: reviewer  
+Status: binding gate
+Owner: reviewer
 Applies to: every Qwen 3.6 prefill experiment proposed for `keep=yes` or merge
 
 This gate is conjunctive. A prefill win does not buy correctness, decode, memory,

@@ -122,7 +122,7 @@ sweep) with equal-length concurrent `submit()` and `maxConcurrentRequests ≥ B`
 Flow (`BenchmarkCommand` → `ModelScanner.resolveLocalPath`):
 
 1. CLI `--model qwen3.6-35b-a3b-vl-mtp-mxfp8` (or config default) selects catalog id.
-2. Scanner maps id → HF cache dir  
+2. Scanner maps id → HF cache dir
    `~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/<hash>/`
 3. `findLatestSnapshot` picks the snapshot subdirectory with **latest mtime**.
 4. GOAL snapshot name **`local`** works if that directory exists and is newest under `snapshots/`.

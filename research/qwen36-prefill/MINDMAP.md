@@ -158,5 +158,12 @@ weighted TFLOPS, 37.3m outputs bit-identical (`notes/044`). E15 covers
 threshold M=8,192/65,536: static 12.02, dynamic K8 3.16 plus long-K
 tolerance failure (`notes/045`). Both miss ≥22 decisively.
 
+E16 sweeps 60 strict MPP combinations across five output tiles, K16/K32,
+1/2/4-SIMD-group scopes, and cooperative/tensor inputs. Thirty-five compile
+and pass 807.4m bit-identical output checks; the bounded maximum is only
+13.4182 TFLOPS versus 22 (`notes/046`). The enumerated matrix is closed, but
+this remains a bounded measurement rather than a hardware theorem; counter
+saturation and independent structure/routing closure are still pending.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

@@ -254,10 +254,14 @@ resource bytes to the release identity instead of trusting a self-authenticated
 digest list. Production validation requires Apple-designated requirements for
 both the executable and manifest under team `SLDQ2GJ6TL`; the
 `--development-ad-hoc-lume` daemon flag is an explicit local-only bypass.
-Publication seals a staging tree beside the destination and atomically renames
-it. CI supplies a private ACL-free publication parent; failure cleanup restores
-permissions only inside the owned staging tree and never edits caller-owned
-parent ACLs.
+Publication seals every staging descendant beside the destination while keeping
+the private staging envelope at `0700`. Darwin permits filesystem-specific
+`EACCES` when renaming a write-disabled directory, so publication uses
+fd-relative `renameatx_np(RENAME_EXCL)` before sealing the final root to `0555`.
+The destination is never replaced, and the executable is first launched from
+its stable final path. A post-rename failure retains and reports the ambiguous
+destination; identity-bound cleanup changes only the owned staging inode and
+never edits caller-owned parent ACLs or modes.
 Before executing Lume, the adapter requires the complete immutable directory
 tree and provenance to match the audited lock; it rejects added, removed,
 replaced, or modified runtime entries. The production installation must be
@@ -285,6 +289,12 @@ have the Darkbloom Developer ID identity installed and select it explicitly:
 ```bash
 DARKBLOOM_LUME_CODESIGN_IDENTITY='Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)' \
   sandbox-macos/Scripts/build-pinned-lume.sh /absolute/install/path
+```
+
+Run the focused publication contract without building Lume:
+
+```bash
+/bin/bash sandbox-macos/Scripts/run-lume-publication-contract-tests.sh
 ```
 
 ```bash

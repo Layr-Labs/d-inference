@@ -10,6 +10,7 @@ COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$LOCK_FILE")"
 SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$LOCK_FILE")"
 EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$LOCK_FILE")"
 PYTHON="$(command -v python3)"
+PUBLICATION_HELPER="$SCRIPT_DIR/lume-runtime-publication.py"
 RUN_TESTS="${DARKBLOOM_LUME_RUN_TESTS:-0}"
 PATCH_RELATIVE_PATHS=()
 EXPECTED_PATCH_SHA256S=()
@@ -55,22 +56,48 @@ INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
 INSTALL_PARENT=""
 STAGING_DIR=""
+STAGING_ID=""
+PUBLICATION_ATTEMPTED=0
+PUBLISHED=0
 
 remove_staging_tree() {
     /bin/bash "$SCRIPT_DIR/remove-sealed-lume-staging.sh" \
         "$INSTALL_PARENT" \
-        "$1"
+        "$1" \
+        "$STAGING_ID"
 }
 
 cleanup() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup_failed=0
     if [[ -n "$BUILD_ROOT" ]]; then
-        rm -rf "$BUILD_ROOT"
+        rm -rf "$BUILD_ROOT" || cleanup_failed=1
     fi
     if [[ -n "$STAGING_DIR" ]]; then
-        remove_staging_tree "$STAGING_DIR"
+        if [[ -e "$STAGING_DIR" || -L "$STAGING_DIR" ]]; then
+            remove_staging_tree "$STAGING_DIR" || cleanup_failed=1
+        elif [[ "$PUBLICATION_ATTEMPTED" == "1" ]] \
+            && [[ -e "$INSTALL_DIR" || -L "$INSTALL_DIR" ]]; then
+            echo "Lume publication outcome is ambiguous; destination retained: $INSTALL_DIR" >&2
+            cleanup_failed=1
+        elif [[ "$PUBLICATION_ATTEMPTED" == "1" ]]; then
+            echo "Lume publication outcome is ambiguous; neither staging nor destination exists" >&2
+            cleanup_failed=1
+        fi
     fi
+    if [[ "$PUBLISHED" == "1" && "$status" -ne 0 ]]; then
+        echo "post-publication validation failed; destination retained: $INSTALL_DIR" >&2
+    fi
+    if [[ "$status" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
+        status=1
+    fi
+    exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     || [[ "$SOURCE_PATH" != "libs/lume" ]] \
@@ -127,7 +154,7 @@ if [[ "$INSTALL_DIR" != /* ]]; then
     echo "Lume install directory must be absolute: $INSTALL_DIR" >&2
     exit 1
 fi
-if [[ -e "$INSTALL_DIR" ]]; then
+if [[ -e "$INSTALL_DIR" || -L "$INSTALL_DIR" ]]; then
     echo "refusing to overwrite existing Lume install path: $INSTALL_DIR" >&2
     exit 1
 fi
@@ -135,9 +162,10 @@ INSTALL_PARENT="$(dirname "$INSTALL_DIR")"
 mkdir -p "$INSTALL_PARENT"
 INSTALL_PARENT="$(cd "$INSTALL_PARENT" && pwd -P)"
 INSTALL_DIR="$INSTALL_PARENT/$(basename "$INSTALL_DIR")"
+"$PYTHON" "$PUBLICATION_HELPER" require-absent "$INSTALL_PARENT" "$INSTALL_DIR"
 STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
-/bin/chmod -N "$STAGING_DIR"
 /bin/chmod 0700 "$STAGING_DIR"
+STAGING_ID="$("$PYTHON" "$PUBLICATION_HELPER" identity "$INSTALL_PARENT" "$STAGING_DIR")"
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
 git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \
@@ -187,7 +215,11 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
         "$BUILT_EXECUTABLE"
 fi
 
-ACTUAL_VERSION="$("$BUILT_EXECUTABLE" --version)"
+ACTUAL_VERSION="$(
+    LUME_TELEMETRY_ENABLED=false \
+        LUME_LOG_LEVEL=error \
+        "$BUILT_EXECUTABLE" --version
+)"
 if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
     echo "Lume version mismatch: expected $EXPECTED_VERSION, got $ACTUAL_VERSION" >&2
     exit 1
@@ -285,34 +317,39 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
 fi
 /usr/bin/codesign "${PROVENANCE_CODESIGN_ARGUMENTS[@]}" "$PROVENANCE_FILE"
 
-/bin/chmod -RN "$STAGING_DIR"
-"$PYTHON" - "$STAGING_DIR" <<'PY'
-import os
-import stat
-import sys
+"$PYTHON" "$PUBLICATION_HELPER" \
+    seal-staging \
+    "$INSTALL_PARENT" \
+    "$STAGING_DIR" \
+    "$STAGING_ID"
 
-install_dir = sys.argv[1]
-for root, directories, files in os.walk(install_dir, topdown=False, followlinks=False):
-    for name in files:
-        path = os.path.join(root, name)
-        mode = 0o555 if os.path.relpath(path, install_dir) == "lume" else 0o444
-        os.chmod(path, mode)
-    for name in directories:
-        path = os.path.join(root, name)
-        if not stat.S_ISDIR(os.lstat(path).st_mode):
-            raise SystemExit(f"refusing non-directory runtime entry: {path}")
-        os.chmod(path, 0o555)
-os.chmod(install_dir, 0o555)
-PY
+# Some Darwin filesystems reject renaming a write-disabled directory. Keep the
+# private staging envelope at 0700 until the exclusive namespace operation,
+# then the helper seals the published root through its already-open descriptor.
+PUBLICATION_ATTEMPTED=1
+"$PYTHON" "$PUBLICATION_HELPER" \
+    publish \
+    "$INSTALL_PARENT" \
+    "$STAGING_DIR" \
+    "$INSTALL_DIR" \
+    "$STAGING_ID"
+PUBLISHED=1
+STAGING_DIR=""
+PROVENANCE_FILE="$INSTALL_DIR/lume.provenance.json"
 
-/usr/bin/codesign --verify --strict "$STAGING_DIR/lume"
+"$PYTHON" "$PUBLICATION_HELPER" \
+    verify \
+    "$INSTALL_PARENT" \
+    "$INSTALL_DIR" \
+    "$STAGING_ID"
+/usr/bin/codesign --verify --strict "$INSTALL_DIR/lume"
 /usr/bin/codesign --verify --strict "$PROVENANCE_FILE"
 if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
     /usr/bin/codesign \
         --verify \
         --strict \
         "-R=$PRODUCTION_REQUIREMENT" \
-        "$STAGING_DIR/lume"
+        "$INSTALL_DIR/lume"
     /usr/bin/codesign \
         --verify \
         --strict \
@@ -320,14 +357,18 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
         "$PROVENANCE_FILE"
 fi
 
-if ! "$STAGING_DIR/lume" --version >/dev/null; then
+if ! LUME_TELEMETRY_ENABLED=false \
+    LUME_LOG_LEVEL=error \
+    "$INSTALL_DIR/lume" --version >/dev/null; then
     echo "hardened Lume runtime failed its launch check" >&2
     exit 1
 fi
 
-/bin/mv "$STAGING_DIR" "$INSTALL_DIR"
-STAGING_DIR=""
-PROVENANCE_FILE="$INSTALL_DIR/lume.provenance.json"
+"$PYTHON" "$PUBLICATION_HELPER" \
+    verify \
+    "$INSTALL_PARENT" \
+    "$INSTALL_DIR" \
+    "$STAGING_ID"
 
 echo "lume_commit=$ACTUAL_COMMIT"
 echo "lume_version=$ACTUAL_VERSION"

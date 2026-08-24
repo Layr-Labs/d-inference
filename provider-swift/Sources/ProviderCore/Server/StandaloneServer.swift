@@ -660,6 +660,7 @@ public actor StandaloneServer {
     private struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
+        let fixedCarveBytes: Int
         let bridge: EngineV2Bridge
     }
 
@@ -684,6 +685,8 @@ public actor StandaloneServer {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
+                    fixedCarveBytes:
+                        slot.bridge.exactPrefixCacheFixedCarveBytes(),
                     bridge: slot.bridge))
         }
         return existing
@@ -773,6 +776,10 @@ public actor StandaloneServer {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
+        let fixedCarveBytes = Dictionary(
+            uniqueKeysWithValues: existing.map {
+                ($0.slot.modelId, $0.fixedCarveBytes)
+            })
         var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
@@ -782,7 +789,7 @@ public actor StandaloneServer {
         // Serviceability floor (fail loud): refuse a load that would leave
         // any slot below the minimum serveable live-KV grant.
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
+            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
         {
             standaloneLogger.warning(
                 "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantResliceFloor.rawValue); retrying target-only before refusing the load")
@@ -799,7 +806,7 @@ public actor StandaloneServer {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:])
+            targets, fixedCarveBytes: fixedCarveBytes)
         else {
             let floorGb = String(
                 format: "%.1f",
@@ -1295,8 +1302,9 @@ public actor StandaloneServer {
                 requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
-            let preLoadCacheHash = reusableSSDRequested
+            let reusableCacheRequested =
+                EngineV2SlotFactory.cacheIdentityRequiresFreshWeightHash()
+            let preLoadCacheHash = reusableCacheRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
                 : nil
             // Hard-fail without Metal: CPU inference is not acceptable, and
@@ -1313,11 +1321,11 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
-            let postLoadCacheHash = reusableSSDRequested
+            let postLoadCacheHash = reusableCacheRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
                 : nil
             let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
+            if reusableCacheRequested {
                 switch ProviderLoop.reusableSSDWeightHashDecision(
                     preLoadHash: preLoadCacheHash,
                     postLoadHash: postLoadCacheHash
@@ -1326,13 +1334,13 @@ public actor StandaloneServer {
                     cacheEligibleWeightHash = bracketed
                 case .unavailable:
                     standaloneLogger.warning(
-                        "Reusable SSD cache disabled for \(modelId) on this load — cryptographic weight hash unavailable")
+                        "Reusable prefix caches disabled for \(modelId) on this load — cryptographic weight hash unavailable")
                     cacheEligibleWeightHash = nil
                 case .changed:
                     newcomer.release()
                     MLX.Memory.clearCache()
                     throw StandaloneServerError.capacityUnavailable(
-                        "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded")
+                        "Model '\(modelId)' changed while loading reusable cache state — unloaded")
                 }
             } else {
                 cacheEligibleWeightHash = nil

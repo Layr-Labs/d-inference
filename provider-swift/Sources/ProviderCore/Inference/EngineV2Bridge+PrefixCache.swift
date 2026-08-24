@@ -275,8 +275,9 @@ extension EngineV2Bridge {
         emit(event)
     }
 
-    /// The slot's TOTAL KV byte claim: for contiguous, the engine admission
-    /// ceiling; for paged, the immutable PHYSICAL backend capacity.
+    /// The slot's TOTAL cache-memory claim: for contiguous, the engine
+    /// admission ceiling; for paged, the immutable PHYSICAL backend capacity;
+    /// plus the construction-fixed exact-state RAM cache carve.
     /// Fleet sizing (`makeEngineV2BridgeForSlot`) and the heartbeat clamp
     /// (`EngineV2Runtime.capacitySummary`) subtract THIS — not the bare
     /// engine capacity — for co-resident slots.
@@ -286,13 +287,23 @@ extension EngineV2Bridge {
             kvBackendKind == .paged && snapshot.kvBytesBackendCapacity > 0
             ? snapshot.kvBytesBackendCapacity
             : snapshot.kvBytesCapacity
-        return engineClaim
+        let (total, overflow) = max(0, engineClaim).addingReportingOverflow(
+            exactPrefixCacheBudgetBytes)
+        return overflow ? Int.max : total
     }
 
-    /// Current logical admission target. Re-slice rollback uses this exact
-    /// value; unlike `slotKVBytesClaim()`, it does
+    /// Current total logical grant (engine admission + fixed exact-cache
+    /// carve). Re-slice rollback uses this exact value; unlike
+    /// `slotKVBytesClaim()`, it does
     /// not replace a shrunk paged ledger with the larger immutable pool.
     func resliceAdmissionBytesClaim() -> Int {
-        engine.capacity().kvBytesCapacity
+        let (total, overflow) = max(0, engine.capacity().kvBytesCapacity)
+            .addingReportingOverflow(exactPrefixCacheBudgetBytes)
+        return overflow ? Int.max : total
+    }
+
+    /// Construction-fixed RAM carve consumed by re-slice floor checks.
+    nonisolated func exactPrefixCacheFixedCarveBytes() -> Int {
+        exactPrefixCacheBudgetBytes
     }
 }

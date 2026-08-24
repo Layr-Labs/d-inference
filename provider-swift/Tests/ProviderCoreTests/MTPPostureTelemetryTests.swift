@@ -64,6 +64,9 @@ private final class PagedPoolStubEngine: CBv2Engine, @unchecked Sendable {
 private func makePostureBridge(
     engine: any CBv2Engine,
     kvBackendKind: EngineV2KVBackendKind,
+    exactPrefixCache: ExactPrefixCacheV2? = nil,
+    exactPrefixCacheConfigured: Bool = false,
+    exactPrefixCacheReason: String = "config_disabled",
     telemetry: PostureTelemetrySink
 ) -> EngineV2Bridge {
     EngineV2Bridge(
@@ -71,6 +74,9 @@ private func makePostureBridge(
         modelId: "gemma-4-26b-qat-4bit",
         tokenizer: TokenizerHandle(StubBridgeTokenizer()),
         eosTokenIds: [],
+        exactPrefixCache: exactPrefixCache,
+        exactPrefixCacheConfigured: exactPrefixCacheConfigured,
+        exactPrefixCacheReason: exactPrefixCacheReason,
         kvBackendKind: kvBackendKind,
         emitTelemetry: telemetry.callback())
 }
@@ -430,6 +436,46 @@ struct MTPPostureTelemetryTests {
 
         try await Task.sleep(for: .milliseconds(120))
         #expect(telemetry.posture == nil)
+
+        await bridge.shutdown()
+    }
+
+    @Test("exact RAM cache posture exposes aggregate status without identities")
+    func exactPrefixCachePosture() async {
+        let telemetry = PostureTelemetrySink()
+        let cache = ExactPrefixCacheV2(
+            config: .init(
+                modelIdentity: "identity-must-not-escape",
+                policyIdentity: "policy-must-not-escape",
+                maxBytes: 4096))
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 8192),
+            kvBackendKind: .contiguous,
+            exactPrefixCache: cache,
+            exactPrefixCacheConfigured: true,
+            exactPrefixCacheReason: "ready",
+            telemetry: telemetry)
+        await bridge.emitSlotPostureTelemetry(
+            ProviderMTPStatusSnapshot(
+                status: .disabled(.configDisabled, configured: false),
+                metrics: nil))
+
+        let event = telemetry.posture
+        #expect(field(event, "exact_prefix_cache_configured") == "true")
+        #expect(field(event, "exact_prefix_cache_active") == "true")
+        #expect(field(event, "exact_prefix_cache_reason") == "ready")
+        #expect(field(event, "exact_prefix_cache_budget_bytes") == "4096")
+        #expect(field(event, "exact_prefix_cache_bytes_in_use") == "0")
+        #expect(field(event, "exact_prefix_cache_entries") == "0")
+        #expect(field(event, "exact_prefix_cache_hits") == "0")
+        #expect(field(event, "exact_prefix_cache_misses") == "0")
+        #expect(field(event, "exact_prefix_cache_tokens_saved") == "0")
+        #expect(field(event, "exact_prefix_cache_donations") == "0")
+        #expect(field(event, "exact_prefix_cache_donations_dropped") == "0")
+        #expect(field(event, "exact_prefix_cache_evictions") == "0")
+        let serialized = event?.fields?.values.map(\.description).joined(separator: " ")
+        #expect(serialized?.contains("identity-must-not-escape") == false)
+        #expect(serialized?.contains("policy-must-not-escape") == false)
 
         await bridge.shutdown()
     }

@@ -151,8 +151,14 @@ enum EngineV2SlotFactory {
 
     /// Human-readable cache state for the slot-serving log line.
     static func prefixCacheStateDescription(
+        exactDecision: ExactPrefixCacheDecision,
+        exactCache: ExactPrefixCacheV2?,
         ssdCache: SSDPrefixCache?
     ) -> String {
+        if exactCache != nil {
+            return "on (tier=ram_exact_state, budget="
+                + "\(exactDecision.cacheBudgetBytes) B, hard LRU, exact boundaries)"
+        }
         if let ssdCache {
             // Saturating sum: an operator-set
             // DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS near Int.max
@@ -164,6 +170,9 @@ enum EngineV2SlotFactory {
             return "on (tier=ssd: encrypted offload, HMAC-keyed names, "
                 + "15-min sliding TTL, NO memory carve, per-donation gate "
                 + "> \(floorDesc) tok — T-041)"
+        }
+        if exactDecision.configured {
+            return "off (tier=ram_exact_state, reason=\(exactDecision.reason.rawValue))"
         }
         return "off"
     }
@@ -181,17 +190,21 @@ enum EngineV2SlotFactory {
     ///   - tokenizer: the container's tokenizer handle.
     ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,
     ///     default max tokens).
-    ///   - kvBytesCapacity: this slot's total live-KV grant, already
+    ///   - kvBytesCapacity: this slot's total request-state grant, already
     ///     re-sliced against co-resident slots by the caller. SSD caching
-    ///     does not carve this grant.
+    ///     does not carve it; active exact-state RAM caching does.
     ///   - maxConcurrentRequests: effective `engine_v2_max_concurrent`.
     ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
     ///     shared gating — unit tests only; both production callers pass
     ///     their ledger).
-    ///   - weightHash: the slot's verified weight hash binding for SSD
-    ///     artifacts. Nil or blank disables reusable SSD caching.
+    ///   - weightHash: the slot's verified weight hash binding for cache
+    ///     artifacts/state. Exact RAM reuse requires canonical lowercase
+    ///     SHA-256; nil or invalid disables it.
+    ///   - exactPrefixCacheConfiguration: optional programmatic override for
+    ///     the default-off exact-state RAM policy. Nil resolves the environment.
     ///   - environment: prefix-cache policy environment
-    ///     (`DARKBLOOM_PREFIX_CACHE*`); injectable for tests.
+    ///     (`DARKBLOOM_PREFIX_CACHE*`, `DARKBLOOM_EXACT_PREFIX_CACHE*`);
+    ///     injectable for tests.
     ///   - emitTelemetry: injectable sink (tests); nil ⇒ shared client.
     ///   - makeEngineOverride: scripted engine builder for tests
     ///     ((modelId, engine capacity) — mirrors
@@ -214,6 +227,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         weightHash: String? = nil,
+        exactPrefixCacheConfiguration: ExactPrefixCacheConfiguration? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
@@ -234,6 +248,7 @@ enum EngineV2SlotFactory {
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             weightHash: weightHash,
+            exactPrefixCacheConfiguration: exactPrefixCacheConfiguration,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
@@ -261,6 +276,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         weightHash: String? = nil,
+        exactPrefixCacheConfiguration: ExactPrefixCacheConfiguration? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
@@ -363,8 +379,11 @@ enum EngineV2SlotFactory {
             tokenToId: { tokenizer.inner.convertTokenToId($0) }
         )
 
-        // SSD offload never carves the live KV grant.
-        let engineKVBytesCapacity = kvBytesCapacity
+        // `kvBytesCapacity` is this slot's total share of the process-wide
+        // UnifiedMemoryCap grant. SSD offload leaves it unchanged; the
+        // default-off exact RAM tier carves its hard ceiling below, after the
+        // resolved backend and model capability are known.
+        var engineKVBytesCapacity = kvBytesCapacity
         let promptContractID =
             assemblyOverrides.promptContractID
             ?? modelDirectory.flatMap {
@@ -394,6 +413,51 @@ enum EngineV2SlotFactory {
             preparedBackend = nil
         }
 
+        let exactConfiguration =
+            exactPrefixCacheConfiguration
+            ?? Self.exactPrefixCacheConfiguration(environment: environment)
+        let exactDecision: ExactPrefixCacheDecision
+        let exactPrefixCache: ExactPrefixCacheV2?
+        if let preparedBackend {
+            do {
+                let resolvedSlotGrant = try preparedBackend.bytesCapacity()
+                exactDecision = Self.exactPrefixCacheDecision(
+                    modelId: modelId,
+                    capabilities: preparedBackend.modelCapabilities,
+                    backend: preparedBackend.kind,
+                    backendDType: preparedBackend.pagedPoolDType,
+                    weightHash: weightHash,
+                    promptContractID: promptContractID,
+                    slotKVBytesCapacity: resolvedSlotGrant,
+                    configuration: exactConfiguration)
+                exactPrefixCache = Self.makeExactPrefixCache(
+                    decision: exactDecision)
+                if exactPrefixCache != nil {
+                    engineKVBytesCapacity = exactDecision.engineKVBytesCapacity
+                    try preparedBackend.resizeContiguousCapacity(engineKVBytesCapacity)
+                }
+            } catch {
+                EngineV2Factory.emitRefusalTelemetry(
+                    modelId: modelId,
+                    reason: EngineV2RefusalReason.classify(error),
+                    error: error,
+                    emitTelemetry: emitTelemetry)
+                throw error
+            }
+        } else {
+            // Scripted engines deliberately have no resolved model/backend
+            // identity. They cannot activate an exact-state cache even if a
+            // test injects an enabled configuration.
+            exactDecision = ExactPrefixCacheDecision(
+                configured: exactConfiguration.enabled,
+                reason: exactConfiguration.enabled
+                    ? .unsupportedBackend : .configDisabled,
+                cacheBudgetBytes: 0,
+                engineKVBytesCapacity: max(0, kvBytesCapacity),
+                identity: nil)
+            exactPrefixCache = nil
+        }
+
         // Encrypted SSD is the only production prefix-cache tier.
         // The same object serves as the ENGINE's `CBv2PrefixCache` and the
         // BRIDGE's staging/backstop/shutdown handle. NOT funding-gated:
@@ -412,7 +476,14 @@ enum EngineV2SlotFactory {
         var cacheCapability: CBv2PrefixReuseCapability?
         var cacheConstructionStatus = PrefixCacheConstructionStatus.configDisabled
         let cacheConstructionStatusBox = PrefixCacheConstructionStatusBox()
-        if makeEngineOverride != nil {
+        if exactPrefixCache != nil {
+            // `PrefixCacheModelStatus` describes the coordinator's durable
+            // SSD receipt protocol, not this process-local exact RAM tier.
+            // Keep that advertisement disabled while exact-cache posture is
+            // reported separately through slot status and telemetry.
+            cacheConstructionStatus = PrefixCacheConstructionStatus(
+                state: .disabled, reason: .unsupportedLayout)
+        } else if makeEngineOverride != nil {
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedBackend)
         } else if let preparedBackend,
@@ -547,7 +618,8 @@ enum EngineV2SlotFactory {
             replayStrategy: PrefixCacheReplayStrategy(cacheCapability),
             state: cacheConstructionStatus.state,
             reason: cacheConstructionStatus.reason)
-        let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
+        let enginePrefixCache: (any CBv2PrefixCache)? =
+            exactPrefixCache ?? ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild
         if let makeEngineOverride {
@@ -614,6 +686,9 @@ enum EngineV2SlotFactory {
             // KV here before engine admission (process-wide gate) and the
             // reservation is what the model-LOAD gate subtracts.
             kvBudget: kvBudget,
+            exactPrefixCache: exactPrefixCache,
+            exactPrefixCacheConfigured: exactDecision.configured,
+            exactPrefixCacheReason: exactDecision.reason.rawValue,
             // SSD tier handle for the bridge's pre-submit staging hook,
             // release backstops, and shutdown (closed by `makeBridge` on
             // an engine-init failure so background tasks never leak).
@@ -622,7 +697,9 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
-        if let ssdPrefixCache {
+        if let exactPrefixCache {
+            await bridge.startExactPrefixCacheStatsLogger(cache: exactPrefixCache)
+        } else if let ssdPrefixCache {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
         await bridge.configureMTPStatus(mtpStatus)
@@ -654,6 +731,8 @@ enum EngineV2SlotFactory {
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
+                    exactDecision: exactDecision,
+                    exactCache: exactPrefixCache,
                     ssdCache: ssdPrefixCache))
 
         let reason = mtpStatus.reason?.rawValue ?? "none"

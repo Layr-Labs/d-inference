@@ -98,7 +98,11 @@ enum KVBackendPosture {
         guard slot.loadError == nil else {
             return "\(slot.model): \(backendPhrase(slot))"
         }
-        return "\(slot.model): \(backendPhrase(slot)) | \(mtpPhrase(slot))"
+        var phrases = [backendPhrase(slot), mtpPhrase(slot)]
+        if slot.exactPrefixCacheConfigured != nil {
+            phrases.append(exactPrefixCachePhrase(slot))
+        }
+        return "\(slot.model): " + phrases.joined(separator: " | ")
     }
 
     /// Resolved backend, always paired with the request it was resolved
@@ -132,6 +136,20 @@ enum KVBackendPosture {
             return "mtp=enabled but INERT (\(MTPFallbackReason.inertKVUnsupported.rawValue))"
         }
         return "mtp=enabled but inactive (\(reason ?? "reason unreported"))"
+    }
+
+    static func exactPrefixCachePhrase(_ slot: DaemonState.SlotPosture) -> String {
+        if slot.exactPrefixCacheActive == true {
+            return "exact-cache=active ("
+                + "\(slot.exactPrefixCacheBytesInUse ?? 0)/"
+                + "\(slot.exactPrefixCacheBudgetBytes ?? 0) B, "
+                + "entries=\(slot.exactPrefixCacheEntries ?? 0))"
+        }
+        guard slot.exactPrefixCacheConfigured == true else {
+            return "exact-cache=off"
+        }
+        return "exact-cache=inactive ("
+            + "\(slot.exactPrefixCacheReason ?? "reason unreported"))"
     }
 }
 

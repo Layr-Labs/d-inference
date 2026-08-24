@@ -147,6 +147,7 @@ extension ProviderLoop {
     private struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
+        let fixedCarveBytes: Int
         let bridge: EngineV2Bridge
     }
 
@@ -190,6 +191,8 @@ extension ProviderLoop {
                         fp16KVBytesPerToken: slot.sizing.fp16KVBytesPerToken,
                         maxContextLength: slot.sizing.maxContextLength),
                     previousGrant: currentGrant,
+                    fixedCarveBytes:
+                        slot.engineV2.exactPrefixCacheFixedCarveBytes(),
                     bridge: slot.engineV2))
         }
         return existing
@@ -309,6 +312,10 @@ extension ProviderLoop {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
+        let fixedCarveBytes = Dictionary(
+            uniqueKeysWithValues: existing.map {
+                ($0.slot.modelId, $0.fixedCarveBytes)
+            })
         var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
@@ -320,7 +327,7 @@ extension ProviderLoop {
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:]), prepared.assistant != nil
+            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
         {
             logger.warning(
                 "mtp: model=\(modelId) fallback reason="
@@ -339,7 +346,7 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: [:])
+            targets, fixedCarveBytes: fixedCarveBytes)
         else {
             let floorGb = String(
                 format: "%.1f",

@@ -426,7 +426,7 @@ LLDB_LOG="$WORK_DIR/lldb-window.log"
 # shellcheck disable=SC2016
 if ! /usr/bin/env -i "${APP_ENV[@]}" /usr/bin/lldb --batch -p "$APP_PID" \
   -o 'expr -l Swift -- import AppKit' \
-  -o 'expr -l Swift -O -- { let stored = Mirror(reflecting: NSApp.delegate!).children.first { $0.label == "appDelegate" }!.value; let appDelegate = Mirror(reflecting: stored).children.first!.value; return String(reflecting: Mirror(reflecting: appDelegate).children.first { $0.label == "_installState" }!.value) }()' \
+  -o 'expr -l Swift -O -- { let stored = Mirror(reflecting: NSApp.delegate!).children.first { $0.label == "appDelegate" }!.value; let appDelegate = Mirror(reflecting: stored).children.first!.value; return String(reflecting: Mirror(reflecting: appDelegate).children.first { $0.label == "installState" }!.value) }()' \
   -o 'expr -l objc++ -- @import AppKit' \
   -o 'expr -l objc++ -O -- ({ NSArray *windows=(NSArray *)[[NSApplication sharedApplication] windows]; NSWindow *match=nil; NSUInteger matches=0; for(NSWindow *candidate in windows){ if([candidate isVisible] && [[candidate title] isEqualToString:@"Darkbloom"]){ match=candidate; matches++; }} NSRect frame=[match frame]; [NSString stringWithFormat:@"DARKBLOOM_WINDOW|matches=%lu|title=%@|identifier=%@|frame=%.0fx%.0f|visible=%d",(unsigned long)matches,[match title],[match identifier],frame.size.width,frame.size.height,[match isVisible]]; })' \
   -o detach >"$LLDB_LOG" 2>&1; then

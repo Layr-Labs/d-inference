@@ -333,6 +333,11 @@ It deliberately evicts 25%/50% boundaries after the full donor. First-token
 parity remains 100%; the existing long-continuation parity blocker remains
 unchanged.
 
+Including the E41 donor and 64-token decode, 75% reuse amortizes to
+2.439× after three warm B4 batches and **2.574× after four**. The 87.5%
+profile crosses on the second warm batch at **2.935×**. These replace the
+short two-token break-even counts for deployment decisions.
+
 Artifacts:
 
 - `artifacts/e41-partial-prefix-2gib-decode64-3x.json.gz`

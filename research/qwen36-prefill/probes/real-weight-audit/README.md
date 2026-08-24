@@ -49,7 +49,7 @@ MXFP8 uses MLX's exact E4M3 code times E8M0 scale decode.
 
 ```bash
 research/qwen36-prefill/probes/real-weight-audit/run.sh \
-  /Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local \
+  /Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local \
   /tmp/qwen36-real-weight-audit
 ```
 

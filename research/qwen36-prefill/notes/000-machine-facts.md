@@ -13,7 +13,7 @@ Status: kept (facts)
 - Provider not running. `provider.toml` still points at live coordinator
   `wss://api.darkbloom.dev/ws/provider`. Benchmarks must not start the
   daemon unless intended.
-- Workdir: `/Users/gaj/work/qwen36-prefill`
+- Workdir: `/Users/benchmark/work/qwen36-prefill`
 - Fan helper: `/Library/PrivilegedHelperTools/io.darkbloom.fan-helper`
 
 Hazard: 2026-08-21 provider.log Qwen load died with

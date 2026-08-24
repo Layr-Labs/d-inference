@@ -3,9 +3,9 @@
 # Run on the M3 Max only. Does not raise CBv2 scheduler budgets.
 set -euo pipefail
 
-ROOT="${1:-/Users/gaj/work/d-inference}"
+ROOT="${1:-/Users/benchmark/work/d-inference}"
 SWIFT="$ROOT/libs/mlx-swift"
-OUT="${2:-/Users/gaj/work/qwen36-prefill/results}"
+OUT="${2:-/Users/benchmark/work/qwen36-prefill/results}"
 mkdir -p "$OUT"
 
 if [[ ! -d "$SWIFT/Source/Cmlx/mlx/mlx" ]]; then

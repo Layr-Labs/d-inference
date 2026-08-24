@@ -53,7 +53,7 @@ wins; log every miss; never rerun a dead experiment without a new reason.
 | Power | Must bench on AC + High Power (`powermode 2`). LPM halves GPU. Record `pmset -g batt` and `powermode` in every result row. |
 | Installed provider | Darkbloom `0.8.10` at `~/.darkbloom` (not currently serving) |
 | Model id | `qwen3.6-35b-a3b-vl-mtp-mxfp8` |
-| Snapshot | `/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local` (~20 GiB, 4-bit affine g64, routers 8-bit) |
+| Snapshot | `/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local` (~20 GiB, 4-bit affine g64, routers 8-bit) |
 | Registry | `models.darkbloom.ai` / `EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp` |
 | Cloud VM | Research notebook + git + agents. It cannot compile Metal. The Mac is the only runtime. |
 | Control plane | This repo (`d-inference`) on branch `cursor/qwen36-prefill-2p5x-74d1` |
@@ -114,9 +114,9 @@ miss after LRU eviction.
 This clears the 2.5× performance threshold for the named reuse-bearing
 workloads without changing weights. It does **not** yet satisfy the full
 merge/ship objective: completion-quality parity, fork execution evidence,
-deployment-budget parity, and a clean submodule commit remain open. The
-distinct, unrelated cold-prompt cell remains the next optimization target
-and must not be conflated with the measured reuse profiles.
+a clean submodule commit, and transient donation-copy accounting remain
+open. The distinct, unrelated cold-prompt cell remains the next optimization
+target and must not be conflated with the measured reuse profiles.
 
 ## Architecture facts (do not rediscover)
 

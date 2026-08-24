@@ -26,8 +26,8 @@ if [[ "$chunk" != default || "$budget" != default ]]; then
     exit 2
 fi
 
-root="/Users/gaj/work/qwen36-prefill"
-binary="/Users/gaj/work/d-inference/provider-swift/.build/release/darkbloom"
+root="/Users/benchmark/work/qwen36-prefill"
+binary="/Users/benchmark/work/d-inference/provider-swift/.build/release/darkbloom"
 model="qwen3.6-35b-a3b-vl-mtp-mxfp8"
 mkdir -p "$root/logs" "$root/results"
 test -x "$binary"

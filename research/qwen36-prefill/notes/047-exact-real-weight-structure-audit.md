@@ -12,7 +12,7 @@ claim.
 The Swift probe read this immutable snapshot directly on the `Mac15,9` M3 Max:
 
 ```text
-/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
+/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
 ```
 
 The successful run pins:

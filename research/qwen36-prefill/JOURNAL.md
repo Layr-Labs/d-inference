@@ -6,12 +6,12 @@ heading. Never delete a miss.
 ## 2026-08-24T05:16Z — engagement
 
 User granted remote access to `m3-max-128gb-2`,
-user `gaj`. Job: 2.5x Qwen 3.6 35B A3B aggregate CBv2 prefill, B=1/2/4.
+using a benchmark-only account. Job: 2.5x Qwen 3.6 35B A3B aggregate
+CBv2 prefill, B=1/2/4.
 
 ## 2026-08-24T05:17Z — machine recon
 
-- Tailscale connected as `cursor-darkbloom-74d1`.
-- SSH password auth works. Host: `gajs-MacBook-Pro-8.local`, M3 Max
+- Private network link and benchmark SSH access work. Host: M3 Max
   40-core GPU, 128 GB, macOS 26.4, Swift 6.3.2, Xcode present.
 - AC power, battery 100%, `powermode=0` (automatic) — **not yet High
   Power**. Must flip to 2 before any decision-grade number.

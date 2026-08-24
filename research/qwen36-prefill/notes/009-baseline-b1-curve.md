@@ -4,7 +4,7 @@ Status: kept (measurement)
 
 Harness: installed Darkbloom 0.8.10, `--scheduler-prefill`, 3 iters,
 contiguous, High Power, AC, stripe cfg 2048, after 128-token warmup.
-JSON: `/Users/gaj/work/qwen36-prefill/results/baseline-scheduler-prefill.json`
+JSON: `/Users/benchmark/work/qwen36-prefill/results/baseline-scheduler-prefill.json`
 
 | L | i1 ms/t (TTFT) | i2 | i3 | **median ms/t** | **median tok/s** | **median TTFT** |
 |---:|---|---|---|---:|---:|---:|

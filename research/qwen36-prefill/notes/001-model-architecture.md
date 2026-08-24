@@ -2,7 +2,7 @@
 
 Status: kept (facts)
 
-Path: `/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local`
+Path: `/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local`
 
 | Field | Value |
 |---|---|

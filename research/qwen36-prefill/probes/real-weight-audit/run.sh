@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-SNAPSHOT="${1:-/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local}"
+SNAPSHOT="${1:-/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local}"
 OUT_DIR="${2:-$SCRIPT_DIR/out}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwen36-real-weight-audit.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT

@@ -284,10 +284,10 @@ Common M3 setup and matrix command:
 
 ```bash
 set -euo pipefail
-export ROOT=/Users/gaj/work/qwen36-prefill
+export ROOT=/Users/benchmark/work/qwen36-prefill
 export MODEL=qwen3.6-35b-a3b-vl-mtp-mxfp8
 export CONFIG="$HOME/.darkbloom/provider.toml"
-export OUT="/Users/gaj/qwen36-reverse-prefill/$(date -u +%Y%m%dT%H%M%SZ)"
+export OUT="/Users/benchmark/qwen36-reverse-prefill/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 sudo pmset -a powermode 2
 pmset -g batt | tee "$OUT/power-before.log"

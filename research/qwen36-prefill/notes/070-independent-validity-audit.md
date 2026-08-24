@@ -42,16 +42,14 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
 | Code/run provenance | PARTIAL after E41 | Sidecar binds the exact root commit, nested base/tree and patch hashes, binary/metallib/model/corpus hashes, OS and Swift; power posture is post-run, and older reports retain schema drift. |
-| RAM/LRU/pinning | PASS for boundedness | Exact `nbytes` accounting, pre-insert eviction, hard ceiling, deterministic LRU, request-correlated pins, and cancellation release are implemented and tested. |
+| RAM/LRU/pinning | PARTIAL | Resident entries obey exact `nbytes`, LRU, pins, and a hard ceiling. Detached donation candidates are materialized before eviction and multiple candidates may coexist until finalization, so transient bytes can exceed the carved resident budget. |
 | Deployment budget equivalence | PASS after E41 | At the exact 2 GiB deployment ceiling, 6,144/7,168-token boundaries remain hits above 2.5×; 2,048/4,096-token boundaries are honestly evicted and miss. |
 | Replayable handoff | PARTIAL | The three nested patches replay from `ab73a827...` to tree `b002398c...`; the gitlink still points at the unpatched base, so a normal recursive clone is not buildable without manual patching. |
 | Deployment integration | PARTIAL | Default-off slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, daemon knobs, and a 2 GiB-equivalent performance run now exist. The nested tree is unpublished. |
-| Tests/build | PARTIAL | Serving wiring runs on Apple Silicon (focused suites, release build, 2,215-test full provider suite), plus Go/UI pass. Fresh-clone CI and a valid archived prompt-fork suite remain missing. |
+| Tests/build | PARTIAL | Serving wiring runs on Apple Silicon (focused suites, release build, 2,215-test full provider suite), plus Go/UI and a valid 9-test prompt-fork suite pass. Fresh-clone CI remains blocked by the unpublished submodule. |
 
-Current-schema validation makes the drift concrete: the partial-prefix report
-fails only the factory-identity constraint. The earlier exact-hit and live-fork
-reports each also omit `cacheBlockTokens` and use the retired
-`exact-full-prompt` match-policy value, producing four validation errors each.
+E41 validates against the current report schema. Historical E32–E37 reports
+retain their original factory/match-policy schema drift and are not rewritten.
 
 ## State and ownership review
 
@@ -71,18 +69,17 @@ self-proving.
 
 ## Required actions
 
-1. Produce a new three-iteration M3 Max report with at least 64 generated
-   tokens, root and submodule commit/tree IDs, patch SHA-256s when applicable,
-   captured fork controls, fork activity deltas, OS/Swift versions, and AC/high
-   power posture.
+1. E40/E41 supply three-iteration 64-token runs, source/artifact hashes,
+   captured controls, OS/Swift, and post-run power posture. A new live-fork
+   report still needs activity deltas and in-run power capture.
 2. Resolve identical-B2 second-token divergence or explicitly remove B2 full
    parity from the acceptance claim and justify that narrower product
    contract. The current hard goal requires correctness at B=2.
 3. Publish the nested library changes to a writable remote, update the
    submodule gitlink, and run the documented tests plus release build from a
    fresh recursive clone.
-4. Rerun durable partial-prefix scenarios with the actual deployment cache
-   ceiling. E41 completes this at 2 GiB.
+4. ~~Rerun durable partial-prefix scenarios with the actual deployment cache
+   ceiling.~~ E41 completes this at 2 GiB.
 5. ~~Rerun the prompt-fork planner/ownership/cancellation suite with the
    correct metallib.~~ E41 passes 9/9 and archives the terminal summary.
 6. Version or reconcile the report schema. Do not edit historical artifact
@@ -116,8 +113,10 @@ Still open:
 - completion-quality parity or a replay posture that preserves the cold decode
   schedule;
 - self-reported live-fork activity in a new fork performance artifact;
-- completion-quality parity despite the now budget-equivalent E41 speed pass;
+- bounding or reserving detached in-flight donation copies before evaluation;
 - publishing the nested library tree and updating the gitlink;
+- sanitizing legacy benchmark artifacts/history that retain private host/user
+  identifiers;
 - replacing, not rewriting, historical reports whose schema identity drifted.
 
 Until these are complete, the correct statement is: **2.5× is measured for

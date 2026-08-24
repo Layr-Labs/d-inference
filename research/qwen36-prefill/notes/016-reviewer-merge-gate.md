@@ -301,16 +301,16 @@ reviewed values before execution.
 ```bash
 set -euo pipefail
 
-export ROOT=/Users/gaj/work/qwen36-prefill
+export ROOT=/Users/benchmark/work/qwen36-prefill
 export BASE_SHA=REPLACE_WITH_HARNESS_ONLY_PRE_KERNEL_COMMIT
 export CANDIDATE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
-export BASE_ROOT=/Users/gaj/work/qwen36-prefill-gate-base
-export CAND_ROOT=/Users/gaj/work/qwen36-prefill-gate-candidate
+export BASE_ROOT=/Users/benchmark/work/qwen36-prefill-gate-base
+export CAND_ROOT=/Users/benchmark/work/qwen36-prefill-gate-candidate
 export MODEL_ID=qwen3.6-35b-a3b-vl-mtp-mxfp8
-export MODEL_PATH=/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
+export MODEL_PATH=/Users/benchmark/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
 export CONFIG="$HOME/.darkbloom/provider.toml"
 export QWEN_IMAGE=/var/folders/hv/5779vnmn5c564l3tdknlf4x80000gp/T/opencode/qwen36-vlm-proof.png
-export OUT="/Users/gaj/qwen36-prefill-gate-artifacts/$(date -u +%Y%m%dT%H%M%SZ)"
+export OUT="/Users/benchmark/qwen36-prefill-gate-artifacts/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 
 test "$(sysctl -n hw.model)" = "Mac15,9"
@@ -389,7 +389,7 @@ export TEST_SHA=REPLACE_WITH_TEST_ONLY_COMMIT
 export TEST_PACKAGE_REL=REPLACE_WITH_PACKAGE_PATH
 export TEST_FILTER=REPLACE_WITH_EXACT_SWIFT_TEST_FILTER
 export EXPECTED_RED_ASSERTION=REPLACE_WITH_EXACT_ASSERTION_TEXT
-export RED_ROOT=/Users/gaj/work/qwen36-prefill-gate-red
+export RED_ROOT=/Users/benchmark/work/qwen36-prefill-gate-red
 
 git -C "$ROOT" worktree add --detach "$RED_ROOT" "$TEST_SHA"
 git -C "$RED_ROOT" submodule update --init --recursive

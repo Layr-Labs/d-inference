@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Hermetic release-bundle smoke for the download-app-first path. The assembled
-# app has the production bundle id but is unsigned and lives in a temporary
-# directory. A DEBUG-only relocation bypass lets it reach the normal welcome
-# screen without copying itself. Every app-visible home, preference, cache,
-# config, and provider-state path is rooted below WORK_DIR.
+# Hermetic fresh-user lifecycle smoke for an unsigned DEBUG app. The assembled
+# app has the release bundle id but is unsigned and lives in a temporary
+# directory. A DEBUG-only relocation bypass reaches the normal welcome screen
+# without copying itself, and every app-visible path is rooted below WORK_DIR.
+# This does NOT prove Developer ID identity, notarization, stapling, Gatekeeper,
+# or signed-app relocation; scripts/qualify-signed-macos-app.sh qualifies a real
+# release artifact without weakening any of those checks.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_DIR="$ROOT_DIR/provider-swift"
-CONFIGURATION="${DARKBLOOM_FRESH_INSTALL_CONFIGURATION:-debug}"
-VERSION="${DARKBLOOM_FRESH_INSTALL_VERSION:-0.0.0-fresh-install-test}"
+CONFIGURATION="${DARKBLOOM_DEBUG_LIFECYCLE_CONFIGURATION:-debug}"
+VERSION="${DARKBLOOM_DEBUG_LIFECYCLE_VERSION:-0.0.0-debug-lifecycle-test}"
 
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-fresh-install.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-debug-lifecycle.XXXXXX")"
 WORK_DIR="$(cd "$WORK_DIR" && pwd -P)"
 APP="$WORK_DIR/Darkbloom.app"
 APP_LOG="$WORK_DIR/app.log"
@@ -30,12 +32,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [[ "$CONFIGURATION" != "debug" ]]; then
-  echo "Fresh-install UI smoke requires a debug DarkbloomApp build" >&2
+  echo "Unsigned lifecycle smoke requires a debug DarkbloomApp build" >&2
   exit 64
 fi
 
-if [[ -n "${DARKBLOOM_FRESH_INSTALL_BIN_DIR:-}" ]]; then
-  BIN_DIR="$DARKBLOOM_FRESH_INSTALL_BIN_DIR"
+if [[ -n "${DARKBLOOM_DEBUG_LIFECYCLE_BIN_DIR:-}" ]]; then
+  BIN_DIR="$DARKBLOOM_DEBUG_LIFECYCLE_BIN_DIR"
 else
   swift build --package-path "$PACKAGE_DIR" -c "$CONFIGURATION" --product DarkbloomApp
   swift build --package-path "$PACKAGE_DIR" -c "$CONFIGURATION" --product darkbloom
@@ -69,8 +71,8 @@ for bundle in "${RESOURCE_BUNDLES[@]}"; do
   /usr/bin/ditto "$bundle" "$STAGED_BIN_DIR/$(basename "$bundle")"
 done
 
-if [[ -n "${DARKBLOOM_FRESH_INSTALL_METALLIB:-}" ]]; then
-  MLX_METALLIB="$DARKBLOOM_FRESH_INSTALL_METALLIB"
+if [[ -n "${DARKBLOOM_DEBUG_LIFECYCLE_METALLIB:-}" ]]; then
+  MLX_METALLIB="$DARKBLOOM_DEBUG_LIFECYCLE_METALLIB"
 elif [[ -s "$BIN_DIR/mlx.metallib" ]]; then
   MLX_METALLIB="$BIN_DIR/mlx.metallib"
 else
@@ -109,7 +111,7 @@ cmp "$MLX_METALLIB" "$APP_MACOS/mlx.metallib"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")" == "$VERSION" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST")" == "14.0" ]]
 [[ ! -e "$APP_CONTENTS/_CodeSignature/CodeResources" ]] || {
-  echo "Fresh-install smoke expected an unsigned assembled app bundle" >&2
+  echo "Unsigned lifecycle smoke unexpectedly received a signed app bundle" >&2
   exit 1
 }
 
@@ -148,12 +150,12 @@ mkdir -p \
   "$WORK_DIR/tmp"
 
 # Startup should not need the CLI. If it regresses and does, record the argv
-# and fail rather than ever falling through to the co-bundled production CLI.
+# and fail rather than ever falling through to the co-bundled shipping CLI.
 FAKE_CLI="$WORK_DIR/fail-closed-darkbloom"
 cat > "$FAKE_CLI" <<'FAKE_CLI_EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${DARKBLOOM_FAKE_CLI_LOG:?}"
-echo "fresh-install smoke forbids CLI execution during app startup" >&2
+echo "unsigned debug lifecycle forbids CLI execution during app startup" >&2
 exit 97
 FAKE_CLI_EOF
 chmod 0755 "$FAKE_CLI"
@@ -488,4 +490,4 @@ APP_PID=""
   exit 1
 }
 
-echo "Fresh-install app bundle and persistent isolated welcome-window launch passed"
+echo "Unsigned debug app fresh-user lifecycle and welcome-window launch passed"

@@ -1344,10 +1344,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
         }
 
         XCTAssertTrue(fixture.startIntentWasObserved)
+        let stoppedRecord = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )
         XCTAssertEqual(
-            try await runtime.inspect(
-                name: fixture.virtualMachineName
-            )?.state,
+            stoppedRecord?.state,
             .stopped
         )
         XCTAssertFalse(
@@ -1426,11 +1427,12 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 atPath: fixture.startIntentFile.path
             )
         )
+        let stoppedRecord = try await runtime.inspect(
+            scope: lease.scope,
+            name: lease.virtualMachineName
+        )
         XCTAssertEqual(
-            try await runtime.inspect(
-                scope: lease.scope,
-                name: lease.virtualMachineName
-            )?.state,
+            stoppedRecord?.state,
             .stopped
         )
     }
@@ -2226,9 +2228,10 @@ final class LumeRuntimeFailureTests: XCTestCase {
         } catch let error as SandboxRuntimeError {
             XCTAssertEqual(error, expectedError)
         }
-        XCTAssertNotNil(
-            try await runtime.inspect(name: fixture.virtualMachineName)
+        let listedRecord = try await runtime.inspect(
+            name: fixture.virtualMachineName
         )
+        XCTAssertNotNil(listedRecord)
 
         try FileManager.default.removeItem(at: fixture.state)
         do {
@@ -2249,7 +2252,10 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 atPath: fixture.startIntentFile.path
             )
         )
-        XCTAssertNil(try await runtime.inspect(name: fixture.virtualMachineName))
+        let unlistedRecord = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )
+        XCTAssertNil(unlistedRecord)
     }
 
     func testDeleteRefusesRunningVirtualMachine() async throws {

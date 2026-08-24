@@ -136,6 +136,8 @@ struct ArrivalPrefillAccountingTests {
               "decodeTokensPerSecond": 10,
               "generatedTokens": 2,
               "completedAtMs": 8.5,
+              "firstTokenID": 123,
+              "firstTokenChecksum": "aaaaaaaaaaaaaaaa",
               "tokenChecksum": "0123456789abcdef"
             }
             """.utf8)
@@ -143,6 +145,8 @@ struct ArrivalPrefillAccountingTests {
         #expect(row.submittedAtMs == 1.25)
         #expect(row.firstTokenAtMs == 4.75)
         #expect(row.completedAtMs == 8.5)
+        #expect(row.firstTokenID == 123)
+        #expect(row.firstTokenChecksum == "aaaaaaaaaaaaaaaa")
 
         let encoded = try JSONEncoder().encode(row)
         let object = try #require(
@@ -150,6 +154,9 @@ struct ArrivalPrefillAccountingTests {
         #expect(object["submittedAtMs"] != nil)
         #expect(object["firstTokenAtMs"] != nil)
         #expect(object["completedAtMs"] != nil)
+        #expect(object["firstTokenID"] as? Int == 123)
+        #expect(object["firstTokenChecksum"] as? String == "aaaaaaaaaaaaaaaa")
+        #expect(object["tokenChecksum"] as? String == "0123456789abcdef")
     }
 
     @Test

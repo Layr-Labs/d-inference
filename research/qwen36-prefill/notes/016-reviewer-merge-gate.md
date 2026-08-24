@@ -30,9 +30,12 @@ exactly:
 ```
 
 Its JSON must record `batchSize`, every row's submitted/first-token/completion
-timestamps, `prefillMakespanMs`, and
-`aggregatePrefillTokensPerSecond`. The aggregate must be computed by the
-harness, not reconstructed from rounded console output:
+timestamps, first-token ID/checksum, full-output checksum,
+`prefillMakespanMs`, and `aggregatePrefillTokensPerSecond`. Pattern summaries
+must report first-token invariance and full-output invariance separately: a
+later decode-token mismatch must remain visible without being misclassified as
+a prefill-output mismatch. The aggregate must be computed by the harness, not
+reconstructed from rounded console output:
 
 ```text
 prefill_tokens_per_row = prompt_tokens_per_request - 1
@@ -49,7 +52,9 @@ with the acceptance metric.
 The harness change is not an optimization and gets its own red/green tests. It
 must prove that B=2 really submits two rows to one serving CBv2 engine, B=4
 submits four, all rows participate in the measured burst, and a failed/missing
-row poisons the cell instead of producing a flattering partial result.
+row poisons the cell instead of producing a flattering partial result. The
+test seam may fake the CBv2 event stream, but not the row scheduling,
+submission, stream consumption, or result validation around it.
 `--scheduler-prefill` must also add the first emitted token's checksum to every
 sample so B=1 baseline/candidate parity is machine-checkable.
 
@@ -529,16 +534,22 @@ run_arrival_matrix base "$BASE_BIN" 2
 for f in "$OUT"/arrival-*.json; do
   jq -e '
     .batchSize as $batch |
-    .schemaVersion >= 5 and
+    .schemaVersion >= 7 and
     .batchSize == (.patterns[0].samples[0].rows | length) and
     (.batchSize == 2 or .batchSize == 4) and
     .iterations == 3 and
     .kvBackend.selection == "contiguous" and
     ([.kvBackend.resolved[] | startswith("contiguous")] | all) and
-    ([.patterns[].outputsStableAcrossIterations] | all) and
-    ([.patterns[].outputsMatchBurst] | all) and
+    ([.patterns[].firstTokensStableAcrossIterations] | all) and
+    ([.patterns[].firstTokensMatchBurst] | all) and
+    ([.patterns[].outputsStableAcrossIterations | type == "boolean"] | all) and
+    ([.patterns[].outputsMatchBurst | type == "boolean"] | all) and
     ([.patterns[].arrivalWithinTolerance] | all) and
     ([.patterns[].samples[].rows | length == $batch] | all) and
+    ([.patterns[].samples[].rows[] |
+      (.firstTokenID | type == "number") and
+      (.firstTokenChecksum | type == "string" and length > 0) and
+      (.tokenChecksum | type == "string" and length > 0)] | all) and
     ([.patterns[].samples[].aggregatePrefillTokensPerSecond > 0] | all) and
     ([.patterns[].samples[].prefillMakespanMs > 0] | all)
   ' "$f" >/dev/null
@@ -634,8 +645,10 @@ jq -e '
   .iterations == 10 and
   ([.patterns[].samples | length == 10] | all) and
   ([.patterns[].samples[].rows | length == $batch] | all) and
-  ([.patterns[].outputsStableAcrossIterations] | all) and
-  ([.patterns[].outputsMatchBurst] | all) and
+  ([.patterns[].firstTokensStableAcrossIterations] | all) and
+  ([.patterns[].firstTokensMatchBurst] | all) and
+  ([.patterns[].outputsStableAcrossIterations | type == "boolean"] | all) and
+  ([.patterns[].outputsMatchBurst | type == "boolean"] | all) and
   ([.patterns[].arrivalWithinTolerance] | all)
 ' "$OUT/soak-b2.json" "$OUT/soak-b4.json" >/dev/null
 

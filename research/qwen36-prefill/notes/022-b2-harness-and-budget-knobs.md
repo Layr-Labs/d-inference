@@ -6,11 +6,12 @@ Reviewer 016 vetoed `keep=yes` until the arrival harness can emit B=2
 and record harness-computed aggregate prefill tok/s. E2 temporarily added
 env overrides for chunk/budget so the candidate geometry could be measured.
 
-## Arrival harness (schema 6)
+## Arrival harness (schema 7)
 
 `--arrival-batch-size 1|2|4` (default 4). JSON records `batchSize`,
-every row's submitted/first-token/completion timestamp, `prefillMakespanMs`,
-and `aggregatePrefillTokensPerSecond`:
+every row's submitted/first-token/completion timestamp, first-token ID/checksum,
+complete-output checksum, `prefillMakespanMs`, and
+`aggregatePrefillTokensPerSecond`:
 
 ```
 tokens_per_row = prompt_tokens - 1
@@ -18,7 +19,9 @@ prefill_makespan = max(first_token) - min(submission)
 aggregate = batch * tokens_per_row / prefill_makespan
 ```
 
-Missing or invalid rows poison the cell. B=1 only runs `burst`.
+Missing or invalid rows poison the cell. First-token and complete-output
+invariance are reported separately, so a later decode-token mismatch remains
+visible without invalidating first-token prefill parity. B=1 only runs `burst`.
 Scheduler-prefill schema 5 adds canonical `tokenChecksum` (same FNV as arrival
 rows) and retains `firstTokenChecksum` as a schema-4 compatibility alias.
 

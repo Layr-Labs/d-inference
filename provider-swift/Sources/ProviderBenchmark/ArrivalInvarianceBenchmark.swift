@@ -20,6 +20,12 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         public let decodeTokensPerSecond: Double
         public let generatedTokens: Int
         public let completedAtMs: Double
+        /// First emitted token id: the output owned by prefill.
+        public let firstTokenID: Int
+        /// Stable checksum of `firstTokenID` alone.
+        public let firstTokenChecksum: String
+        /// Stable checksum of the complete generated token stream. This is
+        /// reported independently because decode-token drift must stay visible.
         public let tokenChecksum: String
     }
 
@@ -51,6 +57,10 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         public let medianMakespanMs: Double
         public let outputsStableAcrossIterations: Bool
         public let outputsMatchBurst: Bool
+        /// Exact first-token parity across repetitions of this topology.
+        public let firstTokensStableAcrossIterations: Bool
+        /// Exact first-token parity versus the burst topology, row for row.
+        public let firstTokensMatchBurst: Bool
         /// Per-row median of the *measured* submission offsets, directly
         /// comparable to `arrivalDelaysMs`.
         public let measuredArrivalOffsetsMs: [Double]
@@ -71,7 +81,9 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     ///   (`prefillMakespanMs`, `aggregatePrefillTokensPerSecond`) so B=1/2/4
     ///   cells are first-class and not reconstructed from console rounding.
     /// 6 adds every row's explicit `firstTokenAtMs` timestamp.
-    public static let currentSchemaVersion = 6
+    /// 7 adds per-row `firstTokenID`/`firstTokenChecksum` and separates
+    ///   first-token invariance from complete generated-output invariance.
+    public static let currentSchemaVersion = 7
 
     public let schemaVersion: Int
     public let modelID: String
@@ -103,8 +115,9 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
 
 /// Measures production ContinuousBatchingV2 under equivalent request sets
 /// submitted with different arrival schedules. Prefix caching is absent, all
-/// rows use greedy decoding, and exact output-token checksums pin numerical
-/// invariance independently from latency and throughput.
+/// rows use greedy decoding, and exact first-token plus complete-output
+/// checksums report prefill invariance and later decode drift independently
+/// from latency and throughput.
 public enum ArrivalInvarianceBenchmark {
     private struct PatternDefinition: Sendable {
         let name: String
@@ -122,15 +135,6 @@ public enum ArrivalInvarianceBenchmark {
         let engine: any CBv2Engine
         /// The backend the factory resolved to, with any fallback reason.
         let resolvedBackend: String
-    }
-
-    private struct MeasuredRow: Sendable {
-        let report: ArrivalInvarianceBenchmarkReport.Row
-        let tokenIDs: [Int]
-        let submittedAt: UInt64
-        let firstTokenAt: UInt64
-        let lastTokenAt: UInt64
-        let finishedAt: UInt64
     }
 
     private struct MeasuredSample: Sendable {
@@ -322,8 +326,9 @@ public enum ArrivalInvarianceBenchmark {
         let patternReports = measuredByPattern.map { definition, measured in
             let reports = measured.map(\.report)
             let allOutputs = measured.map(\.outputs)
-            let firstOutputs = allOutputs.first ?? []
-            let stable = allOutputs.allSatisfy { $0 == firstOutputs }
+            let invariance = ArrivalOutputInvariance.evaluate(
+                outputsByIteration: allOutputs,
+                burstOutputs: burstOutputs)
             let measuredOffsets = definition.delaysMs.indices.map { index in
                 median(reports.compactMap { sample in
                     sample.rows.first { $0.row == index }?.submittedAtMs
@@ -342,8 +347,12 @@ public enum ArrivalInvarianceBenchmark {
                     reports.map(\.aggregateDecodeTokensPerSecond)
                 ),
                 medianMakespanMs: median(reports.map(\.makespanMs)),
-                outputsStableAcrossIterations: stable,
-                outputsMatchBurst: allOutputs.allSatisfy { $0 == burstOutputs },
+                outputsStableAcrossIterations:
+                    invariance.outputsStableAcrossIterations,
+                outputsMatchBurst: invariance.outputsMatchBurst,
+                firstTokensStableAcrossIterations:
+                    invariance.firstTokensStableAcrossIterations,
+                firstTokensMatchBurst: invariance.firstTokensMatchBurst,
                 measuredArrivalOffsetsMs: measuredOffsets,
                 maxArrivalErrorMs: worstArrivalError,
                 arrivalWithinTolerance: worstArrivalError <= toleranceMs,
@@ -414,22 +423,26 @@ public enum ArrivalInvarianceBenchmark {
             let attemptRequestIDBase = try addingRequestIDs(
                 to: requestIDBase,
                 count: attemptOffset)
-            let (rows, scenarioStartedAt) = try await runArrivals(
+            let engineSample = try await ArrivalEngineRunner.run(
                 engine: engine,
-                pattern: pattern,
+                arrivalDelaysMs: pattern.delaysMs,
                 prompts: prompts,
                 decodeTokens: decodeTokens,
                 requestIDBase: attemptRequestIDBase
             )
-            let maxArrivalError = rows
-                .map { abs($0.report.arrivalErrorMs) }
+            let maxArrivalError = engineSample.rows
+                .map {
+                    let submittedAtMs = milliseconds(
+                        from: engineSample.scenarioStartedAtNs,
+                        to: $0.submittedAtNs)
+                    return abs(submittedAtMs - Double($0.scheduledDelayMs))
+                }
                 .max() ?? 0
 
             if !enforceTolerance || maxArrivalError <= toleranceMs {
                 return try makeSample(
-                    rows: rows,
+                    engineSample: engineSample,
                     iteration: iteration,
-                    scenarioStartedAt: scenarioStartedAt,
                     maxArrivalErrorMs: maxArrivalError,
                     discardedAttempts: attempt,
                     promptTokens: promptTokens,
@@ -456,81 +469,21 @@ public enum ArrivalInvarianceBenchmark {
         )
     }
 
-    /// Submits one full topology once. Each row sleeps to an ABSOLUTE deadline
-    /// derived from the shared scenario start, so a late-starting child task
-    /// eats into its own sleep instead of shifting the whole schedule.
-    private static func runArrivals(
-        engine: any CBv2Engine,
-        pattern: PatternDefinition,
-        prompts: [[Int]],
-        decodeTokens: Int,
-        requestIDBase: UInt64
-    ) async throws -> (rows: [MeasuredRow], scenarioStartedAt: UInt64) {
-        let clock = SuspendingClock()
-        let scenarioStartedAt = DispatchTime.now().uptimeNanoseconds
-        let scenarioStartInstant = clock.now
-
-        let rows = try await withThrowingTaskGroup(of: MeasuredRow.self) { group in
-            for (row, delayMs) in pattern.delaysMs.enumerated() {
-                let prompt = prompts[row]
-                let requestID = try addingRequestIDs(
-                    to: requestIDBase,
-                    count: UInt64(row))
-                group.addTask {
-                    try await sleepUntilArrival(
-                        offsetMs: delayMs,
-                        scenarioStart: scenarioStartInstant,
-                        clock: clock
-                    )
-                    return try await consumeRow(
-                        engine: engine,
-                        requestID: requestID,
-                        row: row,
-                        delayMs: delayMs,
-                        prompt: prompt,
-                        decodeTokens: decodeTokens,
-                        scenarioStartedAt: scenarioStartedAt
-                    )
-                }
-            }
-
-            var rows: [MeasuredRow] = []
-            for try await row in group {
-                rows.append(row)
-            }
-            return rows.sorted { $0.report.row < $1.report.row }
-        }
-        return (rows, scenarioStartedAt)
-    }
-
-    /// Sleeps to `scenarioStart + offsetMs`, never "offsetMs from whenever this
-    /// task happened to be scheduled". Zero tolerance keeps the OS from
-    /// coalescing the wake-up into a later timer batch.
-    private static func sleepUntilArrival(
-        offsetMs: Int,
-        scenarioStart: SuspendingClock.Instant,
-        clock: SuspendingClock
-    ) async throws {
-        guard offsetMs > 0 else { return }
-        let deadline = scenarioStart.advanced(by: .milliseconds(offsetMs))
-        guard clock.now < deadline else { return }
-        try await Task.sleep(until: deadline, tolerance: .zero, clock: clock)
-    }
-
     private static func makeSample(
-        rows: [MeasuredRow],
+        engineSample: ArrivalEngineSample,
         iteration: Int,
-        scenarioStartedAt: UInt64,
         maxArrivalErrorMs: Double,
         discardedAttempts: Int,
         promptTokens: Int,
         batchSize: Int
     ) throws -> MeasuredSample {
-        let first = rows.map(\.firstTokenAt).min() ?? scenarioStartedAt
-        let last = rows.map(\.lastTokenAt).max() ?? first
-        let finished = rows.map(\.finishedAt).max() ?? last
+        let rows = engineSample.rows
+        let scenarioStartedAt = engineSample.scenarioStartedAtNs
+        let first = rows.map(\.firstTokenAtNs).min() ?? scenarioStartedAt
+        let last = rows.map(\.lastTokenAtNs).max() ?? first
+        let finished = rows.map(\.completedAtNs).max() ?? last
         let decodeIntervals = rows.reduce(0.0) {
-            $0 + Double(max(0, $1.report.generatedTokens - 1))
+            $0 + Double(max(0, $1.tokenIDs.count - 1))
         }
         let decodeSeconds = seconds(from: first, to: last)
         let makespanSeconds = seconds(from: scenarioStartedAt, to: finished)
@@ -538,21 +491,54 @@ public enum ArrivalInvarianceBenchmark {
             ? decodeIntervals / decodeSeconds
             : 0
         let totalTokens = rows.reduce(0.0) {
-            $0 + Double($1.report.generatedTokens)
+            $0 + Double($1.tokenIDs.count)
         }
         let prefillMetrics = try ArrivalPrefillAccounting.metrics(
             batchSize: batchSize,
             promptTokensPerRequest: promptTokens,
             rows: rows.map {
                 ArrivalPrefillAccounting.RowTiming(
-                    submissionNs: $0.submittedAt,
-                    firstTokenNs: $0.firstTokenAt)
+                    submissionNs: $0.submittedAtNs,
+                    firstTokenNs: $0.firstTokenAtNs)
             })
+        let rowReports = rows.map { row in
+            let submittedAtMs = milliseconds(
+                from: scenarioStartedAt,
+                to: row.submittedAtNs)
+            let rowDecodeSeconds = seconds(
+                from: row.firstTokenAtNs,
+                to: row.lastTokenAtNs)
+            let decodeTPS = row.tokenIDs.count > 1 && rowDecodeSeconds > 0
+                ? Double(row.tokenIDs.count - 1) / rowDecodeSeconds
+                : 0
+            return ArrivalInvarianceBenchmarkReport.Row(
+                row: row.row,
+                scheduledDelayMs: row.scheduledDelayMs,
+                submittedAtMs: submittedAtMs,
+                arrivalErrorMs: submittedAtMs - Double(row.scheduledDelayMs),
+                ttftMs: milliseconds(
+                    from: row.submittedAtNs,
+                    to: row.firstTokenAtNs),
+                firstTokenAtMs: milliseconds(
+                    from: scenarioStartedAt,
+                    to: row.firstTokenAtNs),
+                decodeTokensPerSecond: decodeTPS,
+                generatedTokens: row.tokenIDs.count,
+                completedAtMs: milliseconds(
+                    from: scenarioStartedAt,
+                    to: row.completedAtNs),
+                firstTokenID: row.firstTokenID,
+                firstTokenChecksum: ArrivalPrefillAccounting.tokenChecksum([
+                    row.firstTokenID
+                ]),
+                tokenChecksum: ArrivalPrefillAccounting.tokenChecksum(
+                    row.tokenIDs))
+        }
 
         return MeasuredSample(
             report: ArrivalInvarianceBenchmarkReport.Sample(
                 iteration: iteration,
-                rows: rows.map(\.report),
+                rows: rowReports,
                 aggregateDecodeTokensPerSecond: aggregateTPS,
                 endToEndTokensPerSecond: makespanSeconds > 0
                     ? totalTokens / makespanSeconds
@@ -563,7 +549,7 @@ public enum ArrivalInvarianceBenchmark {
                 prefillMakespanMs: prefillMetrics.makespanSeconds * 1000,
                 aggregatePrefillTokensPerSecond: prefillMetrics.aggregateTokensPerSecond
             ),
-            outputs: rows.map(\.tokenIDs)
+            outputs: engineSample.outputs
         )
     }
 
@@ -604,82 +590,6 @@ public enum ArrivalInvarianceBenchmark {
                 engine: build.engine,
                 resolvedBackend: build.resolvedKVBackendDescriptor)
         }
-    }
-
-    private static func consumeRow(
-        engine: any CBv2Engine,
-        requestID: UInt64,
-        row: Int,
-        delayMs: Int,
-        prompt: [Int],
-        decodeTokens: Int,
-        scenarioStartedAt: UInt64
-    ) async throws -> MeasuredRow {
-        let submittedAt = DispatchTime.now().uptimeNanoseconds
-        let stream = try engine.submit(CBv2Request(
-            id: CBv2RequestID(requestID),
-            promptTokens: prompt,
-            sampling: CBv2SamplingParams(temperature: 0.0),
-            maxTokens: decodeTokens,
-            stopTokens: []
-        ))
-
-        var tokenIDs: [Int] = []
-        var timestamps: [UInt64] = []
-        var finishedAt = submittedAt
-        var finishReason: CBv2FinishReason?
-        for await event in stream {
-            let now = DispatchTime.now().uptimeNanoseconds
-            switch event {
-            case .delta(_, let tokens, _):
-                tokenIDs.append(contentsOf: tokens)
-                timestamps.append(contentsOf: repeatElement(now, count: tokens.count))
-            case .finished(let reason, _):
-                finishedAt = now
-                finishReason = reason
-            }
-        }
-
-        guard let first = timestamps.first, let last = timestamps.last else {
-            throw BenchmarkError.noTokens(row)
-        }
-        guard finishReason == .length else {
-            throw BenchmarkError.unexpectedFinish(
-                row: row,
-                reason: String(describing: finishReason)
-            )
-        }
-        guard tokenIDs.count == decodeTokens else {
-            throw BenchmarkError.unexpectedTokenCount(
-                row: row,
-                expected: decodeTokens,
-                actual: tokenIDs.count
-            )
-        }
-        let decodeSeconds = seconds(from: first, to: last)
-        let decodeTPS = tokenIDs.count > 1 && decodeSeconds > 0
-            ? Double(tokenIDs.count - 1) / decodeSeconds
-            : 0
-        let submittedAtMs = milliseconds(from: scenarioStartedAt, to: submittedAt)
-        return MeasuredRow(
-            report: ArrivalInvarianceBenchmarkReport.Row(
-                row: row,
-                scheduledDelayMs: delayMs,
-                submittedAtMs: submittedAtMs,
-                arrivalErrorMs: submittedAtMs - Double(delayMs),
-                ttftMs: milliseconds(from: submittedAt, to: first),
-                firstTokenAtMs: milliseconds(from: scenarioStartedAt, to: first),
-                decodeTokensPerSecond: decodeTPS,
-                generatedTokens: tokenIDs.count,
-                completedAtMs: milliseconds(from: scenarioStartedAt, to: finishedAt),
-                tokenChecksum: ArrivalPrefillAccounting.tokenChecksum(tokenIDs)
-            ),
-            tokenIDs: tokenIDs,
-            submittedAt: submittedAt,
-            firstTokenAt: first,
-            lastTokenAt: last,
-            finishedAt: finishedAt
-        )
     }
 
     private static func stopAndReclaim(_ engine: any CBv2Engine) async {
@@ -738,9 +648,6 @@ public enum ArrivalInvarianceBenchmark {
     }
 
     private enum BenchmarkError: Error, CustomStringConvertible {
-        case noTokens(Int)
-        case unexpectedFinish(row: Int, reason: String)
-        case unexpectedTokenCount(row: Int, expected: Int, actual: Int)
         case arrivalOutOfTolerance(
             pattern: String,
             iteration: Int,
@@ -753,11 +660,6 @@ public enum ArrivalInvarianceBenchmark {
 
         var description: String {
             switch self {
-            case .noTokens(let row): return "row \(row) produced no tokens"
-            case .unexpectedFinish(let row, let reason):
-                return "row \(row) finished unexpectedly: \(reason)"
-            case .unexpectedTokenCount(let row, let expected, let actual):
-                return "row \(row) produced \(actual) tokens, expected \(expected)"
             case .arrivalOutOfTolerance(
                 let pattern, let iteration, let observed, let tolerance, let attempts
             ):

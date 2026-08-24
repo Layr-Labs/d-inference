@@ -2,7 +2,7 @@ diff --git a/Tests/MLXTests/QwenExpertDenseReferencePerfTests.swift b/Tests/MLXT
 new file mode 100644
 --- /dev/null
 +++ b/Tests/MLXTests/QwenExpertDenseReferencePerfTests.swift
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,153 @@
 +// Copyright © 2026 Eigen Labs.
 +//
 +// Upper-bound experiment for Qwen 3.5/3.6 routed prefill. It compares the

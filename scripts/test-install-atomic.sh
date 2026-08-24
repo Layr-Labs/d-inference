@@ -249,6 +249,68 @@ do
     fi
 done
 
+# Both public installer copies accept exactly SemVer 2 and implement the
+# specification's prerelease precedence without integer overflow.
+VALID_SEMVERS=(
+    "0.0.0"
+    "1.2.3-alpha+001"
+    "1.0.0-alpha.1"
+    "1.0.0-0.3.7"
+    "1.0.0-x.7.z.92+build.01"
+    "184467440737095516160.0.1"
+)
+INVALID_SEMVERS=(
+    "1.0"
+    "01.0.0"
+    "1.01.0"
+    "1.0.01"
+    "1.0.0-"
+    "1.0.0-alpha..1"
+    "1.0.0-alpha.01"
+    "1.0.0+"
+    "1.0.0+build+second"
+    "1.0.0-alpha_beta"
+)
+SEMVER_PRECEDENCE=(
+    "1.0.0-alpha"
+    "1.0.0-alpha.1"
+    "1.0.0-alpha.beta"
+    "1.0.0-beta"
+    "1.0.0-beta.2"
+    "1.0.0-beta.11"
+    "1.0.0-rc.1"
+    "1.0.0"
+)
+for installer in \
+    "$REPO_ROOT/scripts/install.sh" \
+    "$REPO_ROOT/coordinator/api/install.sh"
+do
+    for version in "${VALID_SEMVERS[@]}"; do
+        bash "$installer" --semver-test "$version"
+    done
+    for version in "${INVALID_SEMVERS[@]}"; do
+        if bash "$installer" --semver-test "$version"; then
+            echo "$installer accepted invalid SemVer: $version" >&2
+            exit 1
+        fi
+    done
+    for ((index = 0; index + 1 < ${#SEMVER_PRECEDENCE[@]}; index++)); do
+        lower=${SEMVER_PRECEDENCE[$index]}
+        higher=${SEMVER_PRECEDENCE[$((index + 1))]}
+        bash "$installer" --semver-older-test "$lower" "$higher"
+        if bash "$installer" --semver-older-test "$higher" "$lower"; then
+            echo "$installer reversed SemVer precedence: $higher < $lower" >&2
+            exit 1
+        fi
+    done
+    if bash "$installer" \
+        --semver-older-test "1.0.0+build.1" "1.0.0+build.2"
+    then
+        echo "$installer treated build metadata as precedence" >&2
+        exit 1
+    fi
+done
+
 test_user_app_shortcut() {
     local installer=$1
     local label=$2
@@ -290,6 +352,50 @@ test_user_app_shortcut() {
 
 test_user_app_shortcut "$REPO_ROOT/scripts/install.sh" source
 test_user_app_shortcut "$REPO_ROOT/coordinator/api/install.sh" embedded
+
+test_install_lock_signal_exit() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/signal-lock-$label"
+    local entered="$install_dir/entered"
+    local release="$install_dir/release"
+    local after="$install_dir/after"
+    mkdir -p "$install_dir"
+
+    bash "$installer" \
+        --hold-install-lock-test "$install_dir" "$entered" "$release" "$after" &
+    local holder_pid=$!
+    local ready=0
+    local attempt
+    for attempt in {1..100}; do
+        if [ -f "$entered" ]; then
+            ready=1
+            break
+        fi
+        sleep 0.05
+    done
+    if [ "$ready" -ne 1 ]; then
+        kill -KILL "$holder_pid" 2>/dev/null || true
+        wait "$holder_pid" 2>/dev/null || true
+        echo "$installer never entered the installation lock probe" >&2
+        exit 1
+    fi
+
+    kill -TERM "$holder_pid"
+    local status=0
+    wait "$holder_pid" || status=$?
+    test "$status" -eq 143
+    test ! -e "$after"
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test -f "$install_dir/.app-install.lock"
+    test ! -L "$install_dir/.app-install.lock"
+    test -f "$install_dir/recovery/update.lock"
+    test ! -L "$install_dir/recovery/update.lock"
+}
+
+test_install_lock_signal_exit "$REPO_ROOT/scripts/install.sh" source
+test_install_lock_signal_exit "$REPO_ROOT/coordinator/api/install.sh" embedded
 
 write_existing_bundle() {
     local app=$1
@@ -423,6 +529,128 @@ for installer_label in source embedded; do
         "$fault_installer" "$installer_label" link-darkbloom-enclave
 done
 
+assert_interrupted_app_transaction_recovers() {
+    local installer=$1
+    local label=$2
+    local crash_point=$3
+    local expected=$4
+    local install_dir="$ROOT/crash-recovery-$label-$crash_point"
+    local destination="$install_dir/Darkbloom.app"
+    local bin_dir="$install_dir/bin"
+
+    write_existing_bundle "$destination" com.example.foreign
+    printf 'foreign payload\n' > "$destination/foreign-payload"
+    mkdir -p "$bin_dir"
+    printf 'previous darkbloom\n' > "$bin_dir/darkbloom"
+    printf 'previous metallib\n' > "$bin_dir/mlx.metallib"
+    ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
+    ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived injected crash $crash_point" >&2
+        exit 1
+    fi
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    shopt -s nullglob
+    local backups=("$install_dir"/.install-backup-*)
+    local staging=("$install_dir"/.install-staging-*)
+    local preserved=("$install_dir"/Darkbloom.app.foreign-*)
+    shopt -u nullglob
+    test "${#backups[@]}" -eq 0
+    test "${#staging[@]}" -eq 0
+
+    if [ "$expected" = "rollback" ]; then
+        test "${#preserved[@]}" -eq 0
+        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$destination/Contents/Info.plist")" = "com.example.foreign"
+        test "$(cat "$destination/foreign-payload")" = "foreign payload"
+        test -f "$bin_dir/darkbloom"
+        test ! -L "$bin_dir/darkbloom"
+        test "$(cat "$bin_dir/darkbloom")" = "previous darkbloom"
+        test -L "$bin_dir/darkbloom-enclave"
+        test "$(readlink "$bin_dir/darkbloom-enclave")" = "../previous-enclave"
+        test -L "$bin_dir/eigeninference-enclave"
+        test "$(readlink "$bin_dir/eigeninference-enclave")" = \
+            "previous-legacy-enclave"
+    else
+        test "${#preserved[@]}" -eq 1
+        test -f "${preserved[0]}/foreign-payload"
+        test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$destination/Contents/Info.plist")" = "io.darkbloom.provider"
+        test -L "$bin_dir/darkbloom"
+        test "$(readlink "$bin_dir/darkbloom")" = \
+            "../Darkbloom.app/Contents/MacOS/darkbloom"
+        test -L "$bin_dir/eigeninference-enclave"
+        test "$(readlink "$bin_dir/eigeninference-enclave")" = \
+            "darkbloom-enclave"
+    fi
+}
+
+for crash_point in \
+    previous-app-moved \
+    staged-app-moved \
+    managed-links-installed
+do
+    assert_interrupted_app_transaction_recovers \
+        "$REPO_ROOT/scripts/install.sh" source "$crash_point" rollback
+done
+assert_interrupted_app_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source app-transaction-committed committed
+assert_interrupted_app_transaction_recovers \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded staged-app-moved rollback
+assert_interrupted_app_transaction_recovers \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded app-transaction-committed committed
+
+assert_interrupted_flat_transaction_recovers() {
+    local installer=$1
+    local label=$2
+    local crash_point=$3
+    local expected=$4
+    local install_dir="$ROOT/flat-crash-recovery-$label-$crash_point"
+
+    run_install_with "$installer" "$LEGACY" "$install_dir"
+    printf 'previous-only\n' > "$install_dir/bin/previous-only"
+    artifact_hashes "$LEGACY"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$LEGACY" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived injected flat crash $crash_point" >&2
+        exit 1
+    fi
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test -x "$install_dir/bin/darkbloom"
+    test -L "$install_dir/bin/eigeninference-enclave"
+    if [ "$expected" = "rollback" ]; then
+        test "$(cat "$install_dir/bin/previous-only")" = "previous-only"
+    else
+        test ! -e "$install_dir/bin/previous-only"
+    fi
+    shopt -s nullglob
+    local backups=("$install_dir"/.install-backup-*)
+    local staging=("$install_dir"/.install-staging-*)
+    shopt -u nullglob
+    test "${#backups[@]}" -eq 0
+    test "${#staging[@]}" -eq 0
+}
+
+assert_interrupted_flat_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source flat-previous-moved rollback
+assert_interrupted_flat_transaction_recovers \
+    "$REPO_ROOT/scripts/install.sh" source flat-transaction-committed committed
+assert_interrupted_flat_transaction_recovers \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded flat-layout-moved rollback
+
 # Release and unsigned-dev identifiers are the only replaceable owners. They
 # are swapped in place without producing a misleading foreign backup.
 for owned_id in io.darkbloom.provider dev.darkbloom.app; do
@@ -507,6 +735,10 @@ concurrent_locks=("$CONCURRENT_INSTALL"/.app-install-lock*)
 test "${#concurrent_backups[@]}" -eq 0
 test "${#concurrent_staging[@]}" -eq 0
 test "${#concurrent_locks[@]}" -eq 0
+test -f "$CONCURRENT_INSTALL/.app-install.lock"
+test ! -L "$CONCURRENT_INSTALL/.app-install.lock"
+test -f "$CONCURRENT_INSTALL/recovery/update.lock"
+test ! -L "$CONCURRENT_INSTALL/recovery/update.lock"
 
 make_fan_variant() {
     local output=$1

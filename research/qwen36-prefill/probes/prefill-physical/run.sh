@@ -13,9 +13,14 @@ TRACE_ITERATIONS="${DARKBLOOM_PREFILL_TRACE_ITERATIONS:-1}"
 BATCHES_RAW="${DARKBLOOM_PREFILL_PROFILE_BATCHES:-1,2,4}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwen-prefill-physical.XXXXXX")"
 SAMPLER_PID=""
+TARGET_PID=""
 STOP_FILE=""
 
 cleanup() {
+    if [[ -n "$TARGET_PID" ]] && kill -0 "$TARGET_PID" 2>/dev/null; then
+        kill "$TARGET_PID" 2>/dev/null || true
+        wait "$TARGET_PID" 2>/dev/null || true
+    fi
     if [[ -n "$SAMPLER_PID" ]] && kill -0 "$SAMPLER_PID" 2>/dev/null; then
         : >"$STOP_FILE"
         wait "$SAMPLER_PID" 2>/dev/null || true
@@ -281,9 +286,11 @@ for batch in "${PROFILE_BATCHES[@]}"; do
         --kv-backend contiguous \
         >"$cell/trace-target-output.txt" 2>&1 &
     target_pid=$!
+    TARGET_PID=$target_pid
     sleep 3
     if ! kill -0 "$target_pid" 2>/dev/null; then
         wait "$target_pid" || true
+        TARGET_PID=""
         echo "fatal: B$batch trace target exited before attachment" >&2
         exit 1
     fi
@@ -299,6 +306,7 @@ for batch in "${PROFILE_BATCHES[@]}"; do
     trace_status=$?
     wait "$target_pid"
     target_status=$?
+    TARGET_PID=""
     set -e
 
     printf 'after\n' >"$phase_file"

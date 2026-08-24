@@ -30,6 +30,8 @@ GEMV_SYMBOL="gemv"
 R1_BUILDER_SYMBOL="build_gemma4_sorted_expert_tiles_bm32"
 R1_BUILDER_E256_SYMBOL="build_sorted_expert_tiles_bm32_e256"
 R1_KERNEL_SYMBOL="affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32"
+BM64_BUILDER_E256_SYMBOL="build_sorted_expert_tiles_bm64_e256"
+BM64_KERNEL_E256_SYMBOL="affine_gather_qmm_qwen_e256_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_64_bn_64_bk_32"
 QMV_WIDE_W4_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_2_kl_8_batch_0"
 QMV_WIDE_W4_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_4_kl_8_batch_1"
 QMV_WIDE_W8_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_2_kl_8_batch_0"
@@ -37,6 +39,7 @@ QMV_WIDE_W8_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_4_kl_8_ba
 COMPLETENESS_CONTRACT="$(
     printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" \
         "$R1_BUILDER_E256_SYMBOL" "$R1_KERNEL_SYMBOL" \
+        "$BM64_BUILDER_E256_SYMBOL" "$BM64_KERNEL_E256_SYMBOL" \
         "$QMV_WIDE_W4_M2_SYMBOL" "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
         "$QMV_WIDE_W8_M2_SYMBOL" "$QMV_WIDE_W8_M4_BATCHED_SYMBOL" \
         | shasum -a 256 | cut -d' ' -f1
@@ -161,6 +164,8 @@ verify_metallib() {
         "$R1_BUILDER_SYMBOL" \
         "$R1_BUILDER_E256_SYMBOL" \
         "$R1_KERNEL_SYMBOL" \
+        "$BM64_BUILDER_E256_SYMBOL" \
+        "$BM64_KERNEL_E256_SYMBOL" \
         "$QMV_WIDE_W4_M2_SYMBOL" \
         "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
         "$QMV_WIDE_W8_M2_SYMBOL" \

@@ -134,6 +134,7 @@ struct DaemonRuntimeServiceTests {
         let service = makeService(
             stateFileURL: url,
             cli: StubCLI(),
+            serviceLoaded: false,
             processAlive: { _ in true },
             processIdentityReader: {
                 ProcessIdentity(pid: $0, startTimeMicros: 22)
@@ -141,6 +142,33 @@ struct DaemonRuntimeServiceTests {
         )
 
         #expect(service.initialSnapshot.runState == .paused)
+        #expect(service.initialSnapshot.pid == nil)
+    }
+
+    @Test("A PID-reused record keeps only loaded scheduled-off posture")
+    func processIdentityMismatchWithLoadedScheduleMapsOff() {
+        let url = stateFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var state = testRunningState()
+        state.processIdentity = ProcessIdentity(pid: state.pid, startTimeMicros: 11)
+        state.schedule = .init(
+            mode: "scheduled-off",
+            summary: "Mon-Fri 09:00-17:00",
+            nextChangeAtEpoch: Date().timeIntervalSince1970 + 3_600
+        )
+        writeState(state, to: url)
+
+        let service = makeService(
+            stateFileURL: url,
+            cli: StubCLI(),
+            serviceLoaded: true,
+            processAlive: { _ in true },
+            processIdentityReader: {
+                ProcessIdentity(pid: $0, startTimeMicros: 22)
+            }
+        )
+
+        #expect(service.initialSnapshot.runState == .scheduledOff)
         #expect(service.initialSnapshot.pid == nil)
     }
 

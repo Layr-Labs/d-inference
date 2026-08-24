@@ -704,7 +704,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         assertCapacityError(.leaseOperationInProgress) {
             _ = try arbiter.authorizeMutation(
                 scope: lease.scope,
-                virtualMachineName: "sandbox-other-name",
+                virtualMachineName: lease.virtualMachineName,
                 operation: .start
             )
         }

@@ -350,6 +350,29 @@ extension LumeVirtualMachineRuntime {
         name: String,
         scope: SandboxOperationScope?
     ) async throws {
+        try await performStop(
+            name: name,
+            scope: scope,
+            releaseCapacity: false
+        )
+    }
+
+    func stopAndRelease(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws {
+        try await performStop(
+            name: name,
+            scope: scope,
+            releaseCapacity: true
+        )
+    }
+
+    private func performStop(
+        name: String,
+        scope: SandboxOperationScope?,
+        releaseCapacity: Bool
+    ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -358,7 +381,10 @@ extension LumeVirtualMachineRuntime {
             operation: .stop,
             virtualMachineName: name
         )
-        let operationLock = try beginOperation("stop", name: name)
+        let operationLock = try beginOperation(
+            releaseCapacity ? "release" : "stop",
+            name: name
+        )
         defer {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
@@ -373,6 +399,20 @@ extension LumeVirtualMachineRuntime {
             operationScope: scope
         )
         try await stopWithoutOperationFence(name: name, owner: owner)
+        if releaseCapacity {
+            guard let capacityArbiter,
+                  let scope,
+                  let leaseAuthorization
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "capacity release requires a fenced lease authorization"
+                )
+            }
+            try capacityArbiter.release(
+                scope: scope,
+                holding: leaseAuthorization
+            )
+        }
     }
 
     public func delete(name: String) async throws {

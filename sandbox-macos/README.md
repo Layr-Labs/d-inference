@@ -139,6 +139,8 @@ workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
 create, start, inspect, stop, and release carry the complete operation scope.
 Release stops and verifies the owned VM before its package-internal capacity
+release. The VM-operation and lease-operation locks remain held through the
+capacity-state commit, so a concurrent start cannot run between stop and
 release; callers cannot remove capacity directly. Physical deletion remains
 package-internal until deletion intent has its own durable crash-recovery state,
 so a crash cannot strand a running or missing VM behind released capacity.

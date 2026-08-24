@@ -648,6 +648,69 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
     }
 
+    func testPublicReleaseHoldsFencesThroughCapacityRemoval() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "block-first-list"
+        )
+        defer { try? fixture.remove() }
+        defer { try? fixture.allowListToContinue() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let releasingRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let competingRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let release = Task {
+            try await releasingRuntime.release(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+        }
+        try await fixture.waitForListToStart()
+
+        do {
+            try await competingRuntime.start(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("start must not pass a concurrent release")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationInProgress(
+                    name: fixture.virtualMachineName,
+                    operation: "start"
+                )
+            )
+        }
+        try fixture.allowListToContinue()
+        try await release.value
+
+        do {
+            try await competingRuntime.start(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("released capacity must fence every later start")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseNotFound)
+        }
+        try await fixture.waitForState("stopped")
+        XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+    }
+
     func testExpiredLeaseReconciliationRetainsLeaseOnOwnershipFailure()
         async throws
     {
@@ -791,6 +854,44 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 name: fixture.virtualMachineName
             )
             XCTFail("replaced runtime storage must fail closed")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .storageIdentityMismatch)
+        }
+    }
+
+    func testEmptyReconciliationAndCapabilitiesRejectReplacedStorage()
+        async throws
+    {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let arbiter = try fixture.makeCapacityArbiter(
+            clock: LumeTestWallClock(
+                Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let displaced = fixture.directory.appendingPathComponent(
+            "storage-before-replacement",
+            isDirectory: true
+        )
+        try FileManager.default.moveItem(at: fixture.storage, to: displaced)
+        try FileManager.default.createDirectory(
+            at: fixture.storage,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        do {
+            _ = try await runtime.capabilities()
+            XCTFail("capability inspection must reject replaced storage")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .storageIdentityMismatch)
+        }
+        do {
+            _ = try await runtime.reconcileExpiredLeases()
+            XCTFail("empty reconciliation must reject replaced storage")
         } catch let error as SandboxCapacityError {
             XCTAssertEqual(error, .storageIdentityMismatch)
         }

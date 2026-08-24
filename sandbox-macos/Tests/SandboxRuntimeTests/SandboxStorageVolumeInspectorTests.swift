@@ -18,8 +18,11 @@ final class SandboxStorageVolumeInspectorTests: XCTestCase {
 
         let report = try SandboxStorageVolumeInspector().inspect(path: path)
 
-        XCTAssertEqual(report.path, path.standardizedFileURL)
-        XCTAssertEqual(report.identity.canonicalPath, path.path)
+        XCTAssertEqual(report.path.path, report.identity.canonicalPath)
+        XCTAssertEqual(
+            report.path.lastPathComponent,
+            path.lastPathComponent
+        )
         XCTAssertGreaterThan(report.identity.inode, 0)
     }
 

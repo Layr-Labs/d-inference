@@ -5,6 +5,7 @@ import SandboxRuntime
 public actor LumeLeaseFencedVirtualMachineRuntime {
     private let capacityArbiter: SandboxHostCapacityArbiter
     private let runtime: LumeVirtualMachineRuntime
+    private let storageDirectory: URL
 
     public init(
         configuration: LumeRuntimeConfiguration,
@@ -14,6 +15,7 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
             configuration.storageDirectory
         )
         self.capacityArbiter = capacityArbiter
+        self.storageDirectory = configuration.storageDirectory
         self.runtime = LumeVirtualMachineRuntime(
             configuration: configuration,
             capacityArbiter: capacityArbiter
@@ -21,6 +23,7 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
     }
 
     public func capabilities() async throws -> SandboxRuntimeCapabilities {
+        try capacityArbiter.requireStorageDirectory(storageDirectory)
         try await runtime.capabilities()
     }
 
@@ -66,13 +69,13 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         scope: SandboxOperationScope,
         name: String
     ) async throws {
-        try await runtime.stop(name: name, scope: scope)
-        try capacityArbiter.release(scope: scope)
+        try await runtime.stopAndRelease(name: name, scope: scope)
     }
 
     public func reconcileExpiredLeases() async throws
         -> [LumeExpiredLeaseReconciliationResult]
     {
+        try capacityArbiter.requireStorageDirectory(storageDirectory)
         let expired = try capacityArbiter.expiredLeases()
         var results: [LumeExpiredLeaseReconciliationResult] = []
         results.reserveCapacity(expired.count)
@@ -82,18 +85,11 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
                 lease = try capacityArbiter.fenceExpiredLease(
                     scope: observed.scope
                 )
-                try await runtime.stop(
+                try await runtime.stopAndRelease(
                     name: lease.virtualMachineName,
                     scope: lease.scope
                 )
-                do {
-                    try capacityArbiter.release(scope: lease.scope)
-                    results.append(.init(lease: lease, outcome: .released))
-                } catch SandboxCapacityError.leaseNotFound {
-                    results.append(
-                        .init(lease: lease, outcome: .alreadyReleased)
-                    )
-                }
+                results.append(.init(lease: lease, outcome: .released))
             } catch SandboxCapacityError.leaseNotFound {
                 results.append(
                     .init(lease: lease, outcome: .alreadyReleased)

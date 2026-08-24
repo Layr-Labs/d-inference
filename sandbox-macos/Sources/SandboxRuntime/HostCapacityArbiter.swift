@@ -170,7 +170,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
             bootDiskBytes: bootDiskBytes
         )
         return SandboxLeaseMutationAuthorization(
-            operationLock: operationLock
+            operationLock: operationLock,
+            scope: scope
         )
     }
 
@@ -338,11 +339,20 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
         defer { withExtendedLifetime(operationLock) {} }
         try store.update { state in
-            let index = try Self.leaseIndex(for: scope, in: state.leases)
-            guard state.leases[index].scope.fencingToken == scope.fencingToken else {
-                throw SandboxCapacityError.staleFencingToken
-            }
-            state.leases.remove(at: index)
+            try Self.removeLease(scope: scope, from: &state)
+        }
+    }
+
+    package func release(
+        scope: SandboxOperationScope,
+        holding authorization: SandboxLeaseMutationAuthorization
+    ) throws {
+        guard authorization.authorizes(scope) else {
+            throw SandboxCapacityError.staleFencingToken
+        }
+        defer { withExtendedLifetime(authorization) {} }
+        try store.update { state in
+            try Self.removeLease(scope: scope, from: &state)
         }
     }
 
@@ -587,6 +597,17 @@ public struct SandboxHostCapacityArbiter: Sendable {
         }
         state.nextFencingToken += 1
         return fencingToken
+    }
+
+    private static func removeLease(
+        scope: SandboxOperationScope,
+        from state: inout SandboxCapacityState
+    ) throws {
+        let index = try Self.leaseIndex(for: scope, in: state.leases)
+        guard state.leases[index].scope.fencingToken == scope.fencingToken else {
+            throw SandboxCapacityError.staleFencingToken
+        }
+        state.leases.remove(at: index)
     }
 
     private static func leaseIndex(

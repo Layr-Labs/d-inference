@@ -9,6 +9,7 @@ MODEL="${DARKBLOOM_BENCH_MODEL:-qwen3.6-35b-a3b-vl-mtp-mxfp8}"
 PROMPT_TOKENS="${DARKBLOOM_PREFILL_PROFILE_TOKENS:-8192}"
 ITERATIONS="${DARKBLOOM_PREFILL_PROFILE_ITERATIONS:-3}"
 TRACE_WINDOW="${DARKBLOOM_PREFILL_TRACE_WINDOW:-20s}"
+BATCHES_RAW="${DARKBLOOM_PREFILL_PROFILE_BATCHES:-1,2,4}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/qwen-prefill-physical.XXXXXX")"
 SAMPLER_PID=""
 STOP_FILE=""
@@ -30,6 +31,14 @@ for value in "$PROMPT_TOKENS" "$ITERATIONS"; do
             ;;
     esac
 done
+case "$BATCHES_RAW" in
+    1 | 2 | 4 | 1,2 | 1,4 | 2,4 | 1,2,4) ;;
+    *)
+        echo "fatal: batches must be an ordered subset of 1,2,4" >&2
+        exit 2
+        ;;
+esac
+IFS=, read -r -a PROFILE_BATCHES <<<"$BATCHES_RAW"
 if [[ -e "$OUT_DIR" ]]; then
     echo "fatal: output already exists: $OUT_DIR" >&2
     exit 2
@@ -126,7 +135,7 @@ record_header() {
     echo "MODEL=$MODEL"
     echo "PROMPT_TOKENS_PER_REQUEST=$PROMPT_TOKENS"
     echo "ITERATIONS=$ITERATIONS"
-    echo "BATCHES=1,2,4"
+    echo "BATCHES=$BATCHES_RAW"
     echo "KV_BACKEND=contiguous"
     echo "PREFIX_CACHE=off"
     echo "NUMERICAL_POSTURE=strict-default-top8"
@@ -202,7 +211,7 @@ TRACE_SCHEMAS=(
     gpu-counter-info
 )
 
-for batch in 1 2 4; do
+for batch in "${PROFILE_BATCHES[@]}"; do
     cell="$OUT_DIR/b$batch"
     mkdir -p "$cell/trace-export"
     if ! power_gate_passes; then
@@ -321,7 +330,7 @@ fi
     echo "AGX_INVENTORY_BEGIN"
     sed -n '1,240p' "$OUT_DIR/agx-inventory.txt"
     echo "AGX_INVENTORY_END"
-    for batch in 1 2 4; do
+    for batch in "${PROFILE_BATCHES[@]}"; do
         cell="$OUT_DIR/b$batch"
         echo "CELL_BEGIN batch=$batch"
         echo "PREFILL_SUMMARY_BEGIN"

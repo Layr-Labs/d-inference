@@ -27,17 +27,25 @@ final class LocalAPIStore {
     private let source: Source
     private let pollInterval: Duration
     private let staleAfter: TimeInterval
+    private let probeCoordinator: LocalAPIProbeCoordinator
 
     @ObservationIgnored
     private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored
-    private var probeInFlight: Task<Void, Never>?
-    @ObservationIgnored
     private var lastProbeAt: Date?
 
-    private init(source: Source, initialState: LocalAPIState, pollInterval: Duration, staleAfter: TimeInterval) {
+    private init(
+        source: Source,
+        initialState: LocalAPIState,
+        initialDiscoveryInfo: LocalEndpointInfo? = nil,
+        pollInterval: Duration,
+        staleAfter: TimeInterval
+    ) {
         self.source = source
         self.state = initialState
+        self.probeCoordinator = LocalAPIProbeCoordinator(
+            initialInfo: initialDiscoveryInfo
+        )
         self.pollInterval = pollInterval
         self.staleAfter = staleAfter
     }
@@ -69,12 +77,20 @@ final class LocalAPIStore {
             processIdentityReader: processIdentityReader,
             clientFactory: clientFactory
         )
+        let initialInfo = discoveryReader()
+        let trustedInitialInfo = initialInfo.flatMap { info in
+            LocalEndpointRuntimeTruth.belongsToLiveProcess(
+                info,
+                readIdentity: processIdentityReader
+            ) ? info : nil
+        }
         return LocalAPIStore(
             source: .live(source),
             initialState: bootstrapState(
-                reader: discoveryReader,
+                info: initialInfo,
                 processIdentityReader: processIdentityReader
             ),
+            initialDiscoveryInfo: trustedInitialInfo,
             pollInterval: pollInterval,
             staleAfter: staleAfter
         )
@@ -82,7 +98,6 @@ final class LocalAPIStore {
 
     deinit {
         monitoringTask?.cancel()
-        probeInFlight?.cancel()
     }
 
     var endpoint: LocalAPIEndpointSnapshot? {
@@ -152,8 +167,7 @@ final class LocalAPIStore {
     func stopMonitoring() {
         monitoringTask?.cancel()
         monitoringTask = nil
-        probeInFlight?.cancel()
-        probeInFlight = nil
+        probeCoordinator.cancel()
     }
 
     /// One refresh cycle: re-read the discovery record, adopt state changes,
@@ -164,14 +178,21 @@ final class LocalAPIStore {
         guard case .live(let live) = source else { return }
         let info = live.discoveryReader()
         syncDiscovery(info: info, live: live)
-        guard case .running(let endpoint) = state else { return }
+        guard case .running(let endpoint) = state,
+              let ticket = probeCoordinator.ticket()
+        else {
+            return
+        }
         let catalogSettled: Bool = if case .available = endpoint.modelCatalog { true } else { false }
         let shouldProbe = forceProbe
             || endpoint.health != .reachable
             || !catalogSettled
             || lastProbeAt.map { Date().timeIntervalSince($0) >= staleAfter } ?? true
-        if shouldProbe, let info {
-            await probe(live: live, info: info)
+        if shouldProbe {
+            await probe(
+                live: live,
+                ticket: ticket
+            )
         }
     }
 
@@ -233,10 +254,10 @@ final class LocalAPIStore {
     // MARK: - Live internals
 
     private static func bootstrapState(
-        reader: @Sendable () -> LocalEndpointInfo?,
+        info: LocalEndpointInfo?,
         processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
     ) -> LocalAPIState {
-        guard let info = reader() else {
+        guard let info else {
             return .stopped(message: "No live local discovery record was found.")
         }
         guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
@@ -270,16 +291,24 @@ final class LocalAPIStore {
         )
     }
 
-    /// Adopt the current on-disk truth. Endpoint identity (pid, URL, key)
-    /// changes reset probe state to checking/loading; otherwise probe results
-    /// are preserved so healthy endpoints don't flicker on every poll.
+    /// Adopt the current on-disk truth. Any trusted discovery-record change
+    /// advances a revision and cancels the prior probe, binding asynchronous
+    /// results to the exact PID/start identity, URL, and key they probed.
+    /// Unchanged records preserve settled results so healthy endpoints do not
+    /// flicker on every poll.
     private func syncDiscovery(info: LocalEndpointInfo?, live: LiveSource) {
-        guard let info,
-              LocalEndpointRuntimeTruth.belongsToLiveProcess(
-                  info,
-                  readIdentity: live.processIdentityReader
-              )
-        else {
+        let trustedInfo = info.flatMap { candidate in
+            LocalEndpointRuntimeTruth.belongsToLiveProcess(
+                candidate,
+                readIdentity: live.processIdentityReader
+            ) ? candidate : nil
+        }
+        let recordChanged = probeCoordinator.adopt(trustedInfo)
+        if recordChanged {
+            lastProbeAt = nil
+        }
+
+        guard let trustedInfo else {
             if case .stopped = state { return }
             state = .stopped(
                 message: info == nil
@@ -289,13 +318,14 @@ final class LocalAPIStore {
             return
         }
 
-        let mapped = Self.snapshot(from: info, health: .checking, modelCatalog: .loading)
+        let mapped = Self.snapshot(
+            from: trustedInfo,
+            health: .checking,
+            modelCatalog: .loading
+        )
         switch state {
         case .running(let existing):
-            let identityChanged = existing.pid != mapped.pid
-                || existing.baseURL != mapped.baseURL
-                || existing.apiKey != mapped.apiKey
-            if identityChanged {
+            if recordChanged {
                 state = .running(mapped)
             } else {
                 var merged = mapped
@@ -310,19 +340,21 @@ final class LocalAPIStore {
         }
     }
 
-    /// Probes the endpoint with the small-timeout client. Probes are
-    /// serialized (`probeInFlight`) so a slow endpoint can't stack probes,
-    /// and results publish only on a content change.
+    /// Probes the endpoint with the small-timeout client. The coordinator
+    /// serializes probes so a slow endpoint cannot stack requests, and accepts
+    /// results only for the exact discovery revision that started them.
     ///
     /// Result mapping: transport failure → unreachable + failed catalog;
     /// HTTP 404 → reachable but catalog unavailable (older servers without
     /// `/models`); success → reachable + the decoded model ids.
     private func probe(
         live: LiveSource,
-        info: LocalEndpointInfo
+        ticket: LocalAPIProbeCoordinator.Ticket
     ) async {
-        guard case .running = state else { return }
-        guard probeInFlight == nil else { return }
+        guard case .running = state,
+              probeCoordinator.canStart(ticket)
+        else { return }
+        let info = ticket.info
         guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
             info,
             readIdentity: live.processIdentityReader
@@ -330,25 +362,57 @@ final class LocalAPIStore {
             syncDiscovery(info: info, live: live)
             return
         }
-        let task = Task {
-            defer { probeInFlight = nil }
-            lastProbeAt = .now
-            let client = live.clientFactory(info)
+        let probeID = UUID()
+        lastProbeAt = .now
+        let client = live.clientFactory(info)
+        let task = Task { [weak self] in
+            defer { self?.finishProbe(id: probeID) }
             do {
                 let modelIDs = try await client.listModels()
-                adoptProbeResult(health: .reachable, modelCatalog: .available(modelIDs))
+                self?.adoptProbeResult(
+                    health: .reachable,
+                    modelCatalog: .available(modelIDs),
+                    probeID: probeID,
+                    ticket: ticket
+                )
             } catch LocalEndpointError.httpError(let status, _) where status == 404 {
-                adoptProbeResult(health: .reachable, modelCatalog: .failed)
+                self?.adoptProbeResult(
+                    health: .reachable,
+                    modelCatalog: .failed,
+                    probeID: probeID,
+                    ticket: ticket
+                )
             } catch {
                 guard !Task.isCancelled else { return }
-                adoptProbeResult(health: .unreachable, modelCatalog: .failed)
+                self?.adoptProbeResult(
+                    health: .unreachable,
+                    modelCatalog: .failed,
+                    probeID: probeID,
+                    ticket: ticket
+                )
             }
         }
-        probeInFlight = task
+        probeCoordinator.install(
+            id: probeID,
+            ticket: ticket,
+            task: task
+        )
         await task.value
     }
 
-    private func adoptProbeResult(health: LocalAPIHealth, modelCatalog: LocalAPIModelCatalog) {
+    private func finishProbe(id: UUID) {
+        probeCoordinator.finish(id: id)
+    }
+
+    private func adoptProbeResult(
+        health: LocalAPIHealth,
+        modelCatalog: LocalAPIModelCatalog,
+        probeID: UUID,
+        ticket: LocalAPIProbeCoordinator.Ticket
+    ) {
+        guard probeCoordinator.accepts(id: probeID, ticket: ticket) else {
+            return
+        }
         guard case .running(var endpoint) = state else { return }
         guard endpoint.health != health || endpoint.modelCatalog != modelCatalog else { return }
         endpoint.health = health

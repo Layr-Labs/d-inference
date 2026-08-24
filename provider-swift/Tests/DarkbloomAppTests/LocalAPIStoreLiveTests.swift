@@ -276,6 +276,91 @@ struct LocalAPIStoreLiveTests {
         #expect(store.endpoint?.availableModelIDs == ["gpt-oss-20b"])
     }
 
+    @Test("A probe result is discarded after discovery advances to a new endpoint revision")
+    func staleProbeCannotOverwriteReplacementEndpoint() async throws {
+        let discovery = DiscoverySource()
+        let first = testInfo(
+            apiKey: "first-key",
+            pid: 4002,
+            startTimeMicros: 200_000,
+            port: 8000
+        )
+        let replacement = testInfo(
+            apiKey: "replacement-key",
+            pid: 4003,
+            startTimeMicros: 300_000,
+            port: 8001
+        )
+        discovery.info = first
+        let gate = AsyncProbeGate()
+        let recorder = RevisionProbeRecorder()
+        let identities = [
+            first.pid: first.processIdentity!,
+            replacement.pid: replacement.processIdentity!,
+        ]
+        let store = LocalAPIStore.live(
+            discoveryReader: { discovery.info },
+            processIdentityReader: { identities[$0] },
+            pollInterval: .seconds(3),
+            staleAfter: 15,
+            clientFactory: { info in
+                LocalEndpointClient(
+                    baseURL: URL(string: info.baseURL)!,
+                    apiKey: info.apiKey,
+                    dataTransport: { request in
+                        if info.pid == first.pid {
+                            recorder.markFirstStarted()
+                            await gate.wait()
+                            return (
+                                #"{"data":[{"id":"stale-model"}]}"#.data(using: .utf8)!,
+                                HTTPURLResponse(
+                                    url: request.url!,
+                                    statusCode: 200,
+                                    httpVersion: nil,
+                                    headerFields: nil
+                                )!
+                            )
+                        }
+                        recorder.markReplacementFinished()
+                        return (
+                            #"{"data":[{"id":"replacement-model"}]}"#.data(using: .utf8)!,
+                            HTTPURLResponse(
+                                url: request.url!,
+                                statusCode: 200,
+                                httpVersion: nil,
+                                headerFields: nil
+                            )!
+                        )
+                    },
+                    lineTransport: { _ in
+                        (AsyncThrowingStream { $0.finish() }, HTTPURLResponse())
+                    }
+                )
+            }
+        )
+
+        let firstRefresh = Task { @MainActor in
+            await store.refreshNow(forceProbe: true)
+        }
+        for _ in 0..<500 where !recorder.firstStarted {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(recorder.firstStarted)
+
+        discovery.info = replacement
+        await store.refreshNow(forceProbe: true)
+        #expect(recorder.replacementFinished)
+        #expect(store.endpoint?.port == replacement.port)
+        #expect(store.endpoint?.availableModelIDs == ["replacement-model"])
+
+        await gate.open()
+        await firstRefresh.value
+
+        #expect(store.endpoint?.port == replacement.port)
+        #expect(store.endpoint?.availableModelIDs == ["replacement-model"])
+        #expect(store.endpoint?.health == .reachable)
+    }
+
     // MARK: Monitoring
 
     @Test("Monitoring adopts the endpoint disappearing from disk")
@@ -319,5 +404,38 @@ struct LocalAPIStoreLiveTests {
         try? await Task.sleep(for: .milliseconds(30))
         #expect(store.endpoint?.health == .reachable)  // fixture value, unchanged
         store.stopMonitoring()
+    }
+
+    actor AsyncProbeGate {
+        private var isOpen = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            if isOpen { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func open() {
+            isOpen = true
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    final class RevisionProbeRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didStartFirst = false
+        private var didFinishReplacement = false
+
+        var firstStarted: Bool { lock.withLock { didStartFirst } }
+        var replacementFinished: Bool { lock.withLock { didFinishReplacement } }
+
+        func markFirstStarted() {
+            lock.withLock { didStartFirst = true }
+        }
+
+        func markReplacementFinished() {
+            lock.withLock { didFinishReplacement = true }
+        }
     }
 }

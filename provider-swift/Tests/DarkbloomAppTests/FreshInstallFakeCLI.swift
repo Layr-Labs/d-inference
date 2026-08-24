@@ -221,7 +221,7 @@ enum FreshInstallFakeCLI {
           process_start_time_micros=\#(processIdentity.startTimeMicros)
           /bin/mkdir -p "${state_file%/*}" "$local_dir"
           printf '%s\n' "{\"schema\":1,\"pid\":$pid,\"process_identity\":{\"pid\":$pid,\"start_time_micros\":$process_start_time_micros},\"version\":\"0.0.0-fresh-install-test\",\"written_at\":$now,\"started_at\":$now,\"trust\":{\"trust_level\":\"self_signed\",\"status\":\"pending\",\"reason\":\"Waiting for coordinator trust\",\"received_at\":$now},\"current_model\":\"mlx-community/Qwen3.5-0.8B-MLX-4bit\",\"warm_models\":[\"mlx-community/Qwen3.5-0.8B-MLX-4bit\"],\"inference_active\":true,\"stats\":{\"requests_served\":0,\"tokens_generated\":0,\"usage_gaps\":0},\"identity\":{\"provider_name\":\"Fresh Install Test Mac\",\"operator_address\":\"acct-test\"}}" > "$state_file"
-          printf '%s\n' "{\"base_url\":\"http://127.0.0.1:18080/v1\",\"api_key\":\"fresh-install-test-only\",\"host\":\"127.0.0.1\",\"port\":18080,\"pid\":$pid,\"version\":\"0.0.0-fresh-install-test\",\"updated_at\":\"1970-01-01T00:00:00Z\"}" > "$local_dir/local.json"
+          printf '%s\n' "{\"base_url\":\"http://127.0.0.1:18080/v1\",\"api_key\":\"fresh-install-test-only\",\"host\":\"127.0.0.1\",\"port\":18080,\"pid\":$pid,\"process_identity\":{\"pid\":$pid,\"start_time_micros\":$process_start_time_micros},\"version\":\"0.0.0-fresh-install-test\",\"updated_at\":\"1970-01-01T00:00:00Z\"}" > "$local_dir/local.json"
           exit 0
         fi
 

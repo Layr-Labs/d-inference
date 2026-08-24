@@ -273,6 +273,7 @@ struct FreshInstallHarness: Sendable {
             apiKey: "fresh-install-test-only",
             version: "0.0.0-fresh-install-test",
             pid: processIdentity.pid,
+            processIdentity: processIdentity,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
         let encoder = JSONEncoder()

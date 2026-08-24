@@ -171,7 +171,7 @@ struct OnboardingProviderEvidence: Equatable, Sendable {
             ?? daemonState.map { DaemonStateRuntimeTruth.belongsToLiveProcess($0) }
             ?? false
         self.localEndpointProcessIsAlive = localEndpointProcessIsAlive
-            ?? localEndpoint.map { daemonProcessAlive(pid: $0.pid) }
+            ?? localEndpoint.map { LocalEndpointRuntimeTruth.belongsToLiveProcess($0) }
             ?? false
         self.sampledAt = sampledAt
     }
@@ -188,7 +188,9 @@ struct OnboardingProviderEvidence: Equatable, Sendable {
               let localEndpoint,
               processIsAlive,
               localEndpointProcessIsAlive,
-              !daemonState.isStale(now: sampledAt.timeIntervalSince1970)
+              !daemonState.isStale(now: sampledAt.timeIntervalSince1970),
+              let daemonIdentity = daemonState.processIdentity,
+              localEndpoint.processIdentity == daemonIdentity
         else { return false }
         let modelIsLoaded = daemonState.currentModel == modelID
             || daemonState.warmModels.contains(modelID)

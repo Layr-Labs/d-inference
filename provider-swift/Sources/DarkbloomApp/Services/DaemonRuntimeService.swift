@@ -273,6 +273,12 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         serviceLoaded: @Sendable () -> Bool
     ) -> ProviderSnapshot {
         let state = DaemonStateFile.read(from: stateFileURL)
+        let localEndpoint = localEndpointReader().flatMap { info in
+            LocalEndpointRuntimeTruth.belongsToLiveProcess(
+                info,
+                readIdentity: processIdentityReader
+            ) ? info : nil
+        }
         return DaemonSnapshotMapping.map(
             DaemonSnapshotMapping.Inputs(
                 state: state,
@@ -283,7 +289,7 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
                     )
                 } ?? false,
                 serviceIsLoaded: serviceLoaded(),
-                localEndpoint: localEndpointReader(),
+                localEndpoint: localEndpoint,
                 providerName: providerName
             )
         )

@@ -1,6 +1,8 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 /// PID plus kernel-recorded process start time, preventing PID-reuse mistakes.
@@ -43,6 +45,8 @@ public struct ProcessIdentity: Codable, Sendable, Equatable {
         let micros = UInt64(info.pbi_start_tvsec) * 1_000_000
             + UInt64(info.pbi_start_tvusec)
         return ProcessIdentity(pid: pid, startTimeMicros: micros)
+        #elseif canImport(Glibc)
+        return readLinuxProcIdentity(pid: pid)
         #else
         return nil
         #endif
@@ -52,3 +56,38 @@ public struct ProcessIdentity: Codable, Sendable, Equatable {
         Self.read(pid: pid) == self
     }
 }
+
+#if canImport(Glibc)
+/// Linux exposes process start time as field 22 of `/proc/<pid>/stat`, in
+/// clock ticks since boot. Convert that kernel-stable value to microseconds so
+/// the cross-platform wire shape remains the same.
+private func readLinuxProcIdentity(pid: Int32) -> ProcessIdentity? {
+    guard pid > 0,
+          let stat = try? String(
+              contentsOfFile: "/proc/\(pid)/stat",
+              encoding: .utf8
+          ),
+          let commandEnd = stat.lastIndex(of: ")")
+    else {
+        return nil
+    }
+
+    // The suffix begins with field 3 (`state`). A process name may contain
+    // spaces or parentheses, so splitting the entire line is not safe.
+    let suffix = stat[stat.index(after: commandEnd)...]
+        .split(whereSeparator: \.isWhitespace)
+    let startTimeIndex = 22 - 3
+    guard suffix.indices.contains(startTimeIndex),
+          let startTicks = UInt64(suffix[startTimeIndex])
+    else {
+        return nil
+    }
+
+    let ticksPerSecond = sysconf(Int32(_SC_CLK_TCK))
+    guard ticksPerSecond > 0 else { return nil }
+    let frequency = UInt64(ticksPerSecond)
+    let micros = (startTicks / frequency) * 1_000_000
+        + (startTicks % frequency) * 1_000_000 / frequency
+    return ProcessIdentity(pid: pid, startTimeMicros: micros)
+}
+#endif

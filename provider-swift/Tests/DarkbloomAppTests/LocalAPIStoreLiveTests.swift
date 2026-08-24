@@ -10,14 +10,21 @@ struct LocalAPIStoreLiveTests {
 
     private func testInfo(
         apiKey: String = "dk-local-test-key",
-        pid: Int32 = 4002
+        pid: Int32 = 4002,
+        startTimeMicros: UInt64 = 200_000,
+        port: UInt16 = 8000
     ) -> LocalEndpointInfo {
-        LocalEndpointInfo(
+        let identity = ProcessIdentity(
+            pid: pid,
+            startTimeMicros: startTimeMicros
+        )
+        return LocalEndpointInfo(
             host: "127.0.0.1",
-            port: 8000,
+            port: port,
             apiKey: apiKey,
             version: "0.8.5",
             pid: pid,
+            processIdentity: identity,
             updatedAt: "2026-06-17T19:30:00Z"
         )
     }
@@ -71,11 +78,16 @@ struct LocalAPIStoreLiveTests {
     private func makeStore(
         discovery: DiscoverySource,
         probe: ProbeStub,
-        alive: Bool = true
+        alive: Bool = true,
+        processIdentityReader: (@Sendable (Int32) -> ProcessIdentity?)? = nil
     ) -> LocalAPIStore {
+        let identityReader: @Sendable (Int32) -> ProcessIdentity? = processIdentityReader ?? { pid in
+            guard alive, discovery.info?.pid == pid else { return nil }
+            return discovery.info?.processIdentity
+        }
         LocalAPIStore.live(
             discoveryReader: { discovery.info },
-            processAlive: { _ in alive },
+            processIdentityReader: identityReader,
             pollInterval: .seconds(3),
             staleAfter: 15,
             clientFactory: { info in probe.makeClient(for: info) }
@@ -128,6 +140,51 @@ struct LocalAPIStoreLiveTests {
             Issue.record("Expected .stopped for a dead recorded process")
             return
         }
+    }
+
+    @Test("Legacy PID-only discovery fails closed before sending its bearer token")
+    func legacyIdentityDoesNotProbe() async {
+        let discovery = DiscoverySource()
+        var legacy = testInfo()
+        legacy.processIdentity = nil
+        discovery.info = legacy
+        let probe = ProbeStub()
+        let store = makeStore(discovery: discovery, probe: probe)
+
+        await store.refreshNow(forceProbe: true)
+
+        guard case .stopped = store.state else {
+            Issue.record("Expected legacy discovery to remain stopped")
+            return
+        }
+        #expect(probe.probeCount == 0)
+        #expect(probe.usedAPIKey == nil)
+    }
+
+    @Test("A reused PID fails closed before sending its bearer token")
+    func reusedPIDDoesNotProbe() async {
+        let discovery = DiscoverySource()
+        let info = testInfo()
+        discovery.info = info
+        let probe = ProbeStub()
+        let reused = ProcessIdentity(
+            pid: info.pid,
+            startTimeMicros: info.processIdentity!.startTimeMicros + 1
+        )
+        let store = makeStore(
+            discovery: discovery,
+            probe: probe,
+            processIdentityReader: { _ in reused }
+        )
+
+        await store.refreshNow(forceProbe: true)
+
+        guard case .stopped = store.state else {
+            Issue.record("Expected PID-reused discovery to remain stopped")
+            return
+        }
+        #expect(probe.probeCount == 0)
+        #expect(probe.usedAPIKey == nil)
     }
 
     // MARK: Probing
@@ -228,7 +285,10 @@ struct LocalAPIStoreLiveTests {
         let probe = ProbeStub()
         let store = LocalAPIStore.live(
             discoveryReader: { discovery.info },
-            processAlive: { _ in true },
+            processIdentityReader: { pid in
+                guard discovery.info?.pid == pid else { return nil }
+                return discovery.info?.processIdentity
+            },
             pollInterval: .milliseconds(20),
             clientFactory: { info in probe.makeClient(for: info) }
         )

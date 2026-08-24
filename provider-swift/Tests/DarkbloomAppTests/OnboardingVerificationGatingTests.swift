@@ -74,6 +74,7 @@ struct OnboardingVerificationGatingTests {
                         apiKey: "test",
                         version: "test",
                         pid: $0.pid,
+                        processIdentity: $0.processIdentity,
                         updatedAt: "2026-01-01T00:00:00Z"
                     )
                 }

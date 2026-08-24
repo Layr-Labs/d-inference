@@ -20,7 +20,7 @@ final class LocalAPIStore {
 
     private struct LiveSource {
         let discoveryReader: @Sendable () -> LocalEndpointInfo?
-        let processAlive: @Sendable (Int32) -> Bool
+        let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
         let clientFactory: @Sendable (LocalEndpointInfo) -> LocalEndpointClient
     }
 
@@ -56,7 +56,7 @@ final class LocalAPIStore {
     /// re-reads discovery and probes the endpoint while monitoring.
     static func live(
         discoveryReader: @escaping @Sendable () -> LocalEndpointInfo? = LocalEndpointDiscovery.readInfo,
-        processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive(pid:),
+        processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = ProcessIdentity.read,
         probeTimeout: TimeInterval = 2.5,
         pollInterval: Duration = .seconds(3),
         staleAfter: TimeInterval = 15,
@@ -66,12 +66,15 @@ final class LocalAPIStore {
     ) -> LocalAPIStore {
         let source = LiveSource(
             discoveryReader: discoveryReader,
-            processAlive: processAlive,
+            processIdentityReader: processIdentityReader,
             clientFactory: clientFactory
         )
         return LocalAPIStore(
             source: .live(source),
-            initialState: bootstrapState(reader: discoveryReader, processAlive: processAlive),
+            initialState: bootstrapState(
+                reader: discoveryReader,
+                processIdentityReader: processIdentityReader
+            ),
             pollInterval: pollInterval,
             staleAfter: staleAfter
         )
@@ -167,8 +170,8 @@ final class LocalAPIStore {
             || endpoint.health != .reachable
             || !catalogSettled
             || lastProbeAt.map { Date().timeIntervalSince($0) >= staleAfter } ?? true
-        if shouldProbe {
-            await probe(clientFactory: live.clientFactory, info: info)
+        if shouldProbe, let info {
+            await probe(live: live, info: info)
         }
     }
 
@@ -231,13 +234,16 @@ final class LocalAPIStore {
 
     private static func bootstrapState(
         reader: @Sendable () -> LocalEndpointInfo?,
-        processAlive: @Sendable (Int32) -> Bool
+        processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
     ) -> LocalAPIState {
         guard let info = reader() else {
             return .stopped(message: "No live local discovery record was found.")
         }
-        guard processAlive(info.pid) else {
-            return .stopped(message: "A discovery record exists, but no provider process is running. Start the provider again.")
+        guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
+            info,
+            readIdentity: processIdentityReader
+        ) else {
+            return .stopped(message: "The local discovery record does not belong to the running provider. Start the provider again.")
         }
         return .running(Self.snapshot(from: info, health: .checking, modelCatalog: .loading))
     }
@@ -268,12 +274,17 @@ final class LocalAPIStore {
     /// changes reset probe state to checking/loading; otherwise probe results
     /// are preserved so healthy endpoints don't flicker on every poll.
     private func syncDiscovery(info: LocalEndpointInfo?, live: LiveSource) {
-        guard let info, live.processAlive(info.pid) else {
+        guard let info,
+              LocalEndpointRuntimeTruth.belongsToLiveProcess(
+                  info,
+                  readIdentity: live.processIdentityReader
+              )
+        else {
             if case .stopped = state { return }
             state = .stopped(
                 message: info == nil
                     ? "No live local discovery record was found."
-                    : "The local endpoint's process is no longer running. Start the provider again."
+                    : "The local endpoint discovery is stale or belongs to a different process. Start the provider again."
             )
             return
         }
@@ -307,15 +318,22 @@ final class LocalAPIStore {
     /// HTTP 404 → reachable but catalog unavailable (older servers without
     /// `/models`); success → reachable + the decoded model ids.
     private func probe(
-        clientFactory: @escaping @Sendable (LocalEndpointInfo) -> LocalEndpointClient,
-        info: LocalEndpointInfo?
+        live: LiveSource,
+        info: LocalEndpointInfo
     ) async {
-        guard case .running = state, let info else { return }
+        guard case .running = state else { return }
         guard probeInFlight == nil else { return }
+        guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
+            info,
+            readIdentity: live.processIdentityReader
+        ) else {
+            syncDiscovery(info: info, live: live)
+            return
+        }
         let task = Task {
             defer { probeInFlight = nil }
             lastProbeAt = .now
-            let client = clientFactory(info)
+            let client = live.clientFactory(info)
             do {
                 let modelIDs = try await client.listModels()
                 adoptProbeResult(health: .reachable, modelCatalog: .available(modelIDs))

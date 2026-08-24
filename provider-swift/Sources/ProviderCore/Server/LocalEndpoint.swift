@@ -1,5 +1,4 @@
 import Crypto
-import Darwin
 import Foundation
 import ProviderCoreFoundation
 
@@ -80,24 +79,12 @@ public enum LocalEndpoint {
         return try? JSONDecoder().decode(Info.self, from: data)
     }
 
-    /// Read the discovery file only if the server process that wrote it is still
-    /// running. Cleanup is best-effort (a Ctrl-C/SIGKILL/crash skips the
-    /// shutdown `defer`), so a stale `local.json` can linger pointing at a dead
-    /// server; the recorded pid is the liveness backstop. Consumers (the
-    /// `darkbloom local` command) use this so they never advertise a dead
-    /// endpoint.
+    /// Read discovery only if its PID + kernel start identity still belongs to
+    /// the exact process that wrote it. Cleanup is best-effort (a
+    /// Ctrl-C/SIGKILL/crash skips the shutdown `defer`), and PIDs can be reused,
+    /// so PID-only legacy records deliberately fail closed.
     public static func readLiveInfo() -> Info? {
-        guard let info = readInfo() else { return nil }
-        return isProcessAlive(info.pid) ? info : nil
-    }
-
-    /// True when a process with `pid` exists and is signalable by this user.
-    static func isProcessAlive(_ pid: Int32) -> Bool {
-        if pid <= 0 { return false }
-        // kill(pid, 0) probes existence without delivering a signal: 0 means
-        // alive; EPERM means alive-but-not-ours (still alive); ESRCH means gone.
-        if kill(pid, 0) == 0 { return true }
-        return errno == EPERM
+        LocalEndpointDiscovery.readLiveInfo()
     }
 
     /// Best-effort removal of the discovery file (on shutdown). The token file

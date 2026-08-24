@@ -188,5 +188,11 @@ attention K/V-only on 32 layers, with `0-3,36-39` full, has a 2.59–2.74x
 arithmetic ceiling but extreme quality risk. Exact warm-prefix reuse reaches
 2.5x at >=60% overlap and remains a separate product metric.
 
+E22 proves the raw 2.5× target is reachable across B1/B2/B4, but blind
+layer skipping fails quality (`notes/065`). Top-k4 is the quality-passing
+1.192× component. E27 maps block sensitivity: 28–31 is 97.1% agreement,
+while 0–3 is 2.6% (`notes/066`). Exact prefix-state reuse is now the
+quality-preserving multiplier.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

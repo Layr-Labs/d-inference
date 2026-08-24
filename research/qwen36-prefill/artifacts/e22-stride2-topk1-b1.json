@@ -1,0 +1,122 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--qwen3.6-35b-a3b-vl-mtp-mxfp8\/snapshots\/local",
+  "promptLengths" : [
+    512,
+    2048,
+    8192
+  ],
+  "samples" : [
+    {
+      "firstTokenChecksum" : "f74ac8ebd581580f",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.277596951076321,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "f74ac8ebd581580f",
+      "ttftMs" : 141.852042
+    },
+    {
+      "firstTokenChecksum" : "f6688eeb98f3c469",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.27650668688845403,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "f6688eeb98f3c469",
+      "ttftMs" : 141.294917
+    },
+    {
+      "firstTokenChecksum" : "de1ed7ed6454b23a",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.2773868238747554,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "de1ed7ed6454b23a",
+      "ttftMs" : 141.744667
+    },
+    {
+      "firstTokenChecksum" : "d5be0b72ab028750",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.22097423058133855,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "d5be0b72ab028750",
+      "ttftMs" : 452.33425
+    },
+    {
+      "firstTokenChecksum" : "c15e1e9bb0f0b119",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.22200620810942842,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "c15e1e9bb0f0b119",
+      "ttftMs" : 454.446708
+    },
+    {
+      "firstTokenChecksum" : "8c6de392667e7fc1",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.22164480556912552,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "8c6de392667e7fc1",
+      "ttftMs" : 453.706917
+    },
+    {
+      "firstTokenChecksum" : "3152c0b0b7dd1c56",
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.22079722659015993,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "3152c0b0b7dd1c56",
+      "ttftMs" : 1808.550083
+    },
+    {
+      "firstTokenChecksum" : "c518fa0148c8bd6c",
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.22074456208033205,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "c518fa0148c8bd6c",
+      "ttftMs" : 1808.1187079999997
+    },
+    {
+      "firstTokenChecksum" : "bacf2369afaec06e",
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.2208063066780613,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "tokenChecksum" : "bacf2369afaec06e",
+      "ttftMs" : 1808.6244580000002
+    }
+  ],
+  "schemaVersion" : 5,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

@@ -455,3 +455,23 @@ Five experiments are ranked and gated in `notes/050`. Run the already-captured
 default-off fixed-k seam first for information; the highest cold-target bet is
 the artifact-only depth ladder. Exact prefix reuse can exceed 2.5x at >=60%
 warm overlap but is deliberately excluded from the cold baseline claim.
+
+## 2026-08-24T09:30Z — performance target crossed, quality rejects
+
+Stride-2 prefill layers + top-k1 reaches:
+
+- B1 512/2K/8K: **2.513× / 2.699× / 2.928×**;
+- B2×8K: **2.951×**;
+- B4×2K/8K: **2.713× / 2.744×**.
+
+Natural-prompt quality collapses (1.04% token agreement, corruption).
+Artifact-only eight/eleven-layer profiles also cross 2.5× but fail the
+semantic gate. Top-k4 all-layer passes blind quality at 99.19% of
+baseline but gives 1.192× on primary B4×8K. See notes 063–065.
+
+## 2026-08-24T09:38Z — layer sensitivity mapped
+
+Single four-layer artifact ablations under top-k4 range from 97.1%
+token agreement (layers 28–31) to 2.6% (layers 0–3). First/final blocks
+are critical; middle redundancy is nonuniform. Combining enough blocks
+to reach 2.5× still collapses quality. See `notes/066`.

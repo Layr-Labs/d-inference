@@ -11,6 +11,8 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
     case commandFailed(command: String, status: Int32)
     case copiedBundleMismatch(field: String, expected: String, actual: String)
     case copiedExecutableUnavailable(path: String)
+    case downgradeRejected(sourceVersion: String, installedVersion: String)
+    case downgradeRecoveryStatePresent(path: String)
     case installFailed(path: String, reason: String)
 
     var errorDescription: String? {
@@ -25,13 +27,29 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
             "The copied app failed verification for \(field) (expected \(expected), found \(actual))."
         case .copiedExecutableUnavailable(let path):
             "The copied app executable is missing or cannot be run at \(path)."
+        case .downgradeRejected(let sourceVersion, let installedVersion):
+            "Darkbloom \(sourceVersion) cannot replace the newer installed version "
+                + "\(installedVersion)."
+        case .downgradeRecoveryStatePresent(let path):
+            "Darkbloom cannot perform the requested rollback while SelfUpdater state "
+                + "still exists at \(path)."
         case .installFailed(let path, let reason):
             "Darkbloom could not atomically install the verified app at \(path): \(reason)"
         }
     }
 
     var recoverySuggestion: String? {
-        "Check that ~/.darkbloom and your home Applications folder are writable, then reopen the downloaded Darkbloom app. No administrator access is required."
+        switch self {
+        case .downgradeRejected:
+            "Open the installed Darkbloom app instead. For an intentional signed-release "
+                + "rollback, follow the operator recovery procedure."
+        case .downgradeRecoveryStatePresent:
+            "Stop Darkbloom and archive its recovery directory before retrying the "
+                + "documented signed-release rollback."
+        default:
+            "Check that ~/.darkbloom and your home Applications folder are writable, "
+                + "then reopen the downloaded Darkbloom app. No administrator access is required."
+        }
     }
 }
 
@@ -67,6 +85,7 @@ struct AppInstallCoordinator {
         "anchor apple generic and identifier \"\(productionBundleIdentifier)\" "
         + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
     static let skipRelocationEnvironmentKey = "DARKBLOOM_SKIP_APP_RELOCATION"
+    static let allowDowngradeEnvironmentKey = "DARKBLOOM_ALLOW_APP_DOWNGRADE"
 
     private static let dittoURL = URL(fileURLWithPath: "/usr/bin/ditto")
     private static let codesignURL = URL(fileURLWithPath: "/usr/bin/codesign")
@@ -151,6 +170,18 @@ struct AppInstallCoordinator {
             return .continueLaunch
         }
 
+        // Authenticate and compare both live endpoints before creating the
+        // managed directory or staging anything. A stale downloaded app must
+        // never replace a newer self-updated install while recovery/state.json
+        // still records that newer version.
+        try verifyProductionSignature(at: sourceBundleURL) // pragma: allowlist secret
+        let ownedDestinationMetadata = ownedBundleMetadata(at: destinationURL)
+        try validateVersionTransition(
+            source: sourceMetadata,
+            sourceURL: sourceBundleURL,
+            ownedDestination: ownedDestinationMetadata
+        )
+
         let destinationRoot = destinationURL.deletingLastPathComponent()
         try prepareWritableDirectory(destinationRoot)
 
@@ -161,9 +192,8 @@ struct AppInstallCoordinator {
         )
         defer { try? fileManager.removeItem(at: stagingURL) }
 
-        // Authenticate immediately around the copy so neither endpoint relies
-        // on bundle metadata or a structural-only signature check.
-        try verifyProductionSignature(at: sourceBundleURL)
+        // Re-authenticate the staged endpoint so neither side of the copy
+        // relies on bundle metadata or a structural-only signature check.
         try executor.run(
             Self.dittoURL,
             arguments: ["--rsrc", "--extattr", sourceBundleURL.path, stagingURL.path]
@@ -256,7 +286,17 @@ struct AppInstallCoordinator {
             }
         }
 
-        let destinationIsOwned = isOwnedBundle(at: destinationURL)
+        // Re-read ownership and ordering immediately before the live swap. The
+        // copy can take time, and another updater may have changed the
+        // destination since the pre-staging check.
+        let stagedMetadata = try readMetadata(at: stagingURL)
+        let ownedDestinationMetadata = ownedBundleMetadata(at: destinationURL)
+        try validateVersionTransition(
+            source: stagedMetadata,
+            sourceURL: stagingURL,
+            ownedDestination: ownedDestinationMetadata
+        )
+        let destinationIsOwned = ownedDestinationMetadata != nil
         let backupName = destinationIsOwned
             ? ".Darkbloom.app.previous-\(nonce)"
             : "Darkbloom.app.foreign-\(nonce)"
@@ -285,17 +325,79 @@ struct AppInstallCoordinator {
     }
 
     private func isOwnedBundle(at url: URL) -> Bool {
+        ownedBundleMetadata(at: url) != nil
+    }
+
+    private func ownedBundleMetadata(at url: URL) -> BundleMetadata? {
         guard let type = try? fileManager.attributesOfItem(atPath: url.path)[.type]
                 as? FileAttributeType,
               type == .typeDirectory,
               let metadata = try? readMetadata(at: url)
         else {
-            return false
+            return nil
         }
         guard metadata.identifier == Self.productionBundleIdentifier else {
-            return false
+            return nil
         }
-        return (try? verifyProductionSignature(at: url)) != nil
+        guard (try? verifyProductionSignature(at: url)) != nil else { // pragma: allowlist secret
+            return nil
+        }
+        return metadata
+    }
+
+    private func validateVersionTransition(
+        source: BundleMetadata,
+        sourceURL: URL,
+        ownedDestination: BundleMetadata?
+    ) throws {
+        let sourceVersion = try canonicalSemanticVersion(of: source, at: sourceURL)
+        guard let ownedDestination else { return }
+        let installedVersion = try canonicalSemanticVersion(
+            of: ownedDestination,
+            at: destinationURL
+        )
+        if sourceVersion < installedVersion,
+           environment[Self.allowDowngradeEnvironmentKey] != "1" {
+            throw AppInstallCoordinatorError.downgradeRejected(
+                sourceVersion: source.shortVersion,
+                installedVersion: ownedDestination.shortVersion
+            )
+        }
+        if sourceVersion < installedVersion {
+            let recoveryStateURL = destinationURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("recovery/state.json")
+            if itemExists(at: recoveryStateURL) {
+                throw AppInstallCoordinatorError.downgradeRecoveryStatePresent(
+                    path: recoveryStateURL.path
+                )
+            }
+        }
+    }
+
+    private func canonicalSemanticVersion(
+        of metadata: BundleMetadata,
+        at url: URL
+    ) throws -> BundleSemanticVersion {
+        guard let shortVersion = BundleSemanticVersion(metadata.shortVersion) else {
+            throw AppInstallCoordinatorError.invalidBundle(
+                path: url.path,
+                reason: "CFBundleShortVersionString is not canonical semantic versioning"
+            )
+        }
+        guard let bundleVersion = BundleSemanticVersion(metadata.bundleVersion) else {
+            throw AppInstallCoordinatorError.invalidBundle(
+                path: url.path,
+                reason: "CFBundleVersion is not canonical semantic versioning"
+            )
+        }
+        guard shortVersion == bundleVersion else {
+            throw AppInstallCoordinatorError.invalidBundle(
+                path: url.path,
+                reason: "CFBundleShortVersionString and CFBundleVersion disagree"
+            )
+        }
+        return shortVersion
     }
 
     private func ensureUserShortcut(nonce: String) throws {

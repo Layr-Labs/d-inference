@@ -1,7 +1,7 @@
 From 2f67b8bcebaba60ad2625bbd4387b326c889363a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:53:03 +0000
-Subject: [PATCH 1/2] Batch Qwen artifact projections across layers
+Subject: [PATCH 1/3] Batch Qwen artifact projections across layers
 
 ---
  Libraries/MLXLLM/Models/Qwen35.swift          | 378 +++++++++++-
@@ -1723,7 +1723,7 @@ index 0000000..799243d
 From 785c1c21217bd3c2e296b8de4ee6d503d08f22f2 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Mon, 24 Aug 2026 21:59:24 +0000
-Subject: [PATCH 2/2] Format Qwen artifact projection batching sources
+Subject: [PATCH 2/3] Format Qwen artifact projection batching sources
 
 ---
  .../Qwen35ArtifactProjectionBatch.swift       |  84 +++++----
@@ -2124,6 +2124,60 @@ index 799243d..8459335 100644
      }
  
      private func artifactClose(
+-- 
+2.43.0
+
+
+From 77d3a05a0eca714014e922d542bf1b528d1352bc Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 22:01:24 +0000
+Subject: [PATCH 3/3] Test artifact projection chunk budgeting
+
+---
+ .../Qwen35ArtifactProjectionBatchTests.swift  | 30 +++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+index 8459335..50f1629 100644
+--- a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+@@ -86,6 +86,36 @@ struct Qwen35ArtifactProjectionBatchTests {
+             b4
+                 > Qwen35ArtifactProjectionBatchPolicy
+                 .defaultMaximumTransientMiB * 1_024 * 1_024)
++
++        let config = try TinyArtifactQwen.configuration()
++        let layers = makeQuantizedLayers(config)
++        let bank = try #require(
++            Qwen35ArtifactProjectionWeightBank(
++                layers: layers,
++                maximumStackedWeightBytes:
++                    Qwen35ArtifactProjectionBatchPolicy
++                    .maximumStackedWeightBytes))
++        let gdn = try #require(layers[4].linearAttn)
++        let history = MLXRandom.normal([1, 5, config.hiddenSize])
++        let twoGDNLayerBudget = try #require(
++            Qwen35ArtifactProjectionWeightBank.estimatedTransientBytes(
++                batchSize: 1,
++                historyTokenCount: 5,
++                hiddenSize: config.hiddenSize,
++                gdnLayerCount: 2,
++                gdnQKVDimensions: gdn.inProjQKV.shape.0,
++                gdnAuxDimensions: gdn.inProjA.shape.0,
++                attentionLayerCount: 0,
++                attentionKVDimensions: 0,
++                dtypeSize: history.dtype.size))
++        let chunk = try #require(
++            bank.prepare(
++                hiddenHistory: history,
++                candidateLayerIndices: [4, 5, 6, 7],
++                maximumTransientBytes: twoGDNLayerBudget))
++        #expect(chunk.layerIndices == [4, 5])
++        #expect(chunk.projections.count == 2)
++        #expect(chunk.estimatedTransientBytes == twoGDNLayerBudget)
+     }
+ 
+     @Test func gatheredQuantizedFamiliesMatchSequentialProjectionsAndDoNotReplaceWeights()
 -- 
 2.43.0
 

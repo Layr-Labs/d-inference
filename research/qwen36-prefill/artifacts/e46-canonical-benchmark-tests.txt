@@ -1,0 +1,37 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.30s)
+Test Suite 'Selected tests' started at 2026-08-24 10:59:27.816.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 10:59:27.817.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 10:59:27.817.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 10:59:27.817.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Qwen exact-prefix benchmark" started.
+◇ Test exactTrackingCacheReportsLongestPartialBoundaryBytes() started.
+◇ Test promptBuilderConstructsRequiredExactTokenBoundaries() started.
+◇ Test prefixPolicyEnvironmentCapturesForkControlsWithoutSecrets() started.
+◇ Test exactReportAcceptsFullAndLongestBlockAlignedPartialHits() started.
+◇ Test reportRoundTripsAndKeepsConstructionMissInRates() started.
+◇ Test exactTrackingCacheReportsWholeHybridSnapshotBytes() started.
+◇ Test engineRunnerUsesOneEngineAndPreservesCacheControls() started.
+◇ Test committedCorpusAndSchemasAreValid() started.
+◇ Test corpusValidationRejectsDuplicatesAndUnknownFields() started.
+◇ Test trackingCacheReportsOnlyPublishedStateBytes() started.
+✔ Test prefixPolicyEnvironmentCapturesForkControlsWithoutSecrets() passed after 0.001 seconds.
+✔ Test promptBuilderConstructsRequiredExactTokenBoundaries() passed after 0.001 seconds.
+✔ Test committedCorpusAndSchemasAreValid() passed after 0.002 seconds.
+✔ Test corpusValidationRejectsDuplicatesAndUnknownFields() passed after 0.002 seconds.
+✔ Test exactReportAcceptsFullAndLongestBlockAlignedPartialHits() passed after 0.003 seconds.
+✔ Test reportRoundTripsAndKeepsConstructionMissInRates() passed after 0.009 seconds.
+✔ Test trackingCacheReportsOnlyPublishedStateBytes() passed after 0.026 seconds.
+✔ Test exactTrackingCacheReportsWholeHybridSnapshotBytes() passed after 0.035 seconds.
+✔ Test exactTrackingCacheReportsLongestPartialBoundaryBytes() passed after 0.037 seconds.
+✔ Test engineRunnerUsesOneEngineAndPreservesCacheControls() passed after 0.047 seconds.
+✔ Suite "Qwen exact-prefix benchmark" passed after 0.047 seconds.
+✔ Test run with 10 tests in 1 suite passed after 0.048 seconds.

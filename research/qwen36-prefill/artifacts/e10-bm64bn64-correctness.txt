@@ -1,0 +1,35 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 00:02:57.416.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-24 00:02:57.417.
+Test Suite 'SortedGatherQuantizedMMTests' started at 2026-08-24 00:02:57.417.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemma4ExpertQMMDiagnosticsReflectProcessConfigurationAndArmState]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemma4ExpertQMMDiagnosticsReflectProcessConfigurationAndArmState]' passed (0.157 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaGateUpSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaGateUpSortedAffineGatherQuantizedMMExpertSlices]' passed (0.030 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSelectorRejectsNonAllowlistedAssignmentCount]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSelectorRejectsNonAllowlistedAssignmentCount]' passed (0.155 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testGemmaSortedAffineGatherQuantizedMMExpertSlices]' passed (0.263 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testOrdinaryQuantizedMMPreservesGlobalQMM]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testOrdinaryQuantizedMMPreservesGlobalQMM]' passed (0.103 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSelectorRejectsNonAllowlistedAssignmentCount]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSelectorRejectsNonAllowlistedAssignmentCount]' passed (0.009 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedAffineGatherQuantizedMMExpertSlices]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedAffineGatherQuantizedMMExpertSlices]' passed (0.501 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortedGatherQuantizedMMMatchesLegacyOnRandomTensors]' passed (72.414 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortednessViolationRetractsToLegacyRoute]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testQwenSortednessViolationRetractsToLegacyRoute]' passed (0.007 seconds).
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries]' started.
+Test Case '-[MLXTests.SortedGatherQuantizedMMTests testSortedAffineGatherQuantizedMMFallbackExpertBoundaries]' passed (0.061 seconds).
+Test Suite 'SortedGatherQuantizedMMTests' passed at 2026-08-24 00:04:11.119.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 73.701 (73.701) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-24 00:04:11.119.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 73.701 (73.701) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 00:04:11.119.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 73.701 (73.702) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

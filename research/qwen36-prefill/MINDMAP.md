@@ -136,5 +136,8 @@ The complete one-binary B=1/2/4 × 512/2K/8K matrix is locked in
 E9 BK64 preserved numerics but was flat (best 1.008×); halving outer
 barriers cannot move the FP32 MMA ceiling (`notes/039`).
 
+E10 BM64×BN64 preserved numerics and gained 3–8% only at large M, while
+regressing T1024 ~42% (`notes/040`). Retiling cannot supply 2.5×.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

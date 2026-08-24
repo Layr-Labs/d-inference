@@ -1,0 +1,230 @@
+diff --git a/mlx/backend/common/gemma4_expert_qmm.h b/mlx/backend/common/gemma4_expert_qmm.h
+index 23b1a21d..795377b4 100644
+--- a/mlx/backend/common/gemma4_expert_qmm.h
++++ b/mlx/backend/common/gemma4_expert_qmm.h
+@@ -16,6 +16,7 @@ typedef struct mlx_metal_gemma4_expert_qmm_diagnostics {
+   uint8_t aot_available;
+   uint8_t nax_available;
+   uint8_t armed;
++  uint8_t bm64_requested;
+   uint64_t attempts;
+   uint64_t hits;
+   uint64_t fallback_nax;
+diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
+index 030cfad2..730caa31 100644
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -577,6 +577,16 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
+   // produces undefined tile output instead of the legacy fallback.
+   gemma4_expert_qmm_trust_sorted_ = expert_qmm_env == "trust";
+ 
++  std::string expert_tile_geometry =
++      env::get_var("MLX_GATHER_QMM_EXPERT_TILE_GEOMETRY", "");
++  std::transform(
++      expert_tile_geometry.begin(),
++      expert_tile_geometry.end(),
++      expert_tile_geometry.begin(),
++      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  qwen_expert_qmm_bm64_requested_ =
++      expert_tile_geometry == "bm64_bn64";
++
+   constexpr const char* descriptor_kernel =
+       "build_gemma4_sorted_expert_tiles_bm32";
+   constexpr const char* descriptor_kernel_e256 =
+@@ -584,6 +594,11 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
+   constexpr const char* tile_kernel =
+       "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+       "alN_true_bm_32_bn_32_bk_32";
++  constexpr const char* descriptor_kernel_bm64_e256 =
++      "build_sorted_expert_tiles_bm64_e256";
++  constexpr const char* tile_kernel_bm64_e256 =
++      "affine_gather_qmm_qwen_e256_expert_tiles_bfloat16_t_gs_64_b_4_"
++      "alN_true_bm_64_bn_64_bk_32";
+   auto has_default_function = [this](const char* name) {
+     auto ns_name = NS::String::string(name, NS::ASCIIStringEncoding);
+     auto function =
+@@ -597,7 +612,10 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
+   gemma4_expert_qmm_aot_available_ =
+       has_default_function(descriptor_kernel) &&
+       has_default_function(descriptor_kernel_e256) &&
+-      has_default_function(tile_kernel);
++      has_default_function(tile_kernel) &&
++      (!qwen_expert_qmm_bm64_requested_ ||
++       (has_default_function(descriptor_kernel_bm64_e256) &&
++        has_default_function(tile_kernel_bm64_e256)));
+   if (gemma4_expert_qmm_requested_ && gemma4_expert_qmm_aot_available_) {
+     try {
+       // Resolve the pipelines once so missing or incompatible packaged AOT
+@@ -605,6 +623,10 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
+       get_kernel(descriptor_kernel);
+       get_kernel(descriptor_kernel_e256);
+       get_kernel(tile_kernel);
++      if (qwen_expert_qmm_bm64_requested_) {
++        get_kernel(descriptor_kernel_bm64_e256);
++        get_kernel(tile_kernel_bm64_e256);
++      }
+     } catch (...) {
+       gemma4_expert_qmm_aot_available_ = false;
+     }
+@@ -1003,6 +1025,7 @@ void gemma4_expert_qmm_diagnostics_snapshot(
+     diagnostics->aot_available = d.gemma4_expert_qmm_aot_available();
+     diagnostics->nax_available = mlx::core::metal::is_nax_available();
+     diagnostics->armed = counters.armed;
++    diagnostics->bm64_requested = d.qwen_expert_qmm_bm64_requested();
+     diagnostics->attempts = counters.attempts();
+     diagnostics->hits = counters.hits;
+     diagnostics->fallback_nax = counters.fallback_nax;
+diff --git a/mlx/backend/metal/device.h b/mlx/backend/metal/device.h
+index 697b3ade..ec198066 100644
+--- a/mlx/backend/metal/device.h
++++ b/mlx/backend/metal/device.h
+@@ -198,6 +198,13 @@ class MLX_API Device {
+     return gemma4_expert_qmm_trust_sorted_;
+   }
+ 
++  // MLX_GATHER_QMM_EXPERT_TILE_GEOMETRY=bm64_bn64 selects the Qwen E=256
++  // experiment. The empty/default value keeps the established BM32/BN32
++  // route.
++  bool qwen_expert_qmm_bm64_requested() const {
++    return qwen_expert_qmm_bm64_requested_;
++  }
++
+   bool gemma4_expert_qmm_aot_available() const {
+     return gemma4_expert_qmm_aot_available_;
+   }
+@@ -269,6 +276,7 @@ class MLX_API Device {
+   NS::SharedPtr<MTL::Library> default_library_;
+   bool gemma4_expert_qmm_requested_{false};
+   bool gemma4_expert_qmm_trust_sorted_{false};
++  bool qwen_expert_qmm_bm64_requested_{false};
+   bool gemma4_expert_qmm_aot_available_{false};
+   Gemma4ExpertQMMCounters gemma4_expert_qmm_counters_;
+   std::unordered_map<
+diff --git a/mlx/backend/metal/kernels/quantized.h b/mlx/backend/metal/kernels/quantized.h
+index 04e5b13f..bd67f1c6 100644
+--- a/mlx/backend/metal/kernels/quantized.h
++++ b/mlx/backend/metal/kernels/quantized.h
+@@ -2525,10 +2525,10 @@ template <
+ }
+ 
+ // Descriptor builder for the sorted expert-tile route. One thread per expert
+-// (threadgroup size == NE); instantiated for NE=128 (Gemma 4) and NE=256
+-// (Qwen 3.5/3.6 MoE) in quantized.metal.
+-template <int NE>
+-[[kernel]] void build_sorted_expert_tiles_bm32(
++// (threadgroup size == NE); instantiated for the qualified expert count and
++// block-row combinations in quantized.metal.
++template <int NE, uint BM>
++[[kernel]] void build_sorted_expert_tiles(
+     const device uint32_t* indices [[buffer(0)]],
+     device uint4* descriptors [[buffer(1)]],
+     device uint* count [[buffer(2)]],
+@@ -2537,7 +2537,6 @@ template <int NE>
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+   constexpr uint expert_count = uint(NE);
+-  constexpr uint BM = 32;
+   constexpr uint simdgroup_count = expert_count / 32;
+   threadgroup uint segment_starts[expert_count + 1];
+   threadgroup uint inclusive_tile_offsets[expert_count];
+@@ -2683,9 +2682,10 @@ template <
+     uint lid [[thread_index_in_threadgroup]],
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+-  static_assert(BM == 32, "Gemma 4 expert tiles require BM=32");
++  static_assert(
++      (BM == 32 && BN == 32) || (BM == 64 && BN == 64),
++      "Expert tiles require paired BM/BN of 32 or 64");
+   static_assert(BK == 32, "Gemma 4 expert tiles require BK=32");
+-  static_assert(BN == 32, "Gemma 4 expert tiles require BN=32");
+ 
+   // tid.y is uniform across the threadgroup. Empty capacity slots return
+   // before any threadgroup allocation is consumed by a microkernel barrier.
+diff --git a/mlx/backend/metal/kernels/quantized.metal b/mlx/backend/metal/kernels/quantized.metal
+index 75e788ea..1e2e7ee5 100644
+--- a/mlx/backend/metal/kernels/quantized.metal
++++ b/mlx/backend/metal/kernels/quantized.metal
+@@ -192,18 +192,37 @@ instantiate_kernel(
+     32,
+     32)
+ 
++instantiate_kernel(
++    "affine_gather_qmm_qwen_e256_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_64_bn_64_bk_32",
++    affine_gather_qmm_gemma4_expert_tiles,
++    bfloat16_t,
++    64,
++    4,
++    true,
++    64,
++    32,
++    64)
++
+ // Sorted expert-tile descriptor builders. The E=128 instantiation keeps the
+-// historical Gemma 4 host name; E=256 serves Qwen 3.5/3.6 MoE. The tile
+-// kernel instantiation above is expert-count agnostic (K/N are runtime
+-// arguments) and is shared by both routes.
++// historical Gemma 4 host name; E=256 serves Qwen 3.5/3.6 MoE. The BM64
++// builder is a distinct experiment symbol so the default BM32 route remains
++// source- and metallib-compatible.
+ instantiate_kernel(
+     "build_gemma4_sorted_expert_tiles_bm32",
+-    build_sorted_expert_tiles_bm32,
+-    128)
++    build_sorted_expert_tiles,
++    128,
++    32)
+ 
+ instantiate_kernel(
+     "build_sorted_expert_tiles_bm32_e256",
+-    build_sorted_expert_tiles_bm32,
+-    256)
++    build_sorted_expert_tiles,
++    256,
++    32)
++
++instantiate_kernel(
++    "build_sorted_expert_tiles_bm64_e256",
++    build_sorted_expert_tiles,
++    256,
++    64)
+ 
+     // clang-format on
+diff --git a/mlx/backend/metal/quantized.cpp b/mlx/backend/metal/quantized.cpp
+index 0db1404d..30aa9a02 100644
+--- a/mlx/backend/metal/quantized.cpp
++++ b/mlx/backend/metal/quantized.cpp
+@@ -1325,12 +1325,17 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
+   // expert-count agnostic — only the descriptor builder (one thread per
+   // expert) is instantiated per expert count.
+   const int expert_count = w.shape(0);
+-  const char* descriptor_kernel_name = expert_count == 256
+-      ? "build_sorted_expert_tiles_bm32_e256"
+-      : "build_gemma4_sorted_expert_tiles_bm32";
+-  constexpr const char* tile_kernel_name =
+-      "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+-      "alN_true_bm_32_bn_32_bk_32";
++  const bool use_qwen_bm64 =
++      expert_count == 256 && d.qwen_expert_qmm_bm64_requested();
++  const char* descriptor_kernel_name = use_qwen_bm64
++      ? "build_sorted_expert_tiles_bm64_e256"
++      : (expert_count == 256 ? "build_sorted_expert_tiles_bm32_e256"
++                             : "build_gemma4_sorted_expert_tiles_bm32");
++  const char* tile_kernel_name = use_qwen_bm64
++      ? "affine_gather_qmm_qwen_e256_expert_tiles_bfloat16_t_gs_64_b_4_"
++        "alN_true_bm_64_bn_64_bk_32"
++      : "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
++        "alN_true_bm_32_bn_32_bk_32";
+ 
+   MTL::ComputePipelineState* descriptor_kernel = nullptr;
+   MTL::ComputePipelineState* tile_kernel = nullptr;
+@@ -1341,8 +1346,8 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
+     return Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+   }
+ 
+-  constexpr int bm = 32;
+-  constexpr int bn = 32;
++  const int bm = use_qwen_bm64 ? 64 : 32;
++  const int bn = use_qwen_bm64 ? 64 : 32;
+   constexpr int wm = 2;
+   constexpr int wn = 2;
+   // Upper bound on descriptors: sum over experts of ceil(rows_e / bm) with

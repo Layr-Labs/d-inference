@@ -299,3 +299,12 @@ fallbacks. Separate-process BK32/BK64 A/B:
 Halving outer barriers does not move the FP32 SIMD MMA ceiling. No
 full-model run; baseline restored. See `notes/039`.
 
+## 2026-08-24T07:04Z — E10 BM64×BN64 dead
+
+Correctness 10/10; hits 25/25. At M≥16K, BM64×BN64 gained only
+1.033–1.079×. At T1024 (32 rows/expert) it regressed to 0.57–0.59× due
+to tile waste. No cell approached 1.30×.
+
+Per-shape guards cannot turn a low-single-digit kernel cleanup into the
+2.5× objective. No full-model run; baseline restored. See `notes/040`.
+

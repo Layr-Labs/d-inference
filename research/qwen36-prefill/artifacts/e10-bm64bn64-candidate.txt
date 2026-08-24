@@ -1,0 +1,29 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 00:04:30.097.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-24 00:04:30.098.
+Test Suite 'QwenExpertTilePerfTests' started at 2026-08-24 00:04:30.098.
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' started.
+[qwen-expert-tile-perf] route=tile geometry=bm64_bn64 aot=true nax=false
+[qwen-expert-tile-perf] gate_up_fused T512: M=4096 rows/expert=16 median 2.1508 ms p10 2.1030 p90 2.1813 (~140 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_split T512: M=4096 rows/expert=16 median 1.2623 ms p10 1.2212 p90 1.2866 (~120 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T512: M=4096 rows/expert=16 median 1.1903 ms p10 1.1146 p90 1.2480 (~127 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T1024: M=8192 rows/expert=32 median 5.8230 ms p10 5.8085 p90 5.8371 (~52 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T1024: M=8192 rows/expert=32 median 3.0863 ms p10 3.0487 p90 3.1201 (~49 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T2048: M=16384 rows/expert=64 median 6.0037 ms p10 5.9933 p90 6.0129 (~50 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T2048: M=16384 rows/expert=64 median 3.2415 ms p10 3.2300 p90 3.3019 (~47 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T4096: M=32768 rows/expert=128 median 11.5238 ms p10 11.5120 p90 11.5500 (~26 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T4096: M=32768 rows/expert=128 median 6.1147 ms p10 6.1027 p90 6.1293 (~25 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T8192: M=65536 rows/expert=256 median 22.6000 ms p10 22.5862 p90 22.6272 (~13 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T8192: M=65536 rows/expert=256 median 11.5308 ms p10 11.5206 p90 11.5480 (~13 GB/s wt) hits=25 fallbacks=0 n=25
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' passed (3.419 seconds).
+Test Suite 'QwenExpertTilePerfTests' passed at 2026-08-24 00:04:33.517.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.419 (3.419) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-24 00:04:33.517.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.419 (3.419) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 00:04:33.517.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.419 (3.420) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

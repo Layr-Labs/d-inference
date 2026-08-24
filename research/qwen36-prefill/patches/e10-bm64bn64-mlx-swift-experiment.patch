@@ -1,0 +1,259 @@
+diff --git a/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h b/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
+index c78957c..4614442 100644
+--- a/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
++++ b/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
+@@ -23,6 +23,7 @@ typedef struct mlx_metal_gemma4_expert_qmm_diagnostics {
+   uint8_t aot_available;
+   uint8_t nax_available;
+   uint8_t armed;
++  uint8_t bm64_requested;
+   uint64_t attempts;
+   uint64_t hits;
+   uint64_t fallback_nax;
+diff --git a/Source/Cmlx/include/mlx/gemma4_expert_qmm.h b/Source/Cmlx/include/mlx/gemma4_expert_qmm.h
+index 5f59ef1..a25aaf1 100644
+--- a/Source/Cmlx/include/mlx/gemma4_expert_qmm.h
++++ b/Source/Cmlx/include/mlx/gemma4_expert_qmm.h
+@@ -16,6 +16,7 @@ typedef struct mlx_metal_gemma4_expert_qmm_diagnostics {
+   uint8_t aot_available;
+   uint8_t nax_available;
+   uint8_t armed;
++  uint8_t bm64_requested;
+   uint64_t attempts;
+   uint64_t hits;
+   uint64_t fallback_nax;
+@@ -39,7 +40,7 @@ void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot_and_disarm(
+ }
+ #endif
+ 
+-// ABI drift pins. The layout is 4 x uint8 at offsets 0-3, 4 bytes of
++// ABI drift pins. The layout is 5 x uint8 at offsets 0-4, 3 bytes of
+ // alignment padding, then 8-aligned uint64 counters; the Swift
+ // GPU.Gemma4ExpertQMMDiagnostics mapping and the Cmlx C++ facade mirror both
+ // depend on these exact values.
+@@ -49,6 +50,10 @@ _Static_assert(
+ _Static_assert(
+     offsetof(mlx_metal_gemma4_expert_qmm_diagnostics, armed) == 3,
+     "mlx_metal_gemma4_expert_qmm_diagnostics.armed offset drift: expected 3");
++_Static_assert(
++    offsetof(mlx_metal_gemma4_expert_qmm_diagnostics, bm64_requested) == 4,
++    "mlx_metal_gemma4_expert_qmm_diagnostics.bm64_requested offset drift: "
++    "expected 4");
+ _Static_assert(
+     offsetof(mlx_metal_gemma4_expert_qmm_diagnostics, attempts) == 8,
+     "mlx_metal_gemma4_expert_qmm_diagnostics.attempts offset drift: expected 8");
+diff --git a/Source/Cmlx/mlx-generated/metal/quantized.h b/Source/Cmlx/mlx-generated/metal/quantized.h
+index 04e5b13..bd67f1c 100644
+--- a/Source/Cmlx/mlx-generated/metal/quantized.h
++++ b/Source/Cmlx/mlx-generated/metal/quantized.h
+@@ -2525,10 +2525,10 @@ template <
+ }
+ 
+ // Descriptor builder for the sorted expert-tile route. One thread per expert
+-// (threadgroup size == NE); instantiated for NE=128 (Gemma 4) and NE=256
+-// (Qwen 3.5/3.6 MoE) in quantized.metal.
+-template <int NE>
+-[[kernel]] void build_sorted_expert_tiles_bm32(
++// (threadgroup size == NE); instantiated for the qualified expert count and
++// block-row combinations in quantized.metal.
++template <int NE, uint BM>
++[[kernel]] void build_sorted_expert_tiles(
+     const device uint32_t* indices [[buffer(0)]],
+     device uint4* descriptors [[buffer(1)]],
+     device uint* count [[buffer(2)]],
+@@ -2537,7 +2537,6 @@ template <int NE>
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+   constexpr uint expert_count = uint(NE);
+-  constexpr uint BM = 32;
+   constexpr uint simdgroup_count = expert_count / 32;
+   threadgroup uint segment_starts[expert_count + 1];
+   threadgroup uint inclusive_tile_offsets[expert_count];
+@@ -2683,9 +2682,10 @@ template <
+     uint lid [[thread_index_in_threadgroup]],
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+-  static_assert(BM == 32, "Gemma 4 expert tiles require BM=32");
++  static_assert(
++      (BM == 32 && BN == 32) || (BM == 64 && BN == 64),
++      "Expert tiles require paired BM/BN of 32 or 64");
+   static_assert(BK == 32, "Gemma 4 expert tiles require BK=32");
+-  static_assert(BN == 32, "Gemma 4 expert tiles require BN=32");
+ 
+   // tid.y is uniform across the threadgroup. Empty capacity slots return
+   // before any threadgroup allocation is consumed by a microkernel barrier.
+diff --git a/Source/Cmlx/mlx-generated/quantized.cpp b/Source/Cmlx/mlx-generated/quantized.cpp
+index 78446b7..24f0d21 100644
+--- a/Source/Cmlx/mlx-generated/quantized.cpp
++++ b/Source/Cmlx/mlx-generated/quantized.cpp
+@@ -2538,10 +2538,10 @@ template <
+ }
+ 
+ // Descriptor builder for the sorted expert-tile route. One thread per expert
+-// (threadgroup size == NE); instantiated for NE=128 (Gemma 4) and NE=256
+-// (Qwen 3.5/3.6 MoE) in quantized.metal.
+-template <int NE>
+-[[kernel]] void build_sorted_expert_tiles_bm32(
++// (threadgroup size == NE); instantiated for the qualified expert count and
++// block-row combinations in quantized.metal.
++template <int NE, uint BM>
++[[kernel]] void build_sorted_expert_tiles(
+     const device uint32_t* indices [[buffer(0)]],
+     device uint4* descriptors [[buffer(1)]],
+     device uint* count [[buffer(2)]],
+@@ -2550,7 +2550,6 @@ template <int NE>
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+   constexpr uint expert_count = uint(NE);
+-  constexpr uint BM = 32;
+   constexpr uint simdgroup_count = expert_count / 32;
+   threadgroup uint segment_starts[expert_count + 1];
+   threadgroup uint inclusive_tile_offsets[expert_count];
+@@ -2696,9 +2695,10 @@ template <
+     uint lid [[thread_index_in_threadgroup]],
+     uint simd_gid [[simdgroup_index_in_threadgroup]],
+     uint simd_lid [[thread_index_in_simdgroup]]) {
+-  static_assert(BM == 32, "Gemma 4 expert tiles require BM=32");
++  static_assert(
++      (BM == 32 && BN == 32) || (BM == 64 && BN == 64),
++      "Expert tiles require paired BM/BN of 32 or 64");
+   static_assert(BK == 32, "Gemma 4 expert tiles require BK=32");
+-  static_assert(BN == 32, "Gemma 4 expert tiles require BN=32");
+ 
+   // tid.y is uniform across the threadgroup. Empty capacity slots return
+   // before any threadgroup allocation is consumed by a microkernel barrier.
+diff --git a/Source/MLX/GPU+Metal.swift b/Source/MLX/GPU+Metal.swift
+index bd9f4ca..8b3793b 100644
+--- a/Source/MLX/GPU+Metal.swift
++++ b/Source/MLX/GPU+Metal.swift
+@@ -256,6 +256,7 @@ public enum GPU {
+         public let aotAvailable: Bool
+         public let naxAvailable: Bool
+         public let armed: Bool
++        public let bm64Requested: Bool
+         public let attempts: UInt64
+         public let hits: UInt64
+         public let fallbackNAX: UInt64
+@@ -279,6 +280,7 @@ public enum GPU {
+             aotAvailable = value.aot_available != 0
+             naxAvailable = value.nax_available != 0
+             armed = value.armed != 0
++            bm64Requested = value.bm64_requested != 0
+             attempts = value.attempts
+             hits = value.hits
+             fallbackNAX = value.fallback_nax
+diff --git a/Tests/MLXTests/QwenExpertTilePerfTests.swift b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+index 7224c81..13a8b01 100644
+--- a/Tests/MLXTests/QwenExpertTilePerfTests.swift
++++ b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+@@ -5,13 +5,15 @@
+ // p10-p90 over >= 15 timed iterations at T=512 top-8, i.e. 4096 sorted
+ // assignments).
+ //
+-// The expert-slice route is chosen once per process at Device construction
+-// (MLX_GATHER_QMM_EXPERT_SLICES), so the A/B is two invocations:
++// The expert-slice route and geometry are chosen once per process at Device
++// construction, so the BM32/BM64 A/B is two invocations:
+ //
+-//   MLX_EXPERT_TILES_PERF=1 MLX_GATHER_QMM_EXPERT_SLICES=0 \
+-//     swift test --filter QwenExpertTilePerfTests   # legacy route
+-//   MLX_EXPERT_TILES_PERF=1 MLX_GATHER_QMM_EXPERT_SLICES=1 \
+-//     swift test --filter QwenExpertTilePerfTests   # tile route
++//   MLX_EXPERT_TILES_PERF=1 MLX_GATHER_QMM_EXPERT_SLICES=trust \
++//     MLX_GATHER_QMM_EXPERT_TILE_GEOMETRY=bm32_bn32 \
++//     swift test --filter QwenExpertTilePerfTests   # established tile
++//   MLX_EXPERT_TILES_PERF=1 MLX_GATHER_QMM_EXPERT_SLICES=trust \
++//     MLX_GATHER_QMM_EXPERT_TILE_GEOMETRY=bm64_bn64 \
++//     swift test --filter QwenExpertTilePerfTests   # experiment
+ //
+ // Requires a source-matched mlx.metallib colocated with the test binary
+ // (scripts/fetch-metallib.sh <path>). Skips unless MLX_EXPERT_TILES_PERF=1.
+@@ -62,6 +64,8 @@ final class QwenExpertTilePerfTests: XCTestCase {
+         let diagnostics = GPU.gemma4ExpertQMMDiagnostics()
+         var header =
+             "[qwen-expert-tile-perf] route=" + (diagnostics.requested ? "tile" : "legacy")
++        header += " geometry="
++            + (diagnostics.bm64Requested ? "bm64_bn64" : "bm32_bn32")
+         header += " aot=\(diagnostics.aotAvailable) nax=\(diagnostics.naxAvailable)\n"
+         FileHandle.standardError.write(Data(header.utf8))
+ 
+@@ -119,6 +123,7 @@ final class QwenExpertTilePerfTests: XCTestCase {
+                 * (benchCase.k / 2 + benchCase.k / groupSize * 4)
+             let gbps = Double(weightBytes) / (median / 1e3) / 1e9
+             var line = "[qwen-expert-tile-perf] \(benchCase.name): "
++            line += "M=\(benchCase.m) rows/expert=\(perExpert) "
+             line += "median " + String(format: "%.4f", median) + " ms "
+             line += "p10 " + String(format: "%.4f", p10) + " "
+             line += "p90 " + String(format: "%.4f", p90) + " "
+diff --git a/Tests/MLXTests/SortedGatherQuantizedMMTests.swift b/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
+index f412793..452f7c7 100644
+--- a/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
++++ b/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
+@@ -25,11 +25,15 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+         let enabledValues = ["1", "true", "on", "yes", "trust"]
+         let requested = ProcessInfo.processInfo.environment["MLX_GATHER_QMM_EXPERT_SLICES"]?
+             .lowercased()
++        let bm64Requested =
++            ProcessInfo.processInfo.environment["MLX_GATHER_QMM_EXPERT_TILE_GEOMETRY"]?
++            .lowercased() == "bm64_bn64"
+ 
+         _ = GPU.snapshotAndDisarmGemma4ExpertQMMDiagnostics()
+         GPU.resetGemma4ExpertQMMDiagnostics()
+         let unarmed = GPU.gemma4ExpertQMMDiagnostics()
+         XCTAssertEqual(unarmed.requested, enabledValues.contains(requested ?? ""))
++        XCTAssertEqual(unarmed.bm64Requested, bm64Requested)
+         XCTAssertFalse(unarmed.armed)
+         assertCounterInvariant(unarmed)
+         XCTAssertEqual(unarmed.attempts, 0)
+@@ -38,6 +42,7 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+         let armed = GPU.gemma4ExpertQMMDiagnostics()
+         XCTAssertTrue(armed.armed)
+         XCTAssertEqual(armed.requested, unarmed.requested)
++        XCTAssertEqual(armed.bm64Requested, unarmed.bm64Requested)
+         XCTAssertEqual(armed.aotAvailable, unarmed.aotAvailable)
+         XCTAssertEqual(armed.naxAvailable, unarmed.naxAvailable)
+         XCTAssertEqual(armed.attempts, 0)
+@@ -263,6 +268,9 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+ 
+         let maximallyFragmented16384 =
+             Array(repeating: 1, count: qwenExpertCount - 1) + [16129]
++        var bm64Tails16384 = Array(repeating: 64, count: qwenExpertCount)
++        bm64Tails16384.replaceSubrange(
++            0 ..< 8, with: [1, 16, 17, 63, 64, 65, 127, 159])
+         let maximallyFragmented32768 =
+             Array(repeating: 1, count: qwenExpertCount - 1) + [32513]
+         let maximallyFragmented65536 =
+@@ -271,6 +279,8 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+             ("M4096, BM16 top-8 uniform", Array(repeating: 16, count: qwenExpertCount)),
+             ("M4096, multi-boundary unaligned tiles", unaligned4096),
+             ("M8192, empty experts and heavy skew", emptyExperts8192),
++            ("M16384, BM64-aligned top-8 uniform", Array(repeating: 64, count: qwenExpertCount)),
++            ("M16384, BM64 1/16/17/63/64/65-row tails and skew", bm64Tails16384),
+             ("M16384, maximally fragmented expert boundaries", maximallyFragmented16384),
+             ("M32768, BM32-aligned top-8 uniform", Array(repeating: 128, count: qwenExpertCount)),
+             ("M32768, maximally fragmented expert boundaries", maximallyFragmented32768),
+@@ -352,11 +362,21 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+                 dtype: .bfloat16
+             ).swappedAxes(-1, -2)
+ 
+-            var expertCounts = Array(repeating: 16, count: qwenExpertCount)
+-            expertCounts.replaceSubrange(0 ..< 4, with: [1, 15, 33, 15])
++            let bm64Requested = GPU.gemma4ExpertQMMDiagnostics().bm64Requested
++            var expertCounts = Array(
++                repeating: bm64Requested ? 64 : 16, count: qwenExpertCount)
++            if bm64Requested {
++                // Preserves M=16384 while exercising both small-row and BM64
++                // bodies at 1/16/17/63/64/65-row boundaries plus multi-tile
++                // skew.
++                expertCounts.replaceSubrange(
++                    0 ..< 8, with: [1, 16, 17, 63, 64, 65, 127, 159])
++            } else {
++                expertCounts.replaceSubrange(0 ..< 4, with: [1, 15, 33, 15])
++            }
+             let expertIndices = sortedExpertIndices(expertCounts)
+             let rowCount = expertIndices.count
+-            XCTAssertEqual(rowCount, 4096)
++            XCTAssertEqual(rowCount, bm64Requested ? 16384 : 4096)
+             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+             let x = deterministicValues(
+                 count: rowCount * geometry.k,

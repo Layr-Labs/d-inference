@@ -16,6 +16,57 @@ struct AppFlowStoreTests {
         #expect(store.resumableOnboardingDraft == nil)
     }
 
+    @Test("A configured CLI provider opens the product without replaying onboarding")
+    func configuredProviderOpensProduct() {
+        let preferences = InMemoryAppFlowPreferences()
+        let store = AppFlowStore(
+            preferences: preferences,
+            launchOverride: nil,
+            bootstrapEvidence: AppFlowBootstrapEvidence(
+                hasProviderState: true,
+                hasVerifiedHardwareTrust: true
+            )
+        )
+
+        #expect(store.phase == .product)
+        #expect(store.hasCompletedNetworkOnboarding)
+        #expect(preferences.hasCompletedNetworkOnboarding)
+    }
+
+    @Test("Partial machine setup cannot bypass onboarding")
+    func partialMachineSetupStaysOnWelcome() {
+        let store = AppFlowStore(
+            preferences: InMemoryAppFlowPreferences(),
+            launchOverride: nil,
+            bootstrapEvidence: AppFlowBootstrapEvidence(
+                hasProviderState: true,
+                hasVerifiedHardwareTrust: false
+            )
+        )
+
+        #expect(store.phase == .welcome)
+        #expect(!store.hasCompletedNetworkOnboarding)
+    }
+
+    @Test("A saved onboarding draft wins over machine bootstrap evidence")
+    func savedDraftWinsOverMachineBootstrap() {
+        let preferences = InMemoryAppFlowPreferences(
+            onboardingDraft: OnboardingDraft(step: .enrollment)
+        )
+        let store = AppFlowStore(
+            preferences: preferences,
+            launchOverride: nil,
+            bootstrapEvidence: AppFlowBootstrapEvidence(
+                hasProviderState: true,
+                hasVerifiedHardwareTrust: true
+            )
+        )
+
+        #expect(store.phase == .welcome)
+        #expect(!store.hasCompletedNetworkOnboarding)
+        #expect(store.resumableOnboardingDraft?.step == .enrollment)
+    }
+
     @Test("A completed setup opens the product shell")
     func completedSetupOpensProduct() {
         let store = AppFlowStore(

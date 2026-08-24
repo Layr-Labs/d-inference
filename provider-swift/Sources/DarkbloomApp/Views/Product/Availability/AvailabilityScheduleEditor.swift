@@ -120,7 +120,10 @@ struct AvailabilityScheduleEditor: View {
                     }
                     .frame(minWidth: 122)
                 } else {
-                    Label("Save & Restart", systemImage: "arrow.clockwise")
+                    Label(
+                        store.isLive ? "Save Schedule" : "Save & Restart",
+                        systemImage: store.isLive ? "square.and.arrow.down" : "arrow.clockwise"
+                    )
                 }
             }
             .buttonStyle(.borderedProminent)

@@ -3,6 +3,7 @@ import SwiftUI
 struct ModelLibraryRow: View {
     let model: ModelSummary
     let isSelected: Bool
+    let allowsSelection: Bool
     let onSelect: () -> Void
     let onPrimaryAction: () -> Void
     let onRemove: () -> Void
@@ -61,8 +62,10 @@ struct ModelLibraryRow: View {
 
             if model.isInstalled {
                 Menu {
-                    Button("Use for private chat", action: onSelect)
-                    Divider()
+                    if allowsSelection {
+                        Button("Use for private chat", action: onSelect)
+                        Divider()
+                    }
                     Button("Remove Download…", role: .destructive, action: onRemove)
                         .disabled(model.runtime != .cold)
                 } label: {
@@ -98,6 +101,8 @@ struct ModelLibraryRow: View {
                 Button("Unavailable") {}
                     .buttonStyle(.bordered)
                     .disabled(true)
+            } else if !allowsSelection {
+                EmptyView()
             } else if isSelected {
                 Button("Selected", systemImage: "checkmark", action: onPrimaryAction)
                     .buttonStyle(.bordered)

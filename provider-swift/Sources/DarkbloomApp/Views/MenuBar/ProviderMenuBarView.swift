@@ -3,6 +3,7 @@ import SwiftUI
 struct ProviderMenuBarView: View {
     let content: ProviderMenuBarContent
     let providerStore: ProviderStore
+    let showsPreviewChrome: Bool
 
     @Environment(\.openWindow) private var openWindow
 
@@ -43,16 +44,20 @@ struct ProviderMenuBarView: View {
 
                 Spacer()
 
-                Text("PREVIEW")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .tracking(0.7)
-                    .foregroundStyle(DarkbloomTheme.accent)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(DarkbloomTheme.accent.opacity(0.09), in: Capsule())
+                if showsPreviewChrome {
+                    Text("PREVIEW")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .tracking(0.7)
+                        .foregroundStyle(DarkbloomTheme.accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(DarkbloomTheme.accent.opacity(0.09), in: Capsule())
+                }
             }
 
-            MenuBarPreviewDisclosure()
+            if showsPreviewChrome {
+                MenuBarPreviewDisclosure()
+            }
         }
         .padding(14)
     }

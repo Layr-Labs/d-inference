@@ -58,6 +58,7 @@ struct LocalAPIView: View {
             LocalAPIStateView(
                 kind: .starting,
                 message: message,
+                isLive: store.isLive,
                 onRetry: {},
                 onOpenDiagnostics: onOpenDiagnostics
             )
@@ -66,6 +67,7 @@ struct LocalAPIView: View {
             LocalAPIStateView(
                 kind: .stopped,
                 message: message,
+                isLive: store.isLive,
                 onRetry: {},
                 onOpenDiagnostics: onOpenDiagnostics
             )
@@ -82,6 +84,7 @@ struct LocalAPIView: View {
             LocalAPIStateView(
                 kind: .unavailable,
                 message: message,
+                isLive: store.isLive,
                 onRetry: store.retryPreviewDiscovery,
                 onOpenDiagnostics: onOpenDiagnostics
             )
@@ -98,6 +101,7 @@ struct LocalAPIView: View {
             LocalAPIStateView(
                 kind: .starting,
                 message: "A provider process was discovered. Darkbloom is checking whether its HTTP endpoint responds before showing connection details.",
+                isLive: store.isLive,
                 onRetry: {},
                 onOpenDiagnostics: onOpenDiagnostics
             )
@@ -106,6 +110,7 @@ struct LocalAPIView: View {
             LocalAPIStateView(
                 kind: .unavailable,
                 message: "The provider process is running, but the local API did not answer its health check. Connection details stay hidden until it responds.",
+                isLive: store.isLive,
                 onRetry: store.retryPreviewHealth,
                 onOpenDiagnostics: onOpenDiagnostics
             )
@@ -122,6 +127,7 @@ struct LocalAPIView: View {
     private func reachableContent(_ endpoint: LocalAPIEndpointSnapshot) -> some View {
         LocalAPIConnectionSurface(
             endpoint: endpoint,
+            isLive: store.isLive,
             isAPIKeyRevealed: store.isAPIKeyRevealed,
             copiedItem: store.lastCopiedItem,
             onRevealAPIKey: store.setAPIKeyRevealed,
@@ -155,7 +161,9 @@ struct LocalAPIView: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("This sample endpoint is exposed beyond this Mac")
+                Text(store.isLive
+                    ? "This endpoint is exposed beyond this Mac"
+                    : "This sample endpoint is exposed beyond this Mac")
                     .font(.system(size: 12, weight: .semibold))
                 Text(LocalAPIPresentation.accessDetail(endpoint.bindScope))
                     .font(.system(size: 10))
@@ -191,14 +199,16 @@ struct LocalAPIView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Local requests stay on the path you choose.")
                     .font(.system(size: 12, weight: .semibold))
-                Text("Use Chat for the sample in-app experience, or connect your own client with the endpoint above.")
+                Text(store.isLive
+                    ? "Use Chat in Darkbloom, or connect your own client with the endpoint above."
+                    : "Use Chat for the sample in-app experience, or connect your own client with the endpoint above.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Button("Preview in Chat", action: onOpenChat)
+            Button(store.isLive ? "Open Chat" : "Preview in Chat", action: onOpenChat)
             Button("Open Models", action: onOpenModels)
         }
         .padding(.top, 18)

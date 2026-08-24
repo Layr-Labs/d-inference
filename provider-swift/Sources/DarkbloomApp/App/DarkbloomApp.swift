@@ -19,6 +19,13 @@ struct DarkbloomApp: App {
     @State private var myMacsStore: MyMacsStore
     @State private var availabilityStore: AvailabilityStore
 
+    private var showsPreviewChrome: Bool {
+        PreviewChromePresentation.isVisible(
+            hasOnboardingPreview: onboardingPreview != nil,
+            hasProductPreview: productPreview != nil
+        )
+    }
+
     init() {
         BrandFontLoader.registerFonts()
 
@@ -32,15 +39,22 @@ struct DarkbloomApp: App {
 
         self.onboardingPreview = onboardingPreview
         self.productPreview = productPreview
+        let providerStore = productPreview.map {
+            ProviderStore(previewScenario: $0.providerScenario)
+        } ?? ProviderStore(daemon: DaemonRuntimeService())
         _appFlowStore = State(
             initialValue: AppFlowStore(
                 launchOverride: productPreview != nil
                     ? .product
                     : (onboardingPreview != nil ? .onboarding : AppPhase.currentDebugLaunchOverride),
                 onboardingFlow: onboardingFlow,
-                initialDestination: productPreview?.destination ?? .overview
+                initialDestination: productPreview?.destination ?? .overview,
+                bootstrapEvidence: productPreview == nil
+                    ? AppFlowBootstrapEvidence(snapshot: providerStore.snapshot)
+                    : nil
             )
         )
+        _providerStore = State(initialValue: providerStore)
         // Preview captures stay fully deterministic (fixture services, frozen
         // clock). Real launches wire every product store to its live source:
         // ProviderStore polls ~/.darkbloom/daemon-state.json and shells out
@@ -50,9 +64,6 @@ struct DarkbloomApp: App {
         // `earnings --json`; the local API probes ~/.darkbloom/local.json;
         // My Macs uses the coordinator-backed account session.
         if let productPreview {
-            _providerStore = State(
-                initialValue: ProviderStore(previewScenario: productPreview.providerScenario)
-            )
             _modelLibraryStore = State(
                 initialValue: ModelLibraryStore(fixture: productPreview.modelFixture)
             )
@@ -72,9 +83,6 @@ struct DarkbloomApp: App {
                 initialValue: AvailabilityStore(fixture: productPreview.availabilityFixture)
             )
         } else {
-            _providerStore = State(
-                initialValue: ProviderStore(daemon: DaemonRuntimeService())
-            )
             _modelLibraryStore = State(
                 initialValue: ModelLibraryStore(live: ProcessModelCatalogCLIRunner())
             )
@@ -145,8 +153,8 @@ struct DarkbloomApp: App {
         Settings {
             if appDelegate.installState.isReady {
                 SettingsRootView(
-                    appFlowStore: appFlowStore,
-                    providerStore: providerStore
+                    providerStore: providerStore,
+                    showsPreviewControls: showsPreviewChrome
                 )
             } else {
                 Text("Finish installing Darkbloom before changing settings.")
@@ -161,7 +169,8 @@ struct DarkbloomApp: App {
                         hasCompletedSetup: appFlowStore.hasCompletedNetworkOnboarding,
                         snapshot: providerStore.snapshot
                     ),
-                    providerStore: providerStore
+                    providerStore: providerStore,
+                    showsPreviewChrome: showsPreviewChrome
                 )
             } else {
                 Button("Quit Darkbloom") {

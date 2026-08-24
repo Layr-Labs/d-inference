@@ -61,6 +61,8 @@ struct ModelLibraryView: View {
                         ModelLibraryRow(
                             model: model,
                             isSelected: store.selectedModelID == model.id,
+                            allowsSelection: ModelLibraryPresentation
+                                .allowsTransientSelection(isLive: store.isLive),
                             onSelect: { store.selectModel(id: model.id) },
                             onPrimaryAction: { performPrimaryAction(for: model) },
                             onRemove: { modelToRemove = model }

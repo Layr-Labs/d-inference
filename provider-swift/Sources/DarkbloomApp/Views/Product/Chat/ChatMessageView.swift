@@ -43,7 +43,7 @@ struct ChatMessageView: View {
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(message.role == .user ? "Your preview message" : "Simulated response")
+        .accessibilityLabel(ChatPresentation.messageLabel(message))
         .accessibilityValue(message.text)
     }
 }

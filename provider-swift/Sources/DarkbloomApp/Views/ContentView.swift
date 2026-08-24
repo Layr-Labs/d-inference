@@ -18,6 +18,13 @@ struct ContentView: View {
     @State private var launchIsVisible: Bool
     @State private var identity = MachineIdentity.loading
 
+    private var showsPreviewChrome: Bool {
+        PreviewChromePresentation.isVisible(
+            hasOnboardingPreview: onboardingPreview != nil,
+            hasProductPreview: productPreview != nil
+        )
+    }
+
     init(
         showsLaunchExperience: Bool = true,
         launchMode: DarkbloomLaunchMode = .full,
@@ -50,7 +57,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !launchIsVisible {
+            if !launchIsVisible, showsPreviewChrome {
                 UIPreviewNotice()
             }
 
@@ -61,6 +68,7 @@ struct ContentView: View {
                         WelcomeView(
                             identity: identity,
                             resumableDraft: appFlowStore.resumableOnboardingDraft,
+                            showsPreviewChrome: showsPreviewChrome,
                             onContinue: {
                                 withAnimation(.easeOut(duration: 0.44)) {
                                     appFlowStore.startOnboarding()
@@ -106,6 +114,7 @@ struct ContentView: View {
                             myMacsStore: myMacsStore,
                             availabilityStore: availabilityStore,
                             chatFixture: productPreview?.chatFixture ?? .empty,
+                            isPreview: productPreview != nil,
                             initialDestination: productPreview?.destination
                                 ?? appFlowStore.pendingInitialProductDestination,
                             onSelectDestination: appFlowStore.selectProductDestination,

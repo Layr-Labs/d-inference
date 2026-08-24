@@ -118,7 +118,9 @@ struct LocalAPICodeExampleView: View {
             .overlay { Rectangle().stroke(ProductPalette.stroke, lineWidth: 1) }
 
             if endpoint.requiresAuthentication {
-                Text("Export OPENAI_API_KEY with the sample key before running this example. The key is referenced by name and is never embedded in copied code.")
+                Text(store.isLive
+                    ? "Export OPENAI_API_KEY with the API key before running this example. The key is referenced by name and is never embedded in copied code."
+                    : "Export OPENAI_API_KEY with the sample key before running this example. The key is referenced by name and is never embedded in copied code.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }

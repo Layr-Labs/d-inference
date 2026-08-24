@@ -42,7 +42,9 @@ struct ContributionsView: View {
         }
         .navigationTitle("Contributions")
         .sheet(isPresented: $showsPayout) {
-            PreviewPayoutSheet(store: store)
+            if !store.isLive {
+                PreviewPayoutSheet(store: store)
+            }
         }
         .task {
             await store.refresh()
@@ -65,7 +67,11 @@ struct ContributionsView: View {
                 .foregroundStyle(.secondary)
         }
 
-        ContributionBalanceHero(snapshot: snapshot) {
+        ContributionBalanceHero(
+            snapshot: snapshot,
+            allowsPreviewPayout: ContributionsPresentation
+                .allowsPayoutActions(isLive: store.isLive)
+        ) {
             showsPayout = true
         }
         .padding(.top, 22)
@@ -135,7 +141,9 @@ struct ContributionsView: View {
             ProductPageHeader(
                 eyebrow: "Network",
                 title: "Contributions are out of reach.",
-                subtitle: "Your provider can keep running. Darkbloom just can’t load account totals in this UI preview right now."
+                subtitle: store.isLive
+                    ? "Your provider can keep running. Darkbloom just can’t load account totals right now."
+                    : "Your provider can keep running. Darkbloom just can’t load account totals in this UI preview right now."
             )
 
             HStack(spacing: 16) {

@@ -1,34 +1,38 @@
 import SwiftUI
 
 struct SettingsRootView: View {
-    let appFlowStore: AppFlowStore
     let providerStore: ProviderStore
+    let showsPreviewControls: Bool
 
     @State private var selectedSection = SettingsSection.general
 
     var body: some View {
-        TabView(selection: $selectedSection) {
-            GeneralSettingsView()
-                .tabItem { Label("General", systemImage: "gearshape") }
-                .tag(SettingsSection.general)
+        if showsPreviewControls {
+            TabView(selection: $selectedSection) {
+                GeneralSettingsView()
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                    .tag(SettingsSection.general)
 
-            LocalAPISettingsView()
-                .tabItem { Label("Local API", systemImage: "chevron.left.forwardslash.chevron.right") }
-                .tag(SettingsSection.localAPI)
+                LocalAPISettingsView()
+                    .tabItem { Label("Local API", systemImage: "chevron.left.forwardslash.chevron.right") }
+                    .tag(SettingsSection.localAPI)
 
-            AccountSecuritySettingsView()
-                .tabItem { Label("Account", systemImage: "person.crop.circle") }
-                .tag(SettingsSection.account)
+                AccountSecuritySettingsView()
+                    .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                    .tag(SettingsSection.account)
 
-            UpdateSettingsView(installedVersion: providerStore.snapshot.version)
-                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
-                .tag(SettingsSection.updates)
+                UpdateSettingsView(installedVersion: providerStore.snapshot.version)
+                    .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+                    .tag(SettingsSection.updates)
 
-            AdvancedSettingsView()
-                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
-                .tag(SettingsSection.advanced)
+                AdvancedSettingsView()
+                    .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                    .tag(SettingsSection.advanced)
+            }
+            .frame(width: 620, height: 470)
+        } else {
+            LiveSettingsView(snapshot: providerStore.snapshot)
         }
-        .frame(width: 620, height: 470)
     }
 }
 

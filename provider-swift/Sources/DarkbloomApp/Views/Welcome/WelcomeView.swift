@@ -3,6 +3,7 @@ import SwiftUI
 struct WelcomeView: View {
     let identity: MachineIdentity
     let resumableDraft: OnboardingDraft?
+    let showsPreviewChrome: Bool
     let onContinue: () -> Void
     let onResume: () -> Void
     let onStartOver: () -> Void
@@ -72,7 +73,10 @@ struct WelcomeView: View {
             isPresented = true
         }
         .sheet(isPresented: $showsHowItWorks) {
-            HowItWorksSheet(onStartSetup: onContinue)
+            HowItWorksSheet(
+                showsPreviewChrome: showsPreviewChrome,
+                onStartSetup: onContinue
+            )
         }
         .confirmationDialog(
             "Start setup over?",
@@ -117,6 +121,7 @@ struct WelcomeView: View {
                 if let resumableDraft {
                     ResumeSetupCard(
                         draft: resumableDraft,
+                        showsPreviewChrome: showsPreviewChrome,
                         onResume: onResume,
                         onStartOver: { confirmsStartOver = true }
                     )

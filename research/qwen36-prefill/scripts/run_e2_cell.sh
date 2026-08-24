@@ -21,6 +21,10 @@ for value in "$chunk" "$budget"; do
         *[!0-9]* | 0 | "") echo "invalid geometry: $value" >&2; exit 2 ;;
     esac
 done
+if [[ "$chunk" != default || "$budget" != default ]]; then
+    echo "non-default CBv2 chunk/budget overrides were removed after E2; checkout the archived E2 experiment commit to reproduce that arm" >&2
+    exit 2
+fi
 
 root="/Users/gaj/work/qwen36-prefill"
 binary="/Users/gaj/work/d-inference/provider-swift/.build/release/darkbloom"
@@ -46,16 +50,8 @@ json="$root/results/${label}.json"
 
 environment=(
     env
-    -u DARKBLOOM_CBV2_PREFILL_CHUNK
-    -u DARKBLOOM_CBV2_MAX_BATCHED_TOKENS
     DARKBLOOM_ARRIVAL_TOLERANCE_MS=20
 )
-if [[ "$chunk" != default ]]; then
-    environment+=("DARKBLOOM_CBV2_PREFILL_CHUNK=$chunk")
-fi
-if [[ "$budget" != default ]]; then
-    environment+=("DARKBLOOM_CBV2_MAX_BATCHED_TOKENS=$budget")
-fi
 
 "${environment[@]}" "$binary" benchmark \
     --model "$model" \

@@ -81,6 +81,8 @@ The patch adds regressions for:
 - the E51 B1/B2/B4 arithmetic and an actual two-layer budget cut;
 - gathered versus per-layer quantized projections at `rtol=1e-4`,
   `atol=1e-5`;
+- B1/B2/B4 gathered history versus the incumbent full-rectangle projection
+  slices, covering the incumbent history/suffix QMM split;
 - source parameter object identity before and after bank use;
 - B1/B2/B4 artifact-only and suffix-frontier equivalence;
 - exact K/V cache offsets and row offsets;
@@ -110,10 +112,11 @@ Apply `079-cbv2-cross-layer-artifact-projection-batching.patch` after patch
 078's final nested commit `e5ba752`.
 
 - patch SHA-256:
-  `de22f040db552cd323afc1daccc0ddb212260e4ad2f28a1ca0f032e80af1ebaf`;
+  `c6591ebc054bbd5233662de702bf1c7272b08945f8fe8fe4feccab7538a73669`;
 - nested commits:
   `2f67b8bcebaba60ad2625bbd4387b326c889363a`,
   `785c1c21217bd3c2e296b8de4ee6d503d08f22f2`,
-  `77d3a05a0eca714014e922d542bf1b528d1352bc`;
-- final tree: `6ffc6e9e67426cadad39c6429853e4fb7ec03370`, verified by clean
+  `77d3a05a0eca714014e922d542bf1b528d1352bc`,
+  `fc32dae08048a0ee51f89742eaaa000572c51490`;
+- final tree: `9d14cc56b414c17d920a17151868ceab56b2d5fe`, verified by clean
   patch replay.

@@ -161,7 +161,7 @@ struct AppInstallCoordinator {
         #endif
 
         if sameResolvedPath(sourceBundleURL, destinationURL) {
-            try ensureUserShortcut(nonce: makeUUID().uuidString.lowercased())
+            attemptUserShortcut(nonce: makeUUID().uuidString.lowercased())
             return .continueLaunch
         }
 
@@ -204,12 +204,17 @@ struct AppInstallCoordinator {
             expected: sourceMetadata
         )
 
-        let preservedForeignApp = try installVerifiedBundle(
-            stagingURL,
-            at: destinationURL,
-            nonce: nonce
-        )
-        try ensureUserShortcut(nonce: nonce)
+        let preservedForeignApp = try AppInstallLock.withLock(
+            in: destinationRoot,
+            fileManager: fileManager
+        ) {
+            try installVerifiedBundle(
+                stagingURL,
+                at: destinationURL,
+                nonce: nonce
+            )
+        }
+        attemptUserShortcut(nonce: nonce)
 
         try executor.run(
             Self.openURL,
@@ -322,6 +327,18 @@ struct AppInstallCoordinator {
             return nil
         }
         return backupURL
+    }
+
+    private func attemptUserShortcut(nonce: String) {
+        do {
+            try ensureUserShortcut(nonce: nonce)
+        } catch {
+            NSLog(
+                "Darkbloom installed successfully but could not create %@: %@",
+                userShortcutURL.path,
+                error.localizedDescription
+            )
+        }
     }
 
     private func isOwnedBundle(at url: URL) -> Bool {

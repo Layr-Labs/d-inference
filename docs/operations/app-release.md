@@ -104,7 +104,11 @@ When the canonical destination is an owned signed app, relocation parses
 the two fields to agree semantically, and compares them before creating a
 directory or staging a copy. Equal-version repair and upgrades are allowed;
 an older downloaded source is rejected so the live app cannot fall behind
-SelfUpdater's durable installed-version record.
+SelfUpdater's durable installed-version record. Direct app relocation and the
+shell installer serialize their final destination check and swap through the
+same `~/.darkbloom/.app-install-lock`; the shell path applies the same
+monotonic version rule. Concurrent valid installers therefore finish at the
+highest version instead of letting the last stale copy win.
 
 The sole downgrade override exists for the one-machine recovery procedure
 below. It remains signature-pinned and refuses to run while

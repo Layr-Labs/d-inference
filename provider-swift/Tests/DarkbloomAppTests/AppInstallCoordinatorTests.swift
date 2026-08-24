@@ -84,6 +84,23 @@ struct AppInstallCoordinatorTests {
         #expect(executor.invocations[3].arguments == ["-n", fixture.destination.path])
     }
 
+    @Test("shortcut failure cannot invalidate a committed installation")
+    func shortcutFailureIsBestEffort() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = try fixture.makeDownloadedApp(payload: "committed")
+        let applications = fixture.home.appendingPathComponent("Applications")
+        try Data("user-owned-file".utf8).write(to: applications)
+        let executor = RecordingExecutor()
+
+        let result = try fixture.coordinator(source: source, executor: executor).coordinate()
+
+        #expect(result == .relocated(to: fixture.destination, preservedForeignApp: nil))
+        #expect(try fixture.payload(at: fixture.destination) == "committed")
+        #expect(try String(contentsOf: applications, encoding: .utf8) == "user-owned-file")
+        #expect(executor.didOpen(fixture.destination))
+    }
+
     @Test("system Applications app relocates to the managed destination")
     func systemApplicationsRelocates() throws {
         let fixture = try Fixture()

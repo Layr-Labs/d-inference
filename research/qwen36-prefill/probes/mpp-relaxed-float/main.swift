@@ -72,7 +72,10 @@ private func comparisonLine(
 }
 
 private func sampleLine(shape: ProjectionShape, sample: TimingSample) -> String {
-    [
+    let gpuRate = usefulTFLOPS(
+        operations: shape.usefulOperations,
+        seconds: sample.gpuSeconds)
+    return [
         "SAMPLE",
         "shape=\(shape.label)",
         "variant=\(sample.variantID)",
@@ -82,11 +85,7 @@ private func sampleLine(shape: ProjectionShape, sample: TimingSample) -> String 
         "gpu_ms=\(format(sample.gpuSeconds * 1e3, digits: 6))",
         "kernel_ms=\(format(sample.kernelSeconds * 1e3, digits: 6))",
         "cpu_wall_ms=\(format(sample.cpuSeconds * 1e3, digits: 6))",
-        "useful_gpu_tflops=\(format(
-            usefulTFLOPS(
-                operations: shape.usefulOperations,
-                seconds: sample.gpuSeconds),
-            digits: 4))",
+        "useful_gpu_tflops=\(format(gpuRate, digits: 4))",
     ].joined(separator: " ")
 }
 
@@ -95,7 +94,10 @@ private func summaryLine(
     variant: RelaxedVariant,
     summary: TimingSummary
 ) -> String {
-    [
+    let gpuRate = usefulTFLOPS(
+        operations: shape.usefulOperations,
+        seconds: summary.gpuMedianSeconds)
+    return [
         "SUMMARY",
         "shape=\(shape.label)",
         "variant=\(variant.rawValue)",
@@ -108,11 +110,7 @@ private func summaryLine(
         "gpu_max_ms=\(format(summary.gpuMaximumSeconds * 1e3, digits: 6))",
         "kernel_median_ms=\(format(summary.kernelMedianSeconds * 1e3, digits: 6))",
         "cpu_wall_median_ms=\(format(summary.cpuMedianSeconds * 1e3, digits: 6))",
-        "useful_gpu_tflops=\(format(
-            usefulTFLOPS(
-                operations: shape.usefulOperations,
-                seconds: summary.gpuMedianSeconds),
-            digits: 4))",
+        "useful_gpu_tflops=\(format(gpuRate, digits: 4))",
     ].joined(separator: " ")
 }
 
@@ -174,31 +172,29 @@ private func runShape(
         }
     }
 
-    guard samples[.strict]?.count == measuredRounds,
-          samples[.relaxed]?.count == measuredRounds
+    guard let strictSamples = samples[.strict],
+          let relaxedSamples = samples[.relaxed],
+          strictSamples.count == measuredRounds,
+          relaxedSamples.count == measuredRounds
     else {
         throw ProbeFailure.message("\(shape.label) timing matrix is incomplete")
     }
-    let strict = try summarize(samples[.strict]!)
-    let relaxed = try summarize(samples[.relaxed]!)
+    let strict = try summarize(strictSamples)
+    let relaxed = try summarize(relaxedSamples)
     print(summaryLine(shape: shape, variant: .strict, summary: strict))
     print(summaryLine(shape: shape, variant: .relaxed, summary: relaxed))
+    let strictRate = usefulTFLOPS(
+        operations: shape.usefulOperations,
+        seconds: strict.gpuMedianSeconds)
+    let relaxedRate = usefulTFLOPS(
+        operations: shape.usefulOperations,
+        seconds: relaxed.gpuMedianSeconds)
     print(
         "COMPARISON shape=\(shape.label)"
             + " relaxed_over_strict="
             + "\(format(strict.gpuMedianSeconds / relaxed.gpuMedianSeconds, digits: 4))"
-            + " strict_gpu_tflops="
-            + "\(format(
-                usefulTFLOPS(
-                    operations: shape.usefulOperations,
-                    seconds: strict.gpuMedianSeconds),
-                digits: 4))"
-            + " relaxed_gpu_tflops="
-            + "\(format(
-                usefulTFLOPS(
-                    operations: shape.usefulOperations,
-                    seconds: relaxed.gpuMedianSeconds),
-                digits: 4))")
+            + " strict_gpu_tflops=\(format(strictRate, digits: 4))"
+            + " relaxed_gpu_tflops=\(format(relaxedRate, digits: 4))")
     return ShapeResult(
         shape: shape,
         strict: strict,

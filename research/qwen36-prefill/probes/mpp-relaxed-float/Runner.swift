@@ -54,7 +54,7 @@ struct ProjectionShape {
             let bytes = try checkedProduct(
                 [elements, MemoryLayout<Float>.stride],
                 label: "\(label) \(name) bytes")
-            guard bytes <= device.maxBufferLength else {
+            guard UInt64(bytes) <= device.maxBufferLength else {
                 throw ProbeFailure.message(
                     "\(label) \(name) needs \(bytes) bytes; "
                         + "device maxBufferLength is \(device.maxBufferLength)")

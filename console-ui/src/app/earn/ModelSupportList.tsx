@@ -10,6 +10,8 @@ function formatSize(sizeGB: number): string {
 
 export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
   const { modelRows, bestModel, effectiveRAM, marketState } = calc;
+  const unavailable = marketState === "unavailable" || modelRows.length === 0;
+  const ready = marketState === "ready" && modelRows.length > 0;
 
   return (
     <div className="rounded-xl bg-bg-secondary p-6 mb-6">
@@ -21,15 +23,17 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
         Active public models rank by your conserved share of their trailing 30-day work pool.
       </p>
 
-      {marketState === "loading" ? (
+      {marketState === "loading" && (
         <div className="text-center py-6 text-sm text-text-secondary">
           Loading trailing market data…
         </div>
-      ) : marketState === "unavailable" || modelRows.length === 0 ? (
+      )}
+      {marketState !== "loading" && unavailable && (
         <div className="text-center py-6 text-sm text-text-secondary">
           Estimate unavailable
         </div>
-      ) : (
+      )}
+      {ready && (
         <ul className="rounded-lg border border-border-dim overflow-hidden">
           {modelRows.map(({ model, fits, estimate }, index) => {
             const isBest = Boolean(estimate && model.id === bestModel?.id);

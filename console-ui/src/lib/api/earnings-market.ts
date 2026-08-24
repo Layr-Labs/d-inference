@@ -10,6 +10,7 @@ import type {
 type JsonRecord = Record<string, unknown>;
 
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const INVALID_MARKET_RESPONSE = "Invalid earnings market response";
 const UNAVAILABLE_REASONS = new Set<EarningsUnavailableReason>([
   "settled_work_unavailable",
   "competing_capacity_unavailable",
@@ -105,18 +106,19 @@ function isMarketModel(value: unknown): value is EarningsMarketModel {
 function isAudit(value: unknown): value is EarningsMarketAudit {
   const audit = asRecord(value);
   if (!audit) return false;
-  const keys: (keyof EarningsMarketAudit)[] = [
-    "total_settled_work_micro_usd",
-    "modeled_work_micro_usd",
-    "unattributed_work_micro_usd",
-    "total_paid_tokens",
-    "modeled_paid_tokens",
-    "unattributed_paid_tokens",
-    "total_paid_jobs",
-    "modeled_paid_jobs",
-    "unattributed_paid_jobs",
-  ];
-  if (!keys.every((key) => isNonNegativeInteger(audit[key]))) return false;
+  if (
+    !isNonNegativeInteger(audit.total_settled_work_micro_usd) ||
+    !isNonNegativeInteger(audit.modeled_work_micro_usd) ||
+    !isNonNegativeInteger(audit.unattributed_work_micro_usd) ||
+    !isNonNegativeInteger(audit.total_paid_tokens) ||
+    !isNonNegativeInteger(audit.modeled_paid_tokens) ||
+    !isNonNegativeInteger(audit.unattributed_paid_tokens) ||
+    !isNonNegativeInteger(audit.total_paid_jobs) ||
+    !isNonNegativeInteger(audit.modeled_paid_jobs) ||
+    !isNonNegativeInteger(audit.unattributed_paid_jobs)
+  ) {
+    return false;
+  }
   const typed = audit as unknown as EarningsMarketAudit;
   return (
     typed.modeled_work_micro_usd + typed.unattributed_work_micro_usd ===
@@ -169,12 +171,12 @@ export function parseEarningsMarket(value: unknown): EarningsMarketResponse {
     !isAudit(market.audit) ||
     !isBaseRewards(market.base_rewards)
   ) {
-    throw new Error("Invalid earnings market response");
+    throw new Error(INVALID_MARKET_RESPONSE);
   }
 
   const models = market.models as EarningsMarketModel[];
   if (new Set(models.map((model) => model.id)).size !== models.length) {
-    throw new Error("Invalid earnings market response");
+    throw new Error(INVALID_MARKET_RESPONSE);
   }
   const audit = market.audit as unknown as EarningsMarketAudit;
   const modeledWork = models.reduce((sum, model) => sum + model.work_payout_micro_usd, 0);
@@ -185,7 +187,7 @@ export function parseEarningsMarket(value: unknown): EarningsMarketResponse {
     modeledTokens !== audit.modeled_paid_tokens ||
     modeledJobs !== audit.modeled_paid_jobs
   ) {
-    throw new Error("Invalid earnings market response");
+    throw new Error(INVALID_MARKET_RESPONSE);
   }
   return market as unknown as EarningsMarketResponse;
 }

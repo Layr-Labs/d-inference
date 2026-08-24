@@ -469,4 +469,3 @@ At the actual model mix, that raises the apparent 12.3 control to only about:
 That is the complete exact-algebra headroom found here, before overhead. A
 2.5x result still requires a different arithmetic throughput regime, a
 different hardware target, or an explicitly changed model-quality contract.
-

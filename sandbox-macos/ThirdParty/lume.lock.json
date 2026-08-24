@@ -14,7 +14,7 @@
     },
     {
       "path": "ThirdParty/lume-patches/0003-bind-run-lock-identity.patch",
-      "sha256": "8da944a57941cc0c0f3889caffac1cd6b99e2a880a64d4d1200bc0102059a856"
+      "sha256": "0c0a57fb61990c93fdb541183c4555d25c84e2fb218f32149b3891e41e437a17"
     }
   ],
   "license": "MIT",

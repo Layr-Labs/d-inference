@@ -1,3 +1,13 @@
+diff --git a/libs/lume/Package.swift b/libs/lume/Package.swift
+index abfb86c673373dcb1001f864a805026810c841eb..26d4ee6c6ccfe94b6dbf6b8c1d071a404a6fdd34 100644
+--- a/libs/lume/Package.swift
++++ b/libs/lume/Package.swift
+@@ -53 +53,4 @@ let package = Package(
+-            path: "tests")
++            path: "tests",
++            resources: [
++                .copy("RunLockTestHelper.c")
++            ])
 diff --git a/libs/lume/src/Errors/Errors.swift b/libs/lume/src/Errors/Errors.swift
 index 007f267e9423e8caec6ac902a56f3dce8edc913d..107e37e01520ba05536dd74dbf305d2cc5c9dbdb 100644
 --- a/libs/lume/src/Errors/Errors.swift
@@ -1553,17 +1563,17 @@ index fac0255da934ef3711c231dbfa3388387149a928..3f137de037bca893a69f5d9b05bf86fe
 +        activeURL = nil
 diff --git a/libs/lume/tests/RunLockLivenessTests.swift b/libs/lume/tests/RunLockLivenessTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf697263e0d
+index 0000000000000000000000000000000000000000..d29f8aaabd2458e9d4f1fbfd548e6a531caeb80f
 --- /dev/null
 +++ b/libs/lume/tests/RunLockLivenessTests.swift
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,538 @@
 +import Darwin
 +import Foundation
 +import Testing
 +
 +@testable import lume
 +
-+private enum LockChildMode: Equatable {
++private enum LockChildMode: String {
 +    case owner
 +    case opener
 +}
@@ -1571,6 +1581,8 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +private enum LockChildError: Error {
 +    case systemCall(String, Int32)
 +    case setupFailed
++    case helperResourceMissing
++    case helperCompilationFailed(Int32)
 +}
 +
 +private enum GatedRunError: Error {
@@ -1668,40 +1680,126 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    }
 +}
 +
++private final class LockTestHelper {
++    private let temporaryDirectory: URL
++    private let executable: URL
++
++    init() throws {
++        guard let source = Bundle.module.url(
++                  forResource: "RunLockTestHelper",
++                  withExtension: "c")
++        else {
++            throw LockChildError.helperResourceMissing
++        }
++
++        let temporaryDirectory =
++            FileManager.default.temporaryDirectory
++            .appendingPathComponent(UUID().uuidString)
++        try FileManager.default.createDirectory(
++            at: temporaryDirectory,
++            withIntermediateDirectories: false)
++        let executable =
++            temporaryDirectory.appendingPathComponent(
++                "run-lock-test-helper")
++
++        do {
++            let compiler = Process()
++            compiler.executableURL =
++                URL(fileURLWithPath: "/usr/bin/xcrun")
++            compiler.arguments = [
++                "--sdk", "macosx", "clang",
++                "-std=c11", "-Wall", "-Wextra", "-Werror",
++                source.path,
++                "-o", executable.path,
++            ]
++            try compiler.run()
++            compiler.waitUntilExit()
++            guard compiler.terminationReason == .exit,
++                  compiler.terminationStatus == 0
++            else {
++                throw LockChildError.helperCompilationFailed(
++                    compiler.terminationStatus)
++            }
++        } catch {
++            try? FileManager.default.removeItem(
++                at: temporaryDirectory)
++            throw error
++        }
++
++        self.temporaryDirectory = temporaryDirectory
++        self.executable = executable
++    }
++
++    deinit {
++        try? FileManager.default.removeItem(
++            at: temporaryDirectory)
++    }
++
++    func spawn(
++        mode: LockChildMode,
++        configPath: String,
++        ownerLockPath: String
++    ) throws -> LockTestChild {
++        let process = Process()
++        process.executableURL = executable
++        process.arguments = [
++            mode.rawValue,
++            configPath,
++            ownerLockPath,
++        ]
++
++        let readyPipe = Pipe()
++        let releasePipe = Pipe()
++        process.standardInput = releasePipe
++        process.standardOutput = readyPipe
++        try process.run()
++        try? readyPipe.fileHandleForWriting.close()
++        try? releasePipe.fileHandleForReading.close()
++
++        let child = LockTestChild(
++            process: process,
++            releaseHandle: releasePipe.fileHandleForWriting)
++        var ready: UInt8 = 0
++        let readyCount = Darwin.read(
++            readyPipe.fileHandleForReading.fileDescriptor,
++            &ready,
++            1)
++        try? readyPipe.fileHandleForReading.close()
++        guard readyCount == 1, ready == 1 else {
++            child.terminate()
++            throw LockChildError.setupFailed
++        }
++        return child
++    }
++}
++
 +private final class LockTestChild {
 +    let processIdentifier: pid_t
-+    private var releaseDescriptor: Int32
++    private let process: Process
++    private var releaseHandle: FileHandle?
 +    private var reaped = false
 +
-+    init(processIdentifier: pid_t, releaseDescriptor: Int32) {
-+        self.processIdentifier = processIdentifier
-+        self.releaseDescriptor = releaseDescriptor
++    init(process: Process, releaseHandle: FileHandle) {
++        self.process = process
++        self.processIdentifier = process.processIdentifier
++        self.releaseHandle = releaseHandle
 +    }
 +
 +    func isAlive() -> Bool {
 +        guard !reaped else { return false }
-+        var status: Int32 = 0
-+        let result = waitpid(processIdentifier, &status, WNOHANG)
-+        if result == processIdentifier || (result == -1 && errno == ECHILD) {
++        if !process.isRunning {
++            process.waitUntilExit()
 +            reaped = true
 +            return false
 +        }
-+        return result == 0
++        return true
 +    }
 +
 +    func terminate() {
-+        if releaseDescriptor >= 0 {
-+            Darwin.close(releaseDescriptor)
-+            releaseDescriptor = -1
-+        }
++        try? releaseHandle?.close()
++        releaseHandle = nil
 +        guard !reaped else { return }
-+
-+        var status: Int32 = 0
-+        while waitpid(processIdentifier, &status, 0) == -1 {
-+            guard errno == EINTR else {
-+                break
-+            }
-+        }
++        process.waitUntilExit()
 +        reaped = true
 +    }
 +}
@@ -1740,131 +1838,6 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    #expect(
 +        SharedVM.shared.getVM(
 +            for: fixture.directory) == nil)
-+}
-+
-+private func makePipe() throws -> [Int32] {
-+    var descriptors = [Int32](repeating: -1, count: 2)
-+    let result = descriptors.withUnsafeMutableBufferPointer {
-+        Darwin.pipe($0.baseAddress!)
-+    }
-+    guard result == 0 else {
-+        throw LockChildError.systemCall("pipe", errno)
-+    }
-+    return descriptors
-+}
-+
-+private func runLockChild(
-+    mode: LockChildMode,
-+    configPath: UnsafePointer<CChar>,
-+    ownerLockPath: UnsafePointer<CChar>,
-+    readyDescriptor: Int32,
-+    releaseDescriptor: Int32
-+) -> Never {
-+    signal(SIGINT, SIG_DFL)
-+    signal(SIGTERM, SIG_DFL)
-+
-+    var signalMask = sigset_t()
-+    sigemptyset(&signalMask)
-+    sigaddset(&signalMask, SIGINT)
-+    sigaddset(&signalMask, SIGTERM)
-+    pthread_sigmask(SIG_UNBLOCK, &signalMask, nil)
-+
-+    let configDescriptor = Darwin.open(
-+        configPath,
-+        mode == .owner
-+            ? O_RDWR | O_CLOEXEC | O_NOFOLLOW
-+            : O_RDONLY | O_CLOEXEC | O_NOFOLLOW
-+    )
-+    var ownerDescriptor: Int32 = -1
-+    var setupSucceeded = configDescriptor >= 0
-+
-+    if setupSucceeded && mode == .owner {
-+        ownerDescriptor = Darwin.open(
-+            ownerLockPath,
-+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
-+            mode_t(S_IRUSR | S_IWUSR)
-+        )
-+        setupSucceeded = ownerDescriptor >= 0
-+            && flock(configDescriptor, LOCK_EX | LOCK_NB) == 0
-+        if setupSucceeded {
-+            var lock = flock()
-+            lock.l_type = Int16(F_WRLCK)
-+            lock.l_whence = Int16(SEEK_SET)
-+            lock.l_start = 0
-+            lock.l_len = 0
-+            setupSucceeded =
-+                fcntl(ownerDescriptor, F_SETLK, &lock) == 0
-+        }
-+    }
-+
-+    var ready: UInt8 = setupSucceeded ? 1 : 0
-+    _ = Darwin.write(readyDescriptor, &ready, 1)
-+    Darwin.close(readyDescriptor)
-+
-+    if setupSucceeded {
-+        var release: UInt8 = 0
-+        while Darwin.read(releaseDescriptor, &release, 1) == -1
-+            && errno == EINTR
-+        {}
-+    }
-+
-+    if ownerDescriptor >= 0 {
-+        Darwin.close(ownerDescriptor)
-+    }
-+    if configDescriptor >= 0 {
-+        Darwin.close(configDescriptor)
-+    }
-+    Darwin.close(releaseDescriptor)
-+    Darwin._exit(setupSucceeded ? 0 : 1)
-+}
-+
-+private func spawnLockChild(
-+    mode: LockChildMode,
-+    configPath: String,
-+    ownerLockPath: String
-+) throws -> LockTestChild {
-+    let readyPipe = try makePipe()
-+    let releasePipe = try makePipe()
-+    let configCString = Array(configPath.utf8CString)
-+    let ownerLockCString = Array(ownerLockPath.utf8CString)
-+
-+    let processIdentifier = configCString.withUnsafeBufferPointer { config in
-+        ownerLockCString.withUnsafeBufferPointer { ownerLock -> pid_t in
-+            let child = fork()
-+            if child == 0 {
-+                Darwin.close(readyPipe[0])
-+                Darwin.close(releasePipe[1])
-+                runLockChild(
-+                    mode: mode,
-+                    configPath: config.baseAddress!,
-+                    ownerLockPath: ownerLock.baseAddress!,
-+                    readyDescriptor: readyPipe[1],
-+                    releaseDescriptor: releasePipe[0])
-+            }
-+            return child
-+        }
-+    }
-+
-+    Darwin.close(readyPipe[1])
-+    Darwin.close(releasePipe[0])
-+    guard processIdentifier > 0 else {
-+        let savedErrno = errno
-+        Darwin.close(readyPipe[0])
-+        Darwin.close(releasePipe[1])
-+        throw LockChildError.systemCall("fork", savedErrno)
-+    }
-+
-+    let child = LockTestChild(
-+        processIdentifier: processIdentifier,
-+        releaseDescriptor: releasePipe[1])
-+    var ready: UInt8 = 0
-+    let readyCount = Darwin.read(readyPipe[0], &ready, 1)
-+    Darwin.close(readyPipe[0])
-+    guard readyCount == 1, ready == 1 else {
-+        child.terminate()
-+        throw LockChildError.setupFailed
-+    }
-+    return child
 +}
 +
 +@MainActor
@@ -1954,13 +1927,14 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +        try? FileManager.default.removeItem(
 +            at: fixture.storage)
 +    }
-+    let owner = try spawnLockChild(
++    let helper = try LockTestHelper()
++    let owner = try helper.spawn(
 +        mode: .owner,
 +        configPath: fixture.directory.configPath.path,
 +        ownerLockPath:
 +            fixture.directory.runOwnerLockPath.path)
 +    defer { owner.terminate() }
-+    let opener = try spawnLockChild(
++    let opener = try helper.spawn(
 +        mode: .opener,
 +        configPath: fixture.directory.configPath.path,
 +        ownerLockPath:
@@ -2006,7 +1980,8 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +        try? FileManager.default.removeItem(
 +            at: fixture.storage)
 +    }
-+    let owner = try spawnLockChild(
++    let helper = try LockTestHelper()
++    let owner = try helper.spawn(
 +        mode: .owner,
 +        configPath: fixture.directory.configPath.path,
 +        ownerLockPath:
@@ -2068,7 +2043,8 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +        try? FileManager.default.removeItem(
 +            at: fixture.storage)
 +    }
-+    let owner = try spawnLockChild(
++    let helper = try LockTestHelper()
++    let owner = try helper.spawn(
 +        mode: .owner,
 +        configPath: fixture.directory.configPath.path,
 +        ownerLockPath:
@@ -2097,7 +2073,8 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +        try? FileManager.default.removeItem(
 +            at: fixture.storage)
 +    }
-+    let owner = try spawnLockChild(
++    let helper = try LockTestHelper()
++    let owner = try helper.spawn(
 +        mode: .owner,
 +        configPath: fixture.directory.configPath.path,
 +        ownerLockPath:
@@ -2127,6 +2104,105 @@ index 0000000000000000000000000000000000000000..c7da33048eb6aca1a395ee74c1ddbcf6
 +    }
 +    #expect(owner.isAlive())
 +    #expect(fixture.directory.sessionsPath.exists())
++}
+diff --git a/libs/lume/tests/RunLockTestHelper.c b/libs/lume/tests/RunLockTestHelper.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..291449fcd061400cda02ff7a72da09ab69ecd7f0
+--- /dev/null
++++ b/libs/lume/tests/RunLockTestHelper.c
+@@ -0,0 +1,93 @@
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++#include <sys/file.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++static bool write_ready(uint8_t value) {
++    ssize_t result;
++    do {
++        result = write(STDOUT_FILENO, &value, sizeof(value));
++    } while (result < 0 && errno == EINTR);
++    return result == sizeof(value);
++}
++
++static void reset_termination_signals(void) {
++    (void)signal(SIGINT, SIG_DFL);
++    (void)signal(SIGTERM, SIG_DFL);
++
++    sigset_t signal_mask;
++    (void)sigemptyset(&signal_mask);
++    (void)sigaddset(&signal_mask, SIGINT);
++    (void)sigaddset(&signal_mask, SIGTERM);
++    (void)sigprocmask(SIG_UNBLOCK, &signal_mask, NULL);
++}
++
++int main(int argc, char *argv[]) {
++    if (argc != 4) {
++        (void)write_ready(0);
++        return 1;
++    }
++
++    const bool owns_locks = strcmp(argv[1], "owner") == 0;
++    const bool opens_only = strcmp(argv[1], "opener") == 0;
++    if (!owns_locks && !opens_only) {
++        (void)write_ready(0);
++        return 1;
++    }
++
++    reset_termination_signals();
++
++    const int config_flags = owns_locks ? O_RDWR : O_RDONLY;
++    const int config_descriptor =
++        open(argv[2], config_flags | O_CLOEXEC | O_NOFOLLOW);
++    int owner_descriptor = -1;
++    bool setup_succeeded = config_descriptor >= 0;
++
++    if (setup_succeeded && owns_locks) {
++        owner_descriptor =
++            open(
++                argv[3],
++                O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
++                S_IRUSR | S_IWUSR);
++        setup_succeeded =
++            owner_descriptor >= 0
++            && flock(config_descriptor, LOCK_EX | LOCK_NB) == 0;
++        if (setup_succeeded) {
++            struct flock lock = {
++                .l_start = 0,
++                .l_len = 0,
++                .l_pid = 0,
++                .l_type = F_WRLCK,
++                .l_whence = SEEK_SET,
++            };
++            setup_succeeded =
++                fcntl(owner_descriptor, F_SETLK, &lock) == 0;
++        }
++    }
++
++    if (!write_ready(setup_succeeded ? 1 : 0)) {
++        setup_succeeded = false;
++    }
++    (void)close(STDOUT_FILENO);
++
++    if (setup_succeeded) {
++        uint8_t release = 0;
++        while (read(STDIN_FILENO, &release, sizeof(release)) < 0
++               && errno == EINTR) {
++        }
++    }
++
++    if (owner_descriptor >= 0) {
++        (void)close(owner_descriptor);
++    }
++    if (config_descriptor >= 0) {
++        (void)close(config_descriptor);
++    }
++    return setup_succeeded ? 0 : 1;
 +}
 diff --git a/libs/lume/tests/VMDisplayLifecycleTests.swift b/libs/lume/tests/VMDisplayLifecycleTests.swift
 index 04be4f46910eecef33d70c6085ecff6b3059f06f..d04e405b2d5c4b4092c09e7984fa574adf4c8cfd 100644

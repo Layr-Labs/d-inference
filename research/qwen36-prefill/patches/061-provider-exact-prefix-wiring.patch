@@ -13,7 +13,7 @@ index 6b8d4094..9697c2f0 100644
              ? prefixCache : nil
          // The ONE config, read back off the preparation. `consume` has
          // already refused a `maxConcurrentRequests` that differs from the
-@@ -1024,6 +1026,20 @@ extension EngineV2Factory {
+@@ -1024,6 +1026,21 @@ extension EngineV2Factory {
              pagedPoolDType: preparedBackend.pagedPoolDType)
      }
  
@@ -26,9 +26,10 @@ index 6b8d4094..9697c2f0 100644
 +        prefixCache: (any CBv2PrefixCache)?
 +    ) -> Bool {
 +        guard let prefixCache else { return false }
-+        if capabilities.supportsPrefixReuse { return true }
-+        return capabilities.supportsExactStatePrefixReuse
-+            && prefixCache is any CBv2ExactStatePrefixCache
++        if prefixCache is any CBv2ExactStatePrefixCache {
++            return capabilities.supportsExactStatePrefixReuse
++        }
++        return capabilities.supportsPrefixReuse
 +    }
 +
      /// Shared final assembly for both backends.
@@ -38,7 +39,7 @@ diff --git a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTes
 index 6f263c70..44d4fc33 100644
 --- a/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
 +++ b/provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift
-@@ -100,6 +100,24 @@ struct EngineV2PrefixCacheUsageTests {
+@@ -100,6 +100,26 @@ struct EngineV2PrefixCacheUsageTests {
          ) == Int.max)
      }
  
@@ -58,6 +59,8 @@ index 6f263c70..44d4fc33 100644
 +            capabilities: recurrent, prefixCache: nil))
 +        #expect(EngineV2Factory.prefixCacheIsSupported(
 +            capabilities: .attentionOnly, prefixCache: legacy))
++        #expect(!EngineV2Factory.prefixCacheIsSupported(
++            capabilities: .attentionOnly, prefixCache: exact))
 +    }
 +
      @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")

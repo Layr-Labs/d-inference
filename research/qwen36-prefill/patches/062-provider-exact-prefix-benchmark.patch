@@ -1,0 +1,1035 @@
+diff --git a/provider-swift/Benchmarks/QwenPrefixReuse/README.md b/provider-swift/Benchmarks/QwenPrefixReuse/README.md
+index 186275b776442ea4a085c406666f03e4ecbb3bee..487dd6a6ac61bfc1d3b541f4e5fefa59af2daff6 100644
+--- a/provider-swift/Benchmarks/QwenPrefixReuse/README.md
++++ b/provider-swift/Benchmarks/QwenPrefixReuse/README.md
+@@ -5,7 +5,7 @@ corpus. It loads one checkpoint once and constructs exactly one engine through
+ `EngineV2Factory.makeProductionBuild`. <!-- pragma: allowlist secret --> Every scenario and phase runs through
+ that engine.
+ 
+-For each iteration the harness evicts the in-memory reference cache, then runs:
++For each iteration the harness evicts its in-memory exact-state cache, then runs:
+ 
+ 1. a cache-disabled cold batch;
+ 2. one cache-enabled construction request against the empty scenario scope;
+@@ -16,6 +16,12 @@ the warm makespan, while also publishing a construction-inclusive hit/miss
+ denominator. Unsupported, policy-skipped, capacity-skipped, and adoption-failed
+ outcomes remain in the JSON; they are never rewritten as hits.
+ 
++The benchmark injects `ExactPrefixCacheV2` only into this opt-in engine. It
++carves one fifth of the unified request-state grant for one resident boundary
++and gives the remaining four fifths to the four live engine rows; cache RAM is
++not silently added on top of the serving grant. Existing serving and quality
++defaults remain unchanged.
++
+ Scenarios:
+ 
+ - identical prompts at B=1, B=2, and B=4;
+@@ -27,6 +33,12 @@ checkpoint tokenization. This avoids treating character overlap as token
+ overlap. Greedy, fixed-length cold and warm outputs are compared by first token
+ and full raw token sequence.
+ 
++The current exact-state cache is intentionally full-prompt-only. Identical B1,
++B2, and B4 rows can hit. The 25/50/75/90-percent rows are expected to remain
++honest misses until arbitrary-boundary recurrent snapshots exist; keeping those
++arms in the report prevents a full-prompt result from being presented as
++general common-prefix reuse.
++
+ Files:
+ 
+ - `qwen-prefix-natural-v1.json`: original CC0 synthetic prose.
+@@ -51,4 +63,5 @@ swift build -c release
+ 
+ A successful command means the measurement completed and validated, not that
+ every warm request hit. Read `capabilitySupported`, row-level `cacheOutcome`,
+-and `cacheAccountingIncludingConstruction` before interpreting speedups.
++`prefixCacheMatchPolicy`, and `cacheAccountingIncludingConstruction` before
++interpreting speedups.
+diff --git a/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json b/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
+index c22859e68a3a3d4aca7b781128dc1265afb89dba..3ad5017678acc214c30b3aad126f6ab5eb8247ed 100644
+--- a/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
++++ b/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-report.schema.json
+@@ -94,9 +94,10 @@
+         "instanceCount",
+         "maxConcurrentRequests",
+         "kvBackend",
++        "kvBytesCapacity",
+         "prefixCacheImplementation",
++        "prefixCacheMatchPolicy",
+         "prefixCacheRequested",
+-        "cacheBlockTokens",
+         "cacheSaltScope",
+         "capabilitySupported",
+         "replayBoundTokens",
+@@ -110,8 +111,15 @@
+         "instanceCount": {"const": 1},
+         "maxConcurrentRequests": {"const": 4},
+         "kvBackend": {"$ref": "#/$defs/kvBackend"},
+-        "prefixCacheImplementation": {"const": "PrefixCacheV2"},
++        "kvBytesCapacity": {"type": "integer", "minimum": 1},
++        "prefixCacheImplementation": {
++          "enum": ["PrefixCacheV2", "ExactPrefixCacheV2"]
++        },
++        "prefixCacheMatchPolicy": {
++          "enum": ["whole-block-prefix", "exact-full-prompt"]
++        },
+         "prefixCacheRequested": {"const": true},
++        "prefixCacheBudgetBytes": {"type": "integer", "minimum": 1},
+         "cacheBlockTokens": {"type": "integer", "minimum": 1},
+         "cacheSaltScope": {"type": "string", "minLength": 1},
+         "capabilitySupported": {"type": "boolean"},
+@@ -125,7 +133,36 @@
+           "type": "object",
+           "additionalProperties": {"type": "string"}
+         }
+-      }
++      },
++      "allOf": [
++        {
++          "if": {
++            "properties": {
++              "prefixCacheImplementation": {"const": "PrefixCacheV2"}
++            }
++          },
++          "then": {
++            "required": ["cacheBlockTokens"],
++            "properties": {
++              "prefixCacheMatchPolicy": {"const": "whole-block-prefix"}
++            }
++          }
++        },
++        {
++          "if": {
++            "properties": {
++              "prefixCacheImplementation": {"const": "ExactPrefixCacheV2"}
++            }
++          },
++          "then": {
++            "required": ["prefixCacheBudgetBytes"],
++            "not": {"required": ["cacheBlockTokens"]},
++            "properties": {
++              "prefixCacheMatchPolicy": {"const": "exact-full-prompt"}
++            }
++          }
++        }
++      ]
+     },
+     "kvBackend": {
+       "type": "object",
+@@ -294,7 +331,7 @@
+         "row": {"$ref": "#/$defs/row"},
+         "donationObserved": {"type": "boolean"},
+         "submitToCacheReadyMs": {"type": "number", "minimum": 0},
+-        "terminalToCacheReadyMs": {"type": "number", "minimum": 0},
++        "cacheReadyMinusTerminalMs": {"type": "number"},
+         "cacheBytesAfterReady": {"type": "integer", "minimum": 0}
+       }
+     },
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
+index 049daa2dfb06f38c808462f055f2e638e75070f3..213a756f3e004d7b60d1c3148e385c12f8d6f6bd 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixEngineRunner.swift
+@@ -29,7 +29,7 @@ struct QwenPrefixEngineBatch: Sendable {
+ enum QwenPrefixEngineRunner {
+     static func run<Engine: CBv2Engine>(
+         engine: Engine,
+-        cache: QwenPrefixTrackingCache,
++        cache: any QwenPrefixBenchmarkCache,
+         prompts: [[Int]],
+         decodeTokens: Int,
+         requestIDBase: UInt64,
+@@ -103,7 +103,7 @@ enum QwenPrefixEngineRunner {
+ 
+     private static func consume<Engine: CBv2Engine>(
+         engine: Engine,
+-        cache: QwenPrefixTrackingCache,
++        cache: any QwenPrefixBenchmarkCache,
+         row: Int,
+         requestID: CBv2RequestID,
+         prompt: [Int],
+@@ -220,11 +220,11 @@ enum QwenPrefixEngineRunner {
+         return CBv2RequestID(result)
+     }
+ 
+-    /// PrefixCacheV2 exposes the whole matched snapshot. Tail-replay plans
+-    /// slice full-attention state down to the saved-token frontier before
+-    /// backend adoption; direct and frozen-full plans adopt through the whole
+-    /// match. Convert the correlated lookup bytes to that exact logical
+-    /// adoption size instead of reporting the larger staging view.
++    /// Convert the request-correlated lookup size to the state handed to
++    /// backend adoption. Exact-state direct hits adopt the whole atomic
++    /// snapshot, including non-token-linear recurrent state and frontier
++    /// logits. Historical tail replay slices token-linear full-attention
++    /// arrays to the saved-token frontier.
+     private static func adoptedStateBytes(
+         usage: CBv2Usage,
+         lookupBytes: Int,
+@@ -240,24 +240,30 @@ enum QwenPrefixEngineRunner {
+         guard matched > 0,
+               saved > 0,
+               lookupBytes > 0,
+-              lookupBytes % matched == 0,
+               let strategy = usage.prefixCacheStrategy
+         else {
+             throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
+         }
+-        let adoptedTokens: Int
+         switch strategy {
+         case .direct, .frozenFullReplay:
+-            adoptedTokens = matched
++            // Direct exact-state Qwen hits include fixed recurrent state and
++            // frontier logits, so bytes are not generally divisible by the
++            // prompt length. The complete lookup snapshot is adopted.
++            return lookupBytes
+         case .tailReplay:
+-            adoptedTokens = saved
+-        }
+-        let (bytes, overflow) = (lookupBytes / matched)
+-            .multipliedReportingOverflow(by: adoptedTokens)
+-        guard !overflow, bytes > 0 else {
+-            throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
++            // The historical KV-only cache exposes token-linear full-
++            // attention arrays. Tail replay slices those arrays to the saved
++            // frontier before adoption.
++            guard lookupBytes % matched == 0 else {
++                throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
++            }
++            let (bytes, overflow) = (lookupBytes / matched)
++                .multipliedReportingOverflow(by: saved)
++            guard !overflow, bytes > 0 else {
++                throw QwenPrefixEngineRunnerError.invalidStateByteAccounting(row: row)
++            }
++            return bytes
+         }
+-        return bytes
+     }
+ 
+     private static func describe(_ reason: CBv2FinishReason) -> String {
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95e999c946 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseBenchmark.swift
+@@ -17,6 +17,7 @@ public enum QwenPrefixReuseBenchmark {
+ 
+     private static let warmupRequestID: UInt64 = 0x5158_0000
+     private static let measuredRequestIDBase: UInt64 = 0x5158_1000
++    private static let exactCacheBudgetDivisor = 5
+ 
+     private struct ModelDescriptor: Sendable {
+         let modelType: String
+@@ -74,6 +75,7 @@ public enum QwenPrefixReuseBenchmark {
+         let modelDirectory = modelDirectory.resolvingSymlinksInPath().standardizedFileURL
+         let corpus = try QwenPrefixCorpusLoader.load(from: corpusURL)
+         let policyEnvironment = QwenQualityCorpusBenchmark.capturedPolicyEnvironment()
++        let processEnvironment = ProcessInfo.processInfo.environment
+ 
+         log("hashing fixed model artifact \(modelID)")
+         guard let fingerprintBefore = WeightHasher.snapshotFingerprint(
+@@ -130,20 +132,30 @@ public enum QwenPrefixReuseBenchmark {
+                 maximumContextTokens: sizing.maxContextLength)
+         }
+ 
+-        let kvCapacity = Int(min(
++        let totalStateCapacity = Int(min(
+             UnifiedMemoryCap.kvBudgetBytes(
+                 physicalBytes: ProcessInfo.processInfo.physicalMemory,
+                 residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
+                 configReserveBytes: 0),
+             UInt64(Int.max)))
+-        let blockSize = CBv2BlockHasher.defaultBlockSize
+-        let cache = QwenPrefixTrackingCache(config: .init(
+-            blockSize: blockSize,
+-            promptContractID: "qwen-prefix-benchmark:\(artifactSHA256)",
+-            scopeID: "benchmark-default-unused",
+-            maxBytes: nil,
+-            materializeOnDonate: true))
+-        let processEnvironment = ProcessInfo.processInfo.environment
++        let exactCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
++        let kvCapacity = totalStateCapacity - exactCacheBudget
++        guard kvCapacity > 0, exactCacheBudget > 0 else {
++            throw QwenPrefixBenchmarkError.insufficientStateBudget(
++                totalBytes: totalStateCapacity)
++        }
++        let policyIdentity = policyEnvironment
++            .sorted(by: { $0.key < $1.key })
++            .map { "\($0.key)=\($0.value)" }
++            .joined(separator: ";")
++        let cache: any QwenPrefixBenchmarkCache = QwenExactPrefixTrackingCache(
++            config: .init(
++                modelIdentity: "qwen-prefix-benchmark:\(artifactSHA256)",
++                policyIdentity:
++                    "qwen-prefix-benchmark-v1;kv=\(kvBackend.rawValue);"
++                        + (policyIdentity.isEmpty ? "strict-default" : policyIdentity),
++                scopeID: "benchmark-default-unused",
++                maxBytes: exactCacheBudget))
+         let components = try await container.perform { context -> EngineComponents in
+             let scenarios = try QwenPrefixPromptBuilder.prepare(
+                 corpus: corpus.corpus,
+@@ -248,9 +260,12 @@ public enum QwenPrefixReuseBenchmark {
+                 kvBackend: BenchmarkKVBackend(
+                     selection: kvBackend.rawValue,
+                     resolved: [components.resolvedKVBackend]),
+-                prefixCacheImplementation: "PrefixCacheV2",
++                kvBytesCapacity: kvCapacity,
++                prefixCacheImplementation: cache.implementationName,
++                prefixCacheMatchPolicy: cache.matchPolicy,
+                 prefixCacheRequested: true,
+-                cacheBlockTokens: blockSize,
++                prefixCacheBudgetBytes: cache.cacheBudgetBytes,
++                cacheBlockTokens: cache.cacheBlockTokens,
+                 cacheSaltScope: "unique per scenario iteration",
+                 capabilitySupported: components.capabilitySupported,
+                 capabilityStrategy: components.capabilityStrategy,
+@@ -274,7 +289,7 @@ public enum QwenPrefixReuseBenchmark {
+ 
+     private static func measureAll(
+         engine: any CBv2Engine,
+-        cache: QwenPrefixTrackingCache,
++        cache: any QwenPrefixBenchmarkCache,
+         scenarios: [QwenPrefixPreparedScenario],
+         iterations: Int,
+         decodeTokens: Int,
+@@ -316,7 +331,7 @@ public enum QwenPrefixReuseBenchmark {
+                     prefixCacheEnabled: true,
+                     cacheSalt: salt)
+                 let constructionRow = construction.rows[0]
+-                let donation: QwenPrefixTrackingCache.DonationObservation?
++                let donation: QwenPrefixDonationObservation?
+                 if capabilitySupported {
+                     donation = await cache.waitForDonation(
+                         requestID: constructionRow.requestID,
+@@ -337,7 +352,10 @@ public enum QwenPrefixReuseBenchmark {
+                     cacheSalt: salt)
+                 if capabilitySupported {
+                     await cache.waitForDonations(
+-                        requestIDs: warm.rows.map(\.requestID),
++                        requestIDs: warm.rows.compactMap {
++                            cache.shouldAwaitDonation(after: $0.usage.prefixCacheOutcome)
++                                ? $0.requestID : nil
++                        },
+                         timeout: timeout)
+                 }
+ 
+@@ -362,7 +380,7 @@ public enum QwenPrefixReuseBenchmark {
+         iteration: Int,
+         cold: QwenPrefixEngineBatch,
+         construction: QwenPrefixEngineRow,
+-        donation: QwenPrefixTrackingCache.DonationObservation?,
++        donation: QwenPrefixDonationObservation?,
+         warm: QwenPrefixEngineBatch
+     ) -> QwenPrefixReuseReport.Sample {
+         let coldReport = batchReport(cold, prefixCacheEnabled: false)
+@@ -378,8 +396,8 @@ public enum QwenPrefixReuseBenchmark {
+         let submitToReady = donation.map {
+             milliseconds(from: construction.submittedAtNs, to: $0.publishedAtNs)
+         }
+-        let terminalToReady = donation.map {
+-            milliseconds(from: construction.completedAtNs, to: $0.publishedAtNs)
++        let readyMinusTerminal = donation.map {
++            signedMilliseconds(from: construction.completedAtNs, to: $0.publishedAtNs)
+         }
+         let cacheRows = [constructionReport] + warmReport.rows
+         return QwenPrefixReuseReport.Sample(
+@@ -389,7 +407,7 @@ public enum QwenPrefixReuseBenchmark {
+                 row: constructionReport,
+                 donationObserved: donation != nil,
+                 submitToCacheReadyMs: submitToReady,
+-                terminalToCacheReadyMs: terminalToReady,
++                cacheReadyMinusTerminalMs: readyMinusTerminal,
+                 cacheBytesAfterReady: donation?.cacheBytesAfterPublish ?? 0),
+             warm: warmReport,
+             cacheAccountingIncludingConstruction: .init(rows: cacheRows),
+@@ -520,6 +538,12 @@ public enum QwenPrefixReuseBenchmark {
+         return Double(end - start) / 1_000_000
+     }
+ 
++    private static func signedMilliseconds(from start: UInt64, to end: UInt64) -> Double {
++        end >= start
++            ? Double(end - start) / 1_000_000
++            : -Double(start - end) / 1_000_000
++    }
++
+     private static func median(_ values: [Double]) -> Double {
+         guard !values.isEmpty else { return 0 }
+         let sorted = values.sorted()
+@@ -572,6 +596,7 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
+     case modelFingerprintUnavailable
+     case modelArtifactChangedDuringRun
+     case requestIDOverflow
++    case insufficientStateBudget(totalBytes: Int)
+     case cacheDidNotEvict(Int)
+     case missingScenario(String)
+ 
+@@ -601,6 +626,9 @@ public enum QwenPrefixBenchmarkError: Error, Equatable, CustomStringConvertible
+             return "Qwen prefix benchmark model artifact changed during the run"
+         case .requestIDOverflow:
+             return "Qwen prefix benchmark exhausted the CBv2 request-id space"
++        case .insufficientStateBudget(let totalBytes):
++            return "Qwen prefix benchmark cannot split its \(totalBytes)-byte "
++                + "state grant between one exact cache entry and four live rows"
+         case .cacheDidNotEvict(let bytes):
+             return "Qwen prefix benchmark cache retained \(bytes) bytes after full eviction"
+         case .missingScenario(let id):
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
+index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb3910a4ae 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
+@@ -38,9 +38,12 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         public let instanceCount: Int
+         public let maxConcurrentRequests: Int
+         public let kvBackend: BenchmarkKVBackend
++        public let kvBytesCapacity: Int
+         public let prefixCacheImplementation: String
++        public let prefixCacheMatchPolicy: String
+         public let prefixCacheRequested: Bool
+-        public let cacheBlockTokens: Int
++        public let prefixCacheBudgetBytes: Int?
++        public let cacheBlockTokens: Int?
+         public let cacheSaltScope: String
+         public let capabilitySupported: Bool
+         public let capabilityStrategy: String?
+@@ -78,8 +81,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         public let replayTokens: Int
+         public let reuseStrategy: String?
+         public let replayBoundarySplits: Int
+-        /// Exact logical `nbytes` of cache state handed to backend adoption,
+-        /// after tail-replay slicing. Zero on every non-hit.
++        /// Exact logical `nbytes` of cache state handed to backend adoption.
++        /// For Qwen this is the atomic attention + recurrent + frontier
++        /// snapshot. Zero on every non-hit.
+         public let stateBytesCloned: Int
+     }
+ 
+@@ -128,7 +132,10 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         public let row: Row
+         public let donationObserved: Bool
+         public let submitToCacheReadyMs: Double?
+-        public let terminalToCacheReadyMs: Double?
++        /// Cache publication timestamp minus the construction terminal
++        /// timestamp. Exact-state donation normally publishes before the
++        /// first token, so a healthy value is negative.
++        public let cacheReadyMinusTerminalMs: Double?
+         public let cacheBytesAfterReady: Int
+     }
+ 
+@@ -225,12 +232,30 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         guard isSHA256(model.artifactSHA256), isSHA256(corpus.sha256) else {
+             throw QwenPrefixReportError.invalidDigest
+         }
++        let validCacheContract =
++            (engine.prefixCacheImplementation == "PrefixCacheV2"
++                && engine.prefixCacheMatchPolicy == "whole-block-prefix"
++                && (engine.cacheBlockTokens ?? 0) > 0)
++            || (engine.prefixCacheImplementation == "ExactPrefixCacheV2"
++                && engine.prefixCacheMatchPolicy == "exact-full-prompt"
++                && engine.cacheBlockTokens == nil
++                && (engine.prefixCacheBudgetBytes ?? 0) > 0)
++        let validCapabilityContract =
++            engine.capabilitySupported
++            ? engine.capabilityStrategy != nil
++                && engine.capabilityUnsupportedReason == nil
++            : engine.capabilityStrategy == nil
+         guard engine.factory == "EngineV2Factory.makeProductionBuild", // pragma: allowlist secret
+               engine.instanceCount == 1,
+               engine.maxConcurrentRequests == 4,
++              engine.kvBytesCapacity > 0,
+               engine.prefixCacheRequested,
+-              engine.cacheBlockTokens > 0,
++              validCacheContract,
++              validCapabilityContract,
+               engine.kvBackend.resolved.count == 1,
++              !engine.cacheSaltScope.isEmpty,
++              engine.replayBoundTokens >= 0,
++              engine.warmupPerformed,
+               configuration.promptTokens >= 2,
+               configuration.decodeTokens >= 2,
+               configuration.iterations > 0,
+@@ -239,7 +264,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+                 == QwenPrefixPromptBuilder.commonPrefixFractions,
+               configuration.commonPrefixBatchSize
+                 == QwenPrefixPromptBuilder.commonPrefixBatchSize,
+-              configuration.donationTimeoutMs > 0
++              configuration.donationTimeoutMs > 0,
++              configuration.generationPolicy
++                == "greedy-fixed-length-no-stop-tokens"
+         else {
+             throw QwenPrefixReportError.invalidEngineContract
+         }
+@@ -257,9 +284,28 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         for scenario in scenarios {
+             try validate(scenario)
+         }
++        let requestIDs = scenarios.flatMap(\.samples).flatMap {
++            $0.coldBaseline.rows.map(\.requestID)
++                + [$0.cacheConstruction.row.requestID]
++                + $0.warm.rows.map(\.requestID)
++        }
++        guard Set(requestIDs).count == requestIDs.count else {
++            throw QwenPrefixReportError.duplicateRequestID
++        }
+     }
+ 
+     private func validate(_ scenario: Scenario) throws {
++        let identicalShapes = [
++            "identical-b1": 1,
++            "identical-b2": 2,
++            "identical-b4": 4,
++        ]
++        let commonShapes = [
++            "common-prefix-25": 0.25,
++            "common-prefix-50": 0.50,
++            "common-prefix-75": 0.75,
++            "common-prefix-90": 0.90,
++        ]
+         guard [1, 2, 4].contains(scenario.batchSize),
+               scenario.samples.count == configuration.iterations,
+               scenario.suffixIDs.count == scenario.batchSize,
+@@ -271,6 +317,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+         if scenario.kind == QwenPrefixScenarioKind.commonPrefix.rawValue {
+             guard scenario.batchSize == configuration.commonPrefixBatchSize,
+                   let fraction = scenario.requestedCommonPrefixFraction,
++                  commonShapes[scenario.id] == fraction,
+                   configuration.commonPrefixFractions.contains(fraction),
+                   let commonTokens = scenario.constructedCommonPrefixTokens,
+                   commonTokens == Int(
+@@ -283,6 +330,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+             }
+         } else {
+             guard scenario.kind == QwenPrefixScenarioKind.identical.rawValue,
++                  identicalShapes[scenario.id] == scenario.batchSize,
+                   scenario.requestedCommonPrefixFraction == 1,
+                   scenario.constructedCommonPrefixTokens == configuration.promptTokens,
+                   scenario.constructedCommonPrefixFraction == 1,
+@@ -334,8 +382,9 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+                     iteration: sample.iteration)
+             }
+             if sample.cacheConstruction.donationObserved {
+-                guard sample.cacheConstruction.submitToCacheReadyMs != nil,
+-                      sample.cacheConstruction.terminalToCacheReadyMs != nil,
++                guard sample.cacheConstruction.submitToCacheReadyMs?.isFinite == true,
++                      (sample.cacheConstruction.submitToCacheReadyMs ?? -1) >= 0,
++                      sample.cacheConstruction.cacheReadyMinusTerminalMs?.isFinite == true,
+                       sample.cacheConstruction.cacheBytesAfterReady > 0
+                 else {
+                     throw QwenPrefixReportError.invalidSample(
+@@ -344,7 +393,7 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+                 }
+             } else {
+                 guard sample.cacheConstruction.submitToCacheReadyMs == nil,
+-                      sample.cacheConstruction.terminalToCacheReadyMs == nil,
++                      sample.cacheConstruction.cacheReadyMinusTerminalMs == nil,
+                       sample.cacheConstruction.cacheBytesAfterReady == 0
+                 else {
+                     throw QwenPrefixReportError.invalidSample(
+@@ -463,6 +512,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+             "disabled", "skipped_policy", "miss", "hit",
+             "skipped_capacity", "adoption_failed",
+         ]
++        let validExactHit =
++            engine.prefixCacheMatchPolicy != "exact-full-prompt"
++            || row.cacheOutcome != "hit"
++            || (row.matchedTokens == row.promptTokens
++                && row.savedPrefillTokens == row.promptTokens
++                && row.replayTokens == 0
++                && row.reuseStrategy == "direct")
+         guard row.row >= 0,
+               row.promptTokens == configuration.promptTokens,
+               row.ttftMs.isFinite,
+@@ -478,12 +534,15 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+               row.finishReason == "length",
+               validOutcomes.contains(row.cacheOutcome),
+               row.matchedTokens >= 0,
+-              row.matchedTokens < row.promptTokens,
+-              row.matchedTokens % engine.cacheBlockTokens == 0,
++              row.matchedTokens <= row.promptTokens,
++              engine.cacheBlockTokens.map {
++                  row.matchedTokens % $0 == 0
++              } ?? true,
+               row.savedPrefillTokens >= 0,
+               row.replayTokens >= 0,
+               row.replayBoundarySplits >= 0,
+               row.stateBytesCloned >= 0,
++              validExactHit,
+               (row.cacheOutcome == "hit"
+                 ? row.matchedTokens > 0
+                     && row.savedPrefillTokens > 0
+@@ -542,6 +601,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+     case invalidScenario(String)
+     case invalidSample(scenario: String, iteration: Int)
+     case invalidRow(scenario: String, iteration: Int, row: Int)
++    case duplicateRequestID
+ 
+     public var description: String {
+         switch self {
+@@ -565,6 +625,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+         case .invalidRow(let scenario, let iteration, let row):
+             return "Qwen prefix report scenario '\(scenario)' iteration \(iteration) "
+                 + "row \(row) is inconsistent"
++        case .duplicateRequestID:
++            return "Qwen prefix report reuses a CBv2 request identifier"
+         }
+     }
+ }
+diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
+index 7d0a1c069d001054a6745e498036d00d1e9e8a12..a5cfc45f3ce68d482de8e1a4c8564eb846c66dcd 100644
+--- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
++++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixTrackingCache.swift
+@@ -2,15 +2,33 @@ import Foundation
+ import MLX
+ import MLXLMCommon
+ 
++struct QwenPrefixDonationObservation: Sendable {
++    let publishedAtNs: UInt64
++    let cacheBytesAfterPublish: Int
++}
++
++protocol QwenPrefixBenchmarkCache: CBv2PrefixCache {
++    var implementationName: String { get }
++    var matchPolicy: String { get }
++    var cacheBlockTokens: Int? { get }
++    var cacheBudgetBytes: Int? { get }
++    var bytesInUse: Int { get }
++    func shouldAwaitDonation(after outcome: CBv2PrefixCacheOutcome) -> Bool
++    func lookupStateBytes(for requestID: CBv2RequestID) -> Int
++    func donation(for requestID: CBv2RequestID) -> QwenPrefixDonationObservation?
++    func waitForDonation(
++        requestID: CBv2RequestID,
++        timeout: Duration
++    ) async -> QwenPrefixDonationObservation?
++    func waitForDonations(requestIDs: [CBv2RequestID], timeout: Duration) async
++}
++
+ /// Benchmark-only observation wrapper around the engine's reference prefix
+ /// cache. It does not alter lookup, donation, pinning, or eviction semantics.
+ /// Correlation is keyed by CBv2's request receipt id, so concurrent identical
+ /// prompts remain independently measurable.
+-final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
+-    struct DonationObservation: Sendable {
+-        let publishedAtNs: UInt64
+-        let cacheBytesAfterPublish: Int
+-    }
++final class QwenPrefixTrackingCache: QwenPrefixBenchmarkCache, @unchecked Sendable {
++    typealias DonationObservation = QwenPrefixDonationObservation
+ 
+     private let cache: PrefixCacheV2
+     private let lock = NSLock()
+@@ -19,10 +37,20 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
+ 
+     init(config: CBv2PrefixCacheConfig) {
+         cache = PrefixCacheV2(config: config)
++        cacheBlockTokens = config.blockSize
++        cacheBudgetBytes = config.maxBytes
+     }
+ 
++    let implementationName = "PrefixCacheV2"
++    let matchPolicy = "whole-block-prefix"
++    let cacheBlockTokens: Int?
++    let cacheBudgetBytes: Int?
+     var bytesInUse: Int { cache.bytesInUse }
+ 
++    func shouldAwaitDonation(after _: CBv2PrefixCacheOutcome) -> Bool {
++        true
++    }
++
+     func stats() -> CBv2PrefixCacheStats {
+         cache.stats()
+     }
+@@ -192,3 +220,153 @@ final class QwenPrefixTrackingCache: CBv2PrefixCache, @unchecked Sendable {
+         }
+     }
+ }
++
++/// Benchmark observation wrapper for the stronger hybrid-state cache. Legacy
++/// KV-only methods intentionally miss/no-op; Qwen enters through
++/// `CBv2ExactStatePrefixCache` lookup and donation.
++final class QwenExactPrefixTrackingCache:
++    QwenPrefixBenchmarkCache, CBv2ExactStatePrefixCache, @unchecked Sendable
++{
++    private let cache: ExactPrefixCacheV2
++    private let lock = NSLock()
++    private var lookupBytesByRequest: [CBv2RequestID: Int] = [:]
++    private var donationsByRequest: [CBv2RequestID: QwenPrefixDonationObservation] = [:]
++
++    init(config: CBv2ExactPrefixCacheConfig) {
++        cache = ExactPrefixCacheV2(config: config)
++        cacheBudgetBytes = config.maxBytes
++    }
++
++    let implementationName = "ExactPrefixCacheV2"
++    let matchPolicy = "exact-full-prompt"
++    let cacheBlockTokens: Int? = nil
++    let cacheBudgetBytes: Int?
++    var bytesInUse: Int { cache.bytesInUse }
++
++    func shouldAwaitDonation(after outcome: CBv2PrefixCacheOutcome) -> Bool {
++        // Exact donations publish synchronously at a finalized prompt
++        // boundary. A hit reuses an existing entry and does not publish a
++        // second copy; only a miss can create a request-correlated donation.
++        outcome == .miss
++    }
++
++    func lookupExact(
++        requestID: CBv2RequestID,
++        tokens: [Int],
++        layerKinds: [CBv2LayerKind],
++        recurrentStateSpec: CBv2RecurrentStateSpec,
++        cacheSalt: String?
++    ) -> CBv2ExactPrefixSnapshot? {
++        let snapshot = cache.lookupExact(
++            requestID: requestID,
++            tokens: tokens,
++            layerKinds: layerKinds,
++            recurrentStateSpec: recurrentStateSpec,
++            cacheSalt: cacheSalt)
++        lock.withLock {
++            lookupBytesByRequest[requestID] = snapshot?.byteCount ?? 0
++        }
++        return snapshot
++    }
++
++    func donateExact(
++        requestID: CBv2RequestID,
++        tokens: [Int],
++        snapshot: CBv2ExactPrefixSnapshot,
++        layerKinds: [CBv2LayerKind],
++        cacheSalt: String?
++    ) {
++        // ExactPrefixCacheV2 returns Void. Serialize the before/after stats
++        // observation so another concurrent donor cannot make this request
++        // appear to have published an entry it actually dropped.
++        lock.lock()
++        defer { lock.unlock() }
++        let before = cache.stats().donations
++        cache.donateExact(
++            requestID: requestID,
++            tokens: tokens,
++            snapshot: snapshot,
++            layerKinds: layerKinds,
++            cacheSalt: cacheSalt)
++        guard cache.stats().donations > before else { return }
++        let observation = QwenPrefixDonationObservation(
++            publishedAtNs: DispatchTime.now().uptimeNanoseconds,
++            cacheBytesAfterPublish: cache.bytesInUse)
++        if donationsByRequest[requestID] == nil {
++            donationsByRequest[requestID] = observation
++        }
++    }
++
++    func acceptsExactDonation(byteCount: Int) -> Bool {
++        cache.acceptsExactDonation(byteCount: byteCount)
++    }
++
++    func endAdoption(tokens: [Int], matched: Int) {
++        cache.endAdoption(tokens: tokens, matched: matched)
++    }
++
++    func endAdoption(tokens: [Int], matched: Int, cacheSalt: String?) {
++        cache.endAdoption(tokens: tokens, matched: matched, cacheSalt: cacheSalt)
++    }
++
++    func lookup(
++        tokens _: [Int],
++        layerKinds _: [CBv2LayerKind]
++    ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
++        nil
++    }
++
++    func donate(
++        tokens _: [Int],
++        state _: [CBv2SequenceKV?],
++        layerKinds _: [CBv2LayerKind]
++    ) {}
++
++    func donate(
++        tokens _: [Int],
++        snapshots _: [(keys: MLXArray, values: MLXArray, offset: Int)?],
++        layerKinds _: [CBv2LayerKind]
++    ) {}
++
++    func evict(toFit byteBudget: Int) {
++        cache.evict(toFit: byteBudget)
++    }
++
++    func lookupStateBytes(for requestID: CBv2RequestID) -> Int {
++        lock.withLock { lookupBytesByRequest[requestID] ?? 0 }
++    }
++
++    func donation(for requestID: CBv2RequestID) -> QwenPrefixDonationObservation? {
++        lock.withLock { donationsByRequest[requestID] }
++    }
++
++    func waitForDonation(
++        requestID: CBv2RequestID,
++        timeout: Duration
++    ) async -> QwenPrefixDonationObservation? {
++        if let observation = donation(for: requestID) { return observation }
++        let clock = ContinuousClock()
++        let deadline = clock.now.advanced(by: timeout)
++        while clock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(10))
++            if let observation = donation(for: requestID) { return observation }
++        }
++        return donation(for: requestID)
++    }
++
++    func waitForDonations(
++        requestIDs: [CBv2RequestID],
++        timeout: Duration
++    ) async {
++        guard !requestIDs.isEmpty else { return }
++        let clock = ContinuousClock()
++        let deadline = clock.now.advanced(by: timeout)
++        while clock.now < deadline {
++            let complete = lock.withLock {
++                requestIDs.allSatisfy { donationsByRequest[$0] != nil }
++            }
++            if complete { return }
++            try? await Task.sleep(for: .milliseconds(10))
++        }
++    }
++}
+diff --git a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
+index e30a04592f3eaf25985d73b3fbdcb5e9025098c3..51e143f9bb02b4e94baddab58c8c326b0d19850c 100644
+--- a/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
++++ b/provider-swift/Tests/ProviderCoreTests/QwenPrefixReuseTests.swift
+@@ -200,6 +200,42 @@ struct QwenPrefixReuseTests {
+         #expect(cache.bytesInUse == 0)
+     }
+ 
++    @Test
++    func exactTrackingCacheReportsWholeHybridSnapshotBytes() async throws {
++        let snapshot = try exactSnapshot(tokenCount: 3)
++        #expect(snapshot.byteCount % snapshot.tokenCount != 0)
++        let cache = QwenExactPrefixTrackingCache(config: .init(
++            modelIdentity: "qwen-exact-test",
++            maxBytes: snapshot.byteCount * 2))
++        let donorID = CBv2RequestID(40)
++        let tokens = [10, 11, 12]
++        cache.donateExact(
++            requestID: donorID,
++            tokens: tokens,
++            snapshot: snapshot,
++            layerKinds: [exactLayerKind],
++            cacheSalt: "scope")
++        #expect(cache.donation(for: donorID) != nil)
++
++        let engine = ExactPrefixScriptedEngine(
++            cache: cache,
++            layerKind: exactLayerKind,
++            recurrentSpec: exactRecurrentSpec)
++        let batch = try await QwenPrefixEngineRunner.run(
++            engine: engine,
++            cache: cache,
++            prompts: [tokens],
++            decodeTokens: 2,
++            requestIDBase: 50,
++            prefixCacheEnabled: true,
++            cacheSalt: "scope")
++
++        let row = try #require(batch.rows.first)
++        #expect(row.usage.prefixCacheOutcome == .hit)
++        #expect(row.usage.prefixCacheMatchedTokens == tokens.count)
++        #expect(row.stateBytesCloned == snapshot.byteCount)
++    }
++
+     @Test
+     func reportRoundTripsAndKeepsConstructionMissInRates() throws {
+         let report = makeReport()
+@@ -241,6 +277,29 @@ struct QwenPrefixReuseTests {
+         }
+     }
+ 
++    @Test
++    func exactReportAcceptsFullPromptHitsAndHonestPartialMisses() throws {
++        let report = makeReport(exactCache: true)
++        try report.validate()
++
++        for scenario in report.scenarios {
++            let warmRows = try #require(scenario.samples.first).warm.rows
++            if scenario.kind == "identical" {
++                #expect(warmRows.allSatisfy {
++                    $0.cacheOutcome == "hit"
++                        && $0.matchedTokens == $0.promptTokens
++                        && $0.savedPrefillTokens == $0.promptTokens
++                })
++            } else {
++                #expect(warmRows.allSatisfy {
++                    $0.cacheOutcome == "miss"
++                        && $0.matchedTokens == 0
++                        && $0.savedPrefillTokens == 0
++                })
++            }
++        }
++    }
++
+     private func repositoryRoot() -> URL {
+         URL(fileURLWithPath: #filePath)
+             .deletingLastPathComponent()
+@@ -261,7 +320,51 @@ struct QwenPrefixReuseTests {
+             })
+     }
+ 
+-    private func makeReport() -> QwenPrefixReuseReport {
++    private var exactLayerKind: CBv2LayerKind {
++        CBv2LayerKind(
++            attention: .full,
++            headDim: 1,
++            kvHeads: 1,
++            queryHeads: 1)
++    }
++
++    private var exactRecurrentSpec: CBv2RecurrentStateSpec {
++        CBv2RecurrentStateSpec(layers: [
++            CBv2RecurrentLayerStateSpec(
++                modelLayerIndex: 0,
++                convShape: [1, 1, 1],
++                convDType: .float32,
++                ssmShape: [1, 1, 1, 1],
++                ssmDType: .float32)
++        ])
++    }
++
++    private func exactSnapshot(tokenCount: Int) throws -> CBv2ExactPrefixSnapshot {
++        let attention = try CBv2ExactAttentionSnapshot(
++            keys: MLXArray.zeros([1, 1, tokenCount, 1]),
++            values: MLXArray.ones([1, 1, tokenCount, 1]),
++            offset: tokenCount,
++            detaching: true)
++        let recurrent = try CBv2RecurrentStateSnapshot(
++            spec: exactRecurrentSpec,
++            layers: [
++                0: CBv2RecurrentLayerState(
++                    conv: MLXArray.zeros([1, 1, 1]),
++                    ssm: MLXArray.ones([1, 1, 1, 1]))
++            ],
++            detaching: true)
++        let snapshot = try CBv2ExactPrefixSnapshot(
++            tokenCount: tokenCount,
++            modelPosition: tokenCount,
++            attention: [attention],
++            recurrentState: recurrent,
++            frontierLogits: MLXArray([Float(1), Float(-1)]),
++            detachingFrontier: true)
++        eval(snapshot.evaluationArrays)
++        return snapshot
++    }
++
++    private func makeReport(exactCache: Bool = false) -> QwenPrefixReuseReport {
+         let promptTokens = 1_024
+         let decodeTokens = 2
+         let shapes: [(String, String, Int, Double)] = [
+@@ -278,6 +381,7 @@ struct QwenPrefixReuseTests {
+             let matchedTokens = min(
+                 commonTokens,
+                 ((promptTokens - 1) / 256) * 256)
++            let warmHit = !exactCache || shape.1 == "identical"
+             let coldRows = (0 ..< shape.2).map {
+                 reportRow(
+                     row: $0,
+@@ -296,10 +400,11 @@ struct QwenPrefixReuseTests {
+                 reportRow(
+                     row: $0,
+                     requestID: UInt64(3_000 + scenarioIndex * 100 + $0),
+-                    outcome: "hit",
+-                    matched: matchedTokens,
+-                    saved: matchedTokens,
+-                    stateBytes: matchedTokens * 16)
++                    outcome: warmHit ? "hit" : "miss",
++                    matched: warmHit ? (exactCache ? promptTokens : matchedTokens) : 0,
++                    saved: warmHit ? (exactCache ? promptTokens : matchedTokens) : 0,
++                    stateBytes:
++                        warmHit ? (exactCache ? promptTokens * 16 + 7 : matchedTokens * 16) : 0)
+             }
+             let cold = reportBatch(rows: coldRows, enabled: false)
+             let warm = reportBatch(rows: warmRows, enabled: true)
+@@ -318,7 +423,7 @@ struct QwenPrefixReuseTests {
+                     row: construction,
+                     donationObserved: true,
+                     submitToCacheReadyMs: 12,
+-                    terminalToCacheReadyMs: 1,
++                    cacheReadyMinusTerminalMs: -1,
+                     cacheBytesAfterReady: commonTokens * 16),
+                 warm: warm,
+                 cacheAccountingIncludingConstruction: .init(rows: cacheRows),
+@@ -380,9 +485,14 @@ struct QwenPrefixReuseTests {
+                 kvBackend: BenchmarkKVBackend(
+                     selection: "contiguous",
+                     resolved: ["contiguous"]),
+-                prefixCacheImplementation: "PrefixCacheV2",
++                kvBytesCapacity: 4 * 1024 * 1024 * 1024,
++                prefixCacheImplementation:
++                    exactCache ? "ExactPrefixCacheV2" : "PrefixCacheV2",
++                prefixCacheMatchPolicy:
++                    exactCache ? "exact-full-prompt" : "whole-block-prefix",
+                 prefixCacheRequested: true,
+-                cacheBlockTokens: 256,
++                prefixCacheBudgetBytes: exactCache ? 1_024 * 1_024 * 1_024 : nil,
++                cacheBlockTokens: exactCache ? nil : 256,
+                 cacheSaltScope: "unique per scenario iteration",
+                 capabilitySupported: true,
+                 capabilityStrategy: "direct",
+@@ -527,3 +637,65 @@ private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
+ 
+     func shutdown() async {}
+ }
++
++private final class ExactPrefixScriptedEngine: CBv2Engine, @unchecked Sendable {
++    private let cache: QwenExactPrefixTrackingCache
++    private let layerKind: CBv2LayerKind
++    private let recurrentSpec: CBv2RecurrentStateSpec
++
++    init(
++        cache: QwenExactPrefixTrackingCache,
++        layerKind: CBv2LayerKind,
++        recurrentSpec: CBv2RecurrentStateSpec
++    ) {
++        self.cache = cache
++        self.layerKind = layerKind
++        self.recurrentSpec = recurrentSpec
++    }
++
++    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
++        let receiptID = request.prefixCacheReceiptID ?? request.id
++        let hit = cache.lookupExact(
++            requestID: receiptID,
++            tokens: request.promptTokens,
++            layerKinds: [layerKind],
++            recurrentStateSpec: recurrentSpec,
++            cacheSalt: request.cacheSalt)
++        if let hit {
++            cache.endAdoption(
++                requestID: receiptID,
++                tokens: request.promptTokens,
++                matched: hit.tokenCount,
++                cacheSalt: request.cacheSalt)
++        }
++        let tokens = [Int(request.id.raw), Int(request.id.raw) + 1]
++        return AsyncStream { continuation in
++            continuation.yield(.delta(text: "", tokens: [tokens[0]], logprobs: nil))
++            continuation.yield(.delta(text: "", tokens: [tokens[1]], logprobs: nil))
++            continuation.yield(.finished(
++                reason: .length,
++                usage: CBv2Usage(
++                    promptTokens: request.promptTokens.count,
++                    completionTokens: tokens.count,
++                    prefixCacheHitTokens: hit?.tokenCount ?? 0,
++                    prefixCacheOutcome: hit == nil ? .miss : .hit,
++                    prefixCacheMatchedTokens: hit?.tokenCount ?? 0,
++                    prefixCachePrefillTokensSaved: hit?.tokenCount ?? 0,
++                    prefixCacheStrategy: hit == nil ? nil : .direct)))
++            continuation.finish()
++        }
++    }
++
++    func cancel(_: CBv2RequestID) {}
++
++    func capacity() -> CBv2CapacitySnapshot {
++        CBv2CapacitySnapshot(
++            activeRequests: 0,
++            waitingRequests: 0,
++            kvBytesInUse: 0,
++            kvBytesCapacity: 1 << 20,
++            activeTokens: 0)
++    }
++
++    func shutdown() async {}
++}

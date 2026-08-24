@@ -35,10 +35,13 @@ Any 2x-class implementation must raise the rate of **both gathered and dense
 large projections**. See `notes/026-independent-roof-and-levers.md`.
 
 The only same-quality experiment with a credible path above the homogeneous
-FP32 roof is an exact BF16-input, FP32-accumulate Metal 4 MPP prototype. It
-must preserve the incumbent BF16 dequantized tile bytes and FP32 accumulation.
-Apple9/M3 may lower MPP to the same shader resources, so this is a hypothesis,
-not a promised win.
+FP32 roof is a **new**, exact BF16-input, FP32-accumulate Metal 4 MPP
+prototype. It must preserve the incumbent BF16 dequantized tile bytes and FP32
+accumulation. E6 already forced MLX's existing NAX/MPP kernels onto this M3:
+the optimized-shader fallback executed but failed 11 QMM correctness
+assertions, so that shortcut is dead before timing (`notes/034`). A custom
+byte-identical loader remains conceptually open, but cannot reuse the existing
+NAX implementation as-is.
 
 ## 1. Exact path that runs
 
@@ -319,9 +322,16 @@ Kill:
 
 ### P4 — Exact Metal 4 MPP BF16xBF16→FP32 roof
 
-Build one fixed-shape isolated kernel first. Dequantize affine W4/g64 into the
-same BF16 bytes, feed BF16 activation and weight tensors to MPP `matmul2d`,
-set `relaxed_precision=false`, accumulate/store through float at the incumbent
+Do **not** force-enable the existing NAX route: E6 did that on the generation-15
+M3 and found 11 failures, including ordinary QMM error up to 14, Qwen gate-up
+error 5.03, Qwen down error 6.75, and sorted-boundary error 3.0–3.5. No timing
+was taken under its correctness-first ratchet
+(`artifacts/e6-portable-mpp-correctness.txt`).
+
+Instead, build one new fixed-shape isolated kernel first. Dequantize affine
+W4/g64 into bytes proven identical to the incumbent non-NAX BF16 tile, feed
+BF16 activation and weight tensors to MPP `matmul2d`, set
+`relaxed_precision=false`, accumulate/store through float at the incumbent
 boundary, and compare against the current kernel.
 
 Mechanism: this is the only candidate that can change the arithmetic execution
@@ -386,7 +396,7 @@ Repository primary sources:
 - `libs/mlx/mlx/backend/metal/device.cpp`
 - `libs/mlx-swift/Source/Cmlx/mlx-generated/{quantized.cpp,metal/quantized.h}`
 - `libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift`
-- `research/qwen36-prefill/notes/{011-explorer-moe-gdn,013-optimizer-metal,021-e1-tile-ab-results,023-e1-confirms-alu-bound}.md`
+- `research/qwen36-prefill/notes/{011-explorer-moe-gdn,013-optimizer-metal,021-e1-tile-ab-results,023-e1-confirms-alu-bound,034-e6-portable-mpp-prereg}.md`
 
 External API constraints:
 

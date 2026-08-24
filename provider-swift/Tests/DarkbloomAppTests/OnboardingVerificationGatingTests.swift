@@ -55,7 +55,10 @@ struct OnboardingVerificationGatingTests {
         )
     }
 
-    private func makeFlow(stateURL: URL) -> OnboardingFlowModel {
+    private func makeFlow(
+        stateURL: URL,
+        verificationCheckInGrace: Duration = .seconds(30)
+    ) -> OnboardingFlowModel {
         let flow = OnboardingFlowModel(
             startingAt: .verification,
             accountLinkRunner: nil,
@@ -78,7 +81,7 @@ struct OnboardingVerificationGatingTests {
                 )
             },
             verificationPollInterval: .milliseconds(10),
-            verificationCheckInGrace: .milliseconds(300)
+            verificationCheckInGrace: verificationCheckInGrace
         )
         flow.selectedModelID = Self.modelID
         return flow
@@ -142,7 +145,9 @@ struct OnboardingVerificationGatingTests {
     func deadProviderCannotPass() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let flow = makeFlow(stateURL: fixture.stateURL)
+        let flow = makeFlow(
+            stateURL: fixture.stateURL,
+            verificationCheckInGrace: .milliseconds(300))
         writeTrust(
             trust(status: "verified", level: "hardware"),
             to: fixture,
@@ -233,7 +238,9 @@ struct OnboardingVerificationGatingTests {
     func delayedCheckInSelfHeals() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let flow = makeFlow(stateURL: fixture.stateURL)
+        let flow = makeFlow(
+            stateURL: fixture.stateURL,
+            verificationCheckInGrace: .milliseconds(300))
 
         let run = Task { await flow.runAutomaticWorkForCurrentStep() }
         let delayed = await eventually { flow.verificationPhase == .checkInDelayed }

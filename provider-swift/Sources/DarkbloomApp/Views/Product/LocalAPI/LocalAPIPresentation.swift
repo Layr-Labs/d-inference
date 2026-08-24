@@ -97,7 +97,7 @@ enum LocalAPIPresentation {
 
     static func stateTitle(_ phase: LocalAPIEndpointPhase, isLive: Bool) -> String {
         let endpoint = isLive ? "endpoint" : "sample endpoint"
-        switch phase {
+        return switch phase {
         case .starting: "\(isLive ? "Endpoint" : "Sample endpoint") is starting"
         case .stopped: "No \(endpoint) is running"
         case .unavailable: "The \(endpoint) needs attention"
@@ -106,7 +106,7 @@ enum LocalAPIPresentation {
 
     static func healthTitle(_ endpoint: LocalAPIEndpointSnapshot, isLive: Bool) -> String {
         let noun = isLive ? "Endpoint" : "Sample endpoint"
-        switch endpoint.health {
+        return switch endpoint.health {
         case .checking: "Checking \(noun.lowercased())"
         case .reachable where endpoint.isOpenWithoutAuthentication:
             "\(noun) open"

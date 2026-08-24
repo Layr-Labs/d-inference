@@ -74,3 +74,54 @@ it on is the 2.5x lever. If it is already on, 2.5x must come from
 bytes/chunk (stripe, 4-bit residency, kernel overlap), not batching.
 
 This is the first experiment. No code change until H0 is measured.
+
+## 2026-08-24T05:22Z — canary PASS
+
+Installed 0.8.10, High Power, AC, contiguous, L=512 B=1:
+
+- TTFT 420.1 ms
+- 0.822 ms/token
+- **1,217 tok/s**
+- stripe cfg 2048 (inactive at L=512)
+- 164 GiB fatal did **not** reproduce on this shape
+
+See `notes/007-canary-b1-512.md`. Full baseline (512/2048/8192 × 3 +
+4-wide arrival 2048/8192) started at 05:24Z as `run_baseline.sh`.
+
+## 2026-08-24T05:24Z — code read while canary ran
+
+Packed path exists (`EngineLoopV2` ~1692–1807). Recurrent Qwen
+skips packing when `positionState != nil`. MoE flattens packed
+`[B,L]` into one expert-tile (`notes/008`). H0 now has three
+outcomes, not two: packing-off / packing-on-weight-bound /
+packing-on-compute-bound. Arrival aggregate vs 4×B=1 distinguishes
+the last two only if we also know `packedPrefillActivity`.
+
+## 2026-08-24T05:23Z — B=1 curve locked
+
+Medians (3 iters, High Power): **512 → 1,435 tok/s; 2048 → 1,669;
+8192 → 1,555**. 8K ≈ 4 × 2048 streams (+7.4%). See `notes/009`.
+
+## 2026-08-24T05:24Z — H0 resolved (pending 2nd burst iter)
+
+4×2048 burst makespan 4,926 ms ⇒ **1,663 agg prefill tok/s = 1.00×
+B=1**. Packing is on (time matches 4 packed `[4,512]` steps, not 16
+solo 512s). The 2048 step budget splits a burst into 512-token
+chunks, so tokens-per-weight-stream stays 2048. That is why
+aggregate cannot beat solo.
+
+Next experiment (not started): raise burst chunk and
+`maxBatchedTokensPerStep` so one step can be packed `[4,2048]`.
+Reviewer must bless expert-tile assignment cap and memory.
+
+## 2026-08-24T05:26Z — the roof is the tile allowlist
+
+`assignments ∈ {4096,8192,16384}` is a CPU closed set
+(`notes/018`). Packed `[4,512]` is already at 16384. Raising the
+scheduler budget without a new M falls to legacy gather. 2.5× means
+M=32768 (2×) + another lever, or M=65536 (4×).
+
+Arrival harness v1 died on stagger-25ms (10 ms > 5 ms tolerance).
+Burst i=1 is in the log only. Rerunning with
+`DARKBLOOM_ARRIVAL_TOLERANCE_MS=20`.
+

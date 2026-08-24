@@ -74,17 +74,20 @@ flowchart TB
 - `A1`: L² only dominates long full-attn layers. At 8K, 10 layers of
   8K² may or may not beat MoE weight traffic. Measure, don't assume.
 
-## Ranked bets (2026-08-24, pre-baseline)
+## Ranked bets (2026-08-24, post B=1 + burst)
+
+Baseline killed the "packed is off" story. Packed `[4,512]` already
+hits the tile allowlist max (M=16384). See `notes/009` and `notes/018`.
 
 | Rank | Node | Expected | Risk | Why now |
 |---:|---|---|---|---|
-| 1 | S2 packed actually on | 1.5–4x agg B=4 if off | Low if already on | First measure H0 |
-| 2 | S3 fewer weight re-reads | 1.1–1.4x B=1 | Memory, LPM | Physics of P1/P3 |
-| 3 | H1 wavefront | up to ~2x if 24% peak is real | High / MLX | Structural |
-| 4 | B1/B2 residual narrowing | ~10-14% B=1 | Low | Already partly shipped |
-| 5 | A2 GDN parallel scan | 5-7% | Numeric tolerance | After bigger fish |
-| 6 | A4/M3 re-enable with decode guard | 6-10% B=1 | High (0.8.8) | Only with decode A/B |
-| 7 | A5 sparse | 8K: none; 32K+: large | Quality | Out of 8K scope |
+| 1 | Extend tile allowlist M=32768 / 65536 | 2.0× / up to 4.0× tokens per weight stream | Descriptor alloc, metallib, decode | **The roof.** Do this before any scheduler budget raise. |
+| 2 | S3 one-shot 8K after M=65536 | B=1 8K toward ~4× if weight-bound | Memory, L² | Same kernel as (1) |
+| 3 | H1 wavefront | residual after (1) | High / MLX | Still the 24% peak claim |
+| 4 | A1 query-block / SDPA | 0–15% | Numerics | After the roof moves |
+| 5 | A2 GDN parallel scan | 5–10% | Numeric tolerance | After bigger fish |
+| 99 | Raise chunk without new M | **negative** (legacy fallback) | Proven by contracts | Dead as a solo move |
 | 99 | M4 mega-kernel | negative | Proven | Dead |
 
-Update this table after the baseline lands.
+B=1 2.5× at 8K is the same physics as (1)+(2). B=4 2.5× is (1) at
+M=32768 plus a second lever, or M=65536 alone if it holds.

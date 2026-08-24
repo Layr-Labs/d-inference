@@ -1,0 +1,104 @@
+{
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 3,
+  "kvBackend" : {
+    "resolved" : [
+      "contiguous"
+    ],
+    "selection" : "contiguous"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/.cache\/huggingface\/hub\/models--qwen3.6-35b-a3b-vl-mtp-mxfp8\/snapshots\/local",
+  "promptLengths" : [
+    512,
+    2048,
+    8192
+  ],
+  "samples" : [
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.6981603894324854,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 356.75995900000004
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.6967075166340508,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 356.017541
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.6954110410958905,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 355.355042
+    },
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.6550652784562775,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 1340.918625
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.5963217513434294,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 1220.670625
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.5985735832926233,
+      "promptTokens" : 2048,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 1225.280125
+    },
+    {
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.6426222275668416,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 5263.718666
+    },
+    {
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.6428505219142963,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 5265.588625
+    },
+    {
+      "iteration" : 3,
+      "msPerPrefillToken" : 0.6423147458185815,
+      "promptTokens" : 8192,
+      "resolvedKVBackend" : "contiguous",
+      "strategy" : "cbv2",
+      "ttftMs" : 5261.200083000001
+    }
+  ],
+  "schemaVersion" : 3,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

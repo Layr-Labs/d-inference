@@ -31,6 +31,7 @@ struct DarkbloomApp: App {
 
         let productPreview = ProductPreviewConfiguration.current
         let onboardingPreview = OnboardingPreviewConfiguration.current
+        let isPreviewSession = productPreview != nil || onboardingPreview != nil
         let onboardingFlow = OnboardingFlowModel(
             startingAt: onboardingPreview?.step ?? .readiness,
             previewVariant: onboardingPreview?.variant,
@@ -39,9 +40,11 @@ struct DarkbloomApp: App {
 
         self.onboardingPreview = onboardingPreview
         self.productPreview = productPreview
-        let providerStore = productPreview.map {
-            ProviderStore(previewScenario: $0.providerScenario)
-        } ?? ProviderStore(daemon: DaemonRuntimeService())
+        let providerStore = isPreviewSession
+            ? ProviderStore(
+                previewScenario: productPreview?.providerScenario ?? .online
+            )
+            : ProviderStore(daemon: DaemonRuntimeService())
         _appFlowStore = State(
             initialValue: AppFlowStore(
                 launchOverride: productPreview != nil
@@ -49,7 +52,7 @@ struct DarkbloomApp: App {
                     : (onboardingPreview != nil ? .onboarding : AppPhase.currentDebugLaunchOverride),
                 onboardingFlow: onboardingFlow,
                 initialDestination: productPreview?.destination ?? .overview,
-                bootstrapEvidence: productPreview == nil
+                bootstrapEvidence: !isPreviewSession
                     ? AppFlowBootstrapEvidence(snapshot: providerStore.snapshot)
                     : nil
             )
@@ -63,24 +66,36 @@ struct DarkbloomApp: App {
         // availability persists via `config set schedule`; contributions read
         // `earnings --json`; the local API probes ~/.darkbloom/local.json;
         // My Macs uses the coordinator-backed account session.
-        if let productPreview {
+        if isPreviewSession {
             _modelLibraryStore = State(
-                initialValue: ModelLibraryStore(fixture: productPreview.modelFixture)
+                initialValue: ModelLibraryStore(
+                    fixture: productPreview?.modelFixture ?? .ready
+                )
             )
             _diagnosticsStore = State(
-                initialValue: DiagnosticsStore(fixture: productPreview.diagnosticsFixture)
+                initialValue: DiagnosticsStore(
+                    fixture: productPreview?.diagnosticsFixture ?? .healthy
+                )
             )
             _contributionsStore = State(
-                initialValue: ContributionsStore(fixture: productPreview.contributionsFixture)
+                initialValue: ContributionsStore(
+                    fixture: productPreview?.contributionsFixture ?? .active
+                )
             )
             _localAPIStore = State(
-                initialValue: LocalAPIStore(fixture: productPreview.localAPIFixture)
+                initialValue: LocalAPIStore(
+                    fixture: productPreview?.localAPIFixture ?? .active
+                )
             )
             _myMacsStore = State(
-                initialValue: MyMacsStore(fixture: productPreview.myMacsFixture)
+                initialValue: MyMacsStore(
+                    fixture: productPreview?.myMacsFixture ?? .ready
+                )
             )
             _availabilityStore = State(
-                initialValue: AvailabilityStore(fixture: productPreview.availabilityFixture)
+                initialValue: AvailabilityStore(
+                    fixture: productPreview?.availabilityFixture ?? .always
+                )
             )
         } else {
             _modelLibraryStore = State(

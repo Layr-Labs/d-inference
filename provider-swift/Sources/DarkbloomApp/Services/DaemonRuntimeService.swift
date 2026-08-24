@@ -78,7 +78,9 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         self.selectionInstalled = selectionInstalled
         let initial = Self.mapFromDisk(
             stateFileURL: stateFileURL, providerName: providerName,
-            localEndpointReader: localEndpointReader, processAlive: processAlive
+            localEndpointReader: localEndpointReader,
+            processAlive: processAlive,
+            selectionInstalled: selectionInstalled
         )
         published = initial
         initialSnapshot = initial
@@ -220,7 +222,9 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
     private func refreshFromDisk() {
         let mapped = Self.mapFromDisk(
             stateFileURL: stateFileURL, providerName: providerName,
-            localEndpointReader: localEndpointReader, processAlive: processAlive
+            localEndpointReader: localEndpointReader,
+            processAlive: processAlive,
+            selectionInstalled: selectionInstalled
         )
         guard mapped != published else { return }
         published = mapped
@@ -262,13 +266,15 @@ actor DaemonRuntimeService: ProviderRuntimeServicing {
         stateFileURL: URL,
         providerName: String,
         localEndpointReader: @Sendable () -> LocalEndpointInfo?,
-        processAlive: @Sendable (Int32) -> Bool
+        processAlive: @Sendable (Int32) -> Bool,
+        selectionInstalled: @Sendable () -> Bool
     ) -> ProviderSnapshot {
         let state = DaemonStateFile.read(from: stateFileURL)
         return DaemonSnapshotMapping.map(
             DaemonSnapshotMapping.Inputs(
                 state: state,
                 processIsAlive: state.map { processAlive($0.pid) } ?? false,
+                serviceIsInstalled: selectionInstalled(),
                 localEndpoint: localEndpointReader(),
                 providerName: providerName
             )

@@ -33,11 +33,13 @@ struct DaemonSnapshotMappingTests {
     private func inputs(
         state: DaemonState?,
         alive: Bool,
+        installed: Bool = true,
         endpoint: LocalEndpointInfo? = nil
     ) -> DaemonSnapshotMapping.Inputs {
         DaemonSnapshotMapping.Inputs(
             state: state,
             processIsAlive: alive,
+            serviceIsInstalled: installed,
             localEndpoint: endpoint,
             now: referenceNow,
             providerName: "Gaj’s Mac"
@@ -131,17 +133,40 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.availability.nextChangeAt == Date(timeIntervalSince1970: nextChange))
     }
 
-    @Test("Expired scheduled-off posture cannot mask a stopped provider")
-    func expiredScheduledOffMapsPaused() {
+    @Test("An uninstalled service cannot inherit retained scheduled-off posture")
+    func stoppedServiceMapsPaused() {
         let state = freshState(schedule: .init(
             mode: "scheduled-off",
             summary: "Mon-Fri 09:00-17:00",
-            nextChangeAtEpoch: referenceNow.timeIntervalSince1970 - 1
+            nextChangeAtEpoch: referenceNow.timeIntervalSince1970 + 3_600
         ))
-        let snapshot = DaemonSnapshotMapping.map(inputs(state: state, alive: false))
+        let snapshot = DaemonSnapshotMapping.map(
+            inputs(state: state, alive: false, installed: false)
+        )
 
         #expect(snapshot.runState == .paused)
         #expect(snapshot.availability.state == .paused)
+    }
+
+    @Test("Schedule boundaries expire at equality for active and off postures")
+    func expiredScheduleBoundaryNeedsFreshState() {
+        for mode in ["scheduled-active", "scheduled-off"] {
+            for offset in [-1.0, 0.0] {
+                let state = freshState(schedule: .init(
+                    mode: mode,
+                    summary: "Mon-Fri 09:00-17:00",
+                    nextChangeAtEpoch: referenceNow.timeIntervalSince1970 + offset
+                ))
+                let snapshot = DaemonSnapshotMapping.map(
+                    inputs(state: state, alive: true)
+                )
+
+                #expect(snapshot.runState == .stale)
+                #expect(snapshot.availability.state == .unknown)
+                #expect(snapshot.availability.nextChangeAt == nil)
+                #expect(snapshot.currentModel == nil)
+            }
+        }
     }
 
     @Test("Old writes → stale run state + critical problem")
@@ -187,6 +212,23 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.trust.updatedAt == referenceNow.addingTimeInterval(-60))
     }
 
+    @Test("Hardware level without a successful coordinator status stays pending")
+    func hardwareTrustRequiresSuccessfulStatus() {
+        for status in ["unknown", "pending", "challenge_sent"] {
+            let trust = DaemonState.Trust(
+                trustLevel: "hardware",
+                status: status,
+                reason: "Waiting for the coordinator",
+                receivedAt: referenceNow.timeIntervalSince1970 - 30
+            )
+            let snapshot = DaemonSnapshotMapping.map(
+                inputs(state: freshState(trust: trust), alive: true)
+            )
+
+            #expect(snapshot.trust.state == .pending)
+        }
+    }
+
     @Test("A recent model-load error → attention + problem; old error stays quiet in run state")
     func loadErrorAttention() {
         var recent = freshState()
@@ -196,6 +238,7 @@ struct DaemonSnapshotMappingTests {
         #expect(recentSnapshot.lastProblem?.id == "model-load-error")
         #expect(recentSnapshot.lastProblem?.severity == .warning)
         #expect(recentSnapshot.lastProblem?.detail.contains("gemma-4-26b-qat-4bit") == true)
+        #expect(recentSnapshot.lastProblem?.recoveryTitle == "Review Mac")
 
         var old = freshState()
         old.lastModelLoadError = .init(model: "gemma-4-26b-qat-4bit", message: "insufficient memory", at: referenceNow.timeIntervalSince1970 - 3_600)

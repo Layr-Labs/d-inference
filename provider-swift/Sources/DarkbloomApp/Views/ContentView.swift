@@ -114,7 +114,7 @@ struct ContentView: View {
                             myMacsStore: myMacsStore,
                             availabilityStore: availabilityStore,
                             chatFixture: productPreview?.chatFixture ?? .empty,
-                            isPreview: productPreview != nil,
+                            isPreview: showsPreviewChrome,
                             initialDestination: productPreview?.destination
                                 ?? appFlowStore.pendingInitialProductDestination,
                             onSelectDestination: appFlowStore.selectProductDestination,
@@ -144,6 +144,12 @@ struct ContentView: View {
             withAnimation(.easeOut(duration: 0.28)) {
                 identity = detected
             }
+        }
+        .onChange(of: providerStore.snapshot) { _, snapshot in
+            guard !showsPreviewChrome else { return }
+            appFlowStore.applyBootstrapEvidence(
+                AppFlowBootstrapEvidence(snapshot: snapshot)
+            )
         }
         #if DEBUG
         .task {

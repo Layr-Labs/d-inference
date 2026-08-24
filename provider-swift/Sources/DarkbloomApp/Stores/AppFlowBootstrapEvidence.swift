@@ -12,7 +12,9 @@ struct AppFlowBootstrapEvidence: Equatable, Sendable {
 
     init(snapshot: ProviderSnapshot) {
         let trustLevel = snapshot.trust.level.lowercased()
-        hasProviderState = snapshot.version != "unknown"
+        hasProviderState = snapshot.version != "unknown" &&
+            snapshot.isRunning &&
+            !snapshot.isStale
         hasVerifiedHardwareTrust = snapshot.trust.state == .verified &&
             (trustLevel == "hardware" || trustLevel == "mda_verified")
     }

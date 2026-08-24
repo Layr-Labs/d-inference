@@ -48,6 +48,43 @@ struct AppFlowStoreTests {
         #expect(!store.hasCompletedNetworkOnboarding)
     }
 
+    @Test("Late verified machine evidence can open the product")
+    func lateBootstrapEvidenceOpensProduct() {
+        let preferences = InMemoryAppFlowPreferences()
+        let store = AppFlowStore(
+            preferences: preferences,
+            launchOverride: nil
+        )
+
+        store.applyBootstrapEvidence(AppFlowBootstrapEvidence(
+            hasProviderState: true,
+            hasVerifiedHardwareTrust: true
+        ))
+
+        #expect(store.phase == .product)
+        #expect(preferences.hasCompletedNetworkOnboarding)
+    }
+
+    @Test("Snapshot bootstrap requires a fresh running provider and verified hardware")
+    func snapshotBootstrapIsFailClosed() {
+        var valid = ProviderPreviewScenario.online.snapshot
+        valid.trust.state = .verified
+        valid.trust.level = "hardware"
+        #expect(AppFlowBootstrapEvidence(snapshot: valid).canOpenProductWithoutOnboarding)
+
+        var pending = valid
+        pending.trust.state = .pending
+        #expect(!AppFlowBootstrapEvidence(snapshot: pending).canOpenProductWithoutOnboarding)
+
+        var stale = valid
+        stale.runState = .stale
+        #expect(!AppFlowBootstrapEvidence(snapshot: stale).canOpenProductWithoutOnboarding)
+
+        var stopped = valid
+        stopped.runState = .paused
+        #expect(!AppFlowBootstrapEvidence(snapshot: stopped).canOpenProductWithoutOnboarding)
+    }
+
     @Test("A saved onboarding draft wins over machine bootstrap evidence")
     func savedDraftWinsOverMachineBootstrap() {
         let preferences = InMemoryAppFlowPreferences(

@@ -249,16 +249,35 @@ def clear_descriptor_acl(descriptor: int) -> None:
     if platform.system() != "Darwin":
         return
     libc = ctypes.CDLL(None, use_errno=True)
-    delete_acl = libc.acl_delete_fd_np
-    delete_acl.argtypes = [ctypes.c_int, ctypes.c_int]
-    delete_acl.restype = ctypes.c_int
+    init_acl = libc.acl_init
+    init_acl.argtypes = [ctypes.c_int]
+    init_acl.restype = ctypes.c_void_p
+    set_acl = libc.acl_set_fd_np
+    set_acl.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    set_acl.restype = ctypes.c_int
+    free_acl = libc.acl_free
+    free_acl.argtypes = [ctypes.c_void_p]
+    free_acl.restype = ctypes.c_int
+
     ctypes.set_errno(0)
-    if delete_acl(descriptor, ACL_TYPE_EXTENDED) != 0:
+    empty_acl = init_acl(0)
+    if not empty_acl:
         error_number = ctypes.get_errno()
-        if error_number != errno.ENOENT:
-            raise PublicationError("could not clear the staging root ACL") from OSError(
-                error_number, os.strerror(error_number)
-            )
+        raise PublicationError("could not allocate an empty staging ACL") from OSError(
+            error_number, os.strerror(error_number)
+        )
+    ctypes.set_errno(0)
+    result = set_acl(descriptor, empty_acl, ACL_TYPE_EXTENDED)
+    operation_error = ctypes.get_errno()
+    ctypes.set_errno(0)
+    free_result = free_acl(empty_acl)
+    free_error = ctypes.get_errno()
+    if result != 0:
+        raise PublicationError("could not clear the staging root ACL") from OSError(
+            operation_error, os.strerror(operation_error)
+        )
+    if free_result != 0:
+        raise OSError(free_error, os.strerror(free_error))
     require_no_acl(descriptor, ".")
 
 

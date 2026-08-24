@@ -31,24 +31,26 @@ enum PreviewCapture {
         }
 
         window.displayIfNeeded()
-        if let image = CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            CGWindowID(window.windowNumber),
-            [.boundsIgnoreFraming, .bestResolution]
-        ) {
-            let representation = NSBitmapImageRep(cgImage: image)
+        guard let contentView = window.contentView,
+              let representation = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds)
+        else {
+            return false
+        }
+
+        contentView.layoutSubtreeIfNeeded()
+        if let layer = contentView.layer,
+           let context = NSGraphicsContext(bitmapImageRep: representation)
+        {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            layer.render(in: context.cgContext)
+            NSGraphicsContext.restoreGraphicsState()
             if let png = representation.representation(using: .png, properties: [:]) {
                 try? png.write(to: url, options: .atomic)
                 return true
             }
         }
 
-        guard let contentView = window.contentView,
-              let representation = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds)
-        else {
-            return false
-        }
         contentView.cacheDisplay(in: contentView.bounds, to: representation)
         if let png = representation.representation(using: .png, properties: [:]) {
             try? png.write(to: url, options: .atomic)

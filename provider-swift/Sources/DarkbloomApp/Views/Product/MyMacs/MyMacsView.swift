@@ -112,15 +112,16 @@ struct MyMacsView: View {
             LinkAnotherMacSheet()
         }
         .confirmationDialog(
-            removalRequest.map { "Remove \($0.title) from this account?" }
-                ?? "Remove this Mac from this account?",
+            MyMacRemovalPresentation.confirmationTitle(
+                macTitle: removalRequest?.title
+            ),
             isPresented: Binding(
                 get: { removalRequest != nil },
                 set: { if !$0 { removalRequest = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Remove from Account", role: .destructive) {
+            Button(MyMacRemovalPresentation.actionTitle, role: .destructive) {
                 confirmRemoval()
             }
             Button("Cancel", role: .cancel) {
@@ -391,7 +392,9 @@ struct MyMacsView: View {
             let removed = await store.removeMac(id: removalRequest.macID)
             if removed {
                 reconcileFilteredSelection()
-                AccessibilityNotification.Announcement("Mac removed from this account").post()
+                AccessibilityNotification.Announcement(
+                    MyMacRemovalPresentation.successAnnouncement
+                ).post()
             }
         }
     }
@@ -405,6 +408,13 @@ private struct MyMacRemovalRequest: Identifiable {
 }
 
 enum MyMacRemovalPresentation {
+    static let actionTitle = "Remove Saved Record"
     static let confirmationMessage =
         "This removes only the saved My Macs record; it does not unlink a running Mac or clear that Mac’s local credentials. Contribution history remains on your account, and the Mac may appear here again if it reconnects."
+    static let successAnnouncement = "Saved Mac record removed"
+
+    static func confirmationTitle(macTitle: String?) -> String {
+        macTitle.map { "Remove \($0) from My Macs?" }
+            ?? "Remove this saved record from My Macs?"
+    }
 }

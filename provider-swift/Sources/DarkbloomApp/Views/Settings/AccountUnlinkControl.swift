@@ -19,10 +19,48 @@ enum AccountUnlinkPresentation {
     }
 }
 
+struct AccountUnlinkControlPresentation: Equatable, Sendable {
+    enum Status: Equatable, Sendable {
+        case hidden
+        case progress(String)
+        case success(String)
+        case failure(String)
+    }
+
+    let status: Status
+    let actionTitle: String?
+    let actionDisabled: Bool
+
+    init(state: AccountUnlinkState) {
+        switch state {
+        case .idle:
+            status = .hidden
+            actionTitle = "Sign Out & Unlink This Mac…"
+            actionDisabled = false
+        case .unlinking:
+            status = .progress("Securely unlinking this Mac…")
+            actionTitle = "Sign Out & Unlink This Mac…"
+            actionDisabled = true
+        case .succeeded:
+            status = .success(AccountUnlinkPresentation.successMessage)
+            actionTitle = nil
+            actionDisabled = true
+        case .failed(let message):
+            status = .failure(message)
+            actionTitle = "Retry Sign Out & Unlink…"
+            actionDisabled = false
+        }
+    }
+}
+
 struct AccountUnlinkControl: View {
     let store: AccountUnlinkStore
 
     @State private var showsConfirmation = false
+
+    private var presentation: AccountUnlinkControlPresentation {
+        AccountUnlinkControlPresentation(state: store.state)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -32,11 +70,11 @@ struct AccountUnlinkControl: View {
 
             status
 
-            if store.state != .succeeded {
-                Button(buttonTitle, role: .destructive) {
+            if let actionTitle = presentation.actionTitle {
+                Button(actionTitle, role: .destructive) {
                     showsConfirmation = true
                 }
-                .disabled(store.state.isUnlinking)
+                .disabled(presentation.actionDisabled)
             }
         }
         .confirmationDialog(
@@ -57,35 +95,28 @@ struct AccountUnlinkControl: View {
 
     @ViewBuilder
     private var status: some View {
-        switch store.state {
-        case .idle:
+        switch presentation.status {
+        case .hidden:
             EmptyView()
-        case .unlinking:
+        case .progress(let message):
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Securely unlinking this Mac…")
+                Text(message)
             }
             .font(.callout)
             .accessibilityElement(children: .combine)
-        case .succeeded:
+        case .success(let message):
             Label(
-                AccountUnlinkPresentation.successMessage,
+                message,
                 systemImage: "checkmark.circle.fill"
             )
             .font(.callout)
             .foregroundStyle(.green)
-        case .failed(let message):
+        case .failure(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
                 .foregroundStyle(ProductPalette.critical)
         }
-    }
-
-    private var buttonTitle: String {
-        if case .failed = store.state {
-            return "Retry Sign Out & Unlink…"
-        }
-        return "Sign Out & Unlink This Mac…"
     }
 }

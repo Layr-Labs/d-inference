@@ -20,7 +20,7 @@ struct AccountUnlinkStoreTests {
         #expect(call?.arguments == ["logout"])
         #expect(call?.timeout == .seconds(7))
 
-        await cli.complete(.success(ProviderCLIResult(exitStatus: 0, stderrTail: "")))
+        await cli.succeed()
         await unlink.value
 
         #expect(store.state == .succeeded)
@@ -38,10 +38,10 @@ struct AccountUnlinkStoreTests {
 
         let unlink = Task { await store.unlinkThisMac() }
         #expect(await cli.waitUntilStarted())
-        await cli.complete(.failure(ProviderCLIError.exited(
+        await cli.fail(ProviderCLIError.exited(
             1,
             message: "coordinator rejected provider unlink"
-        )))
+        ))
         await unlink.value
 
         guard case .failed(let message) = store.state else {
@@ -66,9 +66,34 @@ struct AccountUnlinkStoreTests {
         await store.unlinkThisMac()
         #expect(await cli.callCount == 1)
 
-        await cli.complete(.success(ProviderCLIResult(exitStatus: 0, stderrTail: "")))
+        await cli.succeed()
         await first.value
         #expect(store.state == .succeeded)
+    }
+
+    @Test("The native control maps every transaction state to honest UI")
+    func controlPresentationStates() {
+        let idle = AccountUnlinkControlPresentation(state: .idle)
+        #expect(idle.status == .hidden)
+        #expect(idle.actionTitle == "Sign Out & Unlink This Mac…")
+        #expect(!idle.actionDisabled)
+
+        let unlinking = AccountUnlinkControlPresentation(state: .unlinking)
+        #expect(unlinking.status == .progress("Securely unlinking this Mac…"))
+        #expect(unlinking.actionTitle == "Sign Out & Unlink This Mac…")
+        #expect(unlinking.actionDisabled)
+
+        let succeeded = AccountUnlinkControlPresentation(state: .succeeded)
+        #expect(succeeded.status == .success(AccountUnlinkPresentation.successMessage))
+        #expect(succeeded.actionTitle == nil)
+        #expect(succeeded.actionDisabled)
+
+        let failed = AccountUnlinkControlPresentation(
+            state: .failed(message: "Revocation failed")
+        )
+        #expect(failed.status == .failure("Revocation failed"))
+        #expect(failed.actionTitle == "Retry Sign Out & Unlink…")
+        #expect(!failed.actionDisabled)
     }
 
     @Test("Copy distinguishes saved-record removal, current-Mac unlink, and history")
@@ -89,6 +114,10 @@ struct AccountUnlinkStoreTests {
         #expect(MyMacRemovalPresentation.confirmationMessage.contains(
             "Contribution history remains"
         ))
+        #expect(MyMacRemovalPresentation.actionTitle == "Remove Saved Record")
+        #expect(MyMacRemovalPresentation.confirmationTitle(
+            macTitle: "Studio"
+        ) == "Remove Studio from My Macs?")
     }
 }
 
@@ -138,10 +167,19 @@ private actor ControlledUnlinkCLI: ProviderCLIRunning {
         }
     }
 
-    func complete(_ result: Result<ProviderCLIResult, any Error>) {
+    func succeed() {
         guard let continuation else { return }
         self.continuation = nil
-        continuation.resume(with: result)
+        continuation.resume(returning: ProviderCLIResult(
+            exitStatus: 0,
+            stderrTail: ""
+        ))
+    }
+
+    func fail(_ error: ProviderCLIError) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(throwing: error)
     }
 
     func waitUntilStarted() async -> Bool {

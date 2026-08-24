@@ -600,13 +600,24 @@ func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) 
 		providerKey = "key-summary-repair"
 	)
 
-	if _, err := s.pool.Exec(ctx, `
+	seed, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin seed: %v", err)
+	}
+	defer seed.Rollback(ctx)
+
+	if _, err := seed.Exec(ctx, `
 		INSERT INTO provider_earnings (
 			account_id, provider_id, provider_key, job_id, model,
 			amount_micro_usd, prompt_tokens, completion_tokens
 		) VALUES
 			($1, 'provider-a', $2, 'repair-work', 'model-a', 100, 10, 2),
-			($1, 'provider-a', $2, 'repair-floor', 'base_reward', 200, 0, 0);
+			($1, 'provider-a', $2, 'repair-floor', 'base_reward', 200, 0, 0)`,
+		accountID, providerKey,
+	); err != nil {
+		t.Fatalf("seed earnings: %v", err)
+	}
+	if _, err := seed.Exec(ctx, `
 		INSERT INTO earnings_summary (
 			key, key_type, total_count, total_micro_usd,
 			total_prompt_tokens, total_completion_tokens
@@ -617,12 +628,18 @@ func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) 
 			total_count = EXCLUDED.total_count,
 			total_micro_usd = EXCLUDED.total_micro_usd,
 			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-			total_completion_tokens = EXCLUDED.total_completion_tokens;
-		DELETE FROM schema_migrations
-		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'`,
+			total_completion_tokens = EXCLUDED.total_completion_tokens`,
 		accountID, providerKey,
 	); err != nil {
-		t.Fatalf("seed stale summary: %v", err)
+		t.Fatalf("seed summaries: %v", err)
+	}
+	if _, err := seed.Exec(ctx, `
+		DELETE FROM schema_migrations
+		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'`); err != nil {
+		t.Fatalf("reset repair migration: %v", err)
+	}
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
 	}
 
 	blocker, err := s.pool.Begin(ctx)

@@ -59,10 +59,13 @@ public struct ProcessIdentity: Codable, Sendable, Equatable {
 
 #if canImport(Glibc)
 /// Linux exposes process start time as field 22 of `/proc/<pid>/stat`, in
-/// clock ticks since boot. Convert that kernel-stable value to microseconds so
-/// the cross-platform wire shape remains the same.
+/// clock ticks since boot. Add the kernel-recorded boot epoch before converting
+/// to microseconds: ticks alone can repeat after a reboot, which would let a
+/// stale persisted identity collide with a later process that received the
+/// same PID at the same offset into a different boot.
 private func readLinuxProcIdentity(pid: Int32) -> ProcessIdentity? {
     guard pid > 0,
+          let bootTimeMicros = linuxBootTimeMicros,
           let stat = try? String(
               contentsOfFile: "/proc/\(pid)/stat",
               encoding: .utf8
@@ -86,8 +89,36 @@ private func readLinuxProcIdentity(pid: Int32) -> ProcessIdentity? {
     let ticksPerSecond = sysconf(Int32(_SC_CLK_TCK))
     guard ticksPerSecond > 0 else { return nil }
     let frequency = UInt64(ticksPerSecond)
-    let micros = (startTicks / frequency) * 1_000_000
+    let elapsedMicros = (startTicks / frequency) * 1_000_000
         + (startTicks % frequency) * 1_000_000 / frequency
-    return ProcessIdentity(pid: pid, startTimeMicros: micros)
+    let (startTimeMicros, overflow) = bootTimeMicros.addingReportingOverflow(
+        elapsedMicros
+    )
+    guard !overflow else { return nil }
+    return ProcessIdentity(pid: pid, startTimeMicros: startTimeMicros)
 }
+
+/// `btime` is seconds since the Unix epoch and is immutable for this boot.
+/// Cache it once so frequent endpoint trust checks only read the target
+/// process's stat record.
+private let linuxBootTimeMicros: UInt64? = {
+    guard let stat = try? String(
+        contentsOfFile: "/proc/stat",
+        encoding: .utf8
+    ),
+          let bootLine = stat.split(separator: "\n").first(where: {
+              $0.hasPrefix("btime ")
+          }),
+          let bootSeconds = UInt64(
+              bootLine.dropFirst("btime ".count)
+                  .trimmingCharacters(in: .whitespaces)
+          )
+    else {
+        return nil
+    }
+    let (micros, overflow) = bootSeconds.multipliedReportingOverflow(
+        by: 1_000_000
+    )
+    return overflow ? nil : micros
+}()
 #endif

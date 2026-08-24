@@ -387,7 +387,16 @@ private func run() throws {
         atol: qmmATolerance
     )
     print(comparisonLine("ADVERSARIAL_INCUMBENT", incumbentComparison))
-    guard incumbentComparison.passed else {
+    let incumbentBF16 = incumbent.map { bfloatValue(bfloatBits($0)) }
+    let candidateBF16 = candidate.map { bfloatValue(bfloatBits($0)) }
+    let incumbentBF16Comparison = compare(
+        expected: incumbentBF16,
+        actual: candidateBF16,
+        rtol: qmmRTolerance,
+        atol: qmmATolerance
+    )
+    print(comparisonLine("ADVERSARIAL_INCUMBENT_BF16_OUTPUT", incumbentBF16Comparison))
+    guard incumbentComparison.passed, incumbentBF16Comparison.passed else {
         print("TIMING=skipped reason=adversarial_incumbent_tolerance")
         print("VERDICT=reject reason=per_weight_bf16_rounding_contract")
         exit(2)

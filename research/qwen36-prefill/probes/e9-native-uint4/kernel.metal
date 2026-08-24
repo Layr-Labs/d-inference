@@ -31,7 +31,8 @@ kernel void e9_native_uint4_affine_group64(
     const device bfloat* scales [[buffer(2)]],
     const device bfloat* biases [[buffer(3)]],
     device float* output [[buffer(4)]],
-    ushort lane [[thread_index_in_simdgroup]]) {
+    ushort lane [[thread_index_in_simdgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
   constexpr auto descriptor = matmul2d_descriptor(
       tileM,
       tileN,
@@ -50,7 +51,9 @@ kernel void e9_native_uint4_affine_group64(
       metal::tensor_inline>(
       packed_codes, QExtents(), metal::array<int, 2>{1, tileN});
   auto c = metal::tensor(
-      output, CExtents(), metal::array<int, 2>{1, tileN});
+      output + size_t(group) * tileM * tileN,
+      CExtents(),
+      metal::array<int, 2>{1, tileN});
   auto q_dot =
       operation.get_destination_cooperative_tensor<decltype(x), decltype(q), float>();
 

@@ -133,7 +133,9 @@ fi
 if [[ "$PROBE_STATUS" -ne 0 ]]; then
     exit "$PROBE_STATUS"
 fi
-if ! grep -Fq "VERDICT=correctness-pass" "$PROBE_LOG"; then
+if ! grep -Fq "VERDICT=correctness-pass" "$PROBE_LOG" \
+    && ! grep -Fq "VERDICT=timing-measured" "$PROBE_LOG"
+then
     echo "fatal: successful probe omitted correctness verdict" >&2
     exit 1
 fi

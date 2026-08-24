@@ -310,23 +310,64 @@ private final class Runner {
         return prepared.values()
     }
 
-    func benchmark(_ fixture: Fixture) throws -> (medianNanoseconds: Double, tflops: Double) {
+    func benchmark(
+        _ fixture: Fixture
+    ) throws -> (gpuMedianNanoseconds: Double, wallMedianNanoseconds: Double, tflops: Double) {
         let prepared = try PreparedDispatch(device: device, fixture: fixture)
-        try submit(prepared: prepared, dispatches: 20)
-
-        let dispatchesPerSample = 2_000
-        var samples: [Double] = []
-        for _ in 0..<7 {
-            let start = DispatchTime.now().uptimeNanoseconds
-            try submit(prepared: prepared, dispatches: dispatchesPerSample)
-            let end = DispatchTime.now().uptimeNanoseconds
-            samples.append(Double(end - start) / Double(dispatchesPerSample))
+        let groups = 8_192
+        let outputBytes = groups * elementCount * MemoryLayout<Float>.stride
+        guard let output = device.makeBuffer(
+            length: outputBytes, options: .storageModePrivate)
+        else {
+            throw ProbeFailure.message("failed to allocate parallel timing output")
         }
-        samples.sort()
-        let median = samples[samples.count / 2]
-        let usefulOperations = 2.0 * Double(tileM * tileN * groupK)
-        let tflops = usefulOperations / (median * 1e-9) / 1e12
-        return (median, tflops)
+        func one() throws -> (gpu: Double, wall: Double) {
+            let wallStart = DispatchTime.now().uptimeNanoseconds
+            guard let commandBuffer = queue.makeCommandBuffer(),
+                  let encoder = commandBuffer.makeComputeCommandEncoder()
+            else {
+                throw ProbeFailure.message("failed to create timing command encoder")
+            }
+            encoder.setComputePipelineState(pipeline)
+            for (index, buffer) in prepared.inputs.enumerated() {
+                encoder.setBuffer(buffer, offset: 0, index: index)
+            }
+            encoder.setBuffer(output, offset: 0, index: 4)
+            encoder.dispatchThreadgroups(
+                MTLSize(width: groups, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(
+                    width: pipeline.threadExecutionWidth, height: 1, depth: 1))
+            encoder.endEncoding()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            let wallEnd = DispatchTime.now().uptimeNanoseconds
+            guard commandBuffer.status == .completed else {
+                throw ProbeFailure.message(
+                    "timing command failed: "
+                        + (commandBuffer.error?.localizedDescription ?? "unknown"))
+            }
+            let gpu = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+            guard gpu.isFinite, gpu > 0 else {
+                throw ProbeFailure.message("timing command has no GPU timestamp")
+            }
+            return (gpu * 1e9, Double(wallEnd - wallStart))
+        }
+        for _ in 0..<5 { _ = try one() }
+        var gpuSamples: [Double] = []
+        var wallSamples: [Double] = []
+        for _ in 0..<15 {
+            let sample = try one()
+            gpuSamples.append(sample.gpu)
+            wallSamples.append(sample.wall)
+        }
+        gpuSamples.sort()
+        wallSamples.sort()
+        let gpuMedian = gpuSamples[gpuSamples.count / 2]
+        let wallMedian = wallSamples[wallSamples.count / 2]
+        let usefulOperations =
+            Double(groups) * 2.0 * Double(tileM * tileN * groupK)
+        let tflops = usefulOperations / (gpuMedian * 1e-9) / 1e12
+        return (gpuMedian, wallMedian, tflops)
     }
 }
 
@@ -396,10 +437,19 @@ private func run() throws {
         atol: qmmATolerance
     )
     print(comparisonLine("ADVERSARIAL_INCUMBENT_BF16_OUTPUT", incumbentBF16Comparison))
-    guard incumbentComparison.passed, incumbentBF16Comparison.passed else {
+    let allowNumericalDrift =
+        ProcessInfo.processInfo.environment["E9_ALLOW_NUMERICAL_DRIFT"] == "1"
+    guard (incumbentComparison.passed && incumbentBF16Comparison.passed)
+        || allowNumericalDrift
+    else {
         print("TIMING=skipped reason=adversarial_incumbent_tolerance")
         print("VERDICT=reject reason=per_weight_bf16_rounding_contract")
         exit(2)
+    }
+    if allowNumericalDrift,
+       !incumbentComparison.passed || !incumbentBF16Comparison.passed
+    {
+        print("QUALITY_POLICY=numerical_drift_requires_model_eval")
     }
 
     guard ProcessInfo.processInfo.environment["E9_ALLOW_TIMING"] == "1" else {
@@ -410,10 +460,11 @@ private func run() throws {
     let timing = try runner.benchmark(adversary)
     print(
         "TIMING=run"
-            + " median_ns=\(String(format: "%.1f", timing.medianNanoseconds))"
+            + " gpu_median_ns=\(String(format: "%.1f", timing.gpuMedianNanoseconds))"
+            + " wall_median_ns=\(String(format: "%.1f", timing.wallMedianNanoseconds))"
             + " useful_tflops=\(String(format: "%.4f", timing.tflops))"
     )
-    print("VERDICT=correctness-pass timing=measured_no-serving-claim")
+    print("VERDICT=timing-measured quality-gate-required")
 }
 
 do {

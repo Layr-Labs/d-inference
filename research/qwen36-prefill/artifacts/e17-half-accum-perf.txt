@@ -1,0 +1,29 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-24 01:20:40.695.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-24 01:20:40.696.
+Test Suite 'QwenExpertTilePerfTests' started at 2026-08-24 01:20:40.696.
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' started.
+[qwen-expert-tile-perf] route=tile aot=true nax=false
+[qwen-expert-tile-perf] gate_up_fused T512: median 2.2530 ms p10 2.1647 p90 2.3169 (~134 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_split T512: median 1.2756 ms p10 1.2407 p90 1.3500 (~118 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T512: median 1.3213 ms p10 1.2382 p90 1.3516 (~114 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T1024: median 3.4378 ms p10 3.2892 p90 3.5153 (~88 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T1024: median 1.8867 ms p10 1.8274 p90 1.9735 (~80 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T2048: median 6.2926 ms p10 6.2105 p90 6.5252 (~48 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T2048: median 3.4379 ms p10 3.3295 p90 3.5240 (~44 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T4096: median 12.2987 ms p10 12.2110 p90 12.3828 (~25 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T4096: median 6.3703 ms p10 6.2818 p90 6.6310 (~24 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] gate_up_fused T8192: median 24.4006 ms p10 24.3497 p90 24.4248 (~12 GB/s wt) hits=25 fallbacks=0 n=25
+[qwen-expert-tile-perf] down T8192: median 12.3940 ms p10 12.3134 p90 12.4511 (~12 GB/s wt) hits=25 fallbacks=0 n=25
+Test Case '-[MLXTests.QwenExpertTilePerfTests testQwenRoutedPrefillUnitTimings]' passed (3.471 seconds).
+Test Suite 'QwenExpertTilePerfTests' passed at 2026-08-24 01:20:44.167.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.471 (3.471) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-24 01:20:44.167.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.471 (3.471) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 01:20:44.167.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.471 (3.472) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

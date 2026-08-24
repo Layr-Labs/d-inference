@@ -9,9 +9,10 @@ short experiments, git as memory, ratchet only upwards.
 
 - `research/qwen36-prefill/GOAL.md` — the objective. Always re-read.
 - The model snapshot on the Mac. Do not silently swap weights.
-- Numerical contract: greedy temp=0 text prefill must match the current
-  Darkbloom path within documented tolerances (bitwise where we already
-  require bitwise; tolerance-based only for GDN scan-class changes).
+- Weight contract: model weight bytes and hashes are immutable.
+- Numerical policy is mutable after the 2026-08-24 owner override.
+  Checksum differences must be reported and quality-evaluated; they are
+  not, by themselves, a reason to stop an otherwise promising path.
 - `prepare`-equivalent: the baseline harness
   `darkbloom benchmark --scheduler-prefill` and
   `darkbloom benchmark --arrival-invariance`.
@@ -36,8 +37,9 @@ paths. One conceptual change per experiment.
 6. Run the fixed harness on the M3 Max, High Power, AC, quiet machine.
    Record power posture. Budget wall-clock so runs stay comparable
    (prefer 3-iter medians at 2,048 and 8,192; B=1/2/4).
-7. If crash / OOM / `fatalError` / numeric mismatch: log, revert, stop
-   that line. Write a note. Do not "fix forward" in the same iteration.
+7. If crash / OOM / `fatalError`: log, revert, stop that line. If outputs
+   differ, record the delta and run the preregistered quality gate; keep or
+   reject on quality, not checksum identity alone.
 8. Append one row to `results.tsv`. Update `JOURNAL.md`.
 9. If the primary metric improved **and** reviewer gates pass: keep.
    Else `git reset` the experiment commit. The tree only moves up.
@@ -76,7 +78,7 @@ aggregate. Prefer Pareto improvements.
 The reviewer rejects a keep if any of:
 
 - No before/after on the Mac
-- Numeric contract broken
+- Weight bytes changed, numerical change hidden, or quality gate failed
 - Only a microbenchmark, no full-model CBv2 number
 - Cannot be expressed as a Darkbloom-integrable PR (hidden env-only
   hack that serving can never turn on, coordinator-invisible

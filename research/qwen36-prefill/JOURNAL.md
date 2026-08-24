@@ -387,3 +387,23 @@ Stop the enumerated matrix and do not integrate serving. This is a bounded
 measured maximum, not an M3 hardware theorem; unenumerated schedules, counter
 saturation, and the independent structure/routing closure remain outside this
 experiment. See `notes/046`.
+
+## 2026-08-24T08:19Z — owner resets numerical constraint
+
+The owner explicitly rejected terminating at the incumbent numerical
+contract. Model weight bytes are the only immutable object. Execution
+precision, routing, layer/token policy, and cache/state algorithms may
+change if quality and safety pass.
+
+The objective remains 2.5×. Work now proceeds backwards from the actual
+prefill product: 10-layer KV, 30-layer GDN terminal state/tails, frontier
+logits. See `GOAL.md`, `program.md`, and `notes/055`.
+
+## 2026-08-24T08:25Z — reopened precision paths still dead
+
+- half accumulator: flat/slower at every serving cell;
+- native uint4 affine factoring: 2.5878 TFLOPS;
+- relaxed MPP: identical to strict (13.72 static, 3.35 dynamic).
+
+Numerical freedom does not create hardware throughput in these M3
+fallbacks. Move to work deletion/state construction. See `notes/056`.

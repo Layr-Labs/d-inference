@@ -31,13 +31,16 @@ wins; log every miss; never rerun a dead experiment without a new reason.
    - B=4 aggregate prefill tok/s (equal-length concurrent prefills)
    - the **aggregate continuous-batching** number serving cares about:
      total prompt tokens finished / wall-clock makespan of the burst
-4. **Correctness is non-negotiable.** Same numerical contract as current
-   Darkbloom: greedy / temp=0 logits, attention, KV writes, MoE routing
-   (top-8 of 256), GDN state, chat template, tool/multimodal fences.
-   A faster wrong kernel is a failed experiment.
+4. **Model weights are immutable.** Their bytes and hashes cannot change.
+   Execution precision, association, kernels, routing policy, cache/state
+   representation, scheduling, and inference algorithms are mutable.
+   Exact incumbent token checksums are diagnostic, not an automatic veto:
+   non-identical candidates must pass the fixed quality/eval corpus,
+   accounting, memory, cancellation, and uptime gates before they can ship.
 5. **Darkbloom-integrable.** Protocol-symmetric if the wire changes.
    No coordinator-invisible semantic drift. No `fatalError` Metal path.
-   No silent quality regression. Tests that fail without the change.
+   No silent quality regression: every intentional numerical/model-policy
+   change is named, measured, and quality-gated. Tests that fail without the change.
    Reviewer can say "this can merge."
 
 ## Machine, model, control plane
@@ -56,6 +59,23 @@ wins; log every miss; never rerun a dead experiment without a new reason.
 | Control plane | This repo (`d-inference`) on branch `cursor/qwen36-prefill-2p5x-74d1` |
 
 Do not write SSH passwords, tokens, or wallet keys into this tree.
+
+## 2026-08-24 objective reset
+
+The owner explicitly rejected treating the incumbent numerical execution
+contract as a physical boundary:
+
+- **only model weight bytes are fixed;**
+- do not stop at a same-arithmetic roof;
+- lower/mixed precision, changed association, alternate routing, exact or
+  approximate kernels, cache/state compression, and speculative algorithms
+  are valid experiments;
+- candidates that change outputs must earn acceptance through measured
+  quality, not be rejected solely for checksum inequality;
+- continue until the 2.5× end-to-end objective is reached.
+
+Safety remains non-negotiable: no crashes, memory corruption, silent
+failures, accounting drift, or unreported quality changes.
 
 ## Architecture facts (do not rediscover)
 

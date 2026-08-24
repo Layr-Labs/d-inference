@@ -12,6 +12,10 @@ constant constexpr int perfK = 16;
 constant constexpr int perfHalfK = 8;
 constant constexpr int perfRepeats = 128;
 
+#ifndef MPP_RELAXED_PRECISION
+#define MPP_RELAXED_PRECISION false
+#endif
+
 using PerfAExtents = metal::extents<int, perfK, perfM>;
 using PerfBExtents = metal::extents<int, perfN, perfK>;
 using PerfCExtents = metal::extents<int, perfN, perfM>;
@@ -58,7 +62,7 @@ kernel void perf_mpp_static_k16(
       perfK,
       false,
       false,
-      false,
+      MPP_RELAXED_PRECISION,
       matmul2d_descriptor::mode::multiply_accumulate);
   matmul2d<descriptor, metal::execution_simdgroup> operation;
 
@@ -99,7 +103,7 @@ kernel void perf_mpp_dynamic_k8(
       static_cast<int>(metal::dynamic_extent),
       false,
       false,
-      false,
+      MPP_RELAXED_PRECISION,
       matmul2d_descriptor::mode::multiply_accumulate);
   matmul2d<descriptor, metal::execution_simdgroup> operation;
 

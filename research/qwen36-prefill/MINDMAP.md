@@ -165,5 +165,11 @@ and pass 807.4m bit-identical output checks; the bounded maximum is only
 this remains a bounded measurement rather than a hardware theorem; counter
 saturation and independent structure/routing closure are still pending.
 
+Owner override (`notes/055`): only model weight bytes are immutable.
+Checksum identity is no longer an automatic veto; quality decides.
+E17–E19 timed half accumulation, native uint4 factoring, and relaxed MPP,
+but all were flat/slower (`notes/056`). New active branches are work
+deletion and direct cache/state construction.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

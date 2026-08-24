@@ -1,8 +1,8 @@
 # 070 — independent first-principles validity audit
 
-Date: 2026-08-24  
-Reviewer: second independent review  
-Verdict: **FAIL for merge/ship; PASS for the narrowly scoped performance claim**
+- Date: 2026-08-24
+- Reviewer: second independent review
+- Verdict: **FAIL for merge/ship; PASS for the narrowly scoped performance claim**
 
 ## Claim judgment
 
@@ -41,12 +41,17 @@ The broader claim that the full 2.5× objective is complete is not valid yet.
 | First/full token parity | FAIL for decision grade | First-token parity is 100%; partial/B4 two-token sequences match. Identical B2 reports `fullTokenEqualityRate = 0`, and all decision artifacts use only `decodeTokens = 2`, not the documented 64. |
 | Three-run medians | PASS | `iterations = 3`; archived summary medians reproduce the tabulated values. |
 | Model/corpus identity | PASS | Reports contain a full model artifact SHA-256 and corpus SHA-256, with pre/post filesystem fingerprint checks. |
-| Code/run provenance | FAIL | No root/submodule commit or patch hashes, no OS/Swift/power fields, and archived reports say `makeServingBuild` while the checked-in v1 schema requires `makeProductionBuild`. |
+| Code/run provenance | FAIL | No root/submodule commit or patch hashes, no OS/Swift/power fields, and archived reports use a different factory identity from the checked-in v1 schema. |
 | RAM/LRU/pinning | PASS for boundedness | Exact `nbytes` accounting, pre-insert eviction, hard ceiling, deterministic LRU, request-correlated pins, and cancellation release are implemented and tested. |
-| Production budget equivalence | FAIL | Benchmark cache budget is 19,477,509,628 B and post-donor residency is 4,829,189,120 B; production defaults to a 1 GiB ceiling, which cannot retain the measured 32-boundary set. |
+| Deployment budget equivalence | FAIL | Benchmark cache budget is 19,477,509,628 B and post-donor residency is 4,829,189,120 B; deployment defaults to a 1 GiB ceiling, which cannot retain the measured 32-boundary set. |
 | Replayable handoff | PARTIAL | The three nested patches replay from `ab73a827...` to tree `b002398c...`; the gitlink still points at the unpatched base, so a normal recursive clone is not buildable without manual patching. |
-| Production integration | PARTIAL | A default-off exact-cache slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, and daemon knobs now exist. The nested tree is unpublished and the production-budget profile is unmeasured. |
-| Tests/build | FAIL as a complete gate | Archived exact cache/engine, provider report/usage, full provider suite, and release build pass. The archived prompt-fork selection aborts on a missing `metallib`; the new production slot wiring has not been run on a Swift-capable host. |
+| Deployment integration | PARTIAL | A default-off exact-cache slot policy, verified identities, unified-memory carve, re-slicing, status, telemetry, and daemon knobs now exist. The nested tree is unpublished and the deployment-budget profile is unmeasured. |
+| Tests/build | FAIL as a complete gate | Archived exact cache/engine, provider report/usage, full provider suite, and release build pass. The archived prompt-fork selection aborts on a missing `metallib`; the new deployment slot wiring has not been run on a Swift-capable host. |
+
+Current-schema validation makes the drift concrete: the partial-prefix report
+fails only the factory-identity constraint. The earlier exact-hit and live-fork
+reports each also omit `cacheBlockTokens` and use the retired
+`exact-full-prompt` match-policy value, producing four validation errors each.
 
 ## State and ownership review
 

@@ -755,7 +755,7 @@ public actor StandaloneServer {
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
-                    ?? Gemma4ProviderMTPAssistantLoader(),
+                    ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 logInfo: { standaloneLogger.info("\($0)") },
                 logWarning: { standaloneLogger.warning("\($0)") })

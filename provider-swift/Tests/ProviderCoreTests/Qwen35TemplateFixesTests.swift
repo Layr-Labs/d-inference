@@ -55,7 +55,11 @@ struct Qwen35TemplateFixesTests {
         #expect(Qwen35TemplateFix.applies(
             to: .init(modelId: nil, modelType: "qwen3_5_moe")))
         #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: nil, modelType: "qwen3_5")))
+        #expect(Qwen35TemplateFix.applies(
             to: .init(modelId: "mlx-community/Qwen3.6-35B", modelType: nil)))
+        #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: "mlx-community/Qwen3.8-27B-4bit", modelType: nil)))
         #expect(!Qwen35TemplateFix.applies(
             to: .init(modelId: "qwen3-8b", modelType: "qwen3")))
         #expect(!Qwen35TemplateFix.applies(

@@ -283,7 +283,7 @@ extension ProviderLoop {
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
-                    ?? Gemma4ProviderMTPAssistantLoader(),
+                    ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })

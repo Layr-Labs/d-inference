@@ -297,7 +297,7 @@ extension EngineV2Factory {
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma.cbv2LayerKinds)
         case let gptoss as GPTOSSModel:
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gptoss.cbv2LayerKinds)
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             guard qwen.cbv2Capabilities.supportsPrefixReuse else { return 0 }
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: qwen.cbv2LayerKinds)
         case let qwen as MLXVLM.Qwen3VL:
@@ -319,7 +319,7 @@ extension EngineV2Factory {
             return gemma.cbv2LayerKinds
         case let gptoss as GPTOSSModel:
             return gptoss.cbv2LayerKinds
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             return qwen.cbv2LayerKinds
         case let qwen as MLXVLM.Qwen3VL:
             return qwen.cbv2LayerKinds
@@ -659,7 +659,7 @@ extension EngineV2Factory {
             layerKinds = gptoss.cbv2LayerKinds
             modelCapabilities = .attentionOnly
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             layerKinds = qwen.cbv2LayerKinds
             modelCapabilities = qwen.cbv2Capabilities
             newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }

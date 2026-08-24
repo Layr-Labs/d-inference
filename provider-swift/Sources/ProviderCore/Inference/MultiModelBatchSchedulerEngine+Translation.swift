@@ -12,11 +12,30 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
+/// Template-only controls recovered from the sealed OpenAI body. The
+/// upstream request type does not model these top-level fields, but Qwen3.8's
+/// published template consumes all three.
+public struct ChatTemplateControls: Sendable, Equatable {
+    public let reasoningEffort: String?
+    public let enableThinking: Bool?
+    public let preserveThinking: Bool?
+
+    public init(
+        reasoningEffort: String? = nil,
+        enableThinking: Bool? = nil,
+        preserveThinking: Bool? = nil
+    ) {
+        self.reasoningEffort = reasoningEffort
+        self.enableThinking = enableThinking
+        self.preserveThinking = preserveThinking
+    }
+}
+
 extension MultiModelBatchSchedulerEngine {
 
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?,
+        controls: ChatTemplateControls,
         modelType: String? = nil,
         hasMedia: Bool = false
     ) -> [String: any Sendable]? {
@@ -25,12 +44,12 @@ extension MultiModelBatchSchedulerEngine {
             modelId: request.model,
             modelType: modelType)
         if let effectiveEffort = GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(
-            reasoningEffort,
+            controls.reasoningEffort,
             context: fixContext)
         {
             context["reasoning_effort"] = effectiveEffort
         }
-        if let reasoningEnabled = request.reasoning?.enabled {
+        if let reasoningEnabled = controls.enableThinking ?? request.reasoning?.enabled {
             context["enable_thinking"] = reasoningEnabled
         } else if hasMedia {
             // Qwen 3.5/3.6 templates default thinking ON when this key is
@@ -40,7 +59,34 @@ extension MultiModelBatchSchedulerEngine {
             // `reasoning.enabled`.
             context["enable_thinking"] = false
         }
+        if let preserveThinking = controls.preserveThinking {
+            context["preserve_thinking"] = preserveThinking
+        }
         return context.isEmpty ? nil : context
+    }
+
+    static func templateAdditionalContext(
+        for request: OpenAIChatCompletionRequest,
+        reasoningEffort: String?,
+        modelType: String? = nil,
+        hasMedia: Bool = false
+    ) -> [String: any Sendable]? {
+        templateAdditionalContext(
+            for: request,
+            controls: ChatTemplateControls(reasoningEffort: reasoningEffort),
+            modelType: modelType,
+            hasMedia: hasMedia)
+    }
+
+    static func templateAdditionalContext(
+        for request: OpenAIChatCompletionRequest,
+        reasoningEffort: String?
+    ) -> [String: any Sendable]? {
+        templateAdditionalContext(
+            for: request,
+            reasoningEffort: reasoningEffort,
+            modelType: nil,
+            hasMedia: false)
     }
 
     /// Translate an upstream `OpenAIChatCompletionRequest` into the

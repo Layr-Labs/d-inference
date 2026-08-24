@@ -68,14 +68,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let releaseModel: @Sendable (String) async -> Void
     private let defaultMaxTokens: Int
 
-    /// OpenAI `reasoning_effort` for this request (`low`/`medium`/`high`
-    /// for gpt-oss; model-specific otherwise). The prompt pipeline injects
-    /// it into the chat template's render context. GPT-OSS currently maps
-    /// `high` to `medium` before Harmony rendering to keep generation inside
-    /// the upstream request deadline; all other model/value combinations
-    /// pass through unchanged. `nil` leaves the template at its built-in
-    /// default.
-    private let reasoningEffort: String?
+    /// OpenAI `reasoning_effort` and Qwen template controls for this request
+    /// (`low`/`medium`/`high` for gpt-oss; model-specific otherwise).
+    /// GPT-OSS currently maps `high` to `medium` before Harmony rendering to
+    /// keep generation inside the upstream request deadline.
+    /// Controls are injected into the chat template's render context so
+    /// templates that read it (gpt-oss / Harmony) emit the matching
+    /// `Reasoning: <effort>` system directive. `nil` leaves the template
+    /// at its built-in default. We do not validate the value here — the
+    /// allowed set is model-specific and lives in each model's Jinja
+    /// template, so passing through is the format-agnostic choice.
+    private let templateControls: ChatTemplateControls
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -120,6 +123,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -133,7 +137,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = reserveModel
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = reasoningEffort
+        self.templateControls = templateControls
+            ?? ChatTemplateControls(reasoningEffort: reasoningEffort)
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -173,7 +178,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = { _ in }
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = nil
+        self.templateControls = ChatTemplateControls()
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -374,7 +379,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 do {
                     try checkFirstContentDeadline()
                     let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, reasoningEffort)
+                        container, visionRequest, templateControls)
                     // MLX vision evaluation mutates container/Metal state and is
                     // not safely cancellable. Reject immediately after it returns.
                     try checkFirstContentDeadline()
@@ -548,7 +553,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                templateControls: templateControls)
             try checkFirstContentDeadline()
         } catch {
             emitToolConstraintTelemetry(

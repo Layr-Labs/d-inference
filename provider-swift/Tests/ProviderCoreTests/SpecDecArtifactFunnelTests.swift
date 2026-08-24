@@ -133,6 +133,15 @@ private func makeInlineQwenArtifact(includeMTP: Bool = true) throws -> URL {
     return root
 }
 
+private func makeDenseQwenTargetWithoutInlineMTP() throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-dense-qwen-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(#"{"model_type":"qwen3_5","text_config":{"model_type":"qwen3_5_text"}}"#.utf8)
+        .write(to: root.appendingPathComponent("config.json"))
+    return root
+}
+
 /// HF-cache-style copy of an inline Qwen artifact: the snapshot directory
 /// holds only RELATIVE symlinks into a sibling `blobs/` directory — the
 /// layout `hf download` materializes and the layout production checkpoints
@@ -245,6 +254,32 @@ struct SpecDecArtifactFunnelTests {
         #expect(prepared.artifact == nil)
         #expect(prepared.status.reason == .inlineArtifactInvalid)
         #expect(await catalog.calls == 0)
+    }
+
+    @Test("dense Qwen target without inline MTP falls through to catalog metadata")
+    func qwenStandaloneAssistantUsesCatalogPath() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let catalog = FunnelCatalog(funnelModel(id: "qwen/qwen3.8-27b"))
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: "qwen/qwen3.8-27b",
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                allowDownload: true,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .metadataMissing)
+        // The catalog refresh is deliberately deadline-bounded and may lose
+        // its race under concurrent test load. The stable contract is that a
+        // dense checkpoint without inline tensors reaches metadata handling
+        // rather than being rejected as an invalid inline artifact.
+        #expect(prepared.status.reason != .inlineArtifactInvalid)
     }
 
     @Test("HF-cache symlinked snapshot passes inspection and admits inline MTP")

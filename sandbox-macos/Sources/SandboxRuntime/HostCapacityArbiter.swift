@@ -332,17 +332,6 @@ public struct SandboxHostCapacityArbiter: Sendable {
         }
     }
 
-    package func release(scope: SandboxOperationScope) throws {
-        try requireCurrentScope(scope)
-        let operationLock = try store.acquireLeaseOperationLock(
-            sandboxID: scope.sandboxID
-        )
-        defer { withExtendedLifetime(operationLock) {} }
-        try store.update { state in
-            try Self.removeLease(scope: scope, from: &state)
-        }
-    }
-
     package func release(
         scope: SandboxOperationScope,
         holding authorization: SandboxLeaseMutationAuthorization

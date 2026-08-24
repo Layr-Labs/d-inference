@@ -328,12 +328,20 @@ final class HostCapacityArbiterTests: XCTestCase {
             )
         }
         assertCapacityError(.staleFencingToken) {
-            try arbiter.release(scope: unissuedScope)
+            _ = try arbiter.authorizeMutation(
+                scope: unissuedScope,
+                virtualMachineName: first.virtualMachineName,
+                operation: .stop
+            )
         }
         assertCapacityError(.staleFencingToken) {
-            try arbiter.release(scope: first.scope)
+            _ = try arbiter.authorizeMutation(
+                scope: first.scope,
+                virtualMachineName: first.virtualMachineName,
+                operation: .stop
+            )
         }
-        try arbiter.release(scope: renewed.scope)
+        try releaseLease(renewed, using: arbiter)
 
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
         assertCapacityError(.staleSandboxGeneration(
@@ -360,7 +368,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             first.scope.fencingToken,
             "released fencing tokens must never be reused after restart"
         )
-        try reopened.release(scope: second.scope)
+        try releaseLease(second, using: reopened)
         let reopenedAgain = try makeArbiter(stateDirectory: stateDirectory)
         assertCapacityError(.staleSandboxGeneration(
             highest: secondGeneration,
@@ -609,7 +617,11 @@ final class HostCapacityArbiterTests: XCTestCase {
             lease.scope.fencingToken
         )
         assertCapacityError(.staleFencingToken) {
-            try arbiter.release(scope: lease.scope)
+            _ = try arbiter.authorizeMutation(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .stop
+            )
         }
         XCTAssertEqual(
             try arbiter.authorize(
@@ -1173,6 +1185,21 @@ final class HostCapacityArbiterTests: XCTestCase {
     ) throws {
         _ = try arbiter.initialize()
         _ = try arbiter.setMode(.sandboxDedicated)
+    }
+
+    private func releaseLease(
+        _ lease: SandboxCapacityLease,
+        using arbiter: SandboxHostCapacityArbiter
+    ) throws {
+        let authorization = try arbiter.authorizeMutation(
+            scope: lease.scope,
+            virtualMachineName: lease.virtualMachineName,
+            operation: .stop
+        )
+        try arbiter.release(
+            scope: lease.scope,
+            holding: authorization
+        )
     }
 
     private func generation(_ value: UInt64) throws -> SandboxGeneration {

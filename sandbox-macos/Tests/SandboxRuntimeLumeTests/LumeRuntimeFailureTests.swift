@@ -344,7 +344,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         }
     }
 
-    func testLeaseFencedInspectRejectsReleaseDuringObservation()
+    func testLeaseFencedInspectBlocksConcurrentRelease()
         async throws
     {
         let fixture = try FakeLumeFixture(behavior: "block-first-list")
@@ -372,15 +372,28 @@ final class LumeRuntimeFailureTests: XCTestCase {
         }
         try await fixture.waitForListToStart()
 
-        try arbiter.release(scope: lease.scope)
+        do {
+            try await runtime.release(
+                scope: lease.scope,
+                name: lease.virtualMachineName
+            )
+            XCTFail("release must not pass an active inspection")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .operationInProgress(
+                    name: fixture.virtualMachineName,
+                    operation: "inspect"
+                )
+            )
+        }
         try fixture.allowListToContinue()
 
-        do {
-            _ = try await inspection.value
-            XCTFail("inspection must discard a released lease observation")
-        } catch let error as SandboxCapacityError {
-            XCTAssertEqual(error, .leaseNotFound)
-        }
+        XCTAssertNotNil(try await inspection.value)
+        try await runtime.release(
+            scope: lease.scope,
+            name: lease.virtualMachineName
+        )
     }
 
     func testLeaseFencedInspectRejectsListedVMWithoutOwnership() async throws {

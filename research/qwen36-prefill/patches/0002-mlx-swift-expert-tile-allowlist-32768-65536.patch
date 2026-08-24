@@ -1,0 +1,209 @@
+From 7ccaf47b27a498344247ab952410bbfbfee69b47 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 05:35:29 +0000
+Subject: [PATCH] Extend expert-tile allowlist and benches to M=32768/65536.
+
+Mirror the MLX classifier closed-set change and add correctness plus
+perf cases for 4096- and 8192-token Qwen top-8 prefills. Scheduler
+budgets stay unchanged until the Mac A/B keeps.
+---
+ .../mlx-backend-common-gemma4_expert_qmm.h    | 22 +++++++++++++++--
+ Source/Cmlx/mlx-generated/metal/quantized.h   |  6 +++--
+ Source/Cmlx/mlx-generated/quantized.cpp       |  6 +++--
+ Tests/MLXTests/QwenExpertTilePerfTests.swift  | 13 +++++++---
+ .../SortedGatherQuantizedMMTests.swift        | 24 +++++++++++++++----
+ 5 files changed, 57 insertions(+), 14 deletions(-)
+
+diff --git a/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h b/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
+index e190504..c78957c 100644
+--- a/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
++++ b/Source/Cmlx/include-framework/mlx-backend-common-gemma4_expert_qmm.h
+@@ -112,6 +112,25 @@ struct Gemma4ExpertQMMRouteInput {
+   int biases_dim2{0};
+ };
+ 
++// Closed set of assignment counts the sorted expert-tile route is qualified
++// for. Each value is tokens × top-k for the serving MoE geometries:
++// 4096/8192/16384 = 512/1024/2048 tokens at top-8, and 32768/65536 =
++// 4096/8192 tokens. The Metal builder takes M as a runtime buffer; this
++// gate is the CPU-side allowlist that keeps descriptor occupancy and the
++// adjacent-pair sortedness scan on measured shapes.
++inline bool gemma4_expert_qmm_assignment_count_ok(int assignments) {
++  switch (assignments) {
++    case 4096:
++    case 8192:
++    case 16384:
++    case 32768:
++    case 65536:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
+     const Gemma4ExpertQMMRouteInput& input) {
+   if (!input.requested) {
+@@ -144,8 +163,7 @@ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
+       input.index_count != input.assignments) {
+     return Gemma4ExpertQMMRoute::fallback_topology;
+   }
+-  if (input.assignments != 4096 && input.assignments != 8192 &&
+-      input.assignments != 16384) {
++  if (!gemma4_expert_qmm_assignment_count_ok(input.assignments)) {
+     return Gemma4ExpertQMMRoute::fallback_assignment_count;
+   }
+ 
+diff --git a/Source/Cmlx/mlx-generated/metal/quantized.h b/Source/Cmlx/mlx-generated/metal/quantized.h
+index 7720c47..04e5b13 100644
+--- a/Source/Cmlx/mlx-generated/metal/quantized.h
++++ b/Source/Cmlx/mlx-generated/metal/quantized.h
+@@ -2569,7 +2569,8 @@ template <int NE>
+   // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
+   // thread `lid` covers i = lid + 1, lid + NE + 1, ..., so the NE threads
+   // between them inspect every adjacent pair exactly once (for the reachable
+-  // M in {4096, 8192, 16384} that is a bounded number of iterations each).
++  // M in {4096, 8192, 16384, 32768, 65536} that is a bounded number of
++  // iterations each).
+   // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
+   // complete proof that the array is globally non-decreasing; no
+   // intra-segment inversion can escape it. The simdgroups vote with simd_or
+@@ -2629,7 +2630,8 @@ template <int NE>
+   if (lid == expert_count - 1) {
+     // A retracted count keeps the tile kernel's capacity check memory-safe
+     // (every threadgroup early-returns) and unambiguously signals the host:
+-    // the assignment-count route gate guarantees M is 4096/8192/16384, so a
++    // the assignment-count route gate guarantees M is
++    // 4096/8192/16384/32768/65536, so a
+     // valid build always emits at least one tile.
+     count[0] = sorted_violation ? 0u : descriptor_count;
+   }
+diff --git a/Source/Cmlx/mlx-generated/quantized.cpp b/Source/Cmlx/mlx-generated/quantized.cpp
+index 32b9f0a..78446b7 100644
+--- a/Source/Cmlx/mlx-generated/quantized.cpp
++++ b/Source/Cmlx/mlx-generated/quantized.cpp
+@@ -2582,7 +2582,8 @@ template <int NE>
+   // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
+   // thread `lid` covers i = lid + 1, lid + NE + 1, ..., so the NE threads
+   // between them inspect every adjacent pair exactly once (for the reachable
+-  // M in {4096, 8192, 16384} that is a bounded number of iterations each).
++  // M in {4096, 8192, 16384, 32768, 65536} that is a bounded number of
++  // iterations each).
+   // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
+   // complete proof that the array is globally non-decreasing; no
+   // intra-segment inversion can escape it. The simdgroups vote with simd_or
+@@ -2642,7 +2643,8 @@ template <int NE>
+   if (lid == expert_count - 1) {
+     // A retracted count keeps the tile kernel's capacity check memory-safe
+     // (every threadgroup early-returns) and unambiguously signals the host:
+-    // the assignment-count route gate guarantees M is 4096/8192/16384, so a
++    // the assignment-count route gate guarantees M is
++    // 4096/8192/16384/32768/65536, so a
+     // valid build always emits at least one tile.
+     count[0] = sorted_violation ? 0u : descriptor_count;
+   }
+diff --git a/Tests/MLXTests/QwenExpertTilePerfTests.swift b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+index 290d796..7224c81 100644
+--- a/Tests/MLXTests/QwenExpertTilePerfTests.swift
++++ b/Tests/MLXTests/QwenExpertTilePerfTests.swift
+@@ -38,15 +38,22 @@ final class QwenExpertTilePerfTests: XCTestCase {
+         let iterations = 25
+         let warmup = 5
+ 
+-        // (name, K, N, assignments): fused gate_up and down at T=512 and
+-        // T=1024 chunked prefill; split gate/up at T=512 for the unfused
+-        // comparison point.
++        // (name, K, N, assignments): fused gate_up and down at the
++        // allowlisted assignment counts. T=512/1024 are the historical
++        // control cells. T=2048 is today's serving roof (solo stripe and
++        // packed [4,512]). T=4096/8192 are the E1 candidates (M=32768/65536).
+         let cases: [(name: String, k: Int, n: Int, m: Int)] = [
+             ("gate_up_fused T512", 2048, 1024, 4096),
+             ("gate_split T512", 2048, 512, 4096),
+             ("down T512", 512, 2048, 4096),
+             ("gate_up_fused T1024", 2048, 1024, 8192),
+             ("down T1024", 512, 2048, 8192),
++            ("gate_up_fused T2048", 2048, 1024, 16384),
++            ("down T2048", 512, 2048, 16384),
++            ("gate_up_fused T4096", 2048, 1024, 32768),
++            ("down T4096", 512, 2048, 32768),
++            ("gate_up_fused T8192", 2048, 1024, 65536),
++            ("down T8192", 512, 2048, 65536),
+         ]
+ 
+         // The device owns the route decision (0/1/trust all parse there), so
+diff --git a/Tests/MLXTests/SortedGatherQuantizedMMTests.swift b/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
+index 064ac0e..f412793 100644
+--- a/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
++++ b/Tests/MLXTests/SortedGatherQuantizedMMTests.swift
+@@ -78,18 +78,25 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+ 
+         let maximallyFragmented16384 =
+             Array(repeating: 1, count: gemmaExpertCount - 1) + [16257]
++        let maximallyFragmented32768 =
++            Array(repeating: 1, count: gemmaExpertCount - 1) + [32641]
++        let maximallyFragmented65536 =
++            Array(repeating: 1, count: gemmaExpertCount - 1) + [65409]
+         let cases: [(name: String, expertCounts: [Int])] = [
+             ("M4096, BM32-aligned boundaries", Array(repeating: 32, count: gemmaExpertCount)),
+             ("M4096, BM32-unaligned multi-boundary tiles", unaligned4096),
+             ("M4096, explicit 1-row and BM16/BM32 tail boundary", explicitTails4096),
+             ("M8192, empty experts and heavy skew", emptyExperts8192),
+             ("M16384, maximally fragmented expert boundaries", maximallyFragmented16384),
++            ("M32768, BM32-aligned boundaries", Array(repeating: 256, count: gemmaExpertCount)),
++            ("M32768, maximally fragmented expert boundaries", maximallyFragmented32768),
++            ("M65536, maximally fragmented expert boundaries", maximallyFragmented65536),
+         ]
+ 
+         for testCase in cases {
+             let expertIndices = sortedExpertIndices(testCase.expertCounts)
+             let rowCount = expertIndices.count
+-            XCTAssertTrue([4096, 8192, 16384].contains(rowCount))
++            XCTAssertTrue([4096, 8192, 16384, 32768, 65536].contains(rowCount))
+             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+             let x = ones([rowCount, 1, gemmaInputDimensions], dtype: .bfloat16)
+ 
+@@ -232,9 +239,9 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+     /// gate_up [256,1024,2048], split gate/up [256,512,2048], and down
+     /// [256,2048,512] at affine 4-bit/group-64 bfloat16 across the
+     /// allowlisted prefill assignment counts (T x top-8, T in {512, 1024,
+-    /// 2048}). Patterns cover aligned tiles, multi-boundary unaligned tiles,
+-    /// empty experts with heavy skew, and maximal fragmentation (255 one-row
+-    /// experts).
++    /// 2048, 4096, 8192}). Patterns cover aligned tiles, multi-boundary
++    /// unaligned tiles, empty experts with heavy skew, and maximal
++    /// fragmentation (255 one-row experts).
+     func testQwenSortedAffineGatherQuantizedMMExpertSlices() throws {
+         try requireExpertSlicesEnabled()
+         let qwenExpertCount = 256
+@@ -256,11 +263,18 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+ 
+         let maximallyFragmented16384 =
+             Array(repeating: 1, count: qwenExpertCount - 1) + [16129]
++        let maximallyFragmented32768 =
++            Array(repeating: 1, count: qwenExpertCount - 1) + [32513]
++        let maximallyFragmented65536 =
++            Array(repeating: 1, count: qwenExpertCount - 1) + [65281]
+         let cases: [(name: String, expertCounts: [Int])] = [
+             ("M4096, BM16 top-8 uniform", Array(repeating: 16, count: qwenExpertCount)),
+             ("M4096, multi-boundary unaligned tiles", unaligned4096),
+             ("M8192, empty experts and heavy skew", emptyExperts8192),
+             ("M16384, maximally fragmented expert boundaries", maximallyFragmented16384),
++            ("M32768, BM32-aligned top-8 uniform", Array(repeating: 128, count: qwenExpertCount)),
++            ("M32768, maximally fragmented expert boundaries", maximallyFragmented32768),
++            ("M65536, maximally fragmented expert boundaries", maximallyFragmented65536),
+         ]
+ 
+         for geometry in geometries {
+@@ -272,7 +286,7 @@ final class SortedGatherQuantizedMMTests: XCTestCase {
+             for testCase in cases {
+                 let expertIndices = sortedExpertIndices(testCase.expertCounts)
+                 let rowCount = expertIndices.count
+-                XCTAssertTrue([4096, 8192, 16384].contains(rowCount))
++                XCTAssertTrue([4096, 8192, 16384, 32768, 65536].contains(rowCount))
+                 let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+                 let x = ones([rowCount, 1, geometry.k], dtype: .bfloat16)
+ 
+-- 
+2.43.0
+

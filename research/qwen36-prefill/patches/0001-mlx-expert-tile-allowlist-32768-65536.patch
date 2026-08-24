@@ -1,0 +1,138 @@
+From e3bdc8038826d55b75e797c7f67a97d2f808af79 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 05:35:25 +0000
+Subject: [PATCH] Qualify expert-tile gather-QMM for 32768 and 65536
+ assignments.
+
+The Metal descriptor builder already takes M as a runtime buffer.
+The CPU closed set was the roof: packed [4,512] and solo stripe 2048
+both sit at 16384 assignments. Opening 32768/65536 unlocks 4096/8192
+tokens per weight stream for Qwen 3.6 E=256 top-8.
+---
+ mlx/backend/common/gemma4_expert_qmm.h | 22 ++++++++++++++++++++--
+ mlx/backend/metal/kernels/quantized.h  |  6 ++++--
+ mlx/backend/metal/quantized.cpp        |  3 ++-
+ tests/gpu_tests.cpp                    |  8 ++++----
+ 4 files changed, 30 insertions(+), 9 deletions(-)
+
+diff --git a/mlx/backend/common/gemma4_expert_qmm.h b/mlx/backend/common/gemma4_expert_qmm.h
+index 155260a..23b1a21 100644
+--- a/mlx/backend/common/gemma4_expert_qmm.h
++++ b/mlx/backend/common/gemma4_expert_qmm.h
+@@ -105,6 +105,25 @@ struct Gemma4ExpertQMMRouteInput {
+   int biases_dim2{0};
+ };
+ 
++// Closed set of assignment counts the sorted expert-tile route is qualified
++// for. Each value is tokens × top-k for the serving MoE geometries:
++// 4096/8192/16384 = 512/1024/2048 tokens at top-8, and 32768/65536 =
++// 4096/8192 tokens. The Metal builder takes M as a runtime buffer; this
++// gate is the CPU-side allowlist that keeps descriptor occupancy and the
++// adjacent-pair sortedness scan on measured shapes.
++inline bool gemma4_expert_qmm_assignment_count_ok(int assignments) {
++  switch (assignments) {
++    case 4096:
++    case 8192:
++    case 16384:
++    case 32768:
++    case 65536:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
+     const Gemma4ExpertQMMRouteInput& input) {
+   if (!input.requested) {
+@@ -137,8 +156,7 @@ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
+       input.index_count != input.assignments) {
+     return Gemma4ExpertQMMRoute::fallback_topology;
+   }
+-  if (input.assignments != 4096 && input.assignments != 8192 &&
+-      input.assignments != 16384) {
++  if (!gemma4_expert_qmm_assignment_count_ok(input.assignments)) {
+     return Gemma4ExpertQMMRoute::fallback_assignment_count;
+   }
+ 
+diff --git a/mlx/backend/metal/kernels/quantized.h b/mlx/backend/metal/kernels/quantized.h
+index 7720c47..04e5b13 100644
+--- a/mlx/backend/metal/kernels/quantized.h
++++ b/mlx/backend/metal/kernels/quantized.h
+@@ -2569,7 +2569,8 @@ template <int NE>
+   // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
+   // thread `lid` covers i = lid + 1, lid + NE + 1, ..., so the NE threads
+   // between them inspect every adjacent pair exactly once (for the reachable
+-  // M in {4096, 8192, 16384} that is a bounded number of iterations each).
++  // M in {4096, 8192, 16384, 32768, 65536} that is a bounded number of
++  // iterations each).
+   // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
+   // complete proof that the array is globally non-decreasing; no
+   // intra-segment inversion can escape it. The simdgroups vote with simd_or
+@@ -2629,7 +2630,8 @@ template <int NE>
+   if (lid == expert_count - 1) {
+     // A retracted count keeps the tile kernel's capacity check memory-safe
+     // (every threadgroup early-returns) and unambiguously signals the host:
+-    // the assignment-count route gate guarantees M is 4096/8192/16384, so a
++    // the assignment-count route gate guarantees M is
++    // 4096/8192/16384/32768/65536, so a
+     // valid build always emits at least one tile.
+     count[0] = sorted_violation ? 0u : descriptor_count;
+   }
+diff --git a/mlx/backend/metal/quantized.cpp b/mlx/backend/metal/quantized.cpp
+index 91aa804..0db1404 100644
+--- a/mlx/backend/metal/quantized.cpp
++++ b/mlx/backend/metal/quantized.cpp
+@@ -1371,7 +1371,8 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
+   // The descriptor builder fail-safes to count[0] == 0 when the purportedly
+   // sorted indices violate the non-decreasing invariant its binary search
+   // relies on. A zero count is unambiguous here: the selector's assignment
+-  // gate guarantees M is one of 4096/8192/16384, so a valid build always
++  // gate guarantees M is one of 4096/8192/16384/32768/65536, so a valid
++  // build always
+   // emits at least one tile. Drain the stream and re-route retracted calls
+   // to the order-agnostic legacy path rather than running the tile kernel.
+   //
+diff --git a/tests/gpu_tests.cpp b/tests/gpu_tests.cpp
+index 3cd4eca..1cbe669 100644
+--- a/tests/gpu_tests.cpp
++++ b/tests/gpu_tests.cpp
+@@ -751,7 +751,7 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
+     return input;
+   };
+ 
+-  for (int assignments : {4096, 8192, 16384}) {
++  for (int assignments : {4096, 8192, 16384, 32768, 65536}) {
+     CHECK(
+         classify_gemma4_expert_qmm(gate_up(assignments)) ==
+         Gemma4ExpertQMMRoute::hit);
+@@ -839,7 +839,7 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
+   check_miss(
+       [](auto& x) { x.index_count -= 1; },
+       Gemma4ExpertQMMRoute::fallback_topology);
+-  for (int assignments : {8, 16, 32, 4095, 4097}) {
++  for (int assignments : {8, 16, 32, 4095, 4097, 32767, 32769, 65537}) {
+     check_miss(
+         [assignments](auto& x) {
+           x.assignments = assignments;
+@@ -928,7 +928,7 @@ TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
+ 
+   // Fused gate_up, split gate/up, and down projections hit at the chunked
+   // prefill assignment counts (T x top-8 for T in {512, 1024, 2048}).
+-  for (int assignments : {4096, 8192, 16384}) {
++  for (int assignments : {4096, 8192, 16384, 32768, 65536}) {
+     CHECK(
+         classify_gemma4_expert_qmm(qwen(assignments, 2048, 1024)) ==
+         Gemma4ExpertQMMRoute::hit);
+@@ -978,7 +978,7 @@ TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
+       [](auto& x) { x.n -= 32; },
+       Gemma4ExpertQMMRoute::fallback_geometry);
+   // T=128 chunks (1024 assignments) intentionally stay on the legacy path.
+-  for (int assignments : {8, 1024, 4095, 4097}) {
++  for (int assignments : {8, 1024, 4095, 4097, 32767, 32769, 65537}) {
+     check_miss(
+         [assignments](auto& x) {
+           x.assignments = assignments;
+-- 
+2.43.0
+

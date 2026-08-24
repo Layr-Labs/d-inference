@@ -81,7 +81,7 @@ hits the tile allowlist max (M=16384). See `notes/009` and `notes/018`.
 
 | Rank | Node | Expected | Risk | Why now |
 |---:|---|---|---|---|
-| 1 | Extend tile allowlist M=32768 / 65536 | Unlocks 2.0× / 4.0× tokens per weight stream | Descriptor alloc, metallib | **The roof.** Do this before any scheduler budget raise. |
+| 1 | Extend tile allowlist M=32768 / 65536 | Unlocks 2.0× / 4.0× tokens per weight stream | Descriptor alloc, metallib | **E1 in flight** (`notes/020`). Classifier smoke PASS. Mac A/B next. |
 | 2 | S3 wide packed cohort `[B,C]` | B2 1.4–2.0×; B4 2.0–3.5× | Decode delay, memory, admission | Spend the new tile shapes on the aggregate target |
 | 3 | A1 query-block width sweep | 0–8% B1; 0–12% B4 | Numerics, score bytes | Retune D=256 for wider cohorts |
 | 4 | B2 final-layer tail narrowing | 2–8% B1/B4 | Frontier logits | Delete discarded final-layer rows |

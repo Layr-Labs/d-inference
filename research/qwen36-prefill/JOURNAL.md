@@ -125,10 +125,28 @@ Arrival harness v1 died on stagger-25ms (10 ms > 5 ms tolerance).
 Burst i=1 is in the log only. Rerunning with
 `DARKBLOOM_ARRIVAL_TOLERANCE_MS=20`.
 
+## 2026-08-24T05:32Z — papers explorer (015)
+
+Orca selective-batching transfers; expert parallelism does not.
+Packed `[B,L]` flattening is a diagnosis first, not a new kernel.
+Confirms E1: more tokens per already-loaded expert tile. Sparse
+attention stays quality-gated. No implementation from this note.
+
 ## 2026-08-24T05:28Z — B=4 2048 official
 
 2 burst iters: TTFT 4827 / 5044 ms, all four rows locked together.
 Median agg prefill **1,661 tok/s = 0.995× B=1**. H0 closed. See
 `notes/019`. Next is E1 tile microbench at M=32768/65536, not a
 scheduler-only change.
+
+## 2026-08-24T05:35Z — E1 allowlist patch (unmeasured)
+
+Opened CPU allowlist to `{4096, 8192, 16384, 32768, 65536}` via
+`gemma4_expert_qmm_assignment_count_ok`. Host classifier smoke PASS
+on the cloud VM. Metal kernel unchanged (M already a runtime buffer).
+No CBv2 budget raise.
+
+Next: compile mlx-swift tests on the M3 Max and A/B tile vs legacy
+at M=16384 (control), 32768, 65536. Keep only if tile ≥1.3× legacy
+and numerics hold. See `notes/020`.
 

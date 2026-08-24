@@ -1,0 +1,944 @@
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+index 30d9be9..0a53542 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift
+@@ -330,7 +330,7 @@ public struct CBv2EngineLoopConfig: Sendable {
+ 
+ // MARK: - In-flight step
+ 
+-/// A materialized exact full-prompt boundary waiting for the step's
++/// A materialized exact prompt-prefix boundary waiting for the step's
+ /// cancellation verdict. It is indexed only after finalization commits the
+ /// donor's recurrent transaction; a discarded/cancelled prompt never enters
+ /// the cache.
+@@ -379,7 +379,7 @@ final class CBv2InFlightStep {
+     /// step commits it; a one-step-late discarded chained decode rolls it
+     /// back before the request state is released.
+     var recurrentEvaluations: [CBv2RequestID: CBv2RecurrentStateEvaluation] = [:]
+-    /// Final-prompt boundaries captured by this step. Their detached roots
++    /// Prompt-prefix boundaries captured by this step. Their detached roots
+     /// ride `evalTargets`; finalize atomically donates only non-discarded rows.
+     var exactPrefixDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
+     /// Non-nil marks this step as an MTP round (verify and/or seed work,
+@@ -422,7 +422,8 @@ struct CBv2PrefixAdoption: @unchecked Sendable {
+     let plan: CBv2PrefixReusePlan
+     let prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?]
+     /// Present only for the stronger recurrent exact-state cache. It carries
+-    /// recurrent conv/SSM state, full-prompt position, and frontier logits.
++    /// recurrent conv/SSM state and the exact prefix position. Frontier logits
++    /// are present only when the match consumes the complete prompt.
+     let exactSnapshot: CBv2ExactPrefixSnapshot?
+     /// Request-scoped salt the lookup used (TB-007); the pin release and any
+     /// fallback paths must carry the SAME salt or the pin leaks.
+@@ -936,6 +937,12 @@ public final class EngineLoopV2: @unchecked Sendable {
+             }
+             do {
+                 try scheduler.enqueue(request)
++                if prefixLookup.outcome == .miss,
++                    let exactCache = prefixCache as? any CBv2ExactStatePrefixCache,
++                    let rec = scheduler.record(for: request.id)
++                {
++                    rec.exactSnapshotBlockSize = exactCache.exactSnapshotBlockSize
++                }
+                 armLease(for: request)
+                 detokenizers[request.id] =
+                     detokenizerFactory.makeDetokenizer(stopStrings: request.stopStrings)
+@@ -1017,12 +1024,15 @@ public final class EngineLoopV2: @unchecked Sendable {
+             adoptedState = state
+ 
+             if let exact = adoption.exactSnapshot {
++                let isFullPrompt = adoption.matched == rec.request.promptTokens.count
+                 guard let modelSpec =
+                     (model as? any CBv2RecurrentSteppableModel)?.recurrentStateSpec,
+                     modelSpec == exact.recurrentState.spec,
+                     exact.tokenCount == adoption.matched,
+                     exact.modelPosition == adoption.matched,
+-                    adoption.matched == rec.request.promptTokens.count,
++                    adoption.matched > 0,
++                    adoption.matched <= rec.request.promptTokens.count,
++                    !isFullPrompt || exact.frontierLogits != nil,
+                     adoption.plan.strategy == .direct,
+                     adoption.plan.replayTokens == 0,
+                     adoption.plan.replayStart == adoption.matched
+@@ -1047,15 +1057,17 @@ public final class EngineLoopV2: @unchecked Sendable {
+                                 - existingRecurrentBytes))
+                 }
+                 recurrentStates[requestID] = recurrent
+-                exactFrontierLogits[requestID] = exact.frontierLogits
++                if isFullPrompt, let frontier = exact.frontierLogits {
++                    exactFrontierLogits[requestID] = frontier
++                }
+             }
+ 
+             kvStates[requestID] = state
+-            // Exact full-prompt state has already consumed the final prompt
+-            // token. Keep the scheduler one logical token behind solely so
+-            // its ordinary assignment admits/samples the cached frontier.
+-            rec.numComputedTokens =
+-                adoption.exactSnapshot == nil
++            // A partial exact hit resumes at M and computes [M, P) normally.
++            // A full-prompt hit already consumed token P-1, so only that form
++            // keeps the scheduler one logical token behind to sample cached
++            // frontier logits without applying the token twice.
++            rec.numComputedTokens = exactFrontierLogits[requestID] == nil
+                 ? adoption.plan.replayStart
+                 : max(0, adoption.plan.replayStart - 1)
+             rec.prefixReusePlan = adoption.plan
+@@ -1757,6 +1769,8 @@ public final class EngineLoopV2: @unchecked Sendable {
+         // O(steps) of unevaluated graph (DAR-325).
+         var cacheInnerState: [MLXArray] = []
+         var recurrentEvaluations: [CBv2RequestID: CBv2RecurrentStateEvaluation] = [:]
++        var evalTargets: [MLXArray] = []
++        var exactDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
+ 
+         // Exact full-prompt hits sample their cached prompt-frontier logits.
+         // Their KV/recurrent state is already at `prompt.count`; no model
+@@ -1782,6 +1796,17 @@ public final class EngineLoopV2: @unchecked Sendable {
+             if let stepLogprobs = sampler.takeStepLogprobs() {
+                 logprobSegments.append(stepLogprobs)
+             }
++            // A one-token final prompt slice shares the rectangular decode
++            // implementation, but it is still the cold prompt frontier and
++            // must publish the full-prompt boundary.
++            for (index, row) in decodeRows.enumerated() {
++                if let donation = makeExactPrefixDonationCandidate(
++                    rec: row.rec, frontierLogits: last[index])
++                {
++                    exactDonations[row.rec.id] = donation
++                    evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
++                }
++            }
+         }
+ 
+         // Rectangular decode batch, in plan order.
+@@ -1817,8 +1842,6 @@ public final class EngineLoopV2: @unchecked Sendable {
+         // whole cohort. Span-bearing rows require the stronger model and
+         // cache capabilities for row-local embeddings and attention masks.
+         var prefillSampled: [CBv2RequestID: MLXArray] = [:]
+-        var evalTargets: [MLXArray] = []
+-        var exactDonations: [CBv2RequestID: CBv2ExactPrefixDonationCandidate] = [:]
+         var packedIDs = Set<CBv2RequestID>()
+ 
+         if packedPrefillSupported,
+@@ -1905,15 +1928,16 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 }
+                 cacheInnerState.append(contentsOf: eagerCacheInnerState(caches))
+ 
+-                if group.samples {
+-                    for (index, row) in group.rows.enumerated() {
+-                        if let donation = makeExactPrefixDonationCandidate(
+-                            rec: row.rec, frontierLogits: output[index])
+-                        {
+-                            exactDonations[row.rec.id] = donation
+-                            evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
+-                        }
++                for (index, row) in group.rows.enumerated() {
++                    if let donation = makeExactPrefixDonationCandidate(
++                        rec: row.rec,
++                        frontierLogits: group.samples ? output[index] : nil)
++                    {
++                        exactDonations[row.rec.id] = donation
++                        evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
+                     }
++                }
++                if group.samples {
+                     // Parity seam: the frontier logits, as this backend
+                     // computed them, BEFORE the sampler touches them.
+                     if let capture = prefillFrontierCapture() {
+@@ -1993,13 +2017,14 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 }
+             }
+             cacheInnerState.append(contentsOf: eagerCacheInnerState(caches))
++            if let donation = makeExactPrefixDonationCandidate(
++                rec: rec,
++                frontierLogits: row.samples ? output[0] : nil)
++            {
++                exactDonations[rec.id] = donation
++                evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
++            }
+             if row.samples {
+-                if let donation = makeExactPrefixDonationCandidate(
+-                    rec: rec, frontierLogits: output[0])
+-                {
+-                    exactDonations[rec.id] = donation
+-                    evalTargets.append(contentsOf: donation.snapshot.evaluationArrays)
+-                }
+                 if let capture = prefillFrontierCapture() {
+                     capture(rec.id, output[0])
+                 }
+@@ -2066,24 +2091,34 @@ public final class EngineLoopV2: @unchecked Sendable {
+         return step
+     }
+ 
+-    /// Capture a detached Qwen-shaped full-prompt boundary while its final
+-    /// prefill generation is still the recurrent state's latest visible
+-    /// generation. Every detached root is added to this step's eval set by
+-    /// the caller; finalization indexes it only after cancellation is known.
++    /// Capture a detached Qwen-shaped exact prefix while this prefill
++    /// generation is still the recurrent state's latest visible generation.
++    /// Intermediate boundaries are whole-block and omit logits; the complete
++    /// prompt additionally owns its frontier. Every detached root is added to
++    /// this step's eval set by the caller, and finalization indexes it only
++    /// after cancellation is known.
+     private func makeExactPrefixDonationCandidate(
+-        rec: CBv2ScheduledRequest, frontierLogits: MLXArray
++        rec: CBv2ScheduledRequest, frontierLogits: MLXArray?
+     ) -> CBv2ExactPrefixDonationCandidate? {
+         guard let cache = prefixCache as? any CBv2ExactStatePrefixCache,
+             rec.request.prefixCacheEnabled,
+             rec.request.multimodal == nil,
+             rec.request.positionState == nil,
+             rec.generatedTokenCount == 0,
+-            rec.numComputedTokens == rec.request.promptTokens.count,
++            prefixUsageByID[rec.id]?.outcome == .miss,
++            rec.numComputedTokens > 0,
++            rec.numComputedTokens <= rec.request.promptTokens.count,
+             let state = kvStates[rec.id],
+             let recurrent = recurrentStates[rec.id]
+         else { return nil }
+ 
+-        let position = rec.request.promptTokens.count
++        let position = rec.numComputedTokens
++        let isFullPrompt = position == rec.request.promptTokens.count
++        let blockSize = cache.exactSnapshotBlockSize
++        guard blockSize > 0,
++            isFullPrompt || position.isMultiple(of: blockSize),
++            isFullPrompt == (frontierLogits != nil)
++        else { return nil }
+         var rawAttention: [(keys: MLXArray, values: MLXArray)] = []
+         rawAttention.reserveCapacity(layerKinds.count)
+         var estimatedBytes = recurrent.byteCount
+@@ -2111,17 +2146,19 @@ public final class EngineLoopV2: @unchecked Sendable {
+                 estimatedBytes = total
+                 rawAttention.append((keys: keys, values: values))
+             }
+-            let frontier: MLXArray
+-            switch frontierLogits.ndim {
+-            case 1:
+-                frontier = frontierLogits
+-            case 2 where frontierLogits.dim(0) == 1:
+-                frontier = frontierLogits[0]
+-            default:
+-                return nil
++            var frontierBytes = 0
++            if let frontierLogits {
++                switch frontierLogits.ndim {
++                case 1:
++                    frontierBytes = frontierLogits.nbytes
++                case 2 where frontierLogits.dim(0) == 1:
++                    frontierBytes = frontierLogits[0].nbytes
++                default:
++                    return nil
++                }
+             }
+             let (total, frontierOverflow) = estimatedBytes.addingReportingOverflow(
+-                frontier.nbytes)
++                frontierBytes)
+             guard !frontierOverflow, cache.acceptsExactDonation(byteCount: total) else {
+                 return nil
+             }
+@@ -2144,7 +2181,7 @@ public final class EngineLoopV2: @unchecked Sendable {
+             guard snapshot.byteCount == total else { return nil }
+             return CBv2ExactPrefixDonationCandidate(
+                 requestID: rec.request.prefixCacheReceiptID ?? rec.id,
+-                tokens: rec.request.promptTokens,
++                tokens: Array(rec.request.promptTokens.prefix(position)),
+                 snapshot: snapshot,
+                 cacheSalt: rec.request.cacheSalt)
+         } catch {
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
+index 602c609..b02583b 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift
+@@ -641,11 +641,12 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+             outcome: .adoptionFailed, matchedTokens: hit.matched)
+     }
+ 
+-    /// Strong recurrent-cache lookup. V1 intentionally admits only an exact
+-    /// text-only FULL prompt: the snapshot owns all full-attention K/V, every
+-    /// recurrent conv/SSM tensor, the scalar model position, and frontier
+-    /// logits. Explicit multiaxis position state remains cold until its
+-    /// identity is folded into the cache key.
++    /// Strong recurrent-cache lookup. The longest exact text-only boundary
++    /// owns all full-attention K/V, every recurrent conv/SSM tensor, and the
++    /// scalar model position. Only a full-prompt match carries/uses frontier
++    /// logits; a partial match resumes by forwarding its distinct suffix.
++    /// Explicit multiaxis position state remains cold until its identity is
++    /// folded into the cache key.
+     private func makeExactPrefixLookup(
+         for request: CBv2Request, cache: any CBv2ExactStatePrefixCache
+     ) -> CBv2PrefixLookup {
+@@ -689,8 +690,11 @@ public final class EngineV2: CBv2Engine, @unchecked Sendable {
+             }
+             exactStagedFullKVBytes = sum
+         }
+-        guard snapshot.tokenCount == request.promptTokens.count,
+-            snapshot.modelPosition == request.promptTokens.count,
++        guard snapshot.tokenCount > 0,
++            snapshot.tokenCount <= request.promptTokens.count,
++            snapshot.modelPosition == snapshot.tokenCount,
++            (snapshot.tokenCount < request.promptTokens.count
++                || snapshot.frontierLogits != nil),
+             let plan = prefixReuseCapability.plan(
+                 matchedBoundary: snapshot.tokenCount,
+                 exactStagedFullKVBytes: exactStagedFullKVBytes,
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
+index 6111802..daf0a14 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/ExactPrefixCacheV2.swift
+@@ -1,9 +1,10 @@
+ // ExactPrefixCacheV2.swift
+ //
+-// Default-off RAM cache for exact full-prompt boundaries of hybrid
++// Default-off RAM cache for exact prompt-prefix boundaries of hybrid
+ // attention + recurrent CBv2 models. Unlike the historical KV-only prefix
+ // cache, an entry is atomic: full-attention K/V, every recurrent layer's
+-// conv/SSM state, the model position, and prompt-frontier logits.
++// conv/SSM state, and the model position. A full-prompt entry additionally
++// owns prompt-frontier logits.
+ 
+ import CryptoKit
+ import Foundation
+@@ -31,22 +32,30 @@ public struct CBv2ExactPrefixCacheConfig: Sendable, Equatable {
+     public var policyIdentity: String
+     /// Default authenticated cache scope. A request `cacheSalt` replaces it.
+     public var scopeID: String
++    /// Cold prefills snapshot each whole-block boundary. Full-prompt
++    /// boundaries are also retained when the prompt is not block-aligned.
++    public var blockSize: Int
+     /// Hard resident-byte ceiling. Entries larger than the ceiling are
+     /// refused; successful donations enforce LRU eviction immediately.
+     public var maxBytes: Int
+ 
+     public init(
+         modelIdentity: String,
+-        policyIdentity: String = "cbv2-exact-full-prompt-v1",
++        policyIdentity: String = "cbv2-exact-prefix-boundary-v2",
+         scopeID: String = "",
++        blockSize: Int = CBv2BlockHasher.defaultBlockSize,
+         maxBytes: Int
+     ) {
+         precondition(!modelIdentity.isEmpty, "exact prefix cache requires model identity")
+         precondition(!policyIdentity.isEmpty, "exact prefix cache requires policy identity")
++        precondition(
++            blockSize > 0 && UInt64(blockSize) <= UInt64(UInt32.max),
++            "exact prefix cache block size must fit UInt32")
+         precondition(maxBytes >= 0, "exact prefix cache budget must be nonnegative")
+         self.modelIdentity = modelIdentity
+         self.policyIdentity = policyIdentity
+         self.scopeID = scopeID
++        self.blockSize = blockSize
+         self.maxBytes = maxBytes
+     }
+ }
+@@ -92,7 +101,7 @@ public struct CBv2ExactAttentionSnapshot: @unchecked Sendable {
+ 
+ }
+ 
+-/// Atomic, immutable full-prompt boundary. `attention` is aligned to the
++/// Atomic, immutable exact prefix boundary. `attention` is aligned to the
+ /// engine's compact CBv2 layer layout; recurrent layers live in
+ /// `recurrentState` under their original model-layer indices.
+ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+@@ -101,7 +110,9 @@ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+     public let attention: [CBv2ExactAttentionSnapshot?]
+     public let recurrentState: CBv2RecurrentStateSnapshot
+     /// Exact logits after the final prompt token, normalized to `[vocab]`.
+-    public let frontierLogits: MLXArray
++    /// Nil for an intermediate block boundary; partial adopters must execute
++    /// their distinct suffix through the model normally.
++    public let frontierLogits: MLXArray?
+     public let byteCount: Int
+ 
+     public init(
+@@ -109,31 +120,36 @@ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+         modelPosition: Int,
+         attention: [CBv2ExactAttentionSnapshot?],
+         recurrentState: CBv2RecurrentStateSnapshot,
+-        frontierLogits: MLXArray,
++        frontierLogits: MLXArray? = nil,
+         detachingFrontier: Bool = false
+     ) throws {
+         guard tokenCount > 0, modelPosition == tokenCount else {
+             throw CBv2RecurrentStateError.lifecycleViolation(
+-                "exact prefix snapshot must be a full-prompt model boundary")
++                "exact prefix snapshot must be a scalar model boundary")
+         }
+-        let frontier: MLXArray
+-        switch frontierLogits.ndim {
+-        case 1:
+-            frontier = frontierLogits
+-        case 2 where frontierLogits.dim(0) == 1:
+-            frontier = frontierLogits[0]
+-        default:
+-            throw CBv2RecurrentStateError.lifecycleViolation(
+-                "exact prefix frontier logits must be [vocab] or [1, vocab]")
+-        }
+-        guard frontier.dim(0) > 0 else {
+-            throw CBv2RecurrentStateError.lifecycleViolation(
+-                "exact prefix frontier logits cannot be empty")
++        let storedFrontier: MLXArray?
++        if let frontierLogits {
++            let frontier: MLXArray
++            switch frontierLogits.ndim {
++            case 1:
++                frontier = frontierLogits
++            case 2 where frontierLogits.dim(0) == 1:
++                frontier = frontierLogits[0]
++            default:
++                throw CBv2RecurrentStateError.lifecycleViolation(
++                    "exact prefix frontier logits must be [vocab] or [1, vocab]")
++            }
++            guard frontier.dim(0) > 0 else {
++                throw CBv2RecurrentStateError.lifecycleViolation(
++                    "exact prefix frontier logits cannot be empty")
++            }
++            storedFrontier =
++                detachingFrontier
++                ? CBv2ExactSnapshotStorage.detached(frontier)
++                : frontier
++        } else {
++            storedFrontier = nil
+         }
+-        let storedFrontier =
+-            detachingFrontier
+-            ? CBv2ExactSnapshotStorage.detached(frontier)
+-            : frontier
+ 
+         var bytes = recurrentState.byteCount
+         for snapshot in attention {
+@@ -142,7 +158,7 @@ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+             guard !overflow else { throw CBv2RecurrentStateError.byteCountOverflow }
+             bytes = sum
+         }
+-        let (total, overflow) = bytes.addingReportingOverflow(storedFrontier.nbytes)
++        let (total, overflow) = bytes.addingReportingOverflow(storedFrontier?.nbytes ?? 0)
+         guard !overflow else { throw CBv2RecurrentStateError.byteCountOverflow }
+ 
+         self.tokenCount = tokenCount
+@@ -163,7 +179,7 @@ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+             arrays.append(snapshot.values)
+         }
+         arrays.append(contentsOf: recurrentState.evaluationArrays)
+-        arrays.append(frontierLogits)
++        if let frontierLogits { arrays.append(frontierLogits) }
+         return arrays
+     }
+ }
+@@ -172,6 +188,9 @@ public struct CBv2ExactPrefixSnapshot: @unchecked Sendable {
+ /// engine construction stays source-compatible, while the engine can require
+ /// this stronger contract before enabling recurrent prefix reuse.
+ public protocol CBv2ExactStatePrefixCache: CBv2PrefixCache {
++    /// Whole-token alignment used for intermediate cold-prefill snapshots.
++    var exactSnapshotBlockSize: Int { get }
++
+     func lookupExact(
+         requestID: CBv2RequestID,
+         tokens: [Int],
+@@ -193,7 +212,7 @@ public protocol CBv2ExactStatePrefixCache: CBv2PrefixCache {
+     func acceptsExactDonation(byteCount: Int) -> Bool
+ }
+ 
+-/// Thread-safe exact full-prompt RAM cache with deterministic LRU.
++/// Thread-safe longest-exact-prefix RAM cache with deterministic LRU.
+ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sendable {
+     private final class Entry {
+         let key: Data
+@@ -229,6 +248,8 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         self.config = config
+     }
+ 
++    public var exactSnapshotBlockSize: Int { config.blockSize }
++
+     // MARK: Exact-state lookup/donation
+ 
+     public func lookupExact(
+@@ -238,28 +259,38 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         recurrentStateSpec: CBv2RecurrentStateSpec,
+         cacheSalt: String?
+     ) -> CBv2ExactPrefixSnapshot? {
+-        guard let key = key(tokens: tokens, cacheSalt: cacheSalt) else {
++        guard let candidates = lookupCandidates(tokens: tokens, cacheSalt: cacheSalt) else {
+             recordMiss()
+             return nil
+         }
+         lock.lock()
+         defer { lock.unlock() }
+-        guard let entry = entries[key],
+-            entry.snapshot.tokenCount == tokens.count,
+-            entry.snapshot.modelPosition == tokens.count,
+-            entry.snapshot.attention.count == layerKinds.count,
+-            entry.snapshot.recurrentState.spec == recurrentStateSpec,
+-            Self.layoutMatches(snapshot: entry.snapshot, layerKinds: layerKinds)
+-        else {
+-            missCount = Self.saturatingAdd(missCount, 1)
+-            return nil
++        for candidate in candidates {
++            guard let entry = entries[candidate.key],
++                entry.snapshot.tokenCount == candidate.tokenCount,
++                entry.snapshot.modelPosition == candidate.tokenCount,
++                entry.snapshot.attention.count == layerKinds.count,
++                entry.snapshot.recurrentState.spec == recurrentStateSpec,
++                Self.layoutMatches(snapshot: entry.snapshot, layerKinds: layerKinds)
++            else { continue }
++            // State at the request's full prompt boundary is only useful when
++            // it also carries logits from that exact frontier. A block-only
++            // donation at the same length falls through to the next-shorter
++            // boundary so the remaining suffix computes those logits.
++            if candidate.tokenCount == tokens.count,
++                entry.snapshot.frontierLogits == nil
++            {
++                continue
++            }
++            tick &+= 1
++            entry.lastAccess = tick
++            entry.refInUse += 1
++            hitCount = Self.saturatingAdd(hitCount, 1)
++            savedTokens = Self.saturatingAdd(savedTokens, candidate.tokenCount)
++            return entry.snapshot
+         }
+-        tick &+= 1
+-        entry.lastAccess = tick
+-        entry.refInUse += 1
+-        hitCount = Self.saturatingAdd(hitCount, 1)
+-        savedTokens = Self.saturatingAdd(savedTokens, tokens.count)
+-        return entry.snapshot
++        missCount = Self.saturatingAdd(missCount, 1)
++        return nil
+     }
+ 
+     public func donateExact(
+@@ -274,7 +305,7 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+             snapshot.attention.count == layerKinds.count,
+             Self.layoutMatches(snapshot: snapshot, layerKinds: layerKinds),
+             acceptsExactDonation(byteCount: snapshot.byteCount),
+-            let key = key(tokens: tokens, cacheSalt: cacheSalt)
++            let key = key(tokens: tokens, tokenCount: tokens.count, cacheSalt: cacheSalt)
+         else {
+             lock.lock()
+             droppedDonationCount = Self.saturatingAdd(droppedDonationCount, 1)
+@@ -287,7 +318,26 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         if let existing = entries[key] {
+             tick &+= 1
+             existing.lastAccess = tick
+-            return
++            // A longer donor may have installed this position as a block
++            // boundary without logits. Upgrade it when the same token stream
++            // later completes here as a full prompt. A pinned entry remains
++            // immutable; that upgrade is best-effort and may retry later.
++            guard existing.snapshot.frontierLogits == nil,
++                snapshot.frontierLogits != nil
++            else { return }
++            guard existing.refInUse == 0 else {
++                droppedDonationCount = Self.saturatingAdd(droppedDonationCount, 1)
++                return
++            }
++            entries.removeValue(forKey: key)
++            residentBytes -= existing.bytes
++            evictLocked(toFit: config.maxBytes - snapshot.byteCount)
++            guard residentBytes <= config.maxBytes - snapshot.byteCount else {
++                entries[key] = existing
++                residentBytes += existing.bytes
++                droppedDonationCount = Self.saturatingAdd(droppedDonationCount, 1)
++                return
++            }
+         }
+         // Make room BEFORE publishing the entry. Pinned adopters may prevent
+         // eviction; in that case the donation is refused rather than letting
+@@ -321,7 +371,9 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+     }
+ 
+     public func endAdoption(tokens: [Int], matched: Int, cacheSalt: String?) {
+-        guard matched == tokens.count, let key = key(tokens: tokens, cacheSalt: cacheSalt) else {
++        guard matched > 0, matched <= tokens.count,
++            let key = key(tokens: tokens, tokenCount: matched, cacheSalt: cacheSalt)
++        else {
+             return
+         }
+         lock.lock()
+@@ -400,11 +452,45 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+         lock.unlock()
+     }
+ 
+-    private func key(tokens: [Int], cacheSalt: String?) -> Data? {
++    private struct LookupCandidate {
++        let tokenCount: Int
++        let key: Data
++    }
++
++    /// Full prompt first, then whole-block boundaries in descending order.
++    /// The first valid entry is therefore the longest exact reusable prefix.
++    private func lookupCandidates(
++        tokens: [Int], cacheSalt: String?
++    ) -> [LookupCandidate]? {
+         guard !tokens.isEmpty,
+             tokens.count <= Int(UInt32.max),
+             tokens.allSatisfy({ $0 >= 0 && UInt64($0) <= UInt64(UInt32.max) })
+         else { return nil }
++        var lengths = [tokens.count]
++        var boundary = (tokens.count / config.blockSize) * config.blockSize
++        if boundary == tokens.count { boundary -= config.blockSize }
++        while boundary > 0 {
++            lengths.append(boundary)
++            boundary -= config.blockSize
++        }
++        var candidates: [LookupCandidate] = []
++        candidates.reserveCapacity(lengths.count)
++        for tokenCount in lengths {
++            guard let candidate = key(
++                tokens: tokens, tokenCount: tokenCount, cacheSalt: cacheSalt)
++            else { return nil }
++            candidates.append(LookupCandidate(tokenCount: tokenCount, key: candidate))
++        }
++        return candidates
++    }
++
++    private func key(tokens: [Int], tokenCount: Int, cacheSalt: String?) -> Data? {
++        guard tokenCount > 0, tokenCount <= tokens.count,
++            tokenCount <= Int(UInt32.max),
++            tokens[..<tokenCount].allSatisfy({
++                $0 >= 0 && UInt64($0) <= UInt64(UInt32.max)
++            })
++        else { return nil }
+         let model = Data(config.modelIdentity.utf8)
+         let policy = Data(config.policyIdentity.utf8)
+         let scope = Data((cacheSalt ?? config.scopeID).utf8)
+@@ -413,12 +499,13 @@ public final class ExactPrefixCacheV2: CBv2ExactStatePrefixCache, @unchecked Sen
+             scope.count <= Int(UInt32.max)
+         else { return nil }
+ 
+-        var input = Data("darkbloom.cbv2-exact-prefix.v1".utf8)
++        var input = Data("darkbloom.cbv2-exact-prefix.v2".utf8)
+         Self.appendLengthPrefixed(model, to: &input)
+         Self.appendLengthPrefixed(policy, to: &input)
+         Self.appendLengthPrefixed(scope, to: &input)
+-        Self.appendUInt32(UInt32(tokens.count), to: &input)
+-        for token in tokens {
++        Self.appendUInt32(UInt32(config.blockSize), to: &input)
++        Self.appendUInt32(UInt32(tokenCount), to: &input)
++        for token in tokens.prefix(tokenCount) {
+             Self.appendUInt32(UInt32(token), to: &input)
+         }
+         return Data(SHA256.hash(data: input))
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
+index 3c7f2ec..404c945 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift
+@@ -12,13 +12,13 @@ import MLX
+ /// out of paths whose state semantics have not been proven.
+ public struct CBv2ModelCapabilities: Sendable, Equatable {
+     public var supportsPrefixReuse: Bool
+-    /// Exact full-prompt reuse backed by a cache that restores BOTH
++    /// Exact prompt-prefix reuse backed by a cache that restores BOTH
+     /// attention K/V and request-owned recurrent state. This is deliberately
+     /// separate from `supportsPrefixReuse`: a recurrent model must never be
+     /// admitted through the historical KV-only cache by accident.
+     public var supportsExactStatePrefixReuse: Bool
+     /// Exact live-row snapshot/fork at an ordinary finalized prompt boundary.
+-    /// This is a separate proof from durable full-prompt caching: prompt
++    /// This is a separate proof from durable sequential-prefix caching: prompt
+     /// coalescing may fork at any common-prefix boundary before sampling.
+     public var supportsPromptStateForking: Bool
+     public var supportsPagedKV: Bool
+diff --git a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+index af55024..60e37e2 100644
+--- a/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
++++ b/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift
+@@ -73,6 +73,10 @@ public final class CBv2ScheduledRequest {
+     /// cleared on preemption because the adopted state is discarded.
+     internal var prefixReusePlan: CBv2PrefixReusePlan?
+     internal var prefixReplayBoundarySplits = 0
++    /// Cold exact-state donors stop at each whole block so the engine can
++    /// snapshot one finalized K/V + recurrent boundary. Nil for cache hits,
++    /// disabled requests, and every non-exact cache.
++    internal var exactSnapshotBlockSize: Int?
+     /// A simultaneous-prefix leader may not plan past this exact boundary
+     /// until the engine has forked its finalized KV/recurrent state.
+     internal var promptForkBoundary: Int?
+@@ -127,6 +131,22 @@ public final class CBv2ScheduledRequest {
+         if let boundary = promptForkBoundary, start < boundary {
+             proposed = min(proposed, boundary - start)
+         }
++        if let blockSize = exactSnapshotBlockSize,
++            blockSize > 0,
++            start < request.promptTokens.count
++        {
++            let quotient = start / blockSize
++            let (nextMultiple, overflow) = quotient.addingReportingOverflow(1)
++            let (nextBoundary, multiplyOverflow) =
++                nextMultiple.multipliedReportingOverflow(by: blockSize)
++            if !overflow, !multiplyOverflow,
++                nextBoundary < request.promptTokens.count,
++                start < nextBoundary,
++                proposed > nextBoundary - start
++            {
++                proposed = nextBoundary - start
++            }
++        }
+         guard proposed > 0, !multimodalBlocks.isEmpty else { return proposed }
+         // Chunks never split blocks, so a chunk can never START strictly
+         // inside one (preemption restarts at 0; adoption is excluded for
+diff --git a/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift b/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
+index 01174e7..8951ee4 100644
+--- a/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
++++ b/Tests/MLXLMTests/CBv2ExactPrefixCacheTests.swift
+@@ -18,7 +18,7 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
+     }
+ 
+     private func snapshot(
+-        tokenCount: Int = 4, value: Float = 3
++        tokenCount: Int = 4, value: Float = 3, includesFrontier: Bool = true
+     ) throws -> CBv2ExactPrefixSnapshot {
+         let keys = MLXArray(
+             (0 ..< tokenCount).map { value + Float($0) * 0.25 }
+@@ -43,7 +43,8 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
+             modelPosition: tokenCount,
+             attention: [attention],
+             recurrentState: recurrent,
+-            frontierLogits: MLXArray([value, -value]),
++            frontierLogits:
++                includesFrontier ? MLXArray([value, -value]) : nil,
+             detachingFrontier: true)
+         eval(result.evaluationArrays)
+         return result
+@@ -232,4 +233,69 @@ final class CBv2ExactPrefixCacheTests: XCTestCase {
+         backend.release(attentionB)
+         try recurrentB.release()
+     }
++
++    func testLongestExactBoundaryLookupSkipsMissingFullPromptFrontier() throws {
++        let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9]
++        let at4 = try snapshot(tokenCount: 4, value: 4, includesFrontier: false)
++        let at8 = try snapshot(tokenCount: 8, value: 8, includesFrontier: false)
++        let at9 = try snapshot(tokenCount: 9, value: 9)
++        let cache = ExactPrefixCacheV2(config: .init(
++            modelIdentity: "qwen-longest-prefix",
++            policyIdentity: "contiguous-fp32|boundary-v2",
++            blockSize: 4,
++            maxBytes: at4.byteCount + at8.byteCount * 2 + at9.byteCount))
++
++        for (id, count, state) in [(1, 4, at4), (2, 8, at8), (3, 9, at9)] {
++            cache.donateExact(
++                requestID: CBv2RequestID(UInt64(id)),
++                tokens: Array(tokens.prefix(count)),
++                snapshot: state,
++                layerKinds: [layerKind],
++                cacheSalt: "tenant-a")
++        }
++
++        let at8Hit = try XCTUnwrap(lookup(cache, tokens: Array(tokens.prefix(8)) + [99]))
++        XCTAssertEqual(at8Hit.tokenCount, 8)
++        cache.endAdoption(
++            tokens: Array(tokens.prefix(8)) + [99],
++            matched: 8,
++            cacheSalt: "tenant-a")
++
++        let at4Hit = try XCTUnwrap(lookup(cache, tokens: Array(tokens.prefix(6)) + [99, 98, 97]))
++        XCTAssertEqual(at4Hit.tokenCount, 4)
++        cache.endAdoption(
++            tokens: Array(tokens.prefix(6)) + [99, 98, 97],
++            matched: 4,
++            cacheSalt: "tenant-a")
++
++        let fullHit = try XCTUnwrap(lookup(cache, tokens: tokens))
++        XCTAssertEqual(fullHit.tokenCount, tokens.count)
++        XCTAssertNotNil(fullHit.frontierLogits)
++        cache.endAdoption(tokens: tokens, matched: tokens.count, cacheSalt: "tenant-a")
++
++        // A boundary-only state at the request's exact length has no legal
++        // sampling frontier. Lookup falls back to the next reusable boundary.
++        let exactEight = Array(tokens.prefix(8))
++        let fallback = try XCTUnwrap(lookup(cache, tokens: exactEight))
++        XCTAssertEqual(fallback.tokenCount, 4)
++        cache.endAdoption(tokens: exactEight, matched: 4, cacheSalt: "tenant-a")
++
++        // Completing that same token stream upgrades the immutable entry with
++        // frontier logits and makes it a legal full-prompt hit.
++        let at8Full = try snapshot(tokenCount: 8, value: 18)
++        cache.donateExact(
++            requestID: CBv2RequestID(4),
++            tokens: exactEight,
++            snapshot: at8Full,
++            layerKinds: [layerKind],
++            cacheSalt: "tenant-a")
++        let upgraded = try XCTUnwrap(lookup(cache, tokens: exactEight))
++        XCTAssertEqual(upgraded.tokenCount, 8)
++        XCTAssertNotNil(upgraded.frontierLogits)
++        cache.endAdoption(tokens: exactEight, matched: 8, cacheSalt: "tenant-a")
++
++        XCTAssertEqual(cache.stats().hits, 5)
++        XCTAssertEqual(cache.stats().donations, 4)
++        XCTAssertLessThanOrEqual(cache.bytesInUse, cache.config.maxBytes)
++    }
+ }
+diff --git a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
+index da0c136..47353c2 100644
+--- a/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
++++ b/Tests/MLXLMTests/CBv2ExactPrefixEngineTests.swift
+@@ -22,6 +22,7 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+ 
+     private let counterLock = NSLock()
+     private var _prefillRows = 0
++    private var _forwardRows = 0
+ 
+     var prefillRows: Int {
+         counterLock.lock()
+@@ -29,6 +30,12 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+         return _prefillRows
+     }
+ 
++    var forwardRows: Int {
++        counterLock.lock()
++        defer { counterLock.unlock() }
++        return _forwardRows
++    }
++
+     func forward(tokens: MLXArray, caches: [CBv2AttendingLayerCache]) -> MLXArray {
+         preconditionFailure("fixture requires request-owned recurrent state")
+     }
+@@ -42,6 +49,9 @@ private final class CBv2ExactHybridFixtureModel: CBv2RecurrentSteppableModel {
+         let length = tokens.dim(1)
+         precondition(caches.count == 1)
+         precondition(recurrentState.count == batch)
++        counterLock.lock()
++        _forwardRows += batch
++        counterLock.unlock()
+         if length > 1 {
+             counterLock.lock()
+             _prefillRows += batch
+@@ -103,12 +113,13 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+     private let prompt = [7, 2, 5, 1, 6, 3, 4, 0, 7]
+     private let completionTokens = 8
+ 
+-    private func makeStack() -> Stack {
++    private func makeStack(blockSize: Int = 64) -> Stack {
+         let model = CBv2ExactHybridFixtureModel()
+         let cache = ExactPrefixCacheV2(
+             config: .init(
+                 modelIdentity: "tiny-hybrid|fixed-weights|tokenizer-v1",
+-                policyIdentity: "contiguous-fp32|exact-full-prompt-v1",
++                policyIdentity: "contiguous-fp32|exact-prefix-boundary-v2",
++                blockSize: blockSize,
+                 maxBytes: 1 << 20))
+         let backend = CBv2ContiguousKVBackend(
+             config: .init(bytesCapacity: 1 << 24, kvDType: .float32))
+@@ -129,13 +140,19 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+         return Stack(engine: engine, model: model, cache: cache)
+     }
+ 
+-    private func request(id: UInt64, maxTokens: Int? = nil) -> CBv2Request {
++    private func request(
++        id: UInt64,
++        promptTokens: [Int]? = nil,
++        maxTokens: Int? = nil,
++        prefixCacheEnabled: Bool = true
++    ) -> CBv2Request {
+         CBv2Request(
+             id: CBv2RequestID(id),
+-            promptTokens: prompt,
++            promptTokens: promptTokens ?? prompt,
+             sampling: CBv2SamplingParams(temperature: 0),
+             maxTokens: maxTokens ?? completionTokens,
+-            cacheSalt: "tenant-a")
++            cacheSalt: "tenant-a",
++            prefixCacheEnabled: prefixCacheEnabled)
+     }
+ 
+     func testB1RepeatUsesCachedFrontierAndExactHybridState() async throws {
+@@ -233,4 +250,96 @@ final class CBv2ExactPrefixEngineTests: XCTestCase {
+         XCTAssertEqual(stack.cache.stats().hits, 2)
+         XCTAssertEqual(stack.cache.stats().entryCount, 1)
+     }
++
++    func testPartialBoundaryB1B2B4RunsDistinctSuffixAndMatchesColdOutput() async throws {
++        let shared = Array(prompt.prefix(8))
++        for width in [1, 2, 4] {
++            let stack = makeStack(blockSize: 4)
++            let donor = await cbv2SchedCollect(
++                try stack.engine.submit(request(id: UInt64(width * 1_000))))
++            XCTAssertEqual(donor.finishReason, .length)
++
++            let warmPrompts = (0 ..< width).map { row in
++                shared + [20 + row, 30 + row, 40 + row]
++            }
++            var controls: [CBv2SchedCollected] = []
++            for (row, candidate) in warmPrompts.enumerated() {
++                controls.append(await cbv2SchedCollect(
++                    try stack.engine.submit(request(
++                        id: UInt64(width * 1_000 + 10 + row),
++                        promptTokens: candidate,
++                        prefixCacheEnabled: false))))
++            }
++
++            let forwardsBeforeWarm = stack.model.forwardRows
++            let streams = try warmPrompts.enumerated().map { row, candidate in
++                try stack.engine.submit(request(
++                    id: UInt64(width * 1_000 + 100 + row),
++                    promptTokens: candidate))
++            }
++            var warm: [CBv2SchedCollected] = []
++            for stream in streams {
++                warm.append(await cbv2SchedCollect(stream))
++            }
++            await stack.engine.shutdown()
++
++            XCTAssertGreaterThan(
++                stack.model.forwardRows, forwardsBeforeWarm,
++                "B\(width) partial hits must run the uncached suffix")
++            for row in 0 ..< width {
++                XCTAssertEqual(warm[row].finishReason, .length, "B\(width) row \(row)")
++                XCTAssertEqual(
++                    warm[row].tokens, controls[row].tokens,
++                    "B\(width) row \(row) suffix/decode diverged from its cold control")
++                XCTAssertEqual(warm[row].usage?.prefixCacheOutcome, .hit)
++                XCTAssertEqual(warm[row].usage?.prefixCacheMatchedTokens, shared.count)
++                XCTAssertEqual(warm[row].usage?.prefixCachePrefillTokensSaved, shared.count)
++                XCTAssertEqual(warm[row].usage?.prefixCacheReplayTokens, 0)
++                XCTAssertEqual(warm[row].usage?.prefixCacheStrategy, .direct)
++            }
++        }
++    }
++
++    func testCancellingPartialAdopterPreservesBoundaryAndSuffixParity() async throws {
++        let stack = makeStack(blockSize: 4)
++        _ = await cbv2SchedCollect(try stack.engine.submit(request(id: 1)))
++        let candidate = Array(prompt.prefix(8)) + [21, 31, 41]
++        let control = await cbv2SchedCollect(
++            try stack.engine.submit(request(
++                id: 2,
++                promptTokens: candidate,
++                prefixCacheEnabled: false)))
++
++        let victimID = CBv2RequestID(3)
++        let victim = try stack.engine.submit(request(
++            id: victimID.raw,
++            promptTokens: candidate,
++            maxTokens: 100))
++        var victimReason: CBv2FinishReason?
++        var cancelled = false
++        for await event in victim {
++            switch event {
++            case .delta where !cancelled:
++                cancelled = true
++                stack.engine.cancel(victimID)
++            case .finished(let reason, _):
++                victimReason = reason
++            default:
++                break
++            }
++        }
++
++        let survivor = await cbv2SchedCollect(
++            try stack.engine.submit(request(id: 4, promptTokens: candidate)))
++        await stack.engine.shutdown()
++
++        XCTAssertTrue(cancelled)
++        XCTAssertEqual(victimReason, .cancelled)
++        XCTAssertEqual(survivor.finishReason, .length)
++        XCTAssertEqual(survivor.tokens, control.tokens)
++        XCTAssertEqual(survivor.usage?.prefixCacheOutcome, .hit)
++        XCTAssertEqual(survivor.usage?.prefixCacheMatchedTokens, 8)
++        XCTAssertEqual(stack.cache.stats().entryCount, 3)
++        XCTAssertTrue(stack.engine.loopForTesting.recurrentStates.isEmpty)
++    }
+ }

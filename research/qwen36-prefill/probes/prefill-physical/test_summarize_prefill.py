@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 import summarize_prefill
@@ -65,6 +66,24 @@ class PrefillSummaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "expected contiguous KV"):
             summarize_prefill.summarize(report)
+
+    def test_extracts_report_after_xctrace_progress_output(self) -> None:
+        report = {
+            "schemaVersion": 6,
+            "patterns": [],
+        }
+        mixed = (
+            "gemma optimizations: prefill_layer18=on\n"
+            "[arrival-invariance] loading model\n"
+            + json.dumps(report)
+            + "\n"
+        )
+
+        self.assertEqual(summarize_prefill.extract_report(mixed), report)
+
+    def test_rejects_output_without_report(self) -> None:
+        with self.assertRaisesRegex(ValueError, "contains no benchmark JSON"):
+            summarize_prefill.extract_report("benchmark did not finish\n")
 
 
 if __name__ == "__main__":

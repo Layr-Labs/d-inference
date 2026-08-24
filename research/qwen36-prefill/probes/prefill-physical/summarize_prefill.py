@@ -19,6 +19,27 @@ def require_number(value: Any, name: str) -> float:
     return float(value)
 
 
+def extract_report(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    offset = 0
+    while True:
+        start = text.find("{", offset)
+        if start < 0:
+            raise ValueError("target output contains no benchmark JSON object")
+        try:
+            value, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            offset = start + 1
+            continue
+        if (
+            isinstance(value, dict)
+            and "schemaVersion" in value
+            and "patterns" in value
+        ):
+            return value
+        offset = start + 1
+
+
 def summarize(report: dict[str, Any]) -> list[str]:
     batch = int(report["batchSize"])
     prompt = int(report["promptTokensPerRequest"])
@@ -90,13 +111,18 @@ def summarize(report: dict[str, Any]) -> list[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=Path)
+    parser.add_argument("--write-json", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     arguments = parse_args()
-    with arguments.report.open(encoding="utf-8") as handle:
-        report = json.load(handle)
+    report = extract_report(arguments.report.read_text(encoding="utf-8"))
+    if arguments.write_json is not None:
+        arguments.write_json.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     for line in summarize(report):
         print(line)
 

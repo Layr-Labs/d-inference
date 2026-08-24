@@ -236,7 +236,7 @@ for batch in 1 2 4; do
         --window "$TRACE_WINDOW" \
         --no-prompt \
         --output "$trace" \
-        --target-stdout "$cell/report.json" \
+        --target-stdout "$cell/target-output.txt" \
         --launch -- \
         "$BINARY" benchmark \
         --model "$MODEL" \
@@ -276,7 +276,9 @@ for batch in 1 2 4; do
             --output "$cell/trace-export/$schema_name.xml" \
             >"$cell/trace-export/$schema_name.stderr.txt" 2>&1
     done
-    python3 "$SCRIPT_DIR/summarize_prefill.py" "$cell/report.json" \
+    python3 "$SCRIPT_DIR/summarize_prefill.py" \
+        "$cell/target-output.txt" \
+        --write-json "$cell/report.json" \
         >"$cell/prefill-summary.txt"
     python3 "$TELEMETRY_DIR/summarize_physical.py" \
         --agx-jsonl "$cell/agx-samples.jsonl" \

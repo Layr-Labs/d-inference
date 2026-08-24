@@ -53,6 +53,7 @@ xcrun swiftc -O -whole-module-optimization -framework Metal \
 
 POWER_SOURCE_BEFORE="$(power_source)"
 POWER_MODE_BEFORE="$(power_mode_ac)"
+THERMAL_BEFORE="$(pmset -g therm 2>&1 | tr '\n' ';')"
 if [[ "$POWER_SOURCE_BEFORE" != *"AC Power"* || "$POWER_MODE_BEFORE" != "2" ]]; then
     {
         echo "PROBE=mpp-dynamic-k8-throughput"
@@ -72,6 +73,7 @@ set -e
 
 POWER_SOURCE_AFTER="$(power_source)"
 POWER_MODE_AFTER="$(power_mode_ac)"
+THERMAL_AFTER="$(pmset -g therm 2>&1 | tr '\n' ';')"
 if [[ "$POWER_SOURCE_AFTER" == *"AC Power"* && "$POWER_MODE_AFTER" == "2" ]]; then
     POWER_VALID=pass
 else
@@ -89,13 +91,13 @@ fi
     echo "METAL=$(xcrun metal --version | tr '\n' ';')"
     echo "POWER_SOURCE_BEFORE=$POWER_SOURCE_BEFORE"
     echo "POWER_MODE_AC_BEFORE=$POWER_MODE_BEFORE"
-    echo "THERMAL_BEFORE=$(pmset -g therm 2>&1 | tr '\n' ';')"
+    echo "THERMAL_BEFORE=$THERMAL_BEFORE"
     echo "SOURCE_SHA256=$(shasum -a 256 "${SOURCE_FILES[@]}" | tr '\n' ';')"
     echo "PROBE_EXIT=$PROBE_STATUS"
     sed -n '1,2000p' "$PROBE_LOG"
     echo "POWER_SOURCE_AFTER=$POWER_SOURCE_AFTER"
     echo "POWER_MODE_AC_AFTER=$POWER_MODE_AFTER"
-    echo "THERMAL_AFTER=$(pmset -g therm 2>&1 | tr '\n' ';')"
+    echo "THERMAL_AFTER=$THERMAL_AFTER"
     echo "POWER_VALID=$POWER_VALID"
 } | tee "$RESULT"
 

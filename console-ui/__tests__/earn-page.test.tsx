@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createRequire } from "node:module";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EarningsMarketResponse } from "@/lib/api/types";
 import {
@@ -12,6 +13,10 @@ import {
 const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
 const MACBOOK_PRO = "MacBook Pro";
 const MAC_STUDIO = "Mac Studio";
+const requireFromTest = createRequire(import.meta.url);
+const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as {
+  HARDWARE_OPTIONS: typeof HARDWARE_OPTIONS;
+};
 
 const apiMocks = vi.hoisted(() => ({
   fetchEarningsMarket: vi.fn(),
@@ -255,8 +260,24 @@ describe("market-conserving earnings math", () => {
       ramOptions: [24, 48, 64],
       bandwidthGBs: 307,
     });
+    expect(profile("MacBook Air", "M5")).toMatchObject({
+      ramOptions: [16, 24, 32],
+      bandwidthGBs: 153,
+    });
+    expect(profile("iMac", "M4")).toMatchObject({
+      ramOptions: [16, 24, 32],
+      bandwidthGBs: 120,
+    });
+    expect(profile("MacBook Neo", "A18 Pro")).toMatchObject({
+      ramOptions: [8],
+      bandwidthGBs: 60,
+    });
     expect(profile(MAC_STUDIO, "M5 Max (40-core GPU)")).toBeUndefined();
     expect(profile("Mac Pro", "M3 Ultra")).toBeUndefined();
+  });
+
+  it("keeps console and landing hardware profiles identical", () => {
+    expect(landingCore.HARDWARE_OPTIONS).toEqual(HARDWARE_OPTIONS);
   });
 });
 

@@ -18,19 +18,25 @@ export interface MacConfig extends HardwareProfile {
 
 const MACBOOK_AIR = "MacBook Air";
 const MACBOOK_PRO = "MacBook Pro";
+const MACBOOK_NEO = "MacBook Neo";
 const MAC_MINI = "Mac Mini";
+const IMAC = "iMac";
 const MAC_STUDIO = "Mac Studio";
 const MAC_PRO = "Mac Pro";
 const M4_MAX_14_CORE = "M4 Max (14-core CPU)";
 const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
 
 export const MAC_CONFIGS: MacConfig[] = [
+  { macType: MACBOOK_NEO, chip: "A18 Pro", ramOptions: [8], bandwidthGBs: 60, idleWatts: 8, inferWatts: 12 },
   { macType: MACBOOK_AIR, chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 8, inferWatts: 12 },
   { macType: MACBOOK_AIR, chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
   { macType: MACBOOK_AIR, chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
   { macType: MACBOOK_AIR, chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 8, inferWatts: 12 },
+  { macType: MACBOOK_AIR, chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 8, inferWatts: 12 },
+  { macType: MACBOOK_PRO, chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
   { macType: MACBOOK_PRO, chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
+  { macType: MACBOOK_PRO, chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
   { macType: MACBOOK_PRO, chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
   { macType: MACBOOK_PRO, chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
@@ -50,6 +56,9 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MAC_MINI, chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 8, inferWatts: 25 },
   { macType: MAC_MINI, chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 5, inferWatts: 15 },
   { macType: MAC_MINI, chip: "M4 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 273, idleWatts: 8, inferWatts: 25 },
+  { macType: IMAC, chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 15, inferWatts: 40 },
+  { macType: IMAC, chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 15, inferWatts: 40 },
+  { macType: IMAC, chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 15, inferWatts: 40 },
   { macType: MAC_STUDIO, chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
   { macType: MAC_STUDIO, chip: "M1 Ultra", ramOptions: [64, 128], bandwidthGBs: 800, idleWatts: 30, inferWatts: 90 },
   { macType: MAC_STUDIO, chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
@@ -61,6 +70,7 @@ export const MAC_CONFIGS: MacConfig[] = [
 ];
 
 const CHIP_ORDER = [
+  "A18 Pro",
   "M1", "M1 Pro", "M1 Max", "M1 Ultra",
   "M2", "M2 Pro", "M2 Max", "M2 Ultra",
   "M3", "M3 Pro", "M3 Max (14-core CPU)", "M3 Max (16-core CPU)", "M3 Ultra",
@@ -72,7 +82,15 @@ export interface HardwareOption extends MacConfig {
   id: string;
 }
 
-const MAC_TYPE_ORDER = [MACBOOK_AIR, MACBOOK_PRO, MAC_MINI, MAC_STUDIO, MAC_PRO];
+const MAC_TYPE_ORDER = [
+  MACBOOK_NEO,
+  MACBOOK_AIR,
+  MACBOOK_PRO,
+  MAC_MINI,
+  IMAC,
+  MAC_STUDIO,
+  MAC_PRO,
+];
 
 export function buildHardwareOptions(configs: MacConfig[] = MAC_CONFIGS): HardwareOption[] {
   const options = configs.map((config) => ({

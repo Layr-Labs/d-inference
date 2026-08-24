@@ -224,6 +224,27 @@ test("hardware options use shipped Max variants and omit nonexistent Macs", func
     },
     { ramOptions: [48, 64, 128], bandwidthGBs: 614 },
   );
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Air", "M5").ramOptions,
+      bandwidthGBs: profile("MacBook Air", "M5").bandwidthGBs,
+    },
+    { ramOptions: [16, 24, 32], bandwidthGBs: 153 },
+  );
+  assert.deepEqual(
+    {
+      ramOptions: profile("iMac", "M4").ramOptions,
+      bandwidthGBs: profile("iMac", "M4").bandwidthGBs,
+    },
+    { ramOptions: [16, 24, 32], bandwidthGBs: 120 },
+  );
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Neo", "A18 Pro").ramOptions,
+      bandwidthGBs: profile("MacBook Neo", "A18 Pro").bandwidthGBs,
+    },
+    { ramOptions: [8], bandwidthGBs: 60 },
+  );
   assert.equal(profile("Mac Studio", "M5 Max (40-core GPU)"), undefined);
   assert.equal(profile("Mac Pro", "M3 Ultra"), undefined);
 });

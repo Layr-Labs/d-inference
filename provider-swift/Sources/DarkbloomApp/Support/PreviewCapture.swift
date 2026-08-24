@@ -26,13 +26,29 @@ enum PreviewCapture {
 
     @discardableResult
     static func writeFirstWindow(to url: URL) -> Bool {
-        guard let window = NSApp.windows.first(where: { $0.isVisible }),
-              let contentView = window.contentView,
+        guard let window = NSApp.windows.first(where: { $0.isVisible }) else {
+            return false
+        }
+
+        window.displayIfNeeded()
+        if let image = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            CGWindowID(window.windowNumber),
+            [.boundsIgnoreFraming, .bestResolution]
+        ) {
+            let representation = NSBitmapImageRep(cgImage: image)
+            if let png = representation.representation(using: .png, properties: [:]) {
+                try? png.write(to: url, options: .atomic)
+                return true
+            }
+        }
+
+        guard let contentView = window.contentView,
               let representation = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds)
         else {
             return false
         }
-
         contentView.cacheDisplay(in: contentView.bounds, to: representation)
         if let png = representation.representation(using: .png, properties: [:]) {
             try? png.write(to: url, options: .atomic)

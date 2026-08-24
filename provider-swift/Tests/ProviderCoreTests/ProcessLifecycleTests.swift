@@ -35,6 +35,12 @@ struct ProcessLifecycleTests {
         let current = ProcessIdentity(pid: 200, startTimeMicros: 2_000)
         var terminationCount = 0
         try "123\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        defer {
+            ProcessLifecycle.releaseSingleInstanceLock(
+                at: pidFile,
+                currentIdentity: current
+            )
+        }
 
         try ProcessLifecycle.acquireSingleInstanceLock(
             at: pidFile,
@@ -69,6 +75,12 @@ struct ProcessLifecycleTests {
         let current = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
         try writeOwner(old, to: pidFile)
         var terminationCount = 0
+        defer {
+            ProcessLifecycle.releaseSingleInstanceLock(
+                at: pidFile,
+                currentIdentity: current
+            )
+        }
 
         try ProcessLifecycle.acquireSingleInstanceLock(
             at: pidFile,
@@ -92,6 +104,12 @@ struct ProcessLifecycleTests {
         let current = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
         try writeOwner(old, to: pidFile)
         var terminated: ProcessIdentity?
+        defer {
+            ProcessLifecycle.releaseSingleInstanceLock(
+                at: pidFile,
+                currentIdentity: current
+            )
+        }
 
         try ProcessLifecycle.acquireSingleInstanceLock(
             at: pidFile,
@@ -133,7 +151,20 @@ struct ProcessLifecycleTests {
         let pidFile = tempPIDFile()
         let old = ProcessIdentity(pid: 123, startTimeMicros: 1_000)
         let successor = ProcessIdentity(pid: 200, startTimeMicros: 3_000)
-        try writeOwner(successor, to: pidFile)
+        let contender = ProcessIdentity(pid: 300, startTimeMicros: 4_000)
+        try ProcessLifecycle.acquireSingleInstanceLock(
+            at: pidFile,
+            terminationGracePeriod: 0,
+            currentIdentity: successor,
+            readIdentity: { _ in nil },
+            terminate: { _, _ in true }
+        )
+        defer {
+            ProcessLifecycle.releaseSingleInstanceLock(
+                at: pidFile,
+                currentIdentity: successor
+            )
+        }
 
         ProcessLifecycle.releaseSingleInstanceLock(
             at: pidFile,
@@ -141,6 +172,15 @@ struct ProcessLifecycleTests {
         )
 
         #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == successor)
+        #expect(throws: ProcessLifecycleError.singleInstanceLockBusy) {
+            try ProcessLifecycle.acquireSingleInstanceLock(
+                at: pidFile,
+                terminationGracePeriod: 0,
+                currentIdentity: contender,
+                readIdentity: { _ in successor },
+                terminate: { _, _ in true }
+            )
+        }
     }
 
     @Test("standalone and connected launches share one locked housekeeping pass")

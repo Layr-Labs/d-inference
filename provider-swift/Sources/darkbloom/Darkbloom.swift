@@ -50,6 +50,9 @@ struct Darkbloom: AsyncParsableCommand {
             Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
+            #if DEBUG
+            RuntimeLockProbe.self,
+            #endif
         ]
     )
 

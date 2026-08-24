@@ -9,6 +9,8 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 public enum ProcessLifecycle {
@@ -32,10 +34,10 @@ public enum ProcessLifecycle {
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 
-    /// Acquire the single-instance lock. If the file names an older provider
-    /// whose exact kernel identity is still live, terminate that identity
-    /// before replacing the record. Legacy PID-only and stale/reused-PID files
-    /// are overwritten without signaling anything.
+    /// Acquire a lifetime-held kernel advisory lock. If the owner record names
+    /// an older provider whose exact kernel identity is still live, terminate
+    /// that identity before replacing the record. Legacy PID-only and
+    /// stale/reused-PID files are overwritten without signaling anything.
     ///
     /// Returns the path of the PID file on success, throws on inability to
     /// write.
@@ -72,29 +74,93 @@ public enum ProcessLifecycle {
             withIntermediateDirectories: true
         )
 
-        if let existing = readOwner(at: pidFile)?.processIdentity,
-           existing != currentIdentity,
-           readIdentity(existing.pid) == existing,
-           !terminate(existing, terminationGracePeriod)
-        {
-            throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
-        }
+        let key = pidFile.standardizedFileURL.path
+        return try SingleInstanceLockRegistry.shared.synchronized { heldLocks in
+            if let held = heldLocks[key] {
+                guard held.processIdentity == currentIdentity else {
+                    throw ProcessLifecycleError.singleInstanceLockBusy
+                }
+                return pidFile
+            }
 
+            let lockPath = SingleInstanceKernelLock.sidecarPath(for: pidFile)
+            let kernelLock: SingleInstanceKernelLock
+            do {
+                if let acquired = try SingleInstanceKernelLock.tryAcquire(at: lockPath) {
+                    kernelLock = acquired
+                } else {
+                    // A live lock owner may be replaced only when the record
+                    // still resolves to that exact kernel process identity.
+                    guard let existing = readOwner(at: pidFile)?.processIdentity,
+                          existing != currentIdentity,
+                          readIdentity(existing.pid) == existing
+                    else {
+                        throw ProcessLifecycleError.singleInstanceLockBusy
+                    }
+                    guard terminate(existing, terminationGracePeriod) else {
+                        throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
+                    }
+
+                    // One retry only: if a concurrent contender won after the
+                    // old owner exited, it remains the sole owner rather than
+                    // being terminated by this stale takeover attempt.
+                    guard let acquired = try SingleInstanceKernelLock.tryAcquire(at: lockPath) else {
+                        throw ProcessLifecycleError.singleInstanceLockBusy
+                    }
+                    kernelLock = acquired
+                }
+            } catch let error as SingleInstanceKernelLock.LockError {
+                throw ProcessLifecycleError.singleInstanceLockFailed(error.reason)
+            }
+
+            do {
+                // Rollout compatibility: a provider from the prior
+                // identity-aware implementation has a safe owner record but no
+                // kernel lock. Once we own the sidecar, terminate that exact
+                // still-live identity before publishing ourselves.
+                if let existing = readOwner(at: pidFile)?.processIdentity,
+                   existing != currentIdentity,
+                   readIdentity(existing.pid) == existing,
+                   !terminate(existing, terminationGracePeriod)
+                {
+                    throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
+                }
+
+                try writeOwner(
+                    SingleInstanceOwner(processIdentity: currentIdentity),
+                    to: pidFile
+                )
+            } catch {
+                kernelLock.release()
+                throw error
+            }
+
+            heldLocks[key] = HeldSingleInstanceLock(
+                processIdentity: currentIdentity,
+                kernelLock: kernelLock
+            )
+            return pidFile
+        }
+    }
+
+    private static func writeOwner(
+        _ owner: SingleInstanceOwner,
+        to pidFile: URL
+    ) throws {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        var data = try encoder.encode(SingleInstanceOwner(processIdentity: currentIdentity))
+        var data = try encoder.encode(owner)
         data.append(0x0A)
         try data.write(to: pidFile, options: .atomic)
         do {
-            try fm.setAttributes(
+            try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: pidFile.path
             )
         } catch {
-            try? fm.removeItem(at: pidFile)
+            try? FileManager.default.removeItem(at: pidFile)
             throw error
         }
-        return pidFile
     }
 
     private static func readOwner(at url: URL) -> SingleInstanceOwner? {
@@ -115,12 +181,23 @@ public enum ProcessLifecycle {
         at pidFile: URL,
         currentIdentity: ProcessIdentity?
     ) {
-        guard let currentIdentity,
-              readOwner(at: pidFile)?.processIdentity == currentIdentity
-        else {
-            return
+        guard let currentIdentity else { return }
+        let key = pidFile.standardizedFileURL.path
+        SingleInstanceLockRegistry.shared.synchronized { heldLocks in
+            guard let held = heldLocks[key],
+                  held.processIdentity == currentIdentity
+            else {
+                return
+            }
+
+            // Delete only our own record while exclusion is still held. A
+            // stale process can never unlink a successor's record.
+            if readOwner(at: pidFile)?.processIdentity == currentIdentity {
+                try? FileManager.default.removeItem(at: pidFile)
+            }
+            held.kernelLock.release()
+            heldLocks[key] = nil
         }
-        try? FileManager.default.removeItem(at: pidFile)
     }
 
     /// Remove the lock record only when this exact process still owns it.
@@ -312,6 +389,8 @@ public enum ProcessLifecycle {
 public enum ProcessLifecycleError: LocalizedError, Sendable, Equatable {
     case currentProcessIdentityUnavailable
     case existingProviderDidNotExit(Int32)
+    case singleInstanceLockBusy
+    case singleInstanceLockFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -319,6 +398,10 @@ public enum ProcessLifecycleError: LocalizedError, Sendable, Equatable {
             return "could not read this process's kernel identity"
         case .existingProviderDidNotExit(let pid):
             return "existing provider process \(pid) did not exit"
+        case .singleInstanceLockBusy:
+            return "another provider process owns the single-instance lock"
+        case .singleInstanceLockFailed(let reason):
+            return "could not acquire the single-instance lock: \(reason)"
         }
     }
 }

@@ -12,6 +12,15 @@ import Darwin
 #endif
 
 public enum ProcessLifecycle {
+    struct SingleInstanceOwner: Codable, Equatable {
+        let schema: Int
+        let processIdentity: ProcessIdentity
+
+        init(processIdentity: ProcessIdentity) {
+            schema = 1
+            self.processIdentity = processIdentity
+        }
+    }
 
     /// Default PID file location: `~/.darkbloom/provider.pid`.
     /// Override with `DARKBLOOM_PID_FILE` env var (useful for multi-instance testing).
@@ -23,9 +32,10 @@ public enum ProcessLifecycle {
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 
-    /// Acquire the single-instance lock. If an older provider is already
-    /// running, send it SIGTERM, wait briefly, then SIGKILL if it didn't
-    /// exit. Always writes our own PID to the file at the end.
+    /// Acquire the single-instance lock. If the file names an older provider
+    /// whose exact kernel identity is still live, terminate that identity
+    /// before replacing the record. Legacy PID-only and stale/reused-PID files
+    /// are overwritten without signaling anything.
     ///
     /// Returns the path of the PID file on success, throws on inability to
     /// write.
@@ -34,35 +44,118 @@ public enum ProcessLifecycle {
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
         terminationGracePeriod: TimeInterval = 2.0
     ) throws -> URL {
-        let myPID = ProcessInfo.processInfo.processIdentifier
+        guard let currentIdentity = ProcessIdentity.current() else {
+            throw ProcessLifecycleError.currentProcessIdentityUnavailable
+        }
+        return try acquireSingleInstanceLock(
+            at: pidFile,
+            terminationGracePeriod: terminationGracePeriod,
+            currentIdentity: currentIdentity,
+            readIdentity: ProcessIdentity.read(pid:),
+            terminate: { terminate($0, gracePeriod: $1) }
+        )
+    }
+
+    @discardableResult
+    static func acquireSingleInstanceLock(
+        at pidFile: URL,
+        terminationGracePeriod: TimeInterval,
+        currentIdentity: ProcessIdentity,
+        readIdentity: (Int32) -> ProcessIdentity?,
+        terminate: (ProcessIdentity, TimeInterval) -> Bool
+    ) throws -> URL {
         let fm = FileManager.default
 
-        // Best-effort kill of any previous instance.
-        if let existing = readPID(at: pidFile),
-           existing != myPID,
-           processIsAlive(existing)
-        {
-            sendSignal(SIGTERM, to: existing)
-            // Spin-wait up to `terminationGracePeriod` for graceful shutdown.
-            let deadline = Date().addingTimeInterval(terminationGracePeriod)
-            while Date() < deadline, processIsAlive(existing) {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            if processIsAlive(existing) {
-                sendSignal(SIGKILL, to: existing)
-            }
-        }
-
-        // Make the parent directory.
         let parent = pidFile.deletingLastPathComponent()
         try fm.createDirectory(
             at: parent,
             withIntermediateDirectories: true
         )
 
-        // Write our PID.
-        try "\(myPID)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        if let existing = readOwner(at: pidFile)?.processIdentity,
+           existing != currentIdentity,
+           readIdentity(existing.pid) == existing,
+           !terminate(existing, terminationGracePeriod)
+        {
+            throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
+        }
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        var data = try encoder.encode(SingleInstanceOwner(processIdentity: currentIdentity))
+        data.append(0x0A)
+        try data.write(to: pidFile, options: .atomic)
+        do {
+            try fm.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: pidFile.path
+            )
+        } catch {
+            try? fm.removeItem(at: pidFile)
+            throw error
+        }
         return pidFile
+    }
+
+    private static func readOwner(at url: URL) -> SingleInstanceOwner? {
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let owner = try? decoder.decode(SingleInstanceOwner.self, from: data),
+              owner.schema == 1
+        else {
+            return nil
+        }
+        return owner
+    }
+
+    static func releaseSingleInstanceLock(
+        at pidFile: URL,
+        currentIdentity: ProcessIdentity?
+    ) {
+        guard let currentIdentity,
+              readOwner(at: pidFile)?.processIdentity == currentIdentity
+        else {
+            return
+        }
+        try? FileManager.default.removeItem(at: pidFile)
+    }
+
+    /// Remove the lock record only when this exact process still owns it.
+    /// A stale process can therefore never delete a successor's record.
+    public static func releaseSingleInstanceLock(
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile()
+    ) {
+        releaseSingleInstanceLock(
+            at: pidFile,
+            currentIdentity: ProcessIdentity.current()
+        )
+    }
+
+    /// Decode the exact process identity currently recorded as the lock owner.
+    /// Legacy PID-only files deliberately return nil because they cannot safely
+    /// authorize a signal.
+    public static func singleInstanceOwner(
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile()
+    ) -> ProcessIdentity? {
+        readOwner(at: pidFile)?.processIdentity
+    }
+
+    /// Terminate a currently recorded provider only when its kernel identity
+    /// still matches. Missing, legacy, stale, and PID-reused records are no-ops.
+    @discardableResult
+    public static func terminateRecordedInstance(
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
+        gracePeriod: TimeInterval = 2
+    ) -> Bool {
+        guard let identity = singleInstanceOwner(at: pidFile),
+              identity.isCurrent()
+        else {
+            return true
+        }
+        return terminate(identity, gracePeriod: gracePeriod)
     }
 
     /// Acquire the production media-serving lock, then perform the one launch
@@ -101,14 +194,6 @@ public enum ProcessLifecycle {
         purgeLegacyTelemetryQueue()
         purgeLegacyVideoFiles()
         return pidFile
-    }
-
-    /// Remove the PID file. Best-effort -- it's never an error if the file
-    /// is gone.
-    public static func releaseSingleInstanceLock(
-        at pidFile: URL = ProcessLifecycle.defaultPIDFile()
-    ) {
-        try? FileManager.default.removeItem(at: pidFile)
     }
 
     /// Spawn `/usr/bin/caffeinate -s -i -w <pid>` in the background so the
@@ -222,23 +307,18 @@ public enum ProcessLifecycle {
 
     // MARK: - Internals
 
-    private static func readPID(at url: URL) -> Int32? {
-        guard let raw = try? String(contentsOf: url, encoding: .utf8) else {
-            return nil
+}
+
+public enum ProcessLifecycleError: LocalizedError, Sendable, Equatable {
+    case currentProcessIdentityUnavailable
+    case existingProviderDidNotExit(Int32)
+
+    public var errorDescription: String? {
+        switch self {
+        case .currentProcessIdentityUnavailable:
+            return "could not read this process's kernel identity"
+        case .existingProviderDidNotExit(let pid):
+            return "existing provider process \(pid) did not exit"
         }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Int32(trimmed)
-    }
-
-    private static func processIsAlive(_ pid: Int32) -> Bool {
-        // kill(pid, 0) returns 0 if we have permission to signal the process,
-        // even if signal 0 is a no-op. ESRCH means the process is gone.
-        let rc = kill(pid, 0)
-        if rc == 0 { return true }
-        return errno != ESRCH
-    }
-
-    private static func sendSignal(_ signo: Int32, to pid: Int32) {
-        _ = kill(pid, signo)
     }
 }

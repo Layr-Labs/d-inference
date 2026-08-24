@@ -170,8 +170,9 @@ assets:
     sensitivity: critical
     notes: >
       Compromise lets an attacker sign profiles (and binaries) macOS treats as coming
-      from the registered developer. Optional — when unset the coordinator serves
-      profiles unsigned.
+      from the registered developer. Hardware-trust deployments require a valid identity
+      at startup; only the explicit EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES development/test
+      escape hatch permits unsigned enrollment profiles.
 
   - id: A-014
     name: provider_fan_control_authority
@@ -2250,8 +2251,9 @@ threats:
         status: implemented
       - description: >
           LoadFromEnv never logs the p12 or password (only signer CN/org/expiry), and
-          fails closed to unsigned on a missing/invalid/expired identity rather than
-          stamping an untrusted signature.
+          hardware-trust startup fails closed on a missing, invalid, or expired identity.
+          Sign rechecks certificate validity at enrollment time; only the explicit
+          development/test escape hatch permits an unsigned fallback.
         status: implemented
       - description: Zero the decoded p12/password from memory after key extraction.
         status: open

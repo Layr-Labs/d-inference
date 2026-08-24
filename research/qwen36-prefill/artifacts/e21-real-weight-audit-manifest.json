@@ -1,0 +1,918 @@
+{
+  "config" : {
+    "architectures" : [
+      "Qwen3_5MoeForConditionalGeneration"
+    ],
+    "do_sample" : true,
+    "eos_token_id" : [
+      248046,
+      248044
+    ],
+    "generation_config" : {
+      "bos_token_id" : 248044,
+      "do_sample" : true,
+      "eos_token_id" : [
+        248046,
+        248044
+      ],
+      "pad_token_id" : 248044,
+      "temperature" : 1,
+      "top_k" : 20,
+      "top_p" : 0.94999999999999996
+    },
+    "image_token_id" : 248056,
+    "model_type" : "qwen3_5_moe",
+    "mtplx_mtp" : {
+      "block_size" : 3,
+      "included" : true,
+      "model_type" : "qwen3_5_mtp",
+      "prefix" : "mtp.",
+      "shares_target_embeddings" : true,
+      "shares_target_lm_head" : true
+    },
+    "mtplx_mtp_quantization" : {
+      "bits" : 8,
+      "group_size" : 32,
+      "layers.0.mlp.shared_expert.down_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.mlp.shared_expert.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.mlp.shared_expert.up_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.mlp.switch_mlp.down_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.mlp.switch_mlp.gate_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.mlp.switch_mlp.up_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.self_attn.k_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.self_attn.o_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.self_attn.q_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "layers.0.self_attn.v_proj" : {
+        "bits" : 8,
+        "group_size" : 32,
+        "mode" : "mxfp8"
+      },
+      "mode" : "mxfp8"
+    },
+    "quantization" : {
+      "bits" : 4,
+      "group_size" : 64,
+      "language_model.model.layers.0.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.30.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.30.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.31.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.31.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.32.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.32.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.33.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.33.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.34.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.34.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.35.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.35.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.36.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.36.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.37.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.37.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.38.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.38.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.39.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.39.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "mode" : "affine"
+    },
+    "quantization_config" : {
+      "bits" : 4,
+      "group_size" : 64,
+      "language_model.model.layers.0.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.0.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.1.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.2.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.3.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.4.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.5.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.6.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.7.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.8.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.9.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.10.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.11.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.12.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.13.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.14.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.15.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.16.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.17.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.18.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.19.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.20.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.21.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.22.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.23.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.24.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.25.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.26.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.27.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.28.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.29.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.30.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.30.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.31.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.31.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.32.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.32.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.33.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.33.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.34.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.34.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.35.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.35.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.36.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.36.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.37.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.37.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.38.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.38.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.39.mlp.gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "language_model.model.layers.39.mlp.shared_expert_gate" : {
+        "bits" : 8,
+        "group_size" : 64
+      },
+      "mode" : "affine"
+    },
+    "temperature" : 1,
+    "text_config" : {
+      "attention_bias" : false,
+      "attention_dropout" : 0,
+      "attn_output_gate" : true,
+      "bos_token_id" : 248044,
+      "dtype" : "bfloat16",
+      "eos_token_id" : 248044,
+      "full_attention_interval" : 4,
+      "head_dim" : 256,
+      "hidden_act" : "silu",
+      "hidden_size" : 2048,
+      "initializer_range" : 0.02,
+      "layer_types" : [
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention",
+        "linear_attention",
+        "linear_attention",
+        "linear_attention",
+        "full_attention"
+      ],
+      "linear_conv_kernel_dim" : 4,
+      "linear_key_head_dim" : 128,
+      "linear_num_key_heads" : 16,
+      "linear_num_value_heads" : 32,
+      "linear_value_head_dim" : 128,
+      "mamba_ssm_dtype" : "float32",
+      "max_position_embeddings" : 262144,
+      "model_type" : "qwen3_5_moe_text",
+      "moe_intermediate_size" : 512,
+      "mtp_num_hidden_layers" : 1,
+      "mtp_use_dedicated_embeddings" : false,
+      "num_attention_heads" : 16,
+      "num_experts" : 256,
+      "num_experts_per_tok" : 8,
+      "num_hidden_layers" : 40,
+      "num_key_value_heads" : 2,
+      "output_router_logits" : false,
+      "pad_token_id" : null,
+      "partial_rotary_factor" : 0.25,
+      "rms_norm_eps" : 9.9999999999999995e-07,
+      "rope_parameters" : {
+        "mrope_interleaved" : true,
+        "mrope_section" : [
+          11,
+          11,
+          10
+        ],
+        "partial_rotary_factor" : 0.25,
+        "rope_theta" : 10000000,
+        "rope_type" : "default"
+      },
+      "router_aux_loss_coef" : 0.001,
+      "shared_expert_intermediate_size" : 512,
+      "tie_word_embeddings" : false,
+      "use_cache" : true,
+      "vocab_size" : 248320
+    },
+    "tie_word_embeddings" : false,
+    "top_k" : 20,
+    "top_p" : 0.94999999999999996,
+    "transformers_version" : "4.57.1",
+    "video_token_id" : 248057,
+    "vision_config" : {
+      "deepstack_visual_indexes" : [
+
+      ],
+      "depth" : 27,
+      "hidden_act" : "gelu_pytorch_tanh",
+      "hidden_size" : 1152,
+      "in_channels" : 3,
+      "initializer_range" : 0.02,
+      "intermediate_size" : 4304,
+      "model_type" : "qwen3_5_moe",
+      "num_heads" : 16,
+      "num_position_embeddings" : 2304,
+      "out_hidden_size" : 2048,
+      "patch_size" : 16,
+      "spatial_merge_size" : 2,
+      "temporal_patch_size" : 2
+    },
+    "vision_end_token_id" : 248054,
+    "vision_start_token_id" : 248053
+  },
+  "coverage" : {
+    "all_u32_tensors_are_weights" : true,
+    "dense_tensors" : 399,
+    "expert_tensors" : 123,
+    "logical_dense_matrices" : 399,
+    "logical_expert_matrices" : 31488,
+    "quantized_weight_tensors" : 522
+  },
+  "date_utc" : "2026-08-24T09:02:09Z",
+  "decode_contract" : {
+    "affine" : "root-pinned-MLX-0a725e30-bfloat16-multiply-then-add",
+    "mxfp8" : "MLX-E4M3-times-E8M0-to-bfloat16"
+  },
+  "files" : [
+    {
+      "path" : "config.json",
+      "sha256" : "b852ada32203b112e217e5cb48afeadaf16594c0f5d3f5f7a380897e5e8732c2",
+      "size_bytes" : 25638
+    },
+    {
+      "path" : "model.safetensors.index.json",
+      "sha256" : "9799f7d4f5bfa79b909be4a222931137744d0464afd11a7d5b64073049d91a27",
+      "size_bytes" : 218332
+    },
+    {
+      "path" : "model-00001-of-00004.safetensors",
+      "sha256" : "c34931f1e0056846d5e68bdbeb31b94721e93505161c8144a92578d057b9c8a6",
+      "size_bytes" : 5296588934
+    },
+    {
+      "path" : "model-00002-of-00004.safetensors",
+      "sha256" : "5d41d9eea6d3810155396ce20316a9e7b34495c366684f824f08c30d6a132f8d",
+      "size_bytes" : 5360637067
+    },
+    {
+      "path" : "model-00003-of-00004.safetensors",
+      "sha256" : "a4cc7d8943c0c0c5721c775d3630762dbb00b3ea93cbde170fb22381f4bcfa5f",
+      "size_bytes" : 5368328247
+    },
+    {
+      "path" : "model-00004-of-00004.safetensors",
+      "sha256" : "90bea9bf00f8944e08c5e30d0c6ba158f29be634e7bda043f315eb2948ca361f",
+      "size_bytes" : 5256335788
+    }
+  ],
+  "probe" : "qwen36-real-weight-structure-audit",
+  "rank_contract" : {
+    "claim" : "deterministic-minor-exact-lower-bound",
+    "deletion_threshold" : 0.39000000000000001,
+    "fields" : [
+      3,
+      5,
+      7
+    ],
+    "mapping" : "exact-dyadic-BF16-field-homomorphism",
+    "required_formula" : "floor(0.61*N*K/(N+K))+1"
+  },
+  "root_git_sha" : "f0340da2f09f975f221a7148d033528780d5db3f",
+  "root_pinned_mlx_gitlink" : "0a725e3000edabc4911cde345270ca950bfa152f",
+  "schema_version" : 1,
+  "snapshot_path" : "/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local",
+  "source_sha256" : "361fee22e1c30a3877057de88983f3a0844933dd0143df34ad435944a748465f"
+}

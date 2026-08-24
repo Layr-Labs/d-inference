@@ -422,6 +422,18 @@ checksum identity is diagnostic only under the owner override.
 Top-1 primary rate is 2,147.5 tok/s. Another 1.813× is required.
 Proceed to layer/token/state reduction and top-1 geometry. See `notes/057`.
 
+## 2026-08-24T09:02Z — E21 immutable-weight structure scan
+
+Scanned all 522 quantized tensors / 31,887 logical matrices / 35.5B
+decoded values. Every matrix received an exact finite-field rank
+certificate.
+
+Exact model-wide rank/zero/duplicate work deletion is bounded at 24.31%
+of linear MACs; routed aligned zero/tile removal is only 0.6775%;
+duplicate experts = 0. Exact structure cannot provide the missing work
+deletion. Approximate rank/routing/layer policies remain open under the
+owner override. See `notes/058`.
+
 ## 2026-08-24T08:36Z — reverse-state dependency closure
 
 Worked backward from the actual post-prefill product in `notes/050`:

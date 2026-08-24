@@ -1,0 +1,11 @@
+PROBE=qwen36-real-weight-structure-audit
+RUN_VALID=yes
+DECODE_AFFINE=root-pinned-MLX-0a725e30-bfloat16-multiply-then-add
+COVERAGE tensors=522 expert_tensors=123 dense_tensors=399 matrices=31887 expert_matrices=31488 dense_matrices=399
+RANK local_pass=31691 local_fail=196 uncertified=0 exact=569 gf3=31887 gf5=0 gf7=0 weighted_deletion_upper=0.243116885 max_dense_deletion_upper=0.365234375 max_matrix_deletion_upper=0.772949219 threshold=0.390000
+STRUCTURE decoded_values=35495165952 decoded_zeros=4567901228 zero_rows=118658 zero_columns=1736 duplicate_rows=117886 duplicate_columns=123665 duplicate_groups=3806046 duplicate_experts=0
+GENERIC_TILES bn32_bk8_slots=138652672 zero_bn32_bk8=841
+ROUTED_TILES scope=language_model layers=40 bn32_compaction_removed=3308/327680 bn32_aligned_zero=0/327680 bk8_dead_activation=89/655360 bk8_zero_weight=0/655360 removable_routed_mac_fraction=0.006775411 local_rank_failures=196 worst_top8_rank_deletion_upper=0.244598389
+ROUTED_TILES scope=mtp layers=1 bn32_compaction_removed=0/8192 bn32_aligned_zero=0/8192 bk8_dead_activation=0/16384 bk8_zero_weight=0/16384 removable_routed_mac_fraction=0.000000000 local_rank_failures=0 worst_top8_rank_deletion_upper=0.233398438
+VERDICT=model-wide-rank-factor->=39%-deletion-ruled-out exact_finite_field=true lower_bounds_labelled=true local_low_rank_exceptions_disclosed=196
+LIMITS=rank-stops-at-required-plus-64-unless-exact-upper-reached;near-rank-not-shippable;real-routing-separate

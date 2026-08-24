@@ -1,0 +1,92 @@
+{
+  "coverage" : {
+    "dense_matrix_count" : 399,
+    "dense_tensor_count" : 399,
+    "expert_matrix_count" : 31488,
+    "expert_tensor_count" : 123,
+    "matrix_count" : 31887,
+    "tensor_count" : 522
+  },
+  "limits" : {
+    "near_rank" : "not measured; approximate SVD cannot establish exact rank and is non-shippable for this objective",
+    "rank" : "lower bounds stop at required+64 unless the exact structural upper bound is reached",
+    "routing" : "real prompt routing histograms are a separate R4 requirement and are not inferred from weights"
+  },
+  "rank" : {
+    "claim" : "every dense matrix is locally below 39%, and worst-case top-8 expert selection aggregated across routed layers is below 39%",
+    "dense_local_39_percent_failure_count" : 0,
+    "exact_rank_count" : 569,
+    "failure_count" : 196,
+    "gf3_certificate_count" : 31887,
+    "gf5_certificate_count" : 0,
+    "gf7_certificate_count" : 0,
+    "local_39_percent_failure_count" : 196,
+    "local_39_percent_pass_count" : 31691,
+    "mac_weighted_deletion_upper_bound" : 0.24311688492088221,
+    "maximum_dense_deletion_upper_bound" : 0.365234375,
+    "maximum_per_matrix_deletion_upper_bound" : 0.77294921875,
+    "pass_count" : 31691,
+    "threshold_ruled_out" : 0.39000000000000001,
+    "uncertified_matrix_count" : 0
+  },
+  "routed_tiles" : [
+    {
+      "dead_hidden_channels_gate_or_up" : 59093,
+      "down_bk8_dead_activation_fragments" : 89,
+      "down_bk8_fragment_slots" : 655360,
+      "down_bk8_zero_weight_column_fragments" : 0,
+      "expert_instances" : 10240,
+      "gate_up_bn32_aligned_zero_tiles" : 0,
+      "gate_up_bn32_compaction_tiles_removed" : 3308,
+      "gate_up_bn32_tile_slots" : 327680,
+      "gate_zero_rows" : 59093,
+      "layer_count" : 40,
+      "local_rank_cutoff_failures" : 196,
+      "removable_mac_fraction" : 0.0067754109700520837,
+      "removable_macs" : 218251264,
+      "routed_macs" : 32212254720,
+      "scope" : "language_model",
+      "unequal_gate_up_zero_mask_layers" : 0,
+      "up_zero_rows" : 59093,
+      "worst_case_rank_baseline_macs" : 1006632960,
+      "worst_case_rank_deletion_upper_bound" : 0.244598388671875,
+      "worst_case_rank_removable_macs" : 246220800
+    },
+    {
+      "dead_hidden_channels_gate_or_up" : 16,
+      "down_bk8_dead_activation_fragments" : 0,
+      "down_bk8_fragment_slots" : 16384,
+      "down_bk8_zero_weight_column_fragments" : 0,
+      "expert_instances" : 256,
+      "gate_up_bn32_aligned_zero_tiles" : 0,
+      "gate_up_bn32_compaction_tiles_removed" : 0,
+      "gate_up_bn32_tile_slots" : 8192,
+      "gate_zero_rows" : 16,
+      "layer_count" : 1,
+      "local_rank_cutoff_failures" : 0,
+      "removable_mac_fraction" : 0,
+      "removable_macs" : 0,
+      "routed_macs" : 805306368,
+      "scope" : "mtp",
+      "unequal_gate_up_zero_mask_layers" : 0,
+      "up_zero_rows" : 16,
+      "worst_case_rank_baseline_macs" : 25165824,
+      "worst_case_rank_deletion_upper_bound" : 0.2333984375,
+      "worst_case_rank_removable_macs" : 5873664
+    }
+  ],
+  "run_valid" : true,
+  "schema_version" : 1,
+  "structure" : {
+    "bn32_bk8_block_slots" : 138652672,
+    "decoded_values" : 35495165952,
+    "decoded_zeros" : 4567901228,
+    "duplicate_columns" : 123665,
+    "duplicate_experts" : 0,
+    "duplicate_groups" : 3806046,
+    "duplicate_rows" : 117886,
+    "zero_bn32_bk8_blocks" : 841,
+    "zero_columns" : 1736,
+    "zero_rows" : 118658
+  }
+}

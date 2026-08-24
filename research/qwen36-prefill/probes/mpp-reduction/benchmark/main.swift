@@ -68,61 +68,62 @@ private let adversaryCells = [
 ]
 
 // This dispatch-count ledger covers the Qwen 3.6 35B A3B token-linear
-// projections for one 2,048-row pass. Routed rows already include top-8
-// expansion (M=16,384). Only the scalar shared-expert gate (0.0034% of linear
-// FLOPs, N=1 and outside this full-tile probe) is omitted.
+// projections for the threshold-defining [4, 2048] pass (M=8,192). Routed
+// rows already include top-8 expansion (M=65,536). Only the scalar
+// shared-expert gate (0.0034% of linear FLOPs, N=1 and outside this full-tile
+// probe) is omitted.
 private let benchmarkCells = [
     BenchmarkCell(
         name: "gdn-attention-input",
-        m: 2_048,
+        m: 8_192,
         n: 8_192,
         k: 2_048,
         modelDispatchCount: 40),
     BenchmarkCell(
         name: "gdn-wide",
-        m: 2_048,
+        m: 8_192,
         n: 4_096,
         k: 2_048,
         modelDispatchCount: 30),
     BenchmarkCell(
         name: "gdn-attention-output",
-        m: 2_048,
+        m: 8_192,
         n: 2_048,
         k: 4_096,
         modelDispatchCount: 40),
     BenchmarkCell(
         name: "attention-kv-shared-up",
-        m: 2_048,
+        m: 8_192,
         n: 512,
         k: 2_048,
         modelDispatchCount: 100),
     BenchmarkCell(
         name: "router",
-        m: 2_048,
+        m: 8_192,
         n: 256,
         k: 2_048,
         modelDispatchCount: 40),
     BenchmarkCell(
         name: "gdn-small",
-        m: 2_048,
+        m: 8_192,
         n: 32,
         k: 2_048,
         modelDispatchCount: 60),
     BenchmarkCell(
         name: "shared-down",
-        m: 2_048,
+        m: 8_192,
         n: 2_048,
         k: 512,
         modelDispatchCount: 40),
     BenchmarkCell(
         name: "routed-gate-up",
-        m: 16_384,
+        m: 65_536,
         n: 1_024,
         k: 2_048,
         modelDispatchCount: 40),
     BenchmarkCell(
         name: "routed-down",
-        m: 16_384,
+        m: 65_536,
         n: 2_048,
         k: 512,
         modelDispatchCount: 40),

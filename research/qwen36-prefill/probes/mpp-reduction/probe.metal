@@ -6,10 +6,10 @@
 using namespace metal;
 using namespace mpp::tensor_ops;
 
-constexpr int probeM = 16;
-constexpr int probeN = 32;
-constexpr int probeK = 16;
-constexpr int steelK = 8;
+constant constexpr int probeM = 16;
+constant constexpr int probeN = 32;
+constant constexpr int probeK = 16;
+constant constexpr int steelK = 8;
 
 using ProbeAExtents = metal::extents<int, probeK, probeM>;
 using ProbeBExtents = metal::extents<int, probeN, probeK>;
@@ -124,7 +124,7 @@ kernel void mpp_static_k16_macc_cooperative_inputs(
 
   cooperative_a.load(a_tensor);
   cooperative_b.load(b_tensor);
-#pragma unroll full
+#pragma clang loop unroll(full)
   for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {
     cooperative_c.set(i, 0.0f);
   }
@@ -221,7 +221,7 @@ kernel void mpp_dynamic_k8_multiply_explicit_add(
 
   operation.run(a0, b0, c0);
   operation.run(a1, b1, c1);
-#pragma unroll full
+#pragma clang loop unroll(full)
   for (ushort i = 0; i < c0.get_capacity(); ++i) {
     if (c0.is_valid_element(i)) {
       c0[i] = c0[i] + c1.get(i);
@@ -258,7 +258,7 @@ kernel void mpp_static_k16_padded_multiply_explicit_add(
 
   operation.run(a0, b0, c0);
   operation.run(a1, b1, c1);
-#pragma unroll full
+#pragma clang loop unroll(full)
   for (ushort i = 0; i < c0.get_capacity(); ++i) {
     if (c0.is_valid_element(i)) {
       c0[i] = c0[i] + c1.get(i);

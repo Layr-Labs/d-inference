@@ -1,0 +1,17 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-08-23 23:25:33.000.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-08-23 23:25:33.000.
+Test Suite 'FloatDequantizationTests' started at 2026-08-23 23:25:33.000.
+Test Case '-[MLXTests.FloatDequantizationTests testBFloat16AffineQMMDequantizesInFloat32]' started.
+Test Case '-[MLXTests.FloatDequantizationTests testBFloat16AffineQMMDequantizesInFloat32]' passed (0.362 seconds).
+Test Suite 'FloatDequantizationTests' passed at 2026-08-23 23:25:33.363.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.362 (0.362) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-08-23 23:25:33.363.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.362 (0.362) seconds
+Test Suite 'Selected tests' passed at 2026-08-23 23:25:33.363.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.362 (0.363) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -240,3 +240,16 @@ No timing run. Override reversed and test host rebuilt. This closes the
 shortcut “reuse existing NAX on M3”; a brand-new byte-identical MPP
 dequant kernel remains conceptually open. See `notes/034`.
 
+## 2026-08-24T06:27Z — E7 upstream FP32 dequantization dead
+
+Selective upstream MLX #4241 passed its adversarial `-109.5` regression
+and all sorted/Qwen correctness tests. On source-matched M3 A/B:
+
+- gate_up 6.3125 → 6.1445 ms (1.027×);
+- down 3.3834 → 3.2718 ms (1.034×);
+- combined routed projection: **1.030×**.
+
+Below the preregistered 1.05× continuation bar, so no full-model run.
+Patches reversed and baseline source/metallib/host restored. See
+`notes/035`.
+

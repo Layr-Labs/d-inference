@@ -118,5 +118,9 @@ E6 forced MLX's existing portable MPP/NAX path onto M3. It executed but
 failed 11 QMM/Qwen correctness cases before timing (`notes/034`). A
 custom byte-identical MPP loader is the only remaining TensorOps variant.
 
+E7 ported upstream FP32 affine dequantization. Correctness passed, but
+the combined routed gain was only 1.030× (`notes/035`), below its
+full-model continuation bar.
+
 Wavefront / concurrent encode (013) is not a scheduler knob: one process
 GPU stream + `evalLock`. Occupancy at 2048 tokens is already saturated.

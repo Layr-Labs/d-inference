@@ -31,6 +31,9 @@ e4-fp16-w4-down	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-te
 e4-fp16-monolithic-gate	2026-08-24T06:07:00Z	m3-max-128gb-2	mlx-swift-local	mlx-swift-tests	2	yes	E4-fp16-roof	fp16-single-matrix	2048	1	tflops	12.29	TFLOPS	1.00x	roof	flat vs BF16 illegal roof
 e5-half-accum-correctness	2026-08-24T06:14:01Z	m3-max-128gb-2	remote-metal-patch	mlx-swift-tests	2	yes	E5-half-accumulator	half-accum-expert-tile	2048	1	correctness	0	pass	fail	no	30 failures; gate error up to 2368; no timing per preregistration
 e6-portable-mpp-correctness	2026-08-24T06:20:43Z	m3-max-128gb-2	remote-host-patch	mlx-swift-tests	2	yes	E6-portable-MPP	forced-NAX-M3	2048	1	correctness	0	pass	fail	no	11 failures; Qwen errors up to 6.75; no timing per preregistration
+e7-fp32-dequant-gate	2026-08-24T06:27:04Z	m3-max-128gb-2	upstream-56e026d8	mlx-swift-tests	2	yes	E7-FP32-dequant	fp32-reconstruct-once	2048	1	qmm_ms	6.1445	ms	1.027x	no	source-matched baseline 6.3125ms
+e7-fp32-dequant-down	2026-08-24T06:27:04Z	m3-max-128gb-2	upstream-56e026d8	mlx-swift-tests	2	yes	E7-FP32-dequant	fp32-reconstruct-once	2048	1	qmm_ms	3.2718	ms	1.034x	no	source-matched baseline 3.3834ms
+e7-fp32-dequant-correctness	2026-08-24T06:26:46Z	m3-max-128gb-2	upstream-56e026d8	mlx-swift-tests	2	yes	E7-FP32-dequant	fp32-reconstruct-once	2048	1	correctness	1	pass	pass	meta	adversarial -109.5 and all 10 sorted QMM tests pass
 
 
 

@@ -48,8 +48,8 @@ export function BaseRewardsPanel({
           <>
             <p className="text-sm text-text-secondary mb-4">
               The table shows each machine&apos;s maximum monthly tier at full availability,
-              before work offsets, attestation, health, uptime, and allocator checks. All
-              eligible machines share one fixed{" "}
+              before attestation, health, uptime, and allocator checks. All eligible machines
+              share one fixed{" "}
               {fmtUSD(policy.monthly_pool_micro_usd / 1_000_000)} monthly pool, so a tier
               amount is not guaranteed.
             </p>

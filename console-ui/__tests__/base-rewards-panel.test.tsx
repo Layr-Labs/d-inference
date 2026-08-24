@@ -29,7 +29,7 @@ describe("BaseRewardsPanel", () => {
     expect(screen.getByText("$216")).toBeInTheDocument();
     expect(screen.getByText("Under 24GB")).toBeInTheDocument();
     expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getByText(/fixed \$9000\.00 monthly pool/)).toBeInTheDocument();
+    expect(screen.getByText(/fixed \$9,000\.00 monthly pool/)).toBeInTheDocument();
   });
 
   it("labels tiers as capped maxima, never guaranteed payouts", () => {

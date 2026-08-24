@@ -22,11 +22,11 @@ known `lume` / `lume` bootstrap credentials, so this slice is restricted to the
 approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
 host-substrate proof, not a multi-tenant service. The public lease-fenced
-runtime deliberately has no guest-command method.
-`baseImagePreparationAndDevelopment` is an explicit package-only policy for
-base-image preparation and live tests; it is not a production security boundary
-because OpenSSH startup files, launchd metadata, and command-monitor files
-remain writable by the same guest identity.
+runtime exposes `execute`, but guest commands are disabled by default. Only the
+explicit package-only `baseImagePreparationAndDevelopment` policy enables
+execution for base-image preparation and live tests; it is not a production
+security boundary because OpenSSH startup files, launchd metadata, and
+command-monitor files remain writable by the same guest identity.
 
 The development bootstrap executor captures stdout and stderr independently,
 drains both streams without retaining unbounded data, and returns at most 1 MiB

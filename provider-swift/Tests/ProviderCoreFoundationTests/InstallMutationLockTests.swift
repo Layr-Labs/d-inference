@@ -71,8 +71,8 @@ struct InstallMutationLockTests {
             )
 
             #expect(
-                try InstallMutationLock.pendingOneShotTransaction(in: root)
-                    == pending
+                try InstallMutationLock.pendingOneShotTransaction(in: root)?.path
+                    == pending.path
             )
         }
     }

@@ -84,7 +84,10 @@ struct MyMacDetailView: View {
 
                 if mac.canRemove {
                     Menu {
-                        Button("Remove from Account…", role: .destructive) {
+                        Button(
+                            "\(MyMacRemovalPresentation.actionTitle)…",
+                            role: .destructive
+                        ) {
                             onRequestRemoval()
                         }
                     } label: {

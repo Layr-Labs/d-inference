@@ -113,16 +113,10 @@ struct DarkbloomApp: App {
         _accountUnlinkStore = State(initialValue: AccountUnlinkStore(
             refreshAfterSuccess: {
                 myMacsStore.signOut()
-                async let providerRefresh: Void = providerStore.refresh()
-                async let modelRefresh: Void = modelLibraryStore.refresh()
-                async let contributionsRefresh: Void = contributionsStore.refresh()
-                async let availabilityRefresh: Void = availabilityStore.refresh()
-                _ = await (
-                    providerRefresh,
-                    modelRefresh,
-                    contributionsRefresh,
-                    availabilityRefresh
-                )
+                await providerStore.refresh()
+                await modelLibraryStore.refresh()
+                await contributionsStore.refresh()
+                await availabilityStore.refresh()
             }
         ))
     }

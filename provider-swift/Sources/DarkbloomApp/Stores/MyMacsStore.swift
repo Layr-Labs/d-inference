@@ -67,6 +67,8 @@ final class MyMacsStore {
     private var didStart = false
     @ObservationIgnored
     private var liveTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var liveRevision: UInt64 = 0
 
     init(fixture: MyMacsFixture = .ready) {
         let state = MyMacsFixtures.make(fixture)
@@ -125,13 +127,12 @@ final class MyMacsStore {
         guard mode == .live, !didStart else { return }
         didStart = true
         guard let session, session.isSignedIn else {
+            invalidateLiveWork()
             availability = .signedOut
             return
         }
         availability = .loading
-        liveTask = Task { [weak self] in
-            await self?.refreshLive()
-        }
+        scheduleRefreshLive()
     }
 
     func signIn() {
@@ -141,9 +142,11 @@ final class MyMacsStore {
             signInPreview()
         case .live:
             guard !isSigningIn else { return }
+            liveTask?.cancel()
+            let revision = nextLiveRevision()
             isSigningIn = true
             liveTask = Task { [weak self] in
-                await self?.signInLive()
+                await self?.signInLive(revision: revision)
             }
         }
     }
@@ -153,9 +156,7 @@ final class MyMacsStore {
         case .fixture:
             refreshPreview()
         case .live:
-            liveTask = Task { [weak self] in
-                await self?.refreshLive()
-            }
+            scheduleRefreshLive()
         }
     }
 
@@ -164,9 +165,7 @@ final class MyMacsStore {
         case .fixture:
             retryPreviewLoad()
         case .live:
-            liveTask = Task { [weak self] in
-                await self?.refreshLive()
-            }
+            scheduleRefreshLive()
         }
     }
 
@@ -175,11 +174,11 @@ final class MyMacsStore {
         // A Privy token in an ephemeral browser leaves no shared browser
         // session, so signing out is purely local — coordinator tokens
         // self-expire server-side.
+        invalidateLiveWork()
         session?.signOut()
-        liveTask?.cancel()
-        liveTask = nil
         didStart = false
         snapshot = nil
+        isSigningIn = false
         signInErrorMessage = nil
         availability = .signedOut
     }
@@ -200,47 +199,93 @@ final class MyMacsStore {
     // MARK: - Live transitions (mirrors of the fixture state machine)
 
     func signInLive() async {
-        defer { isSigningIn = false }
+        liveTask?.cancel()
+        liveTask = nil
+        let revision = nextLiveRevision()
+        isSigningIn = true
+        await signInLive(revision: revision)
+    }
+
+    private func signInLive(revision: UInt64) async {
+        defer {
+            if revision == liveRevision {
+                isSigningIn = false
+            }
+        }
         guard let session else { return }
         do {
-            _ = try await session.signIn()
+            let bearerToken = try await session.signIn()
             // signOut() may have raced the minutes-long auth browser; that
             // transition owns the state — never resurrect inventory after it.
-            guard !Task.isCancelled else { return }
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                // AccountSessionManager persists in the browser callback. If a
+                // sign-out won the race and no replacement sign-in is active,
+                // clear that stale callback token as well as suppressing UI.
+                if !isSigningIn,
+                   case .signedOut = availability,
+                   session.accessToken() == bearerToken {
+                    session.signOut()
+                }
+                return
+            }
             signInErrorMessage = nil
-            await refreshLive()
+            await refreshLive(
+                at: .now,
+                revision: revision,
+                bearerToken: bearerToken
+            )
         } catch AccountSessionError.cancelled {
             // User dismissed the auth browser: stay signed out, silently.
             // Restore .signedOut if sign-in started from a pre-session state
             // (e.g. start() raced the CTA) — never an error, never a hang in
             // .loading.
-            guard !Task.isCancelled else { return }
+            guard canPublish(revision: revision) else { return }
             if snapshot == nil, session.accessToken() == nil {
                 availability = .signedOut
             }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard canPublish(revision: revision) else { return }
             signInErrorMessage = error.localizedDescription
             availability = .signedOut
         }
     }
 
     func refreshLive(at date: Date = .now) async {
-        guard let session, let fleet else { return }
-        guard let bearerToken = session.accessToken() else {
+        liveTask?.cancel()
+        liveTask = nil
+        let revision = nextLiveRevision()
+        guard let bearerToken = session?.accessToken() else {
             // No usable session: the coordinator cannot be queried at all.
             snapshot = nil
             availability = .signedOut
             return
         }
+        await refreshLive(at: date, revision: revision, bearerToken: bearerToken)
+    }
 
+    private func refreshLive(
+        at date: Date,
+        revision: UInt64,
+        bearerToken: String
+    ) async {
+        guard let fleet, canPublish(revision: revision, bearerToken: bearerToken) else {
+            return
+        }
         do {
             let providers = try await fleet.providers(bearerToken: bearerToken)
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                return
+            }
             // Summary is best-effort: the providers payload alone is
             // sufficient to render inventory (see MyMacsSnapshot).
             let summary = try? await fleet.summary(bearerToken: bearerToken)
-            guard !Task.isCancelled else { return }
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                return
+            }
             let updated = try MyMacsSnapshot(providers: providers, summary: summary, asOf: date)
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                return
+            }
             snapshot = updated
             availability = .ready(
                 lastUpdated: date,
@@ -253,10 +298,11 @@ final class MyMacsStore {
         } catch FleetClientError.sessionExpired {
             // Coordinator rejected the Privy token: drop it so the user
             // re-authenticates instead of streaming repeated 401s.
-            session.signOut()
-            snapshot = nil
-            availability = .signedOut
+            expireSessionIfCurrent(revision: revision, bearerToken: bearerToken)
         } catch {
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                return
+            }
             if let retained = snapshot {
                 availability = .staleRetained(
                     lastUpdated: retained.asOf,
@@ -270,6 +316,53 @@ final class MyMacsStore {
         }
     }
 
+    private func scheduleRefreshLive() {
+        liveTask?.cancel()
+        let revision = nextLiveRevision()
+        guard let bearerToken = session?.accessToken() else {
+            liveTask = nil
+            snapshot = nil
+            availability = .signedOut
+            return
+        }
+        liveTask = Task { [weak self] in
+            await self?.refreshLive(
+                at: .now,
+                revision: revision,
+                bearerToken: bearerToken
+            )
+        }
+    }
+
+    @discardableResult
+    private func nextLiveRevision() -> UInt64 {
+        liveRevision &+= 1
+        return liveRevision
+    }
+
+    private func invalidateLiveWork() {
+        _ = nextLiveRevision()
+        liveTask?.cancel()
+        liveTask = nil
+    }
+
+    private func canPublish(revision: UInt64, bearerToken: String? = nil) -> Bool {
+        guard !Task.isCancelled, revision == liveRevision else { return false }
+        guard let bearerToken else { return true }
+        return session?.accessToken() == bearerToken
+    }
+
+    private func expireSessionIfCurrent(revision: UInt64, bearerToken: String) {
+        guard canPublish(revision: revision, bearerToken: bearerToken) else {
+            return
+        }
+        _ = nextLiveRevision()
+        session?.signOut()
+        snapshot = nil
+        signInErrorMessage = nil
+        availability = .signedOut
+    }
+
     private func removeMacLive(id: String, at date: Date = .now) async -> Bool {
         guard let session, let fleet,
               let mac = mac(id: id),
@@ -278,6 +371,9 @@ final class MyMacsStore {
         else {
             return false
         }
+        liveTask?.cancel()
+        liveTask = nil
+        let revision = nextLiveRevision()
         guard let bearerToken = session.accessToken() else {
             snapshot = nil
             availability = .signedOut
@@ -287,11 +383,12 @@ final class MyMacsStore {
         do {
             try await fleet.deleteProvider(removalToken: removalToken, bearerToken: bearerToken)
         } catch FleetClientError.sessionExpired {
-            session.signOut()
-            snapshot = nil
-            availability = .signedOut
+            expireSessionIfCurrent(revision: revision, bearerToken: bearerToken)
             return false
         } catch {
+            guard canPublish(revision: revision, bearerToken: bearerToken) else {
+                return false
+            }
             // 403 (not owned), 404 (already gone), 409 (still online),
             // transport: retain the inventory and surface the failure without
             // collapsing the page into the unavailable state.
@@ -310,6 +407,9 @@ final class MyMacsStore {
 
         // Coordinator confirmed: apply the identical local bookkeeping the
         // preview path uses (counts reconcile, activity totals retained).
+        guard canPublish(revision: revision, bearerToken: bearerToken) else {
+            return false
+        }
         return removePreviewMac(id: id, at: date)
     }
 

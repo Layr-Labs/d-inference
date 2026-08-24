@@ -1,0 +1,1721 @@
+From 2f67b8bcebaba60ad2625bbd4387b326c889363a Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 21:53:03 +0000
+Subject: [PATCH] Batch Qwen artifact projections across layers
+
+---
+ Libraries/MLXLLM/Models/Qwen35.swift          | 378 +++++++++++-
+ .../Qwen35ArtifactProjectionBatch.swift       | 540 ++++++++++++++++++
+ .../Qwen35ArtifactProjectionBatchPolicy.swift |  96 ++++
+ .../Qwen35ArtifactProjectionBatchTests.swift  | 525 +++++++++++++++++
+ 4 files changed, 1512 insertions(+), 27 deletions(-)
+ create mode 100644 Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+ create mode 100644 Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatchPolicy.swift
+ create mode 100644 Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+
+diff --git a/Libraries/MLXLLM/Models/Qwen35.swift b/Libraries/MLXLLM/Models/Qwen35.swift
+index 4b20be0..082f475 100644
+--- a/Libraries/MLXLLM/Models/Qwen35.swift
++++ b/Libraries/MLXLLM/Models/Qwen35.swift
+@@ -658,6 +658,32 @@ final class Qwen35GatedDeltaNet: Module {
+             operation: "state-only")
+     }
+ 
++    /// Consume cross-layer gathered projections without re-reading this
++    /// layer's qkv/a/b weights. Recurrence remains layer-local and ordered.
++    func cbv2UpdateStateOnly(
++        _ projection: Qwen35GDNArtifactProjection,
++        modelLayerIndex: Int,
++        recurrentState: [CBv2RecurrentStateEvaluation]
++    ) {
++        let (convState, ssmState) = cbv2InputState(
++            inputs: projection.qkv,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState)
++        let (_, newConvState, newSsmState) = processChunk(
++            qkv: projection.qkv,
++            a: projection.a,
++            b: projection.b,
++            convState: convState,
++            ssmState: ssmState,
++            mask: nil)
++        cbv2Stage(
++            conv: newConvState,
++            ssm: newSsmState,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState,
++            operation: "batched-projection-state-only")
++    }
++
+     /// Fold historical rows with the state-only graph, then execute the full
+     /// GDN contribution for the trailing frontier rows from that prefix state.
+     /// Only the post-frontier state is staged, so every row is consumed once
+@@ -722,6 +748,59 @@ final class Qwen35GatedDeltaNet: Module {
+         return outProj(normedOut.reshaped(B, frontierTokenCount, -1))
+     }
+ 
++    /// Fold gathered historical projections, then execute the changing suffix
++    /// through this layer's ordinary projections and recurrence. Only history
++    /// is cross-layer independent; suffix rows remain sequential.
++    func cbv2ForwardFrontierFromProjectedArtifactHistory(
++        _ frontierInputs: MLXArray,
++        history: Qwen35GDNArtifactProjection,
++        modelLayerIndex: Int,
++        recurrentState: [CBv2RecurrentStateEvaluation]
++    ) -> MLXArray {
++        let B = frontierInputs.dim(0)
++        let frontierTokenCount = frontierInputs.dim(1)
++        precondition(
++            frontierTokenCount > 0
++                && history.qkv.ndim == 3
++                && history.qkv.dim(0) == B
++                && history.qkv.dim(1) > 0,
++            "Qwen35 projected frontier requires nonempty history and suffix")
++
++        let (initialConv, initialSSM) = cbv2InputState(
++            inputs: frontierInputs,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState)
++        let prefix = processChunk(
++            qkv: history.qkv,
++            a: history.a,
++            b: history.b,
++            convState: initialConv,
++            ssmState: initialSSM,
++            mask: nil)
++
++        let frontierQKV = inProjQKV(frontierInputs)
++        let frontierB = inProjB(frontierInputs)
++        let frontierA = inProjA(frontierInputs)
++        let frontier = processChunk(
++            qkv: frontierQKV,
++            a: frontierA,
++            b: frontierB,
++            convState: prefix.newConvState,
++            ssmState: prefix.newSsmState,
++            mask: nil)
++        cbv2Stage(
++            conv: frontier.newConvState,
++            ssm: frontier.newSsmState,
++            modelLayerIndex: modelLayerIndex,
++            recurrentState: recurrentState,
++            operation: "batched-projection-frontier-state-river")
++
++        let z = inProjZ(frontierInputs)
++            .reshaped(B, frontierTokenCount, numVHeads, headVDim)
++        let normedOut = norm(frontier.out, gate: z)
++        return outProj(normedOut.reshaped(B, frontierTokenCount, -1))
++    }
++
+     private func cbv2InputState(
+         inputs: MLXArray,
+         modelLayerIndex: Int,
+@@ -1114,6 +1193,38 @@ final class Qwen35Attention: Module {
+         }
+         cache.commitKVOnly(keys: keys, values: values)
+     }
++
++    /// Normalize, RoPE-transform, and commit cross-layer gathered K/V
++    /// projections. The gathered values are raw `kProj`/`vProj` outputs, so
++    /// cache bytes and offset advancement follow the ordinary artifact path.
++    func cbv2CommitKVOnly(
++        _ projection: Qwen35AttentionArtifactProjection,
++        cache: any CBv2KVCommitOnlyLayerCache,
++        positionIds: MLXArray? = nil
++    ) {
++        let B = projection.keys.dim(0)
++        let L = projection.keys.dim(1)
++        precondition(
++            projection.keys.ndim == 3
++                && projection.values.ndim == 3
++                && projection.values.dim(0) == B
++                && projection.values.dim(1) == L,
++            "Qwen35 projected K/V history shape mismatch")
++        var keys = kNorm(
++            projection.keys.reshaped(B, L, kvHeads, -1))
++            .transposed(0, 2, 1, 3)
++        let values = projection.values
++            .reshaped(B, L, kvHeads, -1)
++            .transposed(0, 2, 1, 3)
++
++        if let positionIds {
++            keys = mrope.applyKeys(keys, positionIds: positionIds)
++        } else {
++            let offsets = cache.positionOffsets + 0
++            keys = rope(keys, offset: offsets)
++        }
++        cache.commitKVOnly(keys: keys, values: values)
++    }
+ }
+ 
+ /// Qwen3.5 interleaved 3-axis M-RoPE. Request positions arrive as function
+@@ -1501,14 +1612,24 @@ final class Qwen35DecoderLayer: Module {
+         modelLayerIndex: Int,
+         attentionCache: (any CBv2AttendingLayerCache)?,
+         recurrentState: [CBv2RecurrentStateEvaluation],
+-        positionIds: MLXArray?
++        positionIds: MLXArray?,
++        artifactProjection: Qwen35ArtifactProjection? = nil
+     ) -> MLXArray? {
+         if isLinear {
+             precondition(attentionCache == nil, "Qwen35 recurrent layer received attention KV")
+-            linearAttn!.cbv2UpdateStateOnly(
+-                inputLayerNorm(x),
+-                modelLayerIndex: modelLayerIndex,
+-                recurrentState: recurrentState)
++            if let artifactProjection,
++                case .gdn(let projection) = artifactProjection
++            {
++                linearAttn!.cbv2UpdateStateOnly(
++                    projection,
++                    modelLayerIndex: modelLayerIndex,
++                    recurrentState: recurrentState)
++            } else {
++                linearAttn!.cbv2UpdateStateOnly(
++                    inputLayerNorm(x),
++                    modelLayerIndex: modelLayerIndex,
++                    recurrentState: recurrentState)
++            }
+         } else {
+             guard
+                 let attentionCache,
+@@ -1516,8 +1637,19 @@ final class Qwen35DecoderLayer: Module {
+             else {
+                 return nil
+             }
+-            selfAttn!.cbv2CommitKVOnly(
+-                inputLayerNorm(x), cache: commitCache, positionIds: positionIds)
++            if let artifactProjection,
++                case .attention(let projection) = artifactProjection
++            {
++                selfAttn!.cbv2CommitKVOnly(
++                    projection,
++                    cache: commitCache,
++                    positionIds: positionIds)
++            } else {
++                selfAttn!.cbv2CommitKVOnly(
++                    inputLayerNorm(x),
++                    cache: commitCache,
++                    positionIds: positionIds)
++            }
+         }
+         return x
+     }
+@@ -1535,7 +1667,8 @@ final class Qwen35DecoderLayer: Module {
+         recurrentState: [CBv2RecurrentStateEvaluation],
+         positionIds: MLXArray?,
+         frontierTokenCount: Int,
+-        usePrefillMoERoutingPolicy: Bool
++        usePrefillMoERoutingPolicy: Bool,
++        artifactProjection: Qwen35ArtifactProjection? = nil
+     ) -> MLXArray? {
+         precondition(x.ndim == 3 && x.dim(1) > 0)
+         let length = x.dim(1)
+@@ -1544,16 +1677,27 @@ final class Qwen35DecoderLayer: Module {
+             "Qwen35 frontier state river requires an in-chunk suffix")
+         let historyCount = length - frontierTokenCount
+         let frontierRows = historyCount ..< length
+-        let normalized = inputLayerNorm(x)
+ 
+         let frontierContribution: MLXArray
+         if isLinear {
+             precondition(attentionCache == nil, "Qwen35 recurrent layer received attention KV")
+-            frontierContribution = linearAttn!.cbv2ForwardFrontierFromArtifactHistory(
+-                normalized,
+-                frontierTokenCount: frontierTokenCount,
+-                modelLayerIndex: modelLayerIndex,
+-                recurrentState: recurrentState)
++            if historyCount > 0,
++                let artifactProjection,
++                case .gdn(let projection) = artifactProjection
++            {
++                frontierContribution =
++                    linearAttn!.cbv2ForwardFrontierFromProjectedArtifactHistory(
++                        inputLayerNorm(x[0..., frontierRows, 0...]),
++                        history: projection,
++                        modelLayerIndex: modelLayerIndex,
++                        recurrentState: recurrentState)
++            } else {
++                frontierContribution = linearAttn!.cbv2ForwardFrontierFromArtifactHistory(
++                    inputLayerNorm(x),
++                    frontierTokenCount: frontierTokenCount,
++                    modelLayerIndex: modelLayerIndex,
++                    recurrentState: recurrentState)
++            }
+         } else {
+             guard
+                 let attentionCache,
+@@ -1561,17 +1705,39 @@ final class Qwen35DecoderLayer: Module {
+             else {
+                 return nil
+             }
+-            if historyCount > 0 {
++            if historyCount > 0,
++                let artifactProjection,
++                case .attention(let projection) = artifactProjection
++            {
+                 let history = 0 ..< historyCount
+                 selfAttn!.cbv2CommitKVOnly(
+-                    normalized[0..., history, 0...],
++                    projection,
+                     cache: commitCache,
+-                    positionIds: cbv2PositionSlice(positionIds, range: history))
++                    positionIds: cbv2PositionSlice(
++                        positionIds, range: history))
++                frontierContribution = selfAttn!.cbv2Forward(
++                    inputLayerNorm(x[0..., frontierRows, 0...]),
++                    cache: attentionCache,
++                    positionIds: cbv2PositionSlice(
++                        positionIds, range: frontierRows))
++            } else {
++                // Keep the unbatched E51 graph unchanged: normalize the full
++                // rectangle once, then slice history and suffix.
++                let normalized = inputLayerNorm(x)
++                if historyCount > 0 {
++                    let history = 0 ..< historyCount
++                    selfAttn!.cbv2CommitKVOnly(
++                        normalized[0..., history, 0...],
++                        cache: commitCache,
++                        positionIds: cbv2PositionSlice(
++                            positionIds, range: history))
++                }
++                frontierContribution = selfAttn!.cbv2Forward(
++                    normalized[0..., frontierRows, 0...],
++                    cache: attentionCache,
++                    positionIds: cbv2PositionSlice(
++                        positionIds, range: frontierRows))
+             }
+-            frontierContribution = selfAttn!.cbv2Forward(
+-                normalized[0..., frontierRows, 0...],
+-                cache: attentionCache,
+-                positionIds: cbv2PositionSlice(positionIds, range: frontierRows))
+         }
+ 
+         let frontierInput = x[0..., frontierRows, 0...]
+@@ -1620,6 +1786,15 @@ public class Qwen35TextModelInner: Module {
+     let norm: RMSNorm
+     let prefillMoERoutingPolicy: Qwen35PrefillMoERoutingPolicy
+     let cbv2PrefillLayerPolicy: Qwen35CBv2PrefillLayerPolicy
++    let cbv2ArtifactProjectionBatchPolicy: Qwen35ArtifactProjectionBatchPolicy
++
++    /// Constructed on the first eligible post-load prefill. Quantization swaps
++    /// modules after model initialization, so building this in `init` would
++    /// capture placeholder float weights rather than immutable checkpoint
++    /// weights.
++    private var cbv2ArtifactProjectionWeightBank:
++        Qwen35ArtifactProjectionWeightBank?
++    private var cbv2ArtifactProjectionBatchUnavailable = false
+ 
+     let ssmIdx: Int
+     let faIdx: Int
+@@ -1642,8 +1817,12 @@ public class Qwen35TextModelInner: Module {
+         let resolvedLayerPolicy = Qwen35CBv2PrefillLayerPolicy.fromEnvironment(
+             environment,
+             layerCount: args.hiddenLayers)
++        let resolvedProjectionBatchPolicy =
++            Qwen35ArtifactProjectionBatchPolicy.fromEnvironment(environment)
+         self.prefillMoERoutingPolicy = resolvedMoERoutingPolicy
+         self.cbv2PrefillLayerPolicy = resolvedLayerPolicy
++        self.cbv2ArtifactProjectionBatchPolicy =
++            resolvedProjectionBatchPolicy
+         self.layers = (0 ..< args.hiddenLayers).map { layerIdx in
+             Qwen35DecoderLayer(
+                 args,
+@@ -1658,7 +1837,10 @@ public class Qwen35TextModelInner: Module {
+ 
+         super.init()
+ 
+-        if cbv2PrefillLayerPolicy.isEnabled || prefillMoERoutingPolicy.reducedTopK != nil {
++        if cbv2PrefillLayerPolicy.isEnabled
++            || prefillMoERoutingPolicy.reducedTopK != nil
++            || cbv2ArtifactProjectionBatchPolicy.isEnabled
++        {
+             FileHandle.standardError.write(Data(
+                 "[INFO] Qwen35 CBv2 prefill experiment: "
+                     .appending(cbv2PrefillExperimentDescriptor)
+@@ -1668,7 +1850,9 @@ public class Qwen35TextModelInner: Module {
+     }
+ 
+     var cbv2PrefillExperimentDescriptor: String {
+-        "layers=\(cbv2PrefillLayerPolicy.descriptor);moe=\(prefillMoERoutingPolicy.descriptor)"
++        "layers=\(cbv2PrefillLayerPolicy.descriptor);"
++            + "artifact_projection_batch=\(cbv2ArtifactProjectionBatchPolicy.descriptor);"
++            + "moe=\(prefillMoERoutingPolicy.descriptor)"
+     }
+ 
+     /// Returns the pre-norm hidden state from the final layer.
+@@ -1784,8 +1968,37 @@ public class Qwen35TextModelInner: Module {
+         } else {
+             resolvedSuffixTokenCount = 0
+         }
++        let artifactHistoryCount: Int
++        if cbv2ArtifactProjectionBatchPolicy.isEnabled,
++            cbv2PrefillLayerPolicy.isEnabled,
++            inputEmbeddings == nil
++        {
++            switch phase {
++            case .prefillIntermediate:
++                artifactHistoryCount = inputs.dim(1)
++            case .prefillFrontier:
++                artifactHistoryCount =
++                    inputs.dim(1) - resolvedSuffixTokenCount
++            case .decode, .mtp:
++                artifactHistoryCount = 0
++            }
++        } else {
++            artifactHistoryCount = 0
++        }
++
++        var attentionStorageIndexByLayer: [Int: Int] = [:]
++        var storageIndex = 0
++        for (modelLayerIndex, layer) in layers.enumerated()
++        where !layer.isLinear
++        {
++            attentionStorageIndexByLayer[modelLayerIndex] = storageIndex
++            storageIndex += 1
++        }
++
+         var hiddenStates = inputEmbeddings ?? embedTokens(inputs)
+         var attentionIndex = 0
++        var preparedArtifactProjections:
++            [Int: Qwen35ArtifactProjection] = [:]
+         for (modelLayerIndex, layer) in layers.enumerated() {
+             let attentionCache: (any CBv2AttendingLayerCache)?
+             if layer.isLinear {
+@@ -1798,20 +2011,57 @@ public class Qwen35TextModelInner: Module {
+                     "Qwen35 CBv2 attention cache mapped to the wrong model layer")
+                 attentionIndex += 1
+             }
+-            switch cbv2PrefillLayerPolicy.mode(
++            let layerMode = cbv2PrefillLayerPolicy.mode(
+                 layerIndex: modelLayerIndex, phase: phase)
+-            {
++            let artifactProjection: Qwen35ArtifactProjection?
++            if artifactHistoryCount > 0, layerMode != .full {
++                if preparedArtifactProjections[modelLayerIndex] == nil {
++                    // A prior prepared run can only survive while every
++                    // historical row passes through unchanged. Any mismatch
++                    // is treated as a full-layer barrier.
++                    preparedArtifactProjections.removeAll(keepingCapacity: true)
++                    let candidates =
++                        cbv2ArtifactProjectionCandidateLayerIndices(
++                            from: modelLayerIndex,
++                            phase: phase,
++                            caches: caches,
++                            attentionStorageIndexByLayer:
++                                attentionStorageIndexByLayer)
++                    if candidates.count >= 2,
++                        let weightBank =
++                            resolvedCBv2ArtifactProjectionWeightBank(),
++                        let prepared = weightBank.prepare(
++                            hiddenHistory: hiddenStates[
++                                0..., 0 ..< artifactHistoryCount, 0...],
++                            candidateLayerIndices: candidates,
++                            maximumTransientBytes:
++                                cbv2ArtifactProjectionBatchPolicy
++                                .maximumTransientBytes)
++                    {
++                        preparedArtifactProjections = prepared.projections
++                    }
++                }
++                artifactProjection = preparedArtifactProjections.removeValue(
++                    forKey: modelLayerIndex)
++            } else {
++                preparedArtifactProjections.removeAll(keepingCapacity: true)
++                artifactProjection = nil
++            }
++
++            switch layerMode {
+             case .artifactOnly:
+                 if let artifactHidden = layer.cbv2PrefillArtifactOnly(
+                     hiddenStates,
+                     modelLayerIndex: modelLayerIndex,
+                     attentionCache: attentionCache,
+                     recurrentState: recurrentState,
+-                    positionIds: positionIds)
++                    positionIds: positionIds,
++                    artifactProjection: artifactProjection)
+                 {
+                     hiddenStates = artifactHidden
+                     continue
+                 }
++                preparedArtifactProjections.removeAll(keepingCapacity: true)
+             case .artifactHistoryWithFullFrontier:
+                 if let riverHidden = layer.cbv2PrefillFrontierStateRiver(
+                     hiddenStates,
+@@ -1820,11 +2070,13 @@ public class Qwen35TextModelInner: Module {
+                     recurrentState: recurrentState,
+                     positionIds: positionIds,
+                     frontierTokenCount: resolvedSuffixTokenCount,
+-                    usePrefillMoERoutingPolicy: usePrefillMoERoutingPolicy)
++                    usePrefillMoERoutingPolicy: usePrefillMoERoutingPolicy,
++                    artifactProjection: artifactProjection)
+                 {
+                     hiddenStates = riverHidden
+                     continue
+                 }
++                preparedArtifactProjections.removeAll(keepingCapacity: true)
+             case .full:
+                 break
+             }
+@@ -1839,6 +2091,78 @@ public class Qwen35TextModelInner: Module {
+         }
+         return hiddenStates
+     }
++
++    /// Return the maximal consecutive artifact run whose attention members
++    /// expose cache-only commitment before any cache/state mutation occurs.
++    private func cbv2ArtifactProjectionCandidateLayerIndices(
++        from startLayerIndex: Int,
++        phase: Qwen35CBv2ForwardPhase,
++        caches: [any CBv2AttendingLayerCache],
++        attentionStorageIndexByLayer: [Int: Int]
++    ) -> [Int] {
++        guard
++            cbv2ArtifactProjectionBatchPolicy.isEnabled,
++            layers.indices.contains(startLayerIndex)
++        else {
++            return []
++        }
++
++        var result: [Int] = []
++        for modelLayerIndex in startLayerIndex ..< layers.count {
++            let mode = cbv2PrefillLayerPolicy.mode(
++                layerIndex: modelLayerIndex, phase: phase)
++            guard mode != .full else { break }
++            let layer = layers[modelLayerIndex]
++            if !layer.isLinear {
++                guard
++                    let storageIndex =
++                        attentionStorageIndexByLayer[modelLayerIndex],
++                    caches.indices.contains(storageIndex),
++                    caches[storageIndex]
++                        is any CBv2KVCommitOnlyLayerCache
++                else {
++                    break
++                }
++            }
++            result.append(modelLayerIndex)
++        }
++        return result
++    }
++
++    /// Quantization replaces placeholder modules after initialization. Build
++    /// and retain immutable stacks only after the first eligible forward; an
++    /// unsupported family or unsafe byte count permanently falls back to the
++    /// sequential E51 projection path for this model instance.
++    private func resolvedCBv2ArtifactProjectionWeightBank()
++        -> Qwen35ArtifactProjectionWeightBank?
++    {
++        guard
++            cbv2ArtifactProjectionBatchPolicy.isEnabled,
++            !cbv2ArtifactProjectionBatchUnavailable
++        else {
++            return nil
++        }
++        if let cbv2ArtifactProjectionWeightBank {
++            return cbv2ArtifactProjectionWeightBank
++        }
++        guard
++            let weightBank = Qwen35ArtifactProjectionWeightBank(
++                layers: layers,
++                maximumStackedWeightBytes:
++                    Qwen35ArtifactProjectionBatchPolicy
++                    .maximumStackedWeightBytes)
++        else {
++            cbv2ArtifactProjectionBatchUnavailable = true
++            FileHandle.standardError.write(Data(
++                "[WARN] Qwen35 artifact projection batching unavailable; "
++                    .appending(
++                        "falling back to sequential immutable projections\n")
++                    .utf8))
++            return nil
++        }
++        cbv2ArtifactProjectionWeightBank = weightBank
++        return weightBank
++    }
+ }
+ 
+ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
+diff --git a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+new file mode 100644
+index 0000000..631518b
+--- /dev/null
++++ b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatch.swift
+@@ -0,0 +1,540 @@
++import MLX
++import MLXNN
++
++/// Raw state-producing projections for one skipped Gated DeltaNet layer.
++/// Values are shaped `[batch, history, output]`, exactly like the corresponding
++/// per-layer `QuantizedLinear` calls before convolution/recurrent processing.
++struct Qwen35GDNArtifactProjection {
++    let qkv: MLXArray
++    let a: MLXArray
++    let b: MLXArray
++}
++
++/// Raw K/V projections for one skipped full-attention layer. K normalization
++/// and RoPE remain layer-local because they consume layer-specific modules and
++/// cache offsets.
++struct Qwen35AttentionArtifactProjection {
++    let keys: MLXArray
++    let values: MLXArray
++}
++
++enum Qwen35ArtifactProjection {
++    case gdn(Qwen35GDNArtifactProjection)
++    case attention(Qwen35AttentionArtifactProjection)
++}
++
++struct Qwen35PreparedArtifactProjectionBatch {
++    let layerIndices: [Int]
++    let projections: [Int: Qwen35ArtifactProjection]
++    let estimatedTransientBytes: Int
++}
++
++/// Immutable gathered-QMM weight bank for the five same-shape Qwen artifact
++/// families: GDN qkv/a/b and attention k/v.
++///
++/// This object is deliberately not an `MLXNN.Module`: its stacked arrays are
++/// execution views, not trainable/checkpoint parameters. Source module weights
++/// remain untouched and remain the only named model parameters.
++final class Qwen35ArtifactProjectionWeightBank {
++    private struct QuantizedFamily {
++        let modelLayerIndices: [Int]
++        let ordinalByModelLayer: [Int: Int]
++        let weights: MLXArray
++        let scales: MLXArray
++        let biases: MLXArray?
++        let groupSize: Int
++        let bits: Int
++        let mode: QuantizationMode
++        let inputDimensions: Int
++        let outputDimensions: Int
++        let stackedByteCount: Int
++
++        init?(_ sources: [(modelLayerIndex: Int, linear: Linear)]) {
++            guard
++                !sources.isEmpty,
++                let first = sources.first?.linear as? QuantizedLinear,
++                first.bias == nil,
++                first.weight.dtype == .uint32
++            else {
++                return nil
++            }
++
++            let shape = first.shape
++            let firstHasBiases = first.biases != nil
++            var quantized: [QuantizedLinear] = []
++            quantized.reserveCapacity(sources.count)
++            var sourceBytes = 0
++
++            for source in sources {
++                guard
++                    let linear = source.linear as? QuantizedLinear,
++                    linear.bias == nil,
++                    linear.weight.dtype == .uint32,
++                    linear.shape == shape,
++                    linear.weight.shape == first.weight.shape,
++                    linear.scales.shape == first.scales.shape,
++                    (linear.biases != nil) == firstHasBiases,
++                    linear.biases?.shape == first.biases?.shape,
++                    linear.groupSize == first.groupSize,
++                    linear.bits == first.bits,
++                    linear.mode.rawValue == first.mode.rawValue,
++                    let weightBytes = Self.byteCount(linear.weight),
++                    let scaleBytes = Self.byteCount(linear.scales),
++                    let withWeight = Self.checkedAdd(sourceBytes, weightBytes),
++                    let withScales = Self.checkedAdd(withWeight, scaleBytes)
++                else {
++                    return nil
++                }
++                if let biases = linear.biases {
++                    guard
++                        let biasBytes = Self.byteCount(biases),
++                        let withBiases = Self.checkedAdd(withScales, biasBytes)
++                    else {
++                        return nil
++                    }
++                    sourceBytes = withBiases
++                } else {
++                    sourceBytes = withScales
++                }
++                quantized.append(linear)
++            }
++
++            let modelLayerIndices = sources.map(\.modelLayerIndex)
++            let ordinalByModelLayer = Dictionary(
++                uniqueKeysWithValues: sources.enumerated().map {
++                    ($0.element.modelLayerIndex, $0.offset)
++                })
++            guard ordinalByModelLayer.count == sources.count else { return nil }
++
++            self.modelLayerIndices = modelLayerIndices
++            self.ordinalByModelLayer = ordinalByModelLayer
++            self.weights = stacked(quantized.map(\.weight), axis: 0)
++            self.scales = stacked(quantized.map(\.scales), axis: 0)
++            if firstHasBiases {
++                self.biases = stacked(quantized.compactMap(\.biases), axis: 0)
++            } else {
++                self.biases = nil
++            }
++            self.groupSize = first.groupSize
++            self.bits = first.bits
++            self.mode = first.mode
++            self.inputDimensions = shape.1
++            self.outputDimensions = shape.0
++            self.stackedByteCount = sourceBytes
++        }
++
++        func project(
++            _ inputRows: MLXArray,
++            modelLayerIndices: [Int],
++            batchSize: Int,
++            tokenCount: Int
++        ) -> [MLXArray]? {
++            guard
++                batchSize > 0,
++                tokenCount > 0,
++                let rowsPerLayer = Self.checkedMultiply(batchSize, tokenCount),
++                inputRows.shape == [
++                    modelLayerIndices.count,
++                    rowsPerLayer,
++                    inputDimensions,
++                ]
++            else {
++                return nil
++            }
++
++            var indices: [Int32] = []
++            indices.reserveCapacity(modelLayerIndices.count)
++            for modelLayerIndex in modelLayerIndices {
++                guard
++                    let ordinal = ordinalByModelLayer[modelLayerIndex],
++                    let ordinal32 = Int32(exactly: ordinal)
++                else {
++                    return nil
++                }
++                indices.append(ordinal32)
++            }
++
++            // One index selects one whole `[B * history, hidden]` matrix.
++            // Keeping M intact is the mechanism: Metal dispatches one
++            // matrix-level gathered QMM over the layer family instead of
++            // degrading the history rectangle into per-token QMV work.
++            let projected = gatherQuantizedMM(
++                inputRows,
++                weights,
++                scales: scales,
++                biases: biases,
++                rhsIndices: MLXArray(indices),
++                transpose: true,
++                groupSize: groupSize,
++                bits: bits,
++                mode: mode,
++                sortedIndices: true)
++                .reshaped(
++                    modelLayerIndices.count,
++                    batchSize,
++                    tokenCount,
++                    outputDimensions)
++
++            return modelLayerIndices.indices.map { ordinal in
++                projected[
++                    ordinal ..< (ordinal + 1),
++                    0..., 0..., 0...
++                ].squeezed(axis: 0)
++            }
++        }
++
++        private static func byteCount(_ array: MLXArray) -> Int? {
++            checkedMultiply(array.size, array.dtype.size)
++        }
++
++        private static func checkedMultiply(_ lhs: Int, _ rhs: Int) -> Int? {
++            let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
++            return overflow ? nil : value
++        }
++
++        private static func checkedAdd(_ lhs: Int, _ rhs: Int) -> Int? {
++            let (value, overflow) = lhs.addingReportingOverflow(rhs)
++            return overflow ? nil : value
++        }
++    }
++
++    private let layerByModelIndex: [Int: Qwen35DecoderLayer]
++    private let gdnLayerIndices: Set<Int>
++    private let attentionLayerIndices: Set<Int>
++    private let gdnQKV: QuantizedFamily
++    private let gdnA: QuantizedFamily
++    private let gdnB: QuantizedFamily
++    private let attentionK: QuantizedFamily
++    private let attentionV: QuantizedFamily
++
++    let stackedWeightBytes: Int
++
++    init?(
++        layers: [Qwen35DecoderLayer],
++        maximumStackedWeightBytes: Int
++    ) {
++        guard !layers.isEmpty, maximumStackedWeightBytes > 0 else {
++            return nil
++        }
++
++        let indexed = Array(layers.enumerated())
++        let gdnSources: [(modelLayerIndex: Int, layer: Qwen35GatedDeltaNet)] =
++            indexed.compactMap { entry in
++                guard let linear = entry.element.linearAttn else { return nil }
++                return (entry.offset, linear)
++            }
++        let attentionSources: [
++            (modelLayerIndex: Int, layer: Qwen35Attention)
++        ] = indexed.compactMap { entry in
++            guard let attention = entry.element.selfAttn else { return nil }
++            return (entry.offset, attention)
++        }
++        guard
++            !gdnSources.isEmpty,
++            !attentionSources.isEmpty,
++            let gdnQKV = QuantizedFamily(gdnSources.map {
++                ($0.modelLayerIndex, $0.layer.inProjQKV)
++            }),
++            let gdnA = QuantizedFamily(gdnSources.map {
++                ($0.modelLayerIndex, $0.layer.inProjA)
++            }),
++            let gdnB = QuantizedFamily(gdnSources.map {
++                ($0.modelLayerIndex, $0.layer.inProjB)
++            }),
++            let attentionK = QuantizedFamily(attentionSources.map {
++                ($0.modelLayerIndex, $0.layer.kProj)
++            }),
++            let attentionV = QuantizedFamily(attentionSources.map {
++                ($0.modelLayerIndex, $0.layer.vProj)
++            }),
++            gdnQKV.modelLayerIndices == gdnA.modelLayerIndices,
++            gdnQKV.modelLayerIndices == gdnB.modelLayerIndices,
++            attentionK.modelLayerIndices == attentionV.modelLayerIndices,
++            gdnQKV.inputDimensions == gdnA.inputDimensions,
++            gdnQKV.inputDimensions == gdnB.inputDimensions,
++            gdnQKV.inputDimensions == attentionK.inputDimensions,
++            attentionK.inputDimensions == attentionV.inputDimensions
++        else {
++            return nil
++        }
++
++        var stackedBytes = 0
++        for family in [gdnQKV, gdnA, gdnB, attentionK, attentionV] {
++            guard let next = Self.checkedAdd(
++                stackedBytes, family.stackedByteCount)
++            else {
++                return nil
++            }
++            stackedBytes = next
++        }
++        guard stackedBytes <= maximumStackedWeightBytes else {
++            return nil
++        }
++
++        self.layerByModelIndex = Dictionary(
++            uniqueKeysWithValues: indexed.map { ($0.offset, $0.element) })
++        self.gdnLayerIndices = Set(gdnSources.map(\.modelLayerIndex))
++        self.attentionLayerIndices = Set(
++            attentionSources.map(\.modelLayerIndex))
++        self.gdnQKV = gdnQKV
++        self.gdnA = gdnA
++        self.gdnB = gdnB
++        self.attentionK = attentionK
++        self.attentionV = attentionV
++        self.stackedWeightBytes = stackedBytes
++    }
++
++    /// Select a budget-safe prefix of one consecutive skipped-layer run,
++    /// construct every same-family projection graph for that prefix, and
++    /// return layer-addressable artifacts for sequential recurrence/KV use.
++    func prepare(
++        hiddenHistory: MLXArray,
++        candidateLayerIndices: [Int],
++        maximumTransientBytes: Int
++    ) -> Qwen35PreparedArtifactProjectionBatch? {
++        guard
++            hiddenHistory.ndim == 3,
++            hiddenHistory.dim(0) > 0,
++            hiddenHistory.dim(1) > 0,
++            hiddenHistory.dim(2) == gdnQKV.inputDimensions,
++            !candidateLayerIndices.isEmpty,
++            maximumTransientBytes > 0
++        else {
++            return nil
++        }
++
++        let batchSize = hiddenHistory.dim(0)
++        let tokenCount = hiddenHistory.dim(1)
++        let dtypeSize = hiddenHistory.dtype.size
++        var selected: [Int] = []
++        var estimatedBytes = 0
++        var gdnCount = 0
++        var attentionCount = 0
++
++        for modelLayerIndex in candidateLayerIndices {
++            let outputDimensions: Int
++            if gdnLayerIndices.contains(modelLayerIndex) {
++                guard let sum = Self.checkedSum([
++                    gdnQKV.inputDimensions,
++                    gdnQKV.outputDimensions,
++                    gdnA.outputDimensions,
++                    gdnB.outputDimensions,
++                ]) else {
++                    return nil
++                }
++                outputDimensions = sum
++            } else if attentionLayerIndices.contains(modelLayerIndex) {
++                guard let sum = Self.checkedSum([
++                    attentionK.inputDimensions,
++                    attentionK.outputDimensions,
++                    attentionV.outputDimensions,
++                ]) else {
++                    return nil
++                }
++                outputDimensions = sum
++            } else {
++                return nil
++            }
++            guard
++                let elementCount = Self.checkedProduct([
++                    batchSize, tokenCount, outputDimensions,
++                ]),
++                let layerBytes = Self.checkedMultiply(
++                    elementCount, dtypeSize),
++                let nextBytes = Self.checkedAdd(
++                    estimatedBytes, layerBytes)
++            else {
++                return nil
++            }
++            if nextBytes > maximumTransientBytes {
++                break
++            }
++            selected.append(modelLayerIndex)
++            estimatedBytes = nextBytes
++            if gdnLayerIndices.contains(modelLayerIndex) {
++                gdnCount += 1
++            } else {
++                attentionCount += 1
++            }
++        }
++
++        // A one-layer gather only adds packing overhead. Leave it on the
++        // established per-layer path unless at least one family crosses layers.
++        guard
++            !selected.isEmpty,
++            gdnCount >= 2 || attentionCount >= 2
++        else {
++            return nil
++        }
++
++        var projections: [Int: Qwen35ArtifactProjection] = [:]
++        projections.reserveCapacity(selected.count)
++
++        let selectedGDN = selected.filter { gdnLayerIndices.contains($0) }
++        if !selectedGDN.isEmpty {
++            guard
++                let normalized = normalizedRows(
++                    hiddenHistory, modelLayerIndices: selectedGDN),
++                let qkv = gdnQKV.project(
++                    normalized,
++                    modelLayerIndices: selectedGDN,
++                    batchSize: batchSize,
++                    tokenCount: tokenCount),
++                let a = gdnA.project(
++                    normalized,
++                    modelLayerIndices: selectedGDN,
++                    batchSize: batchSize,
++                    tokenCount: tokenCount),
++                let b = gdnB.project(
++                    normalized,
++                    modelLayerIndices: selectedGDN,
++                    batchSize: batchSize,
++                    tokenCount: tokenCount)
++            else {
++                return nil
++            }
++            for ordinal in selectedGDN.indices {
++                projections[selectedGDN[ordinal]] = .gdn(
++                    Qwen35GDNArtifactProjection(
++                        qkv: qkv[ordinal],
++                        a: a[ordinal],
++                        b: b[ordinal]))
++            }
++        }
++
++        let selectedAttention = selected.filter {
++            attentionLayerIndices.contains($0)
++        }
++        if !selectedAttention.isEmpty {
++            guard
++                let normalized = normalizedRows(
++                    hiddenHistory, modelLayerIndices: selectedAttention),
++                let keys = attentionK.project(
++                    normalized,
++                    modelLayerIndices: selectedAttention,
++                    batchSize: batchSize,
++                    tokenCount: tokenCount),
++                let values = attentionV.project(
++                    normalized,
++                    modelLayerIndices: selectedAttention,
++                    batchSize: batchSize,
++                    tokenCount: tokenCount)
++            else {
++                return nil
++            }
++            for ordinal in selectedAttention.indices {
++                projections[selectedAttention[ordinal]] = .attention(
++                    Qwen35AttentionArtifactProjection(
++                        keys: keys[ordinal],
++                        values: values[ordinal]))
++            }
++        }
++
++        guard projections.count == selected.count else { return nil }
++        return Qwen35PreparedArtifactProjectionBatch(
++            layerIndices: selected,
++            projections: projections,
++            estimatedTransientBytes: estimatedBytes)
++    }
++
++    /// Pure arithmetic seam used by the memory-budget regression. Includes
++    /// one normalized hidden rectangle per layer and every raw artifact output.
++    static func estimatedTransientBytes(
++        batchSize: Int,
++        historyTokenCount: Int,
++        hiddenSize: Int,
++        gdnLayerCount: Int,
++        gdnQKVDimensions: Int,
++        gdnAuxDimensions: Int,
++        attentionLayerCount: Int,
++        attentionKVDimensions: Int,
++        dtypeSize: Int
++    ) -> Int? {
++        guard
++            batchSize > 0,
++            historyTokenCount > 0,
++            hiddenSize > 0,
++            gdnLayerCount >= 0,
++            gdnQKVDimensions >= 0,
++            gdnAuxDimensions >= 0,
++            attentionLayerCount >= 0,
++            attentionKVDimensions >= 0,
++            dtypeSize > 0,
++            let doubledGDNAux = checkedMultiply(2, gdnAuxDimensions),
++            let doubledAttentionKV = checkedMultiply(
++                2, attentionKVDimensions),
++            let gdnWidth = checkedSum([
++                hiddenSize, gdnQKVDimensions, doubledGDNAux,
++            ]),
++            let attentionWidth = checkedSum([
++                hiddenSize, doubledAttentionKV,
++            ]),
++            let gdnElements = checkedProduct([
++                batchSize, historyTokenCount, gdnLayerCount, gdnWidth,
++            ]),
++            let attentionElements = checkedProduct([
++                batchSize, historyTokenCount,
++                attentionLayerCount, attentionWidth,
++            ]),
++            let elements = checkedAdd(gdnElements, attentionElements)
++        else {
++            return nil
++        }
++        return checkedMultiply(elements, dtypeSize)
++    }
++
++    private func normalizedRows(
++        _ hiddenHistory: MLXArray,
++        modelLayerIndices: [Int]
++    ) -> MLXArray? {
++        guard
++            let rowsPerLayer = Self.checkedMultiply(
++                hiddenHistory.dim(0), hiddenHistory.dim(1))
++        else {
++            return nil
++        }
++        var rows: [MLXArray] = []
++        rows.reserveCapacity(modelLayerIndices.count)
++        for modelLayerIndex in modelLayerIndices {
++            guard let layer = layerByModelIndex[modelLayerIndex] else {
++                return nil
++            }
++            rows.append(
++                layer.inputLayerNorm(hiddenHistory)
++                    .reshaped(rowsPerLayer, hiddenHistory.dim(2)))
++        }
++        return stacked(rows, axis: 0)
++    }
++
++    private static func checkedProduct(_ factors: [Int]) -> Int? {
++        var value = 1
++        for factor in factors {
++            guard let next = checkedMultiply(value, factor) else {
++                return nil
++            }
++            value = next
++        }
++        return value
++    }
++
++    private static func checkedSum(_ values: [Int]) -> Int? {
++        var total = 0
++        for value in values {
++            guard let next = checkedAdd(total, value) else {
++                return nil
++            }
++            total = next
++        }
++        return total
++    }
++
++    private static func checkedMultiply(_ lhs: Int, _ rhs: Int) -> Int? {
++        let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
++        return overflow ? nil : value
++    }
++
++    private static func checkedAdd(_ lhs: Int, _ rhs: Int) -> Int? {
++        let (value, overflow) = lhs.addingReportingOverflow(rhs)
++        return overflow ? nil : value
++    }
++}
+diff --git a/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatchPolicy.swift b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatchPolicy.swift
+new file mode 100644
+index 0000000..3b6af77
+--- /dev/null
++++ b/Libraries/MLXLLM/Models/Qwen35ArtifactProjectionBatchPolicy.swift
+@@ -0,0 +1,96 @@
++import Foundation
++
++/// Default-off resource policy for cross-layer artifact projection batching.
++///
++/// The suffix-frontier path leaves historical hidden rows unchanged across
++/// skipped layers. When explicitly armed, those independent projection
++/// families may share gathered quantized-matmul launches. The policy bounds
++/// both the lazy transient graph and the one-time immutable weight stacks.
++public struct Qwen35ArtifactProjectionBatchPolicy: Equatable, Sendable {
++    public static let enabledEnvironmentKey =
++        "DARKBLOOM_QWEN35_PREFILL_ARTIFACT_PROJECTION_BATCH"
++    public static let transientMiBEnvironmentKey =
++        "DARKBLOOM_QWEN35_PREFILL_ARTIFACT_PROJECTION_BATCH_MIB"
++
++    /// E51 B1x512 has 320 historical rows. At the 35B target geometry, all
++    /// skipped-layer normalized inputs and qkv/a/b/k/v outputs total
++    /// 186.68 MiB, so 192 MiB admits one cross-layer batch with 5.32 MiB of
++    /// headroom. Larger rectangles are split at layer boundaries.
++    public static let defaultMaximumTransientMiB = 192
++    public static let minimumTransientMiB = 16
++    public static let maximumTransientMiB = 512
++
++    /// The 40-layer 4-bit affine target needs about 283 MiB for packed
++    /// qkv/a/b/k/v weights plus scales and quantization biases. Refuse other
++    /// geometries/precisions that exceed this bound instead of silently
++    /// creating an unsafe persistent duplicate.
++    public static let maximumStackedWeightBytes = 320 * 1_024 * 1_024
++
++    /// Gather-QMM may choose a different reduction association from one
++    /// quantizedMM per layer. Raw artifact projections must remain within
++    /// these bounds relative to the sequential quantized reference.
++    public static let artifactRelativeTolerance = 1e-4
++    public static let artifactAbsoluteTolerance = 1e-5
++
++    public static let disabled = Qwen35ArtifactProjectionBatchPolicy()
++
++    public let isEnabled: Bool
++    public let maximumTransientBytes: Int
++
++    private init(
++        isEnabled: Bool = false,
++        maximumTransientBytes: Int = 0
++    ) {
++        self.isEnabled = isEnabled
++        self.maximumTransientBytes = maximumTransientBytes
++    }
++
++    /// Resolve process-start knobs. The enable flag is mandatory and strict;
++    /// an invalid byte budget disables the whole batching mechanism while
++    /// leaving the established sequential suffix-frontier path available.
++    public static func fromEnvironment(
++        _ environment: [String: String] = ProcessInfo.processInfo.environment
++    ) -> Qwen35ArtifactProjectionBatchPolicy {
++        guard
++            let rawEnabled = environment[enabledEnvironmentKey],
++            parseEnabled(rawEnabled)
++        else {
++            return .disabled
++        }
++
++        let maximumMiB: Int
++        if let rawMiB = environment[transientMiBEnvironmentKey] {
++            guard
++                let parsed = Int(
++                    rawMiB.trimmingCharacters(in: .whitespacesAndNewlines)),
++                (minimumTransientMiB ... maximumTransientMiB).contains(parsed)
++            else {
++                return .disabled
++            }
++            maximumMiB = parsed
++        } else {
++            maximumMiB = defaultMaximumTransientMiB
++        }
++
++        let (bytes, overflow) = maximumMiB.multipliedReportingOverflow(
++            by: 1_024 * 1_024)
++        guard !overflow else { return .disabled }
++        return Qwen35ArtifactProjectionBatchPolicy(
++            isEnabled: true,
++            maximumTransientBytes: bytes)
++    }
++
++    public var descriptor: String {
++        guard isEnabled else { return "disabled" }
++        return "gather_qmm=1;transient_mib=\(maximumTransientBytes / (1_024 * 1_024))"
++    }
++
++    private static func parseEnabled(_ raw: String) -> Bool {
++        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
++        case "1", "true", "yes", "on":
++            true
++        default:
++            false
++        }
++    }
++}
+diff --git a/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+new file mode 100644
+index 0000000..799243d
+--- /dev/null
++++ b/Tests/MLXLMTests/Qwen35ArtifactProjectionBatchTests.swift
+@@ -0,0 +1,525 @@
++import MLX
++import MLXNN
++import MLXRandom
++import Testing
++
++@testable import MLXLLM
++@testable import MLXLMCommon
++
++@Suite("Qwen cross-layer artifact projection batching")
++struct Qwen35ArtifactProjectionBatchTests {
++    private struct Fixture {
++        let cache: CBv2LayerCache
++        let rows: [CBv2FullSequenceKV]
++        let recurrent: [CBv2RecurrentRequestState]
++    }
++
++    private struct RecurrentSnapshot {
++        let conv: MLXArray
++        let ssm: MLXArray
++    }
++
++    @Test func policyIsDefaultOffAndMalformedBudgetsFailClosed() {
++        #expect(
++            Qwen35ArtifactProjectionBatchPolicy.fromEnvironment([:])
++                == .disabled)
++        #expect(
++            Qwen35ArtifactProjectionBatchPolicy.fromEnvironment([
++                Qwen35ArtifactProjectionBatchPolicy.enabledEnvironmentKey:
++                    "artifact"
++            ]) == .disabled)
++
++        for value in ["", "0", "15", "513", "192.5", "many"] {
++            let policy =
++                Qwen35ArtifactProjectionBatchPolicy.fromEnvironment([
++                    Qwen35ArtifactProjectionBatchPolicy.enabledEnvironmentKey:
++                        "1",
++                    Qwen35ArtifactProjectionBatchPolicy
++                        .transientMiBEnvironmentKey: value,
++                ])
++            #expect(policy == .disabled)
++        }
++
++        let enabled =
++            Qwen35ArtifactProjectionBatchPolicy.fromEnvironment([
++                Qwen35ArtifactProjectionBatchPolicy.enabledEnvironmentKey:
++                    " ON "
++            ])
++        #expect(enabled.isEnabled)
++        #expect(
++            enabled.maximumTransientBytes
++                == 192 * 1_024 * 1_024)
++        #expect(enabled.descriptor == "gather_qmm=1;transient_mib=192")
++    }
++
++    @Test func e51B1x512FitsOneBatchAndLargerRectanglesMustChunk() throws {
++        let b1 = try #require(
++            Qwen35ArtifactProjectionWeightBank.estimatedTransientBytes(
++                batchSize: 1,
++                historyTokenCount: 320,
++                hiddenSize: 2_048,
++                gdnLayerCount: 27,
++                gdnQKVDimensions: 8_192,
++                gdnAuxDimensions: 32,
++                attentionLayerCount: 9,
++                attentionKVDimensions: 512,
++                dtypeSize: 2))
++        #expect(b1 == 195_747_840)
++        #expect(
++            b1
++                < Qwen35ArtifactProjectionBatchPolicy
++                    .defaultMaximumTransientMiB * 1_024 * 1_024)
++
++        let b4 = try #require(
++            Qwen35ArtifactProjectionWeightBank.estimatedTransientBytes(
++                batchSize: 4,
++                historyTokenCount: 320,
++                hiddenSize: 2_048,
++                gdnLayerCount: 27,
++                gdnQKVDimensions: 8_192,
++                gdnAuxDimensions: 32,
++                attentionLayerCount: 9,
++                attentionKVDimensions: 512,
++                dtypeSize: 2))
++        #expect(b4 == 4 * b1)
++        #expect(
++            b4
++                > Qwen35ArtifactProjectionBatchPolicy
++                    .defaultMaximumTransientMiB * 1_024 * 1_024)
++    }
++
++    @Test func gatheredQuantizedFamiliesMatchSequentialProjectionsAndDoNotReplaceWeights()
++        throws
++    {
++        let config = try TinyArtifactQwen.configuration()
++        MLXRandom.seed(0xB4_71)
++        let layers = makeQuantizedLayers(config)
++        let parametersBefore = parameterIdentity(layers)
++        let bank = try #require(Qwen35ArtifactProjectionWeightBank(
++            layers: layers,
++            maximumStackedWeightBytes:
++                Qwen35ArtifactProjectionBatchPolicy
++                .maximumStackedWeightBytes))
++        #expect(bank.stackedWeightBytes > 0)
++
++        let history = MLXRandom.normal([2, 5, config.hiddenSize])
++        let prepared = try #require(bank.prepare(
++            hiddenHistory: history,
++            candidateLayerIndices: Array(layers.indices),
++            maximumTransientBytes: 192 * 1_024 * 1_024))
++
++        var roots: [MLXArray] = []
++        for (modelLayerIndex, layer) in layers.enumerated() {
++            let normalized = layer.inputLayerNorm(history)
++            let projection = try #require(
++                prepared.projections[modelLayerIndex])
++            if let gdn = layer.linearAttn {
++                guard case .gdn(let actual) = projection else {
++                    Issue.record("GDN layer received attention artifact")
++                    continue
++                }
++                let expected = (
++                    qkv: gdn.inProjQKV(normalized),
++                    a: gdn.inProjA(normalized),
++                    b: gdn.inProjB(normalized))
++                roots += [
++                    actual.qkv, actual.a, actual.b,
++                    expected.qkv, expected.a, expected.b,
++                ]
++            } else if let attention = layer.selfAttn {
++                guard case .attention(let actual) = projection else {
++                    Issue.record("attention layer received GDN artifact")
++                    continue
++                }
++                let expected = (
++                    keys: attention.kProj(normalized),
++                    values: attention.vProj(normalized))
++                roots += [
++                    actual.keys, actual.values,
++                    expected.keys, expected.values,
++                ]
++            }
++        }
++        eval(roots)
++
++        for (modelLayerIndex, layer) in layers.enumerated() {
++            let normalized = layer.inputLayerNorm(history)
++            let projection = try #require(
++                prepared.projections[modelLayerIndex])
++            switch projection {
++            case .gdn(let actual):
++                let gdn = try #require(layer.linearAttn)
++                #expect(artifactClose(actual.qkv, gdn.inProjQKV(normalized)))
++                #expect(artifactClose(actual.a, gdn.inProjA(normalized)))
++                #expect(artifactClose(actual.b, gdn.inProjB(normalized)))
++            case .attention(let actual):
++                let attention = try #require(layer.selfAttn)
++                #expect(artifactClose(
++                    actual.keys, attention.kProj(normalized)))
++                #expect(artifactClose(
++                    actual.values, attention.vProj(normalized)))
++            }
++        }
++
++        let parametersAfter = parameterIdentity(layers)
++        #expect(parametersAfter.count == parametersBefore.count)
++        for (key, before) in parametersBefore {
++            #expect(
++                parametersAfter[key] === before,
++                Comment(rawValue: "projection batching replaced \(key)"))
++        }
++    }
++
++    @Test(arguments: [1, 2, 4])
++    func b1B2B4ArtifactsOffsetsStateRollbackAndCancellationMatchSequential(
++        batchSize: Int
++    ) throws {
++        let config = try TinyArtifactQwen.configuration()
++        MLXRandom.seed(UInt64(0xB4_80 + batchSize))
++        let layers = makeQuantizedLayers(config)
++        let bank = try #require(Qwen35ArtifactProjectionWeightBank(
++            layers: layers,
++            maximumStackedWeightBytes:
++                Qwen35ArtifactProjectionBatchPolicy
++                .maximumStackedWeightBytes))
++        let skippedLayers = [4, 5, 6, 7]
++        let recurrentLayers = [4, 5, 6]
++        let promptLength = 6
++        let candidate = try fixture(
++            config: config,
++            batchSize: batchSize,
++            promptLength: promptLength,
++            recurrentLayers: recurrentLayers)
++        let reference = try fixture(
++            config: config,
++            batchSize: batchSize,
++            promptLength: promptLength,
++            recurrentLayers: recurrentLayers)
++
++        let prefix = MLXRandom.normal([batchSize, 2, config.hiddenSize])
++        let candidatePrefix = try executeArtifactOnly(
++            layers: layers,
++            layerIndices: skippedLayers,
++            fixture: candidate,
++            hidden: prefix,
++            bank: bank,
++            usesProjectionBatch: true)
++        let referencePrefix = try executeArtifactOnly(
++            layers: layers,
++            layerIndices: skippedLayers,
++            fixture: reference,
++            hidden: prefix,
++            bank: bank,
++            usesProjectionBatch: false)
++        eval(candidatePrefix.roots + referencePrefix.roots)
++        for transaction in candidatePrefix.transactions {
++            try transaction.commit()
++        }
++        for transaction in referencePrefix.transactions {
++            try transaction.commit()
++        }
++        assertFixtureEquivalent(candidate, reference)
++        #expect(candidate.cache.offset == 2)
++        #expect(reference.cache.offset == 2)
++
++        let beforeCandidate = try recurrentSnapshots(
++            candidate, layerIndices: recurrentLayers)
++        let beforeReference = try recurrentSnapshots(
++            reference, layerIndices: recurrentLayers)
++        let boundary = MLXRandom.normal([batchSize, 4, config.hiddenSize])
++        let candidateBoundary = try executeFrontier(
++            layers: layers,
++            layerIndices: skippedLayers,
++            fixture: candidate,
++            hidden: boundary,
++            frontierTokenCount: 3,
++            bank: bank,
++            usesProjectionBatch: true)
++        let referenceBoundary = try executeFrontier(
++            layers: layers,
++            layerIndices: skippedLayers,
++            fixture: reference,
++            hidden: boundary,
++            frontierTokenCount: 3,
++            bank: bank,
++            usesProjectionBatch: false)
++        eval(
++            [candidateBoundary.hidden, referenceBoundary.hidden]
++                + candidateBoundary.roots
++                + referenceBoundary.roots)
++        #expect(artifactClose(
++            candidateBoundary.hidden, referenceBoundary.hidden))
++        #expect(candidate.cache.offset == promptLength)
++        #expect(reference.cache.offset == promptLength)
++        #expect(candidate.rows.allSatisfy {
++            $0.absoluteOffset == promptLength
++        })
++        #expect(reference.rows.allSatisfy {
++            $0.absoluteOffset == promptLength
++        })
++
++        let cancelledIndex = batchSize / 2
++        for row in 0 ..< batchSize {
++            if row == cancelledIndex {
++                try candidateBoundary.transactions[row].rollback()
++                try referenceBoundary.transactions[row].rollback()
++            } else {
++                try candidateBoundary.transactions[row].commit()
++                try referenceBoundary.transactions[row].commit()
++            }
++        }
++
++        for row in 0 ..< batchSize {
++            for (ordinal, layerIndex) in recurrentLayers.enumerated() {
++                let candidateState = try #require(
++                    candidate.recurrent[row].state(
++                        modelLayerIndex: layerIndex))
++                let referenceState = try #require(
++                    reference.recurrent[row].state(
++                        modelLayerIndex: layerIndex))
++                let candidateConv = try #require(candidateState.conv)
++                let candidateSSM = try #require(candidateState.ssm)
++                let referenceConv = try #require(referenceState.conv)
++                let referenceSSM = try #require(referenceState.ssm)
++                #expect(artifactClose(candidateConv, referenceConv))
++                #expect(artifactClose(candidateSSM, referenceSSM))
++
++                if row == cancelledIndex {
++                    #expect(TinyArtifactQwen.identical(
++                        candidateConv,
++                        beforeCandidate[row][ordinal].conv))
++                    #expect(TinyArtifactQwen.identical(
++                        candidateSSM,
++                        beforeCandidate[row][ordinal].ssm))
++                    #expect(TinyArtifactQwen.identical(
++                        referenceConv,
++                        beforeReference[row][ordinal].conv))
++                    #expect(TinyArtifactQwen.identical(
++                        referenceSSM,
++                        beforeReference[row][ordinal].ssm))
++                }
++            }
++        }
++
++        assertFixtureEquivalent(candidate, reference)
++        candidate.cache.removeRow(at: cancelledIndex)
++        reference.cache.removeRow(at: cancelledIndex)
++        #expect(candidate.cache.rows.count == batchSize - 1)
++        #expect(reference.cache.rows.count == batchSize - 1)
++        assertFixtureEquivalent(candidate, reference)
++    }
++
++    private func makeQuantizedLayers(
++        _ config: Qwen35TextConfiguration
++    ) -> [Qwen35DecoderLayer] {
++        let layers = (0 ..< 8).map {
++            Qwen35DecoderLayer(config, layerIdx: $0)
++        }
++        for layer in layers {
++            if let gdn = layer.linearAttn {
++                gdn.inProjQKV = QuantizedLinear(
++                    gdn.inProjQKV,
++                    groupSize: 32,
++                    bits: 4,
++                    mode: .affine)
++                gdn.inProjA = QuantizedLinear(
++                    gdn.inProjA,
++                    groupSize: 32,
++                    bits: 4,
++                    mode: .affine)
++                gdn.inProjB = QuantizedLinear(
++                    gdn.inProjB,
++                    groupSize: 32,
++                    bits: 4,
++                    mode: .affine)
++            } else if let attention = layer.selfAttn {
++                attention.kProj = QuantizedLinear(
++                    attention.kProj,
++                    groupSize: 32,
++                    bits: 4,
++                    mode: .affine)
++                attention.vProj = QuantizedLinear(
++                    attention.vProj,
++                    groupSize: 32,
++                    bits: 4,
++                    mode: .affine)
++            }
++            eval(layer)
++        }
++        return layers
++    }
++
++    private func fixture(
++        config: Qwen35TextConfiguration,
++        batchSize: Int,
++        promptLength: Int,
++        recurrentLayers: [Int]
++    ) throws -> Fixture {
++        let kind = try #require(config.cbv2LayerKinds.last)
++        let cache = TinyArtifactQwen.batchCache(
++            kind: kind,
++            batchSize: batchSize,
++            promptLength: promptLength)
++        let spec = TinyArtifactQwen.recurrentSpec(
++            config, layers: recurrentLayers)
++        return Fixture(
++            cache: cache.0,
++            rows: cache.1,
++            recurrent: try (0 ..< batchSize).map { _ in
++                try CBv2RecurrentRequestState(spec: spec)
++            })
++    }
++
++    private func executeArtifactOnly(
++        layers: [Qwen35DecoderLayer],
++        layerIndices: [Int],
++        fixture: Fixture,
++        hidden: MLXArray,
++        bank: Qwen35ArtifactProjectionWeightBank,
++        usesProjectionBatch: Bool
++    ) throws -> (
++        transactions: [CBv2RecurrentStateEvaluation],
++        roots: [MLXArray]
++    ) {
++        let transactions = try fixture.recurrent.map { try $0.bind() }
++        let prepared = usesProjectionBatch
++            ? try #require(bank.prepare(
++                hiddenHistory: hidden,
++                candidateLayerIndices: layerIndices,
++                maximumTransientBytes: 192 * 1_024 * 1_024))
++            : nil
++        var current = hidden
++        for modelLayerIndex in layerIndices {
++            let layer = layers[modelLayerIndex]
++            current = try #require(layer.cbv2PrefillArtifactOnly(
++                current,
++                modelLayerIndex: modelLayerIndex,
++                attentionCache: layer.isLinear ? nil : fixture.cache,
++                recurrentState: transactions,
++                positionIds: nil,
++                artifactProjection:
++                    prepared?.projections[modelLayerIndex]))
++        }
++        let roots = try transactions.flatMap { try $0.evaluate() }
++        eval([current] + roots + fixture.cache.innerState())
++        return (transactions, roots)
++    }
++
++    private func executeFrontier(
++        layers: [Qwen35DecoderLayer],
++        layerIndices: [Int],
++        fixture: Fixture,
++        hidden: MLXArray,
++        frontierTokenCount: Int,
++        bank: Qwen35ArtifactProjectionWeightBank,
++        usesProjectionBatch: Bool
++    ) throws -> (
++        hidden: MLXArray,
++        transactions: [CBv2RecurrentStateEvaluation],
++        roots: [MLXArray]
++    ) {
++        let historyCount = hidden.dim(1) - frontierTokenCount
++        let transactions = try fixture.recurrent.map { try $0.bind() }
++        let prepared = usesProjectionBatch
++            ? try #require(bank.prepare(
++                hiddenHistory: hidden[
++                    0..., 0 ..< historyCount, 0...],
++                candidateLayerIndices: layerIndices,
++                maximumTransientBytes: 192 * 1_024 * 1_024))
++            : nil
++        var current = hidden
++        for modelLayerIndex in layerIndices {
++            let layer = layers[modelLayerIndex]
++            current = try #require(
++                layer.cbv2PrefillFrontierStateRiver(
++                    current,
++                    modelLayerIndex: modelLayerIndex,
++                    attentionCache:
++                        layer.isLinear ? nil : fixture.cache,
++                    recurrentState: transactions,
++                    positionIds: nil,
++                    frontierTokenCount: frontierTokenCount,
++                    usePrefillMoERoutingPolicy: false,
++                    artifactProjection:
++                        prepared?.projections[modelLayerIndex]))
++        }
++        let roots = try transactions.flatMap { try $0.evaluate() }
++        eval([current] + roots + fixture.cache.innerState())
++        return (current, transactions, roots)
++    }
++
++    private func recurrentSnapshots(
++        _ fixture: Fixture,
++        layerIndices: [Int]
++    ) throws -> [[RecurrentSnapshot]] {
++        let result = try fixture.recurrent.map { state in
++            try layerIndices.map { layerIndex in
++                let layerState = try #require(
++                    state.state(modelLayerIndex: layerIndex))
++                let conv = try #require(layerState.conv)
++                let ssm = try #require(layerState.ssm)
++                return RecurrentSnapshot(
++                    conv: conv + MLXArray.zeros(
++                        conv.shape, dtype: conv.dtype),
++                    ssm: ssm + MLXArray.zeros(
++                        ssm.shape, dtype: ssm.dtype))
++            }
++        }
++        eval(result.flatMap { $0 }.flatMap { [$0.conv, $0.ssm] })
++        return result
++    }
++
++    private func assertFixtureEquivalent(
++        _ candidate: Fixture,
++        _ reference: Fixture
++    ) {
++        #expect(candidate.cache.offset == reference.cache.offset)
++        #expect(candidate.cache.rows.count == reference.cache.rows.count)
++        for (candidateRow, referenceRow) in zip(
++            candidate.cache.rows, reference.cache.rows)
++        {
++            guard
++                let candidateRow = candidateRow as? CBv2FullSequenceKV,
++                let referenceRow = referenceRow as? CBv2FullSequenceKV
++            else {
++                Issue.record("unexpected Qwen cache row type")
++                continue
++            }
++            let lhs = candidateRow.snapshot()
++            let rhs = referenceRow.snapshot()
++            eval(lhs.keys, lhs.values, rhs.keys, rhs.values)
++            #expect(lhs.offset == rhs.offset)
++            #expect(artifactClose(lhs.keys, rhs.keys))
++            #expect(artifactClose(lhs.values, rhs.values))
++        }
++    }
++
++    private func parameterIdentity(
++        _ layers: [Qwen35DecoderLayer]
++    ) -> [String: MLXArray] {
++        Dictionary(uniqueKeysWithValues: layers.enumerated().flatMap {
++            ordinal, layer in
++            layer.parameters().flattened().map {
++                ("\(ordinal).\($0.0)", $0.1)
++            }
++        })
++    }
++
++    private func artifactClose(
++        _ lhs: MLXArray,
++        _ rhs: MLXArray
++    ) -> Bool {
++        guard lhs.shape == rhs.shape else { return false }
++        let close = allClose(
++            lhs,
++            rhs,
++            rtol:
++                Qwen35ArtifactProjectionBatchPolicy
++                .artifactRelativeTolerance,
++            atol:
++                Qwen35ArtifactProjectionBatchPolicy
++                .artifactAbsoluteTolerance)
++        eval(close)
++        return close.item(Bool.self)
++    }
++}
+-- 
+2.43.0
+

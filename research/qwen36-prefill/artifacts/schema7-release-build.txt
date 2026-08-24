@@ -1,0 +1,180 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/work/d-inference/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/work/d-inference/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/work/d-inference/provider-swift->/users/gaj/work/d-inference/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+Building for serving...
+[0/6] Write sources
+[2/6] Write swift-version--58304C5D6DBC2206.txt
+[4/6] Compiling ProviderCore APNsBridge.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift:77:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 75 |         throw HardwareError.sysctlFailed(key)
+ 76 |     }
+ 77 |     return String(cString: buffer)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 78 | }
+ 79 | 
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+83 |         // any code path that might have called `Device.setDefault(.cpu)`
+84 |         // earlier in the process (e.g. a stray test fixture).
+85 |         Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+86 |         if Device.defaultDevice().deviceType != .gpu {
+87 |             throw Error.mlxDefaultIsCPU
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:22:45: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+20 |     /// reports a true zero when the cap is already exhausted.
+21 |     public static var measuredLiveKVHeadroomBytes: UInt64 {
+22 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                             |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+   |                                             `- note: use 'Memory.activeMemory' instead
+23 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+24 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:22:84: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+20 |     /// reports a true zero when the cap is already exhausted.
+21 |     public static var measuredLiveKVHeadroomBytes: UInt64 {
+22 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                                                                    |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+   |                                                                                    `- note: use 'Memory.cacheMemory' instead
+23 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+24 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:127:52: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+125 |         // advertises an actively-served model's weights as free); only when fully
+126 |         // idle do we assume idle models can be evicted.
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+    |                                                    |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+    |                                                    `- note: use 'Memory.activeMemory' instead
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:128:50: warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+126 |         // idle do we assume idle models can be evicted.
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+    |                                                  |- warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+    |                                                  `- note: use 'Memory.peakMemory' instead
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+130 |         let mlxUsed = mlxActiveBytes + mlxCacheBytes
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:129:51: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+127 |         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+128 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+129 |         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+    |                                                   |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+    |                                                   `- note: use 'Memory.cacheMemory' instead
+130 |         let mlxUsed = mlxActiveBytes + mlxCacheBytes
+131 |         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:843:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+ 841 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+ 842 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 843 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+ 844 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+ 845 |             reserveBytes: reserve,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:844:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+ 842 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+ 843 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+ 844 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+ 845 |             reserveBytes: reserve,
+ 846 |             outstandingReservationBytes: outstanding)
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:332:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+330 |     var model = [CChar](repeating: 0, count: size)
+331 |     sysctlbyname("hw.model", &model, &size, nil, 0)
+332 |     return String(cString: model)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+333 | }
+334 | 
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:157:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+155 |     // Resolve symlinks
+156 |     guard let resolved = realpath(buffer, nil) else {
+157 |         return String(cString: buffer)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+158 |     }
+159 |     defer { free(resolved) }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift:279:41: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+277 |         }
+278 |         guard let resolved = realpath(buffer, nil) else {
+279 |             return URL(fileURLWithPath: String(cString: buffer))
+    |                                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+280 |         }
+281 |         defer { free(resolved) }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:265:24: warning: no 'async' operations occur within 'await' expression
+263 | 
+264 |     private func runPrefetch(modelId: String, taskId: UUID) async {
+265 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
+    |                        `- warning: no 'async' operations occur within 'await' expression
+266 | 
+267 |         // Short-circuit if already available (loaded or on-disk-and-valid).
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1028:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+1026 |             totalBytes: ProcessInfo.processInfo.physicalMemory,
+1027 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1028 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+     |                                                   |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+     |                                                   `- note: use 'Memory.activeMemory' instead
+1029 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+1030 |             reserveBytes: reserve,
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1029:50: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1027 |             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+1028 |             gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
+1029 |             gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
+     |                                                  |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                                  `- note: use 'Memory.cacheMemory' instead
+1030 |             reserveBytes: reserve,
+1031 |             outstandingReservationBytes: outstanding)
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift:82:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+80 |                 return String(cString: resolved)
+81 |             }
+82 |             return String(cString: buffer)
+   |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+83 |         }
+84 |         return FileManager.default.homeDirectoryForCurrentUser
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[5/7] Compiling ProviderBenchmark ArrivalEngineRunner.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:184:27: warning: no calls to throwing functions occur within 'try' expression
+182 |         )
+183 | 
+184 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
+    |                           `- warning: no calls to throwing functions occur within 'try' expression
+185 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
+186 |         }
+
+/Users/gaj/work/d-inference/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:96:21: warning: no calls to throwing functions occur within 'try' expression
+ 94 |         }
+ 95 | 
+ 96 |         let facts = try await container.perform { ctx -> ModelFacts in
+    |                     `- warning: no calls to throwing functions occur within 'try' expression
+ 97 |             let params = ctx.model.parameters().flattened()
+ 98 |             let bytes = params.reduce(0) { $0 + $1.1.nbytes }
+[6/8] Compiling darkbloom AutoUpdateCommand.swift
+/Users/gaj/work/d-inference/provider-swift/Sources/darkbloom/ProviderAppKitHost.swift:68:35: warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+64 |             do {
+65 |                 let command = try Darkbloom.parseAsRoot(args)
+66 |                 if let asyncCommand = command as? AsyncParsableCommand {
+   |                                               `- note: isolated conformance to protocol 'AsyncParsableCommand' can be introduced here
+67 |                     var cmd = asyncCommand
+68 |                     try await cmd.run()
+   |                                   |- warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+   |                                   `- note: sending main actor-isolated 'cmd' to nonisolated instance method 'run()' risks causing data races between nonisolated and main actor-isolated uses
+69 |                 } else {
+70 |                     var cmd = command
+
+[#SendingRisksDataRace]: <https://docs.swift.org/compiler/documentation/diagnostics/sending-risks-data-race>
+[6/8] Write Objects.LinkFileList
+[7/8] Linking darkbloom
+Build of product 'darkbloom' complete! (67.93s)

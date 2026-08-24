@@ -1,0 +1,39 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/12] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.28s)
+Test Suite 'Selected tests' started at 2026-08-24 01:28:18.700.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-08-24 01:28:18.700.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-08-24 01:28:18.701.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-08-24 01:28:18.701.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite ArrivalPrefillAccountingTests started.
+◇ Test schedulerSampleEncodesCanonicalChecksumAndCompatibilityAlias() started.
+◇ Test tokenChecksumIsStableAndOrderSensitive() started.
+◇ Test arrivalRowsEncodeAllThreeTimestamps() started.
+◇ Test metricsUseMaxFirstTokenMinusMinSubmission() started.
+◇ Test aggregateConversionCannotOverflowInt() started.
+◇ Test everyNamedPatternHasExactlyBatchSizeRows() started.
+◇ Test batchSizeSelectsRowCount() started.
+◇ Test allowedBatchSizesAreExactlyOneTwoFour() started.
+◇ Test makespanIsMaxFirstMinusMinSubmit() started.
+◇ Test aggregateUsesLMinusOneAndPrefillMakespan() started.
+✔ Test aggregateConversionCannotOverflowInt() passed after 0.001 seconds.
+✔ Test batchSizeSelectsRowCount() passed after 0.001 seconds.
+✔ Test makespanIsMaxFirstMinusMinSubmit() passed after 0.001 seconds.
+✔ Test aggregateUsesLMinusOneAndPrefillMakespan() passed after 0.001 seconds.
+◇ Test missingOrInvalidRowsPoisonTheCell() started.
+✔ Test tokenChecksumIsStableAndOrderSensitive() passed after 0.001 seconds.
+✔ Test everyNamedPatternHasExactlyBatchSizeRows() passed after 0.001 seconds.
+✔ Test allowedBatchSizesAreExactlyOneTwoFour() passed after 0.001 seconds.
+✔ Test metricsUseMaxFirstTokenMinusMinSubmission() passed after 0.001 seconds.
+✔ Test schedulerSampleEncodesCanonicalChecksumAndCompatibilityAlias() passed after 0.001 seconds.
+✔ Test arrivalRowsEncodeAllThreeTimestamps() passed after 0.001 seconds.
+✔ Test missingOrInvalidRowsPoisonTheCell() passed after 0.001 seconds.
+✔ Suite ArrivalPrefillAccountingTests passed after 0.001 seconds.
+✔ Test run with 11 tests in 1 suite passed after 0.001 seconds.

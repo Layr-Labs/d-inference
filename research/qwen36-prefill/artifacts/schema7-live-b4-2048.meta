@@ -1,0 +1,15 @@
+ts_start=2026-08-24T08:29:47Z
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; charged; 0:00 remaining present: true
+ powermode            2
+binary_sha256=8e68ed838281079bdf46ac6eb850e4ff38e09701a507cd72d8aa5cb14fa59451
+batch=4
+prompt=2048
+chunk=default
+budget=default
+iterations=1
+exit=0
+ts_end=2026-08-24T08:30:30Z
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	100%; charged; 0:00 remaining present: true
+ powermode            2

@@ -171,6 +171,10 @@ E17–E19 timed half accumulation, native uint4 factoring, and relaxed MPP,
 but all were flat/slower (`notes/056`). New active branches are work
 deletion and direct cache/state construction.
 
+E20 adaptive prefill MoE is the first large end-to-end component:
+top-4 = 1.192× and top-1 = 1.379× at B=4×8K (`notes/057`). Top-1
+still needs 1.813×; quality-aware layer/token/state reduction is active.
+
 Reverse-state closure (`notes/050`): layers 0–38 need every hidden row; only
 layer 39 has exact dead hidden work (1.023–1.032x ceiling). Exact state-only
 GDN, cache quantization, WY, and projection fusion cannot supply 2.5x.

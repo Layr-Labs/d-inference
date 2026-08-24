@@ -75,3 +75,8 @@ e17-half-accum-down	2026-08-24T08:20:44Z	m3-max-128gb-2	e5-half-metallib	mlx-swi
 e18-native-uint4-parallel	2026-08-24T08:24:11Z	m3-max-128gb-2	native-uint4-probe	standalone-metal-probe	2	yes	E18-native-uint4	factored-affine	64	1	tflops	2.5878	TFLOPS	0.19x	no	8192 parallel tiles; quality gate not funded
 e19-relaxed-mpp-static	2026-08-24T08:25:12Z	m3-max-128gb-2	relaxed-mpp-probe	standalone-metal-probe	2	yes	E19-relaxed-MPP	static-k16-relaxed	2048	1	tflops	13.72	TFLOPS	1.00x	no	identical to strict MPP
 e19-relaxed-mpp-dynamic	2026-08-24T08:25:12Z	m3-max-128gb-2	relaxed-mpp-probe	standalone-metal-probe	2	yes	E19-relaxed-MPP	dynamic-k8-relaxed	2048	1	tflops	3.35	TFLOPS	1.00x	no	identical to strict dynamic K8
+e20-topk4-b4-2048	2026-08-24T08:28:00Z	m3-max-128gb-2	adaptive-moe	darkbloom-release	2	yes	E20-adaptive-MoE	prefill-topk4	2048	4	prefill_tps	2054.2	tok/s	1.213x	pending-quality	4/4 two-token checksums match
+e20-topk2-b4-2048	2026-08-24T08:29:00Z	m3-max-128gb-2	adaptive-moe	darkbloom-release	2	yes	E20-adaptive-MoE	prefill-topk2	2048	4	prefill_tps	1994.2	tok/s	1.178x	pending-quality	2/4 checksums match
+e20-topk1-b4-2048	2026-08-24T08:30:00Z	m3-max-128gb-2	adaptive-moe	darkbloom-release	2	yes	E20-adaptive-MoE	prefill-topk1	2048	4	prefill_tps	2085.9	tok/s	1.232x	pending-quality	2/4 checksums match
+e20-topk4-b4-8192	2026-08-24T08:33:00Z	m3-max-128gb-2	adaptive-moe	darkbloom-release	2	yes	E20-adaptive-MoE	prefill-topk4	8192	4	prefill_tps	1857.0	tok/s	1.192x	pending-quality	4/4 checksums match
+e20-topk1-b4-8192	2026-08-24T08:35:00Z	m3-max-128gb-2	adaptive-moe	darkbloom-release	2	yes	E20-adaptive-MoE	prefill-topk1	8192	4	prefill_tps	2147.5	tok/s	1.379x	pending-quality	4/4 checksums match; needs1.813x more

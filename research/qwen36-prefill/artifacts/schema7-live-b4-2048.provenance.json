@@ -1,0 +1,632 @@
+{
+  "artifacts": {
+    "benchmark_binary": {
+      "exists": true,
+      "path": "~/work/d-inference/provider-swift/.build/release/darkbloom",
+      "sha256": "8e68ed838281079bdf46ac6eb850e4ff38e09701a507cd72d8aa5cb14fa59451",
+      "size_bytes": 81299992
+    },
+    "metallib": {
+      "exists": true,
+      "path": "~/work/d-inference/provider-swift/.build/release/mlx.metallib",
+      "sha256": "08c48889aee7a8d126e47b12528e8f3e2c43f45866de938be11a8777a952b033",
+      "size_bytes": 162398152
+    },
+    "stderr": [
+      {
+        "exists": true,
+        "path": "~/work/qwen36-prefill/logs/schema7-live-b4-2048.err",
+        "sha256": "5888fc6b671032cd30869827327804ee19135aad1174afa8529dda04c0a3bc8e",
+        "size_bytes": 1042
+      }
+    ]
+  },
+  "captured_at_utc": "2026-08-24T08:33:58Z",
+  "competing_processes": {
+    "capture": {
+      "argv": [
+        "ps",
+        "-axo",
+        "pid=,ppid=,pcpu=,pmem=,etime=,comm="
+      ],
+      "available": true,
+      "exit_code": 0,
+      "stderr": ""
+    },
+    "entries": [
+      {
+        "cpu_percent": 16.4,
+        "elapsed": "20688-18:17:21",
+        "executable": "mds",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 118
+      },
+      {
+        "cpu_percent": 11.9,
+        "elapsed": "20688-18:17:21",
+        "executable": "fseventsd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 93
+      },
+      {
+        "cpu_percent": 11.0,
+        "elapsed": "20688-18:17:28",
+        "executable": "launchd",
+        "memory_percent": 0.0,
+        "parent_pid": 0,
+        "pid": 1
+      },
+      {
+        "cpu_percent": 6.3,
+        "elapsed": "20688-18:17:21",
+        "executable": "opendirectoryd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 131
+      },
+      {
+        "cpu_percent": 4.2,
+        "elapsed": "05-07:37:04",
+        "executable": "Finder",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 509
+      },
+      {
+        "cpu_percent": 3.9,
+        "elapsed": "20688-18:17:21",
+        "executable": "contextstored",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 129
+      },
+      {
+        "cpu_percent": 3.7,
+        "elapsed": "20688-18:17:21",
+        "executable": "notifyd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 156
+      },
+      {
+        "cpu_percent": 3.4,
+        "elapsed": "06-08:01:35",
+        "executable": "mds_stores",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 316
+      },
+      {
+        "cpu_percent": 2.6,
+        "elapsed": "05-07:37:07",
+        "executable": "cfprefsd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 432
+      },
+      {
+        "cpu_percent": 2.2,
+        "elapsed": "20688-18:17:21",
+        "executable": "logd",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 89
+      },
+      {
+        "cpu_percent": 1.6,
+        "elapsed": "20688-18:17:20",
+        "executable": "cfprefsd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 165
+      },
+      {
+        "cpu_percent": 0.4,
+        "elapsed": "20688-18:17:21",
+        "executable": "diskarbitrationd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 121
+      },
+      {
+        "cpu_percent": 0.3,
+        "elapsed": "05-07:37:06",
+        "executable": "lsd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 452
+      },
+      {
+        "cpu_percent": 0.3,
+        "elapsed": "05-07:37:06",
+        "executable": "Activity Monitor",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 477
+      },
+      {
+        "cpu_percent": 0.2,
+        "elapsed": "20688-18:17:20",
+        "executable": "analyticsd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 171
+      },
+      {
+        "cpu_percent": 0.1,
+        "elapsed": "20688-18:17:20",
+        "executable": "WindowServer",
+        "memory_percent": 0.1,
+        "parent_pid": 1,
+        "pid": 162
+      },
+      {
+        "cpu_percent": 0.1,
+        "elapsed": "20688-18:17:20",
+        "executable": "coreservicesd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 172
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "smd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 90
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "UserEventAgent",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 91
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "mediaremoted",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 94
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "systemstats",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 97
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "accessoryupdaterd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 99
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "uarpassetmanagerd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 100
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "configd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 101
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "endpointsecurityd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 102
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "powerd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 103
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "IOMFB_bics_daemon",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 104
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "amfid",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 106
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "remoted",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 108
+      },
+      {
+        "cpu_percent": 0.0,
+        "elapsed": "20688-18:17:21",
+        "executable": "keybagd",
+        "memory_percent": 0.0,
+        "parent_pid": 1,
+        "pid": 110
+      }
+    ],
+    "includes_command_arguments": false,
+    "limit": 30
+  },
+  "configuration": {
+    "files": [
+      {
+        "exists": true,
+        "path": "~/.config/darkbloom/provider.toml",
+        "sha256": "5bd4a1c02dd1b744ea53d6a396bd35dadc56835132e97949ee8efcf245d8f81a",
+        "size_bytes": 349
+      }
+    ],
+    "settings": {
+      "arm": {
+        "redacted": false,
+        "value": "baseline"
+      },
+      "batch": {
+        "redacted": false,
+        "value": "4"
+      },
+      "kv_backend": {
+        "redacted": false,
+        "value": "contiguous"
+      },
+      "phase": {
+        "redacted": false,
+        "value": "after"
+      },
+      "prompt_tokens": {
+        "redacted": false,
+        "value": "2048"
+      }
+    },
+    "sha256": "48a5a0e292d5d6d94f78e5f8d98ae563d8bf4d06314c8e46227a10d5e5fec177"
+  },
+  "environment": {
+    "SDKROOT": {
+      "redacted": false,
+      "value": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    }
+  },
+  "host": {
+    "hardware": {
+      "gpu": {
+        "adapters": [
+          {
+            "chipset_model": "Apple M3 Max",
+            "core_count": "40",
+            "metal_support": "Metal 4",
+            "vendor": "Apple (0x106b)"
+          }
+        ],
+        "argv": [
+          "system_profiler",
+          "SPDisplaysDataType"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": ""
+      },
+      "machine_model": {
+        "argv": [
+          "sysctl",
+          "-n",
+          "hw.model"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Mac15,9\n"
+      },
+      "memory_bytes": {
+        "argv": [
+          "sysctl",
+          "-n",
+          "hw.memsize"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "137438953472\n"
+      }
+    },
+    "os": {
+      "sw_vers": {
+        "argv": [
+          "sw_vers"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t26.4\nBuildVersion:\t\t25E246\n"
+      },
+      "uname": {
+        "argv": [
+          "uname",
+          "-srvmp"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Darwin 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031 arm64 arm\n"
+      }
+    },
+    "toolchain": {
+      "metal": {
+        "argv": [
+          "xcrun",
+          "-sdk",
+          "macosx",
+          "metal",
+          "--version"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.jm8Vhp/Metal.xctoolchain/usr/metal/current/bin\n"
+      },
+      "metallib": {
+        "argv": [
+          "xcrun",
+          "-sdk",
+          "macosx",
+          "metallib",
+          "--version"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "AIR-LLD 32023.883 (metalfe-32023.883) (compatible with legacy metallib linker)\n"
+      },
+      "swift": {
+        "argv": [
+          "swift",
+          "--version"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "swift-driver version: 1.148.6 ",
+        "stdout": "Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0\n"
+      },
+      "xcode": {
+        "argv": [
+          "xcodebuild",
+          "-version"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Xcode 26.5\nBuild version 17F42\n"
+      }
+    }
+  },
+  "model": {
+    "identity": {
+      "complete": true,
+      "id": "sha256:4c6b26bf39eccc2d77fe9d6cddea0debd6a035f20135454a04d4cf27994ff15a",
+      "source": "immutable_snapshot_revision",
+      "weight_bytes_rehashed": false
+    },
+    "metadata_files": [
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/config.json",
+        "relative_path": "config.json",
+        "sha256": "b852ada32203b112e217e5cb48afeadaf16594c0f5d3f5f7a380897e5e8732c2",
+        "size_bytes": 25638
+      },
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/generation_config.json",
+        "relative_path": "generation_config.json",
+        "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+        "size_bytes": 202
+      },
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/model.safetensors.index.json",
+        "relative_path": "model.safetensors.index.json",
+        "sha256": "9799f7d4f5bfa79b909be4a222931137744d0464afd11a7d5b64073049d91a27",
+        "size_bytes": 218332
+      },
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/preprocessor_config.json",
+        "relative_path": "preprocessor_config.json",
+        "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+        "size_bytes": 390
+      },
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/processor_config.json",
+        "relative_path": "processor_config.json",
+        "sha256": "45fc17c8dd2474af6b493b52483c26c0584b0082d368c480f9fa611e73070040",
+        "size_bytes": 991
+      },
+      {
+        "exists": true,
+        "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local/tokenizer_config.json",
+        "relative_path": "tokenizer_config.json",
+        "sha256": "7488550a894dcf741616126e322ea31d66cf9457b59ec5825f4c7efdced421f8",
+        "size_bytes": 1164
+      }
+    ],
+    "path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local",
+    "resolved_path": "~/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local",
+    "safetensors": {
+      "file_count": 4,
+      "files": [
+        {
+          "content_sha256": null,
+          "content_sha256_source": null,
+          "relative_path": "model-00001-of-00004.safetensors",
+          "size_bytes": 5296588934
+        },
+        {
+          "content_sha256": null,
+          "content_sha256_source": null,
+          "relative_path": "model-00002-of-00004.safetensors",
+          "size_bytes": 5360637067
+        },
+        {
+          "content_sha256": null,
+          "content_sha256_source": null,
+          "relative_path": "model-00003-of-00004.safetensors",
+          "size_bytes": 5368328247
+        },
+        {
+          "content_sha256": null,
+          "content_sha256_source": null,
+          "relative_path": "model-00004-of-00004.safetensors",
+          "size_bytes": 5256335788
+        }
+      ],
+      "manifest_sha256": "be1a5856ac6bd5a0a97f9530764073e611af94a4f9b1863e64521d5ff38e2643",
+      "total_size_bytes": 21281890036,
+      "weight_bytes_rehashed": false
+    }
+  },
+  "power_and_thermal": {
+    "ac_power": true,
+    "battery": {
+      "argv": [
+        "pmset",
+        "-g",
+        "batt"
+      ],
+      "available": true,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=6750307)\t100%; charged; 0:00 remaining present: true\n"
+    },
+    "power_mode_ac": 2,
+    "settings": {
+      "argv": [
+        "pmset",
+        "-g",
+        "custom"
+      ],
+      "available": true,
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "Battery Power:\n Sleep On Power Button 1\n powermode            0\n standby              0\n ttyskeepawake        1\n hibernatemode        0\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         5\n womp                 0\n networkoversleep     0\n sleep                0\n lessbright           1\n tcpkeepalive         1\n disksleep            0\n SleepServices        1\nAC Power:\n Sleep On Power Button 1\n powermode            2\n standby              0\n ttyskeepawake        1\n hibernatemode        0\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         5\n womp                 1\n networkoversleep     0\n sleep                0\n tcpkeepalive         1\n disksleep            0\n SleepServices        1\n"
+    },
+    "thermal": {
+      "cpu_level": {
+        "argv": [
+          "sysctl",
+          "-n",
+          "machdep.xcpm.cpu_thermal_level"
+        ],
+        "available": true,
+        "exit_code": 1,
+        "stderr": "sysctl: unknown oid 'machdep.xcpm.cpu_thermal_level'\n",
+        "stdout": ""
+      },
+      "gpu_level": {
+        "argv": [
+          "sysctl",
+          "-n",
+          "machdep.xcpm.gpu_thermal_level"
+        ],
+        "available": true,
+        "exit_code": 1,
+        "stderr": "sysctl: unknown oid 'machdep.xcpm.gpu_thermal_level'\n",
+        "stdout": ""
+      },
+      "io_level": {
+        "argv": [
+          "sysctl",
+          "-n",
+          "machdep.xcpm.io_thermal_level"
+        ],
+        "available": true,
+        "exit_code": 1,
+        "stderr": "sysctl: unknown oid 'machdep.xcpm.io_thermal_level'\n",
+        "stdout": ""
+      },
+      "pmset": {
+        "argv": [
+          "pmset",
+          "-g",
+          "therm"
+        ],
+        "available": true,
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+      }
+    }
+  },
+  "repository": {
+    "head_sha": "83a5f662ff5f3fcb76df33d38f01c345db279a13",
+    "path": "~/work/qwen-provenance-83a5",
+    "reproducible_committed_state": false,
+    "status": [],
+    "status_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "submodules_recursive": [
+      {
+        "dirty": false,
+        "head_sha": "83a5f662ff5f3fcb76df33d38f01c345db279a13",
+        "path": "libs/mlx",
+        "sha": "0a725e3000edabc4911cde345270ca950bfa152f",
+        "state": "uninitialized",
+        "status": [],
+        "status_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "worktree_present": true
+      },
+      {
+        "dirty": false,
+        "head_sha": "83a5f662ff5f3fcb76df33d38f01c345db279a13",
+        "path": "libs/mlx-swift",
+        "sha": "606d28cfa8c1d66b2975d3162a4aac9756835c5f",
+        "state": "uninitialized",
+        "status": [],
+        "status_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "worktree_present": true
+      },
+      {
+        "dirty": false,
+        "head_sha": "83a5f662ff5f3fcb76df33d38f01c345db279a13",
+        "path": "libs/mlx-swift-lm",
+        "sha": "ab73a827c9dde6f8802507003aa0be71605aab8e",
+        "state": "uninitialized",
+        "status": [],
+        "status_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "worktree_present": true
+      }
+    ],
+    "tree_sha": "4b587f20bd71c1f36e50273c04087df18cda34b8",
+    "worktree_dirty": false
+  },
+  "schema_version": 1
+}

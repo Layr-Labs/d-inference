@@ -1,0 +1,13 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+[arrival-invariance] arrival tolerance 20.00 ms, up to 3 attempt(s) per sample
+[arrival-invariance] loading model qwen3.6-35b-a3b-vl-mtp-mxfp8
+[arrival-invariance]   path: /Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local
+[arrival-invariance] kv backend selection contiguous, engine resolved contiguous
+[arrival-invariance] warming burst
+[arrival-invariance] warming stagger-25ms
+[arrival-invariance] warming stagger-100ms
+[arrival-invariance] warming rolling-250ms
+[arrival-invariance]   burst i=1: prefill 1697.7 tok/s, decode 207.4 tok/s, makespan 4842.3 ms, arrival err 0.03 ms
+[arrival-invariance]   stagger-25ms i=1: prefill 1615.4 tok/s, decode 1.0 tok/s, makespan 5084.9 ms, arrival err 10.05 ms
+[arrival-invariance]   stagger-100ms i=1: prefill 1577.3 tok/s, decode 1.0 tok/s, makespan 5207.6 ms, arrival err 10.08 ms
+[arrival-invariance]   rolling-250ms i=1: prefill 1525.7 tok/s, decode 1.0 tok/s, makespan 5383.2 ms, arrival err 10.06 ms

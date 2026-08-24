@@ -408,6 +408,20 @@ logits. See `GOAL.md`, `program.md`, and `notes/055`.
 Numerical freedom does not create hardware throughput in these M3
 fallbacks. Move to work deletion/state construction. See `notes/056`.
 
+## 2026-08-24T08:31Z — E20 adaptive MoE first large win
+
+Default-off prefill-only expert policy, decode still top-8:
+
+- B=4×2K: top-4 **1.213×**, top-1 **1.232×**;
+- B=4×8K: top-4 **1.192×**, top-1 **1.379×**.
+
+Top-4 retained all sampled two-token outputs at 2K/8K. Top-1 retained
+all at 8K but changed 2/4 rows at 2K. Quality corpus is now binding;
+checksum identity is diagnostic only under the owner override.
+
+Top-1 primary rate is 2,147.5 tok/s. Another 1.813× is required.
+Proceed to layer/token/state reduction and top-1 geometry. See `notes/057`.
+
 ## 2026-08-24T08:36Z — reverse-state dependency closure
 
 Worked backward from the actual post-prefill product in `notes/050`:

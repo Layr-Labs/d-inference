@@ -17,9 +17,9 @@ struct ExactPrefixCacheStatusSnapshot: Sendable, Equatable {
     let budgetBytes: Int
     let bytesInUse: Int
     let entries: Int
-    let hits: Int
-    let misses: Int
-    let tokensSaved: Int
+    let lookupHits: Int
+    let lookupMisses: Int
+    let matchedTokens: Int
     let donations: Int
     let donationsDropped: Int
     let evictions: Int
@@ -42,9 +42,9 @@ extension EngineV2Bridge {
             budgetBytes: exactPrefixCacheBudgetBytes,
             bytesInUse: stats?.bytesInUse ?? 0,
             entries: stats?.entryCount ?? 0,
-            hits: stats?.hits ?? 0,
-            misses: stats?.misses ?? 0,
-            tokensSaved: stats?.tokensSaved ?? 0,
+            lookupHits: stats?.hits ?? 0,
+            lookupMisses: stats?.misses ?? 0,
+            matchedTokens: stats?.tokensSaved ?? 0,
             donations: stats?.donations ?? 0,
             donationsDropped: stats?.donationsDropped ?? 0,
             evictions: stats?.evictions ?? 0)
@@ -88,7 +88,7 @@ extension EngineV2Bridge {
         #if canImport(os)
         let rateString = String(format: "%.1f", rate)
         Self.exactPrefixStatsLogger.info(
-            "prefix cache stats (engine=v2, tier=ram_exact_state, model=\(modelId, privacy: .public)): budgetBytes=\(budgetBytes) bytesInUse=\(stats.bytesInUse) entries=\(stats.entryCount) lookups=\(lookups) hits=\(stats.hits) misses=\(stats.misses) hitRate=\(rateString, privacy: .public)% tokensSaved=\(stats.tokensSaved) donations=\(stats.donations) donationsDropped=\(stats.donationsDropped) evictions=\(stats.evictions)"
+            "prefix cache stats (engine=v2, tier=ram_exact_state, model=\(modelId, privacy: .public)): budgetBytes=\(budgetBytes) bytesInUse=\(stats.bytesInUse) entries=\(stats.entryCount) lookups=\(lookups) lookupHits=\(stats.hits) lookupMisses=\(stats.misses) hitRate=\(rateString, privacy: .public)% matchedTokens=\(stats.tokensSaved) donations=\(stats.donations) donationsDropped=\(stats.donationsDropped) evictions=\(stats.evictions)"
         )
         #endif
     }

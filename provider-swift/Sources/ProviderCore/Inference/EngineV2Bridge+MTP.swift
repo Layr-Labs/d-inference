@@ -155,9 +155,9 @@ extension EngineV2Bridge {
         fields["exact_prefix_cache_budget_bytes"] = .int(exact.budgetBytes)
         fields["exact_prefix_cache_bytes_in_use"] = .int(exact.bytesInUse)
         fields["exact_prefix_cache_entries"] = .int(exact.entries)
-        fields["exact_prefix_cache_hits"] = .int(exact.hits)
-        fields["exact_prefix_cache_misses"] = .int(exact.misses)
-        fields["exact_prefix_cache_tokens_saved"] = .int(exact.tokensSaved)
+        fields["exact_prefix_cache_lookup_hits"] = .int(exact.lookupHits)
+        fields["exact_prefix_cache_lookup_misses"] = .int(exact.lookupMisses)
+        fields["exact_prefix_cache_matched_tokens"] = .int(exact.matchedTokens)
         fields["exact_prefix_cache_donations"] = .int(exact.donations)
         fields["exact_prefix_cache_donations_dropped"] = .int(
             exact.donationsDropped)

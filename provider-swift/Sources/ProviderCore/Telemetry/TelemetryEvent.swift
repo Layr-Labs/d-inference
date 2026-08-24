@@ -279,8 +279,8 @@ public enum TelemetryFieldFilter {
         "exact_prefix_cache_configured", "exact_prefix_cache_active",
         "exact_prefix_cache_reason", "exact_prefix_cache_budget_bytes",
         "exact_prefix_cache_bytes_in_use", "exact_prefix_cache_entries",
-        "exact_prefix_cache_hits", "exact_prefix_cache_misses",
-        "exact_prefix_cache_tokens_saved", "exact_prefix_cache_donations",
+        "exact_prefix_cache_lookup_hits", "exact_prefix_cache_lookup_misses",
+        "exact_prefix_cache_matched_tokens", "exact_prefix_cache_donations",
         "exact_prefix_cache_donations_dropped", "exact_prefix_cache_evictions",
         // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
         // ENGINE/runtime name ("engine_v2", "mlx-swift"); `kv_backend` is the

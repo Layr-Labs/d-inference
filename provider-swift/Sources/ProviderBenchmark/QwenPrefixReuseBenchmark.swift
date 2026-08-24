@@ -21,6 +21,7 @@ public enum QwenPrefixReuseBenchmark {
     private static let prefixExperimentEnvironmentKeys = [
         "DARKBLOOM_CBV2_PROMPT_FORK",
         "DARKBLOOM_PREFIX_BENCH_FORCE_FORK",
+        "DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES",
     ]
 
     private struct ModelDescriptor: Sendable {
@@ -142,7 +143,13 @@ public enum QwenPrefixReuseBenchmark {
                 residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
-        let exactCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
+        let defaultCacheBudget = totalStateCapacity / exactCacheBudgetDivisor
+        let configuredCacheBudget = processEnvironment[
+            "DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES"
+        ].flatMap(Int.init)
+        let exactCacheBudget = min(
+            defaultCacheBudget,
+            configuredCacheBudget ?? defaultCacheBudget)
         let kvCapacity = totalStateCapacity - exactCacheBudget
         let blockSize = CBv2BlockHasher.defaultBlockSize
         guard kvCapacity > 0, exactCacheBudget > 0 else {

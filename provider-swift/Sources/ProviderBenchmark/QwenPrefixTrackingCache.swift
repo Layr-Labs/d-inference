@@ -291,11 +291,8 @@ final class QwenExactPrefixTrackingCache:
             layerKinds: layerKinds,
             cacheSalt: cacheSalt)
         guard cache.stats().donations > before else { return }
-        let publishedAt =
-            donationsByRequest[requestID]?.publishedAtNs
-            ?? DispatchTime.now().uptimeNanoseconds
         donationsByRequest[requestID] = QwenPrefixDonationObservation(
-            publishedAtNs: publishedAt,
+            publishedAtNs: DispatchTime.now().uptimeNanoseconds,
             cacheBytesAfterPublish: cache.bytesInUse)
     }
 

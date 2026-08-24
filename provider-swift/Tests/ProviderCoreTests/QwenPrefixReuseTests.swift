@@ -36,12 +36,14 @@ struct QwenPrefixReuseTests {
         let captured = QwenPrefixReuseBenchmark.capturedPolicyEnvironment([
             "DARKBLOOM_CBV2_PROMPT_FORK": "1",
             "DARKBLOOM_PREFIX_BENCH_FORCE_FORK": "1",
+            "DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES": "2147483648",
             "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
             "DARKBLOOM_API_TOKEN": "secret",
         ])
         #expect(captured == [
             "DARKBLOOM_CBV2_PROMPT_FORK": "1",
             "DARKBLOOM_PREFIX_BENCH_FORCE_FORK": "1",
+            "DARKBLOOM_PREFIX_BENCH_CACHE_MAX_BYTES": "2147483648",
             "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
         ])
     }

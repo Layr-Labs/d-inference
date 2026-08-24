@@ -69,7 +69,7 @@ Building for serving...
 [13/16] Compiling MLXEmbedders EmbedderModelContainer.swift
 [14/16] Compiling MLXLLM LLMModel.swift
 /Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:758:27: warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
- 756 | 
+ 756 |
  757 |     func callAsFunction(_ x: MLXArray, poolCache: PoolingCache?, offset: Int) -> MLXArray {
  758 |         let B = x.dim(0), D = x.dim(2)
      |                           `- warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
@@ -87,10 +87,10 @@ Building for serving...
 
 /Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1513:13: warning: variable 'h' was never mutated; consider changing to 'let' constant
 1511 |         }
-1512 | 
+1512 |
 1513 |         var h = hcPost(x: attnOut, residual: residual, post: postAttn, comb: combAttn)
      |             `- warning: variable 'h' was never mutated; consider changing to 'let' constant
-1514 | 
+1514 |
 1515 |         // FFN sub-block
 [15/17] Compiling MLXVLM MediaProcessing.swift
 [16/18] Compiling MLXLMServer MLXServerRunner.swift
@@ -110,7 +110,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
    |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
    |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
    |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
-   |   | 9 | 
+   |   | 9 |
    |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
    |   +----------------------------------------------------------------
    |13 |         }
@@ -140,7 +140,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
     |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
     |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
     |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
-    |  |   | 9 | 
+    |  |   | 9 |
     |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
     |  |   +------------------------------------------------------------
     |  |13 |         }
@@ -150,7 +150,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
     |5 |     progressHandler: { _ in
     +-------------------------------------------------------------------
 203 |     }
-204 | 
+204 |
 
 macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
 `- /Users/benchmark/work/d-inference/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:211:70: note: expanded code originates here
@@ -173,7 +173,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
     |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
     |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
     |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
-    |  |   | 9 | 
+    |  |   | 9 |
     |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
     |  |   +------------------------------------------------------------
     |  |13 |         }
@@ -191,7 +191,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
  77 |     return String(cString: buffer)
     |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
  78 | }
- 79 | 
+ 79 |
 
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
 83 |         // any code path that might have called `Device.setDefault(.cpu)`
@@ -270,7 +270,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
 332 |     return String(cString: model)
     |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
 333 | }
-334 | 
+334 |
 
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:157:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
 155 |     // Resolve symlinks
@@ -289,11 +289,11 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
 281 |         defer { free(resolved) }
 
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:265:24: warning: no 'async' operations occur within 'await' expression
-263 | 
+263 |
 264 |     private func runPrefetch(modelId: String, taskId: UUID) async {
 265 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
     |                        `- warning: no 'async' operations occur within 'await' expression
-266 | 
+266 |
 267 |         // Short-circuit if already available (loaded or on-disk-and-valid).
 
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift:1035:51: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
@@ -326,7 +326,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
 [18/20] Compiling ProviderBenchmark ArrivalEngineRunner.swift
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:184:27: warning: no calls to throwing functions occur within 'try' expression
 182 |         )
-183 | 
+183 |
 184 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
     |                           `- warning: no calls to throwing functions occur within 'try' expression
 185 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
@@ -334,7 +334,7 @@ macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' i
 
 /Users/benchmark/work/d-inference/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:96:21: warning: no calls to throwing functions occur within 'try' expression
  94 |         }
- 95 | 
+ 95 |
  96 |         let facts = try await container.perform { ctx -> ModelFacts in
     |                     `- warning: no calls to throwing functions occur within 'try' expression
  97 |             let params = ctx.model.parameters().flattened()

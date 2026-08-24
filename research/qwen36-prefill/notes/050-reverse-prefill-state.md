@@ -562,20 +562,21 @@ main multiplier.
 
 ## 7. Artifact-eight implementation handoff
 
-The default-off implementation is preserved as three ordered root-repository
+The default-off implementation is preserved as four ordered root-repository
 patches because the agent identity cannot push the `mlx-swift-lm` submodule:
 
 ```text
+research/qwen36-prefill/patches/052-prefill-moe-topk.patch
 research/qwen36-prefill/patches/053-cbv2-prefill-layer-skip.patch
 research/qwen36-prefill/patches/054-cbv2-artifact-eight-state-cache-only.patch
 research/qwen36-prefill/patches/055-cbv2-prefill-diagnostics-stderr.patch
 ```
 
-Apply `053`, then `054`, then `055`, to submodule base
-`ab73a827c9dde6f8802507003aa0be71605aab8e`. The resulting local submodule
-commits are `bfcf71c`, `23d3b16`, `bd81d9e`, and `51ab73f`; the final tree is
-the artifact-construction implementation with experiment diagnostics isolated
-to stderr, while the first commit is retained only as the patch-series base.
+Apply `052`, `053`, `054`, then `055`, to submodule base
+`ab73a827c9dde6f8802507003aa0be71605aab8e`. This reproduces the exact tree at
+local submodule commit `51ab73f`; intermediate development commits are
+`bfcf71c`, `23d3b16`, and `bd81d9e`. The final tree constructs the requested
+artifacts and isolates experiment diagnostics to stderr.
 
 The registered run arm is:
 

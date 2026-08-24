@@ -14,8 +14,8 @@ struct BenchmarkQualityCorpusOptionsTests {
 
         #expect(command.qualityCorpus
             == "Benchmarks/QualityCorpus/qwen-quality-v1.json")
-        #expect(command.qualityMaxTokens == 64)
-        #expect(command.qualityRunLabel == "unlabeled")
+        #expect(command.qualityMaxTokens == nil)
+        #expect(command.qualityRunLabel == nil)
         #expect(command.qualityBaselineReport == nil)
     }
 
@@ -75,11 +75,16 @@ struct BenchmarkQualityCorpusOptionsTests {
     }
 
     @Test
-    func baselineOptionRequiresQualityMode() {
-        for option in ["--quality-baseline-report", "--quality-output"] {
+    func qualityOptionsRequireQualityMode() {
+        for (option, value) in [
+            ("--quality-max-tokens", "64"),
+            ("--quality-run-label", "baseline"),
+            ("--quality-baseline-report", "baseline.json"),
+            ("--quality-output", "report.json"),
+        ] {
             #expect(throws: (any Error).self) {
                 _ = try Benchmark.parse([
-                    option, "report.json",
+                    option, value,
                 ])
             }
         }

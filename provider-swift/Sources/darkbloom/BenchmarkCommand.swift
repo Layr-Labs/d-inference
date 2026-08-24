@@ -118,13 +118,13 @@ struct Benchmark: AsyncParsableCommand {
         required range 32...4096). Stop tokens are intentionally disabled so \
         every case has the same comparison window.
         """)
-    var qualityMaxTokens = QwenQualityCorpusBenchmark.defaultMaximumTokens
+    var qualityMaxTokens: Int?
 
     @Option(name: .long, help: """
         Quality corpus: label recorded in the report (for example baseline or \
         top4-layer39).
         """)
-    var qualityRunLabel = QwenQualityCorpusBenchmark.defaultRunLabel
+    var qualityRunLabel: String?
 
     @Option(name: .long, help: """
         Quality corpus: baseline report JSON to compare with this run. The \
@@ -183,19 +183,25 @@ struct Benchmark: AsyncParsableCommand {
                     "--quality-corpus cannot be combined with --sweep, "
                         + "--scheduler-prefill, --arrival-invariance, or --parity")
             }
-            guard model != nil else {
+            guard model?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false
+            else {
                 throw ValidationError("--quality-corpus requires an explicit --model")
             }
+            let maximumTokens =
+                qualityMaxTokens ?? QwenQualityCorpusBenchmark.defaultMaximumTokens
             guard (QwenQualityCorpusExecutor.minimumGenerationTokens
                 ... QwenQualityCorpusExecutor.maximumGenerationTokens)
-                .contains(qualityMaxTokens)
+                .contains(maximumTokens)
             else {
                 throw ValidationError(
                     "--quality-max-tokens must be in "
                         + "\(QwenQualityCorpusExecutor.minimumGenerationTokens)..."
                         + "\(QwenQualityCorpusExecutor.maximumGenerationTokens)")
             }
-            let label = qualityRunLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = (
+                qualityRunLabel ?? QwenQualityCorpusBenchmark.defaultRunLabel
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !label.isEmpty, label.utf8.count <= 128 else {
                 throw ValidationError(
                     "--quality-run-label must contain 1...128 UTF-8 bytes")
@@ -210,9 +216,15 @@ struct Benchmark: AsyncParsableCommand {
                     throw ValidationError("\(name) path must not be empty")
                 }
             }
-        } else if qualityBaselineReport != nil || qualityOutput != nil {
+        } else if qualityMaxTokens != nil
+            || qualityRunLabel != nil
+            || qualityBaselineReport != nil
+            || qualityOutput != nil
+        {
             throw ValidationError(
-                "--quality-baseline-report and --quality-output require --quality-corpus")
+                "--quality-max-tokens, --quality-run-label, "
+                    + "--quality-baseline-report, and --quality-output "
+                    + "require --quality-corpus")
         }
     }
 

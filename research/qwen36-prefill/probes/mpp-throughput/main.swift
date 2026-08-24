@@ -45,6 +45,7 @@ private func candidateFields(_ candidate: MPPCandidate) -> [String] {
         "tile=M\(candidate.tileM)N\(candidate.tileN)K\(candidate.tileK)",
         "scope=\(candidate.scope)",
         "scope_simdgroups=\(candidate.scopeSIMDGroups)",
+        "input_mode=\(candidate.inputMode)",
     ]
 }
 
@@ -192,6 +193,7 @@ private func run() throws {
         "SWEEP=tiles-M16N16-M16N32-M16N64-M32N32-M64N32"
             + " tile_k=K16-K32"
             + " scopes=execution_simdgroup-execution_simdgroups_2-execution_simdgroups_4"
+            + " input_modes=cooperative-tensor"
             + " compiler_link_accepted=\(candidates.count)")
     print(
         "MEASUREMENT=one-full-matrix-dispatch-per-command-buffer"
@@ -215,7 +217,7 @@ private func run() throws {
             + " executable=\(runner.executableCandidates.count)"
             + " rejected=\(candidates.count - runner.executableCandidates.count)")
 
-    let currentScheduleID = "mpp_m16_n32_k16_sg1"
+    let currentScheduleID = "mpp_m16_n32_k16_sg1_coop"
     guard runner.executableCandidates.contains(where: { $0.id == currentScheduleID }) else {
         throw ProbeFailure.message(
             "known M16N32K16 execution_simdgroup control is not executable")

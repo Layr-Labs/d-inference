@@ -15,8 +15,9 @@ struct DenseShape {
 #if defined(COMPILE_MPP_CANDIDATE)
 
 #if !defined(MPP_TILE_M) || !defined(MPP_TILE_N) || !defined(MPP_TILE_K) || \
-    !defined(MPP_SCOPE_SIMDGROUPS) || !defined(MPP_FUNCTION)
-#error "MPP candidate compile requires tile, scope, and function macros"
+    !defined(MPP_SCOPE_SIMDGROUPS) || !defined(MPP_INPUT_MODE) || \
+    !defined(MPP_FUNCTION)
+#error "MPP candidate compile requires tile, scope, input, and function macros"
 #endif
 
 #if MPP_SCOPE_SIMDGROUPS == 1
@@ -41,10 +42,11 @@ using MPPRightExtents = metal::extents<int, MPP_TILE_N, MPP_TILE_K>;
 using MPPDestinationExtents = metal::extents<int, MPP_TILE_N, MPP_TILE_M>;
 
 // Every matrix entry in the compile matrix instantiates this strict
-// BF16xBF16->FP32 operation independently. A single-SIMD-group operation packs
-// four independent output tiles into one threadgroup. Multi-SIMD-group scopes
-// use exactly the configured 2 or 4 groups cooperatively for one output tile,
-// as required by the Metal 4 execution-scope contract.
+// BF16xBF16->FP32 operation independently. Input mode 1 uses explicit
+// cooperative loads; input mode 2 passes supported tensor views directly to
+// the operation while retaining a cooperative FP32 destination and store.
+// Testing both records the API's scope restrictions without dropping legal
+// multi-SIMD-group descriptors.
 kernel void MPP_FUNCTION(
     device bfloat* a [[buffer(0)]],
     device bfloat* b [[buffer(1)]],
@@ -70,6 +72,7 @@ kernel void MPP_FUNCTION(
   const uint m_origin = (tile_index / n_tiles) * mppTileM;
   const uint n_origin = (tile_index % n_tiles) * mppTileN;
 
+#if MPP_INPUT_MODE == 1
   auto cooperative_a =
       operation.get_left_input_cooperative_tensor<bfloat, bfloat, float>();
   auto cooperative_b =
@@ -79,12 +82,27 @@ kernel void MPP_FUNCTION(
           decltype(cooperative_a),
           decltype(cooperative_b),
           float>();
+#elif MPP_INPUT_MODE == 2
+  auto first_a_tile = metal::tensor(
+      a + m_origin * shape.k,
+      MPPLeftExtents{},
+      metal::array<int, 2>{1, int(shape.k)});
+  auto first_b_tile = metal::tensor(
+      b + n_origin,
+      MPPRightExtents{},
+      metal::array<int, 2>{1, int(shape.n)});
+  auto cooperative_c =
+      operation.get_destination_cooperative_tensor<
+          decltype(first_a_tile),
+          decltype(first_b_tile),
+          float>();
+#else
+#error "MPP_INPUT_MODE must be 1 (cooperative) or 2 (tensor)"
+#endif
 
 #pragma clang loop unroll(full)
   for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {
-    if (cooperative_c.get_mask(i)) {
-      cooperative_c.set(i, 0.0f);
-    }
+    cooperative_c.set(i, 0.0f);
   }
 
 #pragma clang loop unroll(disable)
@@ -97,9 +115,13 @@ kernel void MPP_FUNCTION(
         b + k_origin * shape.n + n_origin,
         MPPRightExtents{},
         metal::array<int, 2>{1, int(shape.n)});
+#if MPP_INPUT_MODE == 1
     cooperative_a.load(a_tile);
     cooperative_b.load(b_tile);
     operation.run(cooperative_a, cooperative_b, cooperative_c);
+#else
+    operation.run(a_tile, b_tile, cooperative_c);
+#endif
   }
 
   auto c_tile = metal::tensor(

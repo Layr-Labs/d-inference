@@ -102,9 +102,11 @@ record_invalid_gate() {
 }
 
 record_rejection_logs() {
-    local candidate tile_m tile_n tile_k scope scope_groups compile_status link_status
+    local candidate tile_m tile_n tile_k scope scope_groups input_mode
+    local compile_status link_status
     while IFS=$'\t' read -r \
-        candidate tile_m tile_n tile_k scope scope_groups compile_status link_status
+        candidate tile_m tile_n tile_k scope scope_groups input_mode \
+        compile_status link_status
     do
         [[ -z "$candidate" || "$candidate" == \#* ]] && continue
         if [[ "$compile_status" != "pass" ]]; then
@@ -178,21 +180,33 @@ if [[ "$STEEL_LINK_STATUS" -ne 0 ]]; then
     exit 1
 fi
 
-printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tmetal_compile\tmetallib_link\n' \
+printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tinput_mode\tmetal_compile\tmetallib_link\n' \
     >"$COMPILE_MATRIX"
-printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tmetallib_path\n' \
+printf '#candidate\ttile_m\ttile_n\ttile_k\tscope\tscope_simdgroups\tinput_mode\tmetallib_path\n' \
     >"$ACCEPTED_MANIFEST"
 
 REQUESTED_COUNT=0
 COMPILED_COUNT=0
 LINKED_COUNT=0
 while IFS=$'\t' read -r \
-    candidate tile_m tile_n tile_k scope scope_groups
+    candidate tile_m tile_n tile_k scope scope_groups input_mode
 do
     [[ -z "$candidate" || "$candidate" == \#* ]] && continue
     REQUESTED_COUNT=$((REQUESTED_COUNT + 1))
     candidate_air="$BUILD_DIR/candidates/$candidate.air"
     candidate_metallib="$BUILD_DIR/candidates/$candidate.metallib"
+    case "$input_mode" in
+        cooperative)
+            input_mode_value=1
+            ;;
+        tensor)
+            input_mode_value=2
+            ;;
+        *)
+            echo "fatal: unsupported input mode $input_mode for $candidate" >&2
+            exit 1
+            ;;
+    esac
 
     set +e
     xcrun -sdk macosx metal "${METAL_FLAGS[@]}" \
@@ -201,6 +215,7 @@ do
         -DMPP_TILE_N="$tile_n" \
         -DMPP_TILE_K="$tile_k" \
         -DMPP_SCOPE_SIMDGROUPS="$scope_groups" \
+        -DMPP_INPUT_MODE="$input_mode_value" \
         -DMPP_FUNCTION="$candidate" \
         -c "$KERNEL_SOURCE" \
         -o "$candidate_air" \
@@ -208,8 +223,9 @@ do
     metal_status=$?
     set -e
     if [[ "$metal_status" -ne 0 ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\tfail\tnot-run\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tfail\tnot-run\n' \
             "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+            "$input_mode" \
             >>"$COMPILE_MATRIX"
         continue
     fi
@@ -223,18 +239,20 @@ do
     link_status=$?
     set -e
     if [[ "$link_status" -ne 0 ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\tpass\tfail\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tpass\tfail\n' \
             "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+            "$input_mode" \
             >>"$COMPILE_MATRIX"
         continue
     fi
     LINKED_COUNT=$((LINKED_COUNT + 1))
-    printf '%s\t%s\t%s\t%s\t%s\t%s\tpass\tpass\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\tpass\tpass\n' \
         "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
+        "$input_mode" \
         >>"$COMPILE_MATRIX"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$candidate" "$tile_m" "$tile_n" "$tile_k" "$scope" "$scope_groups" \
-        "$candidate_metallib" \
+        "$input_mode" "$candidate_metallib" \
         >>"$ACCEPTED_MANIFEST"
 done <"$CANDIDATE_SOURCE"
 

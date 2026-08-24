@@ -1,31 +1,61 @@
-# candidate	tile_m	tile_n	tile_k	scope	scope_simdgroups
-mpp_m16_n16_k16_sg1	16	16	16	execution_simdgroup	1
-mpp_m16_n16_k16_sg2	16	16	16	execution_simdgroups_2	2
-mpp_m16_n16_k16_sg4	16	16	16	execution_simdgroups_4	4
-mpp_m16_n16_k32_sg1	16	16	32	execution_simdgroup	1
-mpp_m16_n16_k32_sg2	16	16	32	execution_simdgroups_2	2
-mpp_m16_n16_k32_sg4	16	16	32	execution_simdgroups_4	4
-mpp_m16_n32_k16_sg1	16	32	16	execution_simdgroup	1
-mpp_m16_n32_k16_sg2	16	32	16	execution_simdgroups_2	2
-mpp_m16_n32_k16_sg4	16	32	16	execution_simdgroups_4	4
-mpp_m16_n32_k32_sg1	16	32	32	execution_simdgroup	1
-mpp_m16_n32_k32_sg2	16	32	32	execution_simdgroups_2	2
-mpp_m16_n32_k32_sg4	16	32	32	execution_simdgroups_4	4
-mpp_m16_n64_k16_sg1	16	64	16	execution_simdgroup	1
-mpp_m16_n64_k16_sg2	16	64	16	execution_simdgroups_2	2
-mpp_m16_n64_k16_sg4	16	64	16	execution_simdgroups_4	4
-mpp_m16_n64_k32_sg1	16	64	32	execution_simdgroup	1
-mpp_m16_n64_k32_sg2	16	64	32	execution_simdgroups_2	2
-mpp_m16_n64_k32_sg4	16	64	32	execution_simdgroups_4	4
-mpp_m32_n32_k16_sg1	32	32	16	execution_simdgroup	1
-mpp_m32_n32_k16_sg2	32	32	16	execution_simdgroups_2	2
-mpp_m32_n32_k16_sg4	32	32	16	execution_simdgroups_4	4
-mpp_m32_n32_k32_sg1	32	32	32	execution_simdgroup	1
-mpp_m32_n32_k32_sg2	32	32	32	execution_simdgroups_2	2
-mpp_m32_n32_k32_sg4	32	32	32	execution_simdgroups_4	4
-mpp_m64_n32_k16_sg1	64	32	16	execution_simdgroup	1
-mpp_m64_n32_k16_sg2	64	32	16	execution_simdgroups_2	2
-mpp_m64_n32_k16_sg4	64	32	16	execution_simdgroups_4	4
-mpp_m64_n32_k32_sg1	64	32	32	execution_simdgroup	1
-mpp_m64_n32_k32_sg2	64	32	32	execution_simdgroups_2	2
-mpp_m64_n32_k32_sg4	64	32	32	execution_simdgroups_4	4
+# candidate	tile_m	tile_n	tile_k	scope	scope_simdgroups	input_mode
+mpp_m16_n16_k16_sg1_coop	16	16	16	execution_simdgroup	1	cooperative
+mpp_m16_n16_k16_sg1_tensor	16	16	16	execution_simdgroup	1	tensor
+mpp_m16_n16_k16_sg2_coop	16	16	16	execution_simdgroups_2	2	cooperative
+mpp_m16_n16_k16_sg2_tensor	16	16	16	execution_simdgroups_2	2	tensor
+mpp_m16_n16_k16_sg4_coop	16	16	16	execution_simdgroups_4	4	cooperative
+mpp_m16_n16_k16_sg4_tensor	16	16	16	execution_simdgroups_4	4	tensor
+mpp_m16_n16_k32_sg1_coop	16	16	32	execution_simdgroup	1	cooperative
+mpp_m16_n16_k32_sg1_tensor	16	16	32	execution_simdgroup	1	tensor
+mpp_m16_n16_k32_sg2_coop	16	16	32	execution_simdgroups_2	2	cooperative
+mpp_m16_n16_k32_sg2_tensor	16	16	32	execution_simdgroups_2	2	tensor
+mpp_m16_n16_k32_sg4_coop	16	16	32	execution_simdgroups_4	4	cooperative
+mpp_m16_n16_k32_sg4_tensor	16	16	32	execution_simdgroups_4	4	tensor
+mpp_m16_n32_k16_sg1_coop	16	32	16	execution_simdgroup	1	cooperative
+mpp_m16_n32_k16_sg1_tensor	16	32	16	execution_simdgroup	1	tensor
+mpp_m16_n32_k16_sg2_coop	16	32	16	execution_simdgroups_2	2	cooperative
+mpp_m16_n32_k16_sg2_tensor	16	32	16	execution_simdgroups_2	2	tensor
+mpp_m16_n32_k16_sg4_coop	16	32	16	execution_simdgroups_4	4	cooperative
+mpp_m16_n32_k16_sg4_tensor	16	32	16	execution_simdgroups_4	4	tensor
+mpp_m16_n32_k32_sg1_coop	16	32	32	execution_simdgroup	1	cooperative
+mpp_m16_n32_k32_sg1_tensor	16	32	32	execution_simdgroup	1	tensor
+mpp_m16_n32_k32_sg2_coop	16	32	32	execution_simdgroups_2	2	cooperative
+mpp_m16_n32_k32_sg2_tensor	16	32	32	execution_simdgroups_2	2	tensor
+mpp_m16_n32_k32_sg4_coop	16	32	32	execution_simdgroups_4	4	cooperative
+mpp_m16_n32_k32_sg4_tensor	16	32	32	execution_simdgroups_4	4	tensor
+mpp_m16_n64_k16_sg1_coop	16	64	16	execution_simdgroup	1	cooperative
+mpp_m16_n64_k16_sg1_tensor	16	64	16	execution_simdgroup	1	tensor
+mpp_m16_n64_k16_sg2_coop	16	64	16	execution_simdgroups_2	2	cooperative
+mpp_m16_n64_k16_sg2_tensor	16	64	16	execution_simdgroups_2	2	tensor
+mpp_m16_n64_k16_sg4_coop	16	64	16	execution_simdgroups_4	4	cooperative
+mpp_m16_n64_k16_sg4_tensor	16	64	16	execution_simdgroups_4	4	tensor
+mpp_m16_n64_k32_sg1_coop	16	64	32	execution_simdgroup	1	cooperative
+mpp_m16_n64_k32_sg1_tensor	16	64	32	execution_simdgroup	1	tensor
+mpp_m16_n64_k32_sg2_coop	16	64	32	execution_simdgroups_2	2	cooperative
+mpp_m16_n64_k32_sg2_tensor	16	64	32	execution_simdgroups_2	2	tensor
+mpp_m16_n64_k32_sg4_coop	16	64	32	execution_simdgroups_4	4	cooperative
+mpp_m16_n64_k32_sg4_tensor	16	64	32	execution_simdgroups_4	4	tensor
+mpp_m32_n32_k16_sg1_coop	32	32	16	execution_simdgroup	1	cooperative
+mpp_m32_n32_k16_sg1_tensor	32	32	16	execution_simdgroup	1	tensor
+mpp_m32_n32_k16_sg2_coop	32	32	16	execution_simdgroups_2	2	cooperative
+mpp_m32_n32_k16_sg2_tensor	32	32	16	execution_simdgroups_2	2	tensor
+mpp_m32_n32_k16_sg4_coop	32	32	16	execution_simdgroups_4	4	cooperative
+mpp_m32_n32_k16_sg4_tensor	32	32	16	execution_simdgroups_4	4	tensor
+mpp_m32_n32_k32_sg1_coop	32	32	32	execution_simdgroup	1	cooperative
+mpp_m32_n32_k32_sg1_tensor	32	32	32	execution_simdgroup	1	tensor
+mpp_m32_n32_k32_sg2_coop	32	32	32	execution_simdgroups_2	2	cooperative
+mpp_m32_n32_k32_sg2_tensor	32	32	32	execution_simdgroups_2	2	tensor
+mpp_m32_n32_k32_sg4_coop	32	32	32	execution_simdgroups_4	4	cooperative
+mpp_m32_n32_k32_sg4_tensor	32	32	32	execution_simdgroups_4	4	tensor
+mpp_m64_n32_k16_sg1_coop	64	32	16	execution_simdgroup	1	cooperative
+mpp_m64_n32_k16_sg1_tensor	64	32	16	execution_simdgroup	1	tensor
+mpp_m64_n32_k16_sg2_coop	64	32	16	execution_simdgroups_2	2	cooperative
+mpp_m64_n32_k16_sg2_tensor	64	32	16	execution_simdgroups_2	2	tensor
+mpp_m64_n32_k16_sg4_coop	64	32	16	execution_simdgroups_4	4	cooperative
+mpp_m64_n32_k16_sg4_tensor	64	32	16	execution_simdgroups_4	4	tensor
+mpp_m64_n32_k32_sg1_coop	64	32	32	execution_simdgroup	1	cooperative
+mpp_m64_n32_k32_sg1_tensor	64	32	32	execution_simdgroup	1	tensor
+mpp_m64_n32_k32_sg2_coop	64	32	32	execution_simdgroups_2	2	cooperative
+mpp_m64_n32_k32_sg2_tensor	64	32	32	execution_simdgroups_2	2	tensor
+mpp_m64_n32_k32_sg4_coop	64	32	32	execution_simdgroups_4	4	cooperative
+mpp_m64_n32_k32_sg4_tensor	64	32	32	execution_simdgroups_4	4	tensor

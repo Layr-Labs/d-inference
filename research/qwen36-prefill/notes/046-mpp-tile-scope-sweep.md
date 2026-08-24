@@ -16,12 +16,13 @@ limit. A miss closes only the enumerated descriptors, scopes, and shapes.
 
 ## Compile matrix
 
-`probes/mpp-throughput/candidates.tsv` independently compiles 30 candidates:
+`probes/mpp-throughput/candidates.tsv` independently compiles 60 candidates:
 
 - output tiles M16×N16, M16×N32, M16×N64, M32×N32, and M64×N32;
 - static reduction tiles K16 and K32;
 - `execution_simdgroup`, `execution_simdgroups<2>`, and
-  `execution_simdgroups<4>` for every tile.
+  `execution_simdgroups<4>` for every tile;
+- cooperative-input and direct-tensor-input forms for every descriptor/scope.
 
 Every descriptor is strict (`relaxed_precision=false`) and uses
 `multiply_accumulate`, supported cooperative BF16 input loads, one cooperative
@@ -29,7 +30,11 @@ FP32 accumulator across the logical K loop, and a supported cooperative FP32
 store. Each candidate is compiled and linked separately so one rejected
 descriptor or scope cannot suppress another. The artifact records Metal
 compile, metallib link, pipeline creation, first execution, and numerical-gate
-status independently.
+status independently. The SDK permits input cooperative tensors only at
+single-SIMD-group scope, so the compile matrix retains the expected 2/4-group
+cooperative-input rejections while the paired tensor-input candidates test
+those scopes legally. Both forms retain a cooperative FP32 destination and
+supported cooperative store.
 
 Single-SIMD-group candidates pack four independent output tiles per
 threadgroup. Multi-SIMD-group candidates launch exactly two or four SIMD groups

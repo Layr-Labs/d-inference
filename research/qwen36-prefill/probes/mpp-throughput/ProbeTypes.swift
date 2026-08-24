@@ -18,6 +18,7 @@ struct MPPCandidate: Hashable {
     let tileK: Int
     let scope: String
     let scopeSIMDGroups: Int
+    let inputMode: String
     let metallibPath: String
 
     var threadsPerThreadgroup: Int {
@@ -45,7 +46,7 @@ struct MPPCandidate: Hashable {
                 separator: "\t",
                 omittingEmptySubsequences: false
             ).map(String.init)
-            guard fields.count == 7,
+            guard fields.count == 8,
                   let tileM = Int(fields[1]),
                   let tileN = Int(fields[2]),
                   let tileK = Int(fields[3]),
@@ -61,7 +62,8 @@ struct MPPCandidate: Hashable {
                 tileK: tileK,
                 scope: fields[4],
                 scopeSIMDGroups: scopeSIMDGroups,
-                metallibPath: fields[6])
+                inputMode: fields[6],
+                metallibPath: fields[7])
             try candidate.validateDefinition()
             guard seen.insert(candidate.id).inserted else {
                 throw ProbeFailure.message("duplicate candidate id \(candidate.id)")
@@ -101,6 +103,10 @@ struct MPPCandidate: Hashable {
         guard scope == expectedScope else {
             throw ProbeFailure.message(
                 "\(id) scope \(scope) does not match \(scopeSIMDGroups) SIMD groups")
+        }
+        guard inputMode == "cooperative" || inputMode == "tensor" else {
+            throw ProbeFailure.message(
+                "\(id) has unsupported input mode \(inputMode)")
         }
     }
 }

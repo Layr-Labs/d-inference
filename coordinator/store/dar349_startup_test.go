@@ -117,6 +117,64 @@ func TestEarningsMarketIndexesBootSafe(t *testing.T) {
 	}
 }
 
+func TestDropInvalidIndexConcurrently(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+	const indexName = "idx_provider_earnings_invalid_recovery_test"
+	t.Cleanup(func() {
+		_ = s.dropInvalidIndexConcurrently(context.Background(), indexName)
+	})
+
+	for i := range 2 {
+		if err := s.RecordProviderEarning(&ProviderEarning{
+			AccountID:      uniqueID("acct"),
+			ProviderID:     "provider",
+			ProviderKey:    uniqueID("key"),
+			JobID:          uniqueID("job"),
+			Model:          "duplicate-model",
+			AmountMicroUSD: int64(1_000 + i),
+		}); err != nil {
+			t.Fatalf("seed duplicate model %d: %v", i, err)
+		}
+	}
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire connection: %v", err)
+	}
+	mrr := conn.Conn().PgConn().Exec(ctx,
+		`CREATE UNIQUE INDEX CONCURRENTLY `+indexName+` ON provider_earnings(model)`)
+	_, createErr := mrr.ReadAll()
+	conn.Release()
+	if createErr == nil {
+		t.Fatal("duplicate data unexpectedly produced a valid unique index")
+	}
+
+	var exists, valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT true, i.indisvalid
+		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = $1`, indexName).Scan(&exists, &valid); err != nil {
+		t.Fatalf("read failed concurrent index: %v", err)
+	}
+	if !exists || valid {
+		t.Fatalf("failed build state = exists:%t valid:%t, want true/false", exists, valid)
+	}
+
+	if err := s.dropInvalidIndexConcurrently(ctx, indexName); err != nil {
+		t.Fatalf("drop invalid index concurrently: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1)`,
+		indexName,
+	).Scan(&exists); err != nil {
+		t.Fatalf("check dropped index: %v", err)
+	}
+	if exists {
+		t.Fatal("invalid index still exists after concurrent recovery")
+	}
+}
+
 func jobIndexValid(t *testing.T, s *PostgresStore) bool {
 	return postgresIndexValid(t, s, "idx_provider_earnings_job")
 }

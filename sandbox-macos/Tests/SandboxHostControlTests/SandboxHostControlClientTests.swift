@@ -21,7 +21,8 @@ final class SandboxHostControlClientTests: XCTestCase {
         } catch SandboxHostControlTransportError.disconnected {
         }
 
-        let request = try XCTUnwrap(await transport.connectedRequest())
+        let connectedRequest = await transport.connectedRequest()
+        let request = try XCTUnwrap(connectedRequest)
         XCTAssertEqual(
             request.value(
                 forHTTPHeaderField: "X-Darkbloom-Sandbox-Host-ID"
@@ -32,8 +33,10 @@ final class SandboxHostControlClientTests: XCTestCase {
             request.value(forHTTPHeaderField: "Authorization"),
             "Bearer \(Self.token)"
         )
-        XCTAssertEqual(await handler.handledCount(), 1)
-        XCTAssertEqual(await transport.closeCount(), 1)
+        let handledCount = await handler.handledCount()
+        let closeCount = await transport.closeCount()
+        XCTAssertEqual(handledCount, 1)
+        XCTAssertEqual(closeCount, 1)
 
         let frames = try await transport.decodedOutboundFrames()
         XCTAssertGreaterThanOrEqual(frames.count, 3)
@@ -62,8 +65,10 @@ final class SandboxHostControlClientTests: XCTestCase {
             XCTFail("mismatched session was accepted")
         } catch SandboxHostControlTransportError.sessionMismatch {
         }
-        XCTAssertEqual(await handler.handledCount(), 0)
-        XCTAssertEqual(await transport.closeCount(), 1)
+        let handledCount = await handler.handledCount()
+        let closeCount = await transport.closeCount()
+        XCTAssertEqual(handledCount, 0)
+        XCTAssertEqual(closeCount, 1)
     }
 
     func testConfigurationRejectsUnsafeCredentialsAndURL() throws {

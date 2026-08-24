@@ -13,7 +13,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 2 adds required effective config-projected Gemma settings.
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
-    public static let currentSchemaVersion = 3
+    /// 4 adds `firstTokenChecksum` so B=1 baseline/candidate parity is
+    /// machine-checkable without eyeballing TTFT.
+    public static let currentSchemaVersion = 4
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
@@ -27,6 +29,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         /// L=28k, and a TTFT curve averaged across that describes neither
         /// backend.
         public let resolvedKVBackend: String
+        /// Hex SHA-256 of the first emitted token id(s). Empty if the engine
+        /// produced no token before finish (the cell is then invalid).
+        public let firstTokenChecksum: String
     }
 
     public let schemaVersion: Int
@@ -215,16 +220,21 @@ public enum SchedulerPrefillBenchmark {
         ))
 
         var firstOutput: Duration?
+        var firstTokenIDs: [Int] = []
         for await event in stream {
             if firstOutput == nil {
                 firstOutput = ContinuousClock.now - started
             }
-            if case .finished(let reason, _) = event {
+            switch event {
+            case .delta(_, let tokens, _):
+                if firstTokenIDs.isEmpty {
+                    firstTokenIDs = tokens
+                }
+            case .finished(let reason, _):
                 if case .error(let message) = reason {
                     await stopAndReclaim(engine)
                     throw BenchmarkError.requestFailed(message)
                 }
-                break
             }
         }
         let elapsed = firstOutput ?? (ContinuousClock.now - started)
@@ -237,7 +247,8 @@ public enum SchedulerPrefillBenchmark {
             iteration: iteration,
             ttftMs: ttftMs,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
-            resolvedKVBackend: parts.resolvedBackend
+            resolvedKVBackend: parts.resolvedBackend,
+            firstTokenChecksum: ArrivalPrefillAccounting.tokenChecksum(firstTokenIDs)
         )
     }
 

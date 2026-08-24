@@ -106,11 +106,19 @@ extension EngineV2Factory {
 
 
     /// Environment key arming the CBv2 solo-prefill stripe (tokens). See
-    /// `CBv2SchedulerConfig.soloPrefillStripeTokens` for semantics. 2,048 is
-    /// the largest expert-tile-qualified stripe for the E=256 top-8 MoE
-    /// geometry (16,384 assignments); larger values remain correct but drop
-    /// that model family's routed experts off the tile route.
+    /// `CBv2SchedulerConfig.soloPrefillStripeTokens` for semantics. After
+    /// the E1 allowlist, expert tiles qualify 512/1024/2048/4096/8192
+    /// tokens at top-8 (M up to 65,536). Values the classifier rejects
+    /// stay correct but drop that family off the tile route.
     public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
+
+    /// Overrides `CBv2SchedulerConfig.maxBatchedTokensPerStep`. Unset keeps
+    /// the 2,048 default. Non-positive or unparseable values are ignored.
+    public static let maxBatchedTokensKey = "DARKBLOOM_CBV2_MAX_BATCHED_TOKENS"
+
+    /// Overrides `CBv2SchedulerConfig.prefillChunkSize`. Unset keeps the
+    /// 512 default. Non-positive or unparseable values are ignored.
+    public static let prefillChunkKey = "DARKBLOOM_CBV2_PREFILL_CHUNK"
 
     /// Serving default for the solo-prefill stripe (tokens). 2,048 is the
     /// largest expert-tile-qualified stripe (16,384 assignments at top-8)
@@ -130,6 +138,20 @@ extension EngineV2Factory {
                 ? defaultSoloPrefillStripeTokens : nil
         }
         guard let value = Int(raw), value > plainChunk else { return nil }
+        return value
+    }
+
+    /// Positive integer env override, or `defaultValue` when unset / junk.
+    public static func positiveIntEnv(
+        _ key: String,
+        default defaultValue: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        guard let raw = environment[key],
+              let value = Int(raw), value > 0
+        else {
+            return defaultValue
+        }
         return value
     }
 
@@ -816,6 +838,14 @@ extension EngineV2Factory {
         // preparation and sets only `enablePrefixCache`.
         var schedulerConfig = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
+        schedulerConfig.prefillChunkSize = Self.positiveIntEnv(
+            Self.prefillChunkKey,
+            default: schedulerConfig.prefillChunkSize,
+            environment: environment)
+        schedulerConfig.maxBatchedTokensPerStep = Self.positiveIntEnv(
+            Self.maxBatchedTokensKey,
+            default: schedulerConfig.maxBatchedTokensPerStep,
+            environment: environment)
         schedulerConfig.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
             abovePlainChunk: schedulerConfig.prefillChunkSize,
             environment: environment)

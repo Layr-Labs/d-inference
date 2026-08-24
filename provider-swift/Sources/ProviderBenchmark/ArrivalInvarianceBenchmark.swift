@@ -32,6 +32,11 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         /// Attempts discarded before this one because their arrivals missed
         /// the tolerance. Non-zero means the host was scheduling badly.
         public let discardedAttempts: Int
+        /// `max(first_token) - min(submission)` in milliseconds.
+        public let prefillMakespanMs: Double
+        /// `batchSize * (promptTokens - 1) / prefillMakespan`. Acceptance
+        /// metric for aggregate continuous-batching prefill.
+        public let aggregatePrefillTokensPerSecond: Double
     }
 
     public struct Pattern: Codable, Sendable {
@@ -49,6 +54,8 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         public let measuredArrivalOffsetsMs: [Double]
         public let maxArrivalErrorMs: Double
         public let arrivalWithinTolerance: Bool
+        public let medianPrefillMakespanMs: Double
+        public let medianAggregatePrefillTokensPerSecond: Double
     }
 
     /// 2 adds the measured delivered-topology evidence (per-row
@@ -58,13 +65,17 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     ///   the phase's numbers cannot be attributed to an arm, and `.auto`
     ///   resolves CONTIGUOUS.
     /// 4 adds required effective config-projected Gemma settings.
-    public static let currentSchemaVersion = 4
+    /// 5 adds `batchSize` plus harness-computed prefill aggregate
+    ///   (`prefillMakespanMs`, `aggregatePrefillTokensPerSecond`) so B=1/2/4
+    ///   cells are first-class and not reconstructed from console rounding.
+    public static let currentSchemaVersion = 5
 
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
     public let promptTokensPerRequest: Int
     public let decodeTokensPerRequest: Int
+    public let batchSize: Int
     public let iterations: Int
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
@@ -113,6 +124,7 @@ public enum ArrivalInvarianceBenchmark {
     private struct MeasuredRow: Sendable {
         let report: ArrivalInvarianceBenchmarkReport.Row
         let tokenIDs: [Int]
+        let submittedAt: UInt64
         let firstTokenAt: UInt64
         let lastTokenAt: UInt64
         let finishedAt: UInt64
@@ -123,18 +135,22 @@ public enum ArrivalInvarianceBenchmark {
         let outputs: [[Int]]
     }
 
-    private static let patterns = [
-        PatternDefinition(name: "burst", delaysMs: [0, 0, 0, 0]),
-        PatternDefinition(name: "stagger-25ms", delaysMs: [0, 25, 50, 75]),
-        PatternDefinition(name: "stagger-100ms", delaysMs: [0, 100, 200, 300]),
-        PatternDefinition(name: "rolling-250ms", delaysMs: [0, 250, 500, 750]),
-    ]
+    private static func patterns(batchSize: Int) -> [PatternDefinition] {
+        ArrivalPrefillAccounting.patternNames(batchSize: batchSize).compactMap { name in
+            guard let delays = ArrivalPrefillAccounting.delaysMs(
+                batchSize: batchSize, pattern: name)
+            else {
+                return nil
+            }
+            return PatternDefinition(name: name, delaysMs: delays)
+        }
+    }
 
     /// The tightest inter-arrival gap any topology asks for (25 ms today),
     /// derived from the definitions so a future, denser pattern automatically
     /// tightens the bound instead of silently outgrowing it.
     private static let minimumArrivalGapMs: Double = {
-        let gaps = patterns
+        let gaps = patterns(batchSize: 4)
             .flatMap { zip($0.delaysMs, $0.delaysMs.dropFirst()).map { $1 - $0 } }
             .filter { $0 > 0 }
         return Double(gaps.min() ?? 25)
@@ -161,6 +177,7 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         promptTokens: Int = 512,
         decodeTokens: Int = 64,
+        batchSize: Int = 4,
         iterations: Int = 3,
         arrivalToleranceMs: Double? = nil,
         maxAttemptsPerSample: Int = 3,
@@ -170,6 +187,10 @@ public enum ArrivalInvarianceBenchmark {
         let promptTokens = max(2, promptTokens)
         let decodeTokens = max(2, decodeTokens)
         let iterations = max(1, iterations)
+        guard ArrivalPrefillAccounting.allowedBatchSizes.contains(batchSize) else {
+            throw BenchmarkError.unsupportedBatchSize(batchSize)
+        }
+        let patterns = patterns(batchSize: batchSize)
         let toleranceMs = resolvedToleranceMs(explicit: arrivalToleranceMs)
         let maxAttempts = max(1, maxAttemptsPerSample)
         log("arrival tolerance \(String(format: "%.2f", toleranceMs)) ms, "
@@ -266,7 +287,9 @@ public enum ArrivalInvarianceBenchmark {
                     // retried sample can never collide with a discarded one.
                     nextRequestID += UInt64(pattern.delaysMs.count * maxAttempts)
                     log(
-                        "  \(pattern.name) i=\(iteration): aggregate "
+                        "  \(pattern.name) i=\(iteration): prefill "
+                            + "\(String(format: "%.1f", sample.report.aggregatePrefillTokensPerSecond)) tok/s, "
+                            + "decode "
                             + "\(String(format: "%.1f", sample.report.aggregateDecodeTokensPerSecond)) tok/s, "
                             + "makespan \(String(format: "%.1f", sample.report.makespanMs)) ms, "
                             + "arrival err \(String(format: "%.2f", sample.report.maxArrivalErrorMs)) ms"
@@ -314,7 +337,10 @@ public enum ArrivalInvarianceBenchmark {
                 outputsMatchBurst: allOutputs.allSatisfy { $0 == burstOutputs },
                 measuredArrivalOffsetsMs: measuredOffsets,
                 maxArrivalErrorMs: worstArrivalError,
-                arrivalWithinTolerance: worstArrivalError <= toleranceMs
+                arrivalWithinTolerance: worstArrivalError <= toleranceMs,
+                medianPrefillMakespanMs: median(reports.map(\.prefillMakespanMs)),
+                medianAggregatePrefillTokensPerSecond: median(
+                    reports.map(\.aggregatePrefillTokensPerSecond))
             )
         }
 
@@ -324,6 +350,7 @@ public enum ArrivalInvarianceBenchmark {
             modelPath: modelDirectory.path,
             promptTokensPerRequest: promptTokens,
             decodeTokensPerRequest: decodeTokens,
+            batchSize: batchSize,
             iterations: iterations,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
@@ -385,13 +412,21 @@ public enum ArrivalInvarianceBenchmark {
                 .map { abs($0.report.arrivalErrorMs) }
                 .max() ?? 0
 
+            if rows.count != rowCount {
+                throw BenchmarkError.missingRows(
+                    pattern: pattern.name,
+                    expected: rowCount,
+                    actual: rows.count)
+            }
             if !enforceTolerance || maxArrivalError <= toleranceMs {
                 return makeSample(
                     rows: rows,
                     iteration: iteration,
                     scenarioStartedAt: scenarioStartedAt,
                     maxArrivalErrorMs: maxArrivalError,
-                    discardedAttempts: attempt
+                    discardedAttempts: attempt,
+                    promptTokens: promptTokens,
+                    batchSize: rowCount
                 )
             }
 
@@ -477,7 +512,9 @@ public enum ArrivalInvarianceBenchmark {
         iteration: Int,
         scenarioStartedAt: UInt64,
         maxArrivalErrorMs: Double,
-        discardedAttempts: Int
+        discardedAttempts: Int,
+        promptTokens: Int,
+        batchSize: Int
     ) -> MeasuredSample {
         let first = rows.map(\.firstTokenAt).min() ?? scenarioStartedAt
         let last = rows.map(\.lastTokenAt).max() ?? first
@@ -491,6 +528,15 @@ public enum ArrivalInvarianceBenchmark {
             ? Double(decodeIntervals) / decodeSeconds
             : 0
         let totalTokens = rows.reduce(0) { $0 + $1.report.generatedTokens }
+        let minSubmit = rows.map(\.submittedAt).min() ?? scenarioStartedAt
+        let maxFirst = rows.map(\.firstTokenAt).max() ?? first
+        let prefillSeconds = ArrivalPrefillAccounting.prefillMakespanSeconds(
+            minSubmissionNs: minSubmit,
+            maxFirstTokenNs: maxFirst)
+        let aggregatePrefill = ArrivalPrefillAccounting.aggregateTokensPerSecond(
+            batchSize: batchSize,
+            promptTokensPerRequest: promptTokens,
+            prefillMakespanSeconds: prefillSeconds)
 
         return MeasuredSample(
             report: ArrivalInvarianceBenchmarkReport.Sample(
@@ -502,7 +548,9 @@ public enum ArrivalInvarianceBenchmark {
                     : 0,
                 makespanMs: makespanSeconds * 1000,
                 maxArrivalErrorMs: maxArrivalErrorMs,
-                discardedAttempts: discardedAttempts
+                discardedAttempts: discardedAttempts,
+                prefillMakespanMs: prefillSeconds * 1000,
+                aggregatePrefillTokensPerSecond: aggregatePrefill
             ),
             outputs: rows.map(\.tokenIDs)
         )
@@ -612,9 +660,10 @@ public enum ArrivalInvarianceBenchmark {
                 decodeTokensPerSecond: decodeTPS,
                 generatedTokens: tokenIDs.count,
                 completedAtMs: milliseconds(from: scenarioStartedAt, to: finishedAt),
-                tokenChecksum: checksum(tokenIDs)
+                tokenChecksum: ArrivalPrefillAccounting.tokenChecksum(tokenIDs)
             ),
             tokenIDs: tokenIDs,
+            submittedAt: submittedAt,
             firstTokenAt: first,
             lastTokenAt: last,
             finishedAt: finishedAt
@@ -645,19 +694,6 @@ public enum ArrivalInvarianceBenchmark {
         return sorted[middle]
     }
 
-    private static func checksum(_ tokens: [Int]) -> String {
-        var value: UInt64 = 0xcbf29ce484222325
-        for token in tokens {
-            var word = UInt64(bitPattern: Int64(token))
-            for _ in 0 ..< 8 {
-                value ^= word & 0xff
-                value &*= 0x100000001b3
-                word >>= 8
-            }
-        }
-        return String(format: "%016llx", value)
-    }
-
     private enum BenchmarkError: Error, CustomStringConvertible {
         case noTokens(Int)
         case unexpectedFinish(row: Int, reason: String)
@@ -669,6 +705,8 @@ public enum ArrivalInvarianceBenchmark {
             toleranceMs: Double,
             attempts: Int
         )
+        case unsupportedBatchSize(Int)
+        case missingRows(pattern: String, expected: Int, actual: Int)
 
         var description: String {
             switch self {
@@ -685,6 +723,10 @@ public enum ArrivalInvarianceBenchmark {
                     + "\(attempts) attempt(s) (worst arrival error "
                     + "\(String(format: "%.2f", observed)) ms); host scheduling is too "
                     + "noisy for this measurement"
+            case .unsupportedBatchSize(let size):
+                return "--arrival-batch-size must be 1, 2, or 4 (got \(size))"
+            case .missingRows(let pattern, let expected, let actual):
+                return "arrival topology \(pattern) produced \(actual) rows, expected \(expected)"
             }
         }
     }

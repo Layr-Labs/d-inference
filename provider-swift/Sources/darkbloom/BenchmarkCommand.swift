@@ -98,6 +98,12 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Arrival benchmark: measured iterations per arrival pattern.")
     var arrivalIterations = 3
 
+    @Option(name: .long, help: """
+        Arrival benchmark: concurrent request rows (1, 2, or 4). Default 4. \
+        JSON records batchSize and harness-computed aggregatePrefillTokensPerSecond.
+        """)
+    var arrivalBatchSize = 4
+
     // MARK: - Gate G2 parity mode (paged vs contiguous, PASS/FAIL per criterion)
 
     @Flag(name: .long, help: """

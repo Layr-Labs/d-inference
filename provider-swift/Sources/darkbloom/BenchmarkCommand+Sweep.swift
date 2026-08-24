@@ -178,12 +178,17 @@ extension Benchmark {
             printError("--arrival-iterations must be >= 1")
             throw ExitCode.failure
         }
+        guard ArrivalPrefillAccounting.allowedBatchSizes.contains(arrivalBatchSize) else {
+            printError("--arrival-batch-size must be 1, 2, or 4")
+            throw ExitCode.failure
+        }
 
         let report = try await ArrivalInvarianceBenchmark.run(
             modelID: modelID,
             modelDirectory: modelDirectory,
             promptTokens: arrivalPromptTokens,
             decodeTokens: arrivalDecodeTokens,
+            batchSize: arrivalBatchSize,
             iterations: arrivalIterations,
             kvBackend: try resolvedKVBackendSelection(),
             gemmaOptimizations: gemmaOptimizations

@@ -55,7 +55,7 @@ struct DiagnosticFixesSection: View {
 extension DiagnosticFixAction {
     func buttonTitle(isLive: Bool) -> String {
         if isLive { return "View Guidance" }
-        switch self {
+        return switch self {
         case .openEnrollment: "Finish Setup"
         case .openRecoveryInstructions: "View Instructions"
         case .checkForUpdates: "Check for Updates"

@@ -17,13 +17,13 @@ using namespace mpp::tensor_ops;
 // adjacent N elements packed low-nibble first by the host. Scale and bias are
 // BF16 [N] values for this one K group. No MLX or serving symbol references
 // this kernel.
-constexpr int tileM = 16;
-constexpr int tileN = 32;
-constexpr int groupK = 64;
+constant int tileM = 16;
+constant int tileN = 32;
+constant int groupK = 64;
 
-using XExtents = metal::extents<int, groupK, tileM>;
-using QExtents = metal::extents<int, tileN, groupK>;
-using CExtents = metal::extents<int, tileN, tileM>;
+using XExtents = metal::extents<int, 64, 16>;
+using QExtents = metal::extents<int, 32, 64>;
+using CExtents = metal::extents<int, 32, 16>;
 
 kernel void e9_native_uint4_affine_group64(
     const device bfloat* activations [[buffer(0)]],
@@ -43,18 +43,18 @@ kernel void e9_native_uint4_affine_group64(
   matmul2d<descriptor, metal::execution_simdgroup> operation;
 
   auto x = metal::tensor(
-      activations, XExtents{}, metal::array<int, 2>{1, groupK});
+      activations, XExtents(), metal::array<int, 2>{1, groupK});
   auto q = metal::tensor(
-      packed_codes, QExtents{}, metal::array<int, 2>{1, tileN});
+      packed_codes, QExtents(), metal::array<int, 2>{1, tileN});
   auto c = metal::tensor(
-      output, CExtents{}, metal::array<int, 2>{1, tileN});
+      output, CExtents(), metal::array<int, 2>{1, tileN});
   auto q_dot =
       operation.get_destination_cooperative_tensor<decltype(x), decltype(q), float>();
 
   threadgroup float row_sums[tileM];
   if (lane < tileM) {
     float sum = 0.0f;
-#pragma unroll full
+#pragma clang loop unroll(full)
     for (ushort k = 0; k < groupK; ++k) {
       sum += float(activations[int(lane) * groupK + int(k)]);
     }
@@ -64,7 +64,7 @@ kernel void e9_native_uint4_affine_group64(
 
   operation.run(x, q, q_dot);
 
-#pragma unroll full
+#pragma clang loop unroll(full)
   for (ushort i = 0; i < q_dot.get_capacity(); ++i) {
     if (q_dot.is_valid_element(i)) {
       const auto coordinate = q_dot.get_multidimensional_index(i);

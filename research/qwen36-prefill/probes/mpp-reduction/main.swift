@@ -307,6 +307,14 @@ private func run() throws {
             function: "mpp_static_k16_macc_cooperative_inputs",
             usesPaddedInputs: false),
         Variant(
+            label: "mpp-static-k16-nt-macc-cooperative-inputs",
+            function: "mpp_static_k16_nt_macc_cooperative_inputs",
+            usesPaddedInputs: false),
+        Variant(
+            label: "mpp-static-k16-nt-macc-mlx-manual-both",
+            function: "mpp_static_k16_nt_macc_mlx_manual_inputs_and_output",
+            usesPaddedInputs: false),
+        Variant(
             label: "mpp-static-k16-macc-mlx-manual-inputs",
             function: "mpp_static_k16_macc_mlx_manual_inputs",
             usesPaddedInputs: false),

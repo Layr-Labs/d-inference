@@ -13,6 +13,7 @@ constant constexpr int steelK = 8;
 
 using ProbeAExtents = metal::extents<int, probeK, probeM>;
 using ProbeBExtents = metal::extents<int, probeN, probeK>;
+using ProbeBTransposedExtents = metal::extents<int, probeK, probeN>;
 using ProbeCExtents = metal::extents<int, probeN, probeM>;
 using HalfAExtents = metal::extents<int, steelK, probeM>;
 using HalfBExtents = metal::extents<int, probeN, steelK>;
@@ -25,6 +26,13 @@ METAL_FUNC auto full_a_tensor(device bfloat* values) {
 METAL_FUNC auto full_b_tensor(device bfloat* values) {
   return metal::tensor(
       values, ProbeBExtents{}, metal::array<int, 2>{1, probeN});
+}
+
+METAL_FUNC auto full_b_transposed_tensor(device bfloat* values) {
+  return metal::tensor(
+      values,
+      ProbeBTransposedExtents{},
+      metal::array<int, 2>{probeN, 1});
 }
 
 METAL_FUNC auto output_tensor(device float* values) {
@@ -139,6 +147,91 @@ kernel void mpp_static_k16_macc_cooperative_inputs(
   }
   operation.run(cooperative_a, cooperative_b, cooperative_c);
   cooperative_c.store(c_tensor);
+}
+
+kernel void mpp_static_k16_nt_macc_cooperative_inputs(
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
+    device float* output [[buffer(2)]]) {
+  constexpr auto descriptor = matmul2d_descriptor(
+      probeM,
+      probeN,
+      probeK,
+      false,
+      true,
+      false,
+      matmul2d_descriptor::mode::multiply_accumulate);
+  matmul2d<descriptor, metal::execution_simdgroup> operation;
+
+  auto a_tensor = full_a_tensor(a);
+  auto b_tensor = full_b_transposed_tensor(b);
+  auto c_tensor = output_tensor(output);
+  auto cooperative_a =
+      operation.get_left_input_cooperative_tensor<bfloat, bfloat, float>();
+  auto cooperative_b =
+      operation.get_right_input_cooperative_tensor<bfloat, bfloat, float>();
+  auto cooperative_c =
+      operation.get_destination_cooperative_tensor<
+          decltype(cooperative_a),
+          decltype(cooperative_b),
+          float>();
+
+  cooperative_a.load(a_tensor);
+  cooperative_b.load(b_tensor);
+#pragma clang loop unroll(full)
+  for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {
+    cooperative_c.set(i, 0.0f);
+  }
+  operation.run(cooperative_a, cooperative_b, cooperative_c);
+  cooperative_c.store(c_tensor);
+}
+
+kernel void mpp_static_k16_nt_macc_mlx_manual_inputs_and_output(
+    device bfloat* a [[buffer(0)]],
+    device bfloat* b [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    ushort lane [[thread_index_in_simdgroup]]) {
+  constexpr auto descriptor = matmul2d_descriptor(
+      probeM,
+      probeN,
+      probeK,
+      false,
+      true,
+      false,
+      matmul2d_descriptor::mode::multiply_accumulate);
+  matmul2d<descriptor, metal::execution_simdgroup> operation;
+
+  auto cooperative_a =
+      operation.get_left_input_cooperative_tensor<bfloat, bfloat, float>();
+  auto cooperative_b =
+      operation.get_right_input_cooperative_tensor<bfloat, bfloat, float>();
+  auto cooperative_c =
+      operation.get_destination_cooperative_tensor<
+          decltype(cooperative_a),
+          decltype(cooperative_b),
+          float>();
+  const int2 base = mlx_nax_base_coord(lane);
+
+#pragma clang loop unroll(full)
+  for (ushort i = 0; i < 8; ++i) {
+    const int row = base.y + int(i >> 2) * 8;
+    const int column = base.x + int(i & 3);
+    cooperative_a[i] = a[row * probeK + column];
+    cooperative_b[i] = b[column * probeN + row];
+    cooperative_b[8 + i] = b[column * probeN + 16 + row];
+  }
+#pragma clang loop unroll(full)
+  for (ushort i = 0; i < cooperative_c.get_capacity(); ++i) {
+    cooperative_c.set(i, 0.0f);
+  }
+  operation.run(cooperative_a, cooperative_b, cooperative_c);
+#pragma clang loop unroll(full)
+  for (ushort i = 0; i < 8; ++i) {
+    const int row = base.y + int(i >> 2) * 8;
+    const int column = base.x + int(i & 3);
+    output[row * probeN + column] = cooperative_c[i];
+    output[row * probeN + 16 + column] = cooperative_c[8 + i];
+  }
 }
 
 kernel void mpp_static_k16_macc_mlx_manual_inputs(

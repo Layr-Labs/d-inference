@@ -453,17 +453,15 @@ final class HostCapacityArbiterTests: XCTestCase {
         try initializeDedicated(stale)
         storage.arm()
         defer { storage.resume() }
+        let sandboxID = SandboxID()
+        let reservationGeneration = try generation(1)
+        let resources = try makeResources(cpuCount: 8)
         let reservation = Task.detached {
             try stale.reserve(
-                sandboxID: SandboxID(),
-                generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+                sandboxID: sandboxID,
+                generation: reservationGeneration,
                 virtualMachineName: "sandbox-policy-adoption-race",
-                resources: try SandboxResourceSpecification(
-                    cpuCount: 8,
-                    memoryBytes: 8 * SandboxResourcePolicy.gibibyte,
-                    workspaceBytes: 25 * SandboxResourcePolicy.gibibyte,
-                    commandTimeoutSeconds: 900
-                ),
+                resources: resources,
                 expiresAt: now.addingTimeInterval(120)
             )
         }

@@ -460,7 +460,7 @@ index 37cd20e41756caf0960f1a792d8b606663e891a6..c142f6177bd2ba595f4ac22714d561cf
  
      private static func parseEnabled(_ raw: String) -> Bool {
 diff --git a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
-index 551fa0576aec105ddc156318dc32f3f289661f37..2e8bcd998f45da18d04f74fa58e31987264461df 100644
+index 551fa0576aec105ddc156318dc32f3f289661f37..4b3d17dac15cc23a5be8678dc5a8fa78ac7ec549 100644
 --- a/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
 +++ b/Tests/MLXLMTests/Qwen35ArtifactOnlyPrefillTests.swift
 @@ -7,7 +7,7 @@ import Testing
@@ -539,8 +539,8 @@ index 551fa0576aec105ddc156318dc32f3f289661f37..2e8bcd998f45da18d04f74fa58e31987
 +    static func close(
 +        _ lhs: MLXArray,
 +        _ rhs: MLXArray,
-+        rtol: Float = 1e-4,
-+        atol: Float = 1e-5
++        rtol: Double = 1e-4,
++        atol: Double = 1e-5
 +    ) -> Bool {
 +        guard lhs.shape == rhs.shape else { return false }
 +        let result = allClose(lhs, rhs, rtol: rtol, atol: atol)

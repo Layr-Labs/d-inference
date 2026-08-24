@@ -370,7 +370,7 @@ index 69267d36aa92c3921d773ca5310124375c2d6255..0567d86895eb530a304f760fea801f95
              return "Qwen prefix benchmark cache retained \(bytes) bytes after full eviction"
          case .missingScenario(let id):
 diff --git a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
-index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb3910a4ae 100644
+index d0349f1d55ae902a952e855430fe851c9ceb5b43..3f84b95fd04ef8d255bf26b9275184c3654f1a7a 100644
 --- a/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
 +++ b/provider-swift/Sources/ProviderBenchmark/QwenPrefixReuseReport.swift
 @@ -38,9 +38,12 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
@@ -520,7 +520,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb
                        sample.cacheConstruction.cacheBytesAfterReady == 0
                  else {
                      throw QwenPrefixReportError.invalidSample(
-@@ -463,6 +512,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -463,6 +512,16 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
              "disabled", "skipped_policy", "miss", "hit",
              "skipped_capacity", "adoption_failed",
          ]
@@ -531,19 +531,20 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb
 +                && row.savedPrefillTokens == row.promptTokens
 +                && row.replayTokens == 0
 +                && row.reuseStrategy == "direct")
++        let validMatchAlignment = engine.cacheBlockTokens.map { blockTokens in
++            row.matchedTokens % blockTokens == 0
++        } ?? true
          guard row.row >= 0,
                row.promptTokens == configuration.promptTokens,
                row.ttftMs.isFinite,
-@@ -478,12 +534,15 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
+@@ -478,12 +537,13 @@ public struct QwenPrefixReuseReport: Codable, Sendable {
                row.finishReason == "length",
                validOutcomes.contains(row.cacheOutcome),
                row.matchedTokens >= 0,
 -              row.matchedTokens < row.promptTokens,
 -              row.matchedTokens % engine.cacheBlockTokens == 0,
 +              row.matchedTokens <= row.promptTokens,
-+              engine.cacheBlockTokens.map {
-+                  row.matchedTokens % $0 == 0
-+              } ?? true,
++              validMatchAlignment,
                row.savedPrefillTokens >= 0,
                row.replayTokens >= 0,
                row.replayBoundarySplits >= 0,
@@ -552,7 +553,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb
                (row.cacheOutcome == "hit"
                  ? row.matchedTokens > 0
                      && row.savedPrefillTokens > 0
-@@ -542,6 +601,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+@@ -542,6 +602,7 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
      case invalidScenario(String)
      case invalidSample(scenario: String, iteration: Int)
      case invalidRow(scenario: String, iteration: Int, row: Int)
@@ -560,7 +561,7 @@ index d0349f1d55ae902a952e855430fe851c9ceb5b43..6bb4e3452a368a24fcf4be248f6a7aeb
  
      public var description: String {
          switch self {
-@@ -565,6 +625,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
+@@ -565,6 +626,8 @@ public enum QwenPrefixReportError: Error, Equatable, CustomStringConvertible {
          case .invalidRow(let scenario, let iteration, let row):
              return "Qwen prefix report scenario '\(scenario)' iteration \(iteration) "
                  + "row \(row) is inconsistent"

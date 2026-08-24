@@ -62,9 +62,9 @@ struct Benchmark: AsyncParsableCommand {
         KV backend EVERY engine this command builds is built with — \
         auto|contiguous|paged (default auto, which resolves to CONTIGUOUS as \
         of v0.8.1 — pass --kv-backend paged to measure the paged arm). \
-        Applies to --sweep, --scheduler-prefill and \
-        --arrival-invariance alike, so the three phases of a wrapper run can \
-        never measure different arms. An explicit paged selection FAILS the \
+        Applies to --sweep, --scheduler-prefill, --arrival-invariance, and \
+        --qwen-prefix-reuse alike, so related benchmark phases can never \
+        measure different arms. An explicit paged selection FAILS the \
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
         exits non-zero naming the reason — so a paged benchmark can never \
@@ -140,6 +140,37 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var qualityOutput: String?
 
+    // MARK: - Exact Qwen prefix-reuse mode
+
+    @Flag(name: .long, help: """
+        Run the opt-in exact Qwen prefix-reuse benchmark through one serving \
+        CBv2 engine. Measures a cache-off cold baseline, the compulsory cache \
+        construction request, then B1/B2/B4 identical and 25/50/75/90-percent \
+        common-prefix warm arms. Requires --qwen-prefix-corpus and --model.
+        """)
+    var qwenPrefixReuse = false
+
+    @Option(name: .long, help: """
+        Qwen prefix benchmark: synthetic natural-prefix corpus JSON. The \
+        committed corpus is Benchmarks/QwenPrefixReuse/qwen-prefix-natural-v1.json.
+        """)
+    var qwenPrefixCorpus: String?
+
+    @Option(name: .long, help: "Qwen prefix benchmark: tokens per prompt (default 8192).")
+    var qwenPrefixPromptTokens: Int?
+
+    @Option(name: .long, help: "Qwen prefix benchmark: fixed greedy decode tokens (default 64).")
+    var qwenPrefixDecodeTokens: Int?
+
+    @Option(name: .long, help: "Qwen prefix benchmark: measured iterations per scenario (default 3).")
+    var qwenPrefixIterations: Int?
+
+    @Option(name: .long, help: """
+        Qwen prefix benchmark: write the versioned JSON report atomically to \
+        this path instead of stdout.
+        """)
+    var qwenPrefixOutput: String?
+
     // MARK: - Gate G2 parity mode (paged vs contiguous, PASS/FAIL per criterion)
 
     @Flag(name: .long, help: """
@@ -178,10 +209,13 @@ struct Benchmark: AsyncParsableCommand {
             else {
                 throw ValidationError("--quality-corpus path must not be empty")
             }
-            guard !sweep, !schedulerPrefill, !arrivalInvariance, !parity else {
+            guard !sweep, !schedulerPrefill, !arrivalInvariance, !parity,
+                  !qwenPrefixReuse
+            else {
                 throw ValidationError(
                     "--quality-corpus cannot be combined with --sweep, "
-                        + "--scheduler-prefill, --arrival-invariance, or --parity")
+                        + "--scheduler-prefill, --arrival-invariance, --parity, "
+                        + "or --qwen-prefix-reuse")
             }
             guard model?.trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty == false
@@ -225,6 +259,59 @@ struct Benchmark: AsyncParsableCommand {
                 "--quality-max-tokens, --quality-run-label, "
                     + "--quality-baseline-report, and --quality-output "
                     + "require --quality-corpus")
+        }
+
+        if qwenPrefixReuse {
+            guard let corpus = qwenPrefixCorpus,
+                  !corpus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw ValidationError(
+                    "--qwen-prefix-reuse requires --qwen-prefix-corpus")
+            }
+            guard !sweep, !schedulerPrefill, !arrivalInvariance, !parity,
+                  qualityCorpus == nil
+            else {
+                throw ValidationError(
+                    "--qwen-prefix-reuse cannot be combined with --sweep, "
+                        + "--scheduler-prefill, --arrival-invariance, --parity, "
+                        + "or --quality-corpus")
+            }
+            guard model?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false
+            else {
+                throw ValidationError(
+                    "--qwen-prefix-reuse requires an explicit --model")
+            }
+            let promptTokens =
+                qwenPrefixPromptTokens ?? QwenPrefixReuseBenchmark.defaultPromptTokens
+            guard promptTokens >= 2 else {
+                throw ValidationError("--qwen-prefix-prompt-tokens must be >= 2")
+            }
+            let decodeTokens =
+                qwenPrefixDecodeTokens ?? QwenPrefixReuseBenchmark.defaultDecodeTokens
+            guard decodeTokens >= 2 else {
+                throw ValidationError("--qwen-prefix-decode-tokens must be >= 2")
+            }
+            let prefixIterations =
+                qwenPrefixIterations ?? QwenPrefixReuseBenchmark.defaultIterations
+            guard prefixIterations >= 1 else {
+                throw ValidationError("--qwen-prefix-iterations must be >= 1")
+            }
+            if let output = qwenPrefixOutput,
+               output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                throw ValidationError("--qwen-prefix-output path must not be empty")
+            }
+        } else if qwenPrefixCorpus != nil
+            || qwenPrefixPromptTokens != nil
+            || qwenPrefixDecodeTokens != nil
+            || qwenPrefixIterations != nil
+            || qwenPrefixOutput != nil
+        {
+            throw ValidationError(
+                "--qwen-prefix-corpus, --qwen-prefix-prompt-tokens, "
+                    + "--qwen-prefix-decode-tokens, --qwen-prefix-iterations, "
+                    + "and --qwen-prefix-output require --qwen-prefix-reuse")
         }
     }
 
@@ -289,6 +376,15 @@ struct Benchmark: AsyncParsableCommand {
         guard let modelPath = ModelScanner.resolveLocalPath(modelID: selectedModel.id) else {
             printError("could not resolve local path for model '\(selectedModel.id)'")
             throw ExitCode.failure
+        }
+
+        if qwenPrefixReuse {
+            try await runQwenPrefixReuse(
+                modelID: selectedModel.id,
+                modelDirectory: modelPath,
+                corpusPath: qwenPrefixCorpus ?? "",
+                hardware: hardware)
+            return
         }
 
         if let qualityCorpus {

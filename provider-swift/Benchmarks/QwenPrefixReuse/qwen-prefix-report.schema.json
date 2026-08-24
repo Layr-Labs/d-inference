@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darkbloom.dev/schemas/qwen-prefix-report-v1.json",
+  "title": "Darkbloom Qwen exact-prefix reuse report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "benchmark",
+    "createdAtUTC",
+    "model",
+    "corpus",
+    "hardware",
+    "engine",
+    "configuration",
+    "scenarios"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "benchmark": {"const": "qwen-prefix-reuse"},
+    "createdAtUTC": {"type": "string", "format": "date-time"},
+    "model": {"$ref": "#/$defs/model"},
+    "corpus": {"$ref": "#/$defs/corpus"},
+    "hardware": {"$ref": "#/$defs/hardware"},
+    "engine": {"$ref": "#/$defs/engine"},
+    "configuration": {"$ref": "#/$defs/configuration"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {"$ref": "#/$defs/scenario"}
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "artifactSHA256", "modelType"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "artifactSHA256": {"$ref": "#/$defs/sha256"},
+        "modelType": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "maximumContextTokens": {"type": "integer", "minimum": 1}
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "path",
+        "sha256",
+        "license",
+        "provenance",
+        "suffixCount"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "license": {"type": "string", "minLength": 1},
+        "provenance": {"type": "string", "minLength": 1},
+        "suffixCount": {"type": "integer", "minimum": 5, "maximum": 64}
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machineModel", "chipName", "memoryGB", "gpuCores"],
+      "properties": {
+        "machineModel": {"type": "string"},
+        "chipName": {"type": "string"},
+        "memoryGB": {"type": "integer", "minimum": 0},
+        "gpuCores": {"type": "integer", "minimum": 0}
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "factory",
+        "instanceCount",
+        "maxConcurrentRequests",
+        "kvBackend",
+        "prefixCacheImplementation",
+        "prefixCacheRequested",
+        "cacheBlockTokens",
+        "cacheSaltScope",
+        "capabilitySupported",
+        "replayBoundTokens",
+        "warmupPerformed",
+        "policyEnvironment"
+      ],
+      "properties": {
+        "factory": {
+          "const": "EngineV2Factory.makeProductionBuild", "$comment": "pragma: allowlist secret"
+        },
+        "instanceCount": {"const": 1},
+        "maxConcurrentRequests": {"const": 4},
+        "kvBackend": {"$ref": "#/$defs/kvBackend"},
+        "prefixCacheImplementation": {"const": "PrefixCacheV2"},
+        "prefixCacheRequested": {"const": true},
+        "cacheBlockTokens": {"type": "integer", "minimum": 1},
+        "cacheSaltScope": {"type": "string", "minLength": 1},
+        "capabilitySupported": {"type": "boolean"},
+        "capabilityStrategy": {
+          "enum": ["direct", "tail_replay", "frozen_full_replay"]
+        },
+        "capabilityUnsupportedReason": {"type": "string", "minLength": 1},
+        "replayBoundTokens": {"type": "integer", "minimum": 0},
+        "warmupPerformed": {"type": "boolean"},
+        "policyEnvironment": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "kvBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selection", "resolved"],
+      "properties": {
+        "selection": {"enum": ["auto", "contiguous", "paged"]},
+        "resolved": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promptTokens",
+        "decodeTokens",
+        "iterations",
+        "identicalBatchSizes",
+        "commonPrefixFractions",
+        "commonPrefixBatchSize",
+        "donationTimeoutMs",
+        "generationPolicy"
+      ],
+      "properties": {
+        "promptTokens": {"type": "integer", "minimum": 2},
+        "decodeTokens": {"type": "integer", "minimum": 2},
+        "iterations": {"type": "integer", "minimum": 1},
+        "identicalBatchSizes": {
+          "type": "array",
+          "prefixItems": [{"const": 1}, {"const": 2}, {"const": 4}],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "commonPrefixFractions": {
+          "type": "array",
+          "prefixItems": [
+            {"const": 0.25},
+            {"const": 0.5},
+            {"const": 0.75},
+            {"const": 0.9}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "commonPrefixBatchSize": {"const": 4},
+        "donationTimeoutMs": {"type": "integer", "minimum": 1},
+        "generationPolicy": {"const": "greedy-fixed-length-no-stop-tokens"}
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "batchSize",
+        "suffixIDs",
+        "samples",
+        "summary"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "identical-b1",
+            "identical-b2",
+            "identical-b4",
+            "common-prefix-25",
+            "common-prefix-50",
+            "common-prefix-75",
+            "common-prefix-90"
+          ]
+        },
+        "kind": {"enum": ["identical", "common-prefix"]},
+        "batchSize": {"enum": [1, 2, 4]},
+        "requestedCommonPrefixFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "constructedCommonPrefixTokens": {"type": "integer", "minimum": 1},
+        "constructedCommonPrefixFraction": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "suffixIDs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "samples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sample"}
+        },
+        "summary": {"$ref": "#/$defs/summary"}
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iteration",
+        "coldBaseline",
+        "cacheConstruction",
+        "warm",
+        "cacheAccountingIncludingConstruction",
+        "equality"
+      ],
+      "properties": {
+        "iteration": {"type": "integer", "minimum": 1},
+        "coldBaseline": {"$ref": "#/$defs/batch"},
+        "cacheConstruction": {"$ref": "#/$defs/cacheConstruction"},
+        "warm": {"$ref": "#/$defs/batch"},
+        "cacheAccountingIncludingConstruction": {"$ref": "#/$defs/accounting"},
+        "equality": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/equality"}
+        }
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prefixCacheEnabled",
+        "makespanMs",
+        "firstTokenMakespanMs",
+        "rows",
+        "cacheAccounting",
+        "totalSavedPrefillTokens",
+        "totalStateBytesCloned"
+      ],
+      "properties": {
+        "prefixCacheEnabled": {"type": "boolean"},
+        "makespanMs": {"type": "number", "minimum": 0},
+        "firstTokenMakespanMs": {"type": "number", "minimum": 0},
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/row"}
+        },
+        "cacheAccounting": {"$ref": "#/$defs/accounting"},
+        "totalSavedPrefillTokens": {"type": "integer", "minimum": 0},
+        "totalStateBytesCloned": {"type": "integer", "minimum": 0}
+      }
+    },
+    "cacheConstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row",
+        "donationObserved",
+        "cacheBytesAfterReady"
+      ],
+      "properties": {
+        "row": {"$ref": "#/$defs/row"},
+        "donationObserved": {"type": "boolean"},
+        "submitToCacheReadyMs": {"type": "number", "minimum": 0},
+        "terminalToCacheReadyMs": {"type": "number", "minimum": 0},
+        "cacheBytesAfterReady": {"type": "integer", "minimum": 0}
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row",
+        "requestID",
+        "promptTokens",
+        "ttftMs",
+        "totalTimeMs",
+        "firstTokenID",
+        "firstTokenChecksum",
+        "tokenIDs",
+        "tokenChecksum",
+        "finishReason",
+        "cacheOutcome",
+        "matchedTokens",
+        "savedPrefillTokens",
+        "replayTokens",
+        "replayBoundarySplits",
+        "stateBytesCloned"
+      ],
+      "properties": {
+        "row": {"type": "integer", "minimum": 0, "maximum": 3},
+        "requestID": {"type": "integer", "minimum": 0},
+        "promptTokens": {"type": "integer", "minimum": 1},
+        "ttftMs": {"type": "number", "minimum": 0},
+        "totalTimeMs": {"type": "number", "minimum": 0},
+        "firstTokenID": {"type": "integer"},
+        "firstTokenChecksum": {"$ref": "#/$defs/checksum"},
+        "tokenIDs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {"type": "integer"}
+        },
+        "tokenChecksum": {"$ref": "#/$defs/checksum"},
+        "finishReason": {"const": "length"},
+        "cacheOutcome": {
+          "enum": [
+            "disabled",
+            "skipped_policy",
+            "miss",
+            "hit",
+            "skipped_capacity",
+            "adoption_failed"
+          ]
+        },
+        "matchedTokens": {"type": "integer", "minimum": 0},
+        "savedPrefillTokens": {"type": "integer", "minimum": 0},
+        "replayTokens": {"type": "integer", "minimum": 0},
+        "reuseStrategy": {
+          "enum": ["direct", "tail_replay", "frozen_full_replay"]
+        },
+        "replayBoundarySplits": {"type": "integer", "minimum": 0},
+        "stateBytesCloned": {"type": "integer", "minimum": 0}
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestCount",
+        "hitCount",
+        "missCount",
+        "skippedPolicyCount",
+        "disabledCount",
+        "skippedCapacityCount",
+        "adoptionFailedCount",
+        "hitRate",
+        "missRate"
+      ],
+      "properties": {
+        "requestCount": {"type": "integer", "minimum": 0},
+        "hitCount": {"type": "integer", "minimum": 0},
+        "missCount": {"type": "integer", "minimum": 0},
+        "skippedPolicyCount": {"type": "integer", "minimum": 0},
+        "disabledCount": {"type": "integer", "minimum": 0},
+        "skippedCapacityCount": {"type": "integer", "minimum": 0},
+        "adoptionFailedCount": {"type": "integer", "minimum": 0},
+        "hitRate": {"type": "number", "minimum": 0, "maximum": 1},
+        "missRate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "equality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "row",
+        "firstTokenEqual",
+        "fullTokensEqual",
+        "finishReasonEqual"
+      ],
+      "properties": {
+        "row": {"type": "integer", "minimum": 0, "maximum": 3},
+        "firstTokenEqual": {"type": "boolean"},
+        "fullTokensEqual": {"type": "boolean"},
+        "finishReasonEqual": {"type": "boolean"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "medianColdMakespanMs",
+        "medianWarmMakespanMs",
+        "medianCacheConstructionRequestMs",
+        "warmCacheAccounting",
+        "cacheAccountingIncludingConstruction",
+        "totalSavedPrefillTokens",
+        "totalStateBytesCloned",
+        "equalityComparisons",
+        "firstTokenEqualityRate",
+        "fullTokenEqualityRate"
+      ],
+      "properties": {
+        "medianColdMakespanMs": {"type": "number", "minimum": 0},
+        "medianWarmMakespanMs": {"type": "number", "minimum": 0},
+        "medianCacheConstructionRequestMs": {"type": "number", "minimum": 0},
+        "medianSubmitToCacheReadyMs": {"type": "number", "minimum": 0},
+        "warmCacheAccounting": {"$ref": "#/$defs/accounting"},
+        "cacheAccountingIncludingConstruction": {"$ref": "#/$defs/accounting"},
+        "totalSavedPrefillTokens": {"type": "integer", "minimum": 0},
+        "totalStateBytesCloned": {"type": "integer", "minimum": 0},
+        "equalityComparisons": {"type": "integer", "minimum": 1},
+        "firstTokenEqualityRate": {"type": "number", "minimum": 0, "maximum": 1},
+        "fullTokenEqualityRate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

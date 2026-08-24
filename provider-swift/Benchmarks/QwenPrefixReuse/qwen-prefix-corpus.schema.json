@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darkbloom.dev/schemas/qwen-prefix-corpus-v1.json",
+  "title": "Darkbloom Qwen exact-prefix corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "description",
+    "license",
+    "provenance",
+    "sharedPrefix",
+    "suffixes"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"$ref": "#/$defs/identifier"},
+    "version": {"$ref": "#/$defs/identifier"},
+    "description": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "license": {"type": "string", "minLength": 1, "maxLength": 128},
+    "provenance": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "sharedPrefix": {"type": "string", "minLength": 1, "maxLength": 524288},
+    "suffixes": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"$ref": "#/$defs/identifier"},
+          "text": {"type": "string", "minLength": 1, "maxLength": 524288}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    }
+  }
+}

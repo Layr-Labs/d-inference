@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "darkbloom-qwen-prefix-natural",
+  "version": "v1",
+  "description": "Original synthetic prose for controlled exact-token prefix-reuse workloads.",
+  "license": "CC0-1.0",
+  "provenance": "Written for Darkbloom in August 2026; no external text or generated model output was copied.",
+  "sharedPrefix": "A coastal research station kept a public field journal for every shift. The journal was intentionally practical: it described the weather, the instruments, the work schedule, and the small decisions that allowed another crew to reproduce an observation. At dawn, the first technician opened the shutters, checked the roof gauge for leaves, and compared the harbor clock with the station clock. A second technician walked the eastern path and noted whether salt spray had reached the lower sensor cabinet. Inside, the duty scientist reviewed overnight charts before changing any setting. If a line looked unusual, the original reading stayed visible beside the correction.\n\nThe station followed the same sequence for each experiment. First, the team wrote the question in plain language. Next, they listed the measurements that could answer it and the conditions that could confuse the result. They recorded instrument serial numbers, calibration dates, cable routes, software versions, and the exact minute when collection began. One person operated the equipment while another read the checklist aloud. A third person watched for interruptions such as passing boats, radio transmissions, rain bursts, or a temporary loss of power. The procedure was deliberately uneventful because a calm record was easier to trust than a dramatic story reconstructed later.\n\nAt midday, the crew met around a long wooden table. They did not average conflicting readings until they understood why the readings differed. A sensor in direct sun might be accurate but answer a different question from a shaded sensor. A delayed packet might contain valid data with a misleading timestamp. A replacement battery could shift a baseline even when the instrument passed its self-test. The journal therefore separated observed facts, calculations, and interpretations. Facts used units and timestamps. Calculations named their inputs. Interpretations included at least one alternative explanation and a note about what evidence would distinguish it.\n\nBefore sunset, the station copied the day's raw files to two independent drives and printed a short manifest. The closing technician verified file counts and checksums, then placed one drive in the office cabinet and the other in a weatherproof case across the courtyard. Nothing was deleted merely because it seemed unimportant. Failed trials were labeled as failed, not hidden, because they often revealed the practical boundary of a method. The final page for the day summarized what was known, what remained uncertain, and which first action the next shift should take. The goal was continuity: a new crew should be able to begin from the record rather than from memory.",
+  "suffixes": [
+    {
+      "id": "harbor-log",
+      "text": "Harbor traffic became the next subject. The team proposed grouping vessel passages by distance, speed, and engine type, then comparing those intervals with the underwater microphone trace. They would preserve quiet intervals as controls and mark overlapping passages instead of assigning them to whichever vessel looked largest."
+    },
+    {
+      "id": "orchard-plan",
+      "text": "Orchard irrigation offered a separate question. The plan paired soil probes at equal depth, measured shade throughout the afternoon, and weighed harvested fruit without discarding small specimens. A clogged emitter would be documented as an operating condition rather than silently replaced in the dataset."
+    },
+    {
+      "id": "library-audit",
+      "text": "Library humidity required a slower protocol. Conservators selected shelves on different walls, logged every door opening, and placed reference cards beside the electronic sensors. Weekly photographs provided an independent record if a logger drifted or stopped before the next inspection."
+    },
+    {
+      "id": "river-survey",
+      "text": "River clarity changed quickly after rain. Surveyors chose fixed bank markers, lowered the sampling tube to the same depth, and collected an upstream blank before entering the water. They recorded both the visible plume and laboratory turbidity so later readers could compare field impressions with calibrated values."
+    },
+    {
+      "id": "transit-study",
+      "text": "Transit timing focused on ordinary delays. Observers used synchronized clocks at four stops, counted boarding passengers, and noted when construction narrowed a lane. Empty buses and uneventful trips remained in the sample because removing them would exaggerate congestion."
+    },
+    {
+      "id": "workshop-check",
+      "text": "Workshop energy use was measured machine by machine. The electrician captured startup current, steady load, idle draw, and room temperature while the operator repeated a standard part. Tool changes were timestamped so a later analysis would not confuse setup work with cutting work."
+    },
+    {
+      "id": "greenhouse-trial",
+      "text": "Greenhouse ventilation was tested with matched benches. Staff rotated thermometers, measured leaf temperature as well as air temperature, and kept watering schedules unchanged. If a vent jammed, the event stayed in the chronology and the affected interval received a clear annotation."
+    },
+    {
+      "id": "trail-count",
+      "text": "Trail use called for privacy-preserving counts. Infrared counters stored totals rather than images, volunteers performed brief manual checks, and weather notes explained sudden changes in activity. The report would state missed detections and double counts instead of presenting the device total as exact."
+    }
+  ]
+}

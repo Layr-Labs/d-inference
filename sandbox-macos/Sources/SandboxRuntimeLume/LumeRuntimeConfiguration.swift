@@ -6,7 +6,7 @@ public enum LumeRuntimeTrustPolicy: Sendable {
     case developmentAdHoc
 }
 
-public enum LumeGuestCommandPolicy: Sendable {
+package enum LumeGuestCommandPolicy: Sendable {
     case disabled
     case baseImagePreparationAndDevelopment
 }
@@ -44,15 +44,32 @@ public struct LumeRuntimeConfiguration: Sendable {
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
-    public let guestCommandPolicy: LumeGuestCommandPolicy
+    package let guestCommandPolicy: LumeGuestCommandPolicy
 
     public init(
         executable: URL,
         storageDirectory: URL,
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200,
+        trustPolicy: LumeRuntimeTrustPolicy = .production
+    ) throws {
+        try self.init(
+            executable: executable,
+            storageDirectory: storageDirectory,
+            commandTimeoutSeconds: commandTimeoutSeconds,
+            createTimeoutSeconds: createTimeoutSeconds,
+            trustPolicy: trustPolicy,
+            guestCommandPolicy: .disabled
+        )
+    }
+
+    package init(
+        executable: URL,
+        storageDirectory: URL,
+        commandTimeoutSeconds: UInt32 = 60,
+        createTimeoutSeconds: UInt32 = 7_200,
         trustPolicy: LumeRuntimeTrustPolicy = .production,
-        guestCommandPolicy: LumeGuestCommandPolicy = .disabled
+        guestCommandPolicy: LumeGuestCommandPolicy
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,

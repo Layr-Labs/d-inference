@@ -51,7 +51,7 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.start(name: name, scope: scope)
     }
 
-    public func execute(
+    package func execute(
         scope: SandboxOperationScope,
         name: String,
         request: SandboxGuestCommandRequest

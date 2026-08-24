@@ -22,11 +22,11 @@ known `lume` / `lume` bootstrap credentials, so this slice is restricted to the
 approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
 host-substrate proof, not a multi-tenant service. The public lease-fenced
-runtime exposes `execute`, but guest commands are disabled by default. Only the
-explicit package-only `baseImagePreparationAndDevelopment` policy enables
-execution for base-image preparation and live tests; it is not a production
-security boundary because OpenSSH startup files, launchd metadata, and
-command-monitor files remain writable by the same guest identity.
+runtime does not expose guest-command execution. Only the package-scoped
+`baseImagePreparationAndDevelopment` policy and package-scoped `execute` path
+enable execution for base-image preparation and live tests; they are not a
+production security boundary because OpenSSH startup files, launchd metadata,
+and command-monitor files remain writable by the same guest identity.
 
 The development bootstrap executor captures stdout and stderr independently,
 drains both streams without retaining unbounded data, and returns at most 1 MiB
@@ -147,9 +147,10 @@ directory has been destroyed; deleting capacity state alone is unsafe.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
-create, start, inspect, execute, stop, and release carry the complete operation
-scope. Execute remains disabled by default and is only available under the
-explicit base-image/development bootstrap policy.
+create, start, inspect, stop, and release carry the complete operation scope.
+The OpenSSH-backed `execute` path and its enabling base-image/development
+bootstrap policy are package-scoped; public configuration always disables
+guest commands.
 Release stops and verifies the owned VM before its package-internal capacity
 release. The VM-operation and lease-operation locks remain held through the
 capacity-state commit, so a concurrent start cannot run between stop and

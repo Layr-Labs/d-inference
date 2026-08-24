@@ -3721,6 +3721,7 @@ private struct FakeLumeFixture {
         ;;
       run)
         trap 'printf "%s\\n" "stopped" > "$state_file"; exit 0' EXIT HUP INT TERM
+        printf '%s\\n' "$$" > "$root/run-pid"
         if [ ! -f "$root/vms/sandbox-failure-test/.darkbloom-start-intent.json" ]; then
           printf '%s\\n' "missing durable start intent" >&2
           exit 78
@@ -3872,10 +3873,16 @@ private struct FakeLumeFixture {
         exit 64
         ;;
       stop)
-        if [ "$behavior" = "stop-liveness-inconclusive" ] \
-          || [ "$behavior" = "block-first-list-stop-liveness-inconclusive" ]; then
+        if [ "$behavior" = "stop-liveness-inconclusive" ]; then
           printf '%s\\n' "VM liveness is inconclusive" >&2
           exit 70
+        fi
+        if [ "$behavior" = "block-first-list-stop-liveness-inconclusive" ]; then
+          run_pid="$(tr -d '\\n' < "$root/run-pid" 2>/dev/null || true)"
+          if [ -n "$run_pid" ] && kill -0 "$run_pid" 2>/dev/null; then
+            printf '%s\\n' "VM liveness is inconclusive" >&2
+            exit 70
+          fi
         fi
         printf '%s\\n' "stopped" > "$state_file"
         ;;

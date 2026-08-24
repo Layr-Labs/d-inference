@@ -1,6 +1,6 @@
-# 079 — Suffix64 E4 blind 128-token semantic quality gate
+# 079 — Suffix64/128 E4 blind 128-token semantic quality gate
 
-Status: **performance threshold PASS; semantic policy FAIL**
+Status: **both performance thresholds PASS; both semantic policies FAIL**
 
 This review compares:
 
@@ -120,3 +120,75 @@ threshold. That speed is not contained in the semantic-quality artifact and is
 not independently revalidated here. The performance cell passes, but the
 semantic gate is a binding kill-switch: do not retain or ship suffix64 E4 as a
 quality-approved frontier.
+
+## Suffix128 E4 follow-up
+
+The more conservative candidate in
+`artifacts/e50-quality-suffix128-e4-128.json` uses the same 12 prompts,
+corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
+native. The semantic scores below again use only prompt and generated text.
+The supplied exact-continuation count, token agreement, profile identity, and
+speed were withheld from every score and considered only after the table was
+fixed.
+
+### Suffix128 per-case scores
+
+| Case | Native T/F/K/I/C/X | Suffix128 E4 T/F/K/I/C/X | Relative quality | Semantic judgment |
+|---|---:|---:|---|---|
+| `reasoning-rate-plan` | 3/5/—/3/4/0 | 3/5/—/3/4/0 | tie | Both correctly establish the two-stage scheduling task and machine times, then stop before the 52-minute schedule and polisher bottleneck. |
+| `reasoning-constraint-order` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both correctly frame all entities and constraints but list no ordering. |
+| `reasoning-estimation` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both preserve the group, duration, conditions, safety margin, visible-arithmetic, and water-separation requirements, then stop before assumptions or arithmetic. |
+| `code-python-bug` | 3/—/3/3/4/0 | 3/—/3/3/4/0 | semantic tie | Both identify the empty-input and terminal-run faults and every requested deliverable, but provide no corrected implementation or tests within the window. |
+| `code-swift-actor` | 2/—/3/2/4/0 | 2/—/3/2/4/0 | tie | Both accurately preserve the actor, deadline, API, stale-delete, Sendable, and dependency requirements but emit no Swift code or usage. |
+| `factual-heat-pump` | 3/4/—/3/4/0 | 3/4/—/3/4/0 | tie | Both preserve the correct COP, external-heat, conservation, and performance-condition direction but stop before the explanation. |
+| `factual-database-index` | 4/5/—/3/4/0 | 4/5/—/3/4/0 | tie | Both begin the requested comparison with the correct general B-tree equality path. |
+| `factual-probability` | 4/5/—/3/4/0 | 4/5/—/3/4/0 | tie | Both preserve all rates, PPV, and the 10,000-person method, then stop before cohort arithmetic. |
+| `long-context-expedition-log` | 4/5/—/3/4/0 | 2/1/—/1/3/1 | native win; candidate fatal | Suffix128 preserves useful identifiers and origins but fabricates the chronology: A-06R was collected on Day 3, not Day 1; Kestrel transferred E-14 on Day 5, not Day 3; and delivery to Lab Cedar occurred on Day 7, not Day 5. It also mutates Nia into “Team A-06R” and reaches none of the four answers. |
+| `long-context-incident-summary` | 3/5/—/3/4/0 | 4/3/—/2/4/0 | native win; material nonfatal error | Suffix128 advances to the restart/recovery and repeated-manifest root cause, but falsely labels those 09:27 and 09:34 events as 09:09 and 09:14. The core events are otherwise source-faithful; no summary, factors, or three actions appear yet. |
+| `instruction-json-only` | 0/3/—/0/4/0 | 0/3/—/0/4/0 | inherited fatal tie | Both start with prose, irreversibly violating the exact JSON-only envelope despite accurately preserving the requested fields and rules. |
+| `instruction-rewrite` | 3/5/—/2/4/0 | 3/5/—/2/4/0 | tie | Both accurately separate concrete facts from emotional language but do not produce the required final update. |
+
+### Suffix128 relative aggregate
+
+| Metric | Native | Suffix128 E4 | Candidate delta |
+|---|---:|---:|---:|
+| Mean final-answer trajectory | 2.92 | 2.83 | -0.08 |
+| Mean applicable correctness (`F/K`) | 4.25 | 3.75 | -0.50 |
+| Mean instruction adherence | 2.58 | 2.33 | -0.25 |
+| Mean coherence | 4.00 | 3.92 | -0.08 |
+| Mean corruption severity | 0.00 | 0.08 | +0.08 |
+| Adjusted quality total | 225/300 (75.00%) | 213/300 (71.00%) | **-4.00 percentage points** |
+
+Pairwise result: **10 ties, 0 suffix128 wins, and 2 native wins**. Suffix128
+retains **94.67%** of the native adjusted score.
+
+### Suffix128 fatal failures and policy decision
+
+- **Candidate-only fatal failures: 1.**
+  `long-context-expedition-log` fabricates three source chronology facts in the
+  exact-identifier retrieval task.
+- **Inherited fatal failures: 1.** `instruction-json-only` violates the
+  envelope in both reports.
+- `long-context-incident-summary` has a material candidate-only timestamp
+  error, but its core root-cause and recovery facts remain coherent; it is
+  scored as a nonfatal correctness regression.
+- Suffix128 has **zero `X >= 3` cases**. All four mean quality dimensions remain
+  within the policy's 1.0-point limit.
+
+**Semantic verdict: FAIL, narrowly on aggregate and decisively on the fatal
+gate.** Suffix128 satisfies two of the four explicit policy criteria, but:
+
+- 94.67% score retention misses the 95% floor by 0.33 percentage points;
+- one candidate-only fatal source-grounding failure violates the zero-fatal
+  rule.
+
+After scoring, the identity diagnostics show **9/12 exact continuations** and
+**79.30% token-position agreement**. Those values explain why most rows tie,
+but identity cannot erase the two changed long-context errors.
+
+The supplied B4x2K speed is **2.580x**, 0.080x above the 2.5x performance
+threshold; it is performance context rather than a value independently
+revalidated from this semantic artifact. This is the closest measured
+state-river quality/speed point so far, but the semantic kill-switch still
+binds. Do not label or ship suffix128 E4 as quality-approved without eliminating
+the expedition source fabrication and passing a fresh blind run.

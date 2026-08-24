@@ -237,7 +237,7 @@ restore_backed_up_links() {
     local failed=0
     for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
         if install_path_exists "$backup_bin/$name"; then
-            if ! rm -rf "$bin_dir/$name" 2>/dev/null; then
+            if ! rm -rf "${bin_dir:?}/$name" 2>/dev/null; then
                 failed=1
                 continue
             fi
@@ -268,7 +268,7 @@ restore_managed_links() {
     local name
     local failed=0
     for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
-        rm -rf "$bin_dir/$name" 2>/dev/null || failed=1
+        rm -rf "${bin_dir:?}/$name" 2>/dev/null || failed=1
     done
     restore_backed_up_links "$backup_bin" "$bin_dir" || failed=1
     return "$failed"

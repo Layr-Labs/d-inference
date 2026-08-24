@@ -246,53 +246,12 @@ final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         #if DEBUG
-        let environment = ProcessInfo.processInfo.environment
-        // #region agent log
-        PreviewCapture.debugLog(
-            hypothesisId: "A",
-            location: "DarkbloomApp.swift:applicationDidFinishLaunching",
-            message: "Debug process finished application launch",
-            data: [
-                "previewPathPresent": environment["DARKBLOOM_RENDER_PREVIEW_PATH"] != nil,
-                "previewDelayPresent": environment["DARKBLOOM_RENDER_PREVIEW_DELAY"] != nil,
-                "skipRelocationPresent": environment["DARKBLOOM_SKIP_APP_RELOCATION"] != nil,
-                "installStateReady": installState.isReady,
-                "installStateInteractive": installState.isInteractive,
-                "applicationWindowCount": NSApp.windows.count,
-                "visibleWindowCount": NSApp.windows.filter(\.isVisible).count,
-                "activationPolicy": Int(NSApp.activationPolicy().rawValue),
-                "launchPhase": environment["DARKBLOOM_LAUNCH_PHASE"] ?? "unset",
-            ]
-        )
-        // #endregion
         PreviewAppearance.applyIfRequested(to: NSApp)
         #endif
         guard installState.isInteractive else { return }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
-
-    #if DEBUG
-    func applicationWillTerminate(_: Notification) {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["DARKBLOOM_RENDER_PREVIEW_PATH"] else {
-            return
-        }
-
-        // #region agent log
-        PreviewCapture.debugLog(
-            hypothesisId: "E",
-            location: "DarkbloomApp.swift:applicationWillTerminate",
-            message: "Preview process entered application termination",
-            data: [
-                "outputExists": FileManager.default.fileExists(atPath: path),
-                "applicationWindowCount": NSApp.windows.count,
-                "visibleWindowCount": NSApp.windows.filter(\.isVisible).count,
-            ]
-        )
-        // #endregion
-    }
-    #endif
 }
 
 enum AppInstallLaunchState {

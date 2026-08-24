@@ -141,7 +141,7 @@ struct QwenPrefixReuseTests {
         let submitted = engine.submitted.sorted { $0.id.raw < $1.id.raw }
         #expect(submitted.map(\.id.raw) == [900, 901, 902, 903])
         #expect(submitted.map(\.promptTokens) == prompts)
-        #expect(submitted.allSatisfy(\.prefixCacheEnabled))
+        #expect(submitted.allSatisfy { $0.prefixCacheEnabled })
         #expect(submitted.allSatisfy { $0.cacheSalt == "scope/one" })
         #expect(submitted.allSatisfy { $0.prefixCacheReceiptID == $0.id })
         #expect(submitted.allSatisfy { $0.sampling.temperature == 0 })
@@ -465,6 +465,14 @@ private final class PrefixTokenizer: Tokenizer, @unchecked Sendable {
     var bosToken: String? { nil }
     var eosToken: String? { nil }
     var unknownToken: String? { nil }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        [0]
+    }
 }
 
 private final class PrefixScriptedEngine: CBv2Engine, @unchecked Sendable {

@@ -1,0 +1,10 @@
+ts_start=2026-08-24T06:48:46Z
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	95%; charging; 0:34 remaining present: true
+ powermode            2
+5e1e3110871dabb3c672de788c4864bfdeeecd65110391fb98cfe08bac96614b  /Users/gaj/work/d-inference/provider-swift/.build/release/darkbloom
+exit=0
+ts_end=2026-08-24T06:49:12Z
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=6750307)	95%; charging; 0:34 remaining present: true
+ powermode            2

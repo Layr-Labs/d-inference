@@ -275,3 +275,16 @@ Three schema-6 burst repetitions, default geometry, AC/High Power:
 Checksums stable. The binding B=4 2.5× bar is **3,893.5 tok/s** or
 **8.4150 s**. B=4 still equals B=1 8K within noise. See `notes/037`.
 
+## 2026-08-24T06:47Z — complete baseline matrix
+
+One schema-6 binary, three repetitions:
+
+| L | B=1 | B=2 | B=4 |
+|---:|---:|---:|---:|
+| 512 | 1,434.6 | 1,620.2 | 1,712.6 |
+| 2,048 | 1,671.4 | 1,621.4 | 1,694.4 |
+| 8,192 | 1,546.8 | 1,500.7 | 1,557.4 |
+
+B=1 TTFT 356.2 / 1,224.7 / 5,295.6 ms. All required denominators are
+now first-class harness artifacts. See `notes/038`.
+

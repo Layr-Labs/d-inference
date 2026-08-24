@@ -90,6 +90,33 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 + "\"io.darkbloom.sandbox.lume\" "
                 + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
         )
+        XCTAssertEqual(
+            LumeRuntimeCodeSignature.provenanceDesignatedRequirement,
+            "anchor apple generic and identifier "
+                + "\"io.darkbloom.sandbox.lume.provenance\" "
+                + "and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
+        )
+    }
+
+    func testProductionRuntimeTreeRequiresRootOwnership() {
+        XCTAssertTrue(
+            LumeRuntimeProvenanceValidator.acceptsOwner(
+                0,
+                policy: .production
+            )
+        )
+        XCTAssertFalse(
+            LumeRuntimeProvenanceValidator.acceptsOwner(
+                501,
+                policy: .production
+            )
+        )
+        XCTAssertTrue(
+            LumeRuntimeProvenanceValidator.acceptsOwner(
+                geteuid(),
+                policy: .developmentAdHoc
+            )
+        )
     }
 
     func testGuestCommandsRequireExplicitDevelopmentBootstrapPolicy()

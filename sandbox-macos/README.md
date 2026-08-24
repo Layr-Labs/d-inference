@@ -191,15 +191,19 @@ sandbox-macos/Scripts/build-pinned-lume.sh \
 
 The build verifies and applies the pinned patch before compilation, then writes
 `lume.provenance.json` beside the executable with the source commit, patch
-digests, and post-signing SHA-256 for every runtime file. Production validation
-also requires the Apple-designated requirement for
-`io.darkbloom.sandbox.lume` under team `SLDQ2GJ6TL`; the
+digests, and post-signing SHA-256 for every runtime file. It signs that canonical
+manifest separately as `io.darkbloom.sandbox.lume.provenance`, binding all
+resource bytes to the release identity instead of trusting a self-authenticated
+digest list. Production validation requires Apple-designated requirements for
+both the executable and manifest under team `SLDQ2GJ6TL`; the
 `--development-ad-hoc-lume` daemon flag is an explicit local-only bypass.
 Before executing Lume, the adapter requires the complete immutable directory
 tree and provenance to match the audited lock; it rejects added, removed,
 replaced, or modified runtime entries. The production installation must be
-root-owned and non-writable by the dedicated broker identity so those checks
-form a durable boundary. Every invocation sets
+recursively root-owned and non-writable by the dedicated broker identity; the
+validator rejects broker-owned production files even when their modes are
+read-only. The operator must apply `chown -R root:wheel` after installing the
+signed tree. Every invocation sets
 `LUME_TELEMETRY_ENABLED=false` and `LUME_LOG_LEVEL=error`; the latter prevents
 Lume informational diagnostics from corrupting its machine-readable JSON
 output. Moving the pin requires source review plus the opt-in real-binary and VM

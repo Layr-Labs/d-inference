@@ -59,6 +59,16 @@ final class LumeRuntimeContractTests: XCTestCase {
         XCTAssertTrue(
             script.contains(#""-R=$PRODUCTION_REQUIREMENT""#)
         )
+        XCTAssertTrue(
+            script.contains(
+                #"PROVENANCE_SIGNING_IDENTIFIER="io.darkbloom.sandbox.lume.provenance""#
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                #""-R=$PRODUCTION_PROVENANCE_REQUIREMENT""#
+            )
+        )
     }
 
     func testPinnedRealLumeBinaryAndEmptyStorageContract() async throws {

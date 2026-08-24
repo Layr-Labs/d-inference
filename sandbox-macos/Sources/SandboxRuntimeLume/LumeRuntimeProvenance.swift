@@ -27,26 +27,28 @@ enum LumeRuntimeProvenanceValidator {
         guard configuration.executable.lastPathComponent == "lume" else {
             throw unsupported("Lume executable must use the audited install layout")
         }
-        try LumeRuntimeCodeSignature.validate(
-            executable: configuration.executable,
-            policy: configuration.trustPolicy
-        )
         let installationDirectory = configuration.executable
             .deletingLastPathComponent()
+        let provenanceURL = installationDirectory
+            .appendingPathComponent(fileName)
+        try LumeRuntimeCodeSignature.validate(
+            executable: configuration.executable,
+            provenance: provenanceURL,
+            policy: configuration.trustPolicy
+        )
         let runtimeTree = try inspectRuntimeTree(
             at: installationDirectory,
-            computeDigests: true
+            computeDigests: true,
+            policy: configuration.trustPolicy
         )
-        let provenanceURL = configuration.executable
-            .deletingLastPathComponent()
-            .appendingPathComponent(fileName)
         let provenanceFile = try inspectRegularFile(
             at: provenanceURL,
             maximumBytes: maximumProvenanceBytes,
             requiresExecutableMode: false,
             captureData: true,
             computeDigest: true,
-            errorSubject: "Lume provenance"
+            errorSubject: "Lume provenance",
+            policy: configuration.trustPolicy
         )
         let provenance: LumeRuntimeProvenance
         do {
@@ -102,7 +104,8 @@ enum LumeRuntimeProvenanceValidator {
         do {
             let currentTree = try inspectRuntimeTree(
                 at: configuration.executable.deletingLastPathComponent(),
-                computeDigests: false
+                computeDigests: false,
+                policy: configuration.trustPolicy
             )
             let provenance = try inspectRegularFile(
                 at: configuration.executable
@@ -112,7 +115,8 @@ enum LumeRuntimeProvenanceValidator {
                 requiresExecutableMode: false,
                 captureData: false,
                 computeDigest: false,
-                errorSubject: "Lume provenance"
+                errorSubject: "Lume provenance",
+                policy: configuration.trustPolicy
             )
             let currentFiles = currentTree.files.mapValues {
                 $0.identity
@@ -135,10 +139,12 @@ enum LumeRuntimeProvenanceValidator {
 
     private static func inspectRuntimeTree(
         at installationDirectory: URL,
-        computeDigests: Bool
+        computeDigests: Bool,
+        policy: LumeRuntimeTrustPolicy
     ) throws -> InspectedLumeRuntimeTree {
         let installationIdentity = try inspectDirectory(
-            at: installationDirectory
+            at: installationDirectory,
+            policy: policy
         )
         guard let enumerator = FileManager.default.enumerator(
             atPath: installationDirectory.path
@@ -163,7 +169,10 @@ enum LumeRuntimeProvenanceValidator {
             }
             switch metadata.st_mode & S_IFMT {
             case S_IFDIR:
-                directories[relativePath] = try inspectDirectory(at: url)
+                directories[relativePath] = try inspectDirectory(
+                    at: url,
+                    policy: policy
+                )
             case S_IFREG:
                 if relativePath == fileName {
                     continue
@@ -173,7 +182,8 @@ enum LumeRuntimeProvenanceValidator {
                     maximumBytes: nil,
                     requiresExecutableMode: relativePath == "lume",
                     captureData: false,
-                    computeDigest: computeDigests
+                    computeDigest: computeDigests,
+                    policy: policy
                 )
                 files[relativePath] = ValidatedLumeRuntimeFile(
                     identity: file.identity,
@@ -186,7 +196,10 @@ enum LumeRuntimeProvenanceValidator {
                 )
             }
         }
-        guard try inspectDirectory(at: installationDirectory)
+        guard try inspectDirectory(
+            at: installationDirectory,
+            policy: policy
+        )
                 == installationIdentity
         else {
             throw unsupported("Lume runtime tree changed during validation")
@@ -199,7 +212,8 @@ enum LumeRuntimeProvenanceValidator {
     }
 
     private static func inspectDirectory(
-        at url: URL
+        at url: URL,
+        policy: LumeRuntimeTrustPolicy
     ) throws -> LumeFileIdentity {
         let descriptor: Int32
         do {
@@ -222,7 +236,7 @@ enum LumeRuntimeProvenanceValidator {
         }
         guard
               (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid() || metadata.st_uid == 0,
+              acceptsOwner(metadata.st_uid, policy: policy),
               metadata.st_mode & 0o222 == 0
         else {
             throw unsupported(
@@ -238,7 +252,8 @@ enum LumeRuntimeProvenanceValidator {
         requiresExecutableMode: Bool,
         captureData: Bool,
         computeDigest: Bool,
-        errorSubject: String = "Lume runtime file"
+        errorSubject: String = "Lume runtime file",
+        policy: LumeRuntimeTrustPolicy
     ) throws -> InspectedRegularFile {
         let parentDescriptor: Int32
         do {
@@ -263,7 +278,7 @@ enum LumeRuntimeProvenanceValidator {
         var before = stat()
         guard fstat(descriptor, &before) == 0,
               (before.st_mode & S_IFMT) == S_IFREG,
-              before.st_uid == geteuid() || before.st_uid == 0,
+              acceptsOwner(before.st_uid, policy: policy),
               before.st_mode & 0o222 == 0,
               before.st_nlink == 1,
               before.st_size >= 0,
@@ -324,6 +339,18 @@ enum LumeRuntimeProvenanceValidator {
                 : "",
             data: captured
         )
+    }
+
+    static func acceptsOwner(
+        _ owner: uid_t,
+        policy: LumeRuntimeTrustPolicy
+    ) -> Bool {
+        switch policy {
+        case .production:
+            owner == 0
+        case .developmentAdHoc:
+            owner == 0 || owner == geteuid()
+        }
     }
 
     private static func identity(from metadata: stat) -> LumeFileIdentity {

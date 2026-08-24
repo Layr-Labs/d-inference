@@ -14,6 +14,8 @@ PATCH_FILE="$PACKAGE_DIR/$PATCH_RELATIVE_PATH"
 CODESIGN_IDENTITY="${DARKBLOOM_LUME_CODESIGN_IDENTITY:--}"
 PRODUCTION_CODESIGN_IDENTITY="Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
 PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.sandbox.lume" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+PROVENANCE_SIGNING_IDENTIFIER="io.darkbloom.sandbox.lume.provenance"
+PRODUCTION_PROVENANCE_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.sandbox.lume.provenance" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
@@ -210,6 +212,16 @@ with open(destination, "x", encoding="utf-8") as output:
     output.write("\n")
 PY
 
+PROVENANCE_CODESIGN_ARGUMENTS=(
+    --force
+    --identifier "$PROVENANCE_SIGNING_IDENTIFIER"
+    --sign "$CODESIGN_IDENTITY"
+)
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+    PROVENANCE_CODESIGN_ARGUMENTS+=(--timestamp)
+fi
+/usr/bin/codesign "${PROVENANCE_CODESIGN_ARGUMENTS[@]}" "$PROVENANCE_FILE"
+
 "$PYTHON" - "$STAGING_DIR" <<'PY'
 import os
 import stat
@@ -228,6 +240,21 @@ for root, directories, files in os.walk(install_dir, topdown=False, followlinks=
         os.chmod(path, 0o555)
 os.chmod(install_dir, 0o555)
 PY
+
+/usr/bin/codesign --verify --strict "$STAGING_DIR/lume"
+/usr/bin/codesign --verify --strict "$PROVENANCE_FILE"
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+    /usr/bin/codesign \
+        --verify \
+        --strict \
+        "-R=$PRODUCTION_REQUIREMENT" \
+        "$STAGING_DIR/lume"
+    /usr/bin/codesign \
+        --verify \
+        --strict \
+        "-R=$PRODUCTION_PROVENANCE_REQUIREMENT" \
+        "$PROVENANCE_FILE"
+fi
 
 if ! "$STAGING_DIR/lume" --version >/dev/null; then
     echo "hardened Lume runtime failed its launch check" >&2

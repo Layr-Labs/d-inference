@@ -82,7 +82,7 @@ export function useEarningsCalculator() {
       if (a.fits && b.fits) {
         if (Boolean(a.estimate) !== Boolean(b.estimate)) return a.estimate ? -1 : 1;
         const netDelta =
-          (b.estimate?.monthlyNetUSD ?? 0) - (a.estimate?.monthlyNetUSD ?? 0);
+          (b.estimate?.monthlyWorkNetUSD ?? 0) - (a.estimate?.monthlyWorkNetUSD ?? 0);
         if (netDelta !== 0) return netDelta;
       }
       if (a.model.min_ram_gb !== b.model.min_ram_gb) {

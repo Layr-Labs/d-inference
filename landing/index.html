@@ -1466,7 +1466,7 @@ response = client.chat.completions.create(
         <!-- Results-first hero -->
         <div class="calc-hero">
           <div role="status" aria-live="polite" aria-atomic="true">
-            <p class="calc-net-label">Estimated annual net earnings</p>
+            <p class="calc-net-label">Estimated annual net range</p>
             <p class="calc-hero-big"><span id="calc-hero-annual">…</span><span class="unit" id="calc-hero-unit" style="display:none;"> /yr</span></p>
             <p class="calc-hero-monthly" id="calc-hero-monthly">&nbsp;</p>
           </div>
@@ -1479,12 +1479,12 @@ response = client.chat.completions.create(
             <a class="btn btn-primary" id="calc-nofit-btn" href="https://console.darkbloom.dev/earn" target="_blank">Notify me when smaller models launch ↗</a>
             <p class="sub">We&rsquo;re working on supporting smaller models. Register on the console and we&rsquo;ll email you when your Mac can start earning.</p>
           </div>
-          <p class="calc-disc-box">This uses a fixed trailing 30-day settled work pool and full-month availability; it is not a promise. Adding capacity reallocates that pool rather than creating demand. Base rewards are eligibility-gated and shared from a fixed fleet pool, so memory-tier amounts are maxima, not guaranteed income.</p>
+          <p class="calc-disc-box">This uses a fixed trailing 30-day settled work pool and full-month availability; it is not a promise. Adding capacity reallocates that pool rather than creating demand. The net range uses zero to the memory-tier base-reward maximum because five-minute work offsets, eligibility, account caps, and fixed-pool allocation are unknown.</p>
         </div>
 
         <!-- Inputs: exact Mac/chip profile + memory -->
         <div class="csec">
-          <label class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</label>
+          <p class="clabel">Your Mac — find both under &nbsp;&gt; About This Mac</p>
           <div class="calc-selects">
             <div>
               <label class="clabel" for="hardware-select">Mac model and chip</label>
@@ -1499,8 +1499,8 @@ response = client.chat.completions.create(
 
         <!-- Read-only model support list -->
         <div class="csec">
-          <label class="clabel">What your Mac can run</label>
-          <p class="calc-hint">Active public models rank by estimated monthly net after policy caps and electricity.</p>
+          <h4 class="clabel">What your Mac can run</h4>
+          <p class="calc-hint">Active public models rank by modeled work net after electricity; the range adds zero to the policy-capped base-reward maximum.</p>
           <div class="calc-model-list" id="model-list"></div>
         </div>
 
@@ -1515,7 +1515,7 @@ response = client.chat.completions.create(
             </table>
             <ul class="calc-caveats">
               <li id="calc-base-eligibility">Eligibility and uptime requirements load with the policy.</li>
-              <li>Settled inference work and any configured reward offset are shown in the estimate.</li>
+              <li>Configured reward offsets settle every five minutes, so the estimate shows a zero-to-maximum reward range instead of inventing a monthly offset.</li>
               <li id="calc-base-enabled">The program status loads with the policy.</li>
             </ul>
           </div>
@@ -1529,12 +1529,12 @@ response = client.chat.completions.create(
             <div class="calc-breakdown">
               <div class="bd-usage"><div class="lbl" id="calc-usage-lbl">Candidate work share</div><div class="val" id="calc-usage-val">—</div><div class="sub">from settled demand</div></div>
               <div class="bd-floor"><div class="lbl">Base reward maximum</div><div class="val" id="calc-floor-val">—</div><div class="sub" id="calc-floor-sub">eligibility- and pool-capped</div></div>
-              <div class="bd-total"><div class="lbl">Estimated net / mo</div><div class="val" id="calc-total-val">—</div><div class="sub">work + reward − power</div></div>
+              <div class="bd-total"><div class="lbl">Modeled net range / mo</div><div class="val" id="calc-total-val">—</div><div class="sub">work − power, plus 0–max reward</div></div>
             </div>
             <div class="calc-steps" id="calc-steps"></div>
             <ul class="calc-caveats">
               <li>Full-month availability is fixed. Power includes 720 hours of online idle draw plus allocated workload; every paid token is conservatively treated as decode work and active time is capped at 720 hours.</li>
-              <li>The memory-tier base amount is only a maximum before eligibility checks and fixed-pool allocation; it is not committed or guaranteed.</li>
+              <li>The memory-tier base amount is only a maximum before five-minute work offsets, account caps, eligibility checks, and fixed-pool allocation. The range therefore uses zero as the lower reward bound; no reward is committed or guaranteed.</li>
               <li id="calc-audit">The endpoint audit reconciles modeled and unattributed settled work.</li>
               <li>Actual routing also depends on uptime, trust, reputation, latency, and request shape.</li>
             </ul>

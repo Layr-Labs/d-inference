@@ -94,8 +94,8 @@ test("the reported M4 Max case stays near the realized per-provider run rate", f
   assert.ok(estimate);
   assert.ok(Math.abs(estimate.candidateShare - 1 / 788) < 1e-12);
   assert.ok(Math.abs(estimate.workPayoutUSD - (481.45 * 30) / 788) < 1e-8);
-  assert.ok(estimate.monthlyNetUSD < 40);
-  assert.ok(estimate.annualNetUSD < 500);
+  assert.ok(estimate.monthlyNetMaximumUSD < 40);
+  assert.ok(estimate.annualNetMaximumUSD < 500);
 });
 
 test("empty and inconsistent market responses are rejected", function () {
@@ -153,9 +153,9 @@ test("electricity includes full-month idle draw and realized workload draw", fun
   );
 });
 
-test("base reward potential cannot exceed the configured fleet pool", function () {
+test("base reward maximum cannot exceed the configured fleet pool", function () {
   assert.equal(
-    Core.baseRewardPotentialUSD(
+    Core.baseRewardMaximumUSD(
       {
         enabled: true,
         monthly_pool_micro_usd: 5_000_000,
@@ -170,7 +170,7 @@ test("base reward potential cannot exceed the configured fleet pool", function (
   );
 });
 
-test("base reward potential applies work reduction and account caps", function () {
+test("base reward maximum avoids inventing a monthly work offset and applies account caps", function () {
   const policy = {
     enabled: true,
     monthly_pool_micro_usd: 100_000_000,
@@ -179,15 +179,53 @@ test("base reward potential applies work reduction and account caps", function (
     account_cap_fraction: 0,
     tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
   };
-  assert.equal(Core.baseRewardPotentialUSD(policy, 24, 8), 8);
+  assert.equal(Core.baseRewardMaximumUSD(policy, 24), 10);
   assert.equal(
-    Core.baseRewardPotentialUSD(
+    Core.baseRewardMaximumUSD(
       Object.assign({}, policy, { account_cap_fraction: 0.05 }),
       24,
-      8,
     ),
     5,
   );
+});
+
+test("hardware options use shipped Max variants and omit nonexistent Macs", function () {
+  const profile = function (macType, chip) {
+    return Core.HARDWARE_OPTIONS.find(function (option) {
+      return option.macType === macType && option.chip === chip;
+    });
+  };
+
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Pro", "M3 Max (14-core CPU)").ramOptions,
+      bandwidthGBs: profile("MacBook Pro", "M3 Max (14-core CPU)").bandwidthGBs,
+    },
+    { ramOptions: [36, 96], bandwidthGBs: 300 },
+  );
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Pro", "M4 Max (14-core CPU)").ramOptions,
+      bandwidthGBs: profile("MacBook Pro", "M4 Max (14-core CPU)").bandwidthGBs,
+    },
+    { ramOptions: [36], bandwidthGBs: 410 },
+  );
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Pro", "M5 Max (32-core GPU)").ramOptions,
+      bandwidthGBs: profile("MacBook Pro", "M5 Max (32-core GPU)").bandwidthGBs,
+    },
+    { ramOptions: [36], bandwidthGBs: 460 },
+  );
+  assert.deepEqual(
+    {
+      ramOptions: profile("MacBook Pro", "M5 Max (40-core GPU)").ramOptions,
+      bandwidthGBs: profile("MacBook Pro", "M5 Max (40-core GPU)").bandwidthGBs,
+    },
+    { ramOptions: [48, 64, 128], bandwidthGBs: 614 },
+  );
+  assert.equal(profile("Mac Studio", "M5 Max (40-core GPU)"), undefined);
+  assert.equal(profile("Mac Pro", "M3 Ultra"), undefined);
 });
 
 test("model rows rank the highest estimated net rather than highest gross work", function () {
@@ -221,5 +259,5 @@ test("model rows rank the highest estimated net rather than highest gross work",
 
   assert.equal(rows[0].model.id, "high-net");
   assert.ok(rows[0].estimate.workPayoutUSD < rows[1].estimate.workPayoutUSD);
-  assert.ok(rows[0].estimate.monthlyNetUSD > rows[1].estimate.monthlyNetUSD);
+  assert.ok(rows[0].estimate.monthlyWorkNetUSD > rows[1].estimate.monthlyWorkNetUSD);
 });

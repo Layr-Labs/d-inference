@@ -94,7 +94,7 @@ export function BaseRewardsPanel({
                 <span>
                   {policy.reduction_k === 0
                     ? "Settled inference work is paid on top of any allocated reward."
-                    : `The reward draw is reduced by ${policy.reduction_k.toFixed(2)}× settled inference earnings before allocation.`}
+                    : `Each five-minute reward draw is reduced by ${policy.reduction_k.toFixed(2)}× inference earnings settled in that same period before allocation.`}
                 </span>
               </div>
               <div className="flex items-start gap-2 text-xs text-text-secondary">

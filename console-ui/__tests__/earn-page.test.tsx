@@ -4,10 +4,12 @@ import type { EarningsMarketResponse } from "@/lib/api/types";
 import {
   DEFAULT_ELEC_COST_PER_KWH,
   HARDWARE_OPTIONS,
-  baseRewardPotentialUSD,
+  baseRewardMaximumUSD,
   calculateModelEstimate,
   conservedCandidatePayout,
 } from "@/app/earn/calc";
+
+const M4_MAX_16_CORE = "M4 Max (16-core CPU)";
 
 const apiMocks = vi.hoisted(() => ({
   fetchEarningsMarket: vi.fn(),
@@ -133,7 +135,7 @@ describe("market-conserving earnings math", () => {
 
   it("bounds the reported M4 Max case to the realized per-provider run rate", () => {
     const hardware = HARDWARE_OPTIONS.find(
-      (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max",
+      (option) => option.macType === "MacBook Pro" && option.chip === M4_MAX_16_CORE,
     )!;
     const candidateTPS = 0.25 * hardware.bandwidthGBs;
     const model = {
@@ -161,13 +163,13 @@ describe("market-conserving earnings math", () => {
     expect(estimate).not.toBeNull();
     expect(estimate!.candidateShare).toBeCloseTo(1 / 788, 12);
     expect(estimate!.workPayoutUSD).toBeCloseTo((481.45 * 30) / 788, 8);
-    expect(estimate!.monthlyNetUSD).toBeLessThan(40);
-    expect(estimate!.annualNetUSD).toBeLessThan(500);
+    expect(estimate!.monthlyNetMaximumUSD).toBeLessThan(40);
+    expect(estimate!.annualNetMaximumUSD).toBeLessThan(500);
   });
 
   it("charges full-month idle power plus realized allocated workload", () => {
     const hardware = HARDWARE_OPTIONS.find(
-      (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max",
+      (option) => option.macType === "MacBook Pro" && option.chip === M4_MAX_16_CORE,
     )!;
     const estimate = calculateModelEstimate(
       marketFixture.models[0],
@@ -187,7 +189,7 @@ describe("market-conserving earnings math", () => {
 
   it("caps a machine's base-reward maximum at the configured fleet pool", () => {
     expect(
-      baseRewardPotentialUSD(
+      baseRewardMaximumUSD(
         {
           enabled: true,
           monthly_pool_micro_usd: 5_000_000,
@@ -201,7 +203,7 @@ describe("market-conserving earnings math", () => {
     ).toBe(5);
   });
 
-  it("applies configured work reduction and per-account reward caps", () => {
+  it("keeps the reward maximum honest when offsets settle per five-minute epoch", () => {
     const policy = {
       enabled: true,
       monthly_pool_micro_usd: 100_000_000,
@@ -210,21 +212,49 @@ describe("market-conserving earnings math", () => {
       account_cap_fraction: 0,
       tiers: [{ min_ram_gb: 24, monthly_micro_usd: 10_000_000 }],
     };
-    expect(baseRewardPotentialUSD(policy, 24, 8)).toBe(8);
+    expect(baseRewardMaximumUSD(policy, 24)).toBe(10);
     expect(
-      baseRewardPotentialUSD({ ...policy, account_cap_fraction: 0.05 }, 24, 8),
+      baseRewardMaximumUSD({ ...policy, account_cap_fraction: 0.05 }, 24),
     ).toBe(5);
   });
 
   it("keeps form-factor-specific power profiles separate", () => {
-    const m4Max = HARDWARE_OPTIONS.filter((option) => option.chip === "M4 Max");
+    const m4Max = HARDWARE_OPTIONS.filter((option) => option.chip === M4_MAX_16_CORE);
     const macBook = m4Max.find((option) => option.macType === "MacBook Pro");
     const studio = m4Max.find((option) => option.macType === "Mac Studio");
 
-    expect(macBook?.id).toBe("MacBook Pro:M4 Max");
-    expect(studio?.id).toBe("Mac Studio:M4 Max");
+    expect(macBook?.id).toBe(`MacBook Pro:${M4_MAX_16_CORE}`);
+    expect(studio?.id).toBe(`Mac Studio:${M4_MAX_16_CORE}`);
     expect(macBook?.idleWatts).toBe(20);
     expect(studio?.idleWatts).toBe(25);
+  });
+
+  it("maps Max chip variants to their shipped bandwidth and memory combinations", () => {
+    const profile = (macType: string, chip: string) =>
+      HARDWARE_OPTIONS.find((option) => option.macType === macType && option.chip === chip);
+
+    expect(profile("MacBook Pro", "M3 Max (14-core CPU)")).toMatchObject({
+      ramOptions: [36, 96],
+      bandwidthGBs: 300,
+    });
+    expect(profile("MacBook Pro", "M4 Max (14-core CPU)")).toMatchObject({
+      ramOptions: [36],
+      bandwidthGBs: 410,
+    });
+    expect(profile("MacBook Pro", "M5 Max (32-core GPU)")).toMatchObject({
+      ramOptions: [36],
+      bandwidthGBs: 460,
+    });
+    expect(profile("MacBook Pro", "M5 Max (40-core GPU)")).toMatchObject({
+      ramOptions: [48, 64, 128],
+      bandwidthGBs: 614,
+    });
+    expect(profile("MacBook Pro", "M5 Pro")).toMatchObject({
+      ramOptions: [24, 48, 64],
+      bandwidthGBs: 307,
+    });
+    expect(profile("Mac Studio", "M5 Max (40-core GPU)")).toBeUndefined();
+    expect(profile("Mac Pro", "M3 Ultra")).toBeUndefined();
   });
 });
 
@@ -236,6 +266,7 @@ describe("EarnPage", () => {
     expect(await screen.findByText("Best estimate")).toBeInTheDocument();
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.getByText(/candidate share for Alpha/)).toBeInTheDocument();
+    expect(screen.getByText("Estimated annual net range")).toBeInTheDocument();
     expect(screen.getByText("Supply benchmark unavailable")).toBeInTheDocument();
     expect(screen.getByText("Trailing settled payout pool")).toBeInTheDocument();
     expect(screen.getByText("Competing live capacity")).toBeInTheDocument();

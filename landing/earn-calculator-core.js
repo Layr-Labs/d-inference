@@ -15,6 +15,59 @@
     "competing_capacity_unavailable",
     "throughput_benchmark_unavailable",
   ]);
+  const MAC_CONFIGS = [
+    { macType: "MacBook Air", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 8, inferWatts: 12 },
+    { macType: "MacBook Air", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
+    { macType: "MacBook Air", chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
+    { macType: "MacBook Air", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 8, inferWatts: 12 },
+    { macType: "MacBook Pro", chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
+    { macType: "MacBook Pro", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
+    { macType: "MacBook Pro", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
+    { macType: "MacBook Pro", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
+    { macType: "MacBook Pro", chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
+    { macType: "MacBook Pro", chip: "M3 Pro", ramOptions: [18, 36], bandwidthGBs: 150, idleWatts: 15, inferWatts: 35 },
+    { macType: "MacBook Pro", chip: "M3 Max (14-core CPU)", ramOptions: [36, 96], bandwidthGBs: 300, idleWatts: 20, inferWatts: 45 },
+    { macType: "MacBook Pro", chip: "M3 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
+    { macType: "MacBook Pro", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
+    { macType: "MacBook Pro", chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
+    { macType: "MacBook Pro", chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 20, inferWatts: 50 },
+    { macType: "MacBook Pro", chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
+    { macType: "MacBook Pro", chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
+    { macType: "MacBook Pro", chip: "M5 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
+    { macType: "MacBook Pro", chip: "M5 Max (32-core GPU)", ramOptions: [36], bandwidthGBs: 460, idleWatts: 20, inferWatts: 50 },
+    { macType: "MacBook Pro", chip: "M5 Max (40-core GPU)", ramOptions: [48, 64, 128], bandwidthGBs: 614, idleWatts: 20, inferWatts: 50 },
+    { macType: "Mac Mini", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 5, inferWatts: 10 },
+    { macType: "Mac Mini", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 5, inferWatts: 12 },
+    { macType: "Mac Mini", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 8, inferWatts: 25 },
+    { macType: "Mac Mini", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 5, inferWatts: 15 },
+    { macType: "Mac Mini", chip: "M4 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 273, idleWatts: 8, inferWatts: 25 },
+    { macType: "Mac Studio", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
+    { macType: "Mac Studio", chip: "M1 Ultra", ramOptions: [64, 128], bandwidthGBs: 800, idleWatts: 30, inferWatts: 90 },
+    { macType: "Mac Studio", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
+    { macType: "Mac Studio", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
+    { macType: "Mac Studio", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
+    { macType: "Mac Studio", chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 25, inferWatts: 65 },
+    { macType: "Mac Studio", chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
+    { macType: "Mac Pro", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
+  ];
+  const CHIP_ORDER = [
+    "M1", "M1 Pro", "M1 Max", "M1 Ultra",
+    "M2", "M2 Pro", "M2 Max", "M2 Ultra",
+    "M3", "M3 Pro", "M3 Max (14-core CPU)", "M3 Max (16-core CPU)", "M3 Ultra",
+    "M4", "M4 Pro", "M4 Max (14-core CPU)", "M4 Max (16-core CPU)",
+    "M5", "M5 Pro", "M5 Max (32-core GPU)", "M5 Max (40-core GPU)",
+  ];
+  const MAC_TYPE_ORDER = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
+  const HARDWARE_OPTIONS = MAC_CONFIGS.map(function (config) {
+    return Object.assign({}, config, {
+      id: config.macType + ":" + config.chip,
+      ramOptions: config.ramOptions.slice().sort(function (a, b) { return a - b; }),
+    });
+  }).sort(function (a, b) {
+    const chipDelta = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
+    if (chipDelta !== 0) return chipDelta;
+    return MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
+  });
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -215,16 +268,15 @@
     };
   }
 
-  function baseRewardPotentialUSD(policy, memoryGB, workPayoutUSD) {
-    if (workPayoutUSD === undefined) workPayoutUSD = 0;
+  function baseRewardMaximumUSD(policy, memoryGB) {
     if (
       !policy.enabled ||
       !Number.isFinite(memoryGB) ||
-      !Number.isFinite(workPayoutUSD) ||
+      !Number.isFinite(policy.monthly_pool_micro_usd) ||
       !Number.isFinite(policy.reduction_k) ||
       !Number.isFinite(policy.account_cap_fraction) ||
       memoryGB < 0 ||
-      workPayoutUSD < 0 ||
+      policy.monthly_pool_micro_usd < 0 ||
       policy.reduction_k < 0 ||
       policy.account_cap_fraction < 0 ||
       policy.account_cap_fraction > 1
@@ -240,12 +292,11 @@
       }
     });
     const poolUSD = policy.monthly_pool_micro_usd / 1e6;
-    const reduced = Math.max(0, selected - policy.reduction_k * workPayoutUSD);
     const accountCap =
       policy.account_cap_fraction > 0
         ? poolUSD * policy.account_cap_fraction
         : poolUSD;
-    return Math.min(reduced, poolUSD, accountCap);
+    return Math.min(selected, poolUSD, accountCap);
   }
 
   function calculateModelEstimate(model, hardware, memoryGB, baseRewards, electricityCostPerKWh) {
@@ -281,8 +332,9 @@
       activeHours *
       electricityCostPerKWh;
     const electricityUSD = idleElectricityUSD + workloadElectricityUSD;
-    const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB, payout.candidate);
-    const monthlyNetUSD = payout.candidate + baseReward - electricityUSD;
+    const baseRewardMaximum = baseRewardMaximumUSD(baseRewards, memoryGB);
+    const monthlyWorkNetUSD = payout.candidate - electricityUSD;
+    const monthlyNetMaximumUSD = monthlyWorkNetUSD + baseRewardMaximum;
     return {
       model: model,
       candidateTPS: candidateTPS,
@@ -295,9 +347,11 @@
       idleElectricityUSD: idleElectricityUSD,
       workloadElectricityUSD: workloadElectricityUSD,
       electricityUSD: electricityUSD,
-      baseRewardPotentialUSD: baseReward,
-      monthlyNetUSD: monthlyNetUSD,
-      annualNetUSD: monthlyNetUSD * 12,
+      baseRewardMaximumUSD: baseRewardMaximum,
+      monthlyWorkNetUSD: monthlyWorkNetUSD,
+      monthlyNetMaximumUSD: monthlyNetMaximumUSD,
+      annualWorkNetUSD: monthlyWorkNetUSD * 12,
+      annualNetMaximumUSD: monthlyNetMaximumUSD * 12,
     };
   }
 
@@ -323,8 +377,8 @@
       if (a.fits && b.fits) {
         if (Boolean(a.estimate) !== Boolean(b.estimate)) return a.estimate ? -1 : 1;
         const netDelta =
-          (b.estimate ? b.estimate.monthlyNetUSD : 0) -
-          (a.estimate ? a.estimate.monthlyNetUSD : 0);
+          (b.estimate ? b.estimate.monthlyWorkNetUSD : 0) -
+          (a.estimate ? a.estimate.monthlyWorkNetUSD : 0);
         if (netDelta !== 0) return netDelta;
       }
       if (a.model.min_ram_gb !== b.model.min_ram_gb) {
@@ -350,10 +404,11 @@
 
   return {
     MONTH_HOURS: MONTH_HOURS,
+    HARDWARE_OPTIONS: HARDWARE_OPTIONS,
     parseMarket: parseMarket,
     candidateCapacityTPS: candidateCapacityTPS,
     conservedCandidatePayout: conservedCandidatePayout,
-    baseRewardPotentialUSD: baseRewardPotentialUSD,
+    baseRewardMaximumUSD: baseRewardMaximumUSD,
     calculateModelEstimate: calculateModelEstimate,
     buildModelRows: buildModelRows,
     unavailableReasonLabel: unavailableReasonLabel,

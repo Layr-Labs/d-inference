@@ -6,67 +6,14 @@
   "use strict";
 
   const Core = window.DarkbloomEarnings;
-  const MAC_CONFIGS = [
-    { macType: "MacBook Air", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 8, inferWatts: 12 },
-    { macType: "MacBook Air", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
-    { macType: "MacBook Air", chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 8, inferWatts: 12 },
-    { macType: "MacBook Air", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 8, inferWatts: 12 },
-    { macType: "MacBook Pro", chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
-    { macType: "MacBook Pro", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
-    { macType: "MacBook Pro", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 12, inferWatts: 30 },
-    { macType: "MacBook Pro", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
-    { macType: "MacBook Pro", chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
-    { macType: "MacBook Pro", chip: "M3 Pro", ramOptions: [18, 36], bandwidthGBs: 150, idleWatts: 15, inferWatts: 35 },
-    { macType: "MacBook Pro", chip: "M3 Max", ramOptions: [36, 48, 64, 96, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
-    { macType: "MacBook Pro", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
-    { macType: "MacBook Pro", chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
-    { macType: "MacBook Pro", chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
-    { macType: "MacBook Pro", chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
-    { macType: "MacBook Pro", chip: "M5 Pro", ramOptions: [24, 48], bandwidthGBs: 300, idleWatts: 12, inferWatts: 30 },
-    { macType: "MacBook Pro", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 20, inferWatts: 50 },
-    { macType: "Mac Mini", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 5, inferWatts: 10 },
-    { macType: "Mac Mini", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 5, inferWatts: 12 },
-    { macType: "Mac Mini", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 8, inferWatts: 25 },
-    { macType: "Mac Mini", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 5, inferWatts: 15 },
-    { macType: "Mac Mini", chip: "M4 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 273, idleWatts: 8, inferWatts: 25 },
-    { macType: "Mac Studio", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
-    { macType: "Mac Studio", chip: "M1 Ultra", ramOptions: [64, 128], bandwidthGBs: 800, idleWatts: 30, inferWatts: 90 },
-    { macType: "Mac Studio", chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
-    { macType: "Mac Studio", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
-    { macType: "Mac Studio", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
-    { macType: "Mac Studio", chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
-    { macType: "Mac Studio", chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 25, inferWatts: 65 },
-    { macType: "Mac Pro", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
-    { macType: "Mac Pro", chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
-  ];
-  const CHIP_ORDER = [
-    "M1", "M1 Pro", "M1 Max", "M1 Ultra",
-    "M2", "M2 Pro", "M2 Max", "M2 Ultra",
-    "M3", "M3 Pro", "M3 Max", "M3 Ultra",
-    "M4", "M4 Pro", "M4 Max",
-    "M5", "M5 Pro", "M5 Max",
-  ];
-  const MAC_TYPE_ORDER = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
-  const HARDWARE_OPTIONS = (function () {
-    const options = MAC_CONFIGS.map(function (config) {
-      return Object.assign({}, config, {
-        id: config.macType + ":" + config.chip,
-        ramOptions: config.ramOptions.slice().sort(function (a, b) { return a - b; }),
-      });
-    });
-    options.sort(function (a, b) {
-      const chipDelta = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
-      if (chipDelta !== 0) return chipDelta;
-      return MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
-    });
-    return options;
-  })();
+  const HARDWARE_OPTIONS =
+    Core && Array.isArray(Core.HARDWARE_OPTIONS) ? Core.HARDWARE_OPTIONS : [];
 
   const API_BASE = "https://api.darkbloom.dev";
   const ELECTRICITY_USD_PER_KWH = 0.15;
   const locale = navigator.language || "en-US";
   const state = {
-    hardwareID: "MacBook Pro:M4 Max",
+    hardwareID: "MacBook Pro:M4 Max (16-core CPU)",
     ram: 48,
     marketState: "loading",
     market: null,
@@ -79,6 +26,12 @@
       maximumFractionDigits: places,
     });
     return value < 0 ? "-$" + absolute : "$" + absolute;
+  }
+
+  function fmtUSDRange(minimum, maximum) {
+    const lower = fmtUSD(minimum);
+    const upper = fmtUSD(maximum);
+    return lower === upper ? lower : lower + "–" + upper;
   }
 
   function fmtTokens(value) {
@@ -172,7 +125,10 @@
         const amount = document.createElement("span");
         amount.className = "calc-model-net";
         amount.textContent = entry.estimate
-          ? fmtUSD(entry.estimate.monthlyNetUSD) + "/mo net"
+          ? fmtUSDRange(
+              entry.estimate.monthlyWorkNetUSD,
+              entry.estimate.monthlyNetMaximumUSD,
+            ) + "/mo net"
           : Core.unavailableReasonLabel(model.unavailable_reason);
         row.appendChild(amount);
       }
@@ -224,7 +180,7 @@
     appendStep(
       steps,
       "Competing live capacity",
-      model.provider_supply + " eligible providers; " +
+      model.provider_supply + " eligible build-provider pairs across desired and fallback builds; " +
         model.aggregate_memory_bandwidth_gbps.toFixed(0) + " GB/s aggregate reported bandwidth",
       model.aggregate_tps.toFixed(1) + " tok/s",
     );
@@ -258,20 +214,21 @@
         ? ramGB + " GB tier at full availability; ≥" + uptimePercent +
           "% uptime eligibility" +
           (policy.reduction_k > 0
-            ? ", reduced by " + policy.reduction_k.toFixed(2) + "× work earnings"
+            ? "; actual five-minute draws are reduced by " +
+              policy.reduction_k.toFixed(2) + "× same-period work earnings"
             : "") +
           ", then fixed fleet-pool allocation" +
           (policy.account_cap_fraction > 0
             ? " with a " + (policy.account_cap_fraction * 100).toFixed(1) + "% account cap"
             : "")
         : "Base rewards are currently disabled",
-      "+" + fmtUSD(result.baseRewardPotentialUSD) + " /mo",
+      "+" + fmtUSD(result.baseRewardMaximumUSD) + " /mo max",
     );
     appendStep(
       steps,
-      "Estimated net",
-      "Candidate work payout + base reward maximum − idle and workload electricity",
-      fmtUSD(result.monthlyNetUSD) + " /mo",
+      "Modeled net range",
+      "Candidate work payout − electricity, plus zero to the base-reward maximum",
+      fmtUSDRange(result.monthlyWorkNetUSD, result.monthlyNetMaximumUSD) + " /mo",
       true,
     );
   }
@@ -303,7 +260,8 @@
         Math.round(policy.min_uptime_fraction * 100) +
         "% uptime; full tier credit requires full availability." +
         (policy.reduction_k > 0
-          ? " Reward draws are reduced by " + policy.reduction_k.toFixed(2) + "× work earnings."
+          ? " Each five-minute reward draw is reduced by " +
+            policy.reduction_k.toFixed(2) + "× work earnings settled in that same period."
           : "") +
         (policy.account_cap_fraction > 0
           ? " Each payout account is capped at " +
@@ -411,8 +369,15 @@
     }
 
     const result = best.estimate;
-    setText("calc-hero-annual", fmtUSD(result.annualNetUSD));
-    setText("calc-hero-monthly", fmtUSD(result.monthlyNetUSD) + " per month after electricity");
+    setText(
+      "calc-hero-annual",
+      fmtUSDRange(result.annualWorkNetUSD, result.annualNetMaximumUSD),
+    );
+    setText(
+      "calc-hero-monthly",
+      fmtUSDRange(result.monthlyWorkNetUSD, result.monthlyNetMaximumUSD) +
+        " per month after electricity",
+    );
     setDisplay("calc-hero-unit", true);
     setDisplay("calc-nofit", false);
     setDisplay("calc-chip-usage", true);
@@ -420,15 +385,18 @@
       "calc-chip-usage-txt",
       fmtUSD(result.workPayoutUSD) + "/mo candidate share for " + best.model.display_name,
     );
-    setDisplay("calc-chip-floor", result.baseRewardPotentialUSD > 0);
-    setText("calc-chip-floor-amt", "up to " + fmtUSD(result.baseRewardPotentialUSD) + "/mo");
+    setDisplay("calc-chip-floor", result.baseRewardMaximumUSD > 0);
+    setText("calc-chip-floor-amt", "up to " + fmtUSD(result.baseRewardMaximumUSD) + "/mo");
 
     setDisplay("calc-assumptions", true);
     setText("calc-usage-lbl", "Candidate work share");
     setText("calc-usage-val", fmtUSD(result.workPayoutUSD));
-    setText("calc-floor-val", "+ " + fmtUSD(result.baseRewardPotentialUSD));
+    setText("calc-floor-val", "+ " + fmtUSD(result.baseRewardMaximumUSD));
     setText("calc-floor-sub", "eligibility- and pool-capped maximum");
-    setText("calc-total-val", fmtUSD(result.monthlyNetUSD));
+    setText(
+      "calc-total-val",
+      fmtUSDRange(result.monthlyWorkNetUSD, result.monthlyNetMaximumUSD),
+    );
     setText(
       "calc-audit",
       "Audit: " + fmtUSD(state.market.audit.modeled_work_micro_usd / 1e6) +
@@ -472,12 +440,14 @@
       });
     }
 
-    render();
-    if (!Core || !window.fetch) {
+    if (!Core || !window.fetch || HARDWARE_OPTIONS.length === 0) {
       state.marketState = "unavailable";
-      render();
+      renderBaseRewardPolicy(state.marketState, null);
+      renderUnavailable("Calculator configuration could not be loaded.");
+      renderModelMessage("Estimate unavailable");
       return;
     }
+    render();
     fetch(API_BASE + "/v1/earnings/market", {
       headers: { Accept: "application/json" },
     })

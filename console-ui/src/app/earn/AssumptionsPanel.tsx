@@ -1,7 +1,13 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import { DEFAULT_ELEC_COST_PER_KWH, MONTH_HOURS, fmtTokens, fmtUSD } from "./calc";
+import {
+  DEFAULT_ELEC_COST_PER_KWH,
+  MONTH_HOURS,
+  fmtTokens,
+  fmtUSD,
+  fmtUSDRange,
+} from "./calc";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
 function CalcStep({
@@ -47,7 +53,7 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
   const unattributedPoolUSD = market.audit.unattributed_work_micro_usd / 1_000_000;
   const reductionDetail =
     policy.reduction_k > 0
-      ? `; reduced by ${policy.reduction_k.toFixed(2)}× candidate work earnings`
+      ? `; actual five-minute draws are reduced by ${policy.reduction_k.toFixed(2)}× same-period work earnings`
       : "";
   const accountCapDetail =
     policy.account_cap_fraction > 0
@@ -83,7 +89,7 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           <div className="rounded-lg bg-accent-brand/5 border border-accent-brand/20 p-3 text-center">
             <p className="text-xs text-text-secondary mb-1">Base reward maximum</p>
             <p className="text-lg font-mono text-accent-brand">
-              + {fmtUSD(result.baseRewardPotentialUSD)}
+              + {fmtUSD(result.baseRewardMaximumUSD)}
             </p>
             <p className="text-xs text-text-secondary mt-0.5">eligibility- and pool-capped</p>
           </div>
@@ -95,9 +101,11 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
             <p className="text-xs text-text-secondary mt-0.5">idle + allocated work</p>
           </div>
           <div className="rounded-lg bg-accent-green/5 border border-accent-green/20 p-3 text-center">
-            <p className="text-xs text-text-secondary mb-1">Estimated net / mo</p>
-            <p className="text-lg font-mono text-text-primary">{fmtUSD(result.monthlyNetUSD)}</p>
-            <p className="text-xs text-text-secondary mt-0.5">work + reward − power</p>
+            <p className="text-xs text-text-secondary mb-1">Modeled net range / mo</p>
+            <p className="text-lg font-mono text-text-primary">
+              {fmtUSDRange(result.monthlyWorkNetUSD, result.monthlyNetMaximumUSD)}
+            </p>
+            <p className="text-xs text-text-secondary mt-0.5">work − power, plus 0–max reward</p>
           </div>
         </div>
 
@@ -109,7 +117,7 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           />
           <CalcStep
             label="Competing live capacity"
-            detail={`${model.provider_supply} eligible providers on the currently routed build; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
+            detail={`${model.provider_supply} eligible build-provider pairs across the desired and fallback builds; ${model.aggregate_memory_bandwidth_gbps.toFixed(0)} GB/s aggregate reported bandwidth`}
             value={`${model.aggregate_tps.toFixed(1)} tok/s`}
           />
           <CalcStep
@@ -134,12 +142,15 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
                 ? `${effectiveRAM} GB tier at full-month availability${reductionDetail}; requires attestation, health, and ≥${uptimePercent}% uptime, then shares the fixed ${fmtUSD(basePoolUSD)} monthly fleet pool${accountCapDetail}`
                 : "Base rewards are currently disabled; tier policy does not create a payout"
             }
-            value={`+${fmtUSD(result.baseRewardPotentialUSD)} /mo`}
+            value={`+${fmtUSD(result.baseRewardMaximumUSD)} /mo max`}
           />
           <CalcStep
-            label="Estimated net"
-            detail="Candidate work payout + base reward maximum − idle and workload electricity"
-            value={`${fmtUSD(result.monthlyNetUSD)} /mo`}
+            label="Modeled net range"
+            detail="Candidate work payout − electricity, plus zero to the base-reward maximum"
+            value={`${fmtUSDRange(
+              result.monthlyWorkNetUSD,
+              result.monthlyNetMaximumUSD,
+            )} /mo`}
             emphasize
           />
         </div>
@@ -152,8 +163,9 @@ export function AssumptionsPanel({ calc }: { calc: EarningsCalculator }) {
           </li>
           <li>
             Base rewards are separate from work demand. The memory tier is only a maximum before
-            configured work reduction, account caps, eligibility checks, and fixed-pool
-            allocation; it is not committed or guaranteed.
+            five-minute work offsets, account caps, eligibility checks, and fixed-pool allocation.
+            The displayed net range therefore uses zero as its lower reward bound; no reward is
+            committed or guaranteed.
           </li>
           <li>
             The audit reconciles {fmtUSD(market.audit.modeled_work_micro_usd / 1_000_000)} modeled

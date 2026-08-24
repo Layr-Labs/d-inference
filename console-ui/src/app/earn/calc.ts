@@ -33,13 +33,16 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MACBOOK_PRO, chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 15, inferWatts: 40 },
   { macType: MACBOOK_PRO, chip: "M3", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M3 Pro", ramOptions: [18, 36], bandwidthGBs: 150, idleWatts: 15, inferWatts: 35 },
-  { macType: MACBOOK_PRO, chip: "M3 Max", ramOptions: [36, 48, 64, 96, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
+  { macType: MACBOOK_PRO, chip: "M3 Max (14-core CPU)", ramOptions: [36, 96], bandwidthGBs: 300, idleWatts: 20, inferWatts: 45 },
+  { macType: MACBOOK_PRO, chip: "M3 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 400, idleWatts: 20, inferWatts: 45 },
   { macType: MACBOOK_PRO, chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
   { macType: MACBOOK_PRO, chip: "M4 Pro", ramOptions: [24, 48], bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
-  { macType: MACBOOK_PRO, chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
   { macType: MACBOOK_PRO, chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
-  { macType: MACBOOK_PRO, chip: "M5 Pro", ramOptions: [24, 48], bandwidthGBs: 300, idleWatts: 12, inferWatts: 30 },
-  { macType: MACBOOK_PRO, chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: "M5 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
+  { macType: MACBOOK_PRO, chip: "M5 Max (32-core GPU)", ramOptions: [36], bandwidthGBs: 460, idleWatts: 20, inferWatts: 50 },
+  { macType: MACBOOK_PRO, chip: "M5 Max (40-core GPU)", ramOptions: [48, 64, 128], bandwidthGBs: 614, idleWatts: 20, inferWatts: 50 },
   { macType: MAC_MINI, chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68, idleWatts: 5, inferWatts: 10 },
   { macType: MAC_MINI, chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100, idleWatts: 5, inferWatts: 12 },
   { macType: MAC_MINI, chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200, idleWatts: 8, inferWatts: 25 },
@@ -50,18 +53,17 @@ export const MAC_CONFIGS: MacConfig[] = [
   { macType: MAC_STUDIO, chip: "M2 Max", ramOptions: [32, 64, 96], bandwidthGBs: 400, idleWatts: 20, inferWatts: 60 },
   { macType: MAC_STUDIO, chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
   { macType: MAC_STUDIO, chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
-  { macType: MAC_STUDIO, chip: "M4 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
-  { macType: MAC_STUDIO, chip: "M5 Max", ramOptions: [36, 48, 64, 128], bandwidthGBs: 600, idleWatts: 25, inferWatts: 65 },
+  { macType: MAC_STUDIO, chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410, idleWatts: 25, inferWatts: 65 },
+  { macType: MAC_STUDIO, chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
   { macType: MAC_PRO, chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
-  { macType: MAC_PRO, chip: "M3 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 819, idleWatts: 40, inferWatts: 120 },
 ];
 
 const CHIP_ORDER = [
   "M1", "M1 Pro", "M1 Max", "M1 Ultra",
   "M2", "M2 Pro", "M2 Max", "M2 Ultra",
-  "M3", "M3 Pro", "M3 Max", "M3 Ultra",
-  "M4", "M4 Pro", "M4 Max",
-  "M5", "M5 Pro", "M5 Max",
+  "M3", "M3 Pro", "M3 Max (14-core CPU)", "M3 Max (16-core CPU)", "M3 Ultra",
+  "M4", "M4 Pro", "M4 Max (14-core CPU)", "M4 Max (16-core CPU)",
+  "M5", "M5 Pro", "M5 Max (32-core GPU)", "M5 Max (40-core GPU)",
 ];
 
 export interface HardwareOption extends MacConfig {
@@ -85,7 +87,7 @@ export function buildHardwareOptions(configs: MacConfig[] = MAC_CONFIGS): Hardwa
 }
 
 export const HARDWARE_OPTIONS = buildHardwareOptions();
-export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:M4 Max`;
+export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:M4 Max (16-core CPU)`;
 export const DEFAULT_ELEC_COST_PER_KWH = 0.15;
 export const MONTH_HOURS = 30 * 24;
 
@@ -101,9 +103,11 @@ export interface ModelEarningsEstimate {
   idleElectricityUSD: number;
   workloadElectricityUSD: number;
   electricityUSD: number;
-  baseRewardPotentialUSD: number;
-  monthlyNetUSD: number;
-  annualNetUSD: number;
+  baseRewardMaximumUSD: number;
+  monthlyWorkNetUSD: number;
+  monthlyNetMaximumUSD: number;
+  annualWorkNetUSD: number;
+  annualNetMaximumUSD: number;
 }
 
 export function candidateCapacityTPS(
@@ -151,19 +155,18 @@ export function conservedCandidatePayout(
   };
 }
 
-export function baseRewardPotentialUSD(
+export function baseRewardMaximumUSD(
   policy: EarningsMarketBaseRewards,
   memoryGB: number,
-  workPayoutUSD = 0,
 ): number {
   if (
     !policy.enabled ||
     !Number.isFinite(memoryGB) ||
-    !Number.isFinite(workPayoutUSD) ||
+    !Number.isFinite(policy.monthly_pool_micro_usd) ||
     !Number.isFinite(policy.reduction_k) ||
     !Number.isFinite(policy.account_cap_fraction) ||
     memoryGB < 0 ||
-    workPayoutUSD < 0 ||
+    policy.monthly_pool_micro_usd < 0 ||
     policy.reduction_k < 0 ||
     policy.account_cap_fraction < 0 ||
     policy.account_cap_fraction > 1
@@ -179,14 +182,14 @@ export function baseRewardPotentialUSD(
     }
   }
   const poolUSD = policy.monthly_pool_micro_usd / 1_000_000;
-  const reduced = Math.max(0, selected - policy.reduction_k * workPayoutUSD);
   const accountCap =
     policy.account_cap_fraction > 0
       ? poolUSD * policy.account_cap_fraction
       : poolUSD;
-  // Actual allocation may be lower when other eligible machines share the
-  // fleet pool or this payout account has already consumed its cap.
-  return Math.min(reduced, poolUSD, accountCap);
+  // This is an upper bound, not an expected allocation. Actual five-minute
+  // draws can be lower due to same-period work offsets, eligibility, competing
+  // machines, or reward already consumed by this payout account.
+  return Math.min(selected, poolUSD, accountCap);
 }
 
 export function calculateModelEstimate(
@@ -231,8 +234,9 @@ export function calculateModelEstimate(
     activeHours *
     electricityCostPerKWh;
   const electricityUSD = idleElectricityUSD + workloadElectricityUSD;
-  const baseReward = baseRewardPotentialUSD(baseRewards, memoryGB, payout.candidate);
-  const monthlyNetUSD = payout.candidate + baseReward - electricityUSD;
+  const baseRewardMaximum = baseRewardMaximumUSD(baseRewards, memoryGB);
+  const monthlyWorkNetUSD = payout.candidate - electricityUSD;
+  const monthlyNetMaximumUSD = monthlyWorkNetUSD + baseRewardMaximum;
 
   return {
     model,
@@ -246,9 +250,11 @@ export function calculateModelEstimate(
     idleElectricityUSD,
     workloadElectricityUSD,
     electricityUSD,
-    baseRewardPotentialUSD: baseReward,
-    monthlyNetUSD,
-    annualNetUSD: monthlyNetUSD * 12,
+    baseRewardMaximumUSD: baseRewardMaximum,
+    monthlyWorkNetUSD,
+    monthlyNetMaximumUSD,
+    annualWorkNetUSD: monthlyWorkNetUSD * 12,
+    annualNetMaximumUSD: monthlyNetMaximumUSD * 12,
   };
 }
 
@@ -270,6 +276,12 @@ export function unavailableReasonLabel(
 export function fmtUSD(value: number, decimals = 2): string {
   const absolute = Math.abs(value).toFixed(decimals);
   return value < 0 ? `-$${absolute}` : `$${absolute}`;
+}
+
+export function fmtUSDRange(minimum: number, maximum: number, decimals = 2): string {
+  const lower = fmtUSD(minimum, decimals);
+  const upper = fmtUSD(maximum, decimals);
+  return lower === upper ? lower : `${lower}–${upper}`;
 }
 
 export function fmtUSDWhole(value: number): string {

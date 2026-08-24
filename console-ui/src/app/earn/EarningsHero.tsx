@@ -1,7 +1,7 @@
 "use client";
 
 import { Info, Shield, TrendingUp } from "lucide-react";
-import { fmtUSD } from "./calc";
+import { fmtUSD, fmtUSDRange } from "./calc";
 import { SmallModelsInterest } from "./SmallModelsInterest";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
@@ -40,7 +40,7 @@ export function EarningsHero({
     <div className="rounded-xl bg-bg-secondary p-6 sm:p-8 mb-6 text-center">
       <div role="status" aria-live="polite" aria-atomic="true">
         <p className="text-xs uppercase tracking-wider text-text-secondary mb-2">
-          Estimated annual net earnings
+          Estimated annual net range
         </p>
 
         {loading && (
@@ -52,11 +52,12 @@ export function EarningsHero({
         {!loading && result && (
           <>
             <p className="text-4xl sm:text-5xl font-bold font-mono text-text-primary py-1">
-              {fmtUSD(result.annualNetUSD)}
+              {fmtUSDRange(result.annualWorkNetUSD, result.annualNetMaximumUSD)}
               <span className="text-lg font-normal text-text-secondary"> /yr</span>
             </p>
             <p className="text-sm text-text-secondary mt-1">
-              {fmtUSD(result.monthlyNetUSD)} per month after electricity
+              {fmtUSDRange(result.monthlyWorkNetUSD, result.monthlyNetMaximumUSD)} per month
+              after electricity
             </p>
           </>
         )}
@@ -79,13 +80,13 @@ export function EarningsHero({
               candidate share for {bestModel.display_name}
             </span>
           </div>
-          {result.baseRewardPotentialUSD > 0 && (
+          {result.baseRewardMaximumUSD > 0 && (
             <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-brand/10 text-sm text-text-primary">
               <Shield size={14} className="text-accent-brand shrink-0" />
               <span>
                 up to{" "}
                 <span className="font-mono font-medium">
-                  {fmtUSD(result.baseRewardPotentialUSD)}/mo
+                  {fmtUSD(result.baseRewardMaximumUSD)}/mo
                 </span>{" "}
                 base reward maximum after configured policy caps
               </span>
@@ -109,8 +110,9 @@ export function EarningsHero({
           <p className="text-xs text-text-secondary">
             This uses the fixed trailing {market.window_days}-day settled work pool and full-month
             availability; it is not a promise. Demand and competing capacity change. The base
-            reward is eligibility-gated and shared from a fixed pool, so the memory-tier amount
-            is a maximum, not guaranteed income.
+            reward range starts at zero because eligibility, five-minute work offsets, account
+            caps, and fixed-pool allocation are unknown; the memory-tier amount is only the upper
+            bound.
           </p>
         </div>
       )}

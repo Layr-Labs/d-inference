@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Layers, X } from "lucide-react";
-import { fmtUSD, unavailableReasonLabel } from "./calc";
+import { fmtUSDRange, unavailableReasonLabel } from "./calc";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
 function formatSize(sizeGB: number): string {
@@ -20,7 +20,8 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
         <h3 className="text-sm font-medium text-text-primary">What your Mac can run</h3>
       </div>
       <p className="text-xs text-text-secondary mb-4">
-        Active public models rank by estimated monthly net after policy caps and electricity.
+        Active public models rank by modeled work net after electricity; the range adds zero to
+        the policy-capped base-reward maximum.
       </p>
 
       {marketState === "loading" && (
@@ -63,7 +64,11 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
 
                 {fits && estimate && (
                   <span className="text-sm font-mono tabular-nums whitespace-nowrap text-text-secondary">
-                    {fmtUSD(estimate.monthlyNetUSD)}/mo net
+                    {fmtUSDRange(
+                      estimate.monthlyWorkNetUSD,
+                      estimate.monthlyNetMaximumUSD,
+                    )}
+                    /mo net
                   </span>
                 )}
                 {fits && !estimate && (

@@ -2,13 +2,96 @@ import Darwin
 import Foundation
 import SandboxCore
 
+struct SandboxGenerationHighWatermark: Codable, Equatable {
+    let sandboxID: SandboxID
+    var generation: SandboxGeneration
+}
+
 struct SandboxCapacityState: Codable, Equatable {
-    static let schemaVersion: UInt16 = 1
+    static let schemaVersion: UInt16 = 2
+    static let maximumGenerationHighWatermarks = 4_096
 
     let schemaVersion: UInt16
     var mode: SandboxHostMode
     var nextFencingToken: UInt64
     var leases: [SandboxCapacityLease]
+    var generationHighWatermarks: [SandboxGenerationHighWatermark]
+
+    init(
+        schemaVersion: UInt16 = Self.schemaVersion,
+        mode: SandboxHostMode,
+        nextFencingToken: UInt64,
+        leases: [SandboxCapacityLease],
+        generationHighWatermarks: [SandboxGenerationHighWatermark] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.mode = mode
+        self.nextFencingToken = nextFencingToken
+        self.leases = leases
+        self.generationHighWatermarks = generationHighWatermarks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let storedSchemaVersion = try container.decode(
+            UInt16.self,
+            forKey: .schemaVersion
+        )
+        guard storedSchemaVersion == 1
+                || storedSchemaVersion == Self.schemaVersion
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported sandbox capacity state version"
+            )
+        }
+        mode = try container.decode(SandboxHostMode.self, forKey: .mode)
+        nextFencingToken = try container.decode(
+            UInt64.self,
+            forKey: .nextFencingToken
+        )
+        leases = try container.decode(
+            [SandboxCapacityLease].self,
+            forKey: .leases
+        )
+        schemaVersion = Self.schemaVersion
+        if storedSchemaVersion == Self.schemaVersion {
+            generationHighWatermarks = try container.decode(
+                [SandboxGenerationHighWatermark].self,
+                forKey: .generationHighWatermarks
+            )
+        } else {
+            generationHighWatermarks = leases.map {
+                SandboxGenerationHighWatermark(
+                    sandboxID: $0.scope.sandboxID,
+                    generation: $0.scope.generation
+                )
+            }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.schemaVersion, forKey: .schemaVersion)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(nextFencingToken, forKey: .nextFencingToken)
+        try container.encode(leases, forKey: .leases)
+        try container.encode(
+            generationHighWatermarks.sorted {
+                $0.sandboxID.description < $1.sandboxID.description
+            },
+            forKey: .generationHighWatermarks
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case mode
+        case nextFencingToken
+        case leases
+        case generationHighWatermarks
+    }
 }
 
 struct SandboxCapacityStateStore: Sendable {
@@ -305,12 +388,28 @@ struct SandboxCapacityStateStore: Sendable {
         let sandboxIDs = state.leases.map(\.scope.sandboxID)
         let names = state.leases.map(\.virtualMachineName)
         let tokens = state.leases.map(\.scope.fencingToken.rawValue)
+        let generationSandboxIDs = state.generationHighWatermarks.map(
+            \.sandboxID
+        )
         guard Set(sandboxIDs).count == sandboxIDs.count,
               Set(names).count == names.count,
               Set(tokens).count == tokens.count,
+              state.generationHighWatermarks.count
+                  <= SandboxCapacityState.maximumGenerationHighWatermarks,
+              Set(generationSandboxIDs).count == generationSandboxIDs.count,
               state.leases.allSatisfy(Self.validate),
               (tokens.max() ?? 0) < state.nextFencingToken
         else {
+            throw SandboxCapacityError.corruptState
+        }
+        let generations = Dictionary(
+            uniqueKeysWithValues: state.generationHighWatermarks.map {
+                ($0.sandboxID, $0.generation)
+            }
+        )
+        guard state.leases.allSatisfy({
+            generations[$0.scope.sandboxID] == $0.scope.generation
+        }) else {
             throw SandboxCapacityError.corruptState
         }
     }
@@ -322,6 +421,7 @@ struct SandboxCapacityStateStore: Sendable {
         return SandboxVirtualMachineNamePolicy.isValid(lease.virtualMachineName)
             && lease.cpuCount > 0
             && lease.memoryBytes > 0
+            && lease.workspaceBytes > 0
             && issued.isFinite
             && expires.isFinite
             && duration > 0

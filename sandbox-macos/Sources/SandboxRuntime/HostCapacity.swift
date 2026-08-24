@@ -14,17 +14,20 @@ public struct SandboxCapacityPolicy: Equatable, Sendable {
     public let maximumRunningSandboxes: Int
     public let maximumReservedCPUCount: UInt16
     public let maximumReservedMemoryBytes: UInt64
+    public let maximumReservedWorkspaceBytes: UInt64
     public let maximumLeaseDurationSeconds: TimeInterval
 
     public init(
         maximumRunningSandboxes: Int = supportedRunningSandboxes,
         maximumReservedCPUCount: UInt16,
         maximumReservedMemoryBytes: UInt64,
+        maximumReservedWorkspaceBytes: UInt64,
         maximumLeaseDurationSeconds: TimeInterval = 300
     ) throws {
         guard maximumRunningSandboxes == Self.supportedRunningSandboxes,
               maximumReservedCPUCount > 0,
               maximumReservedMemoryBytes > 0,
+              maximumReservedWorkspaceBytes > 0,
               maximumLeaseDurationSeconds.isFinite,
               (30...Self.maximumSupportedLeaseDurationSeconds)
                   .contains(maximumLeaseDurationSeconds)
@@ -34,6 +37,7 @@ public struct SandboxCapacityPolicy: Equatable, Sendable {
         self.maximumRunningSandboxes = maximumRunningSandboxes
         self.maximumReservedCPUCount = maximumReservedCPUCount
         self.maximumReservedMemoryBytes = maximumReservedMemoryBytes
+        self.maximumReservedWorkspaceBytes = maximumReservedWorkspaceBytes
         self.maximumLeaseDurationSeconds = maximumLeaseDurationSeconds
     }
 }
@@ -43,6 +47,7 @@ public struct SandboxCapacityLease: Codable, Equatable, Sendable {
     public let virtualMachineName: String
     public let cpuCount: UInt16
     public let memoryBytes: UInt64
+    public let workspaceBytes: UInt64
     public let issuedAt: Date
     public let expiresAt: Date
 
@@ -51,6 +56,7 @@ public struct SandboxCapacityLease: Codable, Equatable, Sendable {
         virtualMachineName: String,
         cpuCount: UInt16,
         memoryBytes: UInt64,
+        workspaceBytes: UInt64,
         issuedAt: Date,
         expiresAt: Date
     ) {
@@ -58,8 +64,53 @@ public struct SandboxCapacityLease: Codable, Equatable, Sendable {
         self.virtualMachineName = virtualMachineName
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
+        self.workspaceBytes = workspaceBytes
         self.issuedAt = issuedAt
         self.expiresAt = expiresAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try container.decode(
+            SandboxOperationScope.self,
+            forKey: .scope
+        )
+        virtualMachineName = try container.decode(
+            String.self,
+            forKey: .virtualMachineName
+        )
+        cpuCount = try container.decode(UInt16.self, forKey: .cpuCount)
+        memoryBytes = try container.decode(UInt64.self, forKey: .memoryBytes)
+        workspaceBytes = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .workspaceBytes
+        ) ?? SandboxResourcePolicy.alpha.workspaceBytes.upperBound
+        issuedAt = try container.decode(Date.self, forKey: .issuedAt)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(
+            virtualMachineName,
+            forKey: .virtualMachineName
+        )
+        try container.encode(cpuCount, forKey: .cpuCount)
+        try container.encode(memoryBytes, forKey: .memoryBytes)
+        try container.encode(workspaceBytes, forKey: .workspaceBytes)
+        try container.encode(issuedAt, forKey: .issuedAt)
+        try container.encode(expiresAt, forKey: .expiresAt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scope
+        case virtualMachineName
+        case cpuCount
+        case memoryBytes
+        case workspaceBytes
+        case issuedAt
+        case expiresAt
     }
 }
 
@@ -113,6 +164,11 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
         existing: SandboxGeneration,
         requested: SandboxGeneration
     )
+    case staleSandboxGeneration(
+        highest: SandboxGeneration,
+        requested: SandboxGeneration
+    )
+    case generationHistoryExhausted
     case leaseExpired
     case leaseOperationInProgress
     case staleFencingToken
@@ -146,6 +202,10 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "virtual machine name is already reserved"
         case .activeSandboxGeneration(let existing, let requested):
             return "sandbox generation \(existing.rawValue) is already active; requested \(requested.rawValue)"
+        case .staleSandboxGeneration(let highest, let requested):
+            return "sandbox generation \(requested.rawValue) is not newer than durable generation \(highest.rawValue)"
+        case .generationHistoryExhausted:
+            return "sandbox generation history reached its fail-closed capacity"
         case .leaseExpired:
             return "sandbox capacity lease has expired and cannot be renewed"
         case .leaseOperationInProgress:

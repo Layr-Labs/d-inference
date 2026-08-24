@@ -3,6 +3,35 @@ import SandboxCore
 import SandboxRuntime
 
 extension LumeVirtualMachineRuntime {
+    func inspect(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws -> SandboxVirtualMachineRecord? {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        let operationLock = try beginOperation("inspect", name: name)
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .inspect,
+            virtualMachineName: name
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
+        let record = try await inspect(name: name)
+        if record != nil {
+            _ = try LumeVirtualMachineOwnership.requireOwned(
+                name: name,
+                owner: .init(operationScope: scope),
+                in: configuration.storageDirectory
+            )
+        }
+        return record
+    }
+
     public func create(
         _ specification: SandboxVirtualMachineSpecification
     ) async throws {

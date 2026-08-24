@@ -149,7 +149,9 @@ final class LumeRuntimeFailureTests: XCTestCase {
             policy: try SandboxCapacityPolicy(
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
-                    16 * SandboxResourcePolicy.gibibyte
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedWorkspaceBytes:
+                    100 * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { clock.now() }
         )
@@ -237,6 +239,153 @@ final class LumeRuntimeFailureTests: XCTestCase {
             scope: lease.scope,
             name: fixture.virtualMachineName
         )
+    }
+
+    func testLeaseFencedInspectLinearizesBeforeRenewal() async throws {
+        let fixture = try FakeLumeFixture(
+            behavior: "block-first-list"
+        )
+        defer { try? fixture.remove() }
+        defer { try? fixture.allowListToContinue() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try SandboxHostCapacityArbiter(
+            stateDirectory: fixture.directory.appendingPathComponent(
+                "capacity",
+                isDirectory: true
+            ),
+            policy: try SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedWorkspaceBytes:
+                    100 * SandboxResourcePolicy.gibibyte
+            ),
+            currentDate: { clock.now() }
+        )
+        _ = try arbiter.initialize()
+        _ = try arbiter.setMode(.sandboxDedicated)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = LumeLeaseFencedVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 30,
+                createTimeoutSeconds: 30,
+                trustPolicy: .developmentAdHoc
+            ),
+            capacityArbiter: arbiter
+        )
+        let inspection = Task {
+            try await runtime.inspect(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+        }
+        try await fixture.waitForListToStart()
+        let status = LumeRenewalStatus()
+        let renewal = Task.detached {
+            await status.markStarted()
+            let renewed = try arbiter.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(240)
+            )
+            await status.markCompleted()
+            return renewed
+        }
+        while !(await status.started) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let completedWhileInspecting = await status.completed
+        XCTAssertFalse(
+            completedWhileInspecting,
+            "renewal must not rotate the fence during inspection"
+        )
+
+        try fixture.allowListToContinue()
+        let record = try await inspection.value
+        XCTAssertEqual(record?.name, fixture.virtualMachineName)
+        let renewed = try await renewal.value
+        XCTAssertGreaterThan(
+            renewed.scope.fencingToken,
+            lease.scope.fencingToken
+        )
+    }
+
+    func testExpiredLeaseReconciliationStopsThenReleases() async throws {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        clock.set(lease.expiresAt)
+
+        let results = try await runtime.reconcileExpiredLeases()
+
+        XCTAssertEqual(
+            results,
+            [.init(lease: lease, outcome: .released)]
+        )
+        try await fixture.waitForState("stopped")
+        XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+        let retryResults = try await runtime.reconcileExpiredLeases()
+        XCTAssertTrue(retryResults.isEmpty)
+    }
+
+    func testExpiredLeaseReconciliationRetainsLeaseOnOwnershipFailure()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        let mismatchedScope = SandboxOperationScope(
+            sandboxID: lease.scope.sandboxID,
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 2)),
+            fencingToken: lease.scope.fencingToken
+        )
+        try fixture.bindOwnership(to: mismatchedScope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        clock.set(lease.expiresAt)
+
+        let results = try await runtime.reconcileExpiredLeases()
+
+        XCTAssertEqual(results.count, 1)
+        guard case .retained(let detail) = results[0].outcome else {
+            return XCTFail("ownership failure must retain the lease")
+        }
+        XCTAssertTrue(detail.contains("different Darkbloom sandbox scope"))
+        XCTAssertEqual(try arbiter.snapshot().leases, [lease])
+        try await fixture.waitForState("running")
     }
 
     func testRejectsProvenanceWithUnpinnedPatchDigest() async throws {
@@ -1690,6 +1839,43 @@ private struct FakeLumeFixture {
         )
     }
 
+    func makeCapacityArbiter(
+        clock: LumeTestWallClock
+    ) throws -> SandboxHostCapacityArbiter {
+        let arbiter = try SandboxHostCapacityArbiter(
+            stateDirectory: directory.appendingPathComponent(
+                "capacity",
+                isDirectory: true
+            ),
+            policy: SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedWorkspaceBytes:
+                    100 * SandboxResourcePolicy.gibibyte
+            ),
+            currentDate: { clock.now() }
+        )
+        _ = try arbiter.initialize()
+        _ = try arbiter.setMode(.sandboxDedicated)
+        return arbiter
+    }
+
+    func makeLeaseFencedRuntime(
+        capacityArbiter: SandboxHostCapacityArbiter
+    ) throws -> LumeLeaseFencedVirtualMachineRuntime {
+        LumeLeaseFencedVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: executable,
+                storageDirectory: storage,
+                commandTimeoutSeconds: 5,
+                createTimeoutSeconds: 5,
+                trustPolicy: .developmentAdHoc
+            ),
+            capacityArbiter: capacityArbiter
+        )
+    }
+
     func bindOwnership(to scope: SandboxOperationScope) throws {
         try Self.writeOwnershipMarker(
             to: virtualMachineDirectory,
@@ -2161,5 +2347,18 @@ private final class LumeTestWallClock: @unchecked Sendable {
         lock.lock()
         self.value = value
         lock.unlock()
+    }
+}
+
+private actor LumeRenewalStatus {
+    private(set) var started = false
+    private(set) var completed = false
+
+    func markStarted() {
+        started = true
+    }
+
+    func markCompleted() {
+        completed = true
     }
 }

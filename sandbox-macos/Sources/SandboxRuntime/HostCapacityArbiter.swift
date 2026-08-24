@@ -80,7 +80,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
             }
             if let resources {
                 guard lease.cpuCount == resources.cpuCount,
-                      lease.memoryBytes == resources.memoryBytes
+                      lease.memoryBytes == resources.memoryBytes,
+                      lease.workspaceBytes == resources.workspaceBytes
                 else {
                     throw SandboxCapacityError.leaseResourceMismatch
                 }
@@ -175,11 +176,32 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 }
                 guard existing.virtualMachineName == virtualMachineName,
                       existing.cpuCount == resources.cpuCount,
-                      existing.memoryBytes == resources.memoryBytes
+                      existing.memoryBytes == resources.memoryBytes,
+                      existing.workspaceBytes == resources.workspaceBytes
                 else {
                     throw SandboxCapacityError.staleFencingToken
                 }
                 return existing
+            }
+            let generationIndex = state.generationHighWatermarks
+                .firstIndex { $0.sandboxID == sandboxID }
+            if let generationIndex {
+                let highest = state.generationHighWatermarks[
+                    generationIndex
+                ].generation
+                guard generation > highest else {
+                    throw SandboxCapacityError.staleSandboxGeneration(
+                        highest: highest,
+                        requested: generation
+                    )
+                }
+            } else {
+                guard state.generationHighWatermarks.count
+                        < SandboxCapacityState
+                            .maximumGenerationHighWatermarks
+                else {
+                    throw SandboxCapacityError.generationHistoryExhausted
+                }
             }
             guard !state.leases.contains(where: {
                 $0.virtualMachineName == virtualMachineName
@@ -212,6 +234,22 @@ public struct SandboxHostCapacityArbiter: Sendable {
             else {
                 throw SandboxCapacityError.capacityExhausted
             }
+            let reservedWorkspace = try state.leases.reduce(UInt64(0)) {
+                let (sum, overflow) = $0.addingReportingOverflow(
+                    $1.workspaceBytes
+                )
+                guard !overflow else {
+                    throw SandboxCapacityError.corruptState
+                }
+                return sum
+            }
+            let (newWorkspace, workspaceOverflow) = reservedWorkspace
+                .addingReportingOverflow(resources.workspaceBytes)
+            guard !workspaceOverflow,
+                  newWorkspace <= policy.maximumReservedWorkspaceBytes
+            else {
+                throw SandboxCapacityError.capacityExhausted
+            }
             guard state.nextFencingToken < UInt64.max,
                   let fencingToken = SandboxFencingToken(
                       rawValue: state.nextFencingToken
@@ -230,9 +268,22 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 virtualMachineName: virtualMachineName,
                 cpuCount: resources.cpuCount,
                 memoryBytes: resources.memoryBytes,
+                workspaceBytes: resources.workspaceBytes,
                 issuedAt: now,
                 expiresAt: expiresAt
             )
+            if let generationIndex {
+                state.generationHighWatermarks[
+                    generationIndex
+                ].generation = generation
+            } else {
+                state.generationHighWatermarks.append(
+                    SandboxGenerationHighWatermark(
+                        sandboxID: sandboxID,
+                        generation: generation
+                    )
+                )
+            }
             state.leases.append(lease)
             return lease
         }
@@ -283,6 +334,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 virtualMachineName: existing.virtualMachineName,
                 cpuCount: existing.cpuCount,
                 memoryBytes: existing.memoryBytes,
+                workspaceBytes: existing.workspaceBytes,
                 issuedAt: existing.issuedAt,
                 expiresAt: expiresAt
             )
@@ -308,7 +360,11 @@ public struct SandboxHostCapacityArbiter: Sendable {
     public func expiredLeases() throws -> [SandboxCapacityLease] {
         try store.update { state in
             let now = currentDate()
-            return state.leases.filter { $0.expiresAt <= now }
+            return state.leases
+                .filter { $0.expiresAt <= now }
+                .sorted {
+                    $0.scope.fencingToken < $1.scope.fencingToken
+                }
         }
     }
 

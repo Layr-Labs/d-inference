@@ -69,6 +69,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             expiresAt: now.addingTimeInterval(120)
         )
         XCTAssertEqual(first.issuedAt, now)
+        XCTAssertEqual(first.workspaceBytes, resources.workspaceBytes)
         XCTAssertEqual(
             try arbiter.reserve(
                 sandboxID: firstID,
@@ -124,6 +125,34 @@ final class HostCapacityArbiterTests: XCTestCase {
             2,
             "expiry discovery must not reclaim capacity before VM cleanup"
         )
+    }
+
+    func testEnforcesAggregateWorkspaceReservation() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            maximumWorkspaceGiB: 50
+        )
+        try initializeDedicated(arbiter)
+        _ = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-workspace-a",
+            resources: try makeResources(workspaceGiB: 50),
+            expiresAt: now.addingTimeInterval(120)
+        )
+
+        assertCapacityError(.capacityExhausted) {
+            _ = try arbiter.reserve(
+                sandboxID: SandboxID(),
+                generation: try generation(1),
+                virtualMachineName: "sandbox-workspace-b",
+                resources: try makeResources(workspaceGiB: 25),
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
     }
 
     func testFencingRejectsStaleCommandsAndSurvivesRestart() throws {
@@ -190,6 +219,18 @@ final class HostCapacityArbiterTests: XCTestCase {
         try arbiter.release(scope: renewed.scope)
 
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
+        assertCapacityError(.staleSandboxGeneration(
+            highest: firstGeneration,
+            requested: firstGeneration
+        )) {
+            _ = try reopened.reserve(
+                sandboxID: sandboxID,
+                generation: firstGeneration,
+                virtualMachineName: "sandbox-replayed-generation",
+                resources: try makeResources(),
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
         let second = try reopened.reserve(
             sandboxID: sandboxID,
             generation: secondGeneration,
@@ -202,6 +243,20 @@ final class HostCapacityArbiterTests: XCTestCase {
             first.scope.fencingToken,
             "released fencing tokens must never be reused after restart"
         )
+        try reopened.release(scope: second.scope)
+        let reopenedAgain = try makeArbiter(stateDirectory: stateDirectory)
+        assertCapacityError(.staleSandboxGeneration(
+            highest: secondGeneration,
+            requested: secondGeneration
+        )) {
+            _ = try reopenedAgain.reserve(
+                sandboxID: sandboxID,
+                generation: secondGeneration,
+                virtualMachineName: "sandbox-replayed-second-generation",
+                resources: try makeResources(),
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
     }
 
     func testMutationAuthorizationBindsLeaseScopeNameResourcesAndLifetime() throws {
@@ -245,6 +300,14 @@ final class HostCapacityArbiterTests: XCTestCase {
                 virtualMachineName: lease.virtualMachineName,
                 operation: .create,
                 resources: try makeResources(cpuCount: 2)
+            )
+        }
+        assertCapacityError(.leaseResourceMismatch) {
+            _ = try arbiter.authorize(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .create,
+                resources: try makeResources(workspaceGiB: 50)
             )
         }
         let staleScope = SandboxOperationScope(
@@ -402,7 +465,9 @@ final class HostCapacityArbiterTests: XCTestCase {
             policy: SandboxCapacityPolicy(
                 maximumReservedCPUCount: 8,
                 maximumReservedMemoryBytes:
-                    16 * SandboxResourcePolicy.gibibyte
+                    16 * SandboxResourcePolicy.gibibyte,
+                maximumReservedWorkspaceBytes:
+                    100 * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { clock.now() },
             directorySynchronizationError: {
@@ -759,10 +824,73 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testMigratesLegacyActiveLeaseGenerationHistory() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let sandboxID = SandboxID()
+        let generation = try generation(3)
+        let lease = try arbiter.reserve(
+            sandboxID: sandboxID,
+            generation: generation,
+            virtualMachineName: "sandbox-legacy-generation",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: stateURL)
+            ) as? [String: Any]
+        )
+        object["schemaVersion"] = 1
+        object.removeValue(forKey: "generationHighWatermarks")
+        var legacyLeases = try XCTUnwrap(
+            object["leases"] as? [[String: Any]]
+        )
+        legacyLeases[0].removeValue(forKey: "workspaceBytes")
+        object["leases"] = legacyLeases
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
+        )
+
+        let migrated = try makeArbiter(stateDirectory: stateDirectory)
+        let migratedLease = try XCTUnwrap(
+            migrated.snapshot().leases.first
+        )
+        XCTAssertEqual(migratedLease.scope, lease.scope)
+        XCTAssertEqual(
+            migratedLease.workspaceBytes,
+            SandboxResourcePolicy.alpha.workspaceBytes.upperBound
+        )
+        try migrated.release(scope: lease.scope)
+        let reopened = try makeArbiter(stateDirectory: stateDirectory)
+        assertCapacityError(.staleSandboxGeneration(
+            highest: generation,
+            requested: generation
+        )) {
+            _ = try reopened.reserve(
+                sandboxID: sandboxID,
+                generation: generation,
+                virtualMachineName: "sandbox-legacy-replay",
+                resources: try makeResources(),
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+    }
+
     private func makeArbiter(
         stateDirectory: URL,
         maximumCPUCount: UInt16 = 8,
         maximumMemoryGiB: UInt64 = 16,
+        maximumWorkspaceGiB: UInt64 = 100,
         clock: TestWallClock? = nil
     ) throws -> SandboxHostCapacityArbiter {
         let clock = clock ?? TestWallClock(
@@ -773,6 +901,8 @@ final class HostCapacityArbiterTests: XCTestCase {
             policy: SandboxCapacityPolicy(
                 maximumReservedCPUCount: maximumCPUCount,
                 maximumReservedMemoryBytes: maximumMemoryGiB
+                    * SandboxResourcePolicy.gibibyte,
+                maximumReservedWorkspaceBytes: maximumWorkspaceGiB
                     * SandboxResourcePolicy.gibibyte
             ),
             currentDate: { clock.now() }
@@ -781,12 +911,13 @@ final class HostCapacityArbiterTests: XCTestCase {
 
     private func makeResources(
         cpuCount: UInt16 = 4,
-        memoryGiB: UInt64 = 8
+        memoryGiB: UInt64 = 8,
+        workspaceGiB: UInt64 = 25
     ) throws -> SandboxResourceSpecification {
         try SandboxResourceSpecification(
             cpuCount: cpuCount,
             memoryBytes: memoryGiB * SandboxResourcePolicy.gibibyte,
-            workspaceBytes: 25 * SandboxResourcePolicy.gibibyte,
+            workspaceBytes: workspaceGiB * SandboxResourcePolicy.gibibyte,
             commandTimeoutSeconds: 900
         )
     }

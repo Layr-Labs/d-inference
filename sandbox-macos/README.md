@@ -124,17 +124,21 @@ with tenant jobs is prohibited.
 The state machine requires
 `inference -> draining -> sandbox_dedicated` before accepting sandbox work, and
 requires all leases to be released before returning to inference mode. Every
-reservation receives a monotonically increasing fencing token. Retries are
-idempotent only when sandbox generation, VM name, CPU, and memory match.
+reservation receives a monotonically increasing fencing token. A bounded,
+durable per-sandbox generation high-water mark survives release and restart;
+equal or older generations fail closed instead of reclaiming prior authority.
+Retries are idempotent only when sandbox generation, VM name, CPU, memory, and
+workspace reservation match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
 create, start, inspect, stop, and delete carry the complete operation scope.
 Guest execution is absent until the signed guest-control agent replaces Lume's
 shared bootstrap identity. The underlying Lume actor is package-only, validates
 the scope while holding the per-VM operation lock, and binds create
-authorization to the reserved CPU and memory. A per-sandbox inter-process lease
-lock spans each VM mutation and serializes renewal or release, so a newer
-fencing token cannot race an already-authorized mutation. Expired or draining
-leases may only stop or delete their own VM; they cannot start additional work.
+authorization to the reserved CPU, memory, and workspace bytes. A per-sandbox
+inter-process lease lock spans each VM operation, including inspection, and
+serializes renewal or release, so a newer fencing token cannot race an
+already-authorized observation or mutation. Expired or draining leases may only
+stop or delete their own VM; they cannot start additional work.
 Each workload VM also carries a fail-closed ownership marker binding its
 installation to the sandbox ID and generation plus its CPU, memory, disk, and
 image source. Renewed fencing tokens retain access to that same generation, but
@@ -143,13 +147,16 @@ marker role, and clones commit the source template installation ID; workload
 VMs cannot be used as clone templates. Legacy unscoped markers are rejected and
 must be rebuilt rather than inferred.
 
-The alpha policy admits exactly two running sandboxes and enforces aggregate CPU
-and memory limits under an inter-process `flock` on the already-bound state
-directory inode, not a replaceable global lock pathname. Lease expiry is
-discovery-only:
-expired entries continue consuming capacity until a reconciler has stopped the
-VM and releases the matching fencing token. This prevents a stalled control
-plane from overbooking a host whose guest may still be running.
+The alpha policy admits exactly two running sandboxes and enforces aggregate
+CPU, memory, and workspace reservations under an inter-process `flock` on the
+already-bound state directory inode, not a replaceable global lock pathname.
+Workspace reservation prevents host overbooking but is not yet the guest-visible
+disk quota; production quota enforcement still requires the signed guest-control
+agent and a separately bounded workspace volume. Expired entries continue
+consuming capacity until `reconcileExpiredLeases()` has stopped and verified
+each VM before releasing the matching fencing token. Stop or ownership failures
+retain the lease for operator reconciliation, preventing a stalled control plane
+from overbooking a host whose guest may still be running.
 
 ## Pinned Lume substrate
 

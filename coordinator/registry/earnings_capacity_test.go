@@ -27,6 +27,7 @@ func registerCapacityBenchmarkProvider(
 	p := reg.Register(id, nil, msg)
 	p.mu.Lock()
 	testMakeTextRoutable(p)
+	p.RuntimeVerified = true
 	p.DecodeTPS = fallbackTPS
 	p.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB: 64,

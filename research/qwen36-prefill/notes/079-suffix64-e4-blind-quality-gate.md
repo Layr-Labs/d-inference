@@ -6,7 +6,7 @@ all supplied performance cells PASS**
 This review compares:
 
 - native baseline: `artifacts/e30-quality-baseline-128.json`;
-- suffix64 E4 candidate: `artifacts/e50-quality-suffix64-e4-128.json`;
+- suffix64 E4 candidate: `artifacts/e50-quality-suffix64-e4-128.json.gz`;
 - committed corpus:
   `provider-swift/Benchmarks/QualityCorpus/qwen-quality-v1.json`.
 
@@ -125,7 +125,7 @@ quality-approved frontier.
 ## Suffix128 E4 follow-up
 
 The more conservative candidate in
-`artifacts/e50-quality-suffix128-e4-128.json` uses the same 12 prompts,
+`artifacts/e50-quality-suffix128-e4-128.json.gz` uses the same 12 prompts,
 corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
 native. The semantic scores below again use only prompt and generated text.
 The supplied exact-continuation count, token agreement, profile identity, and
@@ -197,7 +197,7 @@ the expedition source fabrication and passing a fresh blind run.
 ## Suffix192 + top-k4 E4 follow-up
 
 The candidate in
-`artifacts/e50-quality-suffix192-topk4-e4-128.json` uses the same 12 prompts,
+`artifacts/e50-quality-suffix192-topk4-e4-128.json.gz` uses the same 12 prompts,
 corpus/model hashes, greedy generation, 128-token cutoff, and length finish as
 native. Scoring again used only prompt and generated text; profile metadata,
 token identity, checksums, agreement, prefixes, and timing did not enter any

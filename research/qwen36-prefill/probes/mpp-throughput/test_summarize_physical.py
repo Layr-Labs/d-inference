@@ -70,6 +70,40 @@ COUNTER_XML = """<?xml version="1.0"?>
 </trace-query-result>
 """
 
+GPU_INTERVAL_XML = """<?xml version="1.0"?>
+<trace-query-result>
+<node>
+<schema>
+<col><mnemonic>start</mnemonic></col>
+<col><mnemonic>duration</mnemonic></col>
+<col><mnemonic>channel-name</mnemonic></col>
+<col><mnemonic>start-latency</mnemonic></col>
+<col><mnemonic>event-depth</mnemonic></col>
+<col><mnemonic>state</mnemonic></col>
+<col><mnemonic>process</mnemonic></col>
+</schema>
+<row>
+<start-time>0</start-time>
+<duration>1000000</duration>
+<gpu-channel-name fmt="Compute">Compute</gpu-channel-name>
+<duration>100000</duration>
+<metal-nesting-level>0</metal-nesting-level>
+<gpu-state fmt="Active">Active</gpu-state>
+<process id="1" fmt="darkbloom (42)">42</process>
+</row>
+<row>
+<start-time>1100000</start-time>
+<duration>900000</duration>
+<gpu-channel-name fmt="Compute">Compute</gpu-channel-name>
+<duration>200000</duration>
+<metal-nesting-level>0</metal-nesting-level>
+<gpu-state fmt="Active">Active</gpu-state>
+<process ref="1"/>
+</row>
+</node>
+</trace-query-result>
+"""
+
 
 class PhysicalSummaryTests(unittest.TestCase):
     def write_trace(self, directory: Path, name: str, contents: str) -> Path:
@@ -148,6 +182,25 @@ class PhysicalSummaryTests(unittest.TestCase):
 
         self.assertTrue(lines)
         self.assertTrue(all("status=not_exported" in line for line in lines))
+
+    def test_gpu_intervals_measure_submission_gaps_and_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write_trace(
+                Path(temporary),
+                "gpu-intervals.xml",
+                GPU_INTERVAL_XML,
+            )
+            lines = list(
+                summary.summarize_gpu_intervals(summary.TraceTable(path))
+            )
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("process=darkbloom_(42)", lines[0])
+        self.assertIn("rows=2 channels=Compute:2", lines[0])
+        self.assertIn("span_s=0.002000 busy_s=0.001900", lines[0])
+        self.assertIn("duty_fraction=0.950000 idle_gap_s=0.000100", lines[0])
+        self.assertIn("gap_count=1 gap_median_us=100.000", lines[0])
+        self.assertIn("start_latency_median_us=150.000", lines[0])
 
 
 if __name__ == "__main__":

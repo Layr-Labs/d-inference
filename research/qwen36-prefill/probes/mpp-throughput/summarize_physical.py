@@ -127,6 +127,17 @@ def summarize_agx(path: Path) -> Iterable[str]:
             f" samples_ge_90={sum(value >= 90 for value in values)}"
             f" samples_ge_99={sum(value >= 99 for value in values)}"
         )
+        active_values = [value for value in values if value > 0]
+        if active_values:
+            yield (
+                f"AGX_ACTIVE_UTILIZATION phase={phase}"
+                f" samples={len(active_values)}"
+                f" median_percent={fmt(statistics.median(active_values))}"
+                f" p10_percent={fmt(percentile(active_values, 0.10))}"
+                f" p90_percent={fmt(percentile(active_values, 0.90))}"
+                f" min_percent={fmt(min(active_values))}"
+                f" max_percent={fmt(max(active_values))}"
+            )
 
 
 def field_safe(value: str) -> str:
@@ -271,6 +282,78 @@ def summarize_gpu_state(table: TraceTable) -> Iterable[str]:
         )
 
 
+def summarize_gpu_intervals(table: TraceTable) -> Iterable[str]:
+    groups: dict[str, list[tuple[float, float, float, str]]] = {}
+    for row in table.rows:
+        start_ns = number(row.get("start", ("", ""))[0])
+        duration_ns = number(row.get("duration", ("", ""))[0])
+        start_latency_ns = number(row.get("start-latency", ("", ""))[0])
+        depth = number(row.get("event-depth", ("0", ""))[0]) or 0
+        state = row.get("state", ("", ""))[1]
+        if (
+            start_ns is None
+            or duration_ns is None
+            or duration_ns <= 0
+            or depth != 0
+            or state not in {"", "Active"}
+        ):
+            continue
+        process = row.get("process", ("unknown", "unknown"))[1]
+        channel = row.get("channel-name", ("unknown", "unknown"))[1]
+        groups.setdefault(process, []).append(
+            (
+                start_ns * 1e-9,
+                (start_ns + duration_ns) * 1e-9,
+                (start_latency_ns or 0) * 1e-9,
+                channel,
+            )
+        )
+    if not groups:
+        yield "TRACE_GPU_INTERVALS status=unavailable rows=0"
+        return
+
+    for process, intervals in sorted(groups.items()):
+        intervals.sort()
+        merged: list[list[float]] = []
+        for start, end, _, _ in intervals:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        busy_seconds = sum(end - start for start, end in merged)
+        span_seconds = merged[-1][1] - merged[0][0]
+        gaps = [
+            merged[index][0] - merged[index - 1][1]
+            for index in range(1, len(merged))
+        ]
+        start_latencies = sorted(interval[2] for interval in intervals)
+        channel_counts = collections.Counter(interval[3] for interval in intervals)
+        channel_field = ",".join(
+            f"{field_safe(channel)}:{count}"
+            for channel, count in sorted(channel_counts.items())
+        )
+        yield (
+            f"TRACE_GPU_INTERVALS process={field_safe(process)}"
+            f" rows={len(intervals)}"
+            f" channels={channel_field}"
+            f" span_s={fmt(span_seconds, 6)}"
+            f" busy_s={fmt(busy_seconds, 6)}"
+            f" duty_fraction="
+            f"{fmt(busy_seconds / span_seconds if span_seconds else math.nan, 6)}"
+            f" idle_gap_s={fmt(max(0, span_seconds - busy_seconds), 6)}"
+            f" gap_count={len(gaps)}"
+            f" gap_median_us="
+            f"{fmt(statistics.median(gaps) * 1e6 if gaps else 0, 3)}"
+            f" gap_p90_us="
+            f"{fmt(percentile(gaps, 0.90) * 1e6 if gaps else 0, 3)}"
+            f" gap_max_us={fmt(max(gaps) * 1e6 if gaps else 0, 3)}"
+            f" start_latency_median_us="
+            f"{fmt(statistics.median(start_latencies) * 1e6, 3)}"
+            f" start_latency_p90_us="
+            f"{fmt(percentile(start_latencies, 0.90) * 1e6, 3)}"
+        )
+
+
 def summarize_counts(directory: Path) -> Iterable[str]:
     schemas = [
         "graphics-compiler-spill-events",
@@ -328,6 +411,11 @@ def main() -> None:
         arguments.trace_directory / "metal-gpu-state-intervals.xml"
     )
     for line in summarize_gpu_state(gpu_state_table):
+        print(line)
+    gpu_interval_table = TraceTable(
+        arguments.trace_directory / "metal-gpu-intervals.xml"
+    )
+    for line in summarize_gpu_intervals(gpu_interval_table):
         print(line)
     counter_info_table = TraceTable(
         arguments.trace_directory / "gpu-counter-info.xml"

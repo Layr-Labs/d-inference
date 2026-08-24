@@ -6,6 +6,15 @@ import Testing
 @testable import DarkbloomApp
 import ProviderCoreFoundation
 
+private func chatTestResponse(statusCode: Int = 200) -> HTTPURLResponse {
+    HTTPURLResponse(
+        url: URL(string: "http://127.0.0.1:8000/v1")!,
+        statusCode: statusCode,
+        httpVersion: nil,
+        headerFields: nil
+    )!
+}
+
 @Suite("Live chat store streams the local endpoint into the transcript")
 @MainActor
 struct ChatStoreTests {
@@ -24,7 +33,10 @@ struct ChatStoreTests {
         )
     }
 
-    private func makeClient(lines: [String], lineDelay: Duration = .zero) -> LocalEndpointClient {
+    private nonisolated func makeClient(
+        lines: [String],
+        lineDelay: Duration = .zero
+    ) -> LocalEndpointClient {
         LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
@@ -95,7 +107,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), HTTPURLResponse()) },
+            dataTransport: { _ in (Data(), chatTestResponse()) },
             lineTransport: { request in
                 recorder.bodies.append(request.httpBody)
                 let stream = AsyncThrowingStream<String, Error> { $0.yield("data: [DONE]"); $0.finish() }
@@ -125,8 +137,9 @@ struct ChatStoreTests {
 
     @Test("Legacy endpoint identity is rejected before client creation")
     func legacyIdentityDoesNotSendSecrets() async throws {
-        var info = testInfo()
-        info.processIdentity = nil
+        var legacyInfo = testInfo()
+        legacyInfo.processIdentity = nil
+        let info = legacyInfo
         let recorder = ChatSecurityRecorder()
         let store = PreviewChatStore(live: LiveChatConfiguration(
             discoveryReader: { info },
@@ -214,7 +227,7 @@ struct ChatStoreTests {
         let store = PreviewChatStore(live: LiveChatConfiguration(
             discoveryReader: { info },
             modelProvider: { nil },
-            processIdentityReader: identity.read,
+            processIdentityReader: { pid in identity.read(pid) },
             clientFactory: { _ in client }
         ))
 
@@ -244,7 +257,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), HTTPURLResponse()) },
+            dataTransport: { _ in (Data(), chatTestResponse()) },
             lineTransport: { _ in
                 let stream = AsyncThrowingStream<String, Error> { continuation in
                     continuation.yield(#"data: {"choices":[{"delta":{"content":"half"}}]}"#)
@@ -268,7 +281,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), HTTPURLResponse()) },
+            dataTransport: { _ in (Data(), chatTestResponse()) },
             lineTransport: { _ in
                 (AsyncThrowingStream { $0.finish() }, HTTPURLResponse(url: URL(string: "http://127.0.0.1:8000/v1")!, statusCode: 503, httpVersion: nil, headerFields: nil)!)
             }
@@ -307,7 +320,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), HTTPURLResponse()) },
+            dataTransport: { _ in (Data(), chatTestResponse()) },
             lineTransport: { request in
                 let attempt = recorder.record(request.httpBody)
                 let stream = AsyncThrowingStream<String, Error> { continuation in
@@ -398,7 +411,9 @@ struct ChatStoreTests {
             dataTransport: { request in
                 (#"{"data":[]}"#.data(using: .utf8)!, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             },
-            lineTransport: { _ in (AsyncThrowingStream { $0.finish() }, HTTPURLResponse()) }
+            lineTransport: { _ in
+                (AsyncThrowingStream { $0.finish() }, chatTestResponse())
+            }
         )
         let store = makeLiveStore(client: client, modelProvider: { nil })
         let prompt = try #require(store.beginResponse(to: "hi"))

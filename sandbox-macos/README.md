@@ -130,6 +130,10 @@ equal or older generations fail closed instead of reclaiming prior authority.
 Capacity state also binds the canonical runtime storage path, directory inode,
 and device. All pre-v3 state is quarantined because neither complete released
 generation history nor the runtime storage identity can be reconstructed.
+The alpha history admits 4,096 distinct sandbox IDs and then fails closed.
+Resetting that history is safe only during host reprovisioning after the broker
+is stopped, the host is drained, and every VM/artifact on the bound storage
+directory has been destroyed; deleting capacity state alone is unsafe.
 Retries are idempotent only when sandbox generation, VM name, CPU, memory,
 workspace reservation, boot disk, and reserved growth charge match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:

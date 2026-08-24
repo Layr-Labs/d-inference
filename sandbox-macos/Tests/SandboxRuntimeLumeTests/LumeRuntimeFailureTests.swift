@@ -547,6 +547,78 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertTrue(retryResults.isEmpty)
     }
 
+    func testExpiredLeaseReconciliationRecoversCrashAfterDurableFence()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        clock.set(lease.expiresAt)
+        let fenced = try arbiter.fenceExpiredLease(scope: lease.scope)
+
+        let reopenedArbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let reopenedRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: reopenedArbiter
+        )
+        let results = try await reopenedRuntime.reconcileExpiredLeases()
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .released)
+        XCTAssertGreaterThan(
+            results[0].lease.scope.fencingToken,
+            fenced.scope.fencingToken
+        )
+        try await fixture.waitForState("stopped")
+        XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
+    }
+
+    func testExpiredLeaseReconciliationRecoversCrashAfterVerifiedStop()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = LumeTestWallClock(now)
+        let arbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            virtualMachineName: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            expiresAt: now.addingTimeInterval(30)
+        )
+        try fixture.bindOwnership(to: lease.scope)
+        clock.set(lease.expiresAt)
+        let fenced = try arbiter.fenceExpiredLease(scope: lease.scope)
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        try await runtime.stop(
+            scope: fenced.scope,
+            name: fenced.virtualMachineName
+        )
+
+        let reopenedArbiter = try fixture.makeCapacityArbiter(clock: clock)
+        let reopenedRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: reopenedArbiter
+        )
+        let results = try await reopenedRuntime.reconcileExpiredLeases()
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .released)
+        XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
+    }
+
     func testPublicReleaseStopsVirtualMachineBeforeReleasingCapacity()
         async throws
     {

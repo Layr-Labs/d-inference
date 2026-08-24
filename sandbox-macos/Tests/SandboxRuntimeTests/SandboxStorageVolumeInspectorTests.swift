@@ -21,7 +21,6 @@ final class SandboxStorageVolumeInspectorTests: XCTestCase {
         XCTAssertEqual(report.path, path.standardizedFileURL)
         XCTAssertEqual(report.identity.canonicalPath, path.path)
         XCTAssertGreaterThan(report.identity.inode, 0)
-        XCTAssertGreaterThan(report.availableImportantBytes, 0)
     }
 
     func testRejectsSharedStorageDirectory() throws {

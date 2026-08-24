@@ -30,15 +30,15 @@ protocol ProviderMTPAssistantLoading: Sendable {
     ) async throws -> ProviderMTPAssistantHandle
 }
 
-/// The sole production assistant loader. `Gemma4AssistantDraftModel.load`
-/// decodes the assistant's own `config.json`, applies its own per-layer
-/// quantization table, loads its own safetensors, and verifies all parameters.
-struct Gemma4ProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
+/// The sole production assistant loader. Qwen targets accept either a
+/// combined inline assistant or a separately published `qwen3_5_mtp`
+/// artifact; Gemma targets retain their dedicated drafter path.
+struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
     func loadAndBind(
         artifact: SpecDecArtifact,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
-        if artifact.source == .inline {
+        if target is Qwen35TextModel || target is Qwen35Model {
             do {
                 let assistant = try Qwen35InlineMTPAssistant.load(
                     from: artifact.directory, target: target)

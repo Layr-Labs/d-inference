@@ -83,9 +83,33 @@ extension EngineV2VisionPrefill {
         return runs
     }
 
+    /// Pixel-row runs for each temporal processor frame, grouped by video.
+    /// The outer order matches `grids`; the inner order is chronological.
+    static func videoFramePixelRuns(
+        grids: [THW], totalRows: Int
+    ) throws -> [[Range<Int>]] {
+        let videoRuns = try imagePixelRuns(grids: grids, totalRows: totalRows)
+        return try zip(grids, videoRuns).enumerated().map { videoIndex, pair in
+            let (grid, videoRun) = pair
+            guard grid.t > 0, grid.h > 0, grid.w > 0 else {
+                throw EngineV2VisionPrefillError.invalidVisionGrid(
+                    mediaIndex: videoIndex)
+            }
+            let (rowsPerFrame, overflow) = grid.h.multipliedReportingOverflow(by: grid.w)
+            guard !overflow, rowsPerFrame > 0 else {
+                throw EngineV2VisionPrefillError.invalidVisionGrid(
+                    mediaIndex: videoIndex)
+            }
+            return (0 ..< grid.t).map { frameIndex in
+                let start = videoRun.lowerBound + frameIndex * rowsPerFrame
+                return start ..< (start + rowsPerFrame)
+            }
+        }
+    }
+
     /// The N² buffer multiple this wrapper's vision tower will allocate, read
     /// from the model's own config against MLX's kernel-selection rule.
-    static func qwenAttentionHeadFactor(_ wrapper: MLXVLM.Qwen35MoE) -> Int {
+    static func qwenAttentionHeadFactor(_ wrapper: MLXVLM.Qwen35) -> Int {
         let vision = wrapper.config.visionConfiguration
         return VisionTowerBudget.attentionHeadFactor(
             hiddenSize: vision.hiddenSize, numHeads: vision.numHeads)
@@ -99,7 +123,7 @@ extension EngineV2VisionPrefill {
     /// for MLX faults — before the next image's graph is built, so peak device
     /// memory is one image's tower and a fault stops the loop where it happens.
     static func qwenPerImageVisionFeatures(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         pixels: MLXArray,
         grids: [THW],
         towerLimits: VisionTowerBudget.Limits,
@@ -114,6 +138,7 @@ extension EngineV2VisionPrefill {
         var features: [MLXArray] = []
         features.reserveCapacity(grids.count)
         for (index, grid) in grids.enumerated() {
+            try Task.checkCancellation()
             switch VisionTowerBudget.admit(
                 grids: [grid],
                 subject: Self.imageSubject(index: index, of: grids.count),
@@ -149,8 +174,73 @@ extension EngineV2VisionPrefill {
         return features
     }
 
+    /// One `[1, softTokens, textHidden]` embedding per temporal processor
+    /// frame, in video order then frame order. A frame is one temporal patch
+    /// group (`temporalPatchSize` source frames), represented by a `THW(1,h,w)`
+    /// grid and driven through its own tower invocation. This keeps the N²
+    /// attention allocation bounded by the largest frame instead of the sum
+    /// of every frame in the request.
+    static func qwenPerVideoFrameVisionFeatures(
+        wrapper: MLXVLM.Qwen35,
+        pixels: MLXArray,
+        grids: [THW],
+        towerLimits: VisionTowerBudget.Limits,
+        mlxErrors: MLX.ErrorBox
+    ) throws -> [MLXArray] {
+        guard !grids.isEmpty else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+        }
+        let frameRuns = try videoFramePixelRuns(
+            grids: grids, totalRows: pixels.dim(0))
+        let limits = towerLimits.withHeadFactor(qwenAttentionHeadFactor(wrapper))
+        let frameCount = grids.reduce(0) { $0 + max(0, $1.t) }
+
+        var features: [MLXArray] = []
+        features.reserveCapacity(frameCount)
+        var globalFrameIndex = 0
+        for (videoIndex, grid) in grids.enumerated() {
+            let singleGrid = THW(1, grid.h, grid.w)
+            for frameIndex in 0 ..< grid.t {
+                try Task.checkCancellation()
+                switch VisionTowerBudget.admit(
+                    grids: [singleGrid],
+                    subject: videoFrameSubject(
+                        videoIndex: videoIndex, frameIndex: frameIndex,
+                        globalIndex: globalFrameIndex, total: frameCount),
+                    limits: limits)
+                {
+                case .admit:
+                    break
+                case .reject(let reason):
+                    throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+                }
+
+                let single = try wrapper.visionFeatures(
+                    videoPixels: pixels[frameRuns[videoIndex][frameIndex], 0...],
+                    videoGrids: [singleGrid])
+                guard single.ordered.count == 1 else {
+                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+                }
+                let embedding = single.ordered[0].features
+                eval(embedding)
+                try EngineV2VisionPrefill.throwIfMLXFaulted(mlxErrors)
+                features.append(embedding)
+                globalFrameIndex += 1
+            }
+        }
+        return features
+    }
+
     /// Content-free subject for a rejection message ("image 2 of 5").
     static func imageSubject(index: Int, of count: Int) -> String {
         count == 1 ? "this image" : "image \(index + 1) of \(count)"
+    }
+
+    static func videoFrameSubject(
+        videoIndex: Int, frameIndex: Int, globalIndex: Int, total: Int
+    ) -> String {
+        if total == 1 { return "this video frame" }
+        return "video \(videoIndex + 1) frame \(frameIndex + 1) "
+            + "(frame \(globalIndex + 1) of \(total))"
     }
 }

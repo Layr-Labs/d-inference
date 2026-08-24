@@ -315,6 +315,16 @@ struct EngineV2VisionPixelRunTests {
         #expect(runs == [0 ..< 50_176])
     }
 
+    @Test("video grids split into one chronological run per temporal group")
+    func videoFramesSplitExactly() throws {
+        let runs = try EngineV2VisionPrefill.videoFramePixelRuns(
+            grids: [THW(3, 2, 2), THW(2, 1, 3)], totalRows: 18)
+        #expect(runs == [
+            [0 ..< 4, 4 ..< 8, 8 ..< 12],
+            [12 ..< 15, 15 ..< 18],
+        ])
+    }
+
     @Test("grids that under-cover the tensor are refused")
     func underCoverageIsRefused() {
         #expect(throws: EngineV2VisionPrefillError.self) {

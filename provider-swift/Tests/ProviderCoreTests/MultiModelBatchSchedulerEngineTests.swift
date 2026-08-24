@@ -221,6 +221,26 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
+@Test("explicit Qwen controls override reasoning.enabled and preserve history")
+func templateContextForwardsQwenControls() {
+    let request = OpenAIChatCompletionRequest(
+        model: "qwen/qwen3.8-27b",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: true))
+
+    for effort in ["low", "medium", "xhigh"] {
+        let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request,
+            controls: ChatTemplateControls(
+                reasoningEffort: effort,
+                enableThinking: false,
+                preserveThinking: true))
+        #expect(context?["reasoning_effort"] as? String == effort)
+        #expect(context?["enable_thinking"] as? Bool == false)
+        #expect(context?["preserve_thinking"] as? Bool == true)
+    }
+}
+
 // MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`

@@ -275,6 +275,24 @@ struct InboundDecodeTests {
         #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":3}"#) == nil)
     }
 
+    @Test("Qwen template controls are extracted independently")
+    func qwenTemplateControlsExtracted() {
+        let json = #"{"model":"m","messages":[],"reasoning_effort":" xhigh ","enable_thinking":false,"preserve_thinking":true}"#
+        let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
+        #expect(controls.reasoningEffort == "xhigh")
+        #expect(controls.enableThinking == false)
+        #expect(controls.preserveThinking == true)
+    }
+
+    @Test("one malformed template control does not discard the others")
+    func malformedQwenTemplateControlIsIsolated() {
+        let json = #"{"model":"m","messages":[],"reasoning_effort":3,"enable_thinking":true,"preserve_thinking":false}"#
+        let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
+        #expect(controls.reasoningEffort == nil)
+        #expect(controls.enableThinking == true)
+        #expect(controls.preserveThinking == false)
+    }
+
     // MARK: - logprobs / top_logprobs extraction
 
     private func logprobsSpec(_ json: String) -> (topLogprobs: Int?, requested: Bool)? {

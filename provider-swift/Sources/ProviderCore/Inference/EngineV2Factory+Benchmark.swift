@@ -23,7 +23,7 @@ extension EngineV2Factory {
         if model is MLXVLM.Gemma4 {
             return try directServingModel(model: model, isVLM: true)
         }
-        guard model is MLXVLM.Qwen35MoE else {
+        guard model is MLXVLM.Qwen35 else {
             throw EngineV2VLMTextExtractionError.unsupportedWrapper(
                 String(describing: type(of: model)))
         }

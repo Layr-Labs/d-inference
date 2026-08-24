@@ -14,7 +14,7 @@ enum Qwen35TemplateFix {
         if let modelType = context.modelType?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased(),
-            modelType == "qwen3_5_moe"
+            modelType == "qwen3_5" || modelType == "qwen3_5_moe"
         {
             return true
         }
@@ -24,6 +24,8 @@ enum Qwen35TemplateFix {
             || modelId.contains("qwen3_5")
             || modelId.contains("qwen3.6")
             || modelId.contains("qwen3_6")
+            || modelId.contains("qwen3.8")
+            || modelId.contains("qwen3_8")
     }
 
     static func normalizeMessages(

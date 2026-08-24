@@ -11,16 +11,17 @@ import Testing
 @testable import ProviderCore
 
 private func qwenTargetFixtureJSON(
+    modelType: String = "qwen3_5_moe",
     mtpLayers: Int = 1,
     fullAttentionInterval: Int = 1
 ) -> Data {
     Data(
         """
         {
-          "model_type": "qwen3_5_moe",
+          "model_type": "\(modelType)",
           "mtp_num_hidden_layers": \(mtpLayers),
           "text_config": {
-            "model_type": "qwen3_5_moe",
+            "model_type": "qwen3_5_text",
             "hidden_size": 64,
             "num_hidden_layers": 2,
             "intermediate_size": 128,
@@ -39,7 +40,7 @@ private func qwenTargetFixtureJSON(
             "mtp_num_hidden_layers": \(mtpLayers)
           },
           "vision_config": {
-            "model_type": "qwen3_5_moe",
+            "model_type": "\(modelType)",
             "depth": 1,
             "hidden_size": 64,
             "intermediate_size": 128,
@@ -220,20 +221,23 @@ struct QwenVLMTargetExtractionTests {
         #expect(defaultModule.bits == 4)
     }
 
-    @Test("plain Qwen wrapper is refused; only the combined MoE wrapper dispatches")
-    func plainQwenWrapperRefused() throws {
-        let configData = qwenTargetFixtureJSON()
+    @Test("dense Qwen wrapper dispatches to the shared CBv2 target seam")
+    func denseQwenWrapperDispatches() throws {
+        let configData = qwenTargetFixtureJSON(modelType: "qwen3_5")
         let wrapperConfig = try JSONDecoder.json5().decode(
             MLXVLM.Qwen35Configuration.self, from: configData)
         let directory = try qwenTargetFixtureDirectory(configData: configData)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        #expect(throws: EngineV2VLMTextExtractionError.self) {
-            _ = try EngineV2VLMTextExtraction.extractTextModel(
-                from: MLXVLM.Qwen35(wrapperConfig),
-                modelDirectory: directory,
-                environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
-        }
+        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+            from: MLXVLM.Qwen35(wrapperConfig),
+            modelDirectory: directory,
+            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
+
+        #expect(extraction.family == .qwen35Dense)
+        #expect(extraction.servingModel is Qwen35Model)
+        #expect((extraction.servingModel is Qwen35MoEModel) == false)
+        #expect(extraction.parityMaxAbsLogitDiff == nil)
     }
 
     @Test("benchmark resolution uses the same extracted Qwen target")
@@ -252,8 +256,8 @@ struct QwenVLMTargetExtractionTests {
         #expect(serving is Qwen35MoEModel)
     }
 
-    @Test("production factory accepts only the wired Qwen MoE target family")
-    func factoryAcceptanceAndRefusal() throws {
+    @Test("production factory accepts dense and MoE through one Qwen target seam")
+    func factoryAcceptance() throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
         let target = Qwen35MoEModel(config)
@@ -269,13 +273,13 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
         #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
 
-        #expect(throws: EngineV2ProductionError.self) {
-            _ = try EngineV2Factory.prepareProductionBackend(
-                model: Qwen35Model(config),
-                kvBytesCapacity: 1 << 20,
-                maxConcurrentRequests: 2,
-                kvBackend: EngineV2KVBackendSelection.contiguous)
-        }
+        let dense = try EngineV2Factory.prepareProductionBackend(
+            model: Qwen35Model(config),
+            kvBytesCapacity: 1 << 20,
+            maxConcurrentRequests: 2,
+            kvBackend: EngineV2KVBackendSelection.contiguous)
+        #expect(dense.layerKinds == prepared.layerKinds)
+        #expect(dense.modelCapabilities == prepared.modelCapabilities)
     }
 
     @Test("Qwen core capability veto forces paged selection to contiguous before preflight")
@@ -396,8 +400,44 @@ struct QwenVLMTargetExtractionTests {
         #expect(try config.cbv2RecurrentStateSpec().peakBytesPerRequest() == 193_167_360)
     }
 
+    @Test("Qwen3.8 dense topology derives measured KV and recurrent residency")
+    func qwen38DenseSizingFacts() throws {
+        let text: [String: Any] = [
+            "model_type": "qwen3_5_text",
+            "hidden_size": 5_120,
+            "num_hidden_layers": 64,
+            "num_attention_heads": 24,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "linear_num_value_heads": 48,
+            "linear_num_key_heads": 16,
+            "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128,
+            "linear_conv_kernel_dim": 4,
+            "vocab_size": 248_320,
+            "full_attention_interval": 4,
+            "max_position_embeddings": 262_144,
+            "mtp_num_hidden_layers": 1,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: [
+            "model_type": "qwen3_5",
+            "text_config": text,
+        ])
+        let config = try EngineV2VLMTextExtraction.decodeQwenTextConfiguration(
+            configData: data)
+
+        #expect(config.cbv2LayerKinds.count == 16)
+        #expect(
+            SlotSizingSnapshot.fp16KVBytesPerToken(layerKinds: config.cbv2LayerKinds)
+                == 65_536)
+        #expect(try config.cbv2RecurrentStateSpec().fixedBytesPerRequest() == 153_944_064)
+        #expect(try config.cbv2RecurrentStateSpec().peakBytesPerRequest() == 461_832_192)
+    }
+
     @Test("Qwen is advertised after target, vision, MTP, and cleanup canaries pass")
     func allowlistIsOpen() {
+        #expect(EngineV2SupportedModels.isSupported(modelType: "qwen3_5"))
+        #expect(EngineV2SupportedModels.isSupported(modelType: " QWEN3_5 "))
         #expect(EngineV2SupportedModels.isSupported(modelType: "qwen3_5_moe"))
         #expect(EngineV2SupportedModels.isSupported(modelType: " QWEN3_5_MOE "))
     }

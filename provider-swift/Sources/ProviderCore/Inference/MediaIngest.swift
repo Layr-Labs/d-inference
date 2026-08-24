@@ -263,6 +263,7 @@ public enum MediaIngest {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxImagesPerRequest: Int = Self.maxImagesPerRequest,
@@ -298,7 +299,9 @@ public enum MediaIngest {
         return UserInput(
             chat: chatMessages,
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request, reasoningEffort: reasoningEffort))
+                for: request,
+                controls: templateControls
+                    ?? ChatTemplateControls(reasoningEffort: reasoningEffort)))
     }
 
 

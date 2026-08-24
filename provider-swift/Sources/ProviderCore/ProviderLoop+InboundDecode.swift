@@ -73,12 +73,29 @@ extension ProviderLoop {
     /// differ) is enforced by each model's chat template, not here, so we
     /// stay format-agnostic rather than hardcoding a per-model allowlist.
     internal static func extractReasoningEffort(from data: Data) -> String? {
-        struct Probe: Decodable { let reasoning_effort: String? }
-        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
-              let raw = probe.reasoning_effort
-        else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        extractChatTemplateControls(from: data).reasoningEffort
+    }
+
+    /// Qwen3.8 template controls that are intentionally not protocol fields.
+    /// Unknown/malformed values are ignored independently so one bad optional
+    /// control never discards another valid one.
+    internal static func extractChatTemplateControls(
+        from data: Data
+    ) -> ChatTemplateControls {
+        struct EffortProbe: Decodable { let reasoning_effort: String? }
+        struct ThinkingProbe: Decodable { let enable_thinking: Bool? }
+        struct PreserveProbe: Decodable { let preserve_thinking: Bool? }
+        let decoder = JSONDecoder()
+        let rawEffort = (try? decoder.decode(EffortProbe.self, from: data))?
+            .reasoning_effort
+        let effort = rawEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ChatTemplateControls(
+            reasoningEffort: effort?.isEmpty == false ? effort : nil,
+            enableThinking: (try? decoder.decode(ThinkingProbe.self, from: data))?
+                .enable_thinking,
+            preserveThinking: (try? decoder.decode(PreserveProbe.self, from: data))?
+                .preserve_thinking)
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -134,11 +151,24 @@ extension ProviderLoop {
         modelType: String?,
         reasoningEffort: String?
     ) -> Int {
+        promptTokenFloor(
+            request: request,
+            tokenizer: tokenizer,
+            modelType: modelType,
+            templateControls: ChatTemplateControls(reasoningEffort: reasoningEffort))
+    }
+
+    internal static func promptTokenFloor(
+        request: OpenAIChatCompletionRequest,
+        tokenizer: TokenizerHandle,
+        modelType: String?,
+        templateControls: ChatTemplateControls
+    ) -> Int {
         guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request, reasoningEffort: reasoningEffort)
+            for: request, controls: templateControls)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

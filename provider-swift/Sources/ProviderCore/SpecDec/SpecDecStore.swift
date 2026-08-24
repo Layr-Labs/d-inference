@@ -406,6 +406,21 @@ enum SpecDecStore {
                 inlineIndexSHA256: indexDigest))
     }
 
+    /// Cheap discriminator used before inline inspection. Ordinary Qwen
+    /// targets can pair with separately published MTP artifacts, so absence
+    /// of `mtplx_mtp.included=true` must fall through to the catalog resolver
+    /// without being logged as an invalid inline payload.
+    static func declaresInlineArtifact(directory: URL) -> Bool {
+        let configURL = directory.standardizedFileURL
+            .appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            data.count <= SpecDecLimits.maximumConfigBytes,
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let inline = root["mtplx_mtp"] as? [String: Any]
+        else { return false }
+        return inline["included"] as? Bool == true
+    }
+
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {

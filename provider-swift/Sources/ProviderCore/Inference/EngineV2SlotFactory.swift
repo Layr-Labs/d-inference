@@ -267,7 +267,7 @@ enum EngineV2SlotFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
-        assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
+        assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {

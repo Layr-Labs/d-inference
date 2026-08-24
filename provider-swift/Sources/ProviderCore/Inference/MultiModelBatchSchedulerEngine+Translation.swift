@@ -12,20 +12,51 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
+/// Template-only controls recovered from the sealed OpenAI body. The
+/// upstream request type does not model these top-level fields, but Qwen3.8's
+/// published template consumes all three.
+public struct ChatTemplateControls: Sendable, Equatable {
+    public let reasoningEffort: String?
+    public let enableThinking: Bool?
+    public let preserveThinking: Bool?
+
+    public init(
+        reasoningEffort: String? = nil,
+        enableThinking: Bool? = nil,
+        preserveThinking: Bool? = nil
+    ) {
+        self.reasoningEffort = reasoningEffort
+        self.enableThinking = enableThinking
+        self.preserveThinking = preserveThinking
+    }
+}
+
 extension MultiModelBatchSchedulerEngine {
+
+    static func templateAdditionalContext(
+        for request: OpenAIChatCompletionRequest,
+        controls: ChatTemplateControls
+    ) -> [String: any Sendable]? {
+        var context: [String: any Sendable] = [:]
+        if let reasoningEffort = controls.reasoningEffort {
+            context["reasoning_effort"] = reasoningEffort
+        }
+        if let reasoningEnabled = controls.enableThinking ?? request.reasoning?.enabled {
+            context["enable_thinking"] = reasoningEnabled
+        }
+        if let preserveThinking = controls.preserveThinking {
+            context["preserve_thinking"] = preserveThinking
+        }
+        return context.isEmpty ? nil : context
+    }
 
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
         reasoningEffort: String?
     ) -> [String: any Sendable]? {
-        var context: [String: any Sendable] = [:]
-        if let reasoningEffort {
-            context["reasoning_effort"] = reasoningEffort
-        }
-        if let reasoningEnabled = request.reasoning?.enabled {
-            context["enable_thinking"] = reasoningEnabled
-        }
-        return context.isEmpty ? nil : context
+        templateAdditionalContext(
+            for: request,
+            controls: ChatTemplateControls(reasoningEffort: reasoningEffort))
     }
 
     /// Translate an upstream `OpenAIChatCompletionRequest` into the

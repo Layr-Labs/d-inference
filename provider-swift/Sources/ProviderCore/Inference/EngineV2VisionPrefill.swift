@@ -286,14 +286,16 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil
+        reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls? = nil
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: reasoningEffort)
+            from: request, reasoningEffort: reasoningEffort,
+            templateControls: templateControls)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
@@ -367,7 +369,7 @@ public enum EngineV2VisionPrefill {
         // token array only.
         let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
 
-        if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
+        if let wrapper = ctx.model as? MLXVLM.Qwen35 {
             return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
@@ -377,60 +379,87 @@ public enum EngineV2VisionPrefill {
                 String(describing: type(of: ctx.model)))
         }
         return try buildGemmaSubmission(
-            wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens)
+            wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
+            mlxErrors: mlxErrors)
     }
 
     /// Qwen3-VL: causal visual tokens, M-RoPE position state, and a vision
-    /// tower driven ONE IMAGE AT A TIME (see `qwenPerImageVisionFeatures`).
+    /// tower driven one image or temporal frame at a time.
     private static func buildQwenSubmission(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         lmInput: LMInput,
         promptTokens: [Int],
         towerLimits: VisionTowerBudget.Limits,
         mlxErrors: MLX.ErrorBox
     ) throws -> PreparedSubmission {
-        // Video remains fail-closed until a real processor/output
-        // representation canary pins temporal packing end-to-end.
-        guard lmInput.video == nil else {
-            throw EngineV2VisionPrefillError.unsupportedMedia(
-                "Qwen35MoE video media is not production-proven")
+        var imageFeatures: [MLXArray] = []
+        var imageGrids: [THW] = []
+        if let image = lmInput.image {
+            guard let grids = image.frames, !grids.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+            }
+            imageGrids = grids
+            imageFeatures = try qwenPerImageVisionFeatures(
+                wrapper: wrapper, pixels: image.pixels, grids: grids,
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
-        // `noProcessedMedia` means "the processor consumed no media", which
-        // maps to a deterministic 400. Pixels WITHOUT grids is a different
-        // thing — the processor produced something the seam cannot describe —
-        // and must keep its retriable refusal rather than tell the caller
-        // their media was attached to the wrong role.
-        guard let image = lmInput.image else {
+
+        var videoFeatures: [MLXArray] = []
+        var videoGrids: [THW] = []
+        if let video = lmInput.video {
+            guard let grids = video.frames, !grids.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+            }
+            videoGrids = grids
+            videoFeatures = try qwenPerVideoFrameVisionFeatures(
+                wrapper: wrapper, pixels: video.pixels, grids: grids,
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
+        }
+        guard !imageFeatures.isEmpty || !videoFeatures.isEmpty else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
-        guard let grids = image.frames, !grids.isEmpty else {
-            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
-        }
-        let imageFeatures = try qwenPerImageVisionFeatures(
-            wrapper: wrapper, pixels: image.pixels, grids: grids,
-            towerLimits: towerLimits, mlxErrors: mlxErrors)
+
         let carved = try carveSpans(
             tokens: promptTokens,
-            imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+            imagePlaceholderId: imageFeatures.isEmpty ? nil : wrapper.imagePlaceholderTokenId,
             imageSpanLengths: imageFeatures.map { $0.dim(1) },
-            videoPlaceholderId: nil,
-            videoSpanLengths: [])
+            videoPlaceholderId: videoFeatures.isEmpty ? nil : wrapper.videoPlaceholderTokenId,
+            videoSpanLengths: videoFeatures.map { $0.dim(1) })
+
+        var embeddings: [MLXArray] = []
+        embeddings.reserveCapacity(carved.count)
+        var imageCursor = 0
+        var videoCursor = 0
+        for entry in carved {
+            switch entry.kind {
+            case .image:
+                embeddings.append(imageFeatures[imageCursor])
+                imageCursor += 1
+            case .video:
+                embeddings.append(videoFeatures[videoCursor])
+                videoCursor += 1
+            }
+        }
+
         let position = try wrapper.positionResult(
             tokens: lmInput.text.tokens,
-            imageGrids: grids,
+            imageGrids: imageGrids,
+            videoGrids: videoGrids,
             attentionMask: lmInput.text.mask)
         // The features are already materialized per image; only the position
         // ids are still lazy here.
         eval(position.promptPositionIds)
+        try throwIfMLXFaulted(mlxErrors)
         return PreparedSubmission(
             promptTokens: promptTokens,
             spans: carved.map(\.span),
-            embeddings: imageFeatures,
+            embeddings: embeddings,
             attention: .causal,
             positionState: CBv2PositionState(
                 promptPositionIds: position.promptPositionIds,
                 decodeDeltas: position.decodeState.deltas),
-            mediaKind: .image)
+            mediaKind: lmInput.video == nil
+                ? .image : (lmInput.image == nil ? .video : .mixed))
     }
 
     /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
@@ -439,7 +468,8 @@ public enum EngineV2VisionPrefill {
     private static func buildGemmaSubmission(
         wrapper: MLXVLM.Gemma4,
         lmInput: LMInput,
-        promptTokens: [Int]
+        promptTokens: [Int],
+        mlxErrors: MLX.ErrorBox
     ) throws -> PreparedSubmission {
         // Vision tower + multimodal projector — the SAME arrays the
         // wrapper's own `prepare` scatters: one per image, one per
@@ -507,6 +537,7 @@ public enum EngineV2VisionPrefill {
         // thread (where the fused tower graph would stall every
         // co-batched request's decode step for the duration).
         eval(embeddings)
+        try throwIfMLXFaulted(mlxErrors)
         return PreparedSubmission(
             promptTokens: promptTokens,
             spans: carved.map(\.span),
@@ -740,12 +771,14 @@ public enum EngineV2VisionPrefill {
 /// preparer so the full routing seam is exercisable without model weights.
 public struct EngineV2VisionPlumbing: Sendable {
     let prepare:
-        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?) async throws
+        @Sendable (ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls) async throws
             -> EngineV2VisionPrefill.PreparedSubmission
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?)
+        prepare: @escaping @Sendable (
+            ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls
+        )
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {
@@ -754,9 +787,10 @@ public struct EngineV2VisionPlumbing: Sendable {
     }
 
     static let production = EngineV2VisionPlumbing(
-        prepare: { container, request, reasoningEffort in
+        prepare: { container, request, templateControls in
             try await EngineV2VisionPrefill.prepare(
-                container: container, request: request, reasoningEffort: reasoningEffort)
+                container: container, request: request,
+                templateControls: templateControls)
         },
         emitTelemetry: { TelemetryClient.shared.emit($0) }
     )

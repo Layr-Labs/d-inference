@@ -76,7 +76,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// at its built-in default. We do not validate the value here — the
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
-    private let reasoningEffort: String?
+    private let templateControls: ChatTemplateControls
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -118,6 +118,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -130,7 +131,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = reserveModel
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = reasoningEffort
+        self.templateControls = templateControls
+            ?? ChatTemplateControls(reasoningEffort: reasoningEffort)
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -169,7 +171,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = { _ in }
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = nil
+        self.templateControls = ChatTemplateControls()
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -359,7 +361,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, reasoningEffort)
+                        container, visionRequest, templateControls)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -516,7 +518,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                templateControls: templateControls)
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",

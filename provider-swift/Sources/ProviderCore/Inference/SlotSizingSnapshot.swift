@@ -134,9 +134,9 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 // Direct ownership makes the loaded tower engine truth with
                 // no config re-decode or second topology that can drift.
                 rate = fp16KVBytesPerToken(layerKinds: gemma.textModel.cbv2LayerKinds)
-            case let qwen as Qwen35MoEModel:
+            case let qwen as Qwen35Model:
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
-            case is MLXVLM.Qwen35MoE:
+            case is MLXVLM.Qwen35:
                 return ModuleFacts(
                     bytes: bytes,
                     moduleKVRate: nil,

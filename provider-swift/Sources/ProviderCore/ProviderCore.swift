@@ -240,5 +240,9 @@ public enum ProviderCore {
     // 0.8.10 passes retained Gemma latch variables before exec in installer,
     // self-update, and paged-preflight runtime-smoke children so eager MLX
     // initialization cannot latch safe R1 off before validation runs.
-    public static let version = "0.8.10"
+    // 0.8.11 adds the dense Qwen3.8-27B VLM runtime: shared Qwen3.5 CBv2
+    // wiring, bounded per-frame video prefill, request template controls, and
+    // separate qwen3_5_mtp artifact loading. Catalog publication remains a
+    // separately approved operation after hardware validation.
+    public static let version = "0.8.11"
 }

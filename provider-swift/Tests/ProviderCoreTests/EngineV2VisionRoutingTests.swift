@@ -1080,8 +1080,8 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, templateControls in
+                effort.set(templateControls.reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = makeRoutingEngine(

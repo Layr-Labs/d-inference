@@ -47,11 +47,26 @@ struct ProductSurfaceHonestyTests {
             text: "Hello",
             isPreview: true
         )
+        let userMessage = LocalChatMessage(role: .user, text: "Hello")
 
         #expect(ChatPresentation.sendLabel(isLive: true) == "Send message")
         #expect(ChatPresentation.stopLabel(isLive: true) == "Stop response")
-        #expect(ChatPresentation.messageLabel(liveResponse) == "Darkbloom response")
-        #expect(ChatPresentation.messageLabel(previewResponse) == "Simulated response")
+        #expect(
+            ChatPresentation.messageLabel(liveResponse, isLive: true)
+                == "Darkbloom response"
+        )
+        #expect(
+            ChatPresentation.messageLabel(previewResponse, isLive: false)
+                == "Simulated response"
+        )
+        #expect(
+            ChatPresentation.messageLabel(userMessage, isLive: true)
+                == "Your message"
+        )
+        #expect(
+            ChatPresentation.messageLabel(userMessage, isLive: false)
+                == "Your preview message"
+        )
     }
 
     @Test("Unwired live actions are hidden or demoted to guidance")

@@ -122,7 +122,7 @@ struct PrivateChatView: View {
             ScrollView {
                 LazyVStack(spacing: 22) {
                     ForEach(store.messages) { message in
-                        ChatMessageView(message: message)
+                        ChatMessageView(message: message, isLive: store.isLive)
                             .id(message.id)
                     }
 

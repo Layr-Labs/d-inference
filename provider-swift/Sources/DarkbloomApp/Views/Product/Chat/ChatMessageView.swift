@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ChatMessageView: View {
     let message: LocalChatMessage
+    let isLive: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -43,7 +44,7 @@ struct ChatMessageView: View {
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(ChatPresentation.messageLabel(message))
+        .accessibilityLabel(ChatPresentation.messageLabel(message, isLive: isLive))
         .accessibilityValue(message.text)
     }
 }

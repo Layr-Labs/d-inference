@@ -35,6 +35,7 @@ struct ProviderTrustSnapshot: Codable, Equatable, Sendable {
 }
 
 enum ProviderAvailabilityState: String, Codable, Sendable {
+    case unknown
     case alwaysAvailable = "always-available"
     case scheduledActive = "scheduled-active"
     case scheduledOff = "scheduled-off"

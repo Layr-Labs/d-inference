@@ -100,6 +100,21 @@ final class AppFlowStore {
         phase = .welcome
     }
 
+    func applyBootstrapEvidence(_ evidence: AppFlowBootstrapEvidence) {
+        guard persistenceEnabled,
+              phase == .welcome,
+              !hasCompletedNetworkOnboarding,
+              resumableOnboardingDraft == nil,
+              evidence.canOpenProductWithoutOnboarding
+        else {
+            return
+        }
+
+        preferences.hasCompletedNetworkOnboarding = true
+        hasCompletedNetworkOnboarding = true
+        phase = .product
+    }
+
     @discardableResult
     func completeOnboarding(
         opening destination: ProductDestination = .overview

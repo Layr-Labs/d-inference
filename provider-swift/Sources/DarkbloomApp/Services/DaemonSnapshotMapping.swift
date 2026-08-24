@@ -11,6 +11,7 @@ enum DaemonSnapshotMapping {
     struct Inputs {
         var state: DaemonState?
         var processIsAlive: Bool
+        var serviceIsInstalled: Bool
         var localEndpoint: LocalEndpointInfo?
         var now: Date
         var providerName: String
@@ -18,12 +19,14 @@ enum DaemonSnapshotMapping {
         init(
             state: DaemonState?,
             processIsAlive: Bool,
+            serviceIsInstalled: Bool = true,
             localEndpoint: LocalEndpointInfo?,
             now: Date = .now,
             providerName: String = "This Mac"
         ) {
             self.state = state
             self.processIsAlive = processIsAlive
+            self.serviceIsInstalled = serviceIsInstalled
             self.localEndpoint = localEndpoint
             self.now = now
             self.providerName = providerName
@@ -43,9 +46,10 @@ enum DaemonSnapshotMapping {
         let epochNow = now.timeIntervalSince1970
         let state = inputs.state
         let isRunning = state != nil && inputs.processIsAlive
-        let isFresh = state.map { !$0.isStale(now: epochNow) } ?? false
 
         let runState = resolveRunState(inputs: inputs)
+        let isFresh = (state.map { !$0.isStale(now: epochNow) } ?? false)
+            && runState != .stale
 
         // Both timestamps track the SOURCE file, not the sampling clock. The
         // service polls on a fixed tick and publishes on Equatable change —
@@ -90,16 +94,40 @@ enum DaemonSnapshotMapping {
 
     // MARK: - Pieces
 
+    private enum ScheduleState {
+        case unreported
+        case always
+        case active(DaemonState.SchedulePosture)
+        case off(DaemonState.SchedulePosture)
+        case expired
+        case unknown
+    }
+
     private static func resolveRunState(inputs: Inputs) -> ProviderRunState {
         guard let state = inputs.state else {
             return .paused
         }
-        if scheduleIsCurrentlyOff(state.schedule, state: state, now: inputs.now.timeIntervalSince1970) {
-            return .scheduledOff
+        let now = inputs.now.timeIntervalSince1970
+        let scheduleState = classifySchedule(state.schedule, state: state, now: now)
+
+        guard inputs.processIsAlive else {
+            if inputs.serviceIsInstalled {
+                switch scheduleState {
+                case .off: return .scheduledOff
+                case .expired: return .stale
+                case .unreported, .always, .active, .unknown: break
+                }
+            }
+            return .paused
         }
-        guard inputs.processIsAlive else { return .paused }
-        if state.isStale(now: inputs.now.timeIntervalSince1970) {
+        if state.isStale(now: now) {
             return .stale
+        }
+        if case .expired = scheduleState {
+            return .stale
+        }
+        if case .off = scheduleState {
+            return .scheduledOff
         }
         if state.inferenceActive {
             return .serving
@@ -139,21 +167,26 @@ enum DaemonSnapshotMapping {
         let nextChange = schedule.nextChangeAtEpoch.map {
             Date(timeIntervalSince1970: $0)
         }
-        switch schedule.mode.lowercased() {
-        case "scheduled-active":
+        switch classifySchedule(schedule, state: state, now: now) {
+        case .active:
             return ProviderAvailabilitySnapshot(
                 state: .scheduledActive,
                 summary: schedule.summary,
                 nextChangeAt: nextChange
             )
-        case "scheduled-off"
-            where scheduleIsCurrentlyOff(schedule, state: state, now: now):
+        case .off:
             return ProviderAvailabilitySnapshot(
                 state: .scheduledOff,
                 summary: "Outside scheduled hours · \(schedule.summary)",
                 nextChangeAt: nextChange
             )
-        default:
+        case .expired, .unknown:
+            return ProviderAvailabilitySnapshot(
+                state: .unknown,
+                summary: "Schedule state is waiting for a fresh provider update",
+                nextChangeAt: nil
+            )
+        case .always, .unreported:
             return ProviderAvailabilitySnapshot(
                 state: .alwaysAvailable,
                 summary: "Available whenever Darkbloom is running",
@@ -162,14 +195,35 @@ enum DaemonSnapshotMapping {
         }
     }
 
-    private static func scheduleIsCurrentlyOff(
+    private static func classifySchedule(
         _ schedule: DaemonState.SchedulePosture?,
         state: DaemonState,
         now: TimeInterval
-    ) -> Bool {
-        guard let schedule, schedule.mode.lowercased() == "scheduled-off" else {
-            return false
+    ) -> ScheduleState {
+        guard let schedule else { return .unreported }
+        switch schedule.mode.lowercased() {
+        case "always":
+            return .always
+        case "scheduled-active":
+            guard scheduleBoundaryIsCurrent(schedule, state: state, now: now) else {
+                return .expired
+            }
+            return .active(schedule)
+        case "scheduled-off":
+            guard scheduleBoundaryIsCurrent(schedule, state: state, now: now) else {
+                return .expired
+            }
+            return .off(schedule)
+        default:
+            return .unknown
         }
+    }
+
+    private static func scheduleBoundaryIsCurrent(
+        _ schedule: DaemonState.SchedulePosture,
+        state: DaemonState,
+        now: TimeInterval
+    ) -> Bool {
         if let nextChange = schedule.nextChangeAtEpoch {
             return now < nextChange
         }
@@ -186,14 +240,10 @@ enum DaemonSnapshotMapping {
                 updatedAt: nil
             )
         }
-        let status = trust.status.lowercased()
-        let state: ProviderTrustState
-        if failingTrustStatuses.contains(status) {
-            state = .failed
-        } else if status == "verified" || trust.trustLevel == "hardware" || trust.trustLevel == "mda_verified" {
-            state = .verified
-        } else {
-            state = .pending
+        let state: ProviderTrustState = switch OnboardingTrustGating.verdict(for: trust) {
+        case .verified: .verified
+        case .refused, .offline: .failed
+        case .pending: .pending
         }
         return ProviderTrustSnapshot(
             state: state,
@@ -221,7 +271,7 @@ enum DaemonSnapshotMapping {
                 severity: .warning,
                 title: "A model failed to load",
                 detail: "\(loadError.model): \(loadError.message)",
-                recoveryTitle: "Restart Darkbloom"
+                recoveryTitle: "Review Mac"
             )
         }
         return nil

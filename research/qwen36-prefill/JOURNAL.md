@@ -544,6 +544,18 @@ The 2.5× objective is reached through correct KV+GDN construction, not a
 faster wrong kernel. Distinct cold prompts remain an active target;
 partial durable-prefix reuse is next. See `notes/068`.
 
+## 2026-08-24T13:36Z — 8K reuse medians locked
+
+Three-run medians:
+
+- warm exact B1/B2/B4: **184.4× / 304.1× / 419.3×**;
+- cold B4 identical fork: **3.357×**;
+- cold B4 90% common fork: **2.628×**;
+- cold B4 75% common fork: 2.047×.
+
+All state construction remains exact and request-owned. The measured
+profiles clear 2.5× with substantial margin.
+
 ## 2026-08-24 — durable exact boundaries generalized
 
 The default-off exact Qwen cache now snapshots every finalized whole-block

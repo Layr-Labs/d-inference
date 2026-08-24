@@ -1,0 +1,5487 @@
+{
+  "benchmark" : "qwen-prefix-reuse",
+  "configuration" : {
+    "commonPrefixBatchSize" : 4,
+    "commonPrefixFractions" : [
+      0.25,
+      0.5,
+      0.75,
+      0.9
+    ],
+    "decodeTokens" : 2,
+    "donationTimeoutMs" : 10000,
+    "generationPolicy" : "greedy-fixed-length-no-stop-tokens",
+    "identicalBatchSizes" : [
+      1,
+      2,
+      4
+    ],
+    "iterations" : 3,
+    "promptTokens" : 8192
+  },
+  "corpus" : {
+    "id" : "darkbloom-qwen-prefix-natural",
+    "license" : "CC0-1.0",
+    "path" : "/Users/gaj/work/d-inference/provider-swift/Benchmarks/QwenPrefixReuse/qwen-prefix-natural-v1.json",
+    "provenance" : "Written for Darkbloom in August 2026; no external text or generated model output was copied.",
+    "sha256" : "f49f82b2e19724d7535b4f7e06f06b159887f3fe48f4ae6ecb2599ab87d724f1",
+    "suffixCount" : 8,
+    "version" : "v1"
+  },
+  "createdAtUTC" : "2026-08-24T12:23:05.866Z",
+  "engine" : {
+    "cacheSaltScope" : "unique per scenario iteration",
+    "capabilityStrategy" : "direct",
+    "capabilitySupported" : true,
+    "factory" : "EngineV2Factory.makeServingBuild",
+    "instanceCount" : 1,
+    "kvBackend" : {
+      "resolved" : [
+        "contiguous"
+      ],
+      "selection" : "contiguous"
+    },
+    "kvBytesCapacity" : 77910038512,
+    "maxConcurrentRequests" : 4,
+    "policyEnvironment" : {
+
+    },
+    "prefixCacheBudgetBytes" : 19477509628,
+    "prefixCacheImplementation" : "ExactPrefixCacheV2",
+    "prefixCacheMatchPolicy" : "exact-full-prompt",
+    "prefixCacheRequested" : true,
+    "replayBoundTokens" : 0,
+    "warmupPerformed" : true
+  },
+  "hardware" : {
+    "chipName" : "Apple M3 Max",
+    "gpuCores" : 40,
+    "machineModel" : "Mac15,9",
+    "memoryGB" : 128
+  },
+  "model" : {
+    "architecture" : "Qwen3_5MoeForConditionalGeneration",
+    "artifactSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "id" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+    "maximumContextTokens" : 262144,
+    "modelType" : "qwen3_5_moe",
+    "path" : "/Users/gaj/.cache/huggingface/hub/models--qwen3.6-35b-a3b-vl-mtp-mxfp8/snapshots/local"
+  },
+  "scenarios" : [
+    {
+      "batchSize" : 1,
+      "constructedCommonPrefixFraction" : 1,
+      "constructedCommonPrefixTokens" : 8192,
+      "id" : "identical-b1",
+      "kind" : "identical",
+      "requestedCommonPrefixFraction" : 1,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 1,
+            "hitRate" : 0.5,
+            "missCount" : 1,
+            "missRate" : 0.5,
+            "requestCount" : 2,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.568542,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725761,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5294.617458,
+              "ttftMs" : 5283.098583
+            },
+            "submitToCacheReadyMs" : 5283.048916
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 1
+            },
+            "firstTokenMakespanMs" : 5301.574833,
+            "makespanMs" : 5312.666583,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725760,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 5312.666583,
+                "ttftMs" : 5301.574833
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 1,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 16.884125,
+            "makespanMs" : 28.975958,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725762,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 28.975958,
+                "ttftMs" : 16.884125
+              }
+            ],
+            "totalSavedPrefillTokens" : 8192,
+            "totalStateBytesCloned" : 232657920
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 1,
+            "hitRate" : 0.5,
+            "missCount" : 1,
+            "missRate" : 0.5,
+            "requestCount" : 2,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.349833,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725864,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5347.241916,
+              "ttftMs" : 5335.953875
+            },
+            "submitToCacheReadyMs" : 5335.892083
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 1
+            },
+            "firstTokenMakespanMs" : 5361.343583,
+            "makespanMs" : 5372.465625,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725863,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 5372.465625,
+                "ttftMs" : 5361.343583
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 1,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 16.457167,
+            "makespanMs" : 27.360834,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725865,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 27.360834,
+                "ttftMs" : 16.457167
+              }
+            ],
+            "totalSavedPrefillTokens" : 8192,
+            "totalStateBytesCloned" : 232657920
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 1,
+            "hitRate" : 0.5,
+            "missCount" : 1,
+            "missRate" : 0.5,
+            "requestCount" : 2,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.663709,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725912,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5347.95725,
+              "ttftMs" : 5336.347833
+            },
+            "submitToCacheReadyMs" : 5336.293541
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 1
+            },
+            "firstTokenMakespanMs" : 5332.490708,
+            "makespanMs" : 5344.19525,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725911,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 5344.19525,
+                "ttftMs" : 5332.490708
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 1,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 1,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 17.032375,
+            "makespanMs" : 29.252875,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725913,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 29.252875,
+                "ttftMs" : 17.032375
+              }
+            ],
+            "totalSavedPrefillTokens" : 8192,
+            "totalStateBytesCloned" : 232657920
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "harbor-log"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 3,
+          "hitRate" : 0.5,
+          "missCount" : 3,
+          "missRate" : 0.5,
+          "requestCount" : 6,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 3,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5347.241916,
+        "medianColdMakespanMs" : 5344.19525,
+        "medianSubmitToCacheReadyMs" : 5335.892083,
+        "medianWarmMakespanMs" : 28.975958,
+        "totalSavedPrefillTokens" : 24576,
+        "totalStateBytesCloned" : 697973760,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 3,
+          "hitRate" : 1,
+          "missCount" : 0,
+          "missRate" : 0,
+          "requestCount" : 3,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 2,
+      "constructedCommonPrefixFraction" : 1,
+      "constructedCommonPrefixTokens" : 8192,
+      "id" : "identical-b2",
+      "kind" : "identical",
+      "requestedCommonPrefixFraction" : 1,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 2,
+            "hitRate" : 0.6666666666666666,
+            "missCount" : 1,
+            "missRate" : 0.3333333333333333,
+            "requestCount" : 3,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.318458,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725765,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5337.282542,
+              "ttftMs" : 5325.023792
+            },
+            "submitToCacheReadyMs" : 5324.964084
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 2
+            },
+            "firstTokenMakespanMs" : 10956.329291,
+            "makespanMs" : 10970.156791,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725763,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10970.155541,
+                "ttftMs" : 10956.32925
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725764,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10970.154791,
+                "ttftMs" : 10956.327291
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 1
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 2,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20.574792,
+            "makespanMs" : 36.346167,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725766,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 36.346167,
+                "ttftMs" : 20.574792
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725767,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 36.34275,
+                "ttftMs" : 20.569208
+              }
+            ],
+            "totalSavedPrefillTokens" : 16384,
+            "totalStateBytesCloned" : 465315840
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 2,
+            "hitRate" : 0.6666666666666666,
+            "missCount" : 1,
+            "missRate" : 0.3333333333333333,
+            "requestCount" : 3,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.334375,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725815,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5322.748583,
+              "ttftMs" : 5311.473958
+            },
+            "submitToCacheReadyMs" : 5311.414208
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 2
+            },
+            "firstTokenMakespanMs" : 10975.212833,
+            "makespanMs" : 10989.197542,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725813,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10989.187125,
+                "ttftMs" : 10975.212625
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725814,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10989.197542,
+                "ttftMs" : 10975.212833
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 1
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 2,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 19.414291,
+            "makespanMs" : 34.694833,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725816,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 34.694833,
+                "ttftMs" : 19.414291
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725817,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 34.674166,
+                "ttftMs" : 19.401458
+              }
+            ],
+            "totalSavedPrefillTokens" : 16384,
+            "totalStateBytesCloned" : 465315840
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 2,
+            "hitRate" : 0.6666666666666666,
+            "missCount" : 1,
+            "missRate" : 0.3333333333333333,
+            "requestCount" : 3,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.338208,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725916,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5339.395125,
+              "ttftMs" : 5327.111542
+            },
+            "submitToCacheReadyMs" : 5327.056917
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 2
+            },
+            "firstTokenMakespanMs" : 10985.938875,
+            "makespanMs" : 10999.8755,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725914,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10999.874625,
+                "ttftMs" : 10985.938
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725915,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "b68708def085bdf1",
+                "tokenIDs" : [
+                  11,
+                  8472
+                ],
+                "totalTimeMs" : 10999.869208,
+                "ttftMs" : 10985.938708
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : false,
+              "row" : 1
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 2,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 2,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20.10625,
+            "makespanMs" : 36.140833,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725917,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 36.134875,
+                "ttftMs" : 20.103291
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725918,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 36.140708,
+                "ttftMs" : 20.106125
+              }
+            ],
+            "totalSavedPrefillTokens" : 16384,
+            "totalStateBytesCloned" : 465315840
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "harbor-log",
+        "harbor-log"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 6,
+          "hitRate" : 0.6666666666666666,
+          "missCount" : 3,
+          "missRate" : 0.3333333333333333,
+          "requestCount" : 9,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 6,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 0,
+        "medianCacheConstructionRequestMs" : 5337.282542,
+        "medianColdMakespanMs" : 10989.197542,
+        "medianSubmitToCacheReadyMs" : 5324.964084,
+        "medianWarmMakespanMs" : 36.140833,
+        "totalSavedPrefillTokens" : 49152,
+        "totalStateBytesCloned" : 1395947520,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 6,
+          "hitRate" : 1,
+          "missCount" : 0,
+          "missRate" : 0,
+          "requestCount" : 6,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 4,
+      "constructedCommonPrefixFraction" : 1,
+      "constructedCommonPrefixTokens" : 8192,
+      "id" : "identical-b4",
+      "kind" : "identical",
+      "requestedCommonPrefixFraction" : 1,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 4,
+            "hitRate" : 0.8,
+            "missCount" : 1,
+            "missRate" : 0.2,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.289667,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725772,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5679.639084,
+              "ttftMs" : 5668.397875
+            },
+            "submitToCacheReadyMs" : 5668.349417
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 21631.871875,
+            "makespanMs" : 21653.722208,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725768,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 21653.719125,
+                "ttftMs" : 21631.86725
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725769,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 21653.7025,
+                "ttftMs" : 21631.859917
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725770,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 21653.703,
+                "ttftMs" : 21631.852667
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725771,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 21653.695334,
+                "ttftMs" : 21631.854834
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 4,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 27.88625,
+            "makespanMs" : 49.264,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725773,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 49.248083,
+                "ttftMs" : 27.882792
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725774,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 49.231292,
+                "ttftMs" : 27.8735
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725775,
+                "reuseStrategy" : "direct",
+                "row" : 2,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 49.254334,
+                "ttftMs" : 27.876584
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725776,
+                "reuseStrategy" : "direct",
+                "row" : 3,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 49.257333,
+                "ttftMs" : 27.8845
+              }
+            ],
+            "totalSavedPrefillTokens" : 32768,
+            "totalStateBytesCloned" : 930631680
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 4,
+            "hitRate" : 0.8,
+            "missCount" : 1,
+            "missRate" : 0.2,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.184667,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725822,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5335.753709,
+              "ttftMs" : 5323.634084
+            },
+            "submitToCacheReadyMs" : 5323.569042
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20973.250041,
+            "makespanMs" : 20994.52975,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725818,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20994.502166,
+                "ttftMs" : 20973.243583
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725819,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20994.518583,
+                "ttftMs" : 20973.240708
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725820,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20994.518584,
+                "ttftMs" : 20973.238667
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725821,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20994.512417,
+                "ttftMs" : 20973.239
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 4,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 29.079584,
+            "makespanMs" : 51.107167,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725823,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 51.097125,
+                "ttftMs" : 29.077959
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725824,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 51.08975,
+                "ttftMs" : 29.062167
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725825,
+                "reuseStrategy" : "direct",
+                "row" : 2,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 51.094959,
+                "ttftMs" : 29.076834
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725826,
+                "reuseStrategy" : "direct",
+                "row" : 3,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 51.075083,
+                "ttftMs" : 29.066042
+              }
+            ],
+            "totalSavedPrefillTokens" : 32768,
+            "totalStateBytesCloned" : 930631680
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 4,
+            "hitRate" : 0.8,
+            "missCount" : 1,
+            "missRate" : 0.2,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.186375,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "bf98f7838a83d4ee",
+              "firstTokenID" : 11,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725870,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "de82f59b33319b3e",
+              "tokenIDs" : [
+                11,
+                279
+              ],
+              "totalTimeMs" : 5323.2405,
+              "ttftMs" : 5312.106125
+            },
+            "submitToCacheReadyMs" : 5312.054125
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20888.793417,
+            "makespanMs" : 20909.503875,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725866,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20909.474917,
+                "ttftMs" : 20888.787417
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725867,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20909.472459,
+                "ttftMs" : 20888.777959
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725868,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20909.489625,
+                "ttftMs" : 20888.778833
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725869,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 20909.495208,
+                "ttftMs" : 20888.77975
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 4,
+              "hitRate" : 1,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 28.193542,
+            "makespanMs" : 50.074625,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725871,
+                "reuseStrategy" : "direct",
+                "row" : 0,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 50.043667,
+                "ttftMs" : 28.1865
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725872,
+                "reuseStrategy" : "direct",
+                "row" : 1,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 50.046041,
+                "ttftMs" : 28.181166
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725873,
+                "reuseStrategy" : "direct",
+                "row" : 2,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 50.065958,
+                "ttftMs" : 28.184875
+              },
+              {
+                "cacheOutcome" : "hit",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 8192,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725874,
+                "reuseStrategy" : "direct",
+                "row" : 3,
+                "savedPrefillTokens" : 8192,
+                "stateBytesCloned" : 232657920,
+                "tokenChecksum" : "de82f59b33319b3e",
+                "tokenIDs" : [
+                  11,
+                  279
+                ],
+                "totalTimeMs" : 50.036625,
+                "ttftMs" : 28.17
+              }
+            ],
+            "totalSavedPrefillTokens" : 32768,
+            "totalStateBytesCloned" : 930631680
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "harbor-log",
+        "harbor-log",
+        "harbor-log",
+        "harbor-log"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 12,
+          "hitRate" : 0.8,
+          "missCount" : 3,
+          "missRate" : 0.2,
+          "requestCount" : 15,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 12,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5335.753709,
+        "medianColdMakespanMs" : 20994.52975,
+        "medianSubmitToCacheReadyMs" : 5323.569042,
+        "medianWarmMakespanMs" : 50.074625,
+        "totalSavedPrefillTokens" : 98304,
+        "totalStateBytesCloned" : 2791895040,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 12,
+          "hitRate" : 1,
+          "missCount" : 0,
+          "missRate" : 0,
+          "requestCount" : 12,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 4,
+      "constructedCommonPrefixFraction" : 0.25,
+      "constructedCommonPrefixTokens" : 2048,
+      "id" : "common-prefix-25",
+      "kind" : "common-prefix",
+      "requestedCommonPrefixFraction" : 0.25,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.278416,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "a0ebeab246ca73ff",
+              "firstTokenID" : 48142,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725781,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "0033bb7d90921fda",
+              "tokenIDs" : [
+                48142,
+                45205
+              ],
+              "totalTimeMs" : 5398.457541,
+              "ttftMs" : 5387.247333
+            },
+            "submitToCacheReadyMs" : 5387.179125
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 21803.075167,
+            "makespanMs" : 21824.466209,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725777,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21824.442834,
+                "ttftMs" : 21803.066584
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725778,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21824.445958,
+                "ttftMs" : 21803.064625
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725779,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21824.44525,
+                "ttftMs" : 21803.054208
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725780,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21824.44625,
+                "ttftMs" : 21803.056166
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21215.525459,
+            "makespanMs" : 21237.846417,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725782,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21237.817791,
+                "ttftMs" : 21215.508791
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725783,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21237.824208,
+                "ttftMs" : 21215.512667
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725784,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21237.824792,
+                "ttftMs" : 21215.506792
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725785,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21237.846417,
+                "ttftMs" : 21215.525459
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.254125,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "a0ebeab246ca73ff",
+              "firstTokenID" : 48142,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725831,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "0033bb7d90921fda",
+              "tokenIDs" : [
+                48142,
+                45205
+              ],
+              "totalTimeMs" : 5326.214125,
+              "ttftMs" : 5315.036208
+            },
+            "submitToCacheReadyMs" : 5314.96
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 21003.376792,
+            "makespanMs" : 21025.5515,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725827,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21025.513542,
+                "ttftMs" : 21003.369375
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725828,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21025.521208,
+                "ttftMs" : 21003.3585
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725829,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21025.524583,
+                "ttftMs" : 21003.364292
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725830,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21025.533333,
+                "ttftMs" : 21003.358625
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21019.623209,
+            "makespanMs" : 21041.110167,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725832,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21041.110167,
+                "ttftMs" : 21019.623209
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725833,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21041.074916,
+                "ttftMs" : 21019.608291
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725834,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21041.077,
+                "ttftMs" : 21019.603667
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725835,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21041.058208,
+                "ttftMs" : 21019.587416
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.3765,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "a0ebeab246ca73ff",
+              "firstTokenID" : 48142,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725879,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "0033bb7d90921fda",
+              "tokenIDs" : [
+                48142,
+                45205
+              ],
+              "totalTimeMs" : 5314.157833,
+              "ttftMs" : 5302.851875
+            },
+            "submitToCacheReadyMs" : 5302.781333
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20999.218625,
+            "makespanMs" : 21020.978541,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725875,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21020.932291,
+                "ttftMs" : 20999.210083
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725876,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21020.933666,
+                "ttftMs" : 20999.199041
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725877,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21020.937625,
+                "ttftMs" : 20999.209459
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725878,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21020.958708,
+                "ttftMs" : 20999.198792
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21022.810167,
+            "makespanMs" : 21045.27225,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "29a775c852b13b25",
+                "firstTokenID" : 303,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725880,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ad47a4cc6d76e84d",
+                "tokenIDs" : [
+                  303,
+                  279
+                ],
+                "totalTimeMs" : 21045.2675,
+                "ttftMs" : 21022.805417
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e2793ed85adea2bd",
+                "firstTokenID" : 13934,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725881,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "526108d61fad6deb",
+                "tokenIDs" : [
+                  13934,
+                  24296
+                ],
+                "totalTimeMs" : 21045.249667,
+                "ttftMs" : 21022.795292
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c7658e897ce8aee1",
+                "firstTokenID" : 3754,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725882,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "d206d10bf5ac957b",
+                "tokenIDs" : [
+                  3754,
+                  321
+                ],
+                "totalTimeMs" : 21045.260417,
+                "ttftMs" : 21022.803583
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "c5bb33fbdd2b51c2",
+                "firstTokenID" : 3066,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725883,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "0ad689d842872316",
+                "tokenIDs" : [
+                  3066,
+                  275
+                ],
+                "totalTimeMs" : 21045.219917,
+                "ttftMs" : 21022.767
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "orchard-plan",
+        "library-audit",
+        "river-survey",
+        "transit-study"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 15,
+          "missRate" : 1,
+          "requestCount" : 15,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 12,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5326.214125,
+        "medianColdMakespanMs" : 21025.5515,
+        "medianSubmitToCacheReadyMs" : 5314.96,
+        "medianWarmMakespanMs" : 21045.27225,
+        "totalSavedPrefillTokens" : 0,
+        "totalStateBytesCloned" : 0,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 12,
+          "missRate" : 1,
+          "requestCount" : 12,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 4,
+      "constructedCommonPrefixFraction" : 0.5,
+      "constructedCommonPrefixTokens" : 4096,
+      "id" : "common-prefix-50",
+      "kind" : "common-prefix",
+      "requestedCommonPrefixFraction" : 0.5,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.199708,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "0e0c85d73400a2f0",
+              "firstTokenID" : 58706,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725790,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "42f542b1e3ba760a",
+              "tokenIDs" : [
+                58706,
+                1070
+              ],
+              "totalTimeMs" : 5326.410791,
+              "ttftMs" : 5314.296833
+            },
+            "submitToCacheReadyMs" : 5314.211083
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 21011.095041,
+            "makespanMs" : 21032.629458,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725786,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 21032.589333,
+                "ttftMs" : 21011.081125
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725787,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 21032.602666,
+                "ttftMs" : 21011.079416
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725788,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 21032.591792,
+                "ttftMs" : 21011.080209
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725789,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 21032.626875,
+                "ttftMs" : 21011.092458
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21043.252958,
+            "makespanMs" : 21065.501666,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725791,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 21065.46775,
+                "ttftMs" : 21043.231333
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725792,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 21065.464542,
+                "ttftMs" : 21043.223917
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725793,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 21065.484792,
+                "ttftMs" : 21043.238917
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725794,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 21065.471416,
+                "ttftMs" : 21043.222708
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.591,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "0e0c85d73400a2f0",
+              "firstTokenID" : 58706,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725840,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "42f542b1e3ba760a",
+              "tokenIDs" : [
+                58706,
+                1070
+              ],
+              "totalTimeMs" : 5323.502125,
+              "ttftMs" : 5311.987792
+            },
+            "submitToCacheReadyMs" : 5311.911125
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20965.798458,
+            "makespanMs" : 20987.665416,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725836,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 20987.637416,
+                "ttftMs" : 20965.784833
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725837,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 20987.636791,
+                "ttftMs" : 20965.778041
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725838,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 20987.642291,
+                "ttftMs" : 20965.775333
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725839,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 20987.641042,
+                "ttftMs" : 20965.775084
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21020.5995,
+            "makespanMs" : 21043.109291,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725841,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 21043.062208,
+                "ttftMs" : 21020.576833
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725842,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 21043.067,
+                "ttftMs" : 21020.587083
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725843,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 21043.09325,
+                "ttftMs" : 21020.582792
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725844,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 21043.075583,
+                "ttftMs" : 21020.592625
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.651334,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "0e0c85d73400a2f0",
+              "firstTokenID" : 58706,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725888,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "42f542b1e3ba760a",
+              "tokenIDs" : [
+                58706,
+                1070
+              ],
+              "totalTimeMs" : 5334.174375,
+              "ttftMs" : 5321.595416
+            },
+            "submitToCacheReadyMs" : 5321.523041
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 21013.1775,
+            "makespanMs" : 21034.200167,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725884,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 21034.169958,
+                "ttftMs" : 21013.167083
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725885,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 21034.185167,
+                "ttftMs" : 21013.1625
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725886,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 21034.178875,
+                "ttftMs" : 21013.167084
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725887,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 21034.167333,
+                "ttftMs" : 21013.156041
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20983.192833,
+            "makespanMs" : 21005.342333,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "ce8cb9c033ec19c3",
+                "firstTokenID" : 5951,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725889,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "cc7ca681590e90f2",
+                "tokenIDs" : [
+                  5951,
+                  7739
+                ],
+                "totalTimeMs" : 21005.29925,
+                "ttftMs" : 20983.180083
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "45602b0cdc2c5c09",
+                "firstTokenID" : 2483,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725890,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "da2e14cdd16b5346",
+                "tokenIDs" : [
+                  2483,
+                  264
+                ],
+                "totalTimeMs" : 21005.308541,
+                "ttftMs" : 20983.184291
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "433cd7c212edb5d6",
+                "firstTokenID" : 40352,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725891,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "9cc36ba3dfda9065",
+                "tokenIDs" : [
+                  40352,
+                  9813
+                ],
+                "totalTimeMs" : 21005.29825,
+                "ttftMs" : 20983.167
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725892,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "8af28d5367cef7a3",
+                "tokenIDs" : [
+                  11,
+                  29014
+                ],
+                "totalTimeMs" : 21005.32875,
+                "ttftMs" : 20983.17925
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "orchard-plan",
+        "library-audit",
+        "river-survey",
+        "transit-study"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 15,
+          "missRate" : 1,
+          "requestCount" : 15,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 12,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5326.410791,
+        "medianColdMakespanMs" : 21032.629458,
+        "medianSubmitToCacheReadyMs" : 5314.211083,
+        "medianWarmMakespanMs" : 21043.109291,
+        "totalSavedPrefillTokens" : 0,
+        "totalStateBytesCloned" : 0,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 12,
+          "missRate" : 1,
+          "requestCount" : 12,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 4,
+      "constructedCommonPrefixFraction" : 0.75,
+      "constructedCommonPrefixTokens" : 6144,
+      "id" : "common-prefix-75",
+      "kind" : "common-prefix",
+      "requestedCommonPrefixFraction" : 0.75,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.313292,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "015e978f90a4c32b",
+              "firstTokenID" : 25347,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725799,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "73bdb9cf651b6d08",
+              "tokenIDs" : [
+                25347,
+                6749
+              ],
+              "totalTimeMs" : 5321.675375,
+              "ttftMs" : 5310.419916
+            },
+            "submitToCacheReadyMs" : 5310.362083
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20950.605667,
+            "makespanMs" : 20972.261834,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725795,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20972.223167,
+                "ttftMs" : 20950.592959
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725796,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20972.223416,
+                "ttftMs" : 20950.590458
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725797,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20972.218375,
+                "ttftMs" : 20950.580791
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725798,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20972.239667,
+                "ttftMs" : 20950.5835
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20934.7985,
+            "makespanMs" : 20957.034208,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725800,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20957.001875,
+                "ttftMs" : 20934.770416
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725801,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20957.005583,
+                "ttftMs" : 20934.765833
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725802,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20957.031125,
+                "ttftMs" : 20934.795417
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725803,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20956.999417,
+                "ttftMs" : 20934.765917
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.259583,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "015e978f90a4c32b",
+              "firstTokenID" : 25347,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725849,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "73bdb9cf651b6d08",
+              "tokenIDs" : [
+                25347,
+                6749
+              ],
+              "totalTimeMs" : 5326.513292,
+              "ttftMs" : 5315.307917
+            },
+            "submitToCacheReadyMs" : 5315.253709
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20915.190208,
+            "makespanMs" : 20937.031208,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725845,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20936.977833,
+                "ttftMs" : 20915.164917
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725846,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20937.018583,
+                "ttftMs" : 20915.177583
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725847,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20936.963792,
+                "ttftMs" : 20915.154333
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725848,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20937.013292,
+                "ttftMs" : 20915.178583
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20957.769667,
+            "makespanMs" : 20979.972875,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725850,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20979.964542,
+                "ttftMs" : 20957.769667
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725851,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20979.960583,
+                "ttftMs" : 20957.756166
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725852,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20979.937209,
+                "ttftMs" : 20957.749584
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725853,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20979.936958,
+                "ttftMs" : 20957.753666
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.742208,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "015e978f90a4c32b",
+              "firstTokenID" : 25347,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725897,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "73bdb9cf651b6d08",
+              "tokenIDs" : [
+                25347,
+                6749
+              ],
+              "totalTimeMs" : 5338.357375,
+              "ttftMs" : 5326.67925
+            },
+            "submitToCacheReadyMs" : 5326.615167
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20936.528625,
+            "makespanMs" : 20957.868542,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725893,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20957.842917,
+                "ttftMs" : 20936.4985
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725894,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20957.841958,
+                "ttftMs" : 20936.492458
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725895,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20957.852042,
+                "ttftMs" : 20936.512125
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725896,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20957.844792,
+                "ttftMs" : 20936.505917
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20932.572291,
+            "makespanMs" : 20955.034541,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b28d71b0a12ade1b",
+                "firstTokenID" : 357,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725898,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "49d2b9e59326fa90",
+                "tokenIDs" : [
+                  357,
+                  272
+                ],
+                "totalTimeMs" : 20955.014166,
+                "ttftMs" : 20932.549875
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "69c124d85186f9ac",
+                "firstTokenID" : 28428,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725899,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "1eda5340a8576c40",
+                "tokenIDs" : [
+                  28428,
+                  279
+                ],
+                "totalTimeMs" : 20955.003041,
+                "ttftMs" : 20932.563875
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "bf98f7838a83d4ee",
+                "firstTokenID" : 11,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725900,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "13977a82c6db0488",
+                "tokenIDs" : [
+                  11,
+                  37536
+                ],
+                "totalTimeMs" : 20954.999333,
+                "ttftMs" : 20932.562958
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "e4fe8b17e8cacb47",
+                "firstTokenID" : 632,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725901,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "fe1806e8be8490d5",
+                "tokenIDs" : [
+                  632,
+                  2987
+                ],
+                "totalTimeMs" : 20954.985458,
+                "ttftMs" : 20932.559208
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "orchard-plan",
+        "library-audit",
+        "river-survey",
+        "transit-study"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 15,
+          "missRate" : 1,
+          "requestCount" : 15,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 12,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5326.513292,
+        "medianColdMakespanMs" : 20957.868542,
+        "medianSubmitToCacheReadyMs" : 5315.253709,
+        "medianWarmMakespanMs" : 20957.034208,
+        "totalSavedPrefillTokens" : 0,
+        "totalStateBytesCloned" : 0,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 12,
+          "missRate" : 1,
+          "requestCount" : 12,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    },
+    {
+      "batchSize" : 4,
+      "constructedCommonPrefixFraction" : 0.89990234375,
+      "constructedCommonPrefixTokens" : 7372,
+      "id" : "common-prefix-90",
+      "kind" : "common-prefix",
+      "requestedCommonPrefixFraction" : 0.9,
+      "samples" : [
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.188667,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "85d96ef01869463e",
+              "firstTokenID" : 10660,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725808,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "b4a269d911df51b5",
+              "tokenIDs" : [
+                10660,
+                47532
+              ],
+              "totalTimeMs" : 5332.014042,
+              "ttftMs" : 5319.901667
+            },
+            "submitToCacheReadyMs" : 5319.825375
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20903.934333,
+            "makespanMs" : 20925.98875,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725804,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 20925.942,
+                "ttftMs" : 20903.912375
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725805,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 20925.967375,
+                "ttftMs" : 20903.912958
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725806,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 20925.948209,
+                "ttftMs" : 20903.908792
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725807,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 20925.94625,
+                "ttftMs" : 20903.908958
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 1,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20915.287083,
+            "makespanMs" : 20936.319917,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725809,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 20936.285458,
+                "ttftMs" : 20915.274667
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725810,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 20936.296209,
+                "ttftMs" : 20915.263375
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725811,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 20936.293625,
+                "ttftMs" : 20915.269458
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725812,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 20936.283708,
+                "ttftMs" : 20915.272791
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -11.300459,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "85d96ef01869463e",
+              "firstTokenID" : 10660,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725858,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "b4a269d911df51b5",
+              "tokenIDs" : [
+                10660,
+                47532
+              ],
+              "totalTimeMs" : 5343.568209,
+              "ttftMs" : 5332.336584
+            },
+            "submitToCacheReadyMs" : 5332.26775
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20959.527584,
+            "makespanMs" : 20981.691709,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725854,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 20981.63425,
+                "ttftMs" : 20959.503542
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725855,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 20981.650625,
+                "ttftMs" : 20959.493667
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725856,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 20981.671542,
+                "ttftMs" : 20959.499458
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725857,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 20981.633833,
+                "ttftMs" : 20959.514667
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 2,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 20909.413333,
+            "makespanMs" : 20931.517125,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725859,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 20931.474083,
+                "ttftMs" : 20909.394458
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725860,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 20931.433625,
+                "ttftMs" : 20909.367625
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725861,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 20931.502167,
+                "ttftMs" : 20909.406958
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725862,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 20931.487792,
+                "ttftMs" : 20909.384
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        },
+        {
+          "cacheAccountingIncludingConstruction" : {
+            "adoptionFailedCount" : 0,
+            "disabledCount" : 0,
+            "hitCount" : 0,
+            "hitRate" : 0,
+            "missCount" : 5,
+            "missRate" : 1,
+            "requestCount" : 5,
+            "skippedCapacityCount" : 0,
+            "skippedPolicyCount" : 0
+          },
+          "cacheConstruction" : {
+            "cacheBytesAfterReady" : 232657920,
+            "cacheReadyMinusTerminalMs" : -12.279458,
+            "donationObserved" : true,
+            "row" : {
+              "cacheOutcome" : "miss",
+              "finishReason" : "length",
+              "firstTokenChecksum" : "85d96ef01869463e",
+              "firstTokenID" : 10660,
+              "matchedTokens" : 0,
+              "promptTokens" : 8192,
+              "replayBoundarySplits" : 0,
+              "replayTokens" : 0,
+              "requestID" : 1364725906,
+              "row" : 0,
+              "savedPrefillTokens" : 0,
+              "stateBytesCloned" : 0,
+              "tokenChecksum" : "b4a269d911df51b5",
+              "tokenIDs" : [
+                10660,
+                47532
+              ],
+              "totalTimeMs" : 5368.999875,
+              "ttftMs" : 5356.789458
+            },
+            "submitToCacheReadyMs" : 5356.720417
+          },
+          "coldBaseline" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 0,
+              "missRate" : 0,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 4
+            },
+            "firstTokenMakespanMs" : 20892.67,
+            "makespanMs" : 20914.047834,
+            "prefixCacheEnabled" : false,
+            "rows" : [
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725902,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 20914.00775,
+                "ttftMs" : 20892.661542
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725903,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 20914.016834,
+                "ttftMs" : 20892.65425
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725904,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 20914.033042,
+                "ttftMs" : 20892.655208
+              },
+              {
+                "cacheOutcome" : "skipped_policy",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725905,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 20914.018042,
+                "ttftMs" : 20892.663208
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          },
+          "equality" : [
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 0
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 1
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 2
+            },
+            {
+              "finishReasonEqual" : true,
+              "firstTokenEqual" : true,
+              "fullTokensEqual" : true,
+              "row" : 3
+            }
+          ],
+          "iteration" : 3,
+          "warm" : {
+            "cacheAccounting" : {
+              "adoptionFailedCount" : 0,
+              "disabledCount" : 0,
+              "hitCount" : 0,
+              "hitRate" : 0,
+              "missCount" : 4,
+              "missRate" : 1,
+              "requestCount" : 4,
+              "skippedCapacityCount" : 0,
+              "skippedPolicyCount" : 0
+            },
+            "firstTokenMakespanMs" : 21008.040334,
+            "makespanMs" : 21030.5645,
+            "prefixCacheEnabled" : true,
+            "rows" : [
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "b3301284c569b47a",
+                "firstTokenID" : 45054,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725907,
+                "row" : 0,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "a2622f5d2df143ed",
+                "tokenIDs" : [
+                  45054,
+                  64229
+                ],
+                "totalTimeMs" : 21030.562917,
+                "ttftMs" : 21008.036292
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "915cfe59bd60b643",
+                "firstTokenID" : 88408,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725908,
+                "row" : 1,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "ee48f54a27c89fd6",
+                "tokenIDs" : [
+                  88408,
+                  466
+                ],
+                "totalTimeMs" : 21030.506459,
+                "ttftMs" : 21008.014417
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "32c2045d4e6b2144",
+                "firstTokenID" : 48309,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725909,
+                "row" : 2,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "df0b7f70f7ba0c57",
+                "tokenIDs" : [
+                  48309,
+                  440
+                ],
+                "totalTimeMs" : 21030.549625,
+                "ttftMs" : 21008.025459
+              },
+              {
+                "cacheOutcome" : "miss",
+                "finishReason" : "length",
+                "firstTokenChecksum" : "d805a89bbd786575",
+                "firstTokenID" : 383,
+                "matchedTokens" : 0,
+                "promptTokens" : 8192,
+                "replayBoundarySplits" : 0,
+                "replayTokens" : 0,
+                "requestID" : 1364725910,
+                "row" : 3,
+                "savedPrefillTokens" : 0,
+                "stateBytesCloned" : 0,
+                "tokenChecksum" : "4452cf228792aa80",
+                "tokenIDs" : [
+                  383,
+                  18541
+                ],
+                "totalTimeMs" : 21030.53825,
+                "ttftMs" : 21008.035334
+              }
+            ],
+            "totalSavedPrefillTokens" : 0,
+            "totalStateBytesCloned" : 0
+          }
+        }
+      ],
+      "suffixIDs" : [
+        "orchard-plan",
+        "library-audit",
+        "river-survey",
+        "transit-study"
+      ],
+      "summary" : {
+        "cacheAccountingIncludingConstruction" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 15,
+          "missRate" : 1,
+          "requestCount" : 15,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        },
+        "equalityComparisons" : 12,
+        "firstTokenEqualityRate" : 1,
+        "fullTokenEqualityRate" : 1,
+        "medianCacheConstructionRequestMs" : 5343.568209,
+        "medianColdMakespanMs" : 20925.98875,
+        "medianSubmitToCacheReadyMs" : 5332.26775,
+        "medianWarmMakespanMs" : 20936.319917,
+        "totalSavedPrefillTokens" : 0,
+        "totalStateBytesCloned" : 0,
+        "warmCacheAccounting" : {
+          "adoptionFailedCount" : 0,
+          "disabledCount" : 0,
+          "hitCount" : 0,
+          "hitRate" : 0,
+          "missCount" : 12,
+          "missRate" : 1,
+          "requestCount" : 12,
+          "skippedCapacityCount" : 0,
+          "skippedPolicyCount" : 0
+        }
+      }
+    }
+  ],
+  "schemaVersion" : 1
+}

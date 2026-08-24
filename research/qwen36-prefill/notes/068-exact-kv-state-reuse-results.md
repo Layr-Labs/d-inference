@@ -74,3 +74,19 @@ Artifacts:
 - `artifacts/e32-prefix-exact-512-v2.json`
 - `artifacts/e33-prefix-fork-{2048,8192}.json`
 - `artifacts/e34-prompt-fork-cold-{512,8192}.json`
+
+## Decision-grade 8K medians (three iterations)
+
+| Profile | B/workload | Native | Candidate | Speedup |
+|---|---|---:|---:|---:|
+| exact full-prompt hit | B1 | 5344.2 ms | 28.98 ms | **184.44×** |
+| exact full-prompt hit | B2 | 10989.2 | 36.14 | **304.07×** |
+| exact full-prompt hit | B4 | 20994.5 | 50.07 | **419.27×** |
+| cold live fork | B4 identical | 20896.6 | 6225.6 | **3.357×** |
+| cold live fork | B4 75% common | 20963.4 | 10239.1 | 2.047× |
+| cold live fork | B4 90% common | 20927.1 | 7963.2 | **2.628×** |
+
+Artifacts:
+
+- `artifacts/e36-prefix-exact-8192-3x.json`
+- `artifacts/e36-prompt-fork-8192-3x.json`

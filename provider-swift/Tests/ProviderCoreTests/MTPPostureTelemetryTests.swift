@@ -486,7 +486,7 @@ struct MTPPostureTelemetryTests {
             engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
             kvBackendKind: .paged,
             telemetry: telemetry)
-        weak var weakBridge = bridge
+        weak let weakBridge = bridge
 
         await bridge?.configureMTPStatus(
             .disabled(.configDisabled, configured: false),

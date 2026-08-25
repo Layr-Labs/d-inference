@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import ProviderCoreFoundation
 
 enum ModelCatalogState: Equatable, Sendable {
     case loading

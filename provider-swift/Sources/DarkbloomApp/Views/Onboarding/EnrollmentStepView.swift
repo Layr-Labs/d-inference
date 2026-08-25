@@ -85,7 +85,7 @@ struct EnrollmentStepView: View {
             OnboardingPrimaryButton(title: "Detecting the profile…", isWorking: true, isDisabled: true, action: {})
         case .profileDetected:
             OnboardingPrimaryButton(title: "Continue", systemImage: "arrow.right") {
-                flow.continueToNextStep()
+                Task { await flow.continueToNextStep() }
             }
             .keyboardShortcut(.defaultAction)
         case .profileMissing:

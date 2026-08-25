@@ -81,6 +81,14 @@ struct OnboardingVerificationGatingTests {
     ) -> OnboardingFlowModel {
         let flow = OnboardingFlowModel(
             startingAt: .verification,
+            diagnosticsRunner: VerificationCompletionDiagnostics(),
+            readinessFactsProvider: {
+                ReadinessMachineFacts(
+                    isAppleSilicon: true,
+                    physicalMemoryBytes: 16 * 1_073_741_824,
+                    availableStorageBytes: 100 * 1_073_741_824
+                )
+            },
             accountLinkRunner: nil,
             daemonStateProvider: { DaemonStateFile.read(from: stateURL) },
             providerEvidenceProvider: {
@@ -149,7 +157,7 @@ struct OnboardingVerificationGatingTests {
         await run.value
         #expect(flow.canContinue)
 
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .complete)
     }
 
@@ -310,7 +318,30 @@ struct OnboardingVerificationGatingTests {
             modelID: "catalog/different-model"
         )
         #expect(!flow.canContinue)
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
+        #expect(flow.step == .verification)
+    }
+
+    @Test("A fresh daemon write cannot keep expired attestation trust alive")
+    func staleTrustCannotComplete() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(stateURL: fixture.stateURL)
+        flow.verificationPhase = .hardwareTrusted
+        writeTrust(
+            .init(
+                trustLevel: "hardware",
+                status: "verified",
+                reason: "old coordinator decision",
+                receivedAt: Date().timeIntervalSince1970
+                    - DaemonState.Trust.maxFreshAge
+                    - 1
+            ),
+            to: fixture
+        )
+
+        #expect(!flow.canContinue)
+        await flow.continueToNextStep()
         #expect(flow.step == .verification)
     }
 
@@ -403,5 +434,36 @@ struct OnboardingVerificationGatingTests {
         try? await Task.sleep(for: .milliseconds(100))
         #expect(flow.verificationPhase == .enrollmentPending)
         #expect(!flow.canContinue)
+    }
+}
+
+private struct VerificationCompletionDiagnostics: DiagnosticsCLIRunning {
+    func runDoctorJSON() async throws -> DoctorJSONReport {
+        let checks = [
+            "hardware",
+            "metal-gpu",
+            "macos",
+            "attestationKey.se-key-sign-test",
+            "sip",
+            "authenticated-root",
+            "account-link",
+            "mdm-enrollment",
+        ].map {
+            DoctorJSONReport.Check(
+                id: $0,
+                section: "test",
+                title: $0,
+                status: "pass",
+                detail: "current",
+                advice: nil
+            )
+        }
+        return DoctorJSONReport(
+            schema: 1,
+            version: "test",
+            checks: checks,
+            fixes: nil,
+            verdict: .init(status: "pass", failures: 0, warnings: 0)
+        )
     }
 }

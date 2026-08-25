@@ -142,10 +142,7 @@ extension OnboardingFlowModel {
         do {
             let report = try await diagnosticsRunner.runDoctorJSON()
             guard revision == operationRevision, !Task.isCancelled else { return true }
-            switch EnrollmentEvidence.evaluate(
-                report: report,
-                providerEvidence: providerEvidenceProvider()
-            ) {
+            switch EnrollmentEvidence.evaluate(report: report) {
             case .enrolled:
                 enrollmentFailureDetail = nil
                 enrollmentPhase = .profileDetected

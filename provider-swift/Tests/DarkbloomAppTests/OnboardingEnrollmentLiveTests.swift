@@ -1,5 +1,4 @@
 import Foundation
-import ProviderCoreFoundation
 import Testing
 @testable import DarkbloomApp
 
@@ -51,11 +50,8 @@ struct OnboardingEnrollmentLiveTests {
 
     @Test("Current doctor MDM evidence cannot be overridden by historical daemon trust")
     func doctorMDMEvidenceIsAuthoritative() {
-        let trusted = providerEvidence()
-
         #expect(EnrollmentEvidence.evaluate(
-            report: evidenceReport(enrolled: false),
-            providerEvidence: trusted
+            report: evidenceReport(enrolled: false)
         ) == .missing(detail: "not enrolled"))
 
         let conflict = report(mdmCheck: .init(
@@ -67,37 +63,17 @@ struct OnboardingEnrollmentLiveTests {
             advice: nil
         ))
         #expect(EnrollmentEvidence.evaluate(
-            report: conflict,
-            providerEvidence: trusted
+            report: conflict
         ) == .conflicting(detail: "another MDM enrollment is installed"))
     }
 
-    @Test("Daemon MDM fallback requires fresh live verified hardware evidence")
-    func daemonFallbackRequiresFreshLiveHardwareTrust() {
-        let unavailableDoctorCheck = report(mdmCheck: nil)
-        let live = providerEvidence()
+    @Test("Missing current MDM evidence fails closed")
+    func missingDoctorEvidenceFailsClosed() {
         #expect(EnrollmentEvidence.evaluate(
-            report: unavailableDoctorCheck,
-            providerEvidence: live
-        ) == .enrolled)
-
-        let dead = providerEvidence(processIsAlive: false)
-        #expect(EnrollmentEvidence.evaluate(
-            report: unavailableDoctorCheck,
-            providerEvidence: dead
-        ) == .missing(detail: "The system check did not report local MDM enrollment evidence."))
-
-        let stale = providerEvidence(writtenAt: 1_000, sampledAt: 2_000)
-        #expect(EnrollmentEvidence.evaluate(
-            report: unavailableDoctorCheck,
-            providerEvidence: stale
-        ) == .missing(detail: "The system check did not report local MDM enrollment evidence."))
-
-        let selfSigned = providerEvidence(trustLevel: "self_signed")
-        #expect(EnrollmentEvidence.evaluate(
-            report: unavailableDoctorCheck,
-            providerEvidence: selfSigned
-        ) == .missing(detail: "The system check did not report local MDM enrollment evidence."))
+            report: report(mdmCheck: nil)
+        ) == .missing(
+            detail: "The current system check did not report local MDM enrollment evidence."
+        ))
     }
 
     @Test("already_enrolled advances without pretending to install a profile")
@@ -259,30 +235,6 @@ struct OnboardingEnrollmentLiveTests {
         )
     }
 
-    private func providerEvidence(
-        processIsAlive: Bool = true,
-        trustLevel: String = "hardware",
-        writtenAt: Double = 1_990,
-        sampledAt: Double = 2_000
-    ) -> OnboardingProviderEvidence {
-        OnboardingProviderEvidence(
-            daemonState: DaemonState(
-                pid: 42,
-                version: "test",
-                writtenAt: writtenAt,
-                startedAt: 1_900,
-                trust: .init(
-                    trustLevel: trustLevel,
-                    status: "online",
-                    reason: "",
-                    receivedAt: writtenAt
-                )
-            ),
-            localEndpoint: nil,
-            processIsAlive: processIsAlive,
-            sampledAt: Date(timeIntervalSince1970: sampledAt)
-        )
-    }
 }
 
 private final class EnrollmentSettingsOpenRecorder:

@@ -121,6 +121,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Trust: Codable, Sendable, Equatable {
+        /// The coordinator challenges a connected provider every five minutes.
+        /// Three challenge intervals without a fresh status is no longer current
+        /// attestation evidence, even if the daemon keeps rewriting its state.
+        public static let maxFreshAge: TimeInterval = 15 * 60
+
         public var trustLevel: String
         public var status: String
         public var reason: String
@@ -130,6 +135,17 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.status = status
             self.reason = reason
             self.receivedAt = receivedAt
+        }
+
+        public func isFresh(
+            now: Double = Date().timeIntervalSince1970,
+            maxAge: TimeInterval = Self.maxFreshAge
+        ) -> Bool {
+            guard now.isFinite, receivedAt.isFinite, maxAge >= 0 else {
+                return false
+            }
+            let age = now - receivedAt
+            return age >= 0 && age <= maxAge
         }
     }
 

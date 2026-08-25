@@ -6,12 +6,12 @@ import Testing
 @MainActor
 struct OnboardingFlowTests {
     @Test("A ready Mac advances into account connection")
-    func readinessAdvancesToAccount() {
+    func readinessAdvancesToAccount() async {
         let flow = preview(.readiness, "ready")
 
         #expect(flow.readinessPhase == .ready)
         #expect(flow.canContinue)
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .account)
     }
 
@@ -71,22 +71,22 @@ struct OnboardingFlowTests {
     }
 
     @Test("Darkbloom account policy blocks network setup until linking succeeds")
-    func accountPolicyRequiresLink() {
+    func accountPolicyRequiresLink() async {
         let waiting = preview(.account, "waiting")
-        waiting.continueToNextStep()
+        await waiting.continueToNextStep()
         #expect(waiting.step == .account)
 
         let linked = preview(.account, "linked")
-        linked.continueToNextStep()
+        await linked.continueToNextStep()
         #expect(linked.step == .enrollment)
     }
 
     @Test("Profile detection is separate from enrollment and trust")
-    func profileDetectionIsSeparate() {
+    func profileDetectionIsSeparate() async {
         let detected = preview(.enrollment, "profile-detected")
         #expect(detected.enrollmentPhase == .profileDetected)
         #expect(detected.verificationPhase == .profileDetected)
-        detected.continueToNextStep()
+        await detected.continueToNextStep()
         #expect(detected.step == .preparation)
         #expect(detected.goBack())
         #expect(detected.step == .enrollment)
@@ -167,15 +167,15 @@ struct OnboardingFlowTests {
     }
 
     @Test("Only hardware trust completes verification")
-    func verificationAdvancesOnlyWhenTrusted() {
+    func verificationAdvancesOnlyWhenTrusted() async {
         for variant in ["profile-detected", "enrollment-pending", "trust-pending", "check-in-delayed", "trust-failed", "offline"] {
             let flow = preview(.verification, variant)
-            flow.continueToNextStep()
+            await flow.continueToNextStep()
             #expect(flow.step == .verification)
         }
 
         let trusted = preview(.verification, "ready")
-        trusted.continueToNextStep()
+        await trusted.continueToNextStep()
         #expect(trusted.step == .complete)
     }
 

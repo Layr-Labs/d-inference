@@ -271,7 +271,7 @@ struct OnboardingPreparationLiveTests {
     }
 
     @Test("A stale ready phase cannot advance without a completed provider start")
-    func providerStartGatesVerification() {
+    func providerStartGatesVerification() async {
         let flow = OnboardingFlowModel(
             startingAt: .preparation,
             diagnosticsRunner: nil,
@@ -283,7 +283,7 @@ struct OnboardingPreparationLiveTests {
         flow.providerStartCompleted = false
 
         #expect(!flow.canContinue)
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .preparation)
     }
 

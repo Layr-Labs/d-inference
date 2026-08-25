@@ -54,8 +54,10 @@ extension OnboardingFlowModel {
         from evidence: OnboardingProviderEvidence
     ) -> DaemonState.Trust? {
         guard let selectedModelID,
-              evidence.reportsStarted(modelID: selectedModelID)
+              evidence.reportsStarted(modelID: selectedModelID),
+              let trust = evidence.daemonState?.trust,
+              trust.isFresh(now: evidence.sampledAt.timeIntervalSince1970)
         else { return nil }
-        return evidence.daemonState?.trust
+        return trust
     }
 }

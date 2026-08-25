@@ -186,7 +186,7 @@ struct AppFlowStoreTests {
     }
 
     @Test("Leaving setup persists and resumes the same screen")
-    func onboardingResumesInPlace() {
+    func onboardingResumesInPlace() async {
         let preferences = InMemoryAppFlowPreferences()
         let onboarding = OnboardingFlowModel(
             startingAt: .readiness,
@@ -200,7 +200,7 @@ struct AppFlowStoreTests {
         )
 
         store.startOnboarding()
-        onboarding.continueToNextStep()
+        await onboarding.continueToNextStep()
         #expect(onboarding.step == .account)
         #expect(preferences.onboardingDraft?.step == .account)
 

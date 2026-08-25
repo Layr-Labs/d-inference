@@ -28,6 +28,7 @@ final class OnboardingFlowModel {
     var accountLinkRequestInFlight = false
     var accountLinkFailureDetail: String?
     var showsProfilePrivacyDetails = false
+    var transitionEvidenceCheckInFlight = false
 
     @ObservationIgnored let freezesAutomaticProgress: Bool
     @ObservationIgnored let reconciliationOutcome: ResumeReconciliationOutcome
@@ -209,7 +210,9 @@ final class OnboardingFlowModel {
     }
 
     var canContinue: Bool {
-        guard !resumeReconciliationState.blocksProgress else { return false }
+        guard !resumeReconciliationState.blocksProgress,
+              !transitionEvidenceCheckInFlight
+        else { return false }
         return switch step {
         case .readiness: readinessPhase.allowsContinuation
         case .account: accountPhase == .linked
@@ -257,8 +260,7 @@ final class OnboardingFlowModel {
         }
     }
 
-    func continueToNextStep() {
-        guard canContinue else { return }
+    func advanceToNextStep() {
         switch step {
         case .readiness: step = .account
         case .account: step = .enrollment

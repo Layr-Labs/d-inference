@@ -1421,14 +1421,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	s.registry.UpdateModelWeightHashes(providerID, resp.ModelHashes)
 
 	recovered := s.registry.RecordChallengeSuccess(providerID)
-	if recovered {
-		// The provider was transiently untrusted and is now back online. Push a
-		// fresh status so its locally persisted operator state reflects recovery.
-		provider.Mu().Lock()
-		trustLevel := provider.TrustLevel
-		provider.Mu().Unlock()
-		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
-	}
 	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
@@ -1494,6 +1486,22 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// verify) — hardware trust is earned via MDM SecurityInfo.
 			provider.SignalChallengeSettled()
 		}
+	}
+
+	// A daemon heartbeat proves only that the process is alive; it must not keep
+	// an old hardware decision looking current forever. Refresh successful
+	// hardware trust after every verified five-minute challenge so local app,
+	// status, and doctor readers can expire attestation evidence independently
+	// of the frequently-written daemon snapshot.
+	provider.Mu().Lock()
+	trustLevel = provider.TrustLevel
+	provider.Mu().Unlock()
+	if trustLevel == registry.TrustHardware {
+		reason := "attestation challenge verified; hardware trust remains active"
+		if recovered {
+			reason = "recovered after transient deroute"
+		}
+		s.sendTrustStatus(provider, trustLevel, "online", reason)
 	}
 }
 

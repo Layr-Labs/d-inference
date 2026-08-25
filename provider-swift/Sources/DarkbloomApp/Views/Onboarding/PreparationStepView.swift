@@ -44,7 +44,7 @@ struct PreparationStepView: View {
             workingButton("Starting provider and local API…")
         case .ready:
             OnboardingPrimaryButton(title: "Continue", systemImage: "arrow.right") {
-                flow.continueToNextStep()
+                Task { await flow.continueToNextStep() }
             }
             .keyboardShortcut(.defaultAction)
         case .downloadFailed:

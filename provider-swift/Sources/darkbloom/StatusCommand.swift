@@ -107,11 +107,15 @@ struct Status: AsyncParsableCommand {
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
 
-        if let trust = state.trust {
+        if state.isStale(now: now) {
+            print("Trust: unavailable (daemon state is stale)")
+        } else if let trust = state.trust, trust.isFresh(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
             if let fix = advice.fix { print("  → fix: \(fix)") }
+        } else if state.trust != nil {
+            print("Trust: unavailable (coordinator status is stale)")
         } else {
             print("Trust: awaiting coordinator status")
         }

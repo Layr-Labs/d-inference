@@ -85,7 +85,7 @@ struct AccountLinkStepView: View {
             OnboardingPrimaryButton(title: "Checking approval…", isWorking: true, isDisabled: true, action: {})
         case .linked:
             OnboardingPrimaryButton(title: "Continue", systemImage: "arrow.right") {
-                flow.continueToNextStep()
+                Task { await flow.continueToNextStep() }
             }
             .keyboardShortcut(.defaultAction)
         case .expired:

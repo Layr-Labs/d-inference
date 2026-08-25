@@ -53,11 +53,7 @@ extension OnboardingFlowModel {
             }
             accountPhase = .linked
 
-            let providerEvidence = providerEvidenceProvider()
-            switch EnrollmentEvidence.evaluate(
-                report: doctor,
-                providerEvidence: providerEvidence
-            ) {
+            switch EnrollmentEvidence.evaluate(report: doctor) {
             case .enrolled:
                 enrollmentPhase = .profileDetected
             case .missing(let detail):
@@ -123,7 +119,11 @@ extension OnboardingFlowModel {
             downloadCompletedModelID = choice.id
             preparationProgress = 1
             preparationPhase = .ready
-            let trust = preparationEvidence.daemonState?.trust
+            let trust = preparationEvidence.daemonState?.trust.flatMap {
+                $0.isFresh(now: preparationEvidence.sampledAt.timeIntervalSince1970)
+                    ? $0
+                    : nil
+            }
             if let trust {
                 switch OnboardingTrustGating.verdict(for: trust) {
                 case .verified:

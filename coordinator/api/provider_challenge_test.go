@@ -75,6 +75,14 @@ func TestChallengeResponseSuccess(t *testing.T) {
 			var challenge protocol.AttestationChallengeMessage
 			json.Unmarshal(data, &challenge)
 
+			p := findProviderByModel(reg, "challenge-model")
+			if p == nil {
+				t.Fatal("provider not found before challenge response")
+			}
+			p.Mu().Lock()
+			p.TrustLevel = registry.TrustHardware
+			p.Mu().Unlock()
+
 			respData := makeValidChallengeResponse(data, pubKey)
 			conn.Write(ctx, websocket.MessageText, respData)
 			break
@@ -85,8 +93,39 @@ func TestChallengeResponseSuccess(t *testing.T) {
 		t.Fatal("did not receive attestation challenge")
 	}
 
-	// Wait for verification to complete.
-	time.Sleep(200 * time.Millisecond)
+	// A passing challenge must refresh the provider's local hardware-trust
+	// evidence; daemon heartbeats alone are not attestation proof.
+	trustRefreshed := false
+	for range 20 {
+		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		_, data, err := conn.Read(readCtx)
+		readCancel()
+		if err != nil {
+			continue
+		}
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			continue
+		}
+		if envelope.Type != protocol.TypeTrustStatus {
+			continue
+		}
+		var status protocol.TrustStatusMessage
+		if err := json.Unmarshal(data, &status); err != nil {
+			t.Fatalf("decode trust status: %v", err)
+		}
+		if status.TrustLevel == string(registry.TrustHardware) &&
+			status.Status == "online" &&
+			strings.Contains(status.Reason, "challenge verified") {
+			trustRefreshed = true
+			break
+		}
+	}
+	if !trustRefreshed {
+		t.Fatal("successful hardware challenge did not refresh trust status")
+	}
 
 	// Verify provider is still online (not untrusted).
 	p := findProviderByModel(reg, "challenge-model")

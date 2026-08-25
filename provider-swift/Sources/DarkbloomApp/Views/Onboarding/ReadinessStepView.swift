@@ -30,7 +30,7 @@ struct ReadinessStepView: View {
                 isWorking: flow.resumeReconciliationState.blocksProgress,
                 isDisabled: !flow.canContinue
             ) {
-                flow.continueToNextStep()
+                Task { await flow.continueToNextStep() }
             }
             .keyboardShortcut(.defaultAction)
         } else if flow.readinessPhase == .checking {

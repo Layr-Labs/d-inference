@@ -16,9 +16,10 @@ enum DoctorRunner {
         let daemonUp = state.map {
             DaemonStateRuntimeTruth.belongsToLiveProcess($0)
         } ?? false
-        // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
-        // its live fields (trust level, current model, capacity) are trustworthy.
+        // State writes and coordinator trust statuses have independent clocks:
+        // a healthy daemon can keep rewriting an old attestation decision.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
+        let trustFresh = stateFresh && (state?.trust?.isFresh(now: now) ?? false)
 
         // ---- Attestation key (local, no daemon needed) ----
         let se = SEKeySelfTest.run()
@@ -36,7 +37,7 @@ enum DoctorRunner {
             sleepPrevented: systemSleepPrevented()))
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
-        if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
+        if let state, let trust = state.trust, trustFresh {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
             out.append(Diagnostic(section: .trust, name: "trust level",
@@ -64,10 +65,10 @@ enum DoctorRunner {
         // timing out" (trust stuck at self_signed) from "not enrolled at all" —
         // the previously-silent stall that left operators thinking they passed
         // while earning nothing.
-        let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
+        let alreadyHardwareTrusted = trustFresh && state?.trust?.trustLevel == "hardware"
         if !alreadyHardwareTrusted {
-            let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
-            let liveStatus = stateFresh ? state?.trust?.status : nil
+            let liveTrustLevel = trustFresh ? state?.trust?.trustLevel : nil
+            let liveStatus = trustFresh ? state?.trust?.status : nil
             let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)

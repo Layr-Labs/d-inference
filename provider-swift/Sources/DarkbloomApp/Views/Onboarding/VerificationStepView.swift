@@ -25,7 +25,7 @@ struct VerificationStepView: View {
         switch flow.verificationPhase {
         case .hardwareTrusted:
             OnboardingPrimaryButton(title: "Finish setup", systemImage: "arrow.right") {
-                flow.continueToNextStep()
+                Task { await flow.continueToNextStep() }
             }
             .keyboardShortcut(.defaultAction)
         case .profileDetected, .enrollmentPending, .trustPending:

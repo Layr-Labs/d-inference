@@ -29,13 +29,13 @@ struct FreshInstallFlowTests {
         await flow.runAutomaticWorkForCurrentStep()
         #expect(flow.readinessPhase == .ready)
         #expect(flow.readinessItems.allSatisfy { $0.state == .complete })
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .account)
 
         flow.startAccountLink()
         #expect(await freshInstallEventually { flow.accountPhase == .linked })
         #expect(openedURLs.urls == [URL(string: "https://app.darkbloom.test/link")!])
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .enrollment)
 
         await flow.beginEnrollment()
@@ -46,13 +46,13 @@ struct FreshInstallFlowTests {
         // Observe that poll before simulating the user's macOS profile action,
         // so argv ordering stays deterministic instead of racing a timer.
         #expect(await freshInstallEventually {
-            (try? harness.invocations().filter { $0 == ["doctor", "--json"] }.count) == 2
+            (try? harness.invocations().filter { $0 == ["doctor", "--json"] }.count) == 4
         })
         try harness.markProfileInstalled()
         await flow.confirmProfileInstallation()
         #expect(flow.enrollmentPhase == .profileDetected)
         flow.cancelPendingOperations()
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .preparation)
 
         await flow.runAutomaticWorkForCurrentStep()
@@ -62,7 +62,7 @@ struct FreshInstallFlowTests {
         #expect(await freshInstallEventually { flow.preparationPhase == .ready })
         #expect(flow.preparationProgress == 1)
         #expect(harness.providerEvidence().reportsStarted(modelID: FreshInstallHarness.modelID))
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .verification)
 
         let verification = Task { await flow.runAutomaticWorkForCurrentStep() }
@@ -70,7 +70,7 @@ struct FreshInstallFlowTests {
         try harness.setTrust(status: "verified", level: "hardware")
         await verification.value
         #expect(flow.verificationPhase == .hardwareTrusted)
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .complete)
         #expect(flow.hasCompletedAllRequiredSteps)
 
@@ -82,8 +82,11 @@ struct FreshInstallFlowTests {
 
         #expect(try harness.invocations() == [
             ["doctor", "--json"],
+            ["doctor", "--json"],
             ["login", "--json"],
+            ["doctor", "--json"],
             ["enroll", "--json"],
+            ["doctor", "--json"],
             ["doctor", "--json"],
             ["doctor", "--json"],
             ["models", "catalog", "--json", "--include-download-plans"],
@@ -91,6 +94,7 @@ struct FreshInstallFlowTests {
             FreshInstallHarness.downloadPlanInvocation,
             FreshInstallHarness.downloadInvocation,
             ["start", "--model", FreshInstallHarness.modelID, "--local-endpoint"],
+            ["doctor", "--json"],
         ])
 
         let invocations = try harness.invocations()

@@ -67,7 +67,12 @@ enum DaemonSnapshotMapping {
             version: state?.version ?? "unknown",
             pid: isRunning ? state?.pid : nil,
             startedAt: isRunning ? state.map { Date(timeIntervalSince1970: $0.startedAt) } : nil,
-            trust: mapTrust(state),
+            trust: mapTrust(
+                state,
+                isRunning: isRunning,
+                isFresh: isFresh,
+                now: epochNow
+            ),
             availability: mapAvailability(
                 state: state,
                 runState: runState,
@@ -138,6 +143,9 @@ enum DaemonSnapshotMapping {
             return .serving
         }
         if state.connectivity?.status == .disconnected {
+            return .attention
+        }
+        if let trust = state.trust, !trust.isFresh(now: now) {
             return .attention
         }
         if let trust = state.trust,
@@ -237,7 +245,21 @@ enum DaemonSnapshotMapping {
         return !state.isStale(now: now)
     }
 
-    private static func mapTrust(_ state: DaemonState?) -> ProviderTrustSnapshot {
+    private static func mapTrust(
+        _ state: DaemonState?,
+        isRunning: Bool,
+        isFresh: Bool,
+        now: TimeInterval
+    ) -> ProviderTrustSnapshot {
+        guard isRunning, isFresh else {
+            return ProviderTrustSnapshot(
+                state: .unknown,
+                level: "Not current",
+                reason: "Live provider trust is unavailable.",
+                guidance: nil,
+                updatedAt: state?.trust.map { Date(timeIntervalSince1970: $0.receivedAt) }
+            )
+        }
         if state?.connectivity?.status == .disconnected {
             let trust = state?.trust
             let changedAt = state?.connectivity?.changedAt
@@ -263,6 +285,15 @@ enum DaemonSnapshotMapping {
                 updatedAt: nil
             )
         }
+        guard trust.isFresh(now: now) else {
+            return ProviderTrustSnapshot(
+                state: .unknown,
+                level: trust.trustLevel.isEmpty ? "Not current" : trust.trustLevel,
+                reason: "The coordinator trust status is stale and must be refreshed.",
+                guidance: nil,
+                updatedAt: Date(timeIntervalSince1970: trust.receivedAt)
+            )
+        }
         let state: ProviderTrustState = switch OnboardingTrustGating.verdict(for: trust) {
         case .verified: .verified
         case .refused, .offline: .failed
@@ -285,6 +316,17 @@ enum DaemonSnapshotMapping {
                 title: "Darkbloom stopped checking in",
                 detail: "The provider process may be asleep or unresponsive.",
                 recoveryTitle: "Restart Darkbloom"
+            )
+        }
+        if runState != .paused,
+           let trust = inputs.state?.trust,
+           !trust.isFresh(now: inputs.now.timeIntervalSince1970) {
+            return ProviderProblem(
+                id: "provider-trust-stale",
+                severity: .warning,
+                title: "Trust verification is out of date",
+                detail: "The coordinator has not refreshed this provider's attestation status.",
+                recoveryTitle: "Check connection"
             )
         }
         if let loadError = attentiveLoadError(inputs),

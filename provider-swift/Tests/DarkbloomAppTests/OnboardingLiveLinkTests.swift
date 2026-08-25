@@ -66,11 +66,13 @@ struct OnboardingLiveLinkTests {
 
     private func makeFlow(
         runner: ScriptedRunner,
-        openedURLs: LockedURLs? = nil
+        openedURLs: LockedURLs? = nil,
+        diagnosticsRunner: (any DiagnosticsCLIRunning)? = nil
     ) -> OnboardingFlowModel {
         let openedURLs = openedURLs ?? LockedURLs()
         return OnboardingFlowModel(
             startingAt: .account,
+            diagnosticsRunner: diagnosticsRunner,
             accountLinkRunner: runner,
             verificationURLHandler: { openedURLs.append($0) }
         )
@@ -106,7 +108,11 @@ struct OnboardingLiveLinkTests {
                 .linked,
             ]),
         ])
-        let flow = makeFlow(runner: runner, openedURLs: opened)
+        let flow = makeFlow(
+            runner: runner,
+            openedURLs: opened,
+            diagnosticsRunner: LinkedAccountDiagnostics()
+        )
         #expect(flow.usesLiveAccountLink)
         #expect(!flow.canContinue)
 
@@ -136,7 +142,7 @@ struct OnboardingLiveLinkTests {
         #expect(flow.accountLinkSession.lifetimeMinutes == 10)
         #expect(opened.urls == [URL(string: "https://app.darkbloom.dev/link")!])
 
-        flow.continueToNextStep()
+        await flow.continueToNextStep()
         #expect(flow.step == .enrollment)
     }
 
@@ -256,5 +262,26 @@ struct OnboardingLiveLinkTests {
 
         await flow.confirmAccountApproval()
         #expect(flow.accountPhase == .linked)
+    }
+}
+
+private struct LinkedAccountDiagnostics: DiagnosticsCLIRunning {
+    func runDoctorJSON() async throws -> DoctorJSONReport {
+        DoctorJSONReport(
+            schema: 1,
+            version: "test",
+            checks: [
+                .init(
+                    id: "account-link",
+                    section: "account",
+                    title: "Account link",
+                    status: "pass",
+                    detail: "linked",
+                    advice: nil
+                ),
+            ],
+            fixes: nil,
+            verdict: .init(status: "pass", failures: 0, warnings: 0)
+        )
     }
 }

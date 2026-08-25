@@ -59,4 +59,31 @@ struct DaemonStateRuntimeTruthTests {
             readIdentity: { _ in ProcessIdentity(pid: 99, startTimeMicros: 100) }
         ))
     }
+
+    @Test("trust evidence expires independently of fresh daemon writes")
+    func trustFreshness() {
+        let fresh = DaemonState.Trust(
+            trustLevel: "hardware",
+            status: "online",
+            reason: "challenge verified",
+            receivedAt: now - DaemonState.Trust.maxFreshAge
+        )
+        #expect(fresh.isFresh(now: now))
+
+        let stale = DaemonState.Trust(
+            trustLevel: "hardware",
+            status: "online",
+            reason: "old challenge",
+            receivedAt: now - DaemonState.Trust.maxFreshAge - 0.001
+        )
+        #expect(!stale.isFresh(now: now))
+
+        let future = DaemonState.Trust(
+            trustLevel: "hardware",
+            status: "online",
+            reason: "malformed timestamp",
+            receivedAt: now + 1
+        )
+        #expect(!future.isFresh(now: now))
+    }
 }

@@ -308,6 +308,26 @@ struct DaemonSnapshotMappingTests {
         #expect(snapshot.trust.updatedAt == referenceNow.addingTimeInterval(-60))
     }
 
+    @Test("Fresh daemon writes do not revive stale coordinator trust")
+    func staleTrustFailsClosed() {
+        let trust = DaemonState.Trust(
+            trustLevel: "hardware",
+            status: "verified",
+            reason: "old attestation",
+            receivedAt: referenceNow.timeIntervalSince1970
+                - DaemonState.Trust.maxFreshAge
+                - 1
+        )
+
+        let snapshot = DaemonSnapshotMapping.map(
+            inputs(state: freshState(trust: trust), alive: true)
+        )
+
+        #expect(snapshot.runState == .attention)
+        #expect(snapshot.trust.state == .unknown)
+        #expect(snapshot.lastProblem?.id == "provider-trust-stale")
+    }
+
     @Test("Hardware level without a successful coordinator status stays pending")
     func hardwareTrustRequiresSuccessfulStatus() {
         for status in ["unknown", "pending", "challenge_sent"] {

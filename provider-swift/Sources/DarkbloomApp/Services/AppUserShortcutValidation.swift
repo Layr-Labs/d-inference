@@ -29,8 +29,14 @@ extension AppUserShortcutTransaction {
             return false
         }
         do {
-            return try fileManager.destinationOfSymbolicLink(atPath: url.path)
-                == managedAppURL.path
+            let target = try fileManager.destinationOfSymbolicLink(
+                atPath: url.path
+            )
+            let targetURL = target.hasPrefix("/")
+                ? URL(fileURLWithPath: target)
+                : url.deletingLastPathComponent().appendingPathComponent(target)
+            return targetURL.standardizedFileURL.resolvingSymlinksInPath()
+                == managedAppURL.resolvingSymlinksInPath()
         } catch {
             throw filesystem("read symbolic link \(url.path)", error: error)
         }

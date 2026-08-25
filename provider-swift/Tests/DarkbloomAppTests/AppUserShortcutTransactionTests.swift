@@ -150,6 +150,30 @@ struct AppUserShortcutTransactionTests {
         #expect(!fixture.journalExists)
     }
 
+    @Test("existing relative shortcut to the managed app remains valid")
+    func relativeManagedShortcutIsAccepted() throws {
+        let fixture = try ShortcutFixture()
+        defer { fixture.remove() }
+        let relativeTarget = "../.darkbloom/Darkbloom.app"
+        try FileManager.default.createSymbolicLink(
+            atPath: fixture.shortcut.path,
+            withDestinationPath: relativeTarget
+        )
+
+        let result = try fixture.transaction().converge(
+            transactionID: fixture.firstID
+        )
+
+        #expect(result == .init(installedShortcut: true))
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: fixture.shortcut.path
+            ) == relativeTarget
+        )
+        try fixture.expectNoOwnedShortcutArtifacts()
+        #expect(!fixture.journalExists)
+    }
+
     @Test("foreign backup namespace entry is preserved exactly")
     func foreignBackupIsPreserved() throws {
         let fixture = try ShortcutFixture()

@@ -30,11 +30,18 @@ extension EngineV2Bridge {
     /// dependency on when the child task first gets scheduled.
     func configureMTPStatus(
         _ status: MTPActivationStatus,
-        metricsInterval: Duration = .seconds(60)
+        metricsInterval: Duration = .seconds(60),
+        beforeSamplerActorHopForTesting: (@Sendable () async -> Void)? = nil
     ) {
         guard !slotPostureSamplerStopped else { return }
         mtpActivationStatus = status
-        slotPostureTask?.cancel()
+        if let previous = slotPostureTask {
+            previous.cancel()
+            // Cancellation cannot retract an actor call that the sampler has
+            // already queued. Keep every replaced handle reachable so
+            // shutdown can join it before releasing the engine.
+            retiredSlotPostureTasks.append(previous)
+        }
         slotPostureTask = nil
         guard metricsInterval > .zero else { return }
         sampleSlotPosture()
@@ -44,6 +51,7 @@ extension EngineV2Bridge {
                 try? await taskSleep(metricsInterval)
                 if Task.isCancelled { return }
                 guard let bridge else { return }
+                await beforeSamplerActorHopForTesting?()
                 await bridge.sampleSlotPosture(fromSampler: true)
             }
         }

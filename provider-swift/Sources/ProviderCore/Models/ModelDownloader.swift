@@ -86,7 +86,9 @@ public struct ModelDownloader: Sendable {
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)
         self.runtimeCapabilities = runtimeCapabilities
-        availableCapacityProvider = Self.availableCapacity(at:)
+        availableCapacityProvider = { directory in
+            try Self.availableCapacity(at: directory)
+        }
     }
 
     init(

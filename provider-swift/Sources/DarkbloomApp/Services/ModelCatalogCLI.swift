@@ -405,7 +405,11 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         admission: AppModelDownloadAdmissionController.Admission
     ) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
         let admissionController = downloadAdmission
-        return AsyncThrowingStream { continuation in
+        let stream = AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+            (continuation: AsyncThrowingStream<
+                ModelDownloadStreamEvent,
+                Error
+            >.Continuation) in
             let process = Process()
             process.executableURL = executable
             process.arguments = [
@@ -492,6 +496,7 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
                 }
             }
         }
+        return stream
     }
 
     func removeModel(modelID: String) async throws {

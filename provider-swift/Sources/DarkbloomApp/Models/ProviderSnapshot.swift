@@ -99,6 +99,8 @@ struct ProviderLocalEndpointSnapshot: Codable, Equatable, Sendable {
 struct ProviderConnectivitySnapshot: Codable, Equatable, Sendable {
     var reconnectCount: Int
     var lastError: String?
+    var isConnected: Bool? = nil
+    var updatedAt: Date? = nil
 }
 
 struct ProviderSystemSnapshot: Codable, Equatable, Sendable {

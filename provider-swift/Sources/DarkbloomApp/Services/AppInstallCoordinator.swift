@@ -111,6 +111,8 @@ struct AppInstallCoordinator {
     private let makeUUID: () -> UUID
     private let relocationFaultInjector:
         (AppRelocationTransaction.FaultPoint) throws -> Void
+    private let shortcutFaultInjector:
+        (AppUserShortcutTransaction.FaultPoint) throws -> Void
 
     init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -119,7 +121,9 @@ struct AppInstallCoordinator {
         executor: any AppInstallCommandExecuting = SystemAppInstallCommandExecutor(),
         makeUUID: @escaping () -> UUID = UUID.init,
         relocationFaultInjector:
-            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in }
+            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in },
+        shortcutFaultInjector:
+            @escaping (AppUserShortcutTransaction.FaultPoint) throws -> Void = { _ in }
     ) {
         let source = Self.mainBundleSource()
         self.init(
@@ -130,7 +134,8 @@ struct AppInstallCoordinator {
             fileManager: fileManager,
             executor: executor,
             makeUUID: makeUUID,
-            relocationFaultInjector: relocationFaultInjector
+            relocationFaultInjector: relocationFaultInjector,
+            shortcutFaultInjector: shortcutFaultInjector
         )
     }
 
@@ -143,7 +148,9 @@ struct AppInstallCoordinator {
         executor: any AppInstallCommandExecuting,
         makeUUID: @escaping () -> UUID = UUID.init,
         relocationFaultInjector:
-            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in }
+            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in },
+        shortcutFaultInjector:
+            @escaping (AppUserShortcutTransaction.FaultPoint) throws -> Void = { _ in }
     ) {
         self.homeDirectory = homeDirectory
         self.sourceBundleURL = sourceBundleURL
@@ -153,6 +160,7 @@ struct AppInstallCoordinator {
         self.executor = executor
         self.makeUUID = makeUUID
         self.relocationFaultInjector = relocationFaultInjector
+        self.shortcutFaultInjector = shortcutFaultInjector
     }
 
     var destinationURL: URL {
@@ -190,7 +198,7 @@ struct AppInstallCoordinator {
                 // previous process died before the exchange. Authenticate it
                 // before allowing it to drive recovery.
                 try verifyProductionSignature(at: sourceBundleURL) // pragma: allowlist secret
-                recovered = try recoverPendingRelocation(
+                recovered = try recoverPendingInstallTransaction(
                     in: destinationRoot
                 )
             } else {
@@ -217,7 +225,9 @@ struct AppInstallCoordinator {
         // never replace a newer self-updated install while recovery/state.json
         // still records that newer version.
         try verifyProductionSignature(at: sourceBundleURL) // pragma: allowlist secret
-        let priorRecovery = try recoverPendingRelocation(in: destinationRoot)
+        let priorRecovery = try recoverPendingInstallTransaction(
+            in: destinationRoot
+        )
         let ownedDestinationMetadata = ownedBundleMetadata(at: destinationURL)
         try validateVersionTransition(
             source: sourceMetadata,
@@ -238,7 +248,9 @@ struct AppInstallCoordinator {
                 let transaction = makeRelocationTransaction(
                     in: destinationRoot
                 )
-                let racedRecovery = try transaction.recover()
+                let racedRecovery = try recoverPendingInstallTransactionLocked(
+                    in: destinationRoot
+                )
                 try transaction.cleanupUnjournaledArtifacts()
 
                 // Re-read ownership and ordering while every Darkbloom
@@ -391,7 +403,19 @@ struct AppInstallCoordinator {
         )
     }
 
-    private func recoverPendingRelocation(
+    private func makeShortcutTransaction(
+        in installRoot: URL
+    ) -> AppUserShortcutTransaction {
+        AppUserShortcutTransaction(
+            installRoot: installRoot,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager,
+            isOwnedApp: { isOwnedBundle(at: $0) },
+            faultInjector: shortcutFaultInjector
+        )
+    }
+
+    private func recoverPendingInstallTransaction(
         in installRoot: URL
     ) throws -> AppRelocationTransaction.RecoveryResult? {
         guard AppRelocationTransaction.hasPendingTransaction(
@@ -407,7 +431,9 @@ struct AppInstallCoordinator {
             ) {
                 try rejectPendingForeignTransactions()
                 let transaction = makeRelocationTransaction(in: installRoot)
-                let result = try transaction.recover()
+                let result = try recoverPendingInstallTransactionLocked(
+                    in: installRoot
+                )
                 try transaction.cleanupUnjournaledArtifacts()
                 return result
             }
@@ -419,6 +445,18 @@ struct AppInstallCoordinator {
                 reason: error.localizedDescription
             )
         }
+    }
+
+    private func recoverPendingInstallTransactionLocked(
+        in installRoot: URL
+    ) throws -> AppRelocationTransaction.RecoveryResult? {
+        if try AppUserShortcutTransaction.pendingJournalIsShortcut(
+            in: installRoot
+        ) {
+            _ = try makeShortcutTransaction(in: installRoot).recover()
+            return nil
+        }
+        return try makeRelocationTransaction(in: installRoot).recover()
     }
 
     private func rejectPendingForeignTransactions() throws {
@@ -450,7 +488,21 @@ struct AppInstallCoordinator {
 
     private func attemptUserShortcut(nonce: String) {
         do {
-            try ensureUserShortcut(nonce: nonce)
+            let shortcutRoot = userShortcutURL.deletingLastPathComponent()
+            try prepareWritableDirectory(shortcutRoot)
+            let installRoot = destinationURL.deletingLastPathComponent()
+            try InstallMutationLock.withOneShotInstallLock(
+                in: installRoot,
+                fileManager: fileManager
+            ) {
+                try rejectPendingForeignTransactions()
+                _ = try recoverPendingInstallTransactionLocked(in: installRoot)
+                let relocation = makeRelocationTransaction(in: installRoot)
+                try relocation.cleanupUnjournaledArtifacts()
+                _ = try makeShortcutTransaction(in: installRoot).converge(
+                    transactionID: nonce
+                )
+            }
         } catch {
             NSLog(
                 "Darkbloom installed successfully but could not create %@: %@",
@@ -560,53 +612,6 @@ struct AppInstallCoordinator {
             )
         }
         return shortVersion
-    }
-
-    private func ensureUserShortcut(nonce: String) throws {
-        let shortcutRoot = userShortcutURL.deletingLastPathComponent()
-        try prepareWritableDirectory(shortcutRoot)
-
-        if itemExists(at: userShortcutURL),
-           sameResolvedPath(userShortcutURL, destinationURL)
-        {
-            return
-        }
-
-        let temporaryURL = shortcutRoot.appendingPathComponent(
-            ".Darkbloom.app.shortcut-\(nonce)"
-        )
-        let backupURL = shortcutRoot.appendingPathComponent(
-            ".Darkbloom.app.shortcut-backup-\(nonce)"
-        )
-        defer { try? fileManager.removeItem(at: temporaryURL) }
-
-        do {
-            try fileManager.createSymbolicLink(
-                atPath: temporaryURL.path,
-                withDestinationPath: destinationURL.path
-            )
-
-            if itemExists(at: userShortcutURL) {
-                guard isOwnedBundle(at: userShortcutURL) else {
-                    return
-                }
-                try fileManager.moveItem(at: userShortcutURL, to: backupURL)
-                do {
-                    try fileManager.moveItem(at: temporaryURL, to: userShortcutURL)
-                } catch {
-                    try? fileManager.moveItem(at: backupURL, to: userShortcutURL)
-                    throw error
-                }
-                try? fileManager.removeItem(at: backupURL)
-            } else {
-                try fileManager.moveItem(at: temporaryURL, to: userShortcutURL)
-            }
-        } catch {
-            throw AppInstallCoordinatorError.installFailed(
-                path: userShortcutURL.path,
-                reason: error.localizedDescription
-            )
-        }
     }
 
     private func prepareWritableDirectory(_ directory: URL) throws {

@@ -99,8 +99,15 @@ known transition and refuses every ambiguous combination without moving live
 content.
 An unrelated canonical destination is retained exactly once as
 `Darkbloom.app.foreign-<id>`. The convenience symlink is created or repaired
-only when doing so cannot replace an unrelated file or app. The app opens the
-verified canonical destination and terminates the source instance; failure
+only when doing so cannot replace an unrelated file or app. Shortcut replacement
+uses the same fixed journal and mutation lock as relocation. If a process exits
+between moving an owned `~/Applications/Darkbloom.app`, publishing the symlink,
+and retiring the backup, the next app launch validates the recorded directory
+and artifact identities plus app ownership before restoring or removing
+anything. Pre-journal `.Darkbloom.app.shortcut-backup-<id>` artifacts are
+adopted in sorted order; owned backups are restored or retired and unrelated
+entries are left unchanged. The app opens the verified canonical destination
+and terminates the source instance; failure
 shows an installation error and never continues provider setup from the
 disposable path. Unsigned `dev.darkbloom.app` builds never relocate, and the
 debug-only `DARKBLOOM_SKIP_APP_RELOCATION=1` seam supports harnesses without

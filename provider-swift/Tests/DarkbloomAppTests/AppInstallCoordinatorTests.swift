@@ -310,10 +310,51 @@ struct AppInstallCoordinatorTests {
             $0.executable.path == "/usr/bin/codesign"
                 && $0.arguments.last == fixture.shortcut.path
         }
-        #expect(shortcutOwnershipChecks.count == 2)
+        #expect(shortcutOwnershipChecks.count >= 2)
         #expect(shortcutOwnershipChecks.allSatisfy {
             $0.arguments == signatureArguments(for: fixture.shortcut)
         })
+    }
+
+    @Test("managed launch recovers an interrupted owned shortcut replacement")
+    func managedLaunchRecoversInterruptedShortcutReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: shippingBundleIdentifier,
+            payload: "managed"
+        )
+        _ = try fixture.makeApp(
+            at: fixture.shortcut,
+            identifier: shippingBundleIdentifier,
+            payload: "old-home-app"
+        )
+
+        let firstResult = try fixture.coordinator(
+            source: fixture.destination,
+            executor: RecordingExecutor(),
+            shortcutFaultInjector: failCoordinatorShortcutOnce(
+                at: .previousShortcutMoved
+            )
+        ).coordinate()
+
+        #expect(firstResult == .continueLaunch)
+        #expect(!FileManager.default.fileExists(atPath: fixture.shortcut.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.relocationJournal.path))
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.shortcutBackup.path
+        ))
+
+        let restartedResult = try fixture.coordinator(
+            source: fixture.destination,
+            executor: RecordingExecutor()
+        ).coordinate()
+
+        #expect(restartedResult == .continueLaunch)
+        try fixture.expectValidShortcut()
+        #expect(!FileManager.default.fileExists(atPath: fixture.shortcutBackup.path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.relocationJournal.path))
     }
 
     @Test("foreign managed destination is preserved instead of overwritten")
@@ -1410,6 +1451,8 @@ private func signatureArguments(for url: URL) -> [String] {
 
 private struct InjectedRelocationFault: Error {}
 
+private struct InjectedShortcutCoordinatorFault: Error {}
+
 private func failOnce(
     at target: AppRelocationTransaction.FaultPoint
 ) -> (AppRelocationTransaction.FaultPoint) throws -> Void {
@@ -1418,6 +1461,17 @@ private func failOnce(
         guard point == target, !hasFailed else { return }
         hasFailed = true
         throw InjectedRelocationFault()
+    }
+}
+
+private func failCoordinatorShortcutOnce(
+    at target: AppUserShortcutTransaction.FaultPoint
+) -> (AppUserShortcutTransaction.FaultPoint) throws -> Void {
+    var hasFailed = false
+    return { point in
+        guard point == target, !hasFailed else { return }
+        hasFailed = true
+        throw InjectedShortcutCoordinatorFault()
     }
 }
 
@@ -1547,6 +1601,13 @@ private struct Fixture {
         )
     }
 
+    var shortcutBackup: URL {
+        shortcut.deletingLastPathComponent().appendingPathComponent(
+            ".Darkbloom.app.shortcut-backup-00000000-0000-0000-0000-000000000001",
+            isDirectory: true
+        )
+    }
+
     var relocationStaging: URL {
         installRoot.appendingPathComponent(
             ".Darkbloom.app.relocation-00000000-0000-0000-0000-000000000001",
@@ -1590,7 +1651,9 @@ private struct Fixture {
         executor: RecordingExecutor,
         environment: [String: String] = [:],
         relocationFaultInjector:
-            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in }
+            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in },
+        shortcutFaultInjector:
+            @escaping (AppUserShortcutTransaction.FaultPoint) throws -> Void = { _ in }
     ) -> AppInstallCoordinator {
         AppInstallCoordinator(
             homeDirectory: home,
@@ -1602,7 +1665,8 @@ private struct Fixture {
             makeUUID: {
                 UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
             },
-            relocationFaultInjector: relocationFaultInjector
+            relocationFaultInjector: relocationFaultInjector,
+            shortcutFaultInjector: shortcutFaultInjector
         )
     }
 

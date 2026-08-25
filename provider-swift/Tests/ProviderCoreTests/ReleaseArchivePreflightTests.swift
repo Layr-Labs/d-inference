@@ -233,7 +233,7 @@ struct ReleaseArchivePreflightTests {
                 "negative-mtime",
                 "mtime",
                 "-1",
-                "canonical timestamp"
+                "PAX mtime"
             ),
             (
                 "overprecise-mtime",

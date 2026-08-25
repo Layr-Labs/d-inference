@@ -350,7 +350,7 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			name:  "negative mtime",
 			key:   "mtime",
 			value: "-1",
-			want:  "canonical timestamp",
+			want:  "PAX mtime",
 		},
 		{
 			name:  "overprecise mtime",

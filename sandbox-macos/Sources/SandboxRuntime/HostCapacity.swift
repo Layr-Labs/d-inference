@@ -171,17 +171,20 @@ public struct SandboxCapacitySnapshot: Equatable, Sendable {
     public let leases: [SandboxCapacityLease]
     public let effectivePolicy: SandboxCapacityPolicy
     public let policyRevision: UInt64
+    public let nextFencingToken: UInt64
 
     public init(
         mode: SandboxHostMode,
         leases: [SandboxCapacityLease],
         effectivePolicy: SandboxCapacityPolicy,
-        policyRevision: UInt64
+        policyRevision: UInt64,
+        nextFencingToken: UInt64
     ) {
         self.mode = mode
         self.leases = leases
         self.effectivePolicy = effectivePolicy
         self.policyRevision = policyRevision
+        self.nextFencingToken = nextFencingToken
     }
 }
 

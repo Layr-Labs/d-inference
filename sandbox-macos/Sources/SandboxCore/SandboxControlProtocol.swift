@@ -258,17 +258,20 @@ public struct SandboxWireHostHeartbeat: Codable, Equatable, Sendable {
     public let mode: String
     public let availableCPU: UInt16
     public let availableMemoryBytes: UInt64
+    public let nextFencingToken: UInt64
     public let leases: [SandboxWireHostLeaseObservation]
 
     public init(
         mode: String,
         availableCPU: UInt16,
         availableMemoryBytes: UInt64,
+        nextFencingToken: UInt64,
         leases: [SandboxWireHostLeaseObservation]
     ) {
         self.mode = mode
         self.availableCPU = availableCPU
         self.availableMemoryBytes = availableMemoryBytes
+        self.nextFencingToken = nextFencingToken
         self.leases = leases
     }
 
@@ -276,6 +279,7 @@ public struct SandboxWireHostHeartbeat: Codable, Equatable, Sendable {
         case mode
         case availableCPU = "available_cpu"
         case availableMemoryBytes = "available_memory_bytes"
+        case nextFencingToken = "next_fencing_token"
         case leases
     }
 }

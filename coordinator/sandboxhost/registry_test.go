@@ -28,10 +28,11 @@ func TestSessionEnforcesIdentityAndMonotonicSequence(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	heartbeat := &protocol.SandboxHostHeartbeatPayload{
-		Mode:            "sandbox_dedicated",
-		AvailableCPU:    8,
-		AvailableMemory: 24 * 1024 * 1024 * 1024,
-		Leases:          []protocol.SandboxHostLeaseObservation{},
+		Mode:             "sandbox_dedicated",
+		AvailableCPU:     8,
+		AvailableMemory:  24 * 1024 * 1024 * 1024,
+		NextFencingToken: 1,
+		Leases:           []protocol.SandboxHostLeaseObservation{},
 	}
 	message := protocol.SandboxDecodedMessage{
 		Header:  testHeader(protocol.SandboxTypeHostHeartbeat, 2),
@@ -135,8 +136,9 @@ func TestReplacementCancelsSupersededMessageAuthority(t *testing.T) {
 			protocol.SandboxDecodedMessage{
 				Header: testHeader(protocol.SandboxTypeHostHeartbeat, 2),
 				Payload: &protocol.SandboxHostHeartbeatPayload{
-					Mode:   "sandbox_dedicated",
-					Leases: []protocol.SandboxHostLeaseObservation{},
+					Mode:             "sandbox_dedicated",
+					NextFencingToken: 1,
+					Leases:           []protocol.SandboxHostLeaseObservation{},
 				},
 			},
 		)

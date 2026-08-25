@@ -229,10 +229,11 @@ func sandboxHostHeartbeatFrame(
 		ConnectionEpoch: testSandboxHostEpoch,
 		Sequence:        sequence,
 		Payload: protocol.SandboxHostHeartbeatPayload{
-			Mode:            "sandbox_dedicated",
-			AvailableCPU:    8,
-			AvailableMemory: 32 * 1024 * 1024 * 1024,
-			Leases:          []protocol.SandboxHostLeaseObservation{},
+			Mode:             "sandbox_dedicated",
+			AvailableCPU:     8,
+			AvailableMemory:  32 * 1024 * 1024 * 1024,
+			NextFencingToken: 1,
+			Leases:           []protocol.SandboxHostLeaseObservation{},
 		},
 	}
 }

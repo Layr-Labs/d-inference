@@ -266,10 +266,11 @@ func TestSandboxCodecRequiresZeroValuedAndCollectionFields(t *testing.T) {
 		ConnectionEpoch: testSandboxEpoch,
 		Sequence:        12,
 		Payload: SandboxHostHeartbeatPayload{
-			Mode:            "sandbox_dedicated",
-			AvailableCPU:    12,
-			AvailableMemory: 48 * sandboxGibibyte,
-			Leases:          []SandboxHostLeaseObservation{},
+			Mode:             "sandbox_dedicated",
+			AvailableCPU:     12,
+			AvailableMemory:  48 * sandboxGibibyte,
+			NextFencingToken: 1,
+			Leases:           []SandboxHostLeaseObservation{},
 		},
 	}
 	validHeartbeat := string(marshalSandboxFrame(t, heartbeat))
@@ -279,6 +280,18 @@ func TestSandboxCodecRequiresZeroValuedAndCollectionFields(t *testing.T) {
 			validHeartbeat,
 			`"leases":[]`,
 			`"leases":null`,
+			1,
+		),
+		"missing next fencing token": strings.Replace(
+			validHeartbeat,
+			`,"next_fencing_token":1`,
+			"",
+			1,
+		),
+		"zero next fencing token": strings.Replace(
+			validHeartbeat,
+			`"next_fencing_token":1`,
+			`"next_fencing_token":0`,
 			1,
 		),
 	} {

@@ -77,6 +77,13 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.delete(name: name, scope: scope)
     }
 
+    package func deleteAndRelease(
+        scope: SandboxOperationScope,
+        name: String
+    ) async throws {
+        try await runtime.deleteAndRelease(name: name, scope: scope)
+    }
+
     public func release(
         scope: SandboxOperationScope,
         name: String

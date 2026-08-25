@@ -235,6 +235,45 @@ public struct SandboxHostCapacityArbiter: Sendable {
             SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound,
         expiresAt: Date
     ) throws -> SandboxCapacityLease {
+        try reserve(
+            sandboxID: sandboxID,
+            generation: generation,
+            authoritativeScope: nil,
+            virtualMachineName: virtualMachineName,
+            resources: resources,
+            bootDiskBytes: bootDiskBytes,
+            expiresAt: expiresAt
+        )
+    }
+
+    public func reserve(
+        authoritativeScope: SandboxOperationScope,
+        virtualMachineName: String,
+        resources: SandboxResourceSpecification,
+        bootDiskBytes: UInt64 =
+            SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound,
+        expiresAt: Date
+    ) throws -> SandboxCapacityLease {
+        try reserve(
+            sandboxID: authoritativeScope.sandboxID,
+            generation: authoritativeScope.generation,
+            authoritativeScope: authoritativeScope,
+            virtualMachineName: virtualMachineName,
+            resources: resources,
+            bootDiskBytes: bootDiskBytes,
+            expiresAt: expiresAt
+        )
+    }
+
+    private func reserve(
+        sandboxID: SandboxID,
+        generation: SandboxGeneration,
+        authoritativeScope: SandboxOperationScope?,
+        virtualMachineName: String,
+        resources: SandboxResourceSpecification,
+        bootDiskBytes: UInt64,
+        expiresAt: Date
+    ) throws -> SandboxCapacityLease {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
         }
@@ -252,6 +291,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
             in: &preview,
             sandboxID: sandboxID,
             generation: generation,
+            authoritativeScope: authoritativeScope,
             virtualMachineName: virtualMachineName,
             resources: resources,
             bootDiskBytes: bootDiskBytes,
@@ -267,6 +307,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 in: &state,
                 sandboxID: sandboxID,
                 generation: generation,
+                authoritativeScope: authoritativeScope,
                 virtualMachineName: virtualMachineName,
                 resources: resources,
                 bootDiskBytes: bootDiskBytes,
@@ -437,6 +478,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         in state: inout SandboxCapacityState,
         sandboxID: SandboxID,
         generation: SandboxGeneration,
+        authoritativeScope: SandboxOperationScope?,
         virtualMachineName: String,
         resources: SandboxResourceSpecification,
         bootDiskBytes: UInt64,
@@ -458,6 +500,11 @@ public struct SandboxHostCapacityArbiter: Sendable {
                     existing: existing.scope.generation,
                     requested: generation
                 )
+            }
+            if let authoritativeScope {
+                guard existing.scope == authoritativeScope else {
+                    throw SandboxCapacityError.staleFencingToken
+                }
             }
             guard existing.expiresAt > now else {
                 throw SandboxCapacityError.leaseExpired
@@ -543,7 +590,20 @@ public struct SandboxHostCapacityArbiter: Sendable {
             reservedGrowthBytes: newGrowth,
             policy: policy
         )
-        let fencingToken = try Self.issueFencingToken(in: &state)
+        let fencingToken: SandboxFencingToken
+        if let authoritativeScope {
+            let requested = authoritativeScope.fencingToken.rawValue
+            guard requested >= state.nextFencingToken else {
+                throw SandboxCapacityError.staleFencingToken
+            }
+            guard requested < UInt64.max else {
+                throw SandboxCapacityError.fencingTokenExhausted
+            }
+            fencingToken = authoritativeScope.fencingToken
+            state.nextFencingToken = requested + 1
+        } else {
+            fencingToken = try Self.issueFencingToken(in: &state)
+        }
 
         let lease = SandboxCapacityLease(
             scope: SandboxOperationScope(
@@ -694,7 +754,8 @@ public struct SandboxHostCapacityArbiter: Sendable {
                 $0.scope.fencingToken < $1.scope.fencingToken
             },
             effectivePolicy: state.effectivePolicy,
-            policyRevision: state.policyRevision
+            policyRevision: state.policyRevision,
+            nextFencingToken: state.nextFencingToken
         )
     }
 }

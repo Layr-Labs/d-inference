@@ -557,6 +557,29 @@ extension LumeVirtualMachineRuntime {
         name: String,
         scope: SandboxOperationScope?
     ) async throws {
+        try await performDelete(
+            name: name,
+            scope: scope,
+            releaseCapacity: false
+        )
+    }
+
+    func deleteAndRelease(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws {
+        try await performDelete(
+            name: name,
+            scope: scope,
+            releaseCapacity: true
+        )
+    }
+
+    private func performDelete(
+        name: String,
+        scope: SandboxOperationScope?,
+        releaseCapacity: Bool
+    ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -565,7 +588,10 @@ extension LumeVirtualMachineRuntime {
             operation: .delete,
             virtualMachineName: name
         )
-        let operationLock = try beginOperation("delete", name: name)
+        let operationLock = try beginOperation(
+            releaseCapacity ? "delete-and-release" : "delete",
+            name: name
+        )
         defer {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
@@ -584,6 +610,11 @@ extension LumeVirtualMachineRuntime {
             try requireUnlistedVirtualMachineIsUnowned(
                 name: name,
                 owner: owner
+            )
+            try releaseCapacityIfRequested(
+                releaseCapacity,
+                scope: scope,
+                authorization: leaseAuthorization
             )
             return
         }
@@ -620,6 +651,33 @@ extension LumeVirtualMachineRuntime {
                 "Lume delete completed but VM still exists"
             )
         }
+        try releaseCapacityIfRequested(
+            releaseCapacity,
+            scope: scope,
+            authorization: leaseAuthorization
+        )
+    }
+
+    private func releaseCapacityIfRequested(
+        _ releaseCapacity: Bool,
+        scope: SandboxOperationScope?,
+        authorization: SandboxLeaseMutationAuthorization?
+    ) throws {
+        guard releaseCapacity else {
+            return
+        }
+        guard let capacityArbiter,
+              let scope,
+              let authorization
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "capacity release requires a fenced lease authorization"
+            )
+        }
+        try capacityArbiter.release(
+            scope: scope,
+            holding: authorization
+        )
     }
 
     func beginOperation(

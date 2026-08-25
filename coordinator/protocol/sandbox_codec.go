@@ -433,6 +433,9 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 		if value.Mode != "sandbox_dedicated" && value.Mode != "draining" {
 			return errors.New("sandbox host mode is invalid")
 		}
+		if value.NextFencingToken == 0 {
+			return errors.New("sandbox host fencing high-water mark is invalid")
+		}
 		if len(value.Leases) > sandboxMaximumHostSlots {
 			return errors.New("sandbox host reported too many leases")
 		}
@@ -643,7 +646,7 @@ func optionalSandboxStringBytes(value *string) int {
 
 func knownSandboxOperation(value string) bool {
 	switch value {
-	case "prepare", "stop", "delete":
+	case "prepare", "renew", "stop", "delete":
 		return true
 	default:
 		return false

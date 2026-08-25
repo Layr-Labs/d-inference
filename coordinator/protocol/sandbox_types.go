@@ -105,10 +105,11 @@ type SandboxHostLeaseObservation struct {
 }
 
 type SandboxHostHeartbeatPayload struct {
-	Mode            string                        `json:"mode"`
-	AvailableCPU    uint16                        `json:"available_cpu"`
-	AvailableMemory uint64                        `json:"available_memory_bytes"`
-	Leases          []SandboxHostLeaseObservation `json:"leases"`
+	Mode             string                        `json:"mode"`
+	AvailableCPU     uint16                        `json:"available_cpu"`
+	AvailableMemory  uint64                        `json:"available_memory_bytes"`
+	NextFencingToken uint64                        `json:"next_fencing_token"`
+	Leases           []SandboxHostLeaseObservation `json:"leases"`
 }
 
 type SandboxOperationStatePayload struct {

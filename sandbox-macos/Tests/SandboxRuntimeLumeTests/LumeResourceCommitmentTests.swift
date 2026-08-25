@@ -62,6 +62,34 @@ final class LumeResourceCommitmentTests: XCTestCase {
         )
     }
 
+    func testDeleteAndReleaseRemovesOwnedVMAndCapacityLease() async throws {
+        let baseline = ResourceCommitmentValues.baseline
+        let fixture = try FakeLumeFixture(
+            initialState: "stopped",
+            observedCPUCount: baseline.cpuCount,
+            observedMemoryBytes: baseline.memoryBytes,
+            observedDiskBytes: baseline.diskBytes
+        )
+        defer { try? fixture.remove() }
+        let context = try makeContext(
+            fixture: fixture,
+            lease: baseline,
+            ownership: baseline
+        )
+
+        try await context.runtime.deleteAndRelease(
+            scope: context.lease.scope,
+            name: context.lease.virtualMachineName
+        )
+
+        XCTAssertTrue(try context.arbiter.snapshot().leases.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
     private func assertIndependentDriftIsRejected(
         dimension: ResourceCommitmentDimension
     ) async throws {

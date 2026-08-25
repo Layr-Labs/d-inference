@@ -135,6 +135,89 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
     }
 
+    func testAcceptsCoordinatorFencingTokenAndAdvancesDurableHighWatermark()
+        throws
+    {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let sandboxID = SandboxID()
+        let scope = SandboxOperationScope(
+            sandboxID: sandboxID,
+            generation: try generation(1),
+            fencingToken: try fencingToken(41)
+        )
+        let resources = try makeResources()
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+
+        let lease = try arbiter.reserve(
+            authoritativeScope: scope,
+            virtualMachineName: "sandbox-authoritative",
+            resources: resources,
+            expiresAt: now.addingTimeInterval(120)
+        )
+        XCTAssertEqual(lease.scope, scope)
+        XCTAssertEqual(try arbiter.snapshot().nextFencingToken, 42)
+        XCTAssertEqual(
+            try arbiter.reserve(
+                authoritativeScope: scope,
+                virtualMachineName: "sandbox-authoritative",
+                resources: resources,
+                expiresAt: now.addingTimeInterval(180)
+            ),
+            lease,
+            "an authoritative prepare retry must return the original lease"
+        )
+
+        let second = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-local-after-authoritative",
+            resources: resources,
+            expiresAt: now.addingTimeInterval(120)
+        )
+        XCTAssertEqual(second.scope.fencingToken.rawValue, 42)
+
+        let reopened = try makeArbiter(stateDirectory: stateDirectory)
+        XCTAssertEqual(try reopened.snapshot().nextFencingToken, 43)
+        assertCapacityError(.staleFencingToken) {
+            _ = try reopened.reserve(
+                authoritativeScope: SandboxOperationScope(
+                    sandboxID: SandboxID(),
+                    generation: try generation(1),
+                    fencingToken: try fencingToken(40)
+                ),
+                virtualMachineName: "sandbox-stale-authority",
+                resources: resources,
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+    }
+
+    func testRejectsExhaustedCoordinatorFencingTokenWithoutMutation() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+
+        assertCapacityError(.fencingTokenExhausted) {
+            _ = try arbiter.reserve(
+                authoritativeScope: SandboxOperationScope(
+                    sandboxID: SandboxID(),
+                    generation: try generation(1),
+                    fencingToken: try fencingToken(UInt64.max)
+                ),
+                virtualMachineName: "sandbox-token-exhaustion",
+                resources: try makeResources(),
+                expiresAt: now.addingTimeInterval(120)
+            )
+        }
+        XCTAssertEqual(try arbiter.snapshot().nextFencingToken, 1)
+        XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+    }
+
     func testEnforcesAggregateBootAndWorkspaceGrowthReservation() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }

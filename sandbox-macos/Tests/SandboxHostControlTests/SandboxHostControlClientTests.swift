@@ -339,6 +339,7 @@ private struct FixedHeartbeatSource: SandboxHostHeartbeatSource {
             mode: "sandbox_dedicated",
             availableCPU: 8,
             availableMemoryBytes: 32 * SandboxResourcePolicy.gibibyte,
+            nextFencingToken: 1,
             leases: []
         )
     }

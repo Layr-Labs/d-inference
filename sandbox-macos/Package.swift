@@ -107,7 +107,12 @@ let package = Package(
         ),
         .testTarget(
             name: "DarkbloomSandboxDaemonTests",
-            dependencies: ["DarkbloomSandboxDaemon"],
+            dependencies: [
+                "DarkbloomSandboxDaemon",
+                "SandboxCore",
+                "SandboxHostControl",
+                "SandboxRuntime",
+            ],
             path: "Tests/DarkbloomSandboxDaemonTests"
         ),
     ]

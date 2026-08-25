@@ -35,6 +35,12 @@ final class ModelLibraryStore {
     @ObservationIgnored
     private let liveCLI: (any ModelCatalogCLIRunning)?
 
+    /// Capacity plans come from the same manifest/staging inspection used by
+    /// the CLI downloader. Keep them with the rendered snapshot so the app
+    /// cannot bypass the CLI's 2 GiB post-download reserve before spawning it.
+    @ObservationIgnored
+    private var downloadPlans: [ModelSummary.ID: CLIModelDownloadStoragePlan]
+
     /// One consumer task per in-flight CLI download (cancel ⇒ pause ⇒ the
     /// child is terminated; its staged bytes stay on disk for resume).
     @ObservationIgnored
@@ -60,6 +66,7 @@ final class ModelLibraryStore {
         models = state.models
         selectedModelID = state.selectedModelID
         liveCLI = nil
+        downloadPlans = [:]
     }
 
     /// Live mode: rows are built by `start()`/`refreshCatalog` from
@@ -70,6 +77,7 @@ final class ModelLibraryStore {
         models = []
         selectedModelID = nil
         liveCLI = cli
+        downloadPlans = [:]
     }
 
     deinit {
@@ -220,6 +228,9 @@ final class ModelLibraryStore {
 
         switch models[index].installation {
         case .notInstalled:
+            if let message = storageAdmissionFailure(for: modelID) {
+                return record(.unavailable(message))
+            }
             if isLive {
                 startLiveDownload(at: index, resumeCredit: 0)
                 return record(.applied)
@@ -233,6 +244,9 @@ final class ModelLibraryStore {
             return record(.applied)
 
         case .failed(let failure):
+            if let message = storageAdmissionFailure(for: modelID) {
+                return record(.unavailable(message))
+            }
             if isLive {
                 let credit = failure.isResumable
                     ? (failure.resumableProgress?.downloadedBytes ?? 0)
@@ -273,6 +287,9 @@ final class ModelLibraryStore {
     @discardableResult
     func resumeDownload(modelID: ModelSummary.ID) -> ModelLibraryActionResult {
         guard let index = index(of: modelID) else { return record(.modelNotFound) }
+        if let message = storageAdmissionFailure(for: modelID) {
+            return record(.unavailable(message))
+        }
 
         if isLive {
             let resumeCredit: Int64
@@ -535,6 +552,7 @@ final class ModelLibraryStore {
     /// The one exception: once the local scan contains the model, disk truth
     /// wins (publish racing the stream has resolved as success).
     private func apply(snapshot: ModelLibrarySnapshot) {
+        downloadPlans = snapshot.downloadPlans
         let localIDs = Set(snapshot.local.map(\.id))
         let catalogIDs = Set(snapshot.catalog.map(\.id))
         let existingByID = Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -623,6 +641,21 @@ final class ModelLibraryStore {
 
     private func index(of modelID: ModelSummary.ID) -> Int? {
         models.firstIndex { $0.id == modelID }
+    }
+
+    private func storageAdmissionFailure(for modelID: ModelSummary.ID) -> String? {
+        guard let plan = downloadPlans[modelID], !plan.hasSufficientCapacity else {
+            return nil
+        }
+        let required = ByteCountFormatter.string(
+            fromByteCount: plan.requiredAvailableBytes,
+            countStyle: .file
+        )
+        let available = plan.availableBytes.map {
+            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+        } ?? "unknown"
+        return "Not enough disk space to download this model while preserving "
+            + "Darkbloom's safety reserve (requires \(required), \(available) available)."
     }
 
     private func emptyProgress(for model: ModelSummary) -> ModelTransferProgress {

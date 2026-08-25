@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	MaxSandboxListLimit = 1000
+	MaxSandboxListLimit    = 1000
+	maxSandboxFencingToken = uint64(^uint64(0)>>1) - 1
 
 	SandboxStatePreparing = "preparing"
 	SandboxStateReady     = "ready"
@@ -118,6 +119,7 @@ type SandboxOperation struct {
 	State                   string     `json:"state"`
 	Generation              uint64     `json:"generation"`
 	FencingToken            uint64     `json:"fencing_token"`
+	RequestedFencingToken   uint64     `json:"requested_fencing_token,omitempty"`
 	PreviousSandboxState    string     `json:"previous_sandbox_state"`
 	DeleteAfterStop         bool       `json:"delete_after_stop"`
 	RequestedLeaseExpiresAt time.Time  `json:"requested_lease_expires_at,omitempty"`
@@ -336,7 +338,8 @@ func applySandboxOperationTransition(
 				return ErrSandboxConflict
 			}
 		} else {
-			if update.FencingToken <= sandbox.FencingToken {
+			if operation.RequestedFencingToken <= sandbox.FencingToken ||
+				update.FencingToken != operation.RequestedFencingToken {
 				return ErrSandboxConflict
 			}
 			if update.LeaseExpiresAt == nil ||

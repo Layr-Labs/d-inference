@@ -69,6 +69,9 @@ func sandboxSchemaMigrations() []string {
 			state TEXT NOT NULL,
 			generation BIGINT NOT NULL CHECK (generation > 0),
 			fencing_token BIGINT NOT NULL CHECK (fencing_token > 0),
+			requested_fencing_token BIGINT NOT NULL DEFAULT 0 CHECK (
+				requested_fencing_token >= 0
+			),
 			previous_sandbox_state TEXT NOT NULL DEFAULT '',
 			delete_after_stop BOOLEAN NOT NULL DEFAULT FALSE,
 			requested_lease_expires_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch',
@@ -107,6 +110,9 @@ func sandboxSchemaMigrations() []string {
 			ADD COLUMN IF NOT EXISTS last_dispatched_at TIMESTAMPTZ`,
 		`ALTER TABLE sandbox_host_operations
 			ADD COLUMN IF NOT EXISTS last_dispatch_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sandbox_host_operations
+			ADD COLUMN IF NOT EXISTS requested_fencing_token
+			BIGINT NOT NULL DEFAULT 0 CHECK (requested_fencing_token >= 0)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_idempotency
 			ON sandbox_host_operations(account_id, sandbox_id, idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_sandbox_operations_sandbox_created
@@ -156,5 +162,37 @@ func sandboxSchemaMigrations() []string {
 			WHERE state NOT IN (
 				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
 			)`,
+		`CREATE TABLE IF NOT EXISTS sandbox_host_fencing_sequences (
+			host_id UUID PRIMARY KEY,
+			next_token BIGINT NOT NULL CHECK (next_token > 0)
+		)`,
+		`INSERT INTO sandbox_host_fencing_sequences (host_id, next_token)
+		 SELECT host_id,
+		   CASE
+		     WHEN MAX(fencing_token) >= 9223372036854775806
+		     THEN 9223372036854775807
+		     ELSE MAX(fencing_token) + 1
+		   END
+		 FROM (
+		   SELECT host_id, fencing_token
+		   FROM sandboxes
+		   UNION ALL
+		   SELECT sandboxes.host_id,
+		     GREATEST(
+		       sandbox_host_operations.fencing_token,
+		       sandbox_host_operations.requested_fencing_token
+		     )
+		   FROM sandbox_host_operations
+		   JOIN sandboxes
+		     ON sandboxes.id = sandbox_host_operations.sandbox_id
+		 ) AS issued_fences
+		 GROUP BY host_id
+		 ON CONFLICT (host_id) DO UPDATE
+		 SET next_token = GREATEST(
+		   sandbox_host_fencing_sequences.next_token,
+		   EXCLUDED.next_token
+		 )`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_host_fencing_token
+			ON sandboxes(host_id, fencing_token)`,
 	}
 }

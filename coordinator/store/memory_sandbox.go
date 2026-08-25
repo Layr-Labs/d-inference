@@ -56,11 +56,22 @@ func (s *MemoryStore) CreateSandbox(
 		hostActive >= limits.MaximumPerHost {
 		return nil, nil, false, ErrSandboxCapacity
 	}
-	s.sandboxes[sandbox.ID] = cloneSandboxRecord(sandbox)
-	s.sandboxOperations[operation.ID] = cloneSandboxOperation(operation)
+	fencingToken, err := s.allocateSandboxFencingTokenLocked(
+		sandbox.HostID,
+		sandbox.FencingToken,
+	)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	storedSandbox := cloneSandboxRecord(sandbox)
+	storedOperation := cloneSandboxOperation(operation)
+	storedSandbox.FencingToken = fencingToken
+	storedOperation.FencingToken = fencingToken
+	s.sandboxes[sandbox.ID] = storedSandbox
+	s.sandboxOperations[operation.ID] = storedOperation
 	s.sandboxByIdempotency[idempotencyIndex] = sandbox.ID
-	return cloneSandboxRecord(sandbox),
-		cloneSandboxOperation(operation),
+	return cloneSandboxRecord(storedSandbox),
+		cloneSandboxOperation(storedOperation),
 		true,
 		nil
 }
@@ -239,16 +250,27 @@ func (s *MemoryStore) BeginSandboxOperation(
 			return nil, nil, false, ErrSandboxConflict
 		}
 	}
+	storedOperation := cloneSandboxOperation(operation)
+	if storedOperation.Kind == SandboxOperationKindRenew {
+		fencingToken, err := s.allocateSandboxFencingTokenLocked(
+			sandbox.HostID,
+			storedOperation.RequestedFencingToken,
+		)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		storedOperation.RequestedFencingToken = fencingToken
+	}
 	sandbox.State = targetState
-	if operation.Kind == SandboxOperationKindDelete ||
-		operation.DeleteAfterStop {
+	if storedOperation.Kind == SandboxOperationKindDelete ||
+		storedOperation.DeleteAfterStop {
 		sandbox.TerminationRequested = true
 	}
 	sandbox.ErrorCode = ""
-	sandbox.UpdatedAt = operation.UpdatedAt
-	s.sandboxOperations[operation.ID] = cloneSandboxOperation(operation)
+	sandbox.UpdatedAt = storedOperation.UpdatedAt
+	s.sandboxOperations[storedOperation.ID] = storedOperation
 	return cloneSandboxRecord(sandbox),
-		cloneSandboxOperation(operation),
+		cloneSandboxOperation(storedOperation),
 		true,
 		nil
 }
@@ -598,6 +620,21 @@ func sandboxIdempotencyIndex(accountID string, idempotencyKey string) string {
 	return accountID + "\x00" + idempotencyKey
 }
 
+func (s *MemoryStore) allocateSandboxFencingTokenLocked(
+	hostID string,
+	minimum uint64,
+) (uint64, error) {
+	next := s.sandboxNextFencingToken[hostID]
+	if next < minimum {
+		next = minimum
+	}
+	if next == 0 || next > maxSandboxFencingToken {
+		return 0, ErrSandboxConflict
+	}
+	s.sandboxNextFencingToken[hostID] = next + 1
+	return next, nil
+}
+
 func (s *MemoryStore) existingSandboxCreateLocked(
 	existingID string,
 ) (*SandboxRecord, *SandboxOperation, bool, error) {
@@ -636,6 +673,7 @@ func validateSandboxCreate(
 		operation.State != SandboxOperationPending ||
 		operation.Generation != sandbox.Generation ||
 		operation.FencingToken != sandbox.FencingToken ||
+		operation.RequestedFencingToken != 0 ||
 		operation.CreatedAt.IsZero() ||
 		operation.UpdatedAt.IsZero() {
 		return ErrSandboxInvalidTransition
@@ -662,16 +700,19 @@ func validateSandboxOperationStart(
 	switch operation.Kind {
 	case SandboxOperationKindRenew:
 		if targetState != operation.PreviousSandboxState ||
-			operation.RequestedLeaseExpiresAt.IsZero() {
+			operation.RequestedLeaseExpiresAt.IsZero() ||
+			operation.RequestedFencingToken <= operation.FencingToken {
 			return ErrSandboxInvalidTransition
 		}
 	case SandboxOperationKindStop:
 		if targetState != SandboxStateStopping ||
-			operation.PreviousSandboxState != SandboxStateReady {
+			operation.PreviousSandboxState != SandboxStateReady ||
+			operation.RequestedFencingToken != 0 {
 			return ErrSandboxInvalidTransition
 		}
 	case SandboxOperationKindDelete:
 		if targetState != SandboxStateDeleting ||
+			operation.RequestedFencingToken != 0 ||
 			(operation.PreviousSandboxState != SandboxStateStopped &&
 				operation.PreviousSandboxState != SandboxStateFailed) {
 			return ErrSandboxInvalidTransition

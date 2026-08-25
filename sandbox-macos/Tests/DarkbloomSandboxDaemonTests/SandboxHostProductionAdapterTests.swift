@@ -87,6 +87,7 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         let renew = SandboxWireLeaseRenew(
             operationID: UUID(),
             scope: prepare.scope,
+            requestedFencingToken: SandboxFencingToken(rawValue: 21)!,
             leaseExpiresAt: Fixture.timestamp(
                 fixture.now.addingTimeInterval(240)
             )

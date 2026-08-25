@@ -29,6 +29,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 
 	// Clean tables for test isolation.
 	for _, table := range []string{
+		"sandbox_host_fencing_sequences",
 		"sandbox_commands",
 		"sandbox_host_operations",
 		"sandboxes",

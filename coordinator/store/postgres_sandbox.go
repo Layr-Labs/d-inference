@@ -20,8 +20,8 @@ const sandboxSelectColumns = `
 
 const sandboxOperationSelectColumns = `
 	id::text, sandbox_id::text, account_id, idempotency_key, kind, state,
-	generation, fencing_token, previous_sandbox_state, delete_after_stop,
-	requested_lease_expires_at, error_code, dispatch_attempts,
+	generation, fencing_token, requested_fencing_token, previous_sandbox_state,
+	delete_after_stop, requested_lease_expires_at, error_code, dispatch_attempts,
 	last_dispatched_at, last_dispatch_error, created_at, updated_at`
 
 const sandboxCommandSelectColumns = `
@@ -109,6 +109,19 @@ func (s *PostgresStore) CreateSandbox(
 		hostActive >= limits.MaximumPerHost {
 		return nil, nil, false, ErrSandboxCapacity
 	}
+	fencingToken, err := allocateSandboxFencingToken(
+		ctx,
+		tx,
+		sandbox.HostID,
+		sandbox.FencingToken,
+	)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	sandbox = cloneSandboxRecord(sandbox)
+	operation = cloneSandboxOperation(operation)
+	sandbox.FencingToken = fencingToken
+	operation.FencingToken = fencingToken
 	if _, err := tx.Exec(
 		ctx,
 		`INSERT INTO sandboxes (
@@ -336,6 +349,7 @@ func (s *PostgresStore) BeginSandboxOperation(
 	if err := validateSandboxOperationStart(operation, targetState); err != nil {
 		return nil, nil, false, err
 	}
+	operation = cloneSandboxOperation(operation)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("begin sandbox operation: %w", err)
@@ -407,6 +421,18 @@ func (s *PostgresStore) BeginSandboxOperation(
 			operation.DeleteAfterStop &&
 			sandbox.TerminationRequested) {
 		return nil, nil, false, ErrSandboxConflict
+	}
+	if operation.Kind == SandboxOperationKindRenew {
+		fencingToken, err := allocateSandboxFencingToken(
+			ctx,
+			tx,
+			sandbox.HostID,
+			operation.RequestedFencingToken,
+		)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		operation.RequestedFencingToken = fencingToken
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {
 		return nil, nil, false, err
@@ -1102,12 +1128,12 @@ func insertSandboxOperation(
 		ctx,
 		`INSERT INTO sandbox_host_operations (
 			id, sandbox_id, account_id, idempotency_key, kind, state,
-			generation, fencing_token, previous_sandbox_state,
-			delete_after_stop, requested_lease_expires_at, error_code,
-			created_at, updated_at
+			generation, fencing_token, requested_fencing_token,
+			previous_sandbox_state, delete_after_stop,
+			requested_lease_expires_at, error_code, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14
+			$14, $15
 		)`,
 		operation.ID,
 		operation.SandboxID,
@@ -1117,6 +1143,7 @@ func insertSandboxOperation(
 		operation.State,
 		operation.Generation,
 		operation.FencingToken,
+		operation.RequestedFencingToken,
 		operation.PreviousSandboxState,
 		operation.DeleteAfterStop,
 		operation.RequestedLeaseExpiresAt,
@@ -1145,6 +1172,42 @@ func getSandboxCommandByIdempotency(
 		sandboxID,
 		idempotencyKey,
 	))
+}
+
+func allocateSandboxFencingToken(
+	ctx context.Context,
+	tx pgx.Tx,
+	hostID string,
+	minimum uint64,
+) (uint64, error) {
+	if minimum == 0 || minimum > maxSandboxFencingToken {
+		return 0, ErrSandboxConflict
+	}
+	var issued int64
+	if err := tx.QueryRow(
+		ctx,
+		`INSERT INTO sandbox_host_fencing_sequences (host_id, next_token)
+		 VALUES ($1, $2 + 1)
+		 ON CONFLICT (host_id) DO UPDATE
+		 SET next_token = GREATEST(
+		   sandbox_host_fencing_sequences.next_token,
+		   $2
+		 ) + 1
+		 WHERE sandbox_host_fencing_sequences.next_token <= $3
+		 RETURNING next_token - 1`,
+		hostID,
+		int64(minimum),
+		int64(maxSandboxFencingToken),
+	).Scan(&issued); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrSandboxConflict
+		}
+		return 0, fmt.Errorf("allocate sandbox fencing token: %w", err)
+	}
+	if issued <= 0 || uint64(issued) > maxSandboxFencingToken {
+		return 0, ErrSandboxConflict
+	}
+	return uint64(issued), nil
 }
 
 func scanSandboxRecord(row rowScanner) (*SandboxRecord, error) {
@@ -1187,6 +1250,7 @@ func scanSandboxOperation(row rowScanner) (*SandboxOperation, error) {
 		&operation.State,
 		&operation.Generation,
 		&operation.FencingToken,
+		&operation.RequestedFencingToken,
 		&operation.PreviousSandboxState,
 		&operation.DeleteAfterStop,
 		&operation.RequestedLeaseExpiresAt,

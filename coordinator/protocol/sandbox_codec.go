@@ -33,6 +33,7 @@ const (
 	sandboxMaximumCPU       = 64
 	sandboxMaximumTimeout   = 900
 	sandboxMaximumHostSlots = 2
+	sandboxMaximumFence     = uint64(^uint64(0)>>1) - 1
 )
 
 var (
@@ -503,6 +504,8 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 	case *SandboxLeaseRenewPayload:
 		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
+			value.RequestedFencingToken <= value.Scope.FencingToken ||
+			value.RequestedFencingToken > sandboxMaximumFence ||
 			validateSandboxTimestamp(value.LeaseExpiresAt) != nil {
 			return errors.New("sandbox lease renewal is invalid")
 		}

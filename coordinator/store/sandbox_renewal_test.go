@@ -78,6 +78,7 @@ func TestSandboxStoreFailedRenewalPreservesAuthority(t *testing.T) {
 				State:                   SandboxOperationPending,
 				Generation:              sandbox.Generation,
 				FencingToken:            sandbox.FencingToken,
+				RequestedFencingToken:   sandbox.FencingToken + 1,
 				PreviousSandboxState:    SandboxStateReady,
 				RequestedLeaseExpiresAt: now.Add(time.Hour),
 				CreatedAt:               now.Add(2 * time.Second),

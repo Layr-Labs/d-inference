@@ -419,21 +419,25 @@ public struct SandboxWirePrepare: Codable, Equatable, Sendable {
 public struct SandboxWireLeaseRenew: Codable, Equatable, Sendable {
     public let operationID: UUID
     public let scope: SandboxWireScope
+    public let requestedFencingToken: SandboxFencingToken
     public let leaseExpiresAt: String
 
     public init(
         operationID: UUID,
         scope: SandboxWireScope,
+        requestedFencingToken: SandboxFencingToken,
         leaseExpiresAt: String
     ) {
         self.operationID = operationID
         self.scope = scope
+        self.requestedFencingToken = requestedFencingToken
         self.leaseExpiresAt = leaseExpiresAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case operationID = "operation_id"
         case scope
+        case requestedFencingToken = "requested_fencing_token"
         case leaseExpiresAt = "lease_expires_at"
     }
 }

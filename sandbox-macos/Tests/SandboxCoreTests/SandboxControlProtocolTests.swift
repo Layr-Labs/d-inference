@@ -342,6 +342,46 @@ final class SandboxControlProtocolTests: XCTestCase {
         )
     }
 
+    func testLeaseRenewRequiresCoordinatorReservedFence() throws {
+        let command = try commandEnvelope()
+        let valid = SandboxControlEnvelope(
+            type: SandboxControlMessageType.leaseRenew,
+            hostID: command.hostID,
+            connectionEpoch: command.connectionEpoch,
+            sequence: command.sequence,
+            payload: SandboxWireLeaseRenew(
+                operationID: UUID(),
+                scope: command.payload.scope,
+                requestedFencingToken: try XCTUnwrap(
+                    SandboxFencingToken(rawValue: 8)
+                ),
+                leaseExpiresAt: "2026-08-25T07:30:00Z"
+            )
+        )
+        XCTAssertNoThrow(
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(valid)
+            )
+        )
+        let invalid = SandboxControlEnvelope(
+            type: SandboxControlMessageType.leaseRenew,
+            hostID: valid.hostID,
+            connectionEpoch: valid.connectionEpoch,
+            sequence: valid.sequence,
+            payload: SandboxWireLeaseRenew(
+                operationID: valid.payload.operationID,
+                scope: valid.payload.scope,
+                requestedFencingToken: valid.payload.scope.fencingToken,
+                leaseExpiresAt: valid.payload.leaseExpiresAt
+            )
+        )
+        XCTAssertThrowsError(
+            try SandboxControlCodec.decodeCoordinatorMessage(
+                JSONEncoder().encode(invalid)
+            )
+        )
+    }
+
     func testStrictCodecBoundsJSONNestingAndRejectsInvalidUTF8() {
         let deeplyNested = Data(
             (

@@ -321,6 +321,30 @@ public struct SandboxHostCapacityArbiter: Sendable {
         scope: SandboxOperationScope,
         expiresAt: Date
     ) throws -> SandboxCapacityLease {
+        try renew(
+            scope: scope,
+            requestedFencingToken: nil,
+            expiresAt: expiresAt
+        )
+    }
+
+    public func renew(
+        scope: SandboxOperationScope,
+        fencingToken: SandboxFencingToken,
+        expiresAt: Date
+    ) throws -> SandboxCapacityLease {
+        try renew(
+            scope: scope,
+            requestedFencingToken: fencingToken,
+            expiresAt: expiresAt
+        )
+    }
+
+    private func renew(
+        scope: SandboxOperationScope,
+        requestedFencingToken: SandboxFencingToken?,
+        expiresAt: Date
+    ) throws -> SandboxCapacityLease {
         try requireCurrentScope(scope)
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: scope.sandboxID
@@ -347,10 +371,26 @@ public struct SandboxHostCapacityArbiter: Sendable {
             guard existing.expiresAt > now else {
                 throw SandboxCapacityError.leaseExpired
             }
-            if expiresAt == existing.expiresAt {
+            if expiresAt == existing.expiresAt,
+               requestedFencingToken == nil
+            {
                 return existing
             }
-            let fencingToken = try Self.issueFencingToken(in: &state)
+            let fencingToken: SandboxFencingToken
+            if let requestedFencingToken {
+                guard requestedFencingToken > existing.scope.fencingToken,
+                      requestedFencingToken.rawValue
+                          >= state.nextFencingToken,
+                      requestedFencingToken.rawValue < UInt64.max
+                else {
+                    throw SandboxCapacityError.staleFencingToken
+                }
+                fencingToken = requestedFencingToken
+                state.nextFencingToken =
+                    requestedFencingToken.rawValue + 1
+            } else {
+                fencingToken = try Self.issueFencingToken(in: &state)
+            }
             let renewed = SandboxCapacityLease(
                 scope: SandboxOperationScope(
                     sandboxID: existing.scope.sandboxID,

@@ -15,6 +15,7 @@ protocol SandboxHostCapacityControlling: Sendable {
     ) throws -> SandboxCapacityLease
     func renew(
         scope: SandboxOperationScope,
+        fencingToken: SandboxFencingToken,
         expiresAt: Date
     ) throws -> SandboxCapacityLease
     func setMode(_ mode: SandboxHostMode) throws -> SandboxCapacitySnapshot
@@ -236,6 +237,7 @@ actor SandboxHostProductionAdapter:
         do {
             let renewed = try capacity.renew(
                 scope: payload.scope.operationScope,
+                fencingToken: payload.requestedFencingToken,
                 expiresAt: Self.parseTimestamp(payload.leaseExpiresAt)
             )
             return .operation(

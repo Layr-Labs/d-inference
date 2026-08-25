@@ -113,7 +113,12 @@ public enum SandboxControlCodec {
         case .leaseRenew:
             try requireFields(
                 payload,
-                required: ["operation_id", "scope", "lease_expires_at"]
+                required: [
+                    "operation_id",
+                    "scope",
+                    "requested_fencing_token",
+                    "lease_expires_at",
+                ]
             )
             try requireScopeFields(payload)
             let envelope: SandboxControlEnvelope<SandboxWireLeaseRenew> =
@@ -229,7 +234,10 @@ public enum SandboxControlCodec {
     }
 
     private static func validate(_ payload: SandboxWireLeaseRenew) -> Bool {
-        validTimestamp(payload.leaseExpiresAt)
+        payload.requestedFencingToken > payload.scope.fencingToken
+            && payload.requestedFencingToken.rawValue
+                <= UInt64(Int64.max) - 1
+            && validTimestamp(payload.leaseExpiresAt)
     }
 
     private static func validate(_ payload: SandboxWireCommand) -> Bool {

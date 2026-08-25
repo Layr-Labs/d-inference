@@ -124,6 +124,14 @@ func (c *Controller) Renew(
 		idempotencyKey,
 		now,
 	)
+	requestedFencingToken, err := c.nextFencingTokenForHost(
+		sandbox.HostID,
+		sandbox.FencingToken,
+	)
+	if err != nil {
+		return nil, err
+	}
+	operation.RequestedFencingToken = requestedFencingToken
 	updatedSandbox, stored, created, err := c.store.BeginSandboxOperation(
 		ctx,
 		operation,
@@ -135,10 +143,54 @@ func (c *Controller) Renew(
 	if !stored.SameRequest(operation) {
 		return nil, ErrIdempotencyConflict
 	}
+	c.recordAllocatedFencingToken(
+		updatedSandbox.HostID,
+		stored.RequestedFencingToken,
+	)
 	if created {
 		_ = c.dispatchOperation(updatedSandbox, stored)
 	}
 	return stored, nil
+}
+
+func (c *Controller) nextFencingTokenForHost(
+	hostID string,
+	current uint64,
+) (uint64, error) {
+	if current >= maximumCoordinatorFencingToken {
+		return 0, store.ErrSandboxConflict
+	}
+	c.scheduleMu.Lock()
+	defer c.scheduleMu.Unlock()
+	next := current + 1
+	if local := c.hostNextFence[hostID]; local > next {
+		next = local
+	}
+	if session, exists := c.hosts.Session(hostID); exists {
+		snapshot := session.Snapshot()
+		if snapshot.Heartbeat != nil &&
+			snapshot.Heartbeat.NextFencingToken > next {
+			next = snapshot.Heartbeat.NextFencingToken
+		}
+	}
+	if next == 0 || next > maximumCoordinatorFencingToken {
+		return 0, store.ErrSandboxConflict
+	}
+	return next, nil
+}
+
+func (c *Controller) recordAllocatedFencingToken(
+	hostID string,
+	issued uint64,
+) {
+	if issued == 0 || issued >= maximumCoordinatorFencingToken {
+		return
+	}
+	c.scheduleMu.Lock()
+	if next := issued + 1; next > c.hostNextFence[hostID] {
+		c.hostNextFence[hostID] = next
+	}
+	c.scheduleMu.Unlock()
 }
 
 func (c *Controller) Stop(

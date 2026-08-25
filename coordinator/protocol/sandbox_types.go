@@ -148,9 +148,10 @@ type SandboxPreparePayload struct {
 }
 
 type SandboxLeaseRenewPayload struct {
-	OperationID    string       `json:"operation_id"`
-	Scope          SandboxScope `json:"scope"`
-	LeaseExpiresAt string       `json:"lease_expires_at"`
+	OperationID           string       `json:"operation_id"`
+	Scope                 SandboxScope `json:"scope"`
+	RequestedFencingToken uint64       `json:"requested_fencing_token"`
+	LeaseExpiresAt        string       `json:"lease_expires_at"`
 }
 
 type SandboxCommandPayload struct {

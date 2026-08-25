@@ -14,14 +14,15 @@ import (
 )
 
 const (
-	CommandTimeoutSeconds      uint32 = 900
-	LeaseDuration                     = 30 * time.Minute
-	HostHeartbeatFreshness            = 60 * time.Second
-	MaximumActiveSandboxes            = 2
-	MaximumSandboxesPerAccount        = 2
-	dispatchTimeout                   = 5 * time.Second
-	dispatchRetryInterval             = 15 * time.Second
-	leaseSweepInterval                = 5 * time.Second
+	CommandTimeoutSeconds          uint32 = 900
+	LeaseDuration                         = 30 * time.Minute
+	HostHeartbeatFreshness                = 60 * time.Second
+	MaximumActiveSandboxes                = 2
+	MaximumSandboxesPerAccount            = 2
+	dispatchTimeout                       = 5 * time.Second
+	dispatchRetryInterval                 = 15 * time.Second
+	leaseSweepInterval                    = 5 * time.Second
+	maximumCoordinatorFencingToken        = uint64(^uint64(0)>>1) - 1
 )
 
 var (
@@ -201,7 +202,7 @@ func (c *Controller) Create(
 		c.scheduleMu.Unlock()
 		return storedSandbox, storedOperation, nil
 	}
-	c.hostNextFence[sandbox.HostID] = fencingToken + 1
+	c.hostNextFence[storedSandbox.HostID] = storedSandbox.FencingToken + 1
 	c.scheduleMu.Unlock()
 
 	payload := protocol.SandboxPreparePayload{
@@ -331,7 +332,7 @@ func (c *Controller) selectHostLocked(
 			availableCPU < resources.CPUCount ||
 			availableMemory < resources.MemoryBytes ||
 			nextFence == 0 ||
-			nextFence > (^uint64(0)>>1) {
+			nextFence > maximumCoordinatorFencingToken {
 			continue
 		}
 		if selected == nil ||

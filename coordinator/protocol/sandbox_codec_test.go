@@ -394,6 +394,37 @@ func TestSandboxCodecRejectsInvalidHostState(t *testing.T) {
 	}
 }
 
+func TestSandboxLeaseRenewRequiresReservedFencingToken(t *testing.T) {
+	renewal := SandboxEnvelope[SandboxLeaseRenewPayload]{
+		Type:            SandboxTypeLeaseRenew,
+		ProtocolVersion: SandboxProtocolVersion,
+		HostID:          testSandboxHostID,
+		ConnectionEpoch: testSandboxEpoch,
+		Sequence:        10,
+		Payload: SandboxLeaseRenewPayload{
+			OperationID: testSandboxOperation,
+			Scope: SandboxScope{
+				SandboxID:    testSandboxID,
+				Generation:   3,
+				FencingToken: 7,
+			},
+			RequestedFencingToken: 8,
+			LeaseExpiresAt:        "2026-08-25T07:30:00Z",
+		},
+	}
+	if _, err := DecodeSandboxCoordinatorMessage(
+		marshalSandboxFrame(t, renewal),
+	); err != nil {
+		t.Fatalf("valid reserved renewal fence rejected: %v", err)
+	}
+	renewal.Payload.RequestedFencingToken = renewal.Payload.Scope.FencingToken
+	if _, err := DecodeSandboxCoordinatorMessage(
+		marshalSandboxFrame(t, renewal),
+	); err == nil {
+		t.Fatal("non-advancing reserved renewal fence was accepted")
+	}
+}
+
 func TestSandboxCodecRejectsOversizedFrame(t *testing.T) {
 	frame := []byte(`{"padding":"` + strings.Repeat("x", maxSandboxFrameBytes) + `"}`)
 	if _, err := DecodeSandboxHostMessage(frame); err == nil {

@@ -132,7 +132,8 @@ func (c *Controller) applyHeartbeatOperationObservation(
 			return true, err
 		}
 	case store.SandboxOperationKindRenew:
-		if observation.Scope.FencingToken <= operation.FencingToken {
+		if observation.Scope.FencingToken !=
+			operation.RequestedFencingToken {
 			return false, nil
 		}
 		if !observedExpiry.Equal(operation.RequestedLeaseExpiresAt) {

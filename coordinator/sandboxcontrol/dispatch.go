@@ -54,8 +54,9 @@ func (c *Controller) dispatchOperation(
 			operation,
 			protocol.SandboxTypeLeaseRenew,
 			protocol.SandboxLeaseRenewPayload{
-				OperationID: operation.ID,
-				Scope:       scope,
+				OperationID:           operation.ID,
+				Scope:                 scope,
+				RequestedFencingToken: operation.RequestedFencingToken,
 				LeaseExpiresAt: operation.RequestedLeaseExpiresAt.Format(
 					time.RFC3339Nano,
 				),

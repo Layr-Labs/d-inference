@@ -1047,6 +1047,34 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRenewHonorsCoordinatorReservedFencingToken() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-reserved-renew-fence",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let requested = try fencingToken(
+            lease.scope.fencingToken.rawValue + 5
+        )
+        let renewed = try arbiter.renew(
+            scope: lease.scope,
+            fencingToken: requested,
+            expiresAt: now.addingTimeInterval(180)
+        )
+        XCTAssertEqual(renewed.scope.fencingToken, requested)
+        XCTAssertEqual(
+            try arbiter.snapshot().nextFencingToken,
+            requested.rawValue + 1
+        )
+    }
+
     func testMutationAuthorizationBindsLeaseScopeNameResourcesAndLifetime() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }

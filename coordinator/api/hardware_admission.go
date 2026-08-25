@@ -713,17 +713,6 @@ func canonicalHardwareInput(result attestation.VerificationResult) hardwareadmis
 	}
 }
 
-func canonicalHardwareObserved(result attestation.VerificationResult) hardwareadmission.Observed {
-	return hardwareadmission.Evaluate(hardwareadmission.DisabledPolicy(), canonicalHardwareInput(result)).Observed
-}
-
-func hardwareClaimMismatch(regMsg *protocol.RegisterMessage, result attestation.VerificationResult) string {
-	if mismatch := hardwareIdentityClaimMismatch(regMsg, result); mismatch != "" {
-		return mismatch
-	}
-	return hardwareCapacityClaimMismatch(regMsg, result)
-}
-
 func hardwareIdentityClaimMismatch(
 	regMsg *protocol.RegisterMessage,
 	result attestation.VerificationResult,

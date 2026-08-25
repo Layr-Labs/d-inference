@@ -612,10 +612,10 @@ verify_release_payload_mode() {
     local file=$1
     local expected=$2
     local label=$3
-    [ -f "$file" ] && [ ! -L "$file" ] || {
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
         fail_install "$label must be a regular non-symlink file."
         return 1
-    }
+    fi
     local actual
     actual=$(release_file_mode "$file") || {
         fail_install "Could not inspect $label permissions."

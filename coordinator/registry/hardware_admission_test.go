@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -97,5 +98,42 @@ func TestVerifiedSerialClaimReplacesLegacyOwnerMap(t *testing.T) {
 	}
 	if reg.GetProvider(legacy.ID) != nil {
 		t.Fatal("legacy serial owner survived verified replacement")
+	}
+}
+
+func TestConcurrentVerifiedSerialClaimsLeaveOneOwner(t *testing.T) {
+	for range 25 {
+		reg := New(testLogger())
+		first := reg.Register("first", nil, testRegisterMessage())
+		second := reg.Register("second", nil, testRegisterMessage())
+		first.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-RACE"})
+		second.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-RACE"})
+
+		start := make(chan struct{})
+		results := make(chan bool, 2)
+		var wg sync.WaitGroup
+		for _, id := range []string{first.ID, second.ID} {
+			wg.Add(1)
+			go func(providerID string) {
+				defer wg.Done()
+				<-start
+				results <- reg.ClaimProviderSerial(providerID, "SERIAL-RACE")
+			}(id)
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		successes := 0
+		for result := range results {
+			if result {
+				successes++
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("successful claims = %d, want exactly one", successes)
+		}
+		if reg.ProviderCount() != 1 {
+			t.Fatalf("provider count = %d, want one owner", reg.ProviderCount())
+		}
 	}
 }

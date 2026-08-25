@@ -536,8 +536,8 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		if !s.commitProviderAdmissionState(provider, policy, false) {
 			return false
 		}
-		s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
-		return true
+		return s.clearPendingHardwareAdmissionIf(
+			provider.ID, pending.policy.Version)
 	}
 	decision := pending.decision
 	if policy.Version != pending.policy.Version {
@@ -551,10 +551,13 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		})
 	}
 	if policy.Mode == hardwareadmission.ModeEnforce && !decision.Allowed {
+		if !s.clearPendingHardwareAdmissionIf(
+			provider.ID, pending.policy.Version) {
+			return false
+		}
 		s.recordHardwareAdmissionAttempt(
 			ctx, provider, pending.serial, policy, "rejected",
 			"hardware_below_minimum", decision)
-		s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 		return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
 			code: "hardware_below_minimum", retryable: false, policy: policy,
 			decision: &decision, reason: hardwareAdmissionReason(decision),
@@ -565,7 +568,10 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		Hardware: decision.Observed, AdmittedAt: time.Now().UTC(),
 	}); err != nil {
 		if errors.Is(err, store.ErrHardwareAdmissionRevoked) {
-			s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
+			if !s.clearPendingHardwareAdmissionIf(
+				provider.ID, pending.policy.Version) {
+				return false
+			}
 			return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
 				code: "hardware_admission_revoked", retryable: false, policy: policy,
 				reason: "This machine's provider admission was revoked by a network operator.",
@@ -575,12 +581,15 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 			"provider_id", provider.ID, "error", err)
 		return false
 	}
+	if !s.clearPendingHardwareAdmissionIf(
+		provider.ID, pending.policy.Version) {
+		return false
+	}
 	s.registry.SetProviderHardwareAdmitted(provider.ID, true)
 	s.registry.ActivateProviderPersistence(provider)
 	s.invalidateHardwareAdmissionCaches()
 	s.recordHardwareAdmissionAttempt(
 		ctx, provider, pending.serial, policy, "admitted", "", decision)
-	s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 	s.sendTrustStatus(
 		provider, registry.TrustHardware, "online",
 		"Hardware admission passed; provider is eligible for routing")

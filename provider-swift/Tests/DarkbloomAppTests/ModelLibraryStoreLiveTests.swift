@@ -97,6 +97,7 @@ struct ModelLibraryStoreLiveTests {
     private func makeSnapshot(
         catalog: [CLICatalogModel] = [],
         local: [CLILocalModelEntry] = [],
+        downloadPlans: [String: CLIModelDownloadStoragePlan] = [:],
         warmModelIDs: Set<String> = [],
         servingModelID: String? = nil,
         physicalMemoryGB: Int? = 32
@@ -104,6 +105,7 @@ struct ModelLibraryStoreLiveTests {
         ModelLibrarySnapshot(
             catalog: catalog,
             local: local,
+            downloadPlans: downloadPlans,
             warmModelIDs: warmModelIDs,
             servingModelID: servingModelID,
             physicalMemoryGB: physicalMemoryGB,
@@ -218,6 +220,63 @@ struct ModelLibraryStoreLiveTests {
         store.retryCatalog()
         #expect(await _eventually { store.catalogState == .available(lastUpdated: makeSnapshot().fetchedAt) })
         #expect(cli.fetchCount == 2)
+    }
+
+    @Test("insufficient download plan blocks the CLI before process creation")
+    func insufficientStoragePlanBlocksDownload() async {
+        let modelID = "mlx/Qwen-7B"
+        let qwen = catalogEntry(id: modelID, sizeBytes: 4_000)!
+        let reserve = Int64(2 * 1_073_741_824)
+        let required = reserve + 4_000
+        let plan = CLIModelDownloadStoragePlan(
+            remainingBytes: 4_000,
+            reserveBytes: reserve,
+            requiredAvailableBytes: required,
+            availableBytes: required - 1,
+            hasSufficientCapacity: false
+        )
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalog: [qwen],
+            downloadPlans: [modelID: plan]
+        )))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+
+        let result = store.beginDownload(modelID: modelID)
+
+        guard case .unavailable(let message) = result else {
+            Issue.record("expected disk-space refusal, got \(result)")
+            return
+        }
+        #expect(message.contains("Not enough disk space"))
+        #expect(cli.channels.isEmpty)
+        #expect(store.models.first?.installation == .notInstalled)
+    }
+
+    @Test("resumed remaining-byte plan admits at the exact reserve boundary")
+    func resumedStoragePlanUsesRemainingBytes() async {
+        let modelID = "mlx/Qwen-7B"
+        let qwen = catalogEntry(id: modelID, sizeBytes: 10_000_000_000)!
+        let reserve = Int64(2 * 1_073_741_824)
+        let remaining = Int64(1_000)
+        let required = reserve + remaining
+        let plan = CLIModelDownloadStoragePlan(
+            remainingBytes: remaining,
+            reserveBytes: reserve,
+            requiredAvailableBytes: required,
+            availableBytes: required,
+            hasSufficientCapacity: true
+        )
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalog: [qwen],
+            downloadPlans: [modelID: plan]
+        )))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+
+        #expect(store.beginDownload(modelID: modelID) == .applied)
+        #expect(await _eventually { cli.channel(id: 1) != nil })
+        #expect(cli.channel(id: 1)?.modelID == modelID)
     }
 
     @Test("download progress, verifying, and done events drive installation state")

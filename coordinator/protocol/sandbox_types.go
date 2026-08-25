@@ -76,6 +76,7 @@ type SandboxHostCapabilities struct {
 	MemoryBytes         uint64   `json:"memory_bytes"`
 	MaximumSandboxes    uint16   `json:"maximum_sandboxes"`
 	WorkspaceSizesBytes []uint64 `json:"workspace_sizes_bytes"`
+	BaseImageIDs        []string `json:"base_image_ids"`
 	SupportsGPU         bool     `json:"supports_gpu"`
 }
 

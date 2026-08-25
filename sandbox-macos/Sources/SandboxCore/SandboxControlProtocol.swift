@@ -83,6 +83,7 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
     public let memoryBytes: UInt64
     public let maximumSandboxes: UInt16
     public let workspaceSizesBytes: [UInt64]
+    public let baseImageIDs: [String]
     public let supportsGPU: Bool
 
     public init(
@@ -95,6 +96,7 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         memoryBytes: UInt64,
         maximumSandboxes: UInt16,
         workspaceSizesBytes: [UInt64],
+        baseImageIDs: [String],
         supportsGPU: Bool
     ) {
         self.daemonVersion = daemonVersion
@@ -106,6 +108,7 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         self.memoryBytes = memoryBytes
         self.maximumSandboxes = maximumSandboxes
         self.workspaceSizesBytes = workspaceSizesBytes
+        self.baseImageIDs = baseImageIDs
         self.supportsGPU = supportsGPU
     }
 
@@ -119,6 +122,7 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         case memoryBytes = "memory_bytes"
         case maximumSandboxes = "maximum_sandboxes"
         case workspaceSizesBytes = "workspace_sizes_bytes"
+        case baseImageIDs = "base_image_ids"
         case supportsGPU = "supports_gpu"
     }
 }

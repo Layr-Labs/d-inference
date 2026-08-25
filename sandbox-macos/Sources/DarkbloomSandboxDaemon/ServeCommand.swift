@@ -85,6 +85,7 @@ enum ServeCommand {
                 25 * SandboxResourcePolicy.gibibyte,
                 50 * SandboxResourcePolicy.gibibyte,
             ],
+            baseImageIDs: options.baseImageIDs,
             supportsGPU: false
         )
         let client = SandboxHostControlClient(
@@ -124,6 +125,7 @@ enum ServeCommand {
         let maximumMemoryBytes: UInt64
         let maximumGrowthBytes: UInt64
         let storageHeadroomBytes: UInt64
+        let baseImageIDs: [String]
         let developmentAdHocLume: Bool
         let allowInsecureLoopback: Bool
 
@@ -166,6 +168,7 @@ enum ServeCommand {
                   let lume = values["--lume"],
                   let storage = values["--storage"],
                   let capacity = values["--capacity-dir"],
+                  let encodedBaseImages = values["--base-images"],
                   let maximumCPUCount = UInt16(
                       values["--max-cpu"] ?? ""
                   ),
@@ -207,6 +210,20 @@ enum ServeCommand {
             self.storageHeadroomBytes = try Self.gibibytes(
                 storageHeadroomGiB
             )
+            let baseImageIDs = encodedBaseImages.split(
+                separator: ",",
+                omittingEmptySubsequences: false
+            ).map(String.init)
+            guard !baseImageIDs.isEmpty,
+                  baseImageIDs.count <= 32,
+                  Set(baseImageIDs).count == baseImageIDs.count,
+                  baseImageIDs.allSatisfy(
+                      SandboxVirtualMachineNamePolicy.isValid
+                  )
+            else {
+                throw DaemonCLIError.invalidArguments("serve")
+            }
+            self.baseImageIDs = baseImageIDs
             self.developmentAdHocLume = developmentAdHocLume
             self.allowInsecureLoopback = allowInsecureLoopback
         }
@@ -228,6 +245,7 @@ enum ServeCommand {
             "--lume",
             "--storage",
             "--capacity-dir",
+            "--base-images",
             "--max-cpu",
             "--max-memory-gib",
             "--max-growth-gib",

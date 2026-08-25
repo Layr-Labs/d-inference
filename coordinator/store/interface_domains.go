@@ -843,6 +843,14 @@ type SandboxStore interface {
 		sandboxID string,
 	) ([]SandboxCommand, error)
 
+	// ListExpiringSandboxCommands returns non-terminal commands whose execution
+	// deadline is at or before the supplied instant.
+	ListExpiringSandboxCommands(
+		ctx context.Context,
+		expiresBefore time.Time,
+		limit int,
+	) ([]PendingSandboxCommand, error)
+
 	// ApplySandboxCommandUpdate applies a fenced host command result.
 	ApplySandboxCommandUpdate(
 		ctx context.Context,

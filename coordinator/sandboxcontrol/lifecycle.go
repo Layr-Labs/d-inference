@@ -46,7 +46,7 @@ func (c *Controller) Execute(
 	if err := protocol.ValidateSandboxCommand(&payload); err != nil {
 		return nil, ErrInvalidRequest
 	}
-	now := c.now().UTC()
+	now := c.now().UTC().Truncate(time.Millisecond)
 	command := &store.SandboxCommand{
 		ID:               commandID,
 		SandboxID:        sandbox.ID,
@@ -114,7 +114,7 @@ func (c *Controller) Renew(
 	if sandbox.TerminationRequested {
 		return nil, store.ErrSandboxConflict
 	}
-	now := c.now().UTC()
+	now := c.now().UTC().Truncate(time.Millisecond)
 	expiresAt := now.Add(LeaseDuration)
 	operation := newSandboxOperation(
 		sandbox,

@@ -33,6 +33,7 @@ func TestDecodeSandboxHostRegister(t *testing.T) {
 				MemoryBytes:         48 * sandboxGibibyte,
 				MaximumSandboxes:    2,
 				WorkspaceSizesBytes: []uint64{sandboxWorkspace25GiB, sandboxWorkspace50GiB},
+				BaseImageIDs:        []string{"macos-tahoe-v1"},
 				SupportsGPU:         true,
 			},
 		},

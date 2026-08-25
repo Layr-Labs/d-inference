@@ -11,6 +11,7 @@ final class ServeCommandTests: XCTestCase {
             "--lume", "/opt/darkbloom/lume",
             "--storage", "/var/lib/darkbloom/vms",
             "--capacity-dir", "/var/lib/darkbloom/capacity",
+            "--base-images", "macos-tahoe-v1,macos-sequoia-v1",
             "--max-cpu", "12",
             "--max-memory-gib", "32",
         ])
@@ -27,6 +28,10 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertEqual(options.maximumMemoryBytes, 32 * 1_073_741_824)
         XCTAssertEqual(options.maximumGrowthBytes, 320 * 1_073_741_824)
         XCTAssertEqual(options.storageHeadroomBytes, 20 * 1_073_741_824)
+        XCTAssertEqual(
+            options.baseImageIDs,
+            ["macos-tahoe-v1", "macos-sequoia-v1"]
+        )
         XCTAssertFalse(options.developmentAdHocLume)
         XCTAssertFalse(options.allowInsecureLoopback)
     }
@@ -39,6 +44,7 @@ final class ServeCommandTests: XCTestCase {
             "--lume", "/lume",
             "--storage", "/storage",
             "--capacity-dir", "/capacity",
+            "--base-images", "macos-tahoe-v1",
             "--max-cpu", "8",
             "--max-memory-gib", "16",
         ]))
@@ -50,6 +56,7 @@ final class ServeCommandTests: XCTestCase {
             "--lume", "/other",
             "--storage", "/storage",
             "--capacity-dir", "/capacity",
+            "--base-images", "macos-tahoe-v1",
             "--max-cpu", "8",
             "--max-memory-gib", "16",
         ]))
@@ -60,6 +67,7 @@ final class ServeCommandTests: XCTestCase {
             "--lume", "/lume",
             "--storage", "/storage",
             "--capacity-dir", "/capacity",
+            "--base-images", "macos-tahoe-v1",
             "--max-cpu", "8",
             "--max-memory-gib", String(UInt64.max),
         ]))

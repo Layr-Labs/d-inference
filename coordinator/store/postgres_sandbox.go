@@ -384,11 +384,10 @@ func (s *PostgresStore) BeginSandboxOperation(
 			operation.Kind == SandboxOperationKindRenew) {
 		return nil, nil, false, ErrSandboxConflict
 	}
-	if operation.Kind == SandboxOperationKindRenew {
-		var activeCommand bool
-		if err := tx.QueryRow(
-			ctx,
-			`SELECT EXISTS (
+	var activeCommand bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS (
 				SELECT 1
 				FROM sandbox_commands
 				WHERE sandbox_id = $1
@@ -396,16 +395,15 @@ func (s *PostgresStore) BeginSandboxOperation(
 					'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
 				  )
 			)`,
-			sandbox.ID,
-		).Scan(&activeCommand); err != nil {
-			return nil, nil, false, fmt.Errorf(
-				"check active sandbox commands: %w",
-				err,
-			)
-		}
-		if activeCommand {
-			return nil, nil, false, ErrSandboxConflict
-		}
+		sandbox.ID,
+	).Scan(&activeCommand); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"check active sandbox commands: %w",
+			err,
+		)
+	}
+	if activeCommand {
+		return nil, nil, false, ErrSandboxConflict
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {
 		return nil, nil, false, err
@@ -513,7 +511,12 @@ func (s *PostgresStore) MarkSandboxTerminationRequested(
 		       WHEN state = $5 THEN updated_at
 		       ELSE $4
 		     END
-		 WHERE id = $1 AND account_id = $2
+		 WHERE id = $1
+		   AND account_id = $2
+		   AND (
+		     termination_idempotency_key = ''
+		     OR termination_idempotency_key = $3
+		   )
 		 RETURNING `+sandboxSelectColumns,
 		sandboxID,
 		accountID,
@@ -522,6 +525,20 @@ func (s *PostgresStore) MarkSandboxTerminationRequested(
 		SandboxStateDeleted,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if scanErr := tx.QueryRow(
+			ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM sandboxes WHERE id = $1 AND account_id = $2
+			)`,
+			sandboxID,
+			accountID,
+		).Scan(&exists); scanErr != nil {
+			return nil, scanErr
+		}
+		if exists {
+			return nil, ErrSandboxConflict
+		}
 		return nil, fmt.Errorf("sandbox %s: %w", sandboxID, ErrNotFound)
 	}
 	return record, err
@@ -658,6 +675,34 @@ func (s *PostgresStore) CreateSandboxCommand(
 		).After(sandbox.LeaseExpiresAt) {
 		return nil, false, ErrSandboxConflict
 	}
+	var activeOperation, activeCommand bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT
+		   EXISTS (
+		     SELECT 1
+		     FROM sandbox_host_operations
+		     WHERE sandbox_id = $1
+		       AND state NOT IN ('ready', 'stopped', 'deleted', 'failed')
+		   ),
+		   EXISTS (
+		     SELECT 1
+		     FROM sandbox_commands
+		     WHERE sandbox_id = $1
+		       AND state NOT IN (
+		         'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		       )
+		   )`,
+		sandbox.ID,
+	).Scan(&activeOperation, &activeCommand); err != nil {
+		return nil, false, fmt.Errorf(
+			"check active sandbox work: %w",
+			err,
+		)
+	}
+	if activeOperation || activeCommand {
+		return nil, false, ErrSandboxConflict
+	}
 	arguments, environment, err := sandboxCommandJSON(command)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode sandbox command: %w", err)
@@ -760,6 +805,58 @@ func (s *PostgresStore) ListActiveSandboxCommands(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list active sandbox commands: %w", err)
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) ListExpiringSandboxCommands(
+	ctx context.Context,
+	expiresBefore time.Time,
+	limit int,
+) ([]PendingSandboxCommand, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxCommandSelectColumns+`
+		 FROM sandbox_commands
+		 WHERE state NOT IN (
+		   'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		 )
+		   AND created_at
+		     + make_interval(secs => timeout_seconds::double precision) <= $1
+		 ORDER BY created_at
+		     + make_interval(secs => timeout_seconds::double precision)
+		 LIMIT $2`,
+		expiresBefore,
+		sandboxListLimit(limit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list expiring sandbox commands: %w", err)
+	}
+	commands := make([]SandboxCommand, 0)
+	for rows.Next() {
+		command, scanErr := scanSandboxCommand(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, scanErr
+		}
+		commands = append(commands, *command)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("list expiring sandbox commands: %w", err)
+	}
+	rows.Close()
+
+	result := make([]PendingSandboxCommand, 0, len(commands))
+	for index := range commands {
+		sandbox, err := s.GetSandboxByID(ctx, commands[index].SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PendingSandboxCommand{
+			Sandbox: *sandbox,
+			Command: commands[index],
+		})
 	}
 	return result, nil
 }

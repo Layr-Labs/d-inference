@@ -15,9 +15,9 @@ import (
 
 const (
 	CommandTimeoutSeconds      uint32 = 900
-	LeaseDuration                     = 30 * time.Minute
+	LeaseDuration                     = 15 * time.Minute
 	HostHeartbeatFreshness            = 60 * time.Second
-	MaximumActiveSandboxes            = 4
+	MaximumActiveSandboxes            = 2
 	MaximumSandboxesPerAccount        = 2
 	dispatchTimeout                   = 5 * time.Second
 	dispatchRetryInterval             = 15 * time.Second
@@ -130,11 +130,16 @@ func (c *Controller) Create(
 	if !errors.Is(err, store.ErrNotFound) {
 		return nil, nil, err
 	}
-	now := c.now().UTC()
+	now := c.now().UTC().Truncate(time.Millisecond)
 	leaseExpiresAt := now.Add(LeaseDuration)
 
 	c.scheduleMu.Lock()
-	session, fencingToken, err := c.selectHostLocked(ctx, resources, now)
+	session, fencingToken, err := c.selectHostLocked(
+		ctx,
+		request.BaseImageID,
+		resources,
+		now,
+	)
 	if err != nil {
 		c.scheduleMu.Unlock()
 		return nil, nil, err
@@ -244,6 +249,7 @@ func (c *Controller) GetCommand(
 
 func (c *Controller) selectHostLocked(
 	ctx context.Context,
+	baseImageID string,
 	resources protocol.SandboxResources,
 	now time.Time,
 ) (*sandboxhost.Session, uint64, error) {
@@ -262,6 +268,10 @@ func (c *Controller) selectHostLocked(
 			snapshot.Heartbeat.Mode != "sandbox_dedicated" ||
 			snapshot.LastHeartbeat.IsZero() ||
 			now.Sub(snapshot.LastHeartbeat) > HostHeartbeatFreshness ||
+			!supportsBaseImage(
+				snapshot.Capabilities.BaseImageIDs,
+				baseImageID,
+			) ||
 			!supportsWorkspace(
 				snapshot.Capabilities.WorkspaceSizesBytes,
 				resources.WorkspaceBytes,
@@ -333,6 +343,15 @@ func (c *Controller) selectHostLocked(
 		return nil, 0, ErrNoCapacity
 	}
 	return selected, selectedFence, nil
+}
+
+func supportsBaseImage(baseImageIDs []string, requested string) bool {
+	for _, baseImageID := range baseImageIDs {
+		if baseImageID == requested {
+			return true
+		}
+	}
+	return false
 }
 
 func supportsWorkspace(sizes []uint64, requested uint64) bool {

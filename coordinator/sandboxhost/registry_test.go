@@ -302,6 +302,7 @@ func testRegistration() *protocol.SandboxHostRegisterPayload {
 			MemoryBytes:         48 * 1024 * 1024 * 1024,
 			MaximumSandboxes:    2,
 			WorkspaceSizesBytes: []uint64{25 * 1024 * 1024 * 1024},
+			BaseImageIDs:        []string{"macos-tahoe-v1"},
 			SupportsGPU:         true,
 		},
 	}

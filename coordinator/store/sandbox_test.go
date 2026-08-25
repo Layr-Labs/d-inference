@@ -168,6 +168,47 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 					err,
 				)
 			}
+			concurrentCommand := *command
+			concurrentCommand.ID = "50000000-0000-0000-0000-000000000006"
+			concurrentCommand.IdempotencyKey =
+				"50000000-0000-0000-0000-000000000060"
+			if _, _, err := backend.CreateSandboxCommand(
+				ctx,
+				&concurrentCommand,
+			); !errors.Is(err, ErrSandboxConflict) {
+				t.Fatalf("concurrent command error = %v", err)
+			}
+			blockedByCommand := &SandboxOperation{
+				ID:                      "50000000-0000-0000-0000-000000000007",
+				SandboxID:               sandbox.ID,
+				AccountID:               accountID,
+				IdempotencyKey:          "50000000-0000-0000-0000-000000000070",
+				Kind:                    SandboxOperationKindRenew,
+				State:                   SandboxOperationPending,
+				Generation:              1,
+				FencingToken:            10,
+				PreviousSandboxState:    SandboxStateReady,
+				RequestedLeaseExpiresAt: now.Add(60 * time.Minute),
+				CreatedAt:               now.Add(3 * time.Second),
+				UpdatedAt:               now.Add(3 * time.Second),
+			}
+			if _, _, _, err := backend.BeginSandboxOperation(
+				ctx,
+				blockedByCommand,
+				SandboxStateReady,
+			); !errors.Is(err, ErrSandboxConflict) {
+				t.Fatalf("operation during active command error = %v", err)
+			}
+			expiring, err := backend.ListExpiringSandboxCommands(
+				ctx,
+				now.Add(15*time.Minute+3*time.Second),
+				10,
+			)
+			if err != nil ||
+				len(expiring) != 1 ||
+				expiring[0].Command.ID != command.ID {
+				t.Fatalf("expiring commands = %+v error = %v", expiring, err)
+			}
 			stdout := "hello"
 			exitCode := int32(0)
 			completedCommand, err := backend.ApplySandboxCommandUpdate(
@@ -190,6 +231,14 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 				completedCommand.StandardOutput != "hello" ||
 				completedCommand.CompletedAt == nil {
 				t.Fatalf("unexpected completed command: %+v", completedCommand)
+			}
+			expiring, err = backend.ListExpiringSandboxCommands(
+				ctx,
+				now.Add(time.Hour),
+				10,
+			)
+			if err != nil || len(expiring) != 0 {
+				t.Fatalf("completed command remained expiring: %+v error = %v", expiring, err)
 			}
 			completedAt := *completedCommand.CompletedAt
 			replayedCommand, err := backend.ApplySandboxCommandUpdate(
@@ -309,6 +358,15 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 					terminating,
 					err,
 				)
+			}
+			if _, err := backend.MarkSandboxTerminationRequested(
+				ctx,
+				accountID,
+				sandbox.ID,
+				"70000000-0000-0000-0000-000000000071",
+				now.Add(10*time.Second),
+			); !errors.Is(err, ErrSandboxConflict) {
+				t.Fatalf("termination idempotency conflict error = %v", err)
 			}
 			retriedCommand := *command
 			retriedCommand.ID = "80000000-0000-0000-0000-000000000080"

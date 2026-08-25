@@ -292,7 +292,8 @@ func writeSandboxAPIError(w http.ResponseWriter, err error) {
 			http.StatusBadRequest,
 			errorResponse("invalid_request_error", "invalid sandbox request"),
 		)
-	case errors.Is(err, sandboxcontrol.ErrNoCapacity):
+	case errors.Is(err, sandboxcontrol.ErrNoCapacity),
+		errors.Is(err, store.ErrSandboxCapacity):
 		w.Header().Set("Retry-After", "5")
 		writeJSON(
 			w,

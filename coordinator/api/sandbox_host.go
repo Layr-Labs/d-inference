@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -91,10 +92,11 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 		"remote",
 		r.RemoteAddr,
 	)
+	heartbeatDeadline := time.Now().Add(sandboxHostReadIdleTimeout)
 	for {
-		readContext, cancelRead := context.WithTimeout(
+		readContext, cancelRead := context.WithDeadline(
 			r.Context(),
-			sandboxHostReadIdleTimeout,
+			heartbeatDeadline,
 		)
 		messageType, encoded, err = connection.Read(readContext)
 		cancelRead()
@@ -123,18 +125,42 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		if err := session.Handle(r.Context(), message); err != nil {
+		handleErr := session.Handle(r.Context(), message)
+		if message.Header.Type == protocol.SandboxTypeHostHeartbeat {
+			heartbeatDeadline = session.Snapshot().LastHeartbeat.Add(
+				sandboxHostReadIdleTimeout,
+			)
+		}
+		if handleErr != nil {
+			if sandboxHostResultConflict(handleErr) {
+				s.logger.Warn(
+					"ignored stale sandbox host result",
+					"host_id",
+					session.HostID(),
+					"message_type",
+					message.Header.Type,
+					"error",
+					handleErr,
+				)
+				continue
+			}
 			status := websocket.StatusPolicyViolation
-			if errors.Is(err, sandboxhost.ErrSessionClosed) {
+			if errors.Is(handleErr, sandboxhost.ErrSessionClosed) {
 				status = websocket.StatusNormalClosure
-			} else if !errors.Is(err, sandboxhost.ErrSequenceReplay) &&
-				!errors.Is(err, sandboxhost.ErrSessionMismatch) {
+			} else if !errors.Is(handleErr, sandboxhost.ErrSequenceReplay) &&
+				!errors.Is(handleErr, sandboxhost.ErrSessionMismatch) {
 				status = websocket.StatusInternalError
 			}
 			_ = connection.Close(status, "sandbox host frame rejected")
 			return
 		}
 	}
+}
+
+func sandboxHostResultConflict(err error) bool {
+	return errors.Is(err, store.ErrNotFound) ||
+		errors.Is(err, store.ErrSandboxConflict) ||
+		errors.Is(err, store.ErrSandboxInvalidTransition)
 }
 
 func sandboxHostCredentials(r *http.Request) (string, string, bool) {

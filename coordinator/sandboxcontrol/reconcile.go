@@ -92,13 +92,25 @@ func (c *Controller) applyHeartbeatOperationObservation(
 ) (bool, error) {
 	if pending == nil ||
 		observation.Scope.SandboxID != pending.Sandbox.ID ||
-		observation.Scope.Generation != pending.Operation.Generation {
+		observation.Scope.Generation != pending.Operation.Generation ||
+		!sandboxResourcesMatchRecord(
+			observation.Resources,
+			&pending.Sandbox,
+		) {
+		return false, nil
+	}
+	observedExpiry, err := time.Parse(
+		time.RFC3339Nano,
+		observation.LeaseExpiresAt,
+	)
+	if err != nil {
 		return false, nil
 	}
 	operation := &pending.Operation
 	switch operation.Kind {
 	case store.SandboxOperationKindPrepare:
-		if observation.Scope.FencingToken != operation.FencingToken {
+		if observation.Scope.FencingToken != operation.FencingToken ||
+			!observedExpiry.Equal(pending.Sandbox.LeaseExpiresAt) {
 			return false, nil
 		}
 		switch observation.State {
@@ -123,9 +135,7 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		if observation.Scope.FencingToken <= operation.FencingToken {
 			return false, nil
 		}
-		expiresAt, err := time.Parse(time.RFC3339Nano, observation.LeaseExpiresAt)
-		if err != nil ||
-			expiresAt.Before(operation.RequestedLeaseExpiresAt) {
+		if !observedExpiry.Equal(operation.RequestedLeaseExpiresAt) {
 			return false, nil
 		}
 		state := store.SandboxOperationReady
@@ -140,7 +150,7 @@ func (c *Controller) applyHeartbeatOperationObservation(
 				Generation:     operation.Generation,
 				FencingToken:   observation.Scope.FencingToken,
 				State:          state,
-				LeaseExpiresAt: &expiresAt,
+				LeaseExpiresAt: &observedExpiry,
 				UpdatedAt:      c.now().UTC(),
 			},
 		)
@@ -183,4 +193,16 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		}
 	}
 	return false, nil
+}
+
+func sandboxResourcesMatchRecord(
+	resources protocol.SandboxResources,
+	sandbox *store.SandboxRecord,
+) bool {
+	return sandbox != nil &&
+		resources.CPUCount == sandbox.CPUCount &&
+		resources.MemoryBytes == sandbox.MemoryBytes &&
+		resources.WorkspaceBytes == sandbox.WorkspaceBytes &&
+		resources.CommandTimeoutSeconds == sandbox.CommandTimeoutSeconds &&
+		resources.GPU == sandbox.GPU
 }

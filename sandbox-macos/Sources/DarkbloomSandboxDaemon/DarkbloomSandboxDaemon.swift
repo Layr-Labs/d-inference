@@ -109,7 +109,8 @@ enum DarkbloomSandboxDaemon {
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]
               darkbloom-sandboxd serve --coordinator WSS_URL --host-id UUID
                 --token-file FILE --lume PATH --storage DIR --capacity-dir DIR
-                --max-cpu N --max-memory-gib N [--max-growth-gib N]
+                --base-images ID[,ID...] --max-cpu N --max-memory-gib N
+                [--max-growth-gib N]
                 [--storage-headroom-gib N] [--development-ad-hoc-lume]
                 [--allow-insecure-loopback]
               darkbloom-sandboxd version

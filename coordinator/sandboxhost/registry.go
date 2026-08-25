@@ -303,6 +303,10 @@ func cloneCapabilities(
 		[]uint64(nil),
 		capabilities.WorkspaceSizesBytes...,
 	)
+	cloned.BaseImageIDs = append(
+		[]string(nil),
+		capabilities.BaseImageIDs...,
+	)
 	return cloned
 }
 

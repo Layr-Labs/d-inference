@@ -151,5 +151,10 @@ func sandboxSchemaMigrations() []string {
 			ADD COLUMN IF NOT EXISTS last_dispatch_error TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sandbox_commands_sandbox_created
 			ON sandbox_commands(sandbox_id, created_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_commands_one_active
+			ON sandbox_commands(sandbox_id)
+			WHERE state NOT IN (
+				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+			)`,
 	}
 }

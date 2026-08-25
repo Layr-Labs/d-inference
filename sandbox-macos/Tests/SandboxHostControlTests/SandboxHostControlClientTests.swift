@@ -216,6 +216,7 @@ final class SandboxHostControlClientTests: XCTestCase {
         memoryBytes: 48 * SandboxResourcePolicy.gibibyte,
         maximumSandboxes: 2,
         workspaceSizesBytes: [25 * SandboxResourcePolicy.gibibyte],
+        baseImageIDs: ["macos-tahoe-v1"],
         supportsGPU: true
     )
 }

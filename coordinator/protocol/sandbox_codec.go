@@ -426,7 +426,8 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 			capabilities.MemoryBytes < sandboxMinimumMemory ||
 			capabilities.MaximumSandboxes == 0 ||
 			capabilities.MaximumSandboxes > sandboxMaximumHostSlots ||
-			!validWorkspaceSizes(capabilities.WorkspaceSizesBytes) {
+			!validWorkspaceSizes(capabilities.WorkspaceSizesBytes) ||
+			!validSandboxBaseImages(capabilities.BaseImageIDs) {
 			return errors.New("sandbox host capabilities are invalid")
 		}
 	case *SandboxHostHeartbeatPayload:
@@ -640,6 +641,23 @@ func validWorkspaceSizes(sizes []uint64) bool {
 			return false
 		}
 		seen[size] = struct{}{}
+	}
+	return true
+}
+
+func validSandboxBaseImages(baseImageIDs []string) bool {
+	if len(baseImageIDs) == 0 || len(baseImageIDs) > 32 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(baseImageIDs))
+	for _, baseImageID := range baseImageIDs {
+		if !sandboxIdentifierPattern.MatchString(baseImageID) {
+			return false
+		}
+		if _, duplicate := seen[baseImageID]; duplicate {
+			return false
+		}
+		seen[baseImageID] = struct{}{}
 	}
 	return true
 }

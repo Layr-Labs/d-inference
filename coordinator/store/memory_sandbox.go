@@ -230,12 +230,10 @@ func (s *MemoryStore) BeginSandboxOperation(
 			return nil, nil, false, ErrSandboxConflict
 		}
 	}
-	if operation.Kind == SandboxOperationKindRenew {
-		for _, command := range s.sandboxCommands {
-			if command.SandboxID == operation.SandboxID &&
-				!command.Terminal() {
-				return nil, nil, false, ErrSandboxConflict
-			}
+	for _, command := range s.sandboxCommands {
+		if command.SandboxID == operation.SandboxID &&
+			!command.Terminal() {
+			return nil, nil, false, ErrSandboxConflict
 		}
 	}
 	sandbox.State = targetState
@@ -302,6 +300,10 @@ func (s *MemoryStore) MarkSandboxTerminationRequested(
 	sandbox := s.sandboxes[sandboxID]
 	if sandbox == nil || sandbox.AccountID != accountID {
 		return nil, fmt.Errorf("sandbox %s: %w", sandboxID, ErrNotFound)
+	}
+	if sandbox.TerminationIdempotencyKey != "" &&
+		sandbox.TerminationIdempotencyKey != idempotencyKey {
+		return nil, ErrSandboxConflict
 	}
 	if sandbox.Terminal() {
 		return cloneSandboxRecord(sandbox), nil
@@ -414,6 +416,16 @@ func (s *MemoryStore) CreateSandboxCommand(
 		).After(sandbox.LeaseExpiresAt) {
 		return nil, false, ErrSandboxConflict
 	}
+	for _, operation := range s.sandboxOperations {
+		if operation.SandboxID == command.SandboxID && !operation.Terminal() {
+			return nil, false, ErrSandboxConflict
+		}
+	}
+	for _, active := range s.sandboxCommands {
+		if active.SandboxID == command.SandboxID && !active.Terminal() {
+			return nil, false, ErrSandboxConflict
+		}
+	}
 	if _, exists := s.sandboxCommands[command.ID]; exists {
 		return nil, false, ErrSandboxConflict
 	}
@@ -454,6 +466,44 @@ func (s *MemoryStore) ListActiveSandboxCommands(
 	sort.Slice(result, func(left, right int) bool {
 		return result[left].CreatedAt.Before(result[right].CreatedAt)
 	})
+	return result, nil
+}
+
+func (s *MemoryStore) ListExpiringSandboxCommands(
+	_ context.Context,
+	expiresBefore time.Time,
+	limit int,
+) ([]PendingSandboxCommand, error) {
+	limit = sandboxListLimit(limit)
+	s.mu.RLock()
+	result := make([]PendingSandboxCommand, 0)
+	for _, command := range s.sandboxCommands {
+		sandbox := s.sandboxes[command.SandboxID]
+		if sandbox == nil ||
+			command.Terminal() ||
+			command.CreatedAt.Add(
+				time.Duration(command.TimeoutSeconds)*time.Second,
+			).After(expiresBefore) {
+			continue
+		}
+		result = append(result, PendingSandboxCommand{
+			Sandbox: *cloneSandboxRecord(sandbox),
+			Command: *cloneSandboxCommand(command),
+		})
+	}
+	s.mu.RUnlock()
+	sort.Slice(result, func(left, right int) bool {
+		leftDeadline := result[left].Command.CreatedAt.Add(
+			time.Duration(result[left].Command.TimeoutSeconds) * time.Second,
+		)
+		rightDeadline := result[right].Command.CreatedAt.Add(
+			time.Duration(result[right].Command.TimeoutSeconds) * time.Second,
+		)
+		return leftDeadline.Before(rightDeadline)
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
 	return result, nil
 }
 

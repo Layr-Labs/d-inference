@@ -71,6 +71,7 @@ final class SandboxControlProtocolTests: XCTestCase {
                         25 * SandboxResourcePolicy.gibibyte,
                         50 * SandboxResourcePolicy.gibibyte,
                     ],
+                    baseImageIDs: ["macos-tahoe-v1"],
                     supportsGPU: true
                 )
             )
@@ -107,6 +108,7 @@ final class SandboxControlProtocolTests: XCTestCase {
                 "memory_bytes",
                 "maximum_sandboxes",
                 "workspace_sizes_bytes",
+                "base_image_ids",
                 "supports_gpu",
             ]
         )

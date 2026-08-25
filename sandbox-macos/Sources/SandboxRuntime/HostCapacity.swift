@@ -28,7 +28,7 @@ public enum SandboxStorageReservation {
 
 public struct SandboxCapacityPolicy: Codable, Equatable, Sendable {
     public static let supportedRunningSandboxes = 2
-    public static let maximumSupportedLeaseDurationSeconds: TimeInterval = 1_800
+    public static let maximumSupportedLeaseDurationSeconds: TimeInterval = 900
 
     public let maximumRunningSandboxes: Int
     public let maximumReservedCPUCount: UInt16

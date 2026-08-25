@@ -170,6 +170,34 @@ if ($mode eq "large") {
     my $pax = pax_record("vendor.future", "value");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_negative_mtime") {
+    my $pax = pax_record("mtime", "-1");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_overprecise_mtime") {
+    my $pax = pax_record("mtime", "1787639300.1234567890");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_legacy_codesign") {
+    my $pax =
+        pax_record("mtime", "1787639300.129016206")
+        . pax_record(
+            "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+            "c2lnbmF0dXJl",
+        )
+        . pax_record(
+            "SCHILY.xattr.com.apple.cs.CodeSignature",
+            "c2lnbmF0dXJl",
+        );
+    emit_entry("PaxHeaders/mlx.metallib", "x", $pax, undef, 0);
+    emit_entry(
+        "bin/mlx.metallib",
+        "0",
+        "metal",
+        undef,
+        0,
+        "0000644\0",
+    );
 } elsif ($mode eq "flat_payload_mode") {
     emit_entry("bin/darkbloom", "0", "binary", undef, 0, "0000775\0");
 } elsif ($mode eq "app_payload_mode") {
@@ -274,6 +302,7 @@ tar czf "$VALID" -C "$VALID_STAGE" .
 run_preflight "$VALID"
 run_preflight "$(make_fixture pax_path)"
 run_preflight "$(make_fixture gnu_long)"
+run_preflight "$(make_fixture pax_legacy_codesign)"
 
 MODE_PAYLOAD="$ROOT/mode-payload"
 mkdir -p "$MODE_PAYLOAD"
@@ -355,6 +384,8 @@ expect_rejection "$(make_fixture pax_acl)" "unsupported PAX metadata key"
 expect_rejection "$(make_fixture pax_fflags)" "unsupported PAX metadata key"
 expect_rejection "$(make_fixture pax_link)" "unsupported PAX link metadata"
 expect_rejection "$(make_fixture pax_unknown)" "unsupported PAX metadata key"
+expect_rejection "$(make_fixture pax_negative_mtime)" "canonical timestamp"
+expect_rejection "$(make_fixture pax_overprecise_mtime)" "fractional precision"
 expect_rejection "$(make_fixture flat_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"

@@ -764,6 +764,7 @@ jobs:
             --no-fflags \
             --no-mac-metadata \
             --no-xattrs \
+            --format ustar \
             -czf "$LEGACY_BUNDLE" \
             -C "${{ steps.bundle.outputs.stage }}" .
           # Apply the same bounded raw-header walk used by clean-machine shell

@@ -513,11 +513,18 @@ func parseReleasePAX(
 				return attrs, err
 			}
 			attrs.size = &size
+		case "mtime":
+			if err := validateReleasePAXTimestamp(value); err != nil {
+				return attrs, err
+			}
 		case "SCHILY.filetype":
 			return attrs, fmt.Errorf("release archive contains unsupported PAX file-type metadata")
 		case "SCHILY.mode":
 			return attrs, fmt.Errorf("release archive contains unsupported PAX mode metadata")
 		default:
+			if releasePAXKeyIsStrippedCodeSignatureMetadata(key) {
+				break
+			}
 			return attrs, fmt.Errorf(
 				"release archive contains unsupported PAX metadata key %q",
 				key,
@@ -535,6 +542,47 @@ func releasePAXKeyIsSparse(key string) bool {
 		key == "SCHILY.realsize" ||
 		key == "SUN.holesdata" ||
 		strings.HasPrefix(key, "LIBARCHIVE.sparse")
+}
+
+func releasePAXKeyIsStrippedCodeSignatureMetadata(key string) bool {
+	switch key {
+	case "LIBARCHIVE.xattr.com.apple.cs.CodeDirectory",
+		"LIBARCHIVE.xattr.com.apple.cs.CodeRequirements",
+		"LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+		"SCHILY.xattr.com.apple.cs.CodeDirectory",
+		"SCHILY.xattr.com.apple.cs.CodeRequirements",
+		"SCHILY.xattr.com.apple.cs.CodeSignature":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateReleasePAXTimestamp(raw []byte) error {
+	parts := bytes.Split(raw, []byte{'.'})
+	if len(parts) > 2 {
+		return fmt.Errorf("release archive PAX mtime is not a canonical timestamp")
+	}
+	if _, err := parseReleaseDecimal(
+		parts[0],
+		int64(^uint64(0)>>1),
+		"PAX mtime seconds",
+	); err != nil {
+		return err
+	}
+	if len(parts) == 1 {
+		return nil
+	}
+	fraction := parts[1]
+	if len(fraction) == 0 || len(fraction) > 9 {
+		return fmt.Errorf("release archive PAX mtime has invalid fractional precision")
+	}
+	for _, digit := range fraction {
+		if digit < '0' || digit > '9' {
+			return fmt.Errorf("release archive PAX mtime fraction is not decimal")
+		}
+	}
+	return nil
 }
 
 func parseReleaseDecimal(raw []byte, limit int64, label string) (int64, error) {

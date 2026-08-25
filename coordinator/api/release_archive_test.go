@@ -346,6 +346,18 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			value: "value",
 			want:  "unsupported PAX metadata key",
 		},
+		{
+			name:  "negative mtime",
+			key:   "mtime",
+			value: "-1",
+			want:  "canonical timestamp",
+		},
+		{
+			name:  "overprecise mtime",
+			key:   "mtime",
+			value: "1787639300.1234567890",
+			want:  "fractional precision",
+		},
 	}
 
 	for _, test := range tests {
@@ -362,6 +374,49 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveAcceptsStrippedLegacyCodeSignatureMetadata(t *testing.T) {
+	keys := []string{
+		"LIBARCHIVE.xattr.com.apple.cs.CodeDirectory",
+		"LIBARCHIVE.xattr.com.apple.cs.CodeRequirements",
+		"LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+		"SCHILY.xattr.com.apple.cs.CodeDirectory",
+		"SCHILY.xattr.com.apple.cs.CodeRequirements",
+		"SCHILY.xattr.com.apple.cs.CodeSignature",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			pax := append(
+				releasePAXRecordForTest(
+					"mtime",
+					"1787639300.129016206",
+				),
+				releasePAXRecordForTest(key, "c2lnbmF0dXJl")...,
+			)
+			archive := buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{
+					name:     "PaxHeaders/mlx.metallib",
+					typeflag: 'x',
+					body:     pax,
+				},
+				rawReleaseTarEntry{
+					name:         "bin/mlx.metallib",
+					typeflag:     '0',
+					body:         []byte("metal"),
+					rawModeField: []byte("0000644\x00"),
+				},
+			)
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("validate legacy code-signature metadata: %v", err)
 			}
 		})
 	}

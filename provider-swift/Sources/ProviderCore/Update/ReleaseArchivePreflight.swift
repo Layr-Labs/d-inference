@@ -587,6 +587,8 @@ private final class ReleaseTarValidator {
                     value,
                     limit: UInt64(Int64.max),
                     label: "PAX size")
+            case "mtime":
+                try validatePAXTimestamp(value)
             case "SCHILY.filetype":
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX file-type metadata")
@@ -594,6 +596,9 @@ private final class ReleaseTarValidator {
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX mode metadata")
             default:
+                if isStrippedCodeSignatureMetadata(key) {
+                    break
+                }
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX metadata key \(key)")
             }
@@ -608,6 +613,47 @@ private final class ReleaseTarValidator {
             || key == "SCHILY.realsize"
             || key == "SUN.holesdata"
             || key.hasPrefix("LIBARCHIVE.sparse")
+    }
+
+    private func isStrippedCodeSignatureMetadata(_ key: String) -> Bool {
+        switch key {
+        case "LIBARCHIVE.xattr.com.apple.cs.CodeDirectory",
+             "LIBARCHIVE.xattr.com.apple.cs.CodeRequirements",
+             "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+             "SCHILY.xattr.com.apple.cs.CodeDirectory",
+             "SCHILY.xattr.com.apple.cs.CodeRequirements",
+             "SCHILY.xattr.com.apple.cs.CodeSignature":
+            true
+        default:
+            false
+        }
+    }
+
+    private func validatePAXTimestamp(_ bytes: [UInt8]) throws {
+        let seconds: [UInt8]
+        if let decimal = bytes.firstIndex(of: 46) {
+            guard !bytes[(decimal + 1)...].contains(46) else {
+                throw ReleaseArchivePreflightError(
+                    "release archive PAX mtime is not a canonical timestamp")
+            }
+            seconds = Array(bytes[..<decimal])
+            let fraction = bytes[(decimal + 1)...]
+            guard !fraction.isEmpty, fraction.count <= 9 else {
+                throw ReleaseArchivePreflightError(
+                    "release archive PAX mtime has invalid fractional precision")
+            }
+            guard fraction.allSatisfy({ $0 >= 48 && $0 <= 57 }) else {
+                throw ReleaseArchivePreflightError(
+                    "release archive PAX mtime fraction is not decimal")
+            }
+        } else {
+            seconds = bytes
+        }
+        _ = try parseDecimal(
+            seconds,
+            limit: UInt64(Int64.max),
+            label: "PAX mtime seconds"
+        )
     }
 
     private func parseDecimal(

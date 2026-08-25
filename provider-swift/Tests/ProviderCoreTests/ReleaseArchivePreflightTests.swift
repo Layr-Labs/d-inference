@@ -229,6 +229,18 @@ struct ReleaseArchivePreflightTests {
                 "value",
                 "unsupported PAX metadata key"
             ),
+            (
+                "negative-mtime",
+                "mtime",
+                "-1",
+                "canonical timestamp"
+            ),
+            (
+                "overprecise-mtime",
+                "mtime",
+                "1787639300.1234567890",
+                "fractional precision"
+            ),
         ]
 
         for (name, key, value, expected) in cases {
@@ -242,6 +254,46 @@ struct ReleaseArchivePreflightTests {
                     .init(name: "file"),
                 ])
             expectPreflightFailure(archive, contains: expected)
+        }
+    }
+
+    @Test("accepts stripped legacy metallib signature metadata")
+    func acceptsStrippedLegacyCodeSignatureMetadata() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let keys = [
+            "LIBARCHIVE.xattr.com.apple.cs.CodeDirectory",
+            "LIBARCHIVE.xattr.com.apple.cs.CodeRequirements",
+            "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+            "SCHILY.xattr.com.apple.cs.CodeDirectory",
+            "SCHILY.xattr.com.apple.cs.CodeRequirements",
+            "SCHILY.xattr.com.apple.cs.CodeSignature",
+        ]
+
+        for (index, key) in keys.enumerated() {
+            let metadata = paxRecord(
+                key: "mtime",
+                value: "1787639300.129016206"
+            ) + paxRecord(
+                key: key,
+                value: "c2lnbmF0dXJl"
+            )
+            let archive = try fixture.writeArchive(
+                named: "legacy-codesign-\(index)",
+                entries: [
+                    .init(
+                        name: "PaxHeaders/mlx.metallib",
+                        typeflag: 120,
+                        body: metadata
+                    ),
+                    .init(
+                        name: "bin/mlx.metallib",
+                        body: Data("metal".utf8),
+                        mode: 0o644
+                    ),
+                ])
+
+            try ReleaseArchivePreflight.validate(archive)
         }
     }
 
@@ -323,6 +375,8 @@ struct ReleaseArchivePreflightTests {
         )
         #expect(
             extractionArguments.starts(with: [
+                "-xzp",
+                "-m",
                 "--no-acls",
                 "--no-fflags",
                 "--no-mac-metadata",
@@ -349,6 +403,97 @@ struct ReleaseArchivePreflightTests {
         )
         #expect(modes.releaseModeMismatch == nil)
     }
+
+    #if canImport(Darwin)
+    @Test("extractor strips archive-controlled extended attributes")
+    func extractorStripsExtendedAttributes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "release-xattr-extraction-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let control = root.appendingPathComponent("control", isDirectory: true)
+        let hardened = root.appendingPathComponent(
+            "hardened",
+            isDirectory: true
+        )
+        let archive = root.appendingPathComponent("payload.tar.gz")
+        for directory in [source, control, hardened] {
+            try FileManager.default.createDirectory(
+                at: directory.appendingPathComponent("bin", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceBinary = source.appendingPathComponent("bin/darkbloom")
+        try Data("binary".utf8).write(to: sourceBinary)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: sourceBinary.path
+        )
+        let attribute = "com.darkbloom.release-test"
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/usr/bin/xattr"),
+            arguments: ["-w", attribute, "restored", sourceBinary.path],
+            timeout: 10
+        )
+        try BoundedProcess.run(
+            ReleaseArchiveExtractor.executable,
+            arguments: [
+                "-czf",
+                archive.path,
+                "-C",
+                source.path,
+                ".",
+            ],
+            timeout: 10
+        )
+        try BoundedProcess.run(
+            ReleaseArchiveExtractor.executable,
+            arguments: [
+                "-xzp",
+                "-f",
+                archive.path,
+                "-C",
+                control.path,
+            ],
+            timeout: 10
+        )
+        try ReleaseArchiveExtractor.extract(
+            archive: archive,
+            destination: hardened,
+            timeout: 10
+        )
+
+        func hasAttribute(_ file: URL) -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+            process.arguments = ["-p", attribute, file.path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationReason == .exit
+                    && process.terminationStatus == 0
+            } catch {
+                return false
+            }
+        }
+
+        #expect(
+            hasAttribute(
+                control.appendingPathComponent("bin/darkbloom")
+            )
+        )
+        #expect(
+            !hasAttribute(
+                hardened.appendingPathComponent("bin/darkbloom")
+            )
+        )
+    }
+    #endif
 
     @Test("enforces aggregate expanded bytes and physical header count")
     func enforcesAggregateLimits() throws {

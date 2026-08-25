@@ -196,6 +196,18 @@ sub parse_decimal {
     return $value;
 }
 
+sub validate_pax_timestamp {
+    my ($raw) = @_;
+    reject("PAX mtime is not a canonical timestamp")
+        unless $raw =~ /\A([0-9]+)(?:\.([0-9]+))?\z/;
+    my $seconds = $1;
+    my $fraction = $2;
+    parse_decimal($seconds, $max_int64, "PAX mtime seconds");
+    reject("PAX mtime has invalid fractional precision")
+        if defined($fraction)
+            && (length($fraction) == 0 || length($fraction) > 9);
+}
+
 sub tar_string {
     my ($field, $label) = @_;
     my $nul = index($field, "\0");
@@ -254,6 +266,15 @@ sub sparse_pax_key {
         || index($key, "LIBARCHIVE.sparse") == 0;
 }
 
+my %stripped_code_signature_metadata = map { $_ => 1 } (
+    "LIBARCHIVE.xattr.com.apple.cs.CodeDirectory",
+    "LIBARCHIVE.xattr.com.apple.cs.CodeRequirements",
+    "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+    "SCHILY.xattr.com.apple.cs.CodeDirectory",
+    "SCHILY.xattr.com.apple.cs.CodeRequirements",
+    "SCHILY.xattr.com.apple.cs.CodeSignature",
+);
+
 sub parse_pax {
     my ($payload) = @_;
     my %attributes;
@@ -300,10 +321,15 @@ sub parse_pax {
                 $max_int64,
                 "PAX size",
             );
+        } elsif ($key eq "mtime") {
+            validate_pax_timestamp($value);
         } elsif ($key eq "SCHILY.filetype") {
             reject("unsupported PAX file-type metadata");
         } elsif ($key eq "SCHILY.mode") {
             reject("unsupported PAX mode metadata");
+        } elsif ($stripped_code_signature_metadata{$key}) {
+            # Compatibility with already-published macOS metallib signatures.
+            # Extraction disables xattrs, so these values never reach disk.
         } else {
             reject("unsupported PAX metadata key $key");
         }
@@ -3173,12 +3199,14 @@ install_bundle_atomically_locked() {
         "$stage" "$install_dir" "$transaction_id" || return 1
     install_test_crash "staging-created"
     if ! /usr/bin/tar \
+        -xzp \
+        -m \
         --no-acls \
         --no-fflags \
         --no-mac-metadata \
         --no-xattrs \
         --no-same-owner \
-        -xzp -f "$archive" -C "$stage"
+        -f "$archive" -C "$stage"
     then
         cleanup_install_staging_after_attempt \
             "$stage" "$install_dir" "$transaction_id" || true

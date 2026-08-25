@@ -9,10 +9,12 @@ struct AppInstallationRecovery: Equatable, Sendable {
     }
 
     @MainActor
-    func openInstalledApp(
-        using opener: any InstalledApplicationOpening =
-            WorkspaceInstalledApplicationOpener()
-    ) {
+    func openInstalledApp() {
+        openInstalledApp(using: WorkspaceInstalledApplicationOpener())
+    }
+
+    @MainActor
+    func openInstalledApp(using opener: any InstalledApplicationOpening) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.allowsRunningApplicationSubstitution = false

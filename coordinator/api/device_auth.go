@@ -187,7 +187,7 @@ func (s *Server) handleDeviceTokenRevoke(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing provider token"))
 		return
 	}
-	if err := s.store.RevokeProviderToken(token); err != nil {
+	if _, _, err := s.revokeProviderToken(token); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			w.WriteHeader(http.StatusNoContent)
 			return

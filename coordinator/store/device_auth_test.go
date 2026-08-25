@@ -116,11 +116,143 @@ func TestProviderToken(t *testing.T) {
 	}
 
 	// Revoke
-	if err := s.RevokeProviderToken(rawToken); err != nil {
+	revoked, err := s.RevokeProviderToken(rawToken)
+	if err != nil {
 		t.Fatalf("RevokeProviderToken: %v", err)
+	}
+	if revoked.AccountID != pt.AccountID || revoked.TokenHash != pt.TokenHash || revoked.Active {
+		t.Fatalf("revoked binding = %+v, want account/hash preserved and active=false", revoked)
 	}
 	if _, err := s.GetProviderToken(rawToken); err == nil {
 		t.Error("expected error for revoked token")
+	}
+}
+
+func TestProviderTokenCreditRequiresActiveMatchingBinding(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			rawToken := uniqueID("provider-credit-token")
+			accountID := uniqueID("provider-credit-account")
+			tokenHash := hashKey(rawToken)
+			if err := s.CreateProviderToken(&ProviderToken{
+				TokenHash: tokenHash,
+				AccountID: accountID,
+				Active:    true,
+			}); err != nil {
+				t.Fatalf("CreateProviderToken: %v", err)
+			}
+
+			credit := func(jobID, creditedAccount string) error {
+				return s.CreditProviderAccountIfTokenActive(tokenHash, &ProviderEarning{
+					AccountID:      creditedAccount,
+					ProviderID:     "provider-credit",
+					ProviderKey:    "provider-key",
+					JobID:          jobID,
+					Model:          "test-model",
+					AmountMicroUSD: 100,
+				})
+			}
+
+			if err := credit(uniqueID("credit-active"), accountID); err != nil {
+				t.Fatalf("active matching credit: %v", err)
+			}
+			if got := s.GetBalance(accountID); got != 100 {
+				t.Fatalf("balance after active credit = %d, want 100", got)
+			}
+			if err := credit(uniqueID("credit-wrong-account"), accountID+"-other"); !errors.Is(err, ErrProviderTokenInactive) {
+				t.Fatalf("wrong-account credit error = %v, want ErrProviderTokenInactive", err)
+			}
+
+			revoked, err := s.RevokeProviderToken(rawToken)
+			if err != nil {
+				t.Fatalf("RevokeProviderToken: %v", err)
+			}
+			if revoked.TokenHash != tokenHash || revoked.AccountID != accountID || revoked.Active {
+				t.Fatalf("revoked binding = %+v", revoked)
+			}
+			if err := credit(uniqueID("credit-revoked"), accountID); !errors.Is(err, ErrProviderTokenInactive) {
+				t.Fatalf("post-revoke credit error = %v, want ErrProviderTokenInactive", err)
+			}
+			if got := s.GetBalance(accountID); got != 100 {
+				t.Fatalf("balance after rejected credits = %d, want 100", got)
+			}
+
+			again, err := s.RevokeProviderToken(rawToken)
+			if err != nil {
+				t.Fatalf("idempotent RevokeProviderToken: %v", err)
+			}
+			if again.TokenHash != tokenHash || again.AccountID != accountID || again.Active {
+				t.Fatalf("idempotent revoked binding = %+v", again)
+			}
+		})
+	}
+}
+
+func TestProviderTokenCreditAndRevokeSerialize(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			const races = 32
+			for i := range races {
+				rawToken := uniqueID("provider-race-token")
+				accountID := uniqueID("provider-race-account")
+				tokenHash := hashKey(rawToken)
+				if err := s.CreateProviderToken(&ProviderToken{
+					TokenHash: tokenHash,
+					AccountID: accountID,
+					Active:    true,
+				}); err != nil {
+					t.Fatalf("race %d CreateProviderToken: %v", i, err)
+				}
+
+				start := make(chan struct{})
+				creditDone := make(chan error, 1)
+				revokeDone := make(chan error, 1)
+				go func() {
+					<-start
+					creditDone <- s.CreditProviderAccountIfTokenActive(tokenHash, &ProviderEarning{
+						AccountID:      accountID,
+						ProviderID:     "provider-race",
+						ProviderKey:    "provider-key",
+						JobID:          uniqueID("provider-race-job"),
+						Model:          "test-model",
+						AmountMicroUSD: 100,
+					})
+				}()
+				go func() {
+					<-start
+					_, err := s.RevokeProviderToken(rawToken)
+					revokeDone <- err
+				}()
+				close(start)
+
+				creditErr := <-creditDone
+				if err := <-revokeDone; err != nil {
+					t.Fatalf("race %d revoke: %v", i, err)
+				}
+				switch {
+				case creditErr == nil:
+					if got := s.GetBalance(accountID); got != 100 {
+						t.Fatalf("race %d successful credit balance = %d, want 100", i, got)
+					}
+				case errors.Is(creditErr, ErrProviderTokenInactive):
+					if got := s.GetBalance(accountID); got != 0 {
+						t.Fatalf("race %d rejected credit balance = %d, want 0", i, got)
+					}
+				default:
+					t.Fatalf("race %d credit error = %v", i, creditErr)
+				}
+
+				if err := s.CreditProviderAccountIfTokenActive(tokenHash, &ProviderEarning{
+					AccountID:      accountID,
+					ProviderID:     "provider-race",
+					JobID:          uniqueID("provider-post-revoke-job"),
+					Model:          "test-model",
+					AmountMicroUSD: 100,
+				}); !errors.Is(err, ErrProviderTokenInactive) {
+					t.Fatalf("race %d post-return credit error = %v, want ErrProviderTokenInactive", i, err)
+				}
+			}
+		})
 	}
 }
 

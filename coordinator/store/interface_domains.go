@@ -478,8 +478,12 @@ type DeviceAuthStore interface {
 	// GetProviderToken validates a provider token and returns it.
 	GetProviderToken(token string) (*ProviderToken, error)
 
-	// RevokeProviderToken deactivates a provider token.
-	RevokeProviderToken(token string) error
+	// RevokeProviderToken deactivates a provider token and returns its canonical
+	// token/account binding. Returning the binding lets the coordinator evict
+	// every live session authenticated by it without a racy lookup after revoke.
+	// Re-revoking an existing inactive token is idempotent and still returns the
+	// binding; an unknown token wraps ErrNotFound.
+	RevokeProviderToken(token string) (*ProviderToken, error)
 }
 
 // InviteStore manages coordinator-generated invite codes and their redemptions.
@@ -540,6 +544,13 @@ type ProviderEarningsStore interface {
 	// CreditProviderAccount atomically credits a linked provider account and
 	// records the corresponding per-node earning.
 	CreditProviderAccount(earning *ProviderEarning) error
+
+	// CreditProviderAccountIfTokenActive performs the same atomic credit only
+	// while tokenHash names an active provider token owned by earning.AccountID.
+	// The token row and credit are serialized in one store critical section /
+	// PostgreSQL statement, so a revoke that wins the race prevents the credit
+	// and a revoke that waits cannot return before an earlier credit commits.
+	CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error
 
 	// CreditProviderWallet atomically credits an unlinked provider wallet and
 	// records the corresponding payout history row.

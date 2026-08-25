@@ -303,7 +303,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			provider = s.registry.Register(providerID, conn, regMsg)
+			var linkedToken *store.ProviderToken
+			provider, linkedToken, err = s.registerProvider(providerID, conn, regMsg)
+			if err != nil {
+				s.logger.Warn("rejecting provider with invalid device token",
+					"provider_id", providerID,
+				)
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid provider token")
+				return
+			}
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
@@ -323,29 +331,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
 
-			// Resolve auth token → account linkage.
-			if regMsg.AuthToken != "" {
-				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil {
-					s.logger.Warn("provider auth token invalid",
-						"provider_id", providerID,
-						"error", err,
-					)
-				} else {
-					provider.Mu().Lock()
-					provider.AccountID = pt.AccountID
-					provider.Mu().Unlock()
-					// Account linkage can be the provider's ONLY stable identity
-					// (Open Mode / invalid attestation → the acct: fallback), and
-					// it lands after the attestation-time bind — re-bind so fault
-					// state keys by identity instead of the session UUID.
-					provider.RebindStableFaultKey()
-					s.logger.Info("provider linked to account",
-						"provider_id", providerID,
-						"account_id", pt.AccountID,
-						"token_label", pt.Label,
-					)
-				}
+			if linkedToken != nil {
+				// Account linkage can be the provider's ONLY stable identity
+				// (Open Mode / invalid attestation → the acct: fallback). It was
+				// initialized before registry publication; bind the fault key now
+				// that attestation had its first chance to supply a stronger key.
+				provider.RebindStableFaultKey()
+				s.logger.Info("provider linked to account",
+					"provider_id", providerID,
+					"account_id", linkedToken.AccountID,
+					"token_label", linkedToken.Label,
+				)
 			}
 
 			// Store provider version.
@@ -1861,10 +1857,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Service/wholesale traffic is billed at the advertised platform price
 	// (never a provider's higher custom price) and is exempt from the minimum,
 	// so the debit matches the published per-token OpenRouter feed exactly.
-	providerAccountForPricing := ""
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerAccountForPricing = providerPricingKeys(p)
-	}
+	// Attribute pricing to the connection that actually served this request.
+	// A fresh lookup by session id can resolve to a replacement connection after
+	// reconnect, which must not rewrite the old connection's billing identity.
+	providerAccountForPricing := providerPricingKeys(provider)
 	var customIn, customOut int64
 	var hasCustom bool
 	if !isServiceConsumer {
@@ -1896,13 +1892,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// (stable across deregistration), not a fresh lookup.
 	freeSelfRoute := false
 	if pr.FreeSelfRoute || pr.PreferOwner {
-		serving := s.registry.GetProvider(providerID)
-		if serving == nil {
-			serving = provider
-		}
-		serving.Mu().Lock()
-		servingOwner := serving.AccountID
-		serving.Mu().Unlock()
+		provider.Mu().Lock()
+		servingOwner := provider.AccountID
+		provider.Mu().Unlock()
 		if servingOwner != "" && servingOwner == pr.ConsumerKey {
 			// Owned machine served it → free. For PreferOwner this also fully
 			// refunds the up-front reservation below (totalCost 0 < reserved).
@@ -2187,12 +2179,6 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.emitRequestBackendLatency(pr.Model, s.providerKVBackendAttribution(provider, pr.Model),
 			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
 
-		// Resolve provider identity for payout.
-		p := s.registry.GetProvider(providerID)
-		if p == nil {
-			p = provider
-		}
-
 		// Compute platform fee (needs referral lookup before spawning goroutines).
 		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
 		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
@@ -2204,11 +2190,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		var settlementWg sync.WaitGroup
 
 		// Credit the provider's linked account (if any).
-		if p != nil {
-			p.Mu().Lock()
-			accountID := p.AccountID
-			publicKey := p.PublicKey
-			p.Mu().Unlock()
+		if provider != nil {
+			provider.Mu().Lock()
+			accountID := provider.AccountID
+			authTokenHash := provider.AuthTokenHash
+			publicKey := provider.PublicKey
+			provider.Mu().Unlock()
 
 			// Credit the provider only when there is an actual payout. A zero
 			// payout means either free self-route (consumer == provider account)
@@ -2220,7 +2207,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				go func() {
 					defer settlementWg.Done()
 					start := time.Now()
-					if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+					err := s.store.CreditProviderAccountIfTokenActive(authTokenHash, &store.ProviderEarning{
 						AccountID:        accountID,
 						ProviderID:       providerID,
 						ProviderKey:      publicKey,
@@ -2230,16 +2217,23 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 						PromptTokens:     msg.Usage.PromptTokens,
 						CompletionTokens: msg.Usage.CompletionTokens,
 						CreatedAt:        time.Now(),
-					}); err != nil {
+					})
+					if err != nil {
 						s.logger.Error("failed to credit linked provider account",
 							"provider_id", providerID,
 							"account_id", accountID,
 							"request_id", msg.RequestID,
 							"error", err,
 						)
+						if errors.Is(err, store.ErrProviderTokenInactive) {
+							s.ddIncr("billing.provider_credit_rejected", []string{"reason:inactive_token"})
+						} else {
+							s.ddIncr("billing.credit_failed", []string{"op:provider_account_credit"})
+						}
+					} else {
+						s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 					}
 					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 				}()
 			}
 		}

@@ -70,9 +70,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	provider := srv.registry.Register("linked-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = accountID
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, accountID)
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
@@ -199,9 +197,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 	provider := srv.registry.Register("overage-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = accountID
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, accountID)
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
@@ -260,9 +256,7 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 	provider := srv.registry.Register("overage-clamp-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = accountID
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, accountID)
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)

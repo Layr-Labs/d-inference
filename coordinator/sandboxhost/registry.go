@@ -47,6 +47,14 @@ func NewRegistry(handler MessageHandler) *Registry {
 	}
 }
 
+// SetHandler installs the durable control-plane result handler during server
+// construction, before the registry is reachable by any WebSocket request.
+func (r *Registry) SetHandler(handler MessageHandler) {
+	r.mu.Lock()
+	r.handler = handler
+	r.mu.Unlock()
+}
+
 type Session struct {
 	registry  *Registry
 	transport Transport
@@ -185,14 +193,17 @@ func (s *Session) Handle(
 	}
 	s.mu.Unlock()
 
-	if s.registry.handler != nil {
+	s.registry.mu.RLock()
+	handler := s.registry.handler
+	s.registry.mu.RUnlock()
+	if handler != nil {
 		handlerContext, cancel := context.WithCancel(ctx)
 		stop := context.AfterFunc(s.authorityContext, cancel)
 		defer func() {
 			stop()
 			cancel()
 		}()
-		if err := s.registry.handler(handlerContext, s, message); err != nil {
+		if err := handler(handlerContext, s, message); err != nil {
 			select {
 			case <-s.authorityContext.Done():
 				return ErrSessionClosed

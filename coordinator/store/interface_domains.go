@@ -694,3 +694,90 @@ type ProviderStore interface {
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)
 }
+
+// SandboxStore is the durable state machine for developer sandboxes. Mutating
+// methods fence every write by sandbox generation and fencing token so a late
+// host response cannot change a newer sandbox incarnation.
+type SandboxStore interface {
+	// CreateSandbox atomically creates the sandbox and its prepare operation.
+	CreateSandbox(
+		ctx context.Context,
+		sandbox *SandboxRecord,
+		operation *SandboxOperation,
+	) error
+
+	// GetSandbox returns one account-owned sandbox.
+	GetSandbox(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+	) (*SandboxRecord, error)
+
+	// GetSandboxByID is the host-control lookup. Callers must separately verify
+	// the reporting host before applying a result.
+	GetSandboxByID(
+		ctx context.Context,
+		sandboxID string,
+	) (*SandboxRecord, error)
+
+	// ListSandboxes returns an account's sandboxes newest first. Implementations
+	// cap non-positive or excessive limits at MaxSandboxListLimit.
+	ListSandboxes(
+		ctx context.Context,
+		accountID string,
+		limit int,
+	) ([]SandboxRecord, error)
+
+	// ListActiveSandboxesByHost returns every non-terminal allocation for a host.
+	// It is used to account for coordinator reservations not yet reflected by the
+	// host's latest heartbeat.
+	ListActiveSandboxesByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]SandboxRecord, error)
+
+	// BeginSandboxOperation atomically checks account ownership, the current
+	// scope/state, records the operation, and moves the sandbox to targetState.
+	BeginSandboxOperation(
+		ctx context.Context,
+		operation *SandboxOperation,
+		targetState string,
+	) (*SandboxRecord, error)
+
+	// GetSandboxOperation returns one account-owned lifecycle operation.
+	GetSandboxOperation(
+		ctx context.Context,
+		accountID string,
+		operationID string,
+	) (*SandboxOperation, error)
+
+	// ApplySandboxOperationUpdate applies a host lifecycle result and its
+	// resulting fence. Unknown, terminal, stale, or invalid transitions fail
+	// closed without changing either row.
+	ApplySandboxOperationUpdate(
+		ctx context.Context,
+		update SandboxOperationUpdate,
+	) (*SandboxRecord, *SandboxOperation, error)
+
+	// CreateSandboxCommand atomically validates the sandbox scope/readiness and
+	// inserts a pending command. A repeated idempotency key returns the original
+	// command with created=false; the caller must reject payload mismatches.
+	CreateSandboxCommand(
+		ctx context.Context,
+		command *SandboxCommand,
+	) (stored *SandboxCommand, created bool, err error)
+
+	// GetSandboxCommand returns one account-owned command.
+	GetSandboxCommand(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		commandID string,
+	) (*SandboxCommand, error)
+
+	// ApplySandboxCommandUpdate applies a fenced host command result.
+	ApplySandboxCommandUpdate(
+		ctx context.Context,
+		update SandboxCommandUpdate,
+	) (*SandboxCommand, error)
+}

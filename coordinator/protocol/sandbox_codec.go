@@ -567,6 +567,21 @@ func validateSandboxResources(resources SandboxResources) error {
 	return nil
 }
 
+func ValidateSandboxResources(resources SandboxResources) error {
+	return validateSandboxResources(resources)
+}
+
+func ValidateSandboxCommand(command *SandboxCommandPayload) error {
+	if command == nil {
+		return errors.New("sandbox command payload is nil")
+	}
+	return validateSandboxCommand(command)
+}
+
+func ValidSandboxIdentifier(value string) bool {
+	return sandboxIdentifierPattern.MatchString(value)
+}
+
 func validateSandboxCommand(command *SandboxCommandPayload) error {
 	if !validCanonicalSandboxUUID(command.CommandID) ||
 		!sandboxIdentifierPattern.MatchString(command.IdempotencyKey) ||

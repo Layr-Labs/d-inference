@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/sandboxcontrol"
 	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
@@ -177,6 +178,7 @@ func (s *Server) latestReleasedVersion() string {
 type Server struct {
 	registry                      *registry.Registry
 	sandboxHosts                  *sandboxhost.Registry
+	sandboxes                     *sandboxcontrol.Controller
 	sandboxHostAuth               *sandboxhost.Authenticator
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -728,9 +730,11 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		sandboxHostAuth, _ = sandboxhost.NewAuthenticator(sandboxhost.AuthConfig{})
 	}
 
+	sandboxHosts := sandboxhost.NewRegistry(nil)
 	s := &Server{
 		registry:             reg,
-		sandboxHosts:         sandboxhost.NewRegistry(nil),
+		sandboxHosts:         sandboxHosts,
+		sandboxes:            sandboxcontrol.New(st, sandboxHosts),
 		sandboxHostAuth:      sandboxHostAuth,
 		store:                st,
 		ledger:               payments.NewLedger(st),
@@ -1755,6 +1759,45 @@ func (s *Server) routes() {
 	// Sandbox hosts use dedicated per-host bearer credentials and a separate
 	// protocol/registry from inference providers.
 	s.mux.HandleFunc("GET /ws/sandbox-host", s.handleSandboxHostWS)
+
+	// Developer sandbox lifecycle. Mutations are drain-gated and account-scoped;
+	// status reads remain available while the coordinator drains.
+	s.mux.HandleFunc(
+		"POST /v1/sandboxes",
+		s.drainGate(s.requireAuth(s.rateLimitFinancial(s.handleCreateSandbox))),
+	)
+	s.mux.HandleFunc(
+		"GET /v1/sandboxes",
+		s.requireAuth(s.handleListSandboxes),
+	)
+	s.mux.HandleFunc(
+		"GET /v1/sandboxes/{sandboxID}",
+		s.requireAuth(s.handleGetSandbox),
+	)
+	s.mux.HandleFunc(
+		"POST /v1/sandboxes/{sandboxID}/commands",
+		s.drainGate(s.requireAuth(s.rateLimitConsumer(s.handleSandboxCommand))),
+	)
+	s.mux.HandleFunc(
+		"GET /v1/sandboxes/{sandboxID}/commands/{commandID}",
+		s.requireAuth(s.handleGetSandboxCommand),
+	)
+	s.mux.HandleFunc(
+		"POST /v1/sandboxes/{sandboxID}/renew",
+		s.drainGate(s.requireAuth(s.handleRenewSandbox)),
+	)
+	s.mux.HandleFunc(
+		"POST /v1/sandboxes/{sandboxID}/stop",
+		s.drainGate(s.requireAuth(s.handleStopSandbox)),
+	)
+	s.mux.HandleFunc(
+		"DELETE /v1/sandboxes/{sandboxID}",
+		s.drainGate(s.requireAuth(s.handleDeleteSandbox)),
+	)
+	s.mux.HandleFunc(
+		"GET /v1/sandbox-operations/{operationID}",
+		s.requireAuth(s.handleGetSandboxOperation),
+	)
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).

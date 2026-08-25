@@ -1039,6 +1039,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
 	}
+	migrations = append(migrations, sandboxSchemaMigrations()...)
 
 	for _, m := range migrations {
 		if _, err := s.pool.Exec(ctx, m); err != nil {

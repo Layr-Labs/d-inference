@@ -750,6 +750,11 @@ struct WatchdogRecoveryIntegrationTests {
             Issue.record("missing app predecessor")
             return
         }
+        var partialModeRecord = predecessor
+        partialModeRecord.release.enclaveMode = nil
+        #expect(throws: (any Error).self) {
+            try store.verifyPredecessor(partialModeRecord)
+        }
         let predecessorBinary = context.fixture.installRoot
             .appendingPathComponent(
                 "recovery/predecessor/Darkbloom.app/Contents/MacOS/darkbloom"

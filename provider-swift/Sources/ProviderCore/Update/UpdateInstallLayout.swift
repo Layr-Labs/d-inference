@@ -148,10 +148,18 @@ extension UpdateRecoveryStore {
                 "staged release payload \(payload) is not executable"
             )
         }
+        let installedBundleHash = try UpdateAtomicFilesystem.treeHash(
+            root: bundle
+        )
+        guard installedBundleHash == staged.stagedTreeHash else {
+            throw StoreError.filesystem(
+                "staged payload changed before transaction commit"
+            )
+        }
         return InstalledReleaseRecord(
             version: staged.release.version,
             releaseBundleHash: staged.release.bundleHash,
-            installedBundleHash: try UpdateAtomicFilesystem.treeHash(root: bundle),
+            installedBundleHash: installedBundleHash,
             binaryHash: try UpdateAtomicFilesystem.sha256(file: binary),
             enclaveHash: try UpdateAtomicFilesystem.sha256(file: enclave),
             metallibHash: try UpdateAtomicFilesystem.sha256(file: metallib),

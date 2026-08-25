@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -34,5 +35,47 @@ func TestIdentityScopedDisconnectCannotEvictReplacementConnection(t *testing.T) 
 	}
 	if got := reg.GetProvider(providerID); got != replacement {
 		t.Fatal("replacement connection is no longer registry-visible")
+	}
+}
+
+func TestDisconnectDoesNotBlockWhenPendingErrorChannelIsFull(t *testing.T) {
+	reg := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	provider := reg.RegisterAuthenticated(
+		"full-terminal-provider",
+		nil,
+		&protocol.RegisterMessage{},
+		ProviderAuthBinding{AccountID: "acct", TokenHash: "token"},
+	)
+	errorCh := make(chan protocol.InferenceErrorMessage, 1)
+	buffered := protocol.InferenceErrorMessage{
+		Type:       protocol.TypeInferenceError,
+		RequestID:  "already-terminal",
+		Error:      "existing terminal",
+		StatusCode: 499,
+	}
+	errorCh <- buffered
+	provider.AddPending(&PendingRequest{
+		RequestID:  "pending",
+		ErrorCh:    errorCh,
+		ChunkCh:    make(chan string),
+		CompleteCh: make(chan protocol.UsageInfo),
+	})
+
+	done := make(chan struct{})
+	go func() {
+		reg.Disconnect("full-terminal-provider")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Disconnect blocked on a full pending error channel")
+	}
+	if got := <-errorCh; got != buffered {
+		t.Fatalf("buffered terminal = %+v, want %+v", got, buffered)
+	}
+	if _, ok := <-errorCh; ok {
+		t.Fatal("pending error channel remains open after disconnect")
 	}
 }

@@ -5100,13 +5100,19 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		if pr.ErrorCh != nil {
 			func() {
 				defer func() { recover() }()
-				pr.ErrorCh <- protocol.InferenceErrorMessage{
+				message := protocol.InferenceErrorMessage{
 					Type:             protocol.TypeInferenceError,
 					RequestID:        reqID,
 					Error:            "provider disconnected",
 					StatusCode:       502,
 					ErrorReason:      disconnectFlushErrorReason(cause),
 					CoordinatorCause: cause,
+				}
+				select {
+				case pr.ErrorCh <- message:
+				default:
+					// A terminal result is already buffered. Preserve it and
+					// continue teardown instead of blocking lifecycle locks.
 				}
 			}()
 			func() {

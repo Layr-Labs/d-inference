@@ -1227,6 +1227,12 @@ assert_interrupted_flat_transaction_recovers \
 assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/coordinator/api/install.sh" embedded flat-layout-moved rollback
 
+# Historical journal compatibility and the recovery-only crash boundaries use
+# the real signed/flat artifacts and filesystem helpers initialized above.
+source "$REPO_ROOT/scripts/test-install-recovery-fixtures.sh"
+source "$REPO_ROOT/scripts/test-install-recovery-checkpoints.sh"
+source "$REPO_ROOT/scripts/test-install-recovery-compatibility.sh"
+
 # A legacy release has no authenticated app version and must never overwrite
 # the CLI links for an installed app. Otherwise SelfUpdater continues to launch
 # the app while users invoke unrelated stale flat binaries from bin/.

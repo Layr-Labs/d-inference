@@ -400,23 +400,24 @@ package enum SandboxAuthorityFileSystem {
         else {
             return nil
         }
+        let original = url.path
         let standardized = url.standardizedFileURL.path
-        guard standardized == url.path,
-              let resolvedPointer = realpath(standardized, nil)
+        let standardizedAlias = ["/tmp", "/var"].contains(where: {
+            standardized == $0 || standardized.hasPrefix($0 + "/")
+        })
+        guard standardized == original
+                || (standardizedAlias && original == "/private" + standardized),
+              let resolvedPointer = realpath(original, nil)
         else {
             return nil
         }
         defer { free(resolvedPointer) }
         let resolved = String(cString: resolvedPointer)
-        if resolved == standardized {
+        if resolved == original {
             return resolved
         }
-        for alias in ["/tmp", "/var"] {
-            if standardized == alias || standardized.hasPrefix(alias + "/") {
-                return resolved == "/private" + standardized
-                    ? resolved
-                    : nil
-            }
+        if standardized == original, standardizedAlias {
+            return resolved == "/private" + original ? resolved : nil
         }
         return nil
     }

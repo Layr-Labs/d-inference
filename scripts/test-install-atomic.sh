@@ -399,8 +399,7 @@ test_install_lock_signal_exit() {
         --hold-install-lock-test "$install_dir" "$entered" "$release" "$after" &
     local holder_pid=$!
     local ready=0
-    local attempt
-    for attempt in {1..100}; do
+    for _ in {1..100}; do
         if [ -f "$entered" ]; then
             ready=1
             break

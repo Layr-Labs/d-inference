@@ -211,6 +211,52 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         )
     }
 
+    func testDeleteReplayAfterReleasedLeaseReturnsDeleted() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        await fixture.runtime.fenceInspectionsAfterRelease()
+        let prepare = try fixture.preparePayload(fencingToken: 31)
+        let prepareResponse = try await fixture.adapter.handle(.prepare(
+            fixture.envelope(payload: prepare, type: .prepare)
+        ))
+        guard case .operation(let prepared) = prepareResponse else {
+            return XCTFail("expected prepare operation response")
+        }
+        XCTAssertEqual(prepared.state, .ready)
+        let deletion = SandboxWireOperation(
+            operationID: UUID(),
+            scope: prepare.scope
+        )
+
+        let firstResponse = try await fixture.adapter.handle(.delete(
+            fixture.envelope(payload: deletion, type: .delete)
+        ))
+        guard case .operation(let firstDelete) = firstResponse else {
+            return XCTFail("expected first delete operation response")
+        }
+        XCTAssertEqual(firstDelete.state, .deleted)
+
+        let replayResponse = try await fixture.adapter.handle(.delete(
+            fixture.envelope(payload: deletion, type: .delete)
+        ))
+        guard case .operation(let replayedDelete) = replayResponse else {
+            return XCTFail("expected replayed delete operation response")
+        }
+        XCTAssertEqual(replayedDelete.state, .deleted)
+        let name = Fixture.virtualMachineName(for: prepare.scope)
+        let events = await fixture.runtime.events()
+        XCTAssertEqual(
+            events,
+            [
+                "create:\(name)",
+                "start:\(name)",
+                "stop:\(name)",
+                "delete:\(name)",
+                "delete:\(name)",
+            ]
+        )
+    }
+
     func testDeleteMissingVirtualMachineRemainsPossible() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -525,12 +571,19 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     private var stopError: SandboxRuntimeError?
     private var startErrorAfterRunning: SandboxRuntimeError?
     private var recordedStopScopes: [SandboxOperationScope] = []
+    private var releasedScopes: [SandboxOperationScope] = []
+    private var shouldFenceInspectionsAfterRelease = false
 
     func inspect(
-        scope _: SandboxOperationScope,
+        scope: SandboxOperationScope,
         name: String
     ) async throws -> SandboxVirtualMachineRecord? {
-        records[name]
+        if shouldFenceInspectionsAfterRelease,
+           releasedScopes.contains(scope)
+        {
+            throw SandboxCapacityError.leaseNotFound
+        }
+        return records[name]
     }
 
     func create(
@@ -620,16 +673,23 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     }
 
     func deleteAndRelease(
-        scope _: SandboxOperationScope,
+        scope: SandboxOperationScope,
         name: String
     ) async throws {
         recordedEvents.append("delete:\(name)")
+        if releasedScopes.contains(scope) {
+            guard records[name] == nil else {
+                throw SandboxCapacityError.leaseNotFound
+            }
+            return
+        }
         if records[name]?.state == .running {
             throw SandboxRuntimeError.unsupported(
                 "refusing to delete running test VM"
             )
         }
         records.removeValue(forKey: name)
+        releasedScopes.append(scope)
     }
 
     func events() -> [String] {
@@ -667,6 +727,10 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
 
     func failStartsAfterRunning(with error: SandboxRuntimeError) {
         startErrorAfterRunning = error
+    }
+
+    func fenceInspectionsAfterRelease() {
+        shouldFenceInspectionsAfterRelease = true
     }
 
     func record(name: String) -> SandboxVirtualMachineRecord? {

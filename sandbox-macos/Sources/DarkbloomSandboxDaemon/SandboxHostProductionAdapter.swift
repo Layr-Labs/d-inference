@@ -593,7 +593,15 @@ actor SandboxHostProductionAdapter:
         let scope = payload.scope.operationScope
         let name = Self.virtualMachineName(for: payload.scope)
         do {
-            if try await runtime.inspect(scope: scope, name: name)?.state == .running {
+            let inspected: SandboxVirtualMachineRecord?
+            do {
+                inspected = try await runtime.inspect(scope: scope, name: name)
+            } catch SandboxCapacityError.leaseNotFound {
+                // A replay can observe the lease released by its first delete.
+                // deleteAndRelease still proves both lease and VM are absent.
+                inspected = nil
+            }
+            if inspected?.state == .running {
                 try await runtime.stop(scope: scope, name: name)
             }
             try await runtime.deleteAndRelease(

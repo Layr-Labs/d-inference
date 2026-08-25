@@ -20,6 +20,7 @@ private final class PostureTelemetrySink: @unchecked Sendable {
     private let lock = NSLock()
     private var _events: [TelemetryEvent] = []
     var events: [TelemetryEvent] { lock.withLock { _events } }
+
     func callback() -> @Sendable (TelemetryEvent) -> Void {
         { [weak self] event in
             guard let self else { return }
@@ -36,6 +37,19 @@ private final class PostureTelemetrySink: @unchecked Sendable {
         events.filter {
             $0.fields?["operation"]?.description == "engine_v2_slot_posture"
         }.count
+    }
+
+    func waitForPostureCount(_ expectedCount: Int) async -> Bool {
+        // Count scheduling opportunities instead of comparing a wall-clock
+        // deadline. Under the fully parallel Swift suite this test task can be
+        // descheduled for several seconds; it must still yield to the sampler
+        // after it resumes rather than fail before the sampler gets a turn.
+        for _ in 0..<500 {
+            if postureCount >= expectedCount { return true }
+            if Task.isCancelled { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return postureCount >= expectedCount
     }
 }
 
@@ -329,16 +343,8 @@ struct MTPPostureTelemetryTests {
         // synchronously by configureMTPStatus, which would satisfy a
         // first-event wait without the timer ever firing — this test is the one
         // that has to prove the recurring loop still runs.
-        let postureCount = {
-            telemetry.events.filter {
-                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
-            }.count
-        }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while postureCount() < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(postureCount() >= 2, "the periodic sampler never produced a second posture event")
+        let sampled = await telemetry.waitForPostureCount(2)
+        #expect(sampled, "the periodic sampler never produced a second posture event")
 
         let event = try #require(telemetry.posture, "periodic sampler produced no posture event")
         #expect(event.kind == .engineHealth)
@@ -407,16 +413,8 @@ struct MTPPostureTelemetryTests {
         // Two samples, not one: the first is the opening snapshot, so waiting
         // only for it would let this test pass against a sampler that never
         // ticked — and then "shutdown stopped it" would prove nothing.
-        let postureCount = {
-            telemetry.events.filter {
-                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
-            }.count
-        }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while postureCount() < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(postureCount() >= 2, "sampler never ticked, so shutdown has nothing to stop")
+        let sampled = await telemetry.waitForPostureCount(2)
+        #expect(sampled, "sampler never ticked, so shutdown has nothing to stop")
 
         await bridge.shutdown()
         let afterShutdown = telemetry.events.count
@@ -435,11 +433,8 @@ struct MTPPostureTelemetryTests {
             .disabled(.configDisabled, configured: false),
             metricsInterval: .milliseconds(20))
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while telemetry.postureCount < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(telemetry.postureCount >= 2, "the prior sampler never ticked")
+        let sampled = await telemetry.waitForPostureCount(2)
+        #expect(sampled, "the prior sampler never ticked")
 
         await bridge.configureMTPStatus(
             .disabled(.assistantLoadFailed, configured: true),
@@ -462,11 +457,8 @@ struct MTPPostureTelemetryTests {
             .disabled(.configDisabled, configured: false),
             metricsInterval: .milliseconds(20))
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while telemetry.postureCount < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(telemetry.postureCount >= 2, "sampler never ticked")
+        let sampled = await telemetry.waitForPostureCount(2)
+        #expect(sampled, "sampler never ticked")
 
         await bridge.shutdown()
         await bridge.shutdown()

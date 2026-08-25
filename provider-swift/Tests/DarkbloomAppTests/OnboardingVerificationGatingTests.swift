@@ -91,9 +91,13 @@ struct OnboardingVerificationGatingTests {
     }
 
     private func eventually(_ predicate: @MainActor () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while ContinuousClock.now < deadline {
+        // Count actor scheduling opportunities rather than expiring on wall
+        // time. The fully parallel Swift suite can deschedule this MainActor
+        // test for several seconds; after resuming it still needs to yield to
+        // the verification task before deciding that progress stalled.
+        for _ in 0..<500 {
             if predicate() { return true }
+            if Task.isCancelled { return false }
             try? await Task.sleep(for: .milliseconds(10))
         }
         return predicate()

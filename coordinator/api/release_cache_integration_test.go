@@ -52,7 +52,11 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "first")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.1.0")
 	assertVersionEndpoint(t, apiServer.URL, "1.1.0")
-	assertRuntimeManifestContains(t, apiServer.URL, strings.Repeat("f", 64))
+	assertRuntimeManifestContains(
+		t,
+		apiServer.URL,
+		sha256HexBytesForReleaseTest([]byte("signed-layout-neutral-metallib")),
+	)
 	linuxAfter := getReleaseBody(t, apiServer.URL+"/v1/releases/latest?platform=linux-amd64", http.StatusOK)
 	if !bytes.Equal(linuxBefore, linuxAfter) {
 		t.Fatalf("macOS mutation changed isolated Linux latest response\nbefore=%s\nafter=%s", linuxBefore, linuxAfter)
@@ -96,15 +100,15 @@ func registerReleaseForCacheTest(
 	version, changelog string,
 ) {
 	t.Helper()
-	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-"+changelog))
+	artifact := buildReleaseBundleForTest(t, []byte("provider-"+changelog))
 	path := "/releases/v" + version + "/darkbloom-bundle-macos-arm64.tar.gz"
 	artifacts.mu.Lock()
-	artifacts.bundles[path] = bundle
+	artifacts.bundles[path] = artifact.bytes
 	artifacts.mu.Unlock()
 	payload := map[string]string{
 		"version": version, "platform": defaultReleasePlatform, "backend": "mlx-swift",
-		"binary_hash": binaryHash, "bundle_hash": bundleHash,
-		"metallib_hash": strings.Repeat("f", 64), "url": cdnURL + path,
+		"binary_hash": artifact.binaryHash, "bundle_hash": artifact.bundleHash,
+		"metallib_hash": artifact.metallibHash, "url": cdnURL + path,
 		"changelog": changelog,
 	}
 	body, err := json.Marshal(payload)

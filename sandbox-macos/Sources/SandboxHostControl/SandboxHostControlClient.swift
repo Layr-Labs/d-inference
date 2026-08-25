@@ -133,8 +133,10 @@ public actor SandboxHostControlClient {
                 if connectedAt.duration(to: clock.now) >= .seconds(60) {
                     retryDelaySeconds = 1
                 }
+                let minimumJitter = Int64(retryDelaySeconds * 800)
+                let maximumJitter = Int64(retryDelaySeconds * 1_200)
                 let jitterMilliseconds = Int64.random(
-                    in: (retryDelaySeconds * 800)...(retryDelaySeconds * 1_200)
+                    in: minimumJitter...maximumJitter
                 )
                 try await Task.sleep(
                     for: .milliseconds(jitterMilliseconds)

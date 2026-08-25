@@ -14,7 +14,7 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
 decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
-and validated by `validateModelManifest` (`coordinator/api/model_registry_handlers.go`).
+and validated by `validateModelManifest` (`coordinator/api/model_manifest_contract.go`).
 
 | Field | Type | Constraint (coordinator) | Notes |
 |---|---|---|---|
@@ -62,7 +62,7 @@ incorrect `Content-Length` cannot cause an unbounded allocation.
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
-`aggregateManifestFileHashes` (`coordinator/api/model_registry_handlers.go`),
+`aggregateManifestFileHashes` (`coordinator/api/model_manifest_contract.go`),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
 provider runs after download. The same value is the catalog `weight_hash`.
@@ -116,7 +116,7 @@ Server-side sequence, in order; any failure before step 5 persists nothing:
    `400 failed to fetch manifest` on any non-2xx.
 3. `validateModelManifest` (table above) → `400`.
 4. `HEAD` every file with 8 workers, comparing `Content-Length` to `size_bytes`
-   (`verifyManifestFiles`) → `400 manifest file verification failed`. If a successful
+   (`verifyManifestFiles` in `coordinator/api/model_manifest_fetch.go`) → `400 manifest file verification failed`. If a successful
    HEAD omits `Content-Length`, files up to 64 MiB are GET-streamed and counted
    with a fixed bound; larger unknown-length objects are rejected.
 5. `SetModelVersion` writes the entry (`status = "beta"`), version

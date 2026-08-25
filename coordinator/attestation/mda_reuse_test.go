@@ -77,7 +77,7 @@ func mintDevicePropertiesChain(t *testing.T, serial, udid string, freshness []by
 // re-bind the proof to a specific machine.
 func TestVerifyMDADeviceAttestation_DevicePropertiesPath(t *testing.T) {
 	seHash := sha256.Sum256([]byte("se-public-key"))
-	chain, root := mintDevicePropertiesChain(t, "C02XL3FHJG5J", "UDID-1234", seHash[:], time.Now().Add(24*time.Hour))
+	chain, root := mintDevicePropertiesChain(t, testDeviceSerial, "TEST-UDID", seHash[:], time.Now().Add(24*time.Hour))
 
 	restore := OverrideRootCAForTest(root)
 	defer restore()
@@ -89,11 +89,11 @@ func TestVerifyMDADeviceAttestation_DevicePropertiesPath(t *testing.T) {
 	if !res.Valid {
 		t.Fatalf("expected valid, got error: %s", res.Error)
 	}
-	if res.DeviceSerial != "C02XL3FHJG5J" {
-		t.Errorf("serial = %q, want C02XL3FHJG5J", res.DeviceSerial)
+	if res.DeviceSerial != testDeviceSerial {
+		t.Errorf("serial = %q, want %s", res.DeviceSerial, testDeviceSerial)
 	}
-	if res.DeviceUDID != "UDID-1234" {
-		t.Errorf("udid = %q, want UDID-1234", res.DeviceUDID)
+	if res.DeviceUDID != "TEST-UDID" {
+		t.Errorf("udid = %q, want TEST-UDID", res.DeviceUDID)
 	}
 	if string(res.FreshnessCode) != string(seHash[:]) {
 		t.Errorf("freshness code does not match SE key hash")

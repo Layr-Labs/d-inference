@@ -707,6 +707,8 @@ type HardwareAdmissionStore interface {
 	IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error)
 	AdmitHardware(ctx context.Context, admission HardwareAdmission) error
 	ListHardwareAdmissions(ctx context.Context, limit int) ([]HardwareAdmission, error)
+	RevokeHardwareAdmission(ctx context.Context, serialNumber, actor, reason string) error
+	RestoreHardwareAdmission(ctx context.Context, serialNumber, actor, reason string) error
 	RecordHardwareAdmissionAttempt(ctx context.Context, attempt HardwareAdmissionAttempt) error
 	ListHardwareAdmissionAttempts(ctx context.Context, accountID string, limit int) ([]HardwareAdmissionAttempt, error)
 }

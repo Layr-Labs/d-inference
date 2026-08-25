@@ -149,17 +149,23 @@ export default function ProviderSetupPage() {
       ? `${(policy.min_fp16_millitflops / 1000).toFixed(1)} FP16 TFLOPS`
       : null,
   ].filter(Boolean);
+  let hardwareDescription =
+    "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.";
+  if (hardwareMinimums.length > 0 && policy?.mode === "shadow") {
+    hardwareDescription = `Shadow evaluation checks ${hardwareMinimums.join(
+      ", "
+    )}; it does not block onboarding until enforcement is enabled.`;
+  } else if (hardwareMinimums.length > 0) {
+    hardwareDescription = `New providers must meet ${hardwareMinimums.join(
+      ", "
+    )}. Existing admitted machines remain grandfathered.`;
+  }
   const requirementCards = REQUIREMENTS.map((requirement) =>
     requirement.title === "16GB+ RAM"
       ? {
           ...requirement,
           title: hardwareTitle,
-          description:
-            hardwareMinimums.length > 0
-              ? `New providers must meet ${hardwareMinimums.join(
-                  ", "
-                )}. Existing admitted machines remain grandfathered.`
-              : "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.",
+          description: hardwareDescription,
         }
       : requirement
   );

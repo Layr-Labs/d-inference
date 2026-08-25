@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -266,7 +267,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			//   - the registry no longer has the provider: registry.Disconnect
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
-			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+			if provider != nil && provider.PersistenceEnabled() &&
+				ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
 				// The socket is dead, but the deferred registry.Disconnect
 				// only runs after the stamp lands (first close wins requires
 				// that order). Flip the provider offline first — StatusOffline
@@ -295,6 +297,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
+			if provider != nil {
+				s.logger.Warn("duplicate register frame rejected", "provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "provider already registered")
+				return
+			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
@@ -304,7 +311,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			if s.hardwareAdmissionEnforcing() {
+			admissionPolicy, err := s.refreshHardwareAdmissionPolicy(loopCtx)
+			if err != nil {
+				s.logger.Warn("provider registration deferred: hardware admission policy unavailable",
+					"provider_id", providerID, "error", err)
+				_ = conn.Close(websocket.StatusInternalError, "hardware admission state unavailable")
+				return
+			}
+			if admissionPolicy.Mode == hardwareadmission.ModeEnforce {
 				provider = s.registry.RegisterPendingHardwareAdmission(providerID, conn, regMsg)
 			} else {
 				provider = s.registry.Register(providerID, conn, regMsg)
@@ -355,7 +369,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			} else {
 				s.registry.SetProviderHardwareAdmitted(providerID, true)
 			}
-			s.registry.ActivateProviderPersistence(provider)
+			if provider.HardwareAdmissionStatus() {
+				s.registry.ActivateProviderPersistence(provider)
+			}
 			if attestResult != nil && attestResult.SerialNumber != "" && !s.allowDuplicateProviderSerials {
 				s.registry.DisconnectDuplicatesBySerial(providerID, attestResult.SerialNumber)
 			}
@@ -2882,7 +2898,13 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		return mdmVerifyTransient
 	}
 	provider.SetMDMFailureReason("")
-	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
+	if s.hasPendingHardwareAdmission(providerID) {
+		s.sendTrustStatus(
+			provider, registry.TrustHardware, "admission_pending",
+			"MDM verification passed; awaiting Apple device identity and code attestation")
+	} else {
+		s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
+	}
 	s.ddIncr("mdm.verification", []string{"outcome:granted"})
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
 		"provider_id", providerID,
@@ -2914,7 +2936,11 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// certificate chain that proves this device's identity. This cert
 	// chain can be independently verified by users against Apple's
 	// Enterprise Attestation Root CA.
-	s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
+	mdaReady := s.verifyAppleDeviceAttestation(
+		ctx, providerID, provider, attestResult, mdmResult.UDID)
+	if s.hasPendingHardwareAdmission(providerID) && !mdaReady {
+		return mdmVerifyTransient
+	}
 	return mdmVerifyGranted
 }
 
@@ -3097,7 +3123,8 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	for attempt := 0; ; attempt++ {
 		// Stop if hardware was already earned — by this loop on a prior
 		// iteration, or by the trust-reuse fast-skip concurrently.
-		if provider.GetTrustLevel() == registry.TrustHardware {
+		if provider.GetTrustLevel() == registry.TrustHardware &&
+			!s.hasPendingHardwareAdmission(providerID) {
 			return
 		}
 		// Stop if the provider was HARD-untrusted out-of-band (e.g. the challenge
@@ -3218,24 +3245,24 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 		"se_key_bound", true,
 	)
 	s.ddIncr("mda.verification", []string{"outcome:reused"})
-	s.finalizePendingHardwareAdmission(provider)
+	s.finalizeOrScheduleHardwareAdmission(provider)
 	return true
 }
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
-func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
+func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) bool {
 	// Fast path: reuse a still-valid, SE-key-bound Apple attestation recovered from
 	// the durable store instead of requesting a fresh one. This skips the
 	// rate-limited APNs round-trip entirely on reconnect/restart and is what keeps
 	// mda_verified green across a provider restart.
 	if s.attachCachedMDAProof(providerID, provider, attestResult) {
-		return
+		return true
 	}
 
 	if udid == "" {
 		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
-		return
+		return false
 	}
 
 	// Compute SE key hash for nonce-based key binding.
@@ -3261,25 +3288,16 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		)
 	}
 
-	// Always send the raw plist command so the nonce reaches Apple's servers.
-	// The structured MicroMDM API doesn't support DeviceAttestationNonce.
-	_, err := s.mdmClient.SendDeviceAttestationCommand(ctx, udid, seKeyNonce)
+	// Register the waiter before sending: an awake device can answer immediately,
+	// and a post-send waiter would miss that response and stall for 60 seconds.
+	attestResp, err := s.mdmClient.RequestDeviceAttestation(
+		ctx, udid, seKeyNonce, 60*time.Second)
 	if err != nil {
-		s.logger.Warn("failed to send DeviceInformation attestation command",
+		s.logger.Warn("DevicePropertiesAttestation request failed",
 			"provider_id", providerID,
 			"error", err,
 		)
-		return
-	}
-
-	// Wait for Apple's response (device contacts Apple's servers — may take longer)
-	attestResp, err := s.mdmClient.WaitForDeviceAttestation(ctx, udid, 60*time.Second)
-	if err != nil {
-		s.logger.Warn("DevicePropertiesAttestation response timeout",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return
+		return false
 	}
 
 	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
@@ -3289,7 +3307,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 			"provider_id", providerID,
 			"error", err,
 		)
-		return
+		return false
 	}
 
 	if !mdaResult.Valid {
@@ -3297,7 +3315,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 			"provider_id", providerID,
 			"error", mdaResult.Error,
 		)
-		return
+		return false
 	}
 
 	// Cross-check: MDA serial must match the provider's self-reported serial
@@ -3308,7 +3326,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 			"attestation_serial", attestResult.SerialNumber,
 		)
 		s.registry.MarkUntrusted(providerID)
-		return
+		return false
 	}
 
 	// Apple Device Attestation verified — store proof for user verification.
@@ -3334,7 +3352,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	// durable (Postgres) store this is what makes the proof recoverable across a
 	// coordinator restart.
 	s.registry.PersistProvider(provider)
-	s.finalizePendingHardwareAdmission(provider)
+	s.finalizeOrScheduleHardwareAdmission(provider)
 
 	// Log results.
 	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
@@ -3364,6 +3382,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 			"freshness_code_len", len(mdaResult.FreshnessCode),
 		)
 	}
+	return seKeyBound
 }
 
 // handleProviderAttestation returns the attestation proof for all providers.
@@ -3412,6 +3431,9 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	var providers []providerAttestation
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if !s.registry.ProviderHardwareAdmitted(p) {
+			return
+		}
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
 		p.Mu().Lock()

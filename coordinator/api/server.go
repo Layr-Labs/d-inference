@@ -1905,6 +1905,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
 	s.mux.HandleFunc("PUT /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
 	s.mux.HandleFunc("GET /v1/admin/hardware-admission/machines", s.requireAuth(s.handleAdminHardwareAdmissionMachines))
+	s.mux.HandleFunc("DELETE /v1/admin/hardware-admission/machines/{serial}", s.requireAuth(s.handleAdminRevokeHardwareAdmission))
+	s.mux.HandleFunc("POST /v1/admin/hardware-admission/machines/restore", s.requireAuth(s.handleAdminRestoreHardwareAdmission))
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but

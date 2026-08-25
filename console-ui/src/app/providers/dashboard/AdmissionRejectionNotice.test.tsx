@@ -43,4 +43,34 @@ describe("AdmissionRejectionNotice", () => {
     const { container } = render(<AdmissionRejectionNotice attempts={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("hides a historical rejection after the same machine is admitted", () => {
+    const base = {
+      provider_id: "provider-1",
+      serial_number: "SERIAL-1",
+      policy_version: 4,
+      mode: "enforce",
+      hardware: { memory_gb: 32 },
+    };
+    const { container } = render(
+      <AdmissionRejectionNotice
+        attempts={[
+          {
+            ...base,
+            id: 2,
+            decision: "admitted",
+            created_at: "2026-08-25T01:00:00Z",
+          },
+          {
+            ...base,
+            id: 1,
+            decision: "rejected",
+            reason_code: "hardware_below_minimum",
+            created_at: "2026-08-25T00:00:00Z",
+          },
+        ]}
+      />
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
 });

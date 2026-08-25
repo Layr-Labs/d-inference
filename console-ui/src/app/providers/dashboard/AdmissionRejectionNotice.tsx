@@ -6,11 +6,22 @@ export function AdmissionRejectionNotice({
 }: {
   attempts: HardwareAdmissionAttempt[];
 }) {
-  const rejection = attempts.find(
-    (attempt) =>
+  const settledMachines = new Set<string>();
+  const rejection = attempts.find((attempt) => {
+    const machine = attempt.serial_number || attempt.provider_id;
+    if (settledMachines.has(machine)) return false;
+    if (
+      attempt.decision === "admitted" ||
+      attempt.decision === "grandfathered" ||
+      attempt.decision === "rejected"
+    ) {
+      settledMachines.add(machine);
+    }
+    return (
       attempt.decision === "rejected" &&
       attempt.reason_code === "hardware_below_minimum"
-  );
+    );
+  });
   if (!rejection) return null;
 
   const deficits = (rejection.failed_checks ?? []).map((failure) => {

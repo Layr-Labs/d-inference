@@ -18,6 +18,13 @@ func (r *Registry) HardwareAdmissionEnforced() bool {
 	return r.hardwareAdmissionEnforced.Load()
 }
 
+func (r *Registry) ProviderHardwareAdmitted(p *Provider) bool {
+	if !r.hardwareAdmissionEnforced.Load() {
+		return true
+	}
+	return p.HardwareAdmissionStatus()
+}
+
 func (r *Registry) SetProviderHardwareAdmitted(providerID string, admitted bool) bool {
 	p := r.GetProvider(providerID)
 	if p == nil {
@@ -36,6 +43,15 @@ func (p *Provider) HardwareAdmissionStatus() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.HardwareAdmitted
+}
+
+func (p *Provider) PersistenceEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.persistenceEnabled
 }
 
 func (r *Registry) ActivateProviderPersistence(p *Provider) {

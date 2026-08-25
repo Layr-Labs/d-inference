@@ -10,13 +10,17 @@ import (
 )
 
 var ErrHardwareAdmissionPolicyConflict = errors.New("hardware admission policy version conflict")
+var ErrHardwareAdmissionRevoked = errors.New("hardware admission revoked")
 
 type HardwareAdmission struct {
-	SerialNumber  string                     `json:"serial_number"`
-	Source        string                     `json:"source"`
-	PolicyVersion int64                      `json:"policy_version"`
-	Hardware      hardwareadmission.Observed `json:"hardware"`
-	AdmittedAt    time.Time                  `json:"admitted_at"`
+	SerialNumber     string                     `json:"serial_number"`
+	Source           string                     `json:"source"`
+	PolicyVersion    int64                      `json:"policy_version"`
+	Hardware         hardwareadmission.Observed `json:"hardware"`
+	AdmittedAt       time.Time                  `json:"admitted_at"`
+	RevokedAt        *time.Time                 `json:"revoked_at,omitempty"`
+	RevokedBy        string                     `json:"revoked_by,omitempty"`
+	RevocationReason string                     `json:"revocation_reason,omitempty"`
 }
 
 type HardwareAdmissionAttempt struct {

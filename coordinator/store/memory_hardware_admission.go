@@ -20,6 +20,12 @@ func (s *MemoryStore) GetActiveHardwareAdmissionPolicy(_ context.Context) (*hard
 		return nil, fmt.Errorf("store: active hardware admission policy %d missing", s.activeHardwarePolicy)
 	}
 	cp := policy
+	cp.GrandfatheredProviderCount = 0
+	for _, admission := range s.hardwareAdmissions {
+		if admission.Source == "grandfathered" && admission.RevokedAt == nil {
+			cp.GrandfatheredProviderCount++
+		}
+	}
 	return &cp, nil
 }
 
@@ -83,8 +89,8 @@ func (s *MemoryStore) IsHardwareAdmitted(_ context.Context, serialNumber string)
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.hardwareAdmissions[serial]
-	return ok, nil
+	admission, ok := s.hardwareAdmissions[serial]
+	return ok && admission.RevokedAt == nil, nil
 }
 
 func (s *MemoryStore) AdmitHardware(_ context.Context, admission HardwareAdmission) error {
@@ -102,9 +108,13 @@ func (s *MemoryStore) AdmitHardware(_ context.Context, admission HardwareAdmissi
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.hardwareAdmissions[serial]; !exists {
-		s.hardwareAdmissions[serial] = admission
+	if existing, exists := s.hardwareAdmissions[serial]; exists {
+		if existing.RevokedAt != nil {
+			return fmt.Errorf("%w: %s", ErrHardwareAdmissionRevoked, serial)
+		}
+		return nil
 	}
+	s.hardwareAdmissions[serial] = admission
 	return nil
 }
 
@@ -123,6 +133,49 @@ func (s *MemoryStore) ListHardwareAdmissions(_ context.Context, limit int) ([]Ha
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) RevokeHardwareAdmission(
+	_ context.Context,
+	serialNumber, actor, reason string,
+) error {
+	serial := normalizeHardwareSerial(serialNumber)
+	if serial == "" || actor == "" || reason == "" {
+		return fmt.Errorf("store: serial, actor, and reason are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	admission, ok := s.hardwareAdmissions[serial]
+	if !ok || admission.RevokedAt != nil {
+		return fmt.Errorf("%w: hardware admission %s", ErrNotFound, serial)
+	}
+	now := time.Now().UTC()
+	admission.RevokedAt = &now
+	admission.RevokedBy = actor
+	admission.RevocationReason = reason
+	s.hardwareAdmissions[serial] = admission
+	return nil
+}
+
+func (s *MemoryStore) RestoreHardwareAdmission(
+	_ context.Context,
+	serialNumber, actor, reason string,
+) error {
+	serial := normalizeHardwareSerial(serialNumber)
+	if serial == "" || actor == "" || reason == "" {
+		return fmt.Errorf("store: serial, actor, and reason are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	admission, ok := s.hardwareAdmissions[serial]
+	if !ok || admission.RevokedAt == nil {
+		return fmt.Errorf("%w: hardware admission %s", ErrNotFound, serial)
+	}
+	admission.RevokedAt = nil
+	admission.RevokedBy = ""
+	admission.RevocationReason = ""
+	s.hardwareAdmissions[serial] = admission
+	return nil
 }
 
 func (s *MemoryStore) RecordHardwareAdmissionAttempt(_ context.Context, attempt HardwareAdmissionAttempt) error {

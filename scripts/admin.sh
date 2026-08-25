@@ -118,6 +118,34 @@ cmd_hardware_policy_machines() {
     authed_curl "$COORDINATOR_URL/v1/admin/hardware-admission/machines" | python3 -m json.tool
 }
 
+cmd_hardware_policy_revoke() {
+    local serial="${1:?Usage: $0 hardware-policy revoke <serial> <reason>}"
+    local reason="${2:?reason is required}"
+    local body
+    body="$(python3 - "$reason" <<'PY'
+import json
+import sys
+print(json.dumps({"reason": sys.argv[1]}))
+PY
+)"
+    authed_curl -X DELETE "$COORDINATOR_URL/v1/admin/hardware-admission/machines/$serial" \
+        -H "Content-Type: application/json" -d "$body" | python3 -m json.tool
+}
+
+cmd_hardware_policy_restore() {
+    local serial="${1:?Usage: $0 hardware-policy restore <serial> <reason>}"
+    local reason="${2:?reason is required}"
+    local body
+    body="$(python3 - "$serial" "$reason" <<'PY'
+import json
+import sys
+print(json.dumps({"serial_number": sys.argv[1], "reason": sys.argv[2]}))
+PY
+)"
+    authed_curl -X POST "$COORDINATOR_URL/v1/admin/hardware-admission/machines/restore" \
+        -H "Content-Type: application/json" -d "$body" | python3 -m json.tool
+}
+
 cmd_hardware_policy_set() {
     local mode="${1:?Usage: $0 hardware-policy set <disabled|shadow|enforce> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason]}"
     local memory_gb="${2:?memory-gb is required}"
@@ -187,8 +215,10 @@ case "${1:-help}" in
         case "${2:-get}" in
             get) cmd_hardware_policy_get ;;
             machines) cmd_hardware_policy_machines ;;
+            revoke) cmd_hardware_policy_revoke "${3:-}" "${4:-}" ;;
+            restore) cmd_hardware_policy_restore "${3:-}" "${4:-}" ;;
             set) cmd_hardware_policy_set "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
-            *) echo "Usage: $0 hardware-policy [get|machines|set]" ;;
+            *) echo "Usage: $0 hardware-policy [get|machines|set|revoke|restore]" ;;
         esac
         ;;
     raw)
@@ -206,6 +236,8 @@ case "${1:-help}" in
         echo "  models list                    List model catalog"
         echo "  hardware-policy get            Show active provider hardware policy"
         echo "  hardware-policy machines       List admitted machines and recent decisions"
+        echo "  hardware-policy revoke <serial> <reason>"
+        echo "  hardware-policy restore <serial> <reason>"
         echo "  hardware-policy set <mode> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason]"
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""

@@ -53,6 +53,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_floor_draws",
 		"code_attestations",
 		"hardware_admission_attempts",
+		"hardware_admission_events",
 		"hardware_admissions",
 		"hardware_admission_state",
 		"hardware_admission_policies",

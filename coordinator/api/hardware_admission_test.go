@@ -131,11 +131,52 @@ func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
 	provider.MDAVerified = true
 	provider.SEKeyBound = true
 	provider.Mu().Unlock()
+	if srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("hardware admission finalized before official-code attestation")
+	}
+	provider.SetCodeAttested(true)
 	if !srv.finalizePendingHardwareAdmission(provider) {
 		t.Fatal("bound, qualified hardware did not finalize")
 	}
 	if admitted, err := st.IsHardwareAdmitted(context.Background(), result.SerialNumber); err != nil || !admitted {
 		t.Fatalf("persisted admission = (%v,%v)", admitted, err)
+	}
+}
+
+func TestEnforcementReconciliationStagesUnboundConnection(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "shadow",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	msg := admissionTestRegister()
+	provider := srv.registry.Register("connected-before-enforce", nil, msg)
+	result := admissionTestAttestation("CONNECTED-BEFORE-ENFORCE")
+	provider.SetAttestationResult(&result)
+
+	current := srv.hardwareAdmissionPolicySnapshot()
+	enforce, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		current.Version,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.setHardwareAdmissionPolicy(enforce)
+	if err := srv.reconcileConnectedHardwareAdmissions(enforce); err != nil {
+		t.Fatal(err)
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("reconciliation admitted a connection without MDA/code identity")
+	}
+	if !srv.hasPendingHardwareAdmission(provider.ID) {
+		t.Fatal("qualified connection was not staged for identity finalization")
+	}
+	if admitted, _ := st.IsHardwareAdmitted(context.Background(), result.SerialNumber); admitted {
+		t.Fatal("reconciliation persisted an unbound positive admission")
 	}
 }
 
@@ -167,6 +208,13 @@ func TestProviderRequirementsAndAdminPolicyEndpoints(t *testing.T) {
 	}
 	if policy.Version == 0 || policy.Mode != hardwareadmission.ModeShadow || policy.MinMemoryGB != 32 {
 		t.Fatalf("policy = %+v", policy)
+	}
+	publicReq := httptest.NewRequest(http.MethodGet, "/v1/provider-requirements", nil)
+	publicW := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(publicW, publicReq)
+	if strings.Contains(publicW.Body.String(), "rollout") ||
+		strings.Contains(publicW.Body.String(), "admin-key") {
+		t.Fatalf("public policy leaked operator audit fields: %s", publicW.Body.String())
 	}
 }
 

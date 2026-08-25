@@ -15,6 +15,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
@@ -28,9 +29,12 @@ func (s *Server) initializeHardwareAdmission(cfg ServerConfig) {
 
 	stored, err := s.store.GetActiveHardwareAdmissionPolicy(ctx)
 	if err != nil {
-		s.logger.Error("failed to load hardware admission policy; enforcement disabled",
+		s.logger.Error("failed to load hardware admission policy; registrations fail closed",
 			"error", err)
-		s.setHardwareAdmissionPolicy(policy)
+		s.setHardwareAdmissionPolicy(hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
+			Reason: "admission state unavailable",
+		})
 		return
 	}
 	if stored != nil {
@@ -84,9 +88,22 @@ func (s *Server) setHardwareAdmissionPolicy(policy hardwareadmission.Policy) {
 		policy.CatalogVersion = hardwareadmission.CatalogVersion
 	}
 	s.hardwareAdmissionMu.Lock()
+	changed := s.hardwareAdmissionPolicy.Version != policy.Version ||
+		s.hardwareAdmissionPolicy.Mode != policy.Mode
 	s.hardwareAdmissionPolicy = policy
 	s.hardwareAdmissionMu.Unlock()
 	s.registry.SetHardwareAdmissionEnforced(policy.Mode == hardwareadmission.ModeEnforce)
+	if changed {
+		s.invalidateHardwareAdmissionCaches()
+	}
+}
+
+func (s *Server) invalidateHardwareAdmissionCaches() {
+	if s.readCache == nil {
+		return
+	}
+	s.readCache.Invalidate("stats:v1")
+	s.readCache.Invalidate("models_capacity:v1")
 }
 
 func (s *Server) hardwareAdmissionPolicySnapshot() hardwareadmission.Policy {
@@ -96,6 +113,7 @@ func (s *Server) hardwareAdmissionPolicySnapshot() hardwareadmission.Policy {
 }
 
 func (s *Server) refreshHardwareAdmissionPolicy(ctx context.Context) (hardwareadmission.Policy, error) {
+	previous := s.hardwareAdmissionPolicySnapshot()
 	policy, err := s.store.GetActiveHardwareAdmissionPolicy(ctx)
 	if err != nil {
 		return hardwareadmission.Policy{}, err
@@ -104,6 +122,11 @@ func (s *Server) refreshHardwareAdmissionPolicy(ctx context.Context) (hardwaread
 		return s.hardwareAdmissionPolicySnapshot(), nil
 	}
 	s.setHardwareAdmissionPolicy(*policy)
+	if previous.Mode != policy.Mode || previous.Version != policy.Version {
+		if err := s.reconcileConnectedHardwareAdmissions(*policy); err != nil {
+			s.scheduleHardwareAdmissionReconciliation(*policy)
+		}
+	}
 	return *policy, nil
 }
 
@@ -163,22 +186,7 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		}
 	}
 
-	input := canonicalHardwareInput(attestResult)
-	decision := hardwareadmission.Evaluate(policy, input)
-	if mismatch := hardwareClaimMismatch(regMsg, attestResult); mismatch != "" {
-		decision.MeetsThresholds = false
-		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
-		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
-			Code: "hardware_claim_mismatch", Metric: mismatch, Unit: "exact match",
-		})
-	}
-	if serial == "" {
-		decision.MeetsThresholds = false
-		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
-		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
-			Code: "hardware_identity_required", Metric: "serial_number", Unit: "attested identity",
-		})
-	}
+	decision := evaluateHardwareClaims(policy, regMsg, attestResult)
 
 	if policy.Mode == hardwareadmission.ModeShadow {
 		s.registry.SetProviderHardwareAdmitted(providerID, true)
@@ -209,6 +217,29 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		code: "hardware_below_minimum", retryable: false, policy: policy,
 		decision: &decision, reason: hardwareAdmissionReason(decision),
 	})
+}
+
+func evaluateHardwareClaims(
+	policy hardwareadmission.Policy,
+	regMsg *protocol.RegisterMessage,
+	attestResult attestation.VerificationResult,
+) hardwareadmission.Decision {
+	decision := hardwareadmission.Evaluate(policy, canonicalHardwareInput(attestResult))
+	if mismatch := hardwareClaimMismatch(regMsg, attestResult); mismatch != "" {
+		decision.MeetsThresholds = false
+		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
+		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
+			Code: "hardware_claim_mismatch", Metric: mismatch, Unit: "exact match",
+		})
+	}
+	if strings.TrimSpace(attestResult.SerialNumber) == "" {
+		decision.MeetsThresholds = false
+		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
+		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
+			Code: "hardware_identity_required", Metric: "serial_number", Unit: "attested identity",
+		})
+	}
+	return decision
 }
 
 func canonicalHardwareInput(result attestation.VerificationResult) hardwareadmission.Input {
@@ -293,7 +324,11 @@ type pendingHardwareAdmission struct {
 }
 
 func (s *Server) stagePendingHardwareAdmission(providerID string, pending pendingHardwareAdmission) {
+	s.registry.SetProviderHardwareAdmitted(providerID, false)
 	s.hardwareAdmissionPendingMu.Lock()
+	if s.hardwareAdmissionPending == nil {
+		s.hardwareAdmissionPending = make(map[string]pendingHardwareAdmission)
+	}
 	s.hardwareAdmissionPending[providerID] = pending
 	s.hardwareAdmissionPendingMu.Unlock()
 }
@@ -324,7 +359,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 
 	provider.Mu().Lock()
 	identityReady := provider.TrustLevel == registry.TrustHardware &&
-		provider.MDAVerified && provider.SEKeyBound &&
+		provider.MDAVerified && provider.SEKeyBound && provider.CodeAttested &&
 		provider.AttestationResult != nil &&
 		strings.EqualFold(provider.AttestationResult.SerialNumber, pending.serial)
 	provider.Mu().Unlock()
@@ -339,6 +374,12 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		s.logger.Warn("hardware admission finalization deferred",
 			"provider_id", provider.ID, "error", err)
 		return false
+	}
+	if policy.Mode != hardwareadmission.ModeEnforce {
+		s.registry.SetProviderHardwareAdmitted(provider.ID, true)
+		s.registry.ActivateProviderPersistence(provider)
+		s.clearPendingHardwareAdmission(provider.ID)
+		return true
 	}
 	decision := pending.decision
 	if policy.Version != pending.policy.Version {
@@ -365,11 +406,20 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		SerialNumber: pending.serial, Source: "policy", PolicyVersion: policy.Version,
 		Hardware: decision.Observed, AdmittedAt: time.Now().UTC(),
 	}); err != nil {
+		if errors.Is(err, store.ErrHardwareAdmissionRevoked) {
+			s.clearPendingHardwareAdmission(provider.ID)
+			return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+				code: "hardware_admission_revoked", retryable: false, policy: policy,
+				reason: "This machine's provider admission was revoked by a network operator.",
+			})
+		}
 		s.logger.Warn("hardware admission finalization could not persist",
 			"provider_id", provider.ID, "error", err)
 		return false
 	}
 	s.registry.SetProviderHardwareAdmitted(provider.ID, true)
+	s.registry.ActivateProviderPersistence(provider)
+	s.invalidateHardwareAdmissionCaches()
 	s.recordHardwareAdmissionAttempt(
 		ctx, provider, pending.serial, policy, "admitted", "", decision)
 	s.clearPendingHardwareAdmission(provider.ID)
@@ -379,6 +429,32 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 	s.ddIncr("providers.hardware_admission", []string{"mode:enforce", "decision:admitted"})
 	s.registry.DrainQueuedRequestsForProvider(provider)
 	return true
+}
+
+func (s *Server) schedulePendingHardwareAdmissionFinalization(provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	saferun.Go(s.logger, "hardwareAdmissionFinalize", func() {
+		for attempt := 1; attempt <= 5; attempt++ {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			if !s.hasPendingHardwareAdmission(provider.ID) {
+				return
+			}
+			if s.finalizePendingHardwareAdmission(provider) {
+				return
+			}
+		}
+	})
+}
+
+func (s *Server) finalizeOrScheduleHardwareAdmission(provider *registry.Provider) {
+	if provider == nil || !s.hasPendingHardwareAdmission(provider.ID) {
+		return
+	}
+	if !s.finalizePendingHardwareAdmission(provider) {
+		s.schedulePendingHardwareAdmissionFinalization(provider)
+	}
 }
 
 func (s *Server) rejectHardwareAdmission(provider *registry.Provider, rejection hardwareAdmissionRejection) bool {
@@ -452,6 +528,16 @@ func hardwareAdmissionReason(decision hardwareadmission.Decision) string {
 	return "This Mac does not meet the current requirements for new providers: " + strings.Join(parts, "; ") + ". Existing admitted machines are grandfathered."
 }
 
+type publicHardwareAdmissionPolicy struct {
+	Version               int64                  `json:"version"`
+	Mode                  hardwareadmission.Mode `json:"mode"`
+	MinMemoryGB           int                    `json:"min_memory_gb"`
+	MinMemoryBandwidthGBs int                    `json:"min_memory_bandwidth_gbs"`
+	MinFP16MilliTFLOPS    int                    `json:"min_fp16_millitflops"`
+	CatalogVersion        string                 `json:"catalog_version"`
+	GrandfatherCutoffAt   *time.Time             `json:"grandfather_cutoff_at,omitempty"`
+}
+
 func (s *Server) handleProviderRequirements(w http.ResponseWriter, r *http.Request) {
 	policy, err := s.refreshHardwareAdmissionPolicy(r.Context())
 	if err != nil {
@@ -461,7 +547,14 @@ func (s *Server) handleProviderRequirements(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"policy":                  policy,
+		"policy": publicHardwareAdmissionPolicy{
+			Version: policy.Version, Mode: policy.Mode,
+			MinMemoryGB:           policy.MinMemoryGB,
+			MinMemoryBandwidthGBs: policy.MinMemoryBandwidthGBs,
+			MinFP16MilliTFLOPS:    policy.MinFP16MilliTFLOPS,
+			CatalogVersion:        policy.CatalogVersion,
+			GrandfatherCutoffAt:   policy.GrandfatherCutoffAt,
+		},
 		"accepting_new_providers": true,
 		"grandfather_existing":    true,
 		"metric_definitions": map[string]string{
@@ -501,6 +594,7 @@ func (s *Server) handleAdminHardwareAdmissionPolicyPut(w http.ResponseWriter, r 
 		MinFP16MilliTFLOPS     int    `json:"min_fp16_millitflops"`
 		Reason                 string `json:"reason"`
 		ExpectedCurrentVersion int64  `json:"expected_current_version"`
+		BreakGlass             bool   `json:"break_glass"`
 	}
 	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
 		return
@@ -521,18 +615,16 @@ func (s *Server) handleAdminHardwareAdmissionPolicyPut(w http.ResponseWriter, r 
 			errorResponse("policy_version_conflict", "hardware admission policy changed; reload and retry"))
 		return
 	}
-	if current.Mode == hardwareadmission.ModeEnforce && mode != hardwareadmission.ModeEnforce {
+	if current.Mode == hardwareadmission.ModeEnforce &&
+		mode != hardwareadmission.ModeEnforce &&
+		(!req.BreakGlass || strings.TrimSpace(req.Reason) == "") {
 		writeJSON(w, http.StatusConflict,
-			errorResponse("enforcement_rollback_forbidden", "an enforced hardware gate may only be replaced by another enforced policy"))
+			errorResponse(
+				"enforcement_rollback_requires_break_glass",
+				"disabling an enforced hardware gate requires break_glass=true and a non-empty audit reason"))
 		return
 	}
-	actor := "admin-key"
-	if user := auth.UserFromContext(r.Context()); user != nil {
-		actor = user.Email
-		if actor == "" {
-			actor = user.AccountID
-		}
-	}
+	actor := hardwareAdmissionActor(r)
 	policy := hardwareadmission.Policy{
 		Mode: mode, MinMemoryGB: req.MinMemoryGB,
 		MinMemoryBandwidthGBs: req.MinMemoryBandwidthGBs,
@@ -558,60 +650,100 @@ func (s *Server) handleAdminHardwareAdmissionPolicyPut(w http.ResponseWriter, r 
 		return
 	}
 	s.setHardwareAdmissionPolicy(activated)
-	s.reconcileConnectedHardwareAdmissions(activated)
+	if err := s.reconcileConnectedHardwareAdmissions(activated); err != nil {
+		s.logger.Warn("hardware admission reconciliation will retry",
+			"policy_version", activated.Version, "error", err)
+		s.scheduleHardwareAdmissionReconciliation(activated)
+	}
 	s.logger.Info("hardware admission policy activated",
 		"version", activated.Version, "mode", activated.Mode,
 		"grandfathered", activated.GrandfatheredProviderCount, "actor", actor)
 	writeJSON(w, http.StatusOK, activated)
 }
 
-func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.Policy) {
+func (s *Server) scheduleHardwareAdmissionReconciliation(policy hardwareadmission.Policy) {
+	saferun.Go(s.logger, "hardwareAdmissionReconcile", func() {
+		for attempt := 1; attempt <= 5; attempt++ {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			current := s.hardwareAdmissionPolicySnapshot()
+			if current.Version != policy.Version || current.Mode != hardwareadmission.ModeEnforce {
+				return
+			}
+			if err := s.reconcileConnectedHardwareAdmissions(policy); err == nil {
+				return
+			}
+		}
+		s.logger.Error("hardware admission reconciliation exhausted retries",
+			"policy_version", policy.Version)
+	})
+}
+
+func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.Policy) error {
 	if policy.Mode != hardwareadmission.ModeEnforce {
-		return
+		s.registry.ForEachProvider(func(provider *registry.Provider) {
+			s.registry.SetProviderHardwareAdmitted(provider.ID, true)
+			s.registry.ActivateProviderPersistence(provider)
+			s.clearPendingHardwareAdmission(provider.ID)
+		})
+		return nil
 	}
 	type candidate struct {
-		id     string
-		serial string
-		input  hardwareadmission.Input
+		provider *registry.Provider
+		result   attestation.VerificationResult
+		hardware protocol.Hardware
 	}
 	var candidates []candidate
 	s.registry.ForEachProvider(func(provider *registry.Provider) {
 		provider.Mu().Lock()
 		provider.HardwareAdmitted = false
 		if provider.AttestationResult != nil && provider.AttestationResult.Valid {
-			family, tier, _ := hardwareadmission.ParseChipIdentity(
-				provider.AttestationResult.ChipName)
+			result := *provider.AttestationResult
 			candidates = append(candidates, candidate{
-				id: provider.ID, serial: provider.AttestationResult.SerialNumber,
-				input: hardwareadmission.Input{
-					MachineModel: provider.AttestationResult.HardwareModel,
-					ChipName:     provider.AttestationResult.ChipName,
-					ChipFamily:   family,
-					ChipTier:     tier,
-					MemoryGB:     provider.Hardware.MemoryGB,
-					GPUCores:     provider.Hardware.GPUCores,
-				},
+				provider: provider,
+				result:   result,
+				hardware: provider.Hardware,
 			})
 		}
 		provider.Mu().Unlock()
 	})
+	var firstErr error
 	for _, candidate := range candidates {
 		ctx, cancel := context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)
-		admitted, err := s.store.IsHardwareAdmitted(ctx, candidate.serial)
-		if err == nil && !admitted {
-			decision := hardwareadmission.Evaluate(policy, candidate.input)
-			if decision.Allowed && candidate.serial != "" {
-				err = s.store.AdmitHardware(ctx, store.HardwareAdmission{
-					SerialNumber: candidate.serial, Source: "policy",
-					PolicyVersion: policy.Version, Hardware: decision.Observed,
-					AdmittedAt: time.Now().UTC(),
-				})
-				admitted = err == nil
-			}
-		}
+		serial := strings.ToUpper(strings.TrimSpace(candidate.result.SerialNumber))
+		admitted, err := s.store.IsHardwareAdmitted(ctx, serial)
 		cancel()
-		s.registry.SetProviderHardwareAdmitted(candidate.id, err == nil && admitted)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if admitted {
+			s.registry.SetProviderHardwareAdmitted(candidate.provider.ID, true)
+			s.registry.ActivateProviderPersistence(candidate.provider)
+			continue
+		}
+
+		regMsg := &protocol.RegisterMessage{Hardware: candidate.hardware}
+		decision := evaluateHardwareClaims(policy, regMsg, candidate.result)
+		if decision.Allowed {
+			s.stagePendingHardwareAdmission(candidate.provider.ID, pendingHardwareAdmission{
+				serial: serial, policy: policy, decision: decision,
+			})
+			s.finalizePendingHardwareAdmission(candidate.provider)
+			continue
+		}
+		ctx, cancel = context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)
+		s.recordHardwareAdmissionAttempt(
+			ctx, candidate.provider, serial, policy, "rejected",
+			"hardware_below_minimum", decision)
+		cancel()
+		s.rejectHardwareAdmission(candidate.provider, hardwareAdmissionRejection{
+			code: "hardware_below_minimum", retryable: false, policy: policy,
+			decision: &decision, reason: hardwareAdmissionReason(decision),
+		})
 	}
+	return firstErr
 }
 
 func (s *Server) handleMyHardwareAdmissionAttempts(w http.ResponseWriter, r *http.Request) {
@@ -648,5 +780,102 @@ func (s *Server) handleAdminHardwareAdmissionMachines(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, map[string]any{
 		"admissions": admissions,
 		"attempts":   attempts,
+	})
+}
+
+func hardwareAdmissionActor(r *http.Request) string {
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		if user.Email != "" {
+			return user.Email
+		}
+		if user.AccountID != "" {
+			return user.AccountID
+		}
+	}
+	return "admin-key"
+}
+
+func (s *Server) handleAdminRevokeHardwareAdmission(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	serial := strings.ToUpper(strings.TrimSpace(r.PathValue("serial")))
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
+		return
+	}
+	req.Reason = strings.TrimSpace(req.Reason)
+	if serial == "" || req.Reason == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse("invalid_request", "serial and reason are required"))
+		return
+	}
+	if err := s.store.RevokeHardwareAdmission(
+		r.Context(), serial, hardwareAdmissionActor(r), req.Reason); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound,
+				errorResponse("not_found", "active hardware admission not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError,
+			errorResponse("internal_error", "failed to revoke hardware admission"))
+		return
+	}
+	var connected []*registry.Provider
+	s.registry.ForEachProvider(func(provider *registry.Provider) {
+		if result := provider.GetAttestationResult(); result != nil &&
+			strings.EqualFold(result.SerialNumber, serial) {
+			connected = append(connected, provider)
+		}
+	})
+	for _, provider := range connected {
+		s.registry.SetProviderHardwareAdmitted(provider.ID, false)
+		s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+			code: "hardware_admission_revoked", retryable: false,
+			policy: s.hardwareAdmissionPolicySnapshot(),
+			reason: "This machine's provider admission was revoked by a network operator.",
+		})
+	}
+	s.invalidateHardwareAdmissionCaches()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"revoked": true, "serial_number": serial,
+	})
+}
+
+func (s *Server) handleAdminRestoreHardwareAdmission(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	var req struct {
+		SerialNumber string `json:"serial_number"`
+		Reason       string `json:"reason"`
+	}
+	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
+		return
+	}
+	req.SerialNumber = strings.ToUpper(strings.TrimSpace(req.SerialNumber))
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.SerialNumber == "" || req.Reason == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse("invalid_request", "serial_number and reason are required"))
+		return
+	}
+	if err := s.store.RestoreHardwareAdmission(
+		r.Context(), req.SerialNumber, hardwareAdmissionActor(r), req.Reason); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound,
+				errorResponse("not_found", "revoked hardware admission not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError,
+			errorResponse("internal_error", "failed to restore hardware admission"))
+		return
+	}
+	s.invalidateHardwareAdmissionCaches()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"restored": true, "serial_number": req.SerialNumber,
+		"message": "The machine must reconnect and re-prove live identity before routing.",
 	})
 }

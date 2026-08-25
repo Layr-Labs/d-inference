@@ -443,14 +443,12 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 // WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
 // It returns early if ctx is cancelled (e.g. the provider disconnected), so a
 // teardown isn't blocked for the full timeout.
-func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+func (c *Client) registerDeviceAttestationWaiter(udid string) (<-chan *DeviceAttestationResponse, func()) {
 	ch := make(chan *DeviceAttestationResponse, 1)
-
 	c.waitMu.Lock()
 	c.attestWaiters[udid] = ch
 	c.waitMu.Unlock()
-
-	defer func() {
+	return ch, func() {
 		c.waitMu.Lock()
 		// Identity-guarded delete (parity with registerSecurityInfoWaiter): only
 		// remove our own channel. With two overlapping connections for the same
@@ -461,8 +459,10 @@ func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, time
 			delete(c.attestWaiters, udid)
 		}
 		c.waitMu.Unlock()
-	}()
+	}
+}
 
+func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationResponse, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
@@ -471,6 +471,28 @@ func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, time
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
 	}
+}
+
+func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+	ch, release := c.registerDeviceAttestationWaiter(udid)
+	defer release()
+	return awaitDeviceAttestation(ctx, ch, udid, timeout)
+}
+
+// RequestDeviceAttestation closes the fast-device webhook race by registering
+// the response waiter before enqueueing and pushing the command.
+func (c *Client) RequestDeviceAttestation(
+	ctx context.Context,
+	udid string,
+	nonce string,
+	timeout time.Duration,
+) (*DeviceAttestationResponse, error) {
+	ch, release := c.registerDeviceAttestationWaiter(udid)
+	defer release()
+	if _, err := c.SendDeviceAttestationCommand(ctx, udid, nonce); err != nil {
+		return nil, err
+	}
+	return awaitDeviceAttestation(ctx, ch, udid, timeout)
 }
 
 // HandleWebhook processes a MicroMDM webhook payload and extracts

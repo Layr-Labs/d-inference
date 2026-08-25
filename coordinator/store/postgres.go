@@ -224,7 +224,21 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			source TEXT NOT NULL,
 			policy_version BIGINT NOT NULL REFERENCES hardware_admission_policies(version),
 			hardware JSONB NOT NULL DEFAULT '{}'::jsonb,
-			admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			revoked_at TIMESTAMPTZ,
+			revoked_by TEXT NOT NULL DEFAULT '',
+			revocation_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_by TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revocation_reason TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_events (
+			id BIGSERIAL PRIMARY KEY,
+			serial_number TEXT NOT NULL,
+			action TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE IF NOT EXISTS hardware_admission_attempts (
 			id BIGSERIAL PRIMARY KEY,

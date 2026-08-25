@@ -9,6 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (s *PostgresStore) GetActiveHardwareAdmissionPolicy(ctx context.Context) (*hardwareadmission.Policy, error) {
@@ -19,7 +20,9 @@ func (s *PostgresStore) GetActiveHardwareAdmissionPolicy(ctx context.Context) (*
 	err := s.pool.QueryRow(ctx, `
 		SELECT p.version, p.mode, p.min_memory_gb, p.min_memory_bandwidth_gbs,
 		       p.min_fp16_millitflops, p.catalog_version, p.created_at,
-		       p.created_by, p.reason, p.grandfather_cutoff_at
+		       p.created_by, p.reason, p.grandfather_cutoff_at,
+		       (SELECT COUNT(*) FROM hardware_admissions
+		        WHERE source = 'grandfathered' AND revoked_at IS NULL)
 		FROM hardware_admission_state s
 		JOIN hardware_admission_policies p ON p.version = s.active_policy_version
 		WHERE s.singleton = TRUE
@@ -27,6 +30,7 @@ func (s *PostgresStore) GetActiveHardwareAdmissionPolicy(ctx context.Context) (*
 		&policy.Version, &policy.Mode, &policy.MinMemoryGB, &policy.MinMemoryBandwidthGBs,
 		&policy.MinFP16MilliTFLOPS, &policy.CatalogVersion, &policy.CreatedAt,
 		&policy.CreatedBy, &policy.Reason, &policy.GrandfatherCutoffAt,
+		&policy.GrandfatheredProviderCount,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -142,7 +146,10 @@ func (s *PostgresStore) IsHardwareAdmitted(ctx context.Context, serialNumber str
 	defer cancel()
 	var admitted bool
 	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM hardware_admissions WHERE serial_number = $1)`,
+		`SELECT EXISTS (
+			SELECT 1 FROM hardware_admissions
+			WHERE serial_number = $1 AND revoked_at IS NULL
+		)`,
 		serial,
 	).Scan(&admitted); err != nil {
 		return false, fmt.Errorf("store: check hardware admission: %w", err)
@@ -167,13 +174,26 @@ func (s *PostgresStore) AdmitHardware(ctx context.Context, admission HardwareAdm
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO hardware_admissions (
 			serial_number, source, policy_version, hardware, admitted_at
 		) VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (serial_number) DO NOTHING
-	`, serial, admission.Source, admission.PolicyVersion, hardwareJSON, admission.AdmittedAt); err != nil {
+	`, serial, admission.Source, admission.PolicyVersion, hardwareJSON, admission.AdmittedAt)
+	if err != nil {
 		return fmt.Errorf("store: admit hardware: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var revoked bool
+		if err := s.pool.QueryRow(ctx, `
+			SELECT revoked_at IS NOT NULL
+			FROM hardware_admissions WHERE serial_number = $1
+		`, serial).Scan(&revoked); err != nil {
+			return fmt.Errorf("store: inspect existing hardware admission: %w", err)
+		}
+		if revoked {
+			return fmt.Errorf("%w: %s", ErrHardwareAdmissionRevoked, serial)
+		}
 	}
 	return nil
 }
@@ -185,7 +205,8 @@ func (s *PostgresStore) ListHardwareAdmissions(ctx context.Context, limit int) (
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	rows, err := s.pool.Query(ctx, `
-		SELECT serial_number, source, policy_version, hardware, admitted_at
+		SELECT serial_number, source, policy_version, hardware, admitted_at,
+		       revoked_at, revoked_by, revocation_reason
 		FROM hardware_admissions
 		ORDER BY admitted_at DESC
 		LIMIT $1
@@ -200,7 +221,8 @@ func (s *PostgresStore) ListHardwareAdmissions(ctx context.Context, limit int) (
 		var hardwareJSON []byte
 		if err := rows.Scan(
 			&admission.SerialNumber, &admission.Source, &admission.PolicyVersion,
-			&hardwareJSON, &admission.AdmittedAt,
+			&hardwareJSON, &admission.AdmittedAt, &admission.RevokedAt,
+			&admission.RevokedBy, &admission.RevocationReason,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan hardware admission: %w", err)
 		}
@@ -213,6 +235,70 @@ func (s *PostgresStore) ListHardwareAdmissions(ctx context.Context, limit int) (
 		return nil, fmt.Errorf("store: list hardware admissions rows: %w", err)
 	}
 	return out, nil
+}
+
+func (s *PostgresStore) RevokeHardwareAdmission(
+	ctx context.Context,
+	serialNumber, actor, reason string,
+) error {
+	return s.setHardwareAdmissionRevocation(ctx, serialNumber, actor, reason, true)
+}
+
+func (s *PostgresStore) RestoreHardwareAdmission(
+	ctx context.Context,
+	serialNumber, actor, reason string,
+) error {
+	return s.setHardwareAdmissionRevocation(ctx, serialNumber, actor, reason, false)
+}
+
+func (s *PostgresStore) setHardwareAdmissionRevocation(
+	ctx context.Context,
+	serialNumber, actor, reason string,
+	revoke bool,
+) error {
+	serial := normalizeHardwareSerial(serialNumber)
+	if serial == "" || actor == "" || reason == "" {
+		return fmt.Errorf("store: serial, actor, and reason are required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin hardware revocation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var tag pgconn.CommandTag
+	action := "restored"
+	if revoke {
+		action = "revoked"
+		tag, err = tx.Exec(ctx, `
+			UPDATE hardware_admissions
+			SET revoked_at = NOW(), revoked_by = $2, revocation_reason = $3
+			WHERE serial_number = $1 AND revoked_at IS NULL
+		`, serial, actor, reason)
+	} else {
+		tag, err = tx.Exec(ctx, `
+			UPDATE hardware_admissions
+			SET revoked_at = NULL, revoked_by = '', revocation_reason = ''
+			WHERE serial_number = $1 AND revoked_at IS NOT NULL
+		`, serial)
+	}
+	if err != nil {
+		return fmt.Errorf("store: %s hardware admission: %w", action, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: hardware admission %s", ErrNotFound, serial)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO hardware_admission_events (serial_number, action, actor, reason)
+		VALUES ($1,$2,$3,$4)
+	`, serial, action, actor, reason); err != nil {
+		return fmt.Errorf("store: audit hardware admission %s: %w", action, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit hardware admission %s: %w", action, err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) RecordHardwareAdmissionAttempt(ctx context.Context, attempt HardwareAdmissionAttempt) error {

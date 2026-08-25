@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1669,6 +1670,9 @@ type Registry struct {
 	modelAliases map[string]AliasTarget
 
 	store store.Store
+	// serialOwners fences duplicate live connections. Claims are updated under
+	// r.mu so simultaneous reconnects cannot evict each other in both directions.
+	serialOwners map[string]string
 
 	tpsRegistry *TPSRegistry
 
@@ -1887,6 +1891,7 @@ type modelLoadAction struct {
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
 		providers:                      make(map[string]*Provider),
+		serialOwners:                   make(map[string]string),
 		queue:                          NewRequestQueueFromEnv(),
 		MinTrustLevel:                  TrustHardware,
 		tpsRegistry:                    NewTPSRegistry(),
@@ -3284,17 +3289,30 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	}
 
 	var toEvict []string
-
-	r.mu.RLock()
+	r.mu.Lock()
+	if _, exists := r.providers[keepID]; !exists {
+		r.mu.Unlock()
+		return
+	}
+	if previous := r.serialOwners[serial]; previous != "" && previous != keepID {
+		if _, exists := r.providers[previous]; exists {
+			toEvict = append(toEvict, previous)
+		}
+	}
+	r.serialOwners[serial] = keepID
 	for id, p := range r.providers {
 		if id == keepID {
 			continue
 		}
-		if p.AttestationResult != nil && p.AttestationResult.SerialNumber == serial {
+		p.mu.Lock()
+		matches := p.AttestationResult != nil &&
+			p.AttestationResult.SerialNumber == serial
+		p.mu.Unlock()
+		if matches && !slices.Contains(toEvict, id) {
 			toEvict = append(toEvict, id)
 		}
 	}
-	r.mu.RUnlock()
+	r.mu.Unlock()
 
 	for _, id := range toEvict {
 		r.logger.Warn("evicting duplicate provider from same device",
@@ -4166,6 +4184,7 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
 	var disconnectedModels []string
+	var persistenceEnabled bool
 	r.mu.Lock()
 	p, ok := r.providers[id]
 	if ok {
@@ -4178,6 +4197,13 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		persistenceEnabled = p.persistenceEnabled
+		if p.AttestationResult != nil {
+			serial := p.AttestationResult.SerialNumber
+			if serial != "" && r.serialOwners[serial] == id {
+				delete(r.serialOwners, serial)
+			}
+		}
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
 		// cooldowns, health ejection) keys by the STABLE identity when one is
@@ -4296,7 +4322,7 @@ func (r *Registry) Disconnect(id string) {
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
-	if r.store != nil {
+	if r.store != nil && persistenceEnabled {
 		saferun.Go(r.logger, "registry.closeSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -4660,6 +4686,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
+		hardwareAdmitted := !r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted
 		attested := p.Attested
 		attestResult := p.AttestationResult
 		privateReady := r.providerSupportsPrivateTextLocked(p)
@@ -4671,7 +4698,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		copy(models, p.Models)
 		p.mu.Unlock()
 
-		if status == StatusOffline || status == StatusUntrusted {
+		if status == StatusOffline || status == StatusUntrusted || !hardwareAdmitted {
 			continue
 		}
 		// Private-only providers serve only their owner's self-route traffic, so
@@ -4843,6 +4870,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
+		hardwareAdmitted := !r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted
 		privateReady := r.providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
@@ -4862,7 +4890,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 			continue
 		}
 		// Apply the same routing-eligibility gates as ListModels.
-		if status == StatusOffline || status == StatusUntrusted {
+		if status == StatusOffline || status == StatusUntrusted || !hardwareAdmitted {
 			continue
 		}
 		if !r.trustMeetsMinimum(trust) || !privateReady {

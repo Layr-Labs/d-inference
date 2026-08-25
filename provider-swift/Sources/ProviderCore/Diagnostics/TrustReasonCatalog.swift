@@ -70,6 +70,10 @@ public enum TrustReasonCatalog {
             return DiagnosticAdvice(
                 message: "hardware-trusted and eligible for traffic.",
                 fix: nil)
+        case "MDM verification passed; awaiting Apple device identity and code attestation":
+            return DiagnosticAdvice(
+                message: "MDM posture passed, but first-time provider admission is still waiting for Apple device identity and official-code attestation. The machine receives no traffic yet.",
+                fix: "keep the Mac awake and signed in so APNs and Apple Device Attestation can complete.")
         case "recovered after transient deroute":
             return DiagnosticAdvice(
                 message: "recovered after a temporary derouting (a brief network/challenge blip).",
@@ -123,6 +127,9 @@ public enum TrustReasonCatalog {
     public static func level(trustLevel: String, status: String) -> DiagnosticLevel {
         if status == "untrusted" || status == "offline" || status == "onboarding_rejected" {
             return .fail
+        }
+        if status == "admission_pending" {
+            return .warn
         }
         switch trustLevel {
         case "hardware", "mda_verified":

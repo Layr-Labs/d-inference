@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,23 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 			admissions, err := backend.ListHardwareAdmissions(ctx, 10)
 			if err != nil || len(admissions) != 1 || admissions[0].SerialNumber != strings.ToUpper(serial) {
 				t.Fatalf("admissions = (%+v,%v)", admissions, err)
+			}
+			if err := backend.RevokeHardwareAdmission(ctx, serial, "test-admin", "retired"); err != nil {
+				t.Fatalf("revoke admission: %v", err)
+			}
+			if admitted, _ := backend.IsHardwareAdmitted(ctx, serial); admitted {
+				t.Fatal("revoked serial remained admitted")
+			}
+			if err := backend.AdmitHardware(ctx, HardwareAdmission{
+				SerialNumber: serial, PolicyVersion: enforce.Version,
+			}); !errors.Is(err, ErrHardwareAdmissionRevoked) {
+				t.Fatalf("re-admit revoked serial error = %v", err)
+			}
+			if err := backend.RestoreHardwareAdmission(ctx, serial, "test-admin", "mistake corrected"); err != nil {
+				t.Fatalf("restore admission: %v", err)
+			}
+			if admitted, _ := backend.IsHardwareAdmitted(ctx, serial); !admitted {
+				t.Fatal("restored serial did not regain admission")
 			}
 
 			active, err := backend.GetActiveHardwareAdmissionPolicy(ctx)

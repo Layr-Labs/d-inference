@@ -269,7 +269,7 @@ func TestReleaseArchiveRejectsNegativeAndOverflowingBase256Sizes(t *testing.T) {
 	}
 }
 
-func TestReleaseArchiveRejectsSparseAndOverflowingPAXMetadata(t *testing.T) {
+func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 	tests := []struct {
 		name  string
 		key   string
@@ -287,6 +287,12 @@ func TestReleaseArchiveRejectsSparseAndOverflowingPAXMetadata(t *testing.T) {
 			key:   "size",
 			value: "999999999999999999999999999999999999",
 			want:  "overflows",
+		},
+		{
+			name:  "mode override",
+			key:   "SCHILY.mode",
+			value: "0000755",
+			want:  "unsupported PAX mode metadata",
 		},
 	}
 

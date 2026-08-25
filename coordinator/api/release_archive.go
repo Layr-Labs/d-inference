@@ -18,7 +18,6 @@ const (
 	maxReleaseArchivePathBytes            = 4 * 1024
 	maxReleaseArchiveComponentBytes       = 255
 	maxReleaseArchiveMetadataBytes  int64 = 1 << 20 // 1 MiB per PAX/long-name record
-	maxReleaseProviderBinBytes      int64 = 512 << 20
 
 	releaseTarBlockSize = 512
 )
@@ -50,6 +49,7 @@ type releaseArchiveEntry struct {
 	Path string
 	Kind releaseArchiveNodeKind
 	Size int64
+	Mode int64
 }
 
 type releaseArchiveVisitor func(releaseArchiveEntry, io.Reader) error
@@ -127,6 +127,13 @@ func validateReleaseArchive(
 		headerSize, err := parseReleaseTarNumber(header[124:136], "entry size")
 		if err != nil {
 			return err
+		}
+		headerMode, err := parseReleaseTarNumber(header[100:108], "entry mode")
+		if err != nil {
+			return err
+		}
+		if headerMode > 0o7777 {
+			return fmt.Errorf("release archive entry mode exceeds portable permission bits")
 		}
 		typeflag := header[156]
 
@@ -234,6 +241,7 @@ func validateReleaseArchive(
 			Path: effectivePath,
 			Kind: kind,
 			Size: effectiveSize,
+			Mode: headerMode,
 		}
 		if err := visitReleaseArchivePayload(r, entry, visitor); err != nil {
 			return err
@@ -494,6 +502,8 @@ func parseReleasePAX(
 			attrs.size = &size
 		case "SCHILY.filetype":
 			return attrs, fmt.Errorf("release archive contains unsupported PAX file-type metadata")
+		case "SCHILY.mode":
+			return attrs, fmt.Errorf("release archive contains unsupported PAX mode metadata")
 		}
 
 		offset = recordEnd

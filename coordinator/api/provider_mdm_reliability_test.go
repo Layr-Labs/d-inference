@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,15 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+const (
+	testMDMCommandOK       = "11111111-1111-4111-8111-111111111111"
+	testMDMCommandMismatch = "22222222-2222-4222-8222-222222222222"
+	testMDMCommandTimeout  = "33333333-3333-4333-8333-333333333333"
+	testMDMCommandUnused   = "44444444-4444-4444-8444-444444444444"
+)
+
+var testCommandUUIDPattern = regexp.MustCompile(`<key>CommandUUID</key>\s*<string>([^<]+)</string>`)
 
 // fakeMDMServer is a minimal MicroMDM stand-in for exercising
 // verifyProviderViaMDM against a real *mdm.Client over HTTP. The test drives the
@@ -94,12 +104,13 @@ func (f *fakeMDMServer) handler() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"payload":{"command_uuid":"` + uuid + `"}}`))
 	})
 
 	// MDA raw-plist command (POST /v1/commands/{udid}).
 	mux.HandleFunc("POST /v1/commands/{udid}", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		fail := f.failMDARawCommand
 		f.mu.Unlock()
@@ -108,15 +119,33 @@ func (f *fakeMDMServer) handler() http.Handler {
 			_, _ = w.Write([]byte("mda unavailable in test"))
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		match := testCommandUUIDPattern.FindSubmatch(body)
+		if len(match) != 2 {
+			http.Error(w, "missing command uuid", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"payload": map[string]any{
+				"udid":         r.PathValue("udid"),
+				"command_uuid": string(match[1]),
+				"command": map[string]string{
+					"request_type": "DeviceInformation",
+				},
+			},
+		})
 	})
 
 	mux.HandleFunc("GET /push/{udid}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.pushedUDIDs = append(f.pushedUDIDs, r.PathValue("udid"))
 		f.mu.Unlock()
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":               "success",
+			"push_notification_id": "push-test-id",
+		})
 	})
 
 	return mux
@@ -223,12 +252,12 @@ func deliverWebhookWhenPushed(srv *Server, fake *fakeMDMServer, udid, commandUUI
 func TestVerifyProviderViaMDM_PostureMismatchTerminal(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID: "cmd-mismatch",
+		commandUUID: testMDMCommandMismatch,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 
 	// MDM says SIP=false (mismatch vs attestation SIP=true) → posture mismatch.
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-mismatch", false /*sip*/, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", testMDMCommandMismatch, false /*sip*/, true)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -262,7 +291,7 @@ func TestVerifyProviderViaMDM_TimeoutTransient(t *testing.T) {
 	}
 	fake := &fakeMDMServer{
 		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID: "cmd-timeout",
+		commandUUID: testMDMCommandTimeout,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 
@@ -287,7 +316,7 @@ func TestVerifyProviderViaMDM_TimeoutTransient(t *testing.T) {
 // the serial → transient outcome (provider may simply not have enrolled yet)
 // and the reason buckets as "device-not-found". Trust is untouched.
 func TestVerifyProviderViaMDM_DeviceNotFoundTransient(t *testing.T) {
-	fake := &fakeMDMServer{device: nil, commandUUID: "unused"}
+	fake := &fakeMDMServer{device: nil, commandUUID: testMDMCommandUnused}
 	srv, p := mdmReliabilityServer(t, fake)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
@@ -314,14 +343,14 @@ func TestVerifyProviderViaMDM_DeviceNotFoundTransient(t *testing.T) {
 func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID:       "cmd-ok",
+		commandUUID:       testMDMCommandOK,
 		failMDARawCommand: true,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	// Seed a stale failure reason to prove success clears it.
 	p.SetMDMFailureReason("securityinfo-timeout")
 
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", testMDMCommandOK, true /*sip*/, true /*secureboot*/)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -434,7 +463,7 @@ func TestProviderAttestationGatesProofsOnHardware(t *testing.T) {
 func TestVerifyProviderViaMDM_TransportErrorTransient(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:                  &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID:             "cmd-unused",
+		commandUUID:             testMDMCommandUnused,
 		failSecurityInfoCommand: true, // POST /v1/commands → 500 → SendSecurityInfoCommand errors
 	}
 	srv, p := mdmReliabilityServer(t, fake)
@@ -530,7 +559,7 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 func TestVerifyProviderViaMDM_InvalidAttestationNotPromoted(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID:       "cmd-ok",
+		commandUUID:       testMDMCommandOK,
 		failMDARawCommand: true,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
@@ -539,7 +568,7 @@ func TestVerifyProviderViaMDM_InvalidAttestationNotPromoted(t *testing.T) {
 	p.AttestationResult.Valid = false
 	p.Mu().Unlock()
 	// Even if SecurityInfo would pass, the invalid attestation must block promotion.
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", testMDMCommandOK, true, true)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
@@ -576,7 +605,7 @@ func TestVerifyProviderViaMDM_LookupFailureBucketsAsError(t *testing.T) {
 func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID: "unused",
+		commandUUID: testMDMCommandUnused,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	p.SetMDMFailureReason("securityinfo-timeout") // left behind by the timed-out sync attempt
@@ -600,7 +629,7 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID: "unused",
+		commandUUID: testMDMCommandUnused,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.registry.MarkUntrusted("prov-mdm") // hard deroute while MDM was in flight
@@ -622,12 +651,12 @@ func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 func TestVerifyProviderViaMDM_DefersGrantWhenUntrusted(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID:       "cmd-ok",
+		commandUUID:       testMDMCommandOK,
 		failMDARawCommand: true,
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.registry.MarkUntrusted("prov-mdm") // deroute lands while MDM verify is in flight
-	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true, true)
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", testMDMCommandOK, true, true)
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 

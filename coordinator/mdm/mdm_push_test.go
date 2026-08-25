@@ -62,6 +62,7 @@ func (f *fakeMicroMDM) handler() http.Handler {
 		f.commandPosts++
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"payload":{"command_uuid":"` + uuid + `"}}`))
 	})
 
@@ -105,15 +106,16 @@ func newFakeMDM(t *testing.T, fake *fakeMicroMDM) (*Client, *httptest.Server) {
 // budget (the pressure this whole change reduces). It enqueues exactly one command
 // and returns the command_uuid; zero explicit pushes.
 func TestSendSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
-	fake := &fakeMicroMDM{commandUUID: "cmd-abc-123"}
+	const commandUUID = "11111111-1111-4111-8111-111111111111"
+	fake := &fakeMicroMDM{commandUUID: commandUUID}
 	c, _ := newFakeMDM(t, fake)
 
 	gotUUID, err := c.SendSecurityInfoCommand(context.Background(), "UDID-PUSH")
 	if err != nil {
 		t.Fatalf("SendSecurityInfoCommand: %v", err)
 	}
-	if gotUUID != "cmd-abc-123" {
-		t.Errorf("command_uuid = %q, want %q", gotUUID, "cmd-abc-123")
+	if gotUUID != commandUUID {
+		t.Errorf("command_uuid = %q, want %q", gotUUID, commandUUID)
 	}
 	if n := fake.commandPostCount(); n != 1 {
 		t.Errorf("command posts = %d, want exactly 1", n)
@@ -128,13 +130,14 @@ func TestSendSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
 // matching the provider's attestation. VerifyProvider returns DeviceEnrolled
 // with no Error.
 func TestVerifyProviderSuccess(t *testing.T) {
+	const commandUUID = "22222222-2222-4222-8222-222222222222"
 	fake := &fakeMicroMDM{
 		device: &DeviceInfo{
 			SerialNumber:     "SERIAL-OK",
 			UDID:             "UDID-OK",
 			EnrollmentStatus: true,
 		},
-		commandUUID: "cmd-ok",
+		commandUUID: commandUUID,
 	}
 	c, _ := newFakeMDM(t, fake)
 
@@ -152,7 +155,7 @@ func TestVerifyProviderSuccess(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		time.Sleep(20 * time.Millisecond)
-		c.HandleWebhook(buildSecurityInfoWebhook("UDID-OK", "cmd-ok"))
+		c.HandleWebhook(buildSecurityInfoWebhook("UDID-OK", commandUUID))
 	}()
 
 	res, err := c.VerifyProvider(context.Background(), "SERIAL-OK", true /*sip*/, true /*secureboot*/)

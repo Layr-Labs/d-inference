@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -112,6 +111,9 @@ const outstandingCommandTTL = 30 * time.Minute
 func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	// When talking to localhost MDM, skip TLS verification since the cert
 	// is issued for the public domain, not localhost/127.0.0.1.
@@ -274,18 +276,15 @@ func (c *Client) LookupDevice(ctx context.Context, serialNumber string) (*Device
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mdm device lookup returned %d", resp.StatusCode)
+	if err := requireMDMStatus(resp, "mdm device lookup", http.StatusOK); err != nil {
+		return nil, err
+	}
+	devices, err := decodeDeviceLookupResponse(resp)
+	if err != nil {
+		return nil, err
 	}
 
-	var result struct {
-		Devices []DeviceInfo `json:"devices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("mdm device lookup decode failed: %w", err)
-	}
-
-	for _, d := range result.Devices {
+	for _, d := range devices {
 		if d.SerialNumber == serialNumber {
 			return &d, nil
 		}
@@ -318,16 +317,20 @@ func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (stri
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		Payload struct {
-			CommandUUID string `json:"command_uuid"`
-		} `json:"payload"`
+	if err := requireMDMStatus(
+		resp,
+		"mdm command",
+		http.StatusOK,
+		http.StatusCreated,
+	); err != nil {
+		return "", err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("mdm command response decode failed: %w", err)
+	commandUUID, err := decodeCommandResponse(resp)
+	if err != nil {
+		return "", err
 	}
 
-	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
+	c.trackCommand(commandUUID, udid, time.Now())
 
 	// Do NOT push explicitly here. MicroMDM's structured POST /v1/commands already
 	// schedules the command AND sends the APNs push to wake the device, so an extra
@@ -337,22 +340,28 @@ func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (stri
 	// explicitly — that asymmetry is correct, not a bug.) The fast-device webhook
 	// race is handled by registering the SecurityInfo waiter BEFORE this call in
 	// VerifyProvider, so the auto-push's response always finds a waiter.
-	return result.Payload.CommandUUID, nil
+	return commandUUID, nil
 }
 
 // pushDevice sends a best-effort APNs push to a device via MicroMDM to trigger
 // an immediate check-in so a freshly-queued command is pulled promptly rather
 // than at the next idle wake. Errors are intentionally ignored: the command is
 // already enqueued, and the push is only a latency optimization.
-func (c *Client) pushDevice(ctx context.Context, udid string) {
+func (c *Client) pushDevice(ctx context.Context, udid string) error {
 	pushReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/push/"+udid, nil)
 	if err != nil {
-		return
+		return err
 	}
 	pushReq.SetBasicAuth("micromdm", c.apiKey)
-	if resp, err := c.client.Do(pushReq); err == nil {
-		_ = resp.Body.Close()
+	resp, err := c.client.Do(pushReq)
+	if err != nil {
+		return fmt.Errorf("mdm push failed: %w", err)
 	}
+	defer resp.Body.Close()
+	if err := requireMDMStatus(resp, "mdm push", http.StatusOK); err != nil {
+		return err
+	}
+	return validatePushResponse(resp)
 }
 
 // SendDeviceAttestationCommand sends a DeviceInformation command requesting
@@ -381,7 +390,8 @@ func (c *Client) SendDeviceAttestationCommand(ctx context.Context, udid string, 
 // field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
 func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce string) (string, error) {
 	// DevicePropertiesAttestation is requested via a DeviceInformation command.
-	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
+	const requestType = "DeviceInformation"
+	if err := assertReadOnlyCommand(requestType); err != nil {
 		return "", err
 	}
 	cmdUUID := uuid.New().String()
@@ -425,9 +435,16 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
+	if err := requireMDMStatus(
+		resp,
+		"mdm raw command",
+		http.StatusOK,
+		http.StatusCreated,
+	); err != nil {
+		return "", err
+	}
+	if err := validateRawCommandResponse(resp, udid, cmdUUID, requestType); err != nil {
+		return "", err
 	}
 
 	c.trackCommand(cmdUUID, udid, time.Now())
@@ -435,7 +452,9 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 	// Push to trigger device check-in (best-effort; command is already queued).
 	// The raw POST /v1/commands/{udid} endpoint does NOT auto-push (unlike the
 	// structured /v1/commands), so the explicit push is required here.
-	c.pushDevice(ctx, udid)
+	if err := c.pushDevice(ctx, udid); err != nil {
+		c.logger.Warn("mdm push after raw command failed", "udid", udid, "error", err)
+	}
 
 	return cmdUUID, nil
 }

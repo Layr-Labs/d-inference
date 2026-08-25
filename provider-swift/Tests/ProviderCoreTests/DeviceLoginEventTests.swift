@@ -95,9 +95,8 @@ struct DeviceLoginEventTests {
             #expect(recorder.events.last?.isTerminal == true)
             #expect(try String(contentsOf: tokenPath) == "mock-token-123")
             #expect(ProviderAccountStore.load() == "mock-account-id")
-            #expect(ProviderIssuerStore.load() == try canonicalCoordinatorIssuer(
-                base.absoluteString
-            ))
+            let expectedIssuer = try canonicalCoordinatorIssuer(base.absoluteString)
+            #expect(ProviderIssuerStore.load() == expectedIssuer)
         }
     }
 

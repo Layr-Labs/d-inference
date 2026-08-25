@@ -898,7 +898,7 @@ func (s *PostgresStore) CreateSandboxCommand(
 		     FROM sandbox_host_operations
 		     WHERE sandbox_id = $1
 		       AND state NOT IN (
-		         'queued', 'ready', 'stopped', 'deleted', 'failed'
+		         'ready', 'stopped', 'deleted', 'failed'
 		       )
 		   ),
 		   EXISTS (

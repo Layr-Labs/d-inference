@@ -245,6 +245,57 @@ func TestSandboxTerminationQueuesUntilCommandCancellationAcknowledged(
 			); !errors.Is(err, ErrSandboxConflict) {
 				t.Fatalf("command admitted during activated stop: %v", err)
 			}
+			stopped, completedStop, err := backend.ApplySandboxOperationUpdate(
+				ctx,
+				SandboxOperationUpdate{
+					OperationID:  activatedStop.ID,
+					SandboxID:    stopping.ID,
+					Generation:   stopping.Generation,
+					FencingToken: stopping.FencingToken,
+					State:        SandboxOperationStopped,
+					UpdatedAt:    now.Add(11 * time.Second),
+				},
+			)
+			if err != nil ||
+				stopped.State != SandboxStateStopped ||
+				completedStop.State != SandboxOperationStopped {
+				t.Fatalf(
+					"complete queued stop: sandbox=%+v operation=%+v error=%v",
+					stopped,
+					completedStop,
+					err,
+				)
+			}
+			deletion := &SandboxOperation{
+				ID:                   "c0000000-0000-0000-0000-000000000412",
+				SandboxID:            stopped.ID,
+				AccountID:            stopped.AccountID,
+				IdempotencyKey:       "d0000000-0000-0000-0000-000000000413",
+				Kind:                 SandboxOperationKindDelete,
+				State:                SandboxOperationPending,
+				Generation:           stopped.Generation,
+				FencingToken:         stopped.FencingToken,
+				PreviousSandboxState: SandboxStateStopped,
+				CreatedAt:            now.Add(12 * time.Second),
+				UpdatedAt:            now.Add(12 * time.Second),
+			}
+			deleting, storedDeletion, created, err := backend.BeginSandboxOperation(
+				ctx,
+				deletion,
+				SandboxStateDeleting,
+			)
+			if err != nil ||
+				!created ||
+				deleting.State != SandboxStateDeleting ||
+				storedDeletion.Kind != SandboxOperationKindDelete {
+				t.Fatalf(
+					"begin delete after queued stop: sandbox=%+v operation=%+v created=%v error=%v",
+					deleting,
+					storedDeletion,
+					created,
+					err,
+				)
+			}
 			if !terminating.TerminationRequested {
 				t.Fatal("termination intent was not persisted")
 			}

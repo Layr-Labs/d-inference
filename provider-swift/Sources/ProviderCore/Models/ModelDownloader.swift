@@ -66,6 +66,7 @@ public struct ModelDownloader: Sendable {
     internal let urlSession: URLSession
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
+    internal let availableCapacityProvider: @Sendable (URL) throws -> Int64?
 
     public init(
         r2CDNURL: String? = nil,
@@ -82,6 +83,33 @@ public struct ModelDownloader: Sendable {
         self.urlSession = urlSession
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)
+        availableCapacityProvider = Self.availableCapacity(at:)
+    }
+
+    init(
+        r2CDNURL: String? = nil,
+        urlSession: URLSession = .shared,
+        catalogClient: ModelCatalogClient? = nil,
+        concurrency: Int = 4,
+        availableCapacityProvider: @escaping @Sendable (URL) throws -> Int64?
+    ) {
+        if let r2CDNURL {
+            self.r2CDNURL = r2CDNURL.trimmingCharacters(
+                in: CharacterSet(charactersIn: "/")
+            )
+        } else if let env = ProcessInfo.processInfo.environment[
+            "DARKBLOOM_R2_CDN_URL"
+        ], !env.isEmpty {
+            self.r2CDNURL = env.trimmingCharacters(
+                in: CharacterSet(charactersIn: "/")
+            )
+        } else {
+            self.r2CDNURL = ModelDownloader.defaultR2CDNURL
+        }
+        self.urlSession = urlSession
+        self.catalogClient = catalogClient
+        self.concurrency = max(1, concurrency)
+        self.availableCapacityProvider = availableCapacityProvider
     }
 
     /// Download a catalog model into the local HuggingFace cache.
@@ -98,9 +126,15 @@ public struct ModelDownloader: Sendable {
     /// time `darkbloom status` runs.
     public func download(
         model: CatalogModel,
+        reserveBytes: Int64 = 0,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil,
         onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
+        guard reserveBytes >= 0 else {
+            throw ModelCatalogError.downloadFailed(
+                "download reserve must be non-negative"
+            )
+        }
         if model.r2Prefix != nil, model.aggregateSHA256 != nil {
             let manifest: ModelManifest
             if let catalogClient {
@@ -108,11 +142,25 @@ public struct ModelDownloader: Sendable {
             } else {
                 manifest = try await fetchManifestFromCDN(model: model)
             }
+            let admissionLock = try await acquireDownloadAdmissionLock()
+            defer { admissionLock.release() }
             try await downloadManifestModel(
-                model: model, manifest: manifest, onProgress: onProgress, onEvent: onEvent)
+                model: model,
+                manifest: manifest,
+                reserveBytes: reserveBytes,
+                onProgress: onProgress,
+                onEvent: onEvent
+            )
             return
         }
 
+        let admissionLock = try await acquireDownloadAdmissionLock()
+        defer { admissionLock.release() }
+        try ensureAvailableCapacity(
+            at: Self.cacheRootDirectory(),
+            remainingBytes: Self.catalogSizeBytes(model),
+            reserveBytes: reserveBytes
+        )
         try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress, onEvent: onEvent)
     }
 
@@ -130,9 +178,13 @@ public struct ModelDownloader: Sendable {
 
     public static func cacheModelDirectory(for modelID: String) -> URL {
         let safe = modelID.replacingOccurrences(of: "/", with: "--")
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+        return cacheRootDirectory()
             .appendingPathComponent("models--\(safe)", isDirectory: true)
+    }
+
+    static func cacheRootDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
     }
 
     static func cacheSnapshotDirectory(for modelID: String) -> URL {
@@ -171,6 +223,20 @@ public struct ModelDownloader: Sendable {
                 String(segment).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(segment)
             }
             .joined(separator: "/")
+    }
+
+    func acquireDownloadAdmissionLock() async throws
+        -> ModelDownloadCacheAdmissionLock
+    {
+        do {
+            return try await ModelDownloadCacheAdmissionLock.acquire(
+                at: Self.cacheRootDirectory()
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ModelCatalogError.downloadFailed(error.localizedDescription)
+        }
     }
 
 }

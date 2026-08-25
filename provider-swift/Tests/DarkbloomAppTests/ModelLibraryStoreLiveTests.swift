@@ -19,15 +19,22 @@ private final class StubModelCatalogCLI: ModelCatalogCLIRunning, @unchecked Send
     private var channelStorage: [DownloadChannel] = []
     private var cancelledChannelIDStorage: Set<Int> = []
     private var removedModelIDStorage: [String] = []
+    private var prepareCountStorage = 0
+    private let preparationGate: StubPreparationGate?
     var removeError: Error?
 
     var fetchCount: Int { lock.withLock { fetchCountStorage } }
+    var prepareCount: Int { lock.withLock { prepareCountStorage } }
     var channels: [DownloadChannel] { lock.withLock { channelStorage } }
     var cancelledChannelIDs: Set<Int> { lock.withLock { cancelledChannelIDStorage } }
     var removedModelIDs: [String] { lock.withLock { removedModelIDStorage } }
 
-    init(snapshot: Result<ModelLibrarySnapshot, Error>) {
+    init(
+        snapshot: Result<ModelLibrarySnapshot, Error>,
+        preparationGate: StubPreparationGate? = nil
+    ) {
         snapshotStorage = snapshot
+        self.preparationGate = preparationGate
     }
 
     func setSnapshot(_ result: Result<ModelLibrarySnapshot, Error>) {
@@ -42,7 +49,31 @@ private final class StubModelCatalogCLI: ModelCatalogCLIRunning, @unchecked Send
         return try result.get()
     }
 
-    func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+    func prepareDownload(modelID: String) async throws -> PreparedModelDownload {
+        lock.withLock { prepareCountStorage += 1 }
+        if let preparationGate {
+            await preparationGate.wait()
+        }
+        try Task.checkCancellation()
+        let snapshot = try lock.withLock { snapshotStorage }.get()
+        let plan = try ValidatedModelDownloadStoragePlan.validate(
+            snapshot.downloadPlans[modelID],
+            modelID: modelID
+        )
+        return PreparedModelDownload(
+            modelID: modelID,
+            plan: plan,
+            start: { [weak self] in
+                self?.makeDownloadStream(modelID: modelID)
+                    ?? AsyncThrowingStream { $0.finish(throwing: CancellationError()) }
+            },
+            cancel: {}
+        )
+    }
+
+    private func makeDownloadStream(
+        modelID: String
+    ) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
         var continuation: AsyncThrowingStream<ModelDownloadStreamEvent, Error>.Continuation!
         let stream = AsyncThrowingStream<ModelDownloadStreamEvent, Error> { c in
             continuation = c
@@ -75,6 +106,23 @@ private final class StubModelCatalogCLI: ModelCatalogCLIRunning, @unchecked Send
     }
 }
 
+private actor StubPreparationGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+}
+
 @MainActor
 private func _eventually(
     iterations: Int = 200,
@@ -98,14 +146,32 @@ struct ModelLibraryStoreLiveTests {
         catalog: [CLICatalogModel] = [],
         local: [CLILocalModelEntry] = [],
         downloadPlans: [String: CLIModelDownloadStoragePlan] = [:],
+        automaticallyPlanDownloads: Bool = true,
         warmModelIDs: Set<String> = [],
         servingModelID: String? = nil,
         physicalMemoryGB: Int? = 32
     ) -> ModelLibrarySnapshot {
-        ModelLibrarySnapshot(
+        let plans: [String: CLIModelDownloadStoragePlan]
+        if automaticallyPlanDownloads, downloadPlans.isEmpty {
+            let reserve = Int64(2 * 1_073_741_824)
+            plans = Dictionary(uniqueKeysWithValues: catalog.map { model in
+                let remaining = max(0, model.totalSizeBytes ?? 0)
+                let required = remaining + reserve
+                return (model.id, CLIModelDownloadStoragePlan(
+                    remainingBytes: remaining,
+                    reserveBytes: reserve,
+                    requiredAvailableBytes: required,
+                    availableBytes: 1_000_000_000_000,
+                    hasSufficientCapacity: true
+                ))
+            })
+        } else {
+            plans = downloadPlans
+        }
+        return ModelLibrarySnapshot(
             catalog: catalog,
             local: local,
-            downloadPlans: downloadPlans,
+            downloadPlans: plans,
             warmModelIDs: warmModelIDs,
             servingModelID: servingModelID,
             physicalMemoryGB: physicalMemoryGB,
@@ -212,7 +278,7 @@ struct ModelLibraryStoreLiveTests {
         }
         #expect(message.contains("coordinator unreachable"))
         #expect(!cached)
-        #expect(store.beginDownload(modelID: "anything") == .modelNotFound)
+        #expect(await store.beginDownload(modelID: "anything") == .modelNotFound)
 
         // Recover: the same stub then serves a real catalog.
         let entry = catalogEntry(id: "mlx/Qwen-7B")!
@@ -242,7 +308,7 @@ struct ModelLibraryStoreLiveTests {
         let store = ModelLibraryStore(live: cli)
         await store.start()
 
-        let result = store.beginDownload(modelID: modelID)
+        let result = await store.beginDownload(modelID: modelID)
 
         guard case .unavailable(let message) = result else {
             Issue.record("expected disk-space refusal, got \(result)")
@@ -253,10 +319,121 @@ struct ModelLibraryStoreLiveTests {
         #expect(store.models.first?.installation == .notInstalled)
     }
 
-    @Test("resumed remaining-byte plan admits at the exact reserve boundary")
-    func resumedStoragePlanUsesRemainingBytes() async {
+    @Test("a stale sufficient screen plan cannot authorize a fresh insufficient preflight")
+    func stalePlanCannotAuthorizeDownload() async {
         let modelID = "mlx/Qwen-7B"
-        let qwen = catalogEntry(id: modelID, sizeBytes: 10_000_000_000)!
+        let qwen = catalogEntry(id: modelID, sizeBytes: 4_000)!
+        let reserve = Int64(2 * 1_073_741_824)
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(catalog: [qwen])))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+
+        let required = reserve + 4_000
+        cli.setSnapshot(.success(makeSnapshot(
+            catalog: [qwen],
+            downloadPlans: [modelID: CLIModelDownloadStoragePlan(
+                remainingBytes: 4_000,
+                reserveBytes: reserve,
+                requiredAvailableBytes: required,
+                availableBytes: required - 1,
+                hasSufficientCapacity: false
+            )]
+        )))
+
+        guard case .unavailable(let message) =
+            await store.beginDownload(modelID: modelID)
+        else {
+            Issue.record("expected the fresh plan to refuse the stale admission")
+            return
+        }
+        #expect(message.contains("Not enough disk space"))
+        #expect(cli.prepareCount == 1)
+        #expect(cli.channels.isEmpty)
+        #expect(store.models.first?.installation == .notInstalled)
+    }
+
+    @Test("missing, unknown, and inconsistent fresh plans fail closed")
+    func invalidFreshPlansFailClosed() async {
+        let modelID = "mlx/Qwen-7B"
+        let qwen = catalogEntry(id: modelID, sizeBytes: 4_000)!
+        let reserve = Int64(2 * 1_073_741_824)
+        let required = reserve + 4_000
+        let invalidPlans: [CLIModelDownloadStoragePlan?] = [
+            nil,
+            CLIModelDownloadStoragePlan(
+                remainingBytes: 4_000,
+                reserveBytes: reserve,
+                requiredAvailableBytes: required,
+                availableBytes: nil,
+                hasSufficientCapacity: false
+            ),
+            CLIModelDownloadStoragePlan(
+                remainingBytes: 4_000,
+                reserveBytes: reserve - 1,
+                requiredAvailableBytes: required - 1,
+                availableBytes: required,
+                hasSufficientCapacity: true
+            ),
+            CLIModelDownloadStoragePlan(
+                remainingBytes: 4_000,
+                reserveBytes: reserve,
+                requiredAvailableBytes: required + 1,
+                availableBytes: required + 1,
+                hasSufficientCapacity: true
+            ),
+            CLIModelDownloadStoragePlan(
+                remainingBytes: 4_000,
+                reserveBytes: reserve,
+                requiredAvailableBytes: required,
+                availableBytes: required - 1,
+                hasSufficientCapacity: true
+            ),
+            CLIModelDownloadStoragePlan(
+                remainingBytes: Int64.max,
+                reserveBytes: reserve,
+                requiredAvailableBytes: Int64.max,
+                availableBytes: Int64.max,
+                hasSufficientCapacity: true
+            ),
+        ]
+
+        for plan in invalidPlans {
+            let plans = plan.map { [modelID: $0] } ?? [:]
+            let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+                catalog: [qwen],
+                downloadPlans: plans,
+                automaticallyPlanDownloads: false
+            )))
+            let store = ModelLibraryStore(live: cli)
+            await store.start()
+
+            guard case .unavailable =
+                await store.beginDownload(modelID: modelID)
+            else {
+                Issue.record("expected invalid plan refusal: \(String(describing: plan))")
+                continue
+            }
+            #expect(cli.channels.isEmpty)
+            #expect(store.models.first?.installation == .notInstalled)
+        }
+    }
+
+    @Test("paused resume admits at the exact remaining-byte plus reserve boundary")
+    func resumedStoragePlanUsesRemainingBytes() async throws {
+        let modelID = "mlx/Qwen-7B"
+        let qwen = catalogEntry(id: modelID, sizeBytes: 10_000)!
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(catalog: [qwen])))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        #expect(await store.beginDownload(modelID: modelID) == .applied)
+        #expect(await _eventually { cli.channel(id: 1) != nil })
+        let first = try #require(cli.channel(id: 1))
+        first.continuation.yield(.progress(file: "weights", bytes: 9_000, total: 10_000))
+        #expect(await _eventually {
+            store.models.first?.installation.progress?.downloadedBytes == 9_000
+        })
+        #expect(store.pauseDownload(modelID: modelID) == .applied)
+
         let reserve = Int64(2 * 1_073_741_824)
         let remaining = Int64(1_000)
         let required = reserve + remaining
@@ -267,16 +444,97 @@ struct ModelLibraryStoreLiveTests {
             availableBytes: required,
             hasSufficientCapacity: true
         )
-        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+        cli.setSnapshot(.success(makeSnapshot(
             catalog: [qwen],
             downloadPlans: [modelID: plan]
         )))
+
+        #expect(await store.resumeDownload(modelID: modelID) == .applied)
+        #expect(await _eventually { cli.channel(id: 2) != nil })
+        #expect(cli.channel(id: 2)?.modelID == modelID)
+    }
+
+    @Test("paused and resumable-failed retries refuse before creating another stream")
+    func resumeStatesRefuseInsufficientFreshPlan() async throws {
+        for shouldFailStream in [false, true] {
+            let modelID = "mlx/Qwen-7B-\(shouldFailStream)"
+            let qwen = catalogEntry(id: modelID, sizeBytes: 10_000)!
+            let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(catalog: [qwen])))
+            let store = ModelLibraryStore(live: cli)
+            await store.start()
+            #expect(await store.beginDownload(modelID: modelID) == .applied)
+            #expect(await _eventually { cli.channel(id: 1) != nil })
+            let first = try #require(cli.channel(id: 1))
+            first.continuation.yield(
+                .progress(file: "weights", bytes: 5_000, total: 10_000)
+            )
+            #expect(await _eventually {
+                store.models.first?.installation.progress?.downloadedBytes == 5_000
+            })
+
+            if shouldFailStream {
+                first.continuation.finish(
+                    throwing: ModelCatalogCLIError.exited(
+                        1,
+                        message: "connection interrupted"
+                    )
+                )
+                #expect(await _eventually {
+                    if case .failed = store.models.first?.installation { return true }
+                    return false
+                })
+            } else {
+                #expect(store.pauseDownload(modelID: modelID) == .applied)
+                #expect(await _eventually { cli.cancelledChannelIDs.contains(1) })
+            }
+
+            let reserve = Int64(2 * 1_073_741_824)
+            let required = reserve + 5_000
+            cli.setSnapshot(.success(makeSnapshot(
+                catalog: [qwen],
+                downloadPlans: [modelID: CLIModelDownloadStoragePlan(
+                    remainingBytes: 5_000,
+                    reserveBytes: reserve,
+                    requiredAvailableBytes: required,
+                    availableBytes: required - 1,
+                    hasSufficientCapacity: false
+                )]
+            )))
+
+            guard case .unavailable =
+                await store.resumeDownload(modelID: modelID)
+            else {
+                Issue.record("expected resume refusal")
+                continue
+            }
+            #expect(cli.channels.count == 1)
+        }
+    }
+
+    @Test("cancelling a delayed preflight cannot create a late event stream")
+    func cancelledDelayedStartNeverSpawns() async {
+        let modelID = "mlx/Qwen-7B"
+        let qwen = catalogEntry(id: modelID, sizeBytes: 4_000)!
+        let gate = StubPreparationGate()
+        let cli = StubModelCatalogCLI(
+            snapshot: .success(makeSnapshot(catalog: [qwen])),
+            preparationGate: gate
+        )
         let store = ModelLibraryStore(live: cli)
         await store.start()
 
-        #expect(store.beginDownload(modelID: modelID) == .applied)
-        #expect(await _eventually { cli.channel(id: 1) != nil })
-        #expect(cli.channel(id: 1)?.modelID == modelID)
+        let start = Task {
+            await store.beginDownload(modelID: modelID)
+        }
+        #expect(await _eventually { cli.prepareCount == 1 })
+        #expect(cli.channels.isEmpty)
+        start.cancel()
+        await gate.open()
+        _ = await start.value
+        await Task.yield()
+
+        #expect(cli.channels.isEmpty)
+        #expect(store.models.first?.installation == .notInstalled)
     }
 
     @Test("download progress, verifying, and done events drive installation state")
@@ -286,7 +544,7 @@ struct ModelLibraryStoreLiveTests {
         let store = ModelLibraryStore(live: cli)
         await store.start()
 
-        #expect(store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
+        #expect(await store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
         // The pump task creates its stream asynchronously — wait for it.
         #expect(await _eventually { cli.channel(id: 1) != nil })
         let channel = try #require(cli.channel(id: 1))
@@ -332,7 +590,7 @@ struct ModelLibraryStoreLiveTests {
         let store = ModelLibraryStore(live: cli)
         await store.start()
 
-        #expect(store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
+        #expect(await store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
         #expect(await _eventually { cli.channel(id: 1) != nil })
         let channel = try #require(cli.channel(id: 1))
 
@@ -363,7 +621,7 @@ struct ModelLibraryStoreLiveTests {
         let store = ModelLibraryStore(live: cli)
         await store.start()
 
-        #expect(store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
+        #expect(await store.beginDownload(modelID: "mlx/Qwen-7B") == .applied)
         #expect(await _eventually { cli.channel(id: 1) != nil })
         let first = try #require(cli.channel(id: 1))
         first.continuation.yield(.progress(file: "a.bin", bytes: 2000, total: 4000))
@@ -383,7 +641,7 @@ struct ModelLibraryStoreLiveTests {
 
         // Resume relaunches the CLI; the staged prefix returns as the first
         // progress, so the bar continues at 50% instead of restarting.
-        #expect(store.resumeDownload(modelID: "mlx/Qwen-7B") == .applied)
+        #expect(await store.resumeDownload(modelID: "mlx/Qwen-7B") == .applied)
         #expect(await _eventually { cli.channel(id: 2) != nil })
         let second = try #require(cli.channel(id: 2))
         second.continuation.yield(.progress(file: "a.bin", bytes: 2500, total: 4000))

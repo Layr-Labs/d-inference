@@ -40,7 +40,9 @@ struct ModelLibraryView: View {
                 ModelTransferSection(
                     models: store.activeTransfers,
                     onPause: { store.pauseDownload(modelID: $0) },
-                    onResume: { store.resumeDownload(modelID: $0) }
+                    onResume: { modelID in
+                        Task { await store.resumeDownload(modelID: modelID) }
+                    }
                 )
                 .padding(.top, 24)
             }
@@ -64,7 +66,9 @@ struct ModelLibraryView: View {
                             allowsSelection: ModelLibraryPresentation
                                 .allowsTransientSelection(isLive: store.isLive),
                             onSelect: { store.selectModel(id: model.id) },
-                            onPrimaryAction: { performPrimaryAction(for: model) },
+                            onPrimaryAction: {
+                                Task { await performPrimaryAction(for: model) }
+                            },
                             onRemove: { modelToRemove = model }
                         )
                     }
@@ -82,7 +86,12 @@ struct ModelLibraryView: View {
         ) {
             if let confirmation = compatibilityConfirmation {
                 Button("Download anyway") {
-                    store.beginDownload(modelID: confirmation.modelID, allowingIncompatibleModel: true)
+                    Task {
+                        await store.beginDownload(
+                            modelID: confirmation.modelID,
+                            allowingIncompatibleModel: true
+                        )
+                    }
                     compatibilityConfirmation = nil
                 }
                 Button("Cancel", role: .cancel) {
@@ -152,10 +161,10 @@ struct ModelLibraryView: View {
         ModelLibraryPresentation.actionErrorMessage(for: store.lastActionResult)
     }
 
-    private func performPrimaryAction(for model: ModelSummary) {
+    private func performPrimaryAction(for model: ModelSummary) async {
         switch model.installation {
         case .notInstalled:
-            let result = store.beginDownload(modelID: model.id)
+            let result = await store.beginDownload(modelID: model.id)
             if case let .requiresCompatibilityConfirmation(required, available) = result {
                 compatibilityConfirmation = CompatibilityConfirmation(
                     modelID: model.id,
@@ -165,12 +174,12 @@ struct ModelLibraryView: View {
             }
         case .failed(let failure):
             if failure.isResumable {
-                store.resumeDownload(modelID: model.id)
+                await store.resumeDownload(modelID: model.id)
             } else {
-                store.beginDownload(modelID: model.id)
+                await store.beginDownload(modelID: model.id)
             }
         case .paused:
-            store.resumeDownload(modelID: model.id)
+            await store.resumeDownload(modelID: model.id)
         case .downloading:
             store.pauseDownload(modelID: model.id)
         case .verifying:

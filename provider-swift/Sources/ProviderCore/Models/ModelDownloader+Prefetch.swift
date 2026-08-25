@@ -52,6 +52,9 @@ extension ModelDownloader {
             throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
         }
 
+        let admissionLock = try await acquireDownloadAdmissionLock()
+        defer { admissionLock.release() }
+
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
@@ -97,9 +100,10 @@ extension ModelDownloader {
         // would spuriously fail a resume that has plenty of room for what remains.
         // Publishing is a same-volume move of the staging dir, so staged bytes
         // need no extra headroom.
-        try Self.ensureAvailableCapacity(
+        try ensureAvailableCapacity(
             at: snapshotsDir,
-            requiredBytes: diskState.remainingBytes
+            remainingBytes: diskState.remainingBytes,
+            reserveBytes: 0
         )
 
         // Sequential downloads (one at a time) so prefetch yields to inference
@@ -196,15 +200,58 @@ extension ModelDownloader {
     }
 
     internal static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
-        guard requiredBytes > 0 else { return }
-        let plan = ModelDownloadStoragePlan(
+        try validateAvailableCapacity(
             remainingBytes: requiredBytes,
             reserveBytes: 0,
-            availableBytes: try availableCapacity(at: directory)
+            availableBytes: try availableCapacity(at: directory),
+            unknownCapacityAllowed: true
         )
-        guard plan.hasSufficientCapacity else {
+    }
+
+    func ensureAvailableCapacity(
+        at directory: URL,
+        remainingBytes: Int64,
+        reserveBytes: Int64
+    ) throws {
+        try Self.validateAvailableCapacity(
+            remainingBytes: remainingBytes,
+            reserveBytes: reserveBytes,
+            availableBytes: try availableCapacityProvider(directory),
+            unknownCapacityAllowed: reserveBytes == 0
+        )
+    }
+
+    static func validateAvailableCapacity(
+        remainingBytes: Int64,
+        reserveBytes: Int64,
+        availableBytes: Int64?,
+        unknownCapacityAllowed: Bool
+    ) throws {
+        guard remainingBytes >= 0, reserveBytes >= 0 else {
             throw ModelCatalogError.downloadFailed(
-                "insufficient disk space: need \(requiredBytes) bytes, available \(plan.availableBytes ?? 0) bytes"
+                "invalid negative disk-capacity requirement"
+            )
+        }
+        let (required, overflow) = remainingBytes.addingReportingOverflow(
+            reserveBytes
+        )
+        guard !overflow else {
+            throw ModelCatalogError.downloadFailed(
+                "disk-capacity requirement overflow"
+            )
+        }
+        guard let availableBytes else {
+            if unknownCapacityAllowed { return }
+            throw ModelCatalogError.downloadFailed(
+                "could not determine available disk space for the required "
+                    + "\(required)-byte download capacity"
+            )
+        }
+        let available = max(0, availableBytes)
+        guard available >= required else {
+            throw ModelCatalogError.downloadFailed(
+                "insufficient disk space: need \(required) bytes including "
+                    + "\(reserveBytes) bytes reserved, available \(available) bytes"
             )
         }
     }

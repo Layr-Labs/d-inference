@@ -109,7 +109,8 @@ extension OnboardingFlowModel {
         preparationPhase = .downloading
 
         do {
-            for try await event in service.downloadEvents(modelID: model.id) {
+            let events = try await service.downloadEvents(modelID: model.id)
+            for try await event in events {
                 guard revision == operationRevision, !Task.isCancelled else { return }
                 switch event {
                 case .progress(let file, let bytes, let total):

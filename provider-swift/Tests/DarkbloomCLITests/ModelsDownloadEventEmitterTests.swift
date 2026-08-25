@@ -117,9 +117,25 @@ struct ModelsDownloadEventEmitterTests {
         let json = try Models.Download.parse(["org/m", "--json"])
         #expect(json.json)
         #expect(json.modelID == "org/m")
+        #expect(json.reserveBytes == 0)
 
-        let plain = try Models.Download.parse(["org/m"])
+        let plain = try Models.Download.parse([
+            "org/m",
+            "--reserve-bytes",
+            "2147483648",
+        ])
         #expect(!plain.json)
+        #expect(plain.reserveBytes == 2_147_483_648)
+
+        let plan = try Models.DownloadPlan.parse([
+            "org/m",
+            "--json",
+            "--reserve-bytes",
+            "2147483648",
+        ])
+        #expect(plan.modelID == "org/m")
+        #expect(plan.json)
+        #expect(plan.reserveBytes == 2_147_483_648)
     }
 
     @Test("catalog download-plan flag parses only when explicitly requested")

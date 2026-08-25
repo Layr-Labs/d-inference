@@ -90,6 +90,16 @@ struct CLIModelDownloadStoragePlan: Decodable, Equatable, Sendable {
     }
 }
 
+private struct CLIModelDownloadPlanOutput: Decodable {
+    let modelID: String
+    let downloadPlan: CLIModelDownloadStoragePlan?
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case downloadPlan = "download_plan"
+    }
+}
+
 private struct CLICatalogPlanOutput: Decodable {
     let models: [CLICatalogModel]
     let downloadPlans: [String: CLIModelDownloadStoragePlan]
@@ -219,10 +229,10 @@ protocol ModelCatalogCLIRunning: Sendable {
     /// Catalog + local scan + daemon warmth, bundled for one store refresh.
     func fetchSnapshot() async throws -> ModelLibrarySnapshot
 
-    /// Live NDJSON event stream for one download. Cancelling the consuming
-    /// task terminates the child process; the CLI's staged `.part` bytes
-    /// stay on disk so a later call resumes the same download.
-    func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error>
+    /// Obtain a fresh downloader-backed storage plan and reserve app capacity.
+    /// The returned one-shot preparation creates the reserve-constrained child
+    /// only when its synchronous `start()` method is called.
+    func prepareDownload(modelID: String) async throws -> PreparedModelDownload
 
     /// `darkbloom models remove <id> --force` (non-interactive; plain
     /// `remove` prompts on stdin, which the app can never answer).
@@ -237,6 +247,7 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
     private let physicalMemoryBytes: UInt64
     private let now: @Sendable () -> Date
     private let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
+    private let downloadAdmission: AppModelDownloadAdmissionController
 
     init(
         locator: any DarkbloomCLILocating = SystemDarkbloomCLILocator(),
@@ -244,13 +255,15 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         now: @escaping @Sendable () -> Date = Date.init,
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? =
-            ProcessIdentity.read
+            ProcessIdentity.read,
+        downloadAdmission: AppModelDownloadAdmissionController = .shared
     ) {
         self.locator = locator
         self.stateFileURL = stateFileURL
         self.physicalMemoryBytes = physicalMemoryBytes
         self.now = now
         self.processIdentityReader = processIdentityReader
+        self.downloadAdmission = downloadAdmission
     }
 
     func fetchSnapshot() async throws -> ModelLibrarySnapshot {
@@ -321,16 +334,88 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
         )
     }
 
-    func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            guard let executable = locator.locate() else {
-                continuation.finish(throwing: ModelCatalogCLIError.cliNotFound)
-                return
-            }
+    func prepareDownload(modelID: String) async throws -> PreparedModelDownload {
+        let executable = try requireCLI()
+        let output = try await runShortCommand(
+            executable: executable,
+            arguments: [
+                "models",
+                "download-plan",
+                modelID,
+                "--json",
+                "--reserve-bytes",
+                String(ModelDownloadStorageContract.appReserveBytes),
+            ],
+            timeout: .seconds(600)
+        )
+        guard output.status == 0 else {
+            throw ModelCatalogCLIError.exited(output.status, message: output.stderrTail)
+        }
 
+        let decoded: CLIModelDownloadPlanOutput
+        do {
+            decoded = try JSONDecoder().decode(
+                CLIModelDownloadPlanOutput.self,
+                from: output.stdout
+            )
+        } catch {
+            throw ModelCatalogCLIError.unreadableOutput(
+                command: "models download-plan \(modelID) --json"
+            )
+        }
+        guard decoded.modelID == modelID else {
+            throw ModelDownloadAdmissionError.malformedPlan(
+                modelID: modelID,
+                reason: "the plan belongs to a different model"
+            )
+        }
+
+        let admission = try await downloadAdmission.admit(
+            modelID: modelID,
+            plan: decoded.downloadPlan
+        )
+        let admissionController = downloadAdmission
+        do {
+            try Task.checkCancellation()
+            return PreparedModelDownload(
+                modelID: modelID,
+                plan: admission.plan,
+                start: {
+                    self.makeDownloadStream(
+                        executable: executable,
+                        modelID: modelID,
+                        admission: admission
+                    )
+                },
+                cancel: {
+                    Task {
+                        await admissionController.release(admission)
+                    }
+                }
+            )
+        } catch {
+            await admissionController.release(admission)
+            throw error
+        }
+    }
+
+    private func makeDownloadStream(
+        executable: URL,
+        modelID: String,
+        admission: AppModelDownloadAdmissionController.Admission
+    ) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+        let admissionController = downloadAdmission
+        return AsyncThrowingStream { continuation in
             let process = Process()
             process.executableURL = executable
-            process.arguments = ["models", "download", modelID, "--json"]
+            process.arguments = [
+                "models",
+                "download",
+                modelID,
+                "--json",
+                "--reserve-bytes",
+                String(admission.plan.reserveBytes),
+            ]
             process.environment = Self.childEnvironment()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
@@ -342,6 +427,11 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             stderrPipe.fileHandleForReading.readabilityHandler = { stderr.append($0.availableData) }
 
             let pump = Task {
+                defer {
+                    Task {
+                        await admissionController.release(admission)
+                    }
+                }
                 do {
                     try process.run()
                 } catch {
@@ -397,6 +487,9 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             continuation.onTermination = { _ in
                 pump.cancel()
                 if process.isRunning { process.terminate() }
+                Task {
+                    await admissionController.release(admission)
+                }
             }
         }
     }

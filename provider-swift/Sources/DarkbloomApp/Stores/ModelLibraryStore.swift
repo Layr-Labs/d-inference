@@ -35,12 +35,6 @@ final class ModelLibraryStore {
     @ObservationIgnored
     private let liveCLI: (any ModelCatalogCLIRunning)?
 
-    /// Capacity plans come from the same manifest/staging inspection used by
-    /// the CLI downloader. Keep them with the rendered snapshot so the app
-    /// cannot bypass the CLI's 2 GiB post-download reserve before spawning it.
-    @ObservationIgnored
-    private var downloadPlans: [ModelSummary.ID: CLIModelDownloadStoragePlan]
-
     /// One consumer task per in-flight CLI download (cancel ⇒ pause ⇒ the
     /// child is terminated; its staged bytes stay on disk for resume).
     @ObservationIgnored
@@ -50,6 +44,12 @@ final class ModelLibraryStore {
     /// clears its replacement from `downloadTasks` on the way out.
     @ObservationIgnored
     private var downloadSessions: [ModelSummary.ID: UUID] = [:]
+
+    /// A preflight is intentionally invisible as an active transfer until the
+    /// fresh plan is admitted and the CLI stream exists. This token prevents
+    /// duplicate taps or delayed preflights from spawning a superseded start.
+    @ObservationIgnored
+    private var pendingDownloadStarts: [ModelSummary.ID: UUID] = [:]
 
     @ObservationIgnored
     private var refreshTask: Task<Void, Never>?
@@ -66,7 +66,6 @@ final class ModelLibraryStore {
         models = state.models
         selectedModelID = state.selectedModelID
         liveCLI = nil
-        downloadPlans = [:]
     }
 
     /// Live mode: rows are built by `start()`/`refreshCatalog` from
@@ -77,7 +76,6 @@ final class ModelLibraryStore {
         models = []
         selectedModelID = nil
         liveCLI = cli
-        downloadPlans = [:]
     }
 
     deinit {
@@ -201,7 +199,7 @@ final class ModelLibraryStore {
     func beginDownload(
         modelID: ModelSummary.ID,
         allowingIncompatibleModel: Bool = false
-    ) -> ModelLibraryActionResult {
+    ) async -> ModelLibraryActionResult {
         guard let index = index(of: modelID) else {
             return record(.modelNotFound)
         }
@@ -228,12 +226,12 @@ final class ModelLibraryStore {
 
         switch models[index].installation {
         case .notInstalled:
-            if let message = storageAdmissionFailure(for: modelID) {
-                return record(.unavailable(message))
-            }
             if isLive {
-                startLiveDownload(at: index, resumeCredit: 0)
-                return record(.applied)
+                return await admitAndStartLiveDownload(
+                    modelID: modelID,
+                    expectedInstallation: models[index].installation,
+                    resumeCredit: 0
+                )
             }
             let progress = ModelTransferProgress(
                 downloadedBytes: 0,
@@ -244,15 +242,15 @@ final class ModelLibraryStore {
             return record(.applied)
 
         case .failed(let failure):
-            if let message = storageAdmissionFailure(for: modelID) {
-                return record(.unavailable(message))
-            }
             if isLive {
                 let credit = failure.isResumable
                     ? (failure.resumableProgress?.downloadedBytes ?? 0)
                     : 0
-                startLiveDownload(at: index, resumeCredit: credit)
-                return record(.applied)
+                return await admitAndStartLiveDownload(
+                    modelID: modelID,
+                    expectedInstallation: models[index].installation,
+                    resumeCredit: credit
+                )
             }
             let progress = failure.isResumable
                 ? failure.resumableProgress ?? emptyProgress(for: models[index])
@@ -285,11 +283,8 @@ final class ModelLibraryStore {
     }
 
     @discardableResult
-    func resumeDownload(modelID: ModelSummary.ID) -> ModelLibraryActionResult {
+    func resumeDownload(modelID: ModelSummary.ID) async -> ModelLibraryActionResult {
         guard let index = index(of: modelID) else { return record(.modelNotFound) }
-        if let message = storageAdmissionFailure(for: modelID) {
-            return record(.unavailable(message))
-        }
 
         if isLive {
             let resumeCredit: Int64
@@ -304,8 +299,11 @@ final class ModelLibraryStore {
             default:
                 return record(.invalidState)
             }
-            startLiveDownload(at: index, resumeCredit: resumeCredit)
-            return record(.applied)
+            return await admitAndStartLiveDownload(
+                modelID: modelID,
+                expectedInstallation: models[index].installation,
+                resumeCredit: resumeCredit
+            )
         }
 
         let progress: ModelTransferProgress
@@ -419,8 +417,74 @@ final class ModelLibraryStore {
 
     // MARK: - Live download pump
 
-    private func startLiveDownload(at index: Int, resumeCredit: Int64) {
-        guard let liveCLI, !isDownloadActive(modelID: models[index].id) else { return }
+    private func admitAndStartLiveDownload(
+        modelID: ModelSummary.ID,
+        expectedInstallation: ModelInstallationState,
+        resumeCredit: Int64
+    ) async -> ModelLibraryActionResult {
+        guard let liveCLI else { return record(.invalidState) }
+        guard pendingDownloadStarts[modelID] == nil,
+              !isDownloadActive(modelID: modelID)
+        else {
+            return record(.invalidState)
+        }
+
+        let intent = UUID()
+        pendingDownloadStarts[modelID] = intent
+        defer {
+            if pendingDownloadStarts[modelID] == intent {
+                pendingDownloadStarts[modelID] = nil
+            }
+        }
+
+        do {
+            let preparation = try await liveCLI.prepareDownload(modelID: modelID)
+            guard downloadStartIsCurrent(
+                modelID: modelID,
+                intent: intent,
+                expectedInstallation: expectedInstallation
+            ), let index = index(of: modelID)
+            else {
+                return .invalidState
+            }
+            let stream = try preparation.start()
+            startLiveDownload(
+                at: index,
+                resumeCredit: resumeCredit,
+                stream: stream,
+                cli: liveCLI
+            )
+            return record(.applied)
+        } catch is CancellationError {
+            return .invalidState
+        } catch {
+            return record(.unavailable(error.localizedDescription))
+        }
+    }
+
+    private func downloadStartIsCurrent(
+        modelID: ModelSummary.ID,
+        intent: UUID,
+        expectedInstallation: ModelInstallationState
+    ) -> Bool {
+        guard !Task.isCancelled,
+              pendingDownloadStarts[modelID] == intent,
+              !isDownloadActive(modelID: modelID),
+              case .available = catalogState,
+              let index = index(of: modelID)
+        else {
+            return false
+        }
+        return models[index].installation == expectedInstallation
+    }
+
+    private func startLiveDownload(
+        at index: Int,
+        resumeCredit: Int64,
+        stream: AsyncThrowingStream<ModelDownloadStreamEvent, Error>,
+        cli: any ModelCatalogCLIRunning
+    ) {
+        guard !isDownloadActive(modelID: models[index].id) else { return }
         let model = models[index]
         models[index].installation = .downloading(ModelTransferProgress(
             downloadedBytes: 0,
@@ -432,7 +496,12 @@ final class ModelLibraryStore {
         downloadTasks[modelID]?.cancel()
         downloadTasks[modelID] = Task { [weak self] in
             guard let self else { return }
-            await self.pumpDownloadEvents(modelID: modelID, resumeCredit: resumeCredit, cli: liveCLI)
+            await self.pumpDownloadEvents(
+                modelID: modelID,
+                resumeCredit: resumeCredit,
+                stream: stream,
+                cli: cli
+            )
             // A superseded/cancelled pump must not clear its replacement.
             if self.downloadSessions[modelID] == session {
                 self.downloadSessions[modelID] = nil
@@ -454,6 +523,7 @@ final class ModelLibraryStore {
     private func pumpDownloadEvents(
         modelID: ModelSummary.ID,
         resumeCredit: Int64,
+        stream: AsyncThrowingStream<ModelDownloadStreamEvent, Error>,
         cli: any ModelCatalogCLIRunning
     ) async {
         var fileBytes: [String: Int64] = [:]
@@ -490,7 +560,7 @@ final class ModelLibraryStore {
         }
 
         do {
-            for try await event in cli.downloadEvents(modelID: modelID) {
+            for try await event in stream {
                 try Task.checkCancellation()
                 guard let index = index(of: modelID) else { return }
                 switch event {
@@ -552,7 +622,6 @@ final class ModelLibraryStore {
     /// The one exception: once the local scan contains the model, disk truth
     /// wins (publish racing the stream has resolved as success).
     private func apply(snapshot: ModelLibrarySnapshot) {
-        downloadPlans = snapshot.downloadPlans
         let localIDs = Set(snapshot.local.map(\.id))
         let catalogIDs = Set(snapshot.catalog.map(\.id))
         let existingByID = Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -641,21 +710,6 @@ final class ModelLibraryStore {
 
     private func index(of modelID: ModelSummary.ID) -> Int? {
         models.firstIndex { $0.id == modelID }
-    }
-
-    private func storageAdmissionFailure(for modelID: ModelSummary.ID) -> String? {
-        guard let plan = downloadPlans[modelID], !plan.hasSufficientCapacity else {
-            return nil
-        }
-        let required = ByteCountFormatter.string(
-            fromByteCount: plan.requiredAvailableBytes,
-            countStyle: .file
-        )
-        let available = plan.availableBytes.map {
-            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
-        } ?? "unknown"
-        return "Not enough disk space to download this model while preserving "
-            + "Darkbloom's safety reserve (requires \(required), \(available) available)."
     }
 
     private func emptyProgress(for model: ModelSummary) -> ModelTransferProgress {

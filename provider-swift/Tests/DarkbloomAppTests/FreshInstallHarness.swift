@@ -142,8 +142,7 @@ struct FreshInstallHarness: Sendable {
     ) -> OnboardingFlowModel {
         let preparation = OnboardingPreparationService(
             catalog: modelRunner(),
-            startCLI: ProcessSetupStartCLI(runner: providerRunner(), timeout: .seconds(2)),
-            availableStorageBytes: { 20 * 1_073_741_824 }
+            startCLI: ProcessSetupStartCLI(runner: providerRunner(), timeout: .seconds(2))
         )
         return OnboardingFlowModel(
             startingAt: step,

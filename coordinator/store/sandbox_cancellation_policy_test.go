@@ -203,3 +203,60 @@ func TestSandboxCancellationAcknowledgementBlocksNewWork(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryPendingCancellationListRotatesDispatchedRows(t *testing.T) {
+	backend := NewMemory(Config{})
+	now := time.Date(2026, 8, 25, 18, 0, 0, 0, time.UTC)
+	hostID := "10000000-0000-0000-0000-000000000451"
+	for index, commandID := range []string{
+		"20000000-0000-0000-0000-000000000452",
+		"30000000-0000-0000-0000-000000000453",
+	} {
+		sandboxID := commandID
+		backend.sandboxes[sandboxID] = &SandboxRecord{
+			ID:     sandboxID,
+			HostID: hostID,
+			State:  SandboxStateReady,
+		}
+		backend.sandboxCommands[commandID] = &SandboxCommand{
+			ID:                  commandID,
+			SandboxID:           sandboxID,
+			State:               SandboxCommandTimedOut,
+			CancellationPending: true,
+			CreatedAt:           now.Add(time.Duration(index) * time.Second),
+			UpdatedAt:           now.Add(time.Duration(index) * time.Second),
+		}
+	}
+
+	pending, err := backend.ListPendingSandboxCommandCancellations(
+		context.Background(),
+		[]string{hostID},
+		1,
+	)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("list first pending cancellation: pending=%+v error=%v", pending, err)
+	}
+	firstCommandID := pending[0].Command.ID
+	if err := backend.RecordSandboxCommandCancellationDispatch(
+		context.Background(),
+		firstCommandID,
+		now.Add(2*time.Second),
+		"",
+	); err != nil {
+		t.Fatalf("record first cancellation dispatch: %v", err)
+	}
+	pending, err = backend.ListPendingSandboxCommandCancellations(
+		context.Background(),
+		[]string{hostID},
+		1,
+	)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("list rotated pending cancellation: pending=%+v error=%v", pending, err)
+	}
+	if pending[0].Command.ID == firstCommandID {
+		t.Fatalf(
+			"bounded cancellation query did not rotate after dispatching %s",
+			firstCommandID,
+		)
+	}
+}

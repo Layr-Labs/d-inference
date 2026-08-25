@@ -727,6 +727,18 @@ func (s *MemoryStore) ListPendingSandboxCommandCancellations(
 	}
 	s.mu.RUnlock()
 	sort.Slice(result, func(left, right int) bool {
+		leftDispatched := result[left].Command.LastCancelDispatchedAt
+		rightDispatched := result[right].Command.LastCancelDispatchedAt
+		if leftDispatched == nil || rightDispatched == nil {
+			if leftDispatched == nil && rightDispatched != nil {
+				return true
+			}
+			if leftDispatched != nil && rightDispatched == nil {
+				return false
+			}
+		} else if !leftDispatched.Equal(*rightDispatched) {
+			return leftDispatched.Before(*rightDispatched)
+		}
 		return result[left].Command.CreatedAt.Before(
 			result[right].Command.CreatedAt,
 		)

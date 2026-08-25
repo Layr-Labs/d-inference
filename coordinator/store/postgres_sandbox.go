@@ -1370,7 +1370,7 @@ func (s *PostgresStore) ListPendingSandboxCommandCancellations(
 		   WHERE host_id = ANY($1::uuid[]) AND state <> $2
 		 )
 		   AND cancellation_pending
-		 ORDER BY created_at
+		 ORDER BY last_cancel_dispatched_at ASC NULLS FIRST, created_at
 		 LIMIT $3`,
 		hostIDs,
 		SandboxStateDeleted,

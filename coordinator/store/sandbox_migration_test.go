@@ -167,4 +167,42 @@ func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 			quarantined,
 		)
 	}
+
+	pending, err := backend.ListPendingSandboxCommandCancellations(
+		ctx,
+		[]string{stored.HostID},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("list first pending cancellation: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("first pending cancellation count = %d, want 1", len(pending))
+	}
+	firstCommandID := pending[0].Command.ID
+	if err := backend.RecordSandboxCommandCancellationDispatch(
+		ctx,
+		firstCommandID,
+		now.Add(4*time.Second),
+		"",
+	); err != nil {
+		t.Fatalf("record first cancellation dispatch: %v", err)
+	}
+	pending, err = backend.ListPendingSandboxCommandCancellations(
+		ctx,
+		[]string{stored.HostID},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("list rotated pending cancellation: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("rotated pending cancellation count = %d, want 1", len(pending))
+	}
+	if pending[0].Command.ID == firstCommandID {
+		t.Fatalf(
+			"bounded cancellation query did not rotate after dispatching %s",
+			firstCommandID,
+		)
+	}
 }

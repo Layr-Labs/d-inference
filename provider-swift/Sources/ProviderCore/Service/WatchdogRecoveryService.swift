@@ -1,5 +1,43 @@
 import Foundation
 
+private struct WatchdogAgentDebugRecord: Encodable {
+    let hypothesisId: String
+    let location: String
+    let message: String
+    let data: [String: String]
+    let timestamp: Int64
+}
+
+private func watchdogAgentDebugLog(
+    hypothesisId: String,
+    location: String,
+    message: String,
+    data: [String: String]
+) {
+    let record = WatchdogAgentDebugRecord(
+        hypothesisId: hypothesisId,
+        location: location,
+        message: message,
+        data: data,
+        timestamp: Int64(Date().timeIntervalSince1970 * 1_000)
+    )
+    guard var encoded = try? JSONEncoder().encode(record) else { return }
+    encoded.append(0x0A)
+    let url = URL(fileURLWithPath: "/opt/cursor/logs/debug.log")
+    let fm = FileManager.default
+    try? fm.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    if !fm.fileExists(atPath: url.path) {
+        _ = fm.createFile(atPath: url.path, contents: nil)
+    }
+    guard let handle = try? FileHandle(forWritingTo: url) else { return }
+    defer { try? handle.close() }
+    try? handle.seekToEnd()
+    try? handle.write(contentsOf: encoded)
+}
+
 /// Recovery authority driven by the persistent watchdog process's ticks.
 /// Recovery mutations and launch persistence use short cross-process leases;
 /// release network transfer and cryptographic staging run between leases.
@@ -180,6 +218,18 @@ public struct WatchdogRecoveryService: Sendable {
             return now + Double(elapsed.components.seconds)
                 + Double(elapsed.components.attoseconds) * 1e-18
         }
+        // #region agent log
+        watchdogAgentDebugLog(
+            hypothesisId: "A",
+            location: "WatchdogRecoveryService.swift:recoverDownProvider-entry",
+            message: "watchdog recovery entered",
+            data: [
+                "autoUpdateEnabled": "\(autoUpdateEnabled)",
+                "currentVersion": updater.currentVersion,
+                "providerProcessAlive": "\(providerProcessAlive)",
+                "now": "\(now)",
+            ])
+        // #endregion
         func acquireRecoverySession(
             operation: String
         ) throws -> SelfUpdater.UpdateSession {
@@ -355,6 +405,20 @@ public struct WatchdogRecoveryService: Sendable {
                     processVersion: updater.currentVersion,
                     recorded: state.current?.version)
             }
+            // #region agent log
+            watchdogAgentDebugLog(
+                hypothesisId: "B",
+                location: "WatchdogRecoveryService.swift:pre-preparation-state",
+                message: "resolved recovery state before optional update",
+                data: [
+                    "candidate": state.candidate?.release.version ?? "nil",
+                    "candidateFailures": "\(state.candidate?.failureCount ?? -1)",
+                    "current": state.current?.version ?? "nil",
+                    "guardedVersion": guardedVersion,
+                    "installGeneration": "\(state.installGeneration)",
+                    "rolledBackTo": rolledBackTo ?? "nil",
+                ])
+            // #endregion
         } catch {
             let reason = "could not attribute candidate failure: \(error)"
             deps.log(reason)
@@ -437,6 +501,13 @@ public struct WatchdogRecoveryService: Sendable {
                 manualOverride: false,
                 beforeInstall: deps.providerStillLoaded
             )
+            // #region agent log
+            watchdogAgentDebugLog(
+                hypothesisId: "A",
+                location: "WatchdogRecoveryService.swift:update-result",
+                message: "optional updater phase completed",
+                data: ["result": "\(result)"])
+            // #endregion
             if case .cancelled(let reason) = result {
                 deps.log("watchdog update cancelled: \(reason)")
                 return rollBackTripUnlessKickstarted(.noLongerLoaded)
@@ -499,6 +570,7 @@ public struct WatchdogRecoveryService: Sendable {
         // crash-loop guard or launch bookkeeping to a version.
         do {
             let state = try session.readState()
+            let updatedToBeforeRevalidation = updatedTo
             candidateOwnsRecovery = state.candidate != nil
                 && state.candidate?.rollbackBlockedReason == nil
             if let candidate = state.candidate {
@@ -513,6 +585,20 @@ public struct WatchdogRecoveryService: Sendable {
                     ? nil
                     : guardedVersion
             }
+            // #region agent log
+            watchdogAgentDebugLog(
+                hypothesisId: "B",
+                location: "WatchdogRecoveryService.swift:final-revalidation",
+                message: "final state resolved launch and update observability",
+                data: [
+                    "candidate": state.candidate?.release.version ?? "nil",
+                    "current": state.current?.version ?? "nil",
+                    "guardedVersion": guardedVersion,
+                    "installGeneration": "\(state.installGeneration)",
+                    "updatedToBefore": updatedToBeforeRevalidation ?? "nil",
+                    "updatedToAfter": updatedTo ?? "nil",
+                ])
+            // #endregion
         } catch {
             let reason =
                 "could not revalidate installed version before restart: \(error)"
@@ -625,6 +711,18 @@ public struct WatchdogRecoveryService: Sendable {
                 try writeIfChanged(state, before: before)
                 throw error
             }
+            // #region agent log
+            watchdogAgentDebugLog(
+                hypothesisId: "E",
+                location: "WatchdogRecoveryService.swift:restart-outcome",
+                message: "watchdog restart issued",
+                data: [
+                    "candidate": state.candidate?.release.version ?? "nil",
+                    "guardedVersion": guardedVersion,
+                    "rolledBackTo": rolledBackTo ?? "nil",
+                    "updatedTo": updatedTo ?? "nil",
+                ])
+            // #endregion
             return .restartIssued(updatedTo: updatedTo, rolledBackTo: rolledBackTo)
         } catch {
             let reason = "provider kickstart failed: \(error)"

@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 /// How the app locates a runnable `darkbloom` CLI binary.
 protocol DarkbloomCLILocating: Sendable {
@@ -37,22 +38,12 @@ struct SystemDarkbloomCLILocator: DarkbloomCLILocating {
         }
         #endif
 
-        let candidate = managedCLIURL
-        guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
-            return nil
-        }
-        let values = try? candidate.resourceValues(
-            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        return ManagedCLIPathValidator().validatedCLIURL(
+            homeDirectory: homeDirectory
         )
-        guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
-            return nil
-        }
-        return candidate
     }
 
     var managedCLIURL: URL {
-        homeDirectory
-            .appendingPathComponent(".darkbloom/Darkbloom.app", isDirectory: true)
-            .appendingPathComponent("Contents/MacOS/darkbloom")
+        ManagedProviderInstallLayout.cliURL(homeDirectory: homeDirectory)
     }
 }

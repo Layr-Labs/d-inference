@@ -511,12 +511,28 @@ exit(0);
 PERL
 }
 
+release_download_block_limit() {
+    local maximum_bytes=$1
+    local bash_ulimit_block_bytes=1024
+    printf '%s\n' \
+        $(( (maximum_bytes + bash_ulimit_block_bytes - 1) / bash_ulimit_block_bytes ))
+}
+
+run_with_release_file_limit() {
+    local maximum_bytes=$1
+    shift
+    local maximum_blocks
+    maximum_blocks=$(release_download_block_limit "$maximum_bytes")
+    (
+        ulimit -f "$maximum_blocks" || exit 74
+        "$@"
+    )
+}
+
 download_release_archive() {
     local url=$1
     local destination=$2
     local maximum_bytes=${3:-$RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES}
-    local block_size=512
-    local maximum_blocks
     local status=0
     local downloaded_bytes
 
@@ -531,18 +547,17 @@ download_release_archive() {
             "Release download size limit exceeds the installer policy."
         return 1
     fi
-    maximum_blocks=$(( (maximum_bytes + block_size - 1) / block_size ))
 
     # `--max-filesize` rejects known and modern chunked oversize responses.
     # RLIMIT_FSIZE is the kernel-enforced fallback on older macOS curl builds:
     # the transfer cannot grow the destination beyond the configured blocks.
-    (
-        ulimit -f "$maximum_blocks" || exit 74
+    run_with_release_file_limit \
+        "$maximum_bytes" \
         curl -f#L \
             --max-filesize "$maximum_bytes" \
             "$url" \
-            -o "$destination"
-    ) || status=$?
+            -o "$destination" \
+        || status=$?
     if [ "$status" -ne 0 ]; then
         rm -f "$destination"
         fail_install \
@@ -2631,6 +2646,15 @@ if [ "${1:-}" = "--download-release-archive-test" ]; then
         exit 64
     }
     download_release_archive "$2" "$3" "$4"
+    exit $?
+fi
+
+if [ "${1:-}" = "--release-download-block-limit-test" ]; then
+    [ "$#" -eq 2 ] || {
+        echo "usage: $0 --release-download-block-limit-test <max-bytes>" >&2
+        exit 64
+    }
+    release_download_block_limit "$2"
     exit $?
 fi
 

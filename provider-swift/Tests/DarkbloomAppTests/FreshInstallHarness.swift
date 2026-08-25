@@ -12,6 +12,22 @@ import ProviderCoreFoundation
 /// keychain, Terminal, or System Settings.
 struct FreshInstallHarness: Sendable {
     static let modelID = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+    static let downloadPlanInvocation = [
+        "models",
+        "download-plan",
+        modelID,
+        "--json",
+        "--reserve-bytes",
+        String(ModelDownloadStorageContract.appReserveBytes),
+    ]
+    static let downloadInvocation = [
+        "models",
+        "download",
+        modelID,
+        "--json",
+        "--reserve-bytes",
+        String(ModelDownloadStorageContract.appReserveBytes),
+    ]
 
     let root: URL
     let home: URL

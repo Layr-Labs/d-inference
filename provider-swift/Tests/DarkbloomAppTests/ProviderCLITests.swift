@@ -181,19 +181,7 @@ private struct CLILocatorFixture {
     let home: URL
 
     init() throws {
-        let unresolvedRoot =
-            FileManager.default.temporaryDirectory.appendingPathComponent(
-                "darkbloom-cli-locator-\(UUID().uuidString)",
-                isDirectory: true
-            )
-        try FileManager.default.createDirectory(
-            at: unresolvedRoot,
-            withIntermediateDirectories: true
-        )
-        // `temporaryDirectory` commonly starts with `/var`, a macOS symlink.
-        // Resolve the fixture root so tests exercise the same no-symlink
-        // ancestor policy as a real `/Users/<name>` home directory.
-        root = unresolvedRoot.resolvingSymlinksInPath()
+        root = try canonicalTestDirectory(prefix: "darkbloom-cli-locator")
         home = root.appendingPathComponent("Home", isDirectory: true)
         try FileManager.default.createDirectory(
             at: home,

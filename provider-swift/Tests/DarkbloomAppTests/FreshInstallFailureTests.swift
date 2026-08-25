@@ -100,7 +100,7 @@ struct FreshInstallFailureTests {
         #expect(flow.preparationProgress == 1)
         #expect(harness.providerEvidence().reportsStarted(modelID: FreshInstallHarness.modelID))
         #expect(try harness.invocations().filter {
-            $0 == ["models", "download", FreshInstallHarness.modelID, "--json"]
+            $0 == FreshInstallHarness.downloadInvocation
         }.count == 2)
     }
 
@@ -144,7 +144,7 @@ struct FreshInstallFailureTests {
         flow.retryPreparation()
         #expect(await freshInstallEventually { flow.preparationPhase == .ready })
         #expect(try harness.invocations().filter {
-            $0 == ["models", "download", FreshInstallHarness.modelID, "--json"]
+            $0 == FreshInstallHarness.downloadInvocation
         }.count == 1)
         #expect(try harness.invocations().filter { $0.first == "start" }.count == 2)
     }

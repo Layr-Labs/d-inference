@@ -1010,17 +1010,34 @@ assert_recovery_is_restart_safe() {
     done
 }
 
-assert_fresh_recovery_preserves_replacement() {
+test_path_identity() {
+    stat -f '%d:%i' "$1" 2>/dev/null \
+        || stat -c '%d:%i' "$1" 2>/dev/null
+}
+
+assert_fresh_recovery_rejects_replacement() {
     local installer=$1
     local label=$2
-    local install_dir="$ROOT/fresh-replacement-$label"
-    local destination="$install_dir/Darkbloom.app"
+    local kind=$3
+    local install_dir="$ROOT/fresh-replacement-$label-$kind"
+    local destination
+    local archive
+    local crash_point
+    if [ "$kind" = "app" ]; then
+        destination="$install_dir/Darkbloom.app"
+        archive=$VALID
+        crash_point=staged-app-moved
+    else
+        destination="$install_dir/bin"
+        archive=$FLAT_LEGACY
+        crash_point=flat-layout-moved
+    fi
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
+    artifact_hashes "$archive"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
         PATH="$CLT_SHIMS:$PATH" \
         bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
             "$FAN_HELPER_REQUIREMENT"
     then
         echo "$installer survived the fresh-install crash" >&2
@@ -1028,27 +1045,48 @@ assert_fresh_recovery_preserves_replacement() {
     fi
 
     rm -rf "$destination"
-    write_existing_bundle "$destination" com.example.after-crash
-    printf 'created after crash\n' > "$destination/foreign-payload"
-    bash "$installer" --recover-install-transactions-test "$install_dir"
+    mkdir -p "$destination"
+    printf 'unrelated replacement\n' > "$destination/foreign-payload"
+    local replacement_identity
+    replacement_identity=$(test_path_identity "$destination")
 
-    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
-        "$destination/Contents/Info.plist")" = "com.example.after-crash"
-    test "$(cat "$destination/foreign-payload")" = "created after crash"
+    local attempt
+    for attempt in 1 2; do
+        if bash "$installer" \
+            --recover-install-transactions-test "$install_dir"
+        then
+            echo "$installer accepted a replacement $kind root" >&2
+            return 1
+        fi
+        test "$(test_path_identity "$destination")" = "$replacement_identity"
+        test "$(cat "$destination/foreign-payload")" = \
+            "unrelated replacement"
+        shopt -s nullglob
+        local backups=("$install_dir"/.install-backup-*)
+        test "${#backups[@]}" -eq 1
+        test -f "${backups[0]}/.transaction"
+    done
 }
 
 assert_recovery_is_restart_safe "$REPO_ROOT/scripts/install.sh" source
 assert_recovery_is_restart_safe \
     "$REPO_ROOT/coordinator/api/install.sh" embedded
-assert_fresh_recovery_preserves_replacement \
-    "$REPO_ROOT/scripts/install.sh" source
-assert_fresh_recovery_preserves_replacement \
-    "$REPO_ROOT/coordinator/api/install.sh" embedded
+for replacement_label in source embedded; do
+    if [ "$replacement_label" = source ]; then
+        replacement_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        replacement_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    assert_fresh_recovery_rejects_replacement \
+        "$replacement_installer" "$replacement_label" app
+    assert_fresh_recovery_rejects_replacement \
+        "$replacement_installer" "$replacement_label" flat
+done
 
-assert_recovery_preserves_in_place_candidate_mutation() {
+assert_fresh_recovery_removes_partial_candidate() {
     local installer=$1
     local label=$2
-    local install_dir="$ROOT/in-place-candidate-$label"
+    local install_dir="$ROOT/partial-fresh-candidate-$label"
     local destination="$install_dir/Darkbloom.app"
 
     artifact_hashes "$VALID"
@@ -1062,11 +1100,17 @@ assert_recovery_preserves_in_place_candidate_mutation() {
         exit 1
     fi
 
-    printf 'created after crash\n' > "$destination/created-after-crash"
+    local candidate_identity
+    candidate_identity=$(test_path_identity "$destination")
+    rm -f "$destination/Contents/MacOS/darkbloom"
+    test "$(test_path_identity "$destination")" = "$candidate_identity"
     bash "$installer" --recover-install-transactions-test "$install_dir"
-    test "$(cat "$destination/created-after-crash")" = "created after crash"
-    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
-        "$destination/Contents/Info.plist")" = "io.darkbloom.provider"
+    test ! -e "$destination"
+    test ! -L "$destination"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    shopt -s nullglob
+    local backups=("$install_dir"/.install-backup-*)
+    test "${#backups[@]}" -eq 0
 }
 
 assert_recovery_preserves_mutated_candidate_and_restores_previous() {
@@ -1105,10 +1149,101 @@ for mutation_label in source embedded; do
     else
         mutation_installer="$REPO_ROOT/coordinator/api/install.sh"
     fi
-    assert_recovery_preserves_in_place_candidate_mutation \
+    assert_fresh_recovery_removes_partial_candidate \
         "$mutation_installer" "$mutation_label"
     assert_recovery_preserves_mutated_candidate_and_restores_previous \
         "$mutation_installer" "$mutation_label"
+done
+
+assert_committed_app_mutation_rolls_back() {
+    local installer=$1
+    local label=$2
+    local component=$3
+    local install_dir="$ROOT/committed-app-mutation-$label-$component"
+    local destination="$install_dir/Darkbloom.app"
+    local bin_dir="$install_dir/bin"
+
+    write_existing_bundle "$destination" com.example.predecessor
+    printf 'known-good predecessor\n' > "$destination/predecessor-payload"
+    mkdir -p "$bin_dir"
+    printf 'previous darkbloom\n' > "$bin_dir/darkbloom"
+    printf 'previous metallib\n' > "$bin_dir/mlx.metallib"
+    printf 'previous-only\n' > "$bin_dir/previous-only"
+    ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
+    ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=app-transaction-committed \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the committed app setup crash" >&2
+        exit 1
+    fi
+
+    local mutated_root
+    local marker_path
+    if [ "$component" = app ]; then
+        mutated_root=$destination
+        marker_path="$destination/Contents/MacOS/darkbloom"
+    else
+        mutated_root=$bin_dir
+        marker_path="$bin_dir/same-inode-bin-mutation"
+    fi
+    local mutated_identity
+    mutated_identity=$(test_path_identity "$mutated_root")
+    if [ "$component" = app ]; then
+        printf 'same-inode-app-mutation\n' >> "$marker_path"
+    else
+        printf 'same-inode-bin-mutation\n' > "$marker_path"
+    fi
+    test "$(test_path_identity "$mutated_root")" = "$mutated_identity"
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "com.example.predecessor"
+    test "$(cat "$destination/predecessor-payload")" = \
+        "known-good predecessor"
+    test "$(cat "$bin_dir/darkbloom")" = "previous darkbloom"
+    test "$(cat "$bin_dir/previous-only")" = "previous-only"
+
+    shopt -s nullglob
+    local preserved_label
+    if [ "$component" = app ]; then
+        preserved_label=Darkbloom.app
+    else
+        preserved_label=bin
+    fi
+    local preserved=("$install_dir/$preserved_label".interrupted-*)
+    test "${#preserved[@]}" -eq 1
+    if [ "$component" = app ]; then
+        grep -aF "same-inode-app-mutation" \
+            "${preserved[0]}/Contents/MacOS/darkbloom" >/dev/null
+    else
+        test "$(cat "${preserved[0]}/same-inode-bin-mutation")" = \
+            "same-inode-bin-mutation"
+    fi
+    local backups=("$install_dir"/.install-backup-*)
+    test "${#backups[@]}" -eq 0
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$destination/predecessor-payload")" = \
+        "known-good predecessor"
+    test -e "${preserved[0]}"
+}
+
+for committed_app_label in source embedded; do
+    if [ "$committed_app_label" = source ]; then
+        committed_app_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        committed_app_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    assert_committed_app_mutation_rolls_back \
+        "$committed_app_installer" "$committed_app_label" app
+    assert_committed_app_mutation_rolls_back \
+        "$committed_app_installer" "$committed_app_label" bin
 done
 
 assert_malformed_recovery_artifact_is_rejected() {
@@ -1226,6 +1361,133 @@ assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/scripts/install.sh" source transaction-retired committed
 assert_interrupted_flat_transaction_recovers \
     "$REPO_ROOT/coordinator/api/install.sh" embedded flat-layout-moved rollback
+
+assert_committed_flat_mutation_rolls_back() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/committed-flat-mutation-$label"
+    local bin_dir="$install_dir/bin"
+
+    run_install_with "$installer" "$FLAT_LEGACY" "$install_dir"
+    printf 'known-good predecessor\n' > "$bin_dir/previous-only"
+    artifact_hashes "$FLAT_LEGACY"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=flat-transaction-committed \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$FLAT_LEGACY" "$install_dir" \
+            "$BINARY_HASH" "$METALLIB_HASH" "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the committed flat setup crash" >&2
+        exit 1
+    fi
+
+    local candidate_identity
+    candidate_identity=$(test_path_identity "$bin_dir")
+    printf 'same-inode-flat-mutation\n' >> "$bin_dir/darkbloom"
+    test "$(test_path_identity "$bin_dir")" = "$candidate_identity"
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$bin_dir/previous-only")" = "known-good predecessor"
+    if grep -aF "same-inode-flat-mutation" \
+        "$bin_dir/darkbloom" >/dev/null
+    then
+        echo "$installer retained the mutated committed flat candidate" >&2
+        return 1
+    fi
+
+    shopt -s nullglob
+    local preserved=("$install_dir/bin".interrupted-*)
+    test "${#preserved[@]}" -eq 1
+    grep -aF "same-inode-flat-mutation" \
+        "${preserved[0]}/darkbloom" >/dev/null
+    local backups=("$install_dir"/.install-backup-*)
+    test "${#backups[@]}" -eq 0
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$bin_dir/previous-only")" = "known-good predecessor"
+    test -e "${preserved[0]}"
+}
+
+assert_fresh_rollback_restarts_after_partial_removal() {
+    local installer=$1
+    local label=$2
+    local kind=$3
+    local component=$4
+    local install_dir="$ROOT/fresh-rollback-restart-$label-$kind-$component"
+    local archive
+    local setup_crash
+    if [ "$kind" = app ]; then
+        archive=$VALID
+        setup_crash="managed-links-installed"
+    else
+        archive=$FLAT_LEGACY
+        setup_crash="flat-layout-moved"
+    fi
+
+    artifact_hashes "$archive"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$setup_crash" \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the fresh rollback setup crash" >&2
+        exit 1
+    fi
+
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="recovery-$component-removal-partial" \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer survived the second rollback interruption" >&2
+        exit 1
+    fi
+
+    shopt -s nullglob
+    local backups=("$install_dir"/.install-backup-*)
+    test "${#backups[@]}" -eq 1
+    test -f "${backups[0]}/.transaction"
+    test -d "${backups[0]}/.rollback-$component"
+    test ! -L "${backups[0]}/.rollback-$component"
+    if [ "$component" = app ]; then
+        test ! -e \
+            "${backups[0]}/.rollback-app/Contents/MacOS/darkbloom"
+        test ! -e "$install_dir/Darkbloom.app"
+    else
+        test ! -e "${backups[0]}/.rollback-bin/darkbloom"
+        test ! -e "$install_dir/bin"
+    fi
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test ! -e "$install_dir/Darkbloom.app"
+    test ! -L "$install_dir/Darkbloom.app"
+    test ! -e "$install_dir/bin"
+    test ! -L "$install_dir/bin"
+    backups=("$install_dir"/.install-backup-*)
+    local staging=("$install_dir"/.install-staging-*)
+    test "${#backups[@]}" -eq 0
+    test "${#staging[@]}" -eq 0
+
+    # A third run proves the completed recovery remains idempotent.
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test ! -e "$install_dir/Darkbloom.app"
+    test ! -e "$install_dir/bin"
+}
+
+for restart_label in source embedded; do
+    if [ "$restart_label" = source ]; then
+        restart_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        restart_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    assert_committed_flat_mutation_rolls_back \
+        "$restart_installer" "$restart_label"
+    assert_fresh_rollback_restarts_after_partial_removal \
+        "$restart_installer" "$restart_label" app app
+    assert_fresh_rollback_restarts_after_partial_removal \
+        "$restart_installer" "$restart_label" app bin
+    assert_fresh_rollback_restarts_after_partial_removal \
+        "$restart_installer" "$restart_label" flat bin
+done
 
 # A legacy release has no authenticated app version and must never overwrite
 # the CLI links for an installed app. Otherwise SelfUpdater continues to launch

@@ -6,9 +6,50 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestReleaseArchiveLimitsStayInSyncAcrossConsumers(t *testing.T) {
+	t.Parallel()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate release archive test source")
+	}
+	repositoryRoot := filepath.Clean(
+		filepath.Join(filepath.Dir(currentFile), "..", ".."))
+
+	assertFileContainsReleaseLimits(t,
+		filepath.Join(repositoryRoot, "scripts", "install.sh"),
+		[]string{
+			"RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES=2147483648",
+			"RELEASE_ARCHIVE_MAX_EXPANDED_BYTES=4294967296",
+			"RELEASE_ARCHIVE_MAX_ENTRIES=16384",
+			"RELEASE_ARCHIVE_MAX_PATH_BYTES=4096",
+			"RELEASE_ARCHIVE_MAX_COMPONENT_BYTES=255",
+			"RELEASE_ARCHIVE_MAX_METADATA_BYTES=1048576",
+		})
+	assertFileContainsReleaseLimits(t,
+		filepath.Join(
+			repositoryRoot,
+			"provider-swift",
+			"Sources",
+			"ProviderCore",
+			"Update",
+			"ReleaseArchivePreflight.swift",
+		),
+		[]string{
+			"static let maxCompressedBytes: UInt64 = 2 * 1024 * 1024 * 1024",
+			"static let maxExpandedBytes: UInt64 = 4 * 1024 * 1024 * 1024",
+			"static let maxEntries = 16 * 1024",
+			"static let maxPathBytes = 4 * 1024",
+			"static let maxComponentBytes = 255",
+			"static let maxMetadataBytes: UInt64 = 1024 * 1024",
+		})
+}
 
 func TestReleaseArchiveAcceptsPortableBundleAndPAXPath(t *testing.T) {
 	longComponent := strings.Repeat("resource-", 15) + "payload"
@@ -481,4 +522,21 @@ func containsReleaseArchivePath(paths []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func assertFileContainsReleaseLimits(
+	t *testing.T,
+	path string,
+	expected []string,
+) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read release policy source %s: %v", path, err)
+	}
+	for _, line := range expected {
+		if !bytes.Contains(content, []byte(line)) {
+			t.Errorf("%s is missing synchronized archive limit %q", path, line)
+		}
+	}
 }

@@ -61,6 +61,12 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 			if admitted, err := backend.IsHardwareAdmitted(ctx, serial); err != nil || !admitted {
 				t.Fatalf("grandfather admitted = (%v,%v), want true,nil", admitted, err)
 			}
+			admission, err := backend.GetHardwareAdmission(ctx, serial)
+			if err != nil || admission == nil ||
+				admission.SerialNumber != strings.ToUpper(serial) ||
+				admission.Hardware.MemoryGB != 16 {
+				t.Fatalf("grandfather admission = (%+v,%v)", admission, err)
+			}
 			if admitted, err := backend.IsHardwareAdmitted(
 				ctx, mdaOnlySerial); err != nil || admitted {
 				t.Fatalf("MDA-only grandfather = (%v,%v), want false,nil", admitted, err)
@@ -81,6 +87,10 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 			}
 			if revoked, err := backend.IsHardwareAdmissionRevoked(ctx, serial); err != nil || !revoked {
 				t.Fatalf("revocation state = (%v,%v), want true,nil", revoked, err)
+			}
+			admission, err = backend.GetHardwareAdmission(ctx, serial)
+			if err != nil || admission == nil || admission.RevokedAt == nil {
+				t.Fatalf("revoked admission = (%+v,%v)", admission, err)
 			}
 			if err := backend.AdmitHardware(ctx, HardwareAdmission{
 				SerialNumber: serial, PolicyVersion: enforce.Version,
@@ -220,5 +230,95 @@ func TestHardwareAdmissionStoreRejectsThresholdlessEnforcement(t *testing.T) {
 				t.Fatal("store activated enforce mode without a capacity threshold")
 			}
 		})
+	}
+}
+
+func TestMemoryHardwarePolicyActivationRollsBackDecodeFailure(t *testing.T) {
+	st := NewMemory(Config{})
+	now := time.Now()
+	for _, record := range []ProviderRecord{
+		{
+			ID: "a-valid", SerialNumber: "ATOMIC-VALID",
+			Hardware: json.RawMessage(`{"memory_gb":64}`),
+			Models:   json.RawMessage(`[]`), Backend: "mlx-swift",
+			TrustLevel: "hardware", RegisteredAt: now, LastSeen: now,
+		},
+		{
+			ID: "z-invalid", SerialNumber: "ATOMIC-INVALID",
+			Hardware: json.RawMessage(`{"memory_gb":`),
+			Models:   json.RawMessage(`[]`), Backend: "mlx-swift",
+			TrustLevel: "hardware", RegisteredAt: now, LastSeen: now,
+		},
+	} {
+		if err := st.UpsertProvider(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode:           hardwareadmission.ModeEnforce,
+			MinMemoryGB:    32,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		0,
+	); err == nil {
+		t.Fatal("malformed grandfather hardware did not fail activation")
+	}
+	active, err := st.GetActiveHardwareAdmissionPolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active != nil {
+		t.Fatalf("failed activation published policy %+v", active)
+	}
+	admissions, err := st.ListHardwareAdmissions(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(admissions) != 0 {
+		t.Fatalf("failed activation partially admitted %+v", admissions)
+	}
+}
+
+func TestPostgresHardwareAdmissionAttemptsRemainBounded(t *testing.T) {
+	databaseURL := newWithdrawableTestDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	st, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO hardware_admission_attempts (
+			provider_id, serial_number, account_id, policy_version, mode,
+			decision, reason_code, hardware, failed_checks, created_at
+		)
+		SELECT
+			'provider-' || value, '', '', 1, 'enforce',
+			'rejected', 'hardware_below_minimum', '{}'::jsonb, '[]'::jsonb, NOW()
+		FROM generate_series(1, 100099) AS value
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordHardwareAdmissionAttempt(ctx, HardwareAdmissionAttempt{
+		ProviderID: "prune-trigger", PolicyVersion: 1,
+		Mode: hardwareadmission.ModeEnforce, Decision: "rejected",
+		ReasonCode: "hardware_below_minimum",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := st.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM hardware_admission_attempts`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != hardwareAdmissionAttemptMaxEntries {
+		t.Fatalf("attempt rows = %d, want %d",
+			count, hardwareAdmissionAttemptMaxEntries)
 	}
 }

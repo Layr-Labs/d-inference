@@ -19,6 +19,7 @@ const CUSTOM_MACHINE = "M6 developer kit";
 const TEST_EMAIL = "owner@example.com";
 const SUBMIT_LABEL = "Register hardware interest";
 const CONFIRMATION_MESSAGE = "Hardware interest saved";
+const REGISTERED_AT = "2026-08-25T12:00:00.000Z";
 
 describe("ProviderWaitlistForm", () => {
   beforeEach(() => {
@@ -89,9 +90,12 @@ describe("ProviderWaitlistForm", () => {
     });
     expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
     expect(
-      screen.getByText(/Automated eligibility emails are not active yet/)
+      screen.getByText(/provider capacity planning/)
     ).toBeInTheDocument();
 
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://api.darkbloom.dev/v1/provider-waitlist"
+    );
     const request = fetchMock.mock.calls[0][1] as RequestInit;
     expect(JSON.parse(request.body as string)).toMatchObject({
       email: TEST_EMAIL,
@@ -113,7 +117,7 @@ describe("ProviderWaitlistForm", () => {
         chip: "M4 Max",
         memoryGB: 128,
         otherMachine: "",
-        registeredAt: "2026-08-25T12:00:00.000Z",
+        registeredAt: REGISTERED_AT,
       })
     );
 
@@ -124,6 +128,41 @@ describe("ProviderWaitlistForm", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("M4 Max")).toBeInTheDocument();
     expect(screen.getByText("128 GB")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      chip: { name: "M4 Max" },
+      memoryGB: 128,
+      otherMachine: "",
+      registeredAt: REGISTERED_AT,
+    },
+    {
+      chip: "M4 Max",
+      memoryGB: "128",
+      otherMachine: "",
+      registeredAt: REGISTERED_AT,
+    },
+    {
+      chip: "M4 Max",
+      memoryGB: 128,
+      otherMachine: "",
+      registeredAt: { date: "2026-08-25" },
+    },
+  ])("discards structurally invalid stored registration %#", (stored) => {
+    window.localStorage.setItem(
+      PROVIDER_WAITLIST_STORAGE_KEY,
+      JSON.stringify(stored)
+    );
+
+    render(<ProviderWaitlistForm />);
+
+    expect(
+      screen.getByRole("button", { name: SUBMIT_LABEL })
+    ).toBeInTheDocument();
+    expect(
+      window.localStorage.getItem(PROVIDER_WAITLIST_STORAGE_KEY)
+    ).toBeNull();
   });
 
   it("renders the form when browser storage is blocked", () => {
@@ -197,5 +236,28 @@ describe("ProviderWaitlistForm", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Too many attempts. Try again in 50 seconds."
     );
+  });
+
+  it("recovers from a bounded request timeout", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new DOMException("timed out", "TimeoutError"))
+    );
+    render(<ProviderWaitlistForm />);
+
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: TEST_EMAIL },
+    });
+    fireEvent.click(screen.getByLabelText(/I agree to store my email/));
+    fireEvent.submit(
+      screen.getByRole("button", { name: SUBMIT_LABEL }).closest("form")!
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Registration timed out. Please try again."
+    );
+    expect(
+      screen.getByRole("button", { name: SUBMIT_LABEL })
+    ).not.toBeDisabled();
   });
 });

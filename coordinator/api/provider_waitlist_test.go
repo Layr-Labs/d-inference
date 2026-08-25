@@ -32,6 +32,9 @@ func TestProviderWaitlistSignupPersistsOtherMachine(t *testing.T) {
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want wildcard", got)
+	}
 	signups, err := st.ListProviderWaitlistSignups(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("list signups: %v", err)
@@ -50,6 +53,27 @@ func TestProviderWaitlistSignupPersistsOtherMachine(t *testing.T) {
 	}
 }
 
+func TestProviderWaitlistCORSPreflightAllowsPublicPost(t *testing.T) {
+	srv, _ := testServer(t)
+	request := httptest.NewRequest(
+		http.MethodOptions, "/v1/provider-waitlist", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:3000")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	response := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want wildcard", got)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want POST", got)
+	}
+}
+
 func TestProviderWaitlistSignupUpsertsEmail(t *testing.T) {
 	srv, st := testServer(t)
 	srv.SetProviderWaitlistRateLimiter(ratelimit.New(ratelimit.Config{RPS: 100, Burst: 100}))
@@ -60,7 +84,7 @@ func TestProviderWaitlistSignupUpsertsEmail(t *testing.T) {
 			"other_machine": "", "consent": true, "company": "",
 		},
 		{
-			"email": "OWNER@example.com", "chip": "M4 Max", "memory_gb": 128,
+			"email": "OWNER@example.com", "chip": "M4 Max (16-core CPU)", "memory_gb": 128,
 			"other_machine": "discarded", "consent": true, "company": "",
 		},
 	} {
@@ -80,6 +104,24 @@ func TestProviderWaitlistSignupUpsertsEmail(t *testing.T) {
 	if signups[0].Chip != "M4 Max" || signups[0].MemoryGB != 128 ||
 		signups[0].OtherMachine != "" {
 		t.Fatalf("updated signup = %#v", signups[0])
+	}
+}
+
+func TestProviderWaitlistAcceptsEveryFutureCalculatorChip(t *testing.T) {
+	for _, chip := range []string{"M5 Ultra", "M6"} {
+		t.Run(chip, func(t *testing.T) {
+			signup, err := validateProviderWaitlistSignup(
+				providerWaitlistSignupRequest{
+					Email: "owner@example.com", Chip: chip,
+					MemoryGB: 32, Consent: true,
+				})
+			if err != nil {
+				t.Fatalf("validate %q: %v", chip, err)
+			}
+			if signup.Chip != chip {
+				t.Fatalf("chip = %q, want %q", signup.Chip, chip)
+			}
+		})
 	}
 }
 

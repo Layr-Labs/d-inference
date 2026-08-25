@@ -194,8 +194,24 @@ func (s *Server) liveTrustedHardwareAdmissions(
 		if serial == "" {
 			return
 		}
+		register := &protocol.RegisterMessage{Hardware: hardware}
+		if _, failed := hardwareIdentityIntegrityFailure(register, result); failed {
+			return
+		}
+		if legacySignedCapacityOmitted(result) {
+			if hardware.MemoryGB <= 0 || hardware.GPUCores <= 0 {
+				return
+			}
+			// Pre-capacity-attestation providers cannot sign RAM/GPU claims.
+			// Grandfather their already-trusted live registration once, then
+			// persist that canonical snapshot for every later reconnect.
+			result.MemoryGB = hardware.MemoryGB
+			result.GPUCores = hardware.GPUCores
+		} else if _, failed := hardwareCapacityIntegrityFailure(register, result); failed {
+			return
+		}
 		decision := evaluateHardwareClaims(
-			policy, &protocol.RegisterMessage{Hardware: hardware}, result)
+			policy, register, result)
 		bySerial[serial] = store.HardwareAdmission{
 			SerialNumber: serial,
 			Source:       "grandfathered",
@@ -323,11 +339,26 @@ func (s *Server) grantProviderHardwareTrust(provider *registry.Provider) bool {
 	}
 	s.hardwareAdmissionApplyMu.Lock()
 	defer s.hardwareAdmissionApplyMu.Unlock()
-	if s.hardwareAdmissionPolicySnapshot().Mode == hardwareadmission.ModeEnforce &&
+	policy := s.hardwareAdmissionPolicySnapshot()
+	if policy.Mode == hardwareadmission.ModeEnforce &&
 		!provider.GetCodeAttested() {
 		return false
 	}
-	return provider.GrantHardwareIfNotUntrusted()
+	// Before the first enforce cutoff, hardware trust and its durable provider
+	// row must commit under the same policy-transition lock. Otherwise a
+	// disconnect can remove the live provider before the async write lands and
+	// activation will miss it from both grandfathering sources.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), hardwareAdmissionStoreTimeout)
+	granted, err := s.registry.GrantProviderHardwareAndPersistIfCurrent(
+		ctx, provider, policy.Mode != hardwareadmission.ModeEnforce)
+	cancel()
+	if err != nil {
+		s.logger.Warn("hardware trust persistence failed",
+			"provider_id", provider.ID, "error", err)
+		return false
+	}
+	return granted
 }
 
 func (s *Server) providerConnectionCurrent(provider *registry.Provider) bool {
@@ -377,17 +408,18 @@ func (s *Server) evaluateProviderHardwareAdmission(
 	if attestResult.Valid {
 		serial = strings.ToUpper(strings.TrimSpace(attestResult.SerialNumber))
 	}
+	var durableAdmission *store.HardwareAdmission
 	if serial != "" {
-		revoked, err := s.store.IsHardwareAdmissionRevoked(ctx, serial)
+		durableAdmission, err = s.store.GetHardwareAdmission(ctx, serial)
 		if err != nil {
 			s.registry.SetProviderHardwareAdmissionFence(provider, false, true)
 			return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
 				code: "admission_state_unavailable", retryable: true,
 				policy: policy,
-				reason: "The coordinator could not verify this machine's revocation state. It will retry automatically.",
+				reason: "The coordinator could not verify this machine's admission state. It will retry automatically.",
 			})
 		}
-		if revoked {
+		if durableAdmission != nil && durableAdmission.RevokedAt != nil {
 			s.registry.SetProviderHardwareAdmissionFence(provider, true, false)
 			decision := evaluateHardwareClaims(policy, regMsg, attestResult)
 			s.recordHardwareAdmissionAttempt(
@@ -411,35 +443,51 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		}
 		return true
 	}
-	if serial != "" {
-		admitted, err := s.store.IsHardwareAdmitted(ctx, serial)
-		if err != nil {
-			return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
-				code: "admission_state_unavailable", retryable: true,
-				policy: policy,
-				reason: "The coordinator could not verify this machine's existing admission. It will retry automatically.",
-			})
-		}
-		if admitted {
-			if !s.commitProviderAdmissionState(provider, policy, true) {
-				if !s.providerConnectionCurrent(provider) {
-					return false
-				}
-				return s.evaluateProviderHardwareAdmission(
-					providerID, provider, regMsg, attestResult)
+	if failure, failed := hardwareIdentityIntegrityFailure(regMsg, attestResult); failed &&
+		policy.Mode == hardwareadmission.ModeEnforce {
+		return s.rejectHardwareClaimIntegrity(
+			ctx, provider, serial, policy, attestResult, failure)
+	}
+	if durableAdmission != nil {
+		if legacySignedCapacityOmitted(attestResult) {
+			hardware, ok := canonicalLegacyAdmissionHardware(
+				durableAdmission.Hardware, attestResult)
+			if !ok {
+				s.registry.SetProviderHardwareAdmissionFence(provider, false, true)
+				return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+					code: "admission_state_unavailable", retryable: true,
+					policy: policy,
+					reason: "The coordinator could not recover verified hardware for this legacy admission. It will retry automatically.",
+				})
 			}
-			s.recordHardwareAdmissionAttempt(ctx, provider, serial, policy, "grandfathered", "", hardwareadmission.Decision{
-				Allowed: true, MeetsThresholds: true,
-				Observed: canonicalHardwareObserved(attestResult),
-			})
-			return true
+			if !s.registry.SetProviderHardwareFromAdmission(provider, hardware) {
+				return false
+			}
+		} else if failure, failed := hardwareCapacityIntegrityFailure(
+			regMsg, attestResult); failed &&
+			policy.Mode == hardwareadmission.ModeEnforce {
+			return s.rejectHardwareClaimIntegrity(
+				ctx, provider, serial, policy, attestResult, failure)
 		}
+		if !s.commitProviderAdmissionState(provider, policy, true) {
+			if !s.providerConnectionCurrent(provider) {
+				return false
+			}
+			return s.evaluateProviderHardwareAdmission(
+				providerID, provider, regMsg, attestResult)
+		}
+		return true
+	}
+	if failure, failed := hardwareCapacityIntegrityFailure(
+		regMsg, attestResult); failed &&
+		policy.Mode == hardwareadmission.ModeEnforce {
+		return s.rejectHardwareClaimIntegrity(
+			ctx, provider, serial, policy, attestResult, failure)
 	}
 
-	// Existing durable admissions predate per-reconnect attestation refresh.
-	// Their signed identity is still verified, and normal MDA/code-attestation
-	// gates remain connection-scoped. Check freshness only for a new admission
-	// so enabling enforcement can roll out without fencing older live daemons.
+	// New admissions require a fresh signed hardware snapshot. Durable reconnects
+	// returned above after exact identity/capacity validation (or a canonical
+	// legacy-ledger fallback), so this does not fence grandfathered daemons.
 	attestationAge := time.Since(attestResult.Timestamp)
 	if attestResult.Timestamp.IsZero() ||
 		attestationAge > 10*time.Minute ||
@@ -466,7 +514,7 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		reasonCode := ""
 		if !decision.MeetsThresholds {
 			outcome = "would_reject"
-			reasonCode = "hardware_below_minimum"
+			reasonCode = hardwareAdmissionReasonCode(decision)
 		}
 		s.recordHardwareAdmissionAttempt(ctx, provider, serial, policy, outcome, reasonCode, decision)
 		s.ddIncr("providers.hardware_admission", []string{"mode:shadow", "decision:" + outcome})
@@ -484,10 +532,12 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		return true
 	}
 
-	s.recordHardwareAdmissionAttempt(ctx, provider, serial, policy, "rejected", "hardware_below_minimum", decision)
+	reasonCode := hardwareAdmissionReasonCode(decision)
+	s.recordHardwareAdmissionAttempt(
+		ctx, provider, serial, policy, "rejected", reasonCode, decision)
 	s.ddIncr("providers.hardware_admission", []string{"mode:enforce", "decision:rejected"})
 	return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
-		code: "hardware_below_minimum", retryable: false, policy: policy,
+		code: reasonCode, retryable: false, policy: policy,
 		decision: &decision, reason: hardwareAdmissionReason(decision),
 	})
 }
@@ -498,21 +548,153 @@ func evaluateHardwareClaims(
 	attestResult attestation.VerificationResult,
 ) hardwareadmission.Decision {
 	decision := hardwareadmission.Evaluate(policy, canonicalHardwareInput(attestResult))
-	if mismatch := hardwareClaimMismatch(regMsg, attestResult); mismatch != "" {
+	if failure, failed := hardwareClaimIntegrityFailure(regMsg, attestResult); failed {
 		decision.MeetsThresholds = false
 		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
-		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
-			Code: "hardware_claim_mismatch", Metric: mismatch, Unit: "exact match",
-		})
-	}
-	if strings.TrimSpace(attestResult.SerialNumber) == "" {
-		decision.MeetsThresholds = false
-		decision.Allowed = policy.Mode != hardwareadmission.ModeEnforce
-		decision.FailedChecks = append(decision.FailedChecks, hardwareadmission.Failure{
-			Code: "hardware_identity_required", Metric: "serial_number", Unit: "attested identity",
-		})
+		decision.FailedChecks = append(decision.FailedChecks, failure)
 	}
 	return decision
+}
+
+func hardwareClaimIntegrityFailure(
+	regMsg *protocol.RegisterMessage,
+	result attestation.VerificationResult,
+) (hardwareadmission.Failure, bool) {
+	if failure, failed := hardwareIdentityIntegrityFailure(regMsg, result); failed {
+		return failure, true
+	}
+	return hardwareCapacityIntegrityFailure(regMsg, result)
+}
+
+func hardwareIdentityIntegrityFailure(
+	regMsg *protocol.RegisterMessage,
+	result attestation.VerificationResult,
+) (hardwareadmission.Failure, bool) {
+	if strings.TrimSpace(result.SerialNumber) == "" {
+		return hardwareadmission.Failure{
+			Code: "hardware_identity_required", Metric: "serial_number",
+			Unit: "attested identity",
+		}, true
+	}
+	if strings.TrimSpace(result.HardwareModel) == "" {
+		return hardwareadmission.Failure{
+			Code: "hardware_identity_required", Metric: "machine_model",
+			Unit: "attested identity",
+		}, true
+	}
+	if strings.TrimSpace(result.ChipName) == "" {
+		return hardwareadmission.Failure{
+			Code: "hardware_identity_required", Metric: "chip_name",
+			Unit: "attested identity",
+		}, true
+	}
+	if mismatch := hardwareIdentityClaimMismatch(regMsg, result); mismatch != "" {
+		return hardwareadmission.Failure{
+			Code: "hardware_claim_mismatch", Metric: mismatch, Unit: "exact match",
+		}, true
+	}
+	return hardwareadmission.Failure{}, false
+}
+
+func hardwareCapacityIntegrityFailure(
+	regMsg *protocol.RegisterMessage,
+	result attestation.VerificationResult,
+) (hardwareadmission.Failure, bool) {
+	if mismatch := hardwareCapacityClaimMismatch(regMsg, result); mismatch != "" {
+		return hardwareadmission.Failure{
+			Code: "hardware_claim_mismatch", Metric: mismatch, Unit: "exact match",
+		}, true
+	}
+	return hardwareadmission.Failure{}, false
+}
+
+func (s *Server) rejectHardwareClaimIntegrity(
+	ctx context.Context,
+	provider *registry.Provider,
+	serial string,
+	policy hardwareadmission.Policy,
+	result attestation.VerificationResult,
+	failure hardwareadmission.Failure,
+) bool {
+	decision := hardwareadmission.Evaluate(
+		policy, canonicalHardwareInput(result))
+	decision.Allowed = false
+	decision.MeetsThresholds = false
+	decision.FailedChecks = append(decision.FailedChecks, failure)
+	s.recordHardwareAdmissionAttempt(
+		ctx, provider, serial, policy, "rejected", failure.Code, decision)
+	return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+		code: failure.Code, retryable: false, policy: policy,
+		decision: &decision, reason: hardwareIntegrityReason(failure),
+	})
+}
+
+func legacySignedCapacityOmitted(result attestation.VerificationResult) bool {
+	return result.MemoryGB == 0 && result.GPUCores == 0
+}
+
+func canonicalLegacyAdmissionHardware(
+	admitted hardwareadmission.Observed,
+	result attestation.VerificationResult,
+) (hardwareadmission.Observed, bool) {
+	if admitted.MemoryGB <= 0 || admitted.GPUCores <= 0 {
+		return hardwareadmission.Observed{}, false
+	}
+	if admitted.MachineModel == "" {
+		admitted.MachineModel = result.HardwareModel
+	}
+	if admitted.ChipName == "" {
+		admitted.ChipName = result.ChipName
+	}
+	if !strings.EqualFold(
+		strings.TrimSpace(admitted.MachineModel),
+		strings.TrimSpace(result.HardwareModel)) ||
+		!strings.EqualFold(
+			strings.TrimSpace(admitted.ChipName),
+			strings.TrimSpace(result.ChipName)) {
+		return hardwareadmission.Observed{}, false
+	}
+	if capGB, known := mdm.ModelMaxMemoryGB(result.HardwareModel); known && capGB > 0 && admitted.MemoryGB > capGB {
+		admitted.MemoryGB = capGB
+	}
+	family, tier, ok := hardwareadmission.ParseChipIdentity(result.ChipName)
+	if !ok {
+		return hardwareadmission.Observed{}, false
+	}
+	decision := hardwareadmission.Evaluate(
+		hardwareadmission.DisabledPolicy(),
+		hardwareadmission.Input{
+			MachineModel: admitted.MachineModel,
+			ChipName:     admitted.ChipName,
+			ChipFamily:   family,
+			ChipTier:     tier,
+			MemoryGB:     admitted.MemoryGB,
+			GPUCores:     admitted.GPUCores,
+		},
+	)
+	if !decision.Observed.CatalogKnown {
+		return hardwareadmission.Observed{}, false
+	}
+	return decision.Observed, true
+}
+
+func hardwareIntegrityReason(failure hardwareadmission.Failure) string {
+	switch failure.Code {
+	case "hardware_identity_required":
+		return "A verified hardware identity is required before this machine can join the provider network."
+	default:
+		return "The advertised hardware does not match the signed hardware attestation."
+	}
+}
+
+func hardwareAdmissionReasonCode(decision hardwareadmission.Decision) string {
+	for _, failure := range decision.FailedChecks {
+		switch failure.Code {
+		case "hardware_claim_mismatch", "hardware_identity_required":
+			return failure.Code
+		}
+	}
+	return "hardware_below_minimum"
 }
 
 func canonicalHardwareInput(result attestation.VerificationResult) hardwareadmission.Input {
@@ -536,12 +718,34 @@ func canonicalHardwareObserved(result attestation.VerificationResult) hardwaread
 }
 
 func hardwareClaimMismatch(regMsg *protocol.RegisterMessage, result attestation.VerificationResult) string {
-	if result.HardwareModel != "" && !strings.EqualFold(strings.TrimSpace(result.HardwareModel), strings.TrimSpace(regMsg.Hardware.MachineModel)) {
+	if mismatch := hardwareIdentityClaimMismatch(regMsg, result); mismatch != "" {
+		return mismatch
+	}
+	return hardwareCapacityClaimMismatch(regMsg, result)
+}
+
+func hardwareIdentityClaimMismatch(
+	regMsg *protocol.RegisterMessage,
+	result attestation.VerificationResult,
+) string {
+	if !strings.EqualFold(strings.TrimSpace(result.HardwareModel), strings.TrimSpace(regMsg.Hardware.MachineModel)) {
 		return "machine_model"
 	}
-	if result.ChipName != "" && !strings.EqualFold(strings.TrimSpace(result.ChipName), strings.TrimSpace(regMsg.Hardware.ChipName)) {
+	if !strings.EqualFold(strings.TrimSpace(result.ChipName), strings.TrimSpace(regMsg.Hardware.ChipName)) {
 		return "chip_name"
 	}
+	family, tier, ok := hardwareadmission.ParseChipIdentity(result.ChipName)
+	if ok && (!strings.EqualFold(family, regMsg.Hardware.ChipFamily) ||
+		!strings.EqualFold(tier, regMsg.Hardware.ChipTier)) {
+		return "chip_identity"
+	}
+	return ""
+}
+
+func hardwareCapacityClaimMismatch(
+	regMsg *protocol.RegisterMessage,
+	result attestation.VerificationResult,
+) string {
 	if result.MemoryGB <= 0 || result.GPUCores <= 0 {
 		return "attested_hardware"
 	}
@@ -550,11 +754,6 @@ func hardwareClaimMismatch(regMsg *protocol.RegisterMessage, result attestation.
 	}
 	if result.GPUCores != regMsg.Hardware.GPUCores {
 		return "gpu_cores"
-	}
-	family, tier, ok := hardwareadmission.ParseChipIdentity(result.ChipName)
-	if ok && (!strings.EqualFold(family, regMsg.Hardware.ChipFamily) ||
-		!strings.EqualFold(tier, regMsg.Hardware.ChipTier)) {
-		return "chip_identity"
 	}
 	return ""
 }
@@ -679,7 +878,8 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 	hardware := provider.Hardware
 	identityReady := provider.TrustLevel == registry.TrustHardware &&
 		provider.Status != registry.StatusUntrusted &&
-		provider.MDAVerified && provider.SEKeyBound && provider.CodeAttested &&
+		provider.MDAVerified && provider.MDAFreshnessVerified &&
+		provider.CodeAttested &&
 		provider.AttestationResult != nil &&
 		strings.EqualFold(
 			strings.TrimSpace(provider.AttestationResult.SerialNumber),
@@ -741,11 +941,12 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 			provider.ID, pending.policy.Version, provider) {
 			return false
 		}
+		reasonCode := hardwareAdmissionReasonCode(decision)
 		s.recordHardwareAdmissionAttempt(
 			ctx, provider, pending.serial, policy, "rejected",
-			"hardware_below_minimum", decision)
+			reasonCode, decision)
 		return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
-			code: "hardware_below_minimum", retryable: false, policy: policy,
+			code: reasonCode, retryable: false, policy: policy,
 			decision: &decision, reason: hardwareAdmissionReason(decision),
 		})
 	}
@@ -1223,8 +1424,26 @@ func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.P
 			continue
 		}
 
+		regMsg := &protocol.RegisterMessage{Hardware: candidate.hardware}
+		decision := evaluateHardwareClaims(policy, regMsg, candidate.result)
+		if failure, failed := hardwareIdentityIntegrityFailure(
+			regMsg, candidate.result); failed {
+			ctx, cancel = context.WithTimeout(
+				context.Background(), hardwareAdmissionStoreTimeout)
+			s.recordHardwareAdmissionAttempt(
+				ctx, candidate.provider, serial, policy, "rejected",
+				failure.Code, decision)
+			cancel()
+			s.rejectHardwareAdmission(
+				candidate.provider, hardwareAdmissionRejection{
+					code: failure.Code, retryable: false, policy: policy,
+					decision: &decision, reason: hardwareIntegrityReason(failure),
+				})
+			continue
+		}
+
 		ctx, cancel = context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)
-		admitted, err := s.store.IsHardwareAdmitted(ctx, serial)
+		durableAdmission, err := s.store.GetHardwareAdmission(ctx, serial)
 		cancel()
 		if err != nil {
 			if firstErr == nil {
@@ -1232,13 +1451,57 @@ func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.P
 			}
 			continue
 		}
-		if admitted {
+		if durableAdmission != nil {
+			if legacySignedCapacityOmitted(candidate.result) {
+				hardware, ok := canonicalLegacyAdmissionHardware(
+					durableAdmission.Hardware, candidate.result)
+				if !ok {
+					s.registry.SetProviderHardwareAdmissionFence(
+						candidate.provider, false, true)
+					if firstErr == nil {
+						firstErr = errors.New(
+							"legacy admission has no canonical hardware snapshot")
+					}
+					continue
+				}
+				if !s.registry.SetProviderHardwareFromAdmission(
+					candidate.provider, hardware) {
+					continue
+				}
+			} else if failure, failed := hardwareCapacityIntegrityFailure(
+				regMsg, candidate.result); failed {
+				ctx, cancel = context.WithTimeout(
+					context.Background(), hardwareAdmissionStoreTimeout)
+				s.recordHardwareAdmissionAttempt(
+					ctx, candidate.provider, serial, policy, "rejected",
+					failure.Code, decision)
+				cancel()
+				s.rejectHardwareAdmission(
+					candidate.provider, hardwareAdmissionRejection{
+						code: failure.Code, retryable: false, policy: policy,
+						decision: &decision, reason: hardwareIntegrityReason(failure),
+					})
+				continue
+			}
 			s.registry.CommitProviderHardwareAdmission(candidate.provider)
 			continue
 		}
 
-		regMsg := &protocol.RegisterMessage{Hardware: candidate.hardware}
-		decision := evaluateHardwareClaims(policy, regMsg, candidate.result)
+		if failure, failed := hardwareCapacityIntegrityFailure(
+			regMsg, candidate.result); failed {
+			ctx, cancel = context.WithTimeout(
+				context.Background(), hardwareAdmissionStoreTimeout)
+			s.recordHardwareAdmissionAttempt(
+				ctx, candidate.provider, serial, policy, "rejected",
+				failure.Code, decision)
+			cancel()
+			s.rejectHardwareAdmission(
+				candidate.provider, hardwareAdmissionRejection{
+					code: failure.Code, retryable: false, policy: policy,
+					decision: &decision, reason: hardwareIntegrityReason(failure),
+				})
+			continue
+		}
 		if decision.Allowed {
 			s.stagePendingHardwareAdmission(candidate.provider.ID, pendingHardwareAdmission{
 				provider: candidate.provider, serial: serial,
@@ -1248,12 +1511,13 @@ func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.P
 			continue
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)
+		reasonCode := hardwareAdmissionReasonCode(decision)
 		s.recordHardwareAdmissionAttempt(
 			ctx, candidate.provider, serial, policy, "rejected",
-			"hardware_below_minimum", decision)
+			reasonCode, decision)
 		cancel()
 		s.rejectHardwareAdmission(candidate.provider, hardwareAdmissionRejection{
-			code: "hardware_below_minimum", retryable: false, policy: policy,
+			code: reasonCode, retryable: false, policy: policy,
 			decision: &decision, reason: hardwareAdmissionReason(decision),
 		})
 	}

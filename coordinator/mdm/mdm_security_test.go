@@ -107,6 +107,23 @@ func buildSecurityInfoWebhook(udid, commandUUID string) []byte {
 	return body
 }
 
+func buildDeviceAttestationWebhook(udid, commandUUID string, cert []byte) []byte {
+	plist := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict>`+
+		`<key>CommandUUID</key><string>%s</string>`+
+		`<key>Status</key><string>Acknowledged</string>`+
+		`<key>DevicePropertiesAttestation</key><array><data>%s</data></array>`+
+		`</dict></plist>`, commandUUID, base64.StdEncoding.EncodeToString(cert))
+	body, _ := json.Marshal(map[string]any{
+		"topic": "mdm.Connect",
+		"acknowledge_event": map[string]any{
+			"udid":        udid,
+			"status":      "Acknowledged",
+			"raw_payload": base64.StdEncoding.EncodeToString([]byte(plist)),
+		},
+	})
+	return body
+}
+
 // TestWebhookDropsUnsolicitedSecurityInfo is the core anti-forgery guarantee: a
 // SecurityInfo webhook whose CommandUUID was never issued by the coordinator is
 // dropped before any trust-upgrade callback runs. This is what stops an
@@ -145,5 +162,44 @@ func TestWebhookDropsUUIDForDifferentDevice(t *testing.T) {
 	c.HandleWebhook(buildSecurityInfoWebhook("UDID-EVIL", "uuid-x"))
 	if fired {
 		t.Fatal("CommandUUID/UDID mismatch must be dropped")
+	}
+}
+
+func TestDeviceAttestationWaitersCorrelateByCommandUUID(t *testing.T) {
+	c := testClient()
+	oldWaiter, releaseOld := c.registerDeviceAttestationWaiter("mda-old")
+	defer releaseOld()
+	newWaiter, releaseNew := c.registerDeviceAttestationWaiter("mda-new")
+	defer releaseNew()
+	c.trackCommand("mda-old", "UDID-SAME", time.Now())
+	c.trackCommand("mda-new", "UDID-SAME", time.Now())
+
+	c.HandleWebhook(buildDeviceAttestationWebhook(
+		"UDID-SAME", "mda-new", []byte("new-cert")))
+	select {
+	case response := <-newWaiter:
+		if response.CommandUUID != "mda-new" ||
+			string(response.CertChain[0]) != "new-cert" {
+			t.Fatalf("new response = %+v", response)
+		}
+	default:
+		t.Fatal("new command response did not reach its exact waiter")
+	}
+	select {
+	case response := <-oldWaiter:
+		t.Fatalf("old waiter consumed new response: %+v", response)
+	default:
+	}
+
+	c.HandleWebhook(buildDeviceAttestationWebhook(
+		"UDID-SAME", "mda-old", []byte("old-cert")))
+	select {
+	case response := <-oldWaiter:
+		if response.CommandUUID != "mda-old" ||
+			string(response.CertChain[0]) != "old-cert" {
+			t.Fatalf("old response = %+v", response)
+		}
+	default:
+		t.Fatal("old command response did not reach its exact waiter")
 	}
 }

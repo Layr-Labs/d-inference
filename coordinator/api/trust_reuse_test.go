@@ -659,7 +659,7 @@ func TestAwaitTrustReuseGrantReturnsOnSettledSignal(t *testing.T) {
 // mdmVerificationLoop skips the live MDM round-trip.
 func TestAwaitTrustReuseGrantReturnsTrueOnHardware(t *testing.T) {
 	srv, p, _ := trustReuseFastSkipProvider(t)
-	if !p.GrantHardwareIfNotUntrusted() {
+	if !srv.registry.GrantProviderHardwareIfCurrent(p) {
 		t.Fatal("precondition: grant should succeed")
 	}
 	if !srv.awaitTrustReuseGrant(context.Background(), p) {

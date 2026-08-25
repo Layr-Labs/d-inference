@@ -125,3 +125,64 @@ func TestProviderWaitlistRejectsInvalidHardwareAcrossStores(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderWaitlistMigratesLegacyConsentColumn(t *testing.T) {
+	databaseURL := newWithdrawableTestDatabase(t)
+	legacy := newWithdrawableMigrationStore(t, databaseURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := legacy.pool.Exec(ctx, `
+		CREATE TABLE provider_waitlist_signups (
+			email TEXT PRIMARY KEY,
+			chip TEXT NOT NULL,
+			memory_gb INT NOT NULL,
+			other_machine TEXT NOT NULL DEFAULT '',
+			consented_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		INSERT INTO provider_waitlist_signups (
+			email, chip, memory_gb, consented_at
+		) VALUES ('legacy@example.com', 'M3 Max', 64, '2026-08-01T12:00:00Z')
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	signups, err := migrated.ListProviderWaitlistSignups(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signups) != 1 ||
+		signups[0].Email != "legacy@example.com" ||
+		signups[0].GPUCores != 0 ||
+		signups[0].SubmittedAt.IsZero() {
+		t.Fatalf("migrated signup = %+v", signups)
+	}
+
+	var oldExists, newExists bool
+	if err := migrated.pool.QueryRow(ctx, `
+		SELECT
+			EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'consented_at'
+			),
+			EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'submitted_at'
+			)
+	`).Scan(&oldExists, &newExists); err != nil {
+		t.Fatal(err)
+	}
+	if oldExists || !newExists {
+		t.Fatalf("legacy/new columns = %v/%v", oldExists, newExists)
+	}
+}

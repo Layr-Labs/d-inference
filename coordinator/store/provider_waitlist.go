@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// ProviderWaitlistSignup records a machine owner who consented to be notified
-// when the admission policy can accept their hardware.
+// ProviderWaitlistSignup records an unverified hardware-interest submission.
+// It does not authorize notifications or prove ownership of the email address.
 type ProviderWaitlistSignup struct {
 	Email        string `json:"email"`
 	Chip         string `json:"chip"`

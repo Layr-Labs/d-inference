@@ -219,6 +219,49 @@ private func tmpStateURL() -> URL {
     #expect(read?.attestationPublicKey == "active-signer-key")
 }
 
+@Test func daemonStateHardwareRejectionRoundTrips() throws {
+    let url = tmpStateURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let hardware = CoordinatorMessage.TrustStatus.Hardware(
+        machineModel: "Mac16,1",
+        chipName: "Apple M4 Max",
+        chipFamily: "M4",
+        chipTier: "Max",
+        memoryGb: 36,
+        gpuCores: 40,
+        memoryBandwidthGbs: 546,
+        fp16MilliTflops: 18_000,
+        catalogKnown: true)
+    let miss = CoordinatorMessage.TrustStatus.RequirementMiss(
+        code: "memory_below_minimum",
+        metric: "memory_gb",
+        observed: 36,
+        required: 48,
+        unit: "GiB")
+    let state = DaemonState(
+        pid: 4711, version: "0.8.12", writtenAt: 1000, startedAt: 900,
+        trust: .init(
+            trustLevel: "none",
+            status: "onboarding_rejected",
+            reason: "48 GiB required",
+            reasonCode: "hardware_below_minimum",
+            policyVersion: 7,
+            catalogVersion: "apple-silicon-v1",
+            retryable: false,
+            hardware: hardware,
+            failedChecks: [miss],
+            receivedAt: 950),
+        currentModel: nil, warmModels: [], inferenceActive: false,
+        stats: .init(requestsServed: 0, tokensGenerated: 0, usageGaps: 0))
+
+    DaemonStateFile.write(state, to: url)
+    let read = try #require(DaemonStateFile.read(from: url))
+    #expect(read.trust?.status == "onboarding_rejected")
+    #expect(read.trust?.hardware?.catalogKnown == true)
+    #expect(read.trust?.hardware?.memoryGb == 36)
+    #expect(read.trust?.failedChecks?.first?.required == 48)
+}
+
 @Test("daemon state written before signer identity was added still decodes")
 func legacyDaemonStateWithoutAttestationIdentityDecodes() throws {
     let url = tmpStateURL()

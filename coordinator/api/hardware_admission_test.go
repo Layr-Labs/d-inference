@@ -118,6 +118,121 @@ func TestHardwareAdmissionAllowsStaleReconnectForDurablyAdmittedMachine(t *testi
 	}
 }
 
+func TestDurablyAdmittedReconnectRejectsUnsignedHardwareMutation(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	now := time.Now()
+	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
+		ID: "legacy-session", SerialNumber: "LEGACY-MUTATED-1",
+		Hardware: json.RawMessage(`{"memory_gb":16}`), Models: json.RawMessage(`[]`),
+		Backend: registry.BackendMLXSwift, TrustLevel: string(registry.TrustHardware),
+		RegisteredAt: now, LastSeen: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, st, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 32,
+	}, quietLogger())
+	msg := admissionTestRegister()
+	msg.Hardware.MemoryGB = 128
+	provider := reg.Register("legacy-mutated-reconnect", nil, msg)
+	result := admissionTestAttestation("LEGACY-MUTATED-1")
+
+	if srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, result) {
+		t.Fatal("durably admitted provider bypassed signed hardware consistency")
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("mutated reconnect was marked admitted")
+	}
+	attempts, err := st.ListHardwareAdmissionAttempts(
+		context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 ||
+		attempts[0].ReasonCode != "hardware_claim_mismatch" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestDurableLegacyReconnectUsesAdmissionHardware(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 8,
+	})
+	const serial = "LEGACY-OPTIONAL-HARDWARE"
+	policy := srv.hardwareAdmissionPolicySnapshot()
+	if err := st.AdmitHardware(context.Background(), store.HardwareAdmission{
+		SerialNumber:  serial,
+		Source:        "grandfathered",
+		PolicyVersion: policy.Version,
+		Hardware: hardwareadmission.Observed{
+			MachineModel: "MacBookAir10,1",
+			ChipName:     "Apple M1",
+			ChipFamily:   "M1",
+			ChipTier:     "Base",
+			MemoryGB:     16,
+			GPUCores:     8,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msg := admissionTestRegister()
+	msg.Hardware.MemoryGB = 512
+	msg.Hardware.GPUCores = 512
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"legacy-optional-hardware", nil, msg)
+	result := admissionTestAttestation(serial)
+	result.MemoryGB = 0
+	result.GPUCores = 0
+
+	if !srv.evaluateProviderHardwareAdmission(
+		provider.ID, provider, msg, result) {
+		t.Fatal("durable legacy provider with omitted optional claims was rejected")
+	}
+	provider.Mu().Lock()
+	hardware := provider.Hardware
+	provider.Mu().Unlock()
+	if hardware.MemoryGB != 16 || hardware.GPUCores != 8 {
+		t.Fatalf("live hardware = %+v, want durable 16 GiB / 8 GPU cores", hardware)
+	}
+}
+
+func TestHardwareAdmissionRejectsMissingSignedIdentityFields(t *testing.T) {
+	for _, field := range []string{"machine_model", "chip_name"} {
+		t.Run(field, func(t *testing.T) {
+			srv, st := testServerWithConfig(t, ServerConfig{
+				HardwareAdmissionMode:        "enforce",
+				HardwareAdmissionMinMemoryGB: 8,
+			})
+			msg := admissionTestRegister()
+			result := admissionTestAttestation("MISSING-SIGNED-" + field)
+			if field == "machine_model" {
+				result.HardwareModel = ""
+			} else {
+				result.ChipName = ""
+			}
+			provider := srv.registry.RegisterPendingHardwareAdmission(
+				"missing-signed-"+field, nil, msg)
+
+			if srv.evaluateProviderHardwareAdmission(
+				provider.ID, provider, msg, result) {
+				t.Fatal("provider with missing signed identity was admitted")
+			}
+			attempts, err := st.ListHardwareAdmissionAttempts(
+				context.Background(), "", 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(attempts) != 1 ||
+				attempts[0].ReasonCode != "hardware_identity_required" {
+				t.Fatalf("attempts = %+v", attempts)
+			}
+		})
+	}
+}
+
 func TestHardwareAdmissionRejectsStaleAttestationForNewMachine(t *testing.T) {
 	srv, _ := testServerWithConfig(t, ServerConfig{
 		HardwareAdmissionMode:        "enforce",
@@ -178,7 +293,7 @@ func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
 	provider.Mu().Lock()
 	provider.TrustLevel = registry.TrustHardware
 	provider.MDAVerified = true
-	provider.SEKeyBound = true
+	provider.MDAFreshnessVerified = true
 	provider.Mu().Unlock()
 	if srv.finalizePendingHardwareAdmission(provider) {
 		t.Fatal("hardware admission finalized before official-code attestation")
@@ -327,10 +442,8 @@ func TestFirstEnforcementGrandfathersLiveTrustedProvider(t *testing.T) {
 
 	provider := srv.registry.RegisterPendingHardwareAdmission(
 		"live-grandfather", nil, admissionTestRegister())
-	provider.SetAttestationResult(&attestation.VerificationResult{
-		Valid:        true,
-		SerialNumber: "LIVE-GRANDFATHER-SERIAL",
-	})
+	result := admissionTestAttestation("LIVE-GRANDFATHER-SERIAL")
+	provider.SetAttestationResult(&result)
 	provider.SetAttested(true, registry.TrustHardware)
 
 	body := `{"mode":"enforce","min_memory_gb":32,"reason":"launch","expected_current_version":0}`
@@ -354,6 +467,93 @@ func TestFirstEnforcementGrandfathersLiveTrustedProvider(t *testing.T) {
 	}
 	if !provider.HardwareAdmissionStatus() || !provider.PersistenceEnabled() {
 		t.Fatal("live grandfathered provider was not committed")
+	}
+}
+
+func TestFirstEnforcementGrandfathersLegacySignedCapacityOmission(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{AdminKey: "test-key"})
+	srv.SetMDMClient(mdm.NewClient("http://mdm.invalid", "test", quietLogger()))
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		onSend: func(_, _, _, _ string) error { return nil },
+	})
+
+	registration := admissionTestRegister()
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"legacy-live-grandfather", nil, registration)
+	result := admissionTestAttestation("LEGACY-LIVE-GRANDFATHER")
+	result.MemoryGB = 0
+	result.GPUCores = 0
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+
+	body := `{"mode":"enforce","min_memory_gb":48,"reason":"launch","expected_current_version":0}`
+	request := httptest.NewRequest(
+		http.MethodPut, "/v1/admin/hardware-admission/policy",
+		strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer test-key")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+
+	admission, err := st.GetHardwareAdmission(
+		context.Background(), result.SerialNumber)
+	if err != nil || admission == nil {
+		t.Fatalf("legacy live admission = (%+v,%v), want durable admission", admission, err)
+	}
+	if admission.Hardware.MemoryGB != registration.Hardware.MemoryGB ||
+		admission.Hardware.GPUCores != registration.Hardware.GPUCores {
+		t.Fatalf("durable hardware = %+v, want registration snapshot", admission.Hardware)
+	}
+	if !provider.HardwareAdmissionStatus() {
+		t.Fatal("legacy live grandfather was fenced during first enforcement")
+	}
+}
+
+func TestFirstEnforcementRejectsLiveUnsignedHardwareMutation(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{AdminKey: "test-key"})
+	srv.SetMDMClient(mdm.NewClient(
+		"http://mdm.invalid", "test", quietLogger()))
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		onSend: func(_, _, _, _ string) error { return nil },
+	})
+	registration := admissionTestRegister()
+	registration.Hardware.MemoryGB = 128
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"live-mutated-grandfather", nil, registration)
+	result := admissionTestAttestation("LIVE-MUTATED-GRANDFATHER")
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+
+	body := `{"mode":"enforce","min_memory_gb":16,"reason":"launch","expected_current_version":0}`
+	request := httptest.NewRequest(
+		http.MethodPut, "/v1/admin/hardware-admission/policy",
+		strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer test-key")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	admitted, err := st.IsHardwareAdmitted(
+		context.Background(), result.SerialNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted || provider.HardwareAdmissionStatus() {
+		t.Fatal("mutated live hardware crossed the grandfathering cutoff")
+	}
+	attempts, err := st.ListHardwareAdmissionAttempts(
+		context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 ||
+		attempts[0].ReasonCode != "hardware_claim_mismatch" {
+		t.Fatalf("attempts = %+v", attempts)
 	}
 }
 
@@ -634,7 +834,7 @@ func TestPolicyChangeRechecksHardwareClaimIntegrity(t *testing.T) {
 	provider.SetCodeAttested(true)
 	provider.Mu().Lock()
 	provider.MDAVerified = true
-	provider.SEKeyBound = true
+	provider.MDAFreshnessVerified = true
 	provider.Mu().Unlock()
 	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
@@ -689,7 +889,7 @@ func TestStaleFinalizerCannotPersistNewPendingGeneration(t *testing.T) {
 	provider.SetCodeAttested(true)
 	provider.Mu().Lock()
 	provider.MDAVerified = true
-	provider.SEKeyBound = true
+	provider.MDAFreshnessVerified = true
 	provider.Mu().Unlock()
 	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
@@ -742,7 +942,7 @@ func TestHardUntrustedProviderCannotFinalizeHardwareAdmission(t *testing.T) {
 	provider.SetCodeAttested(true)
 	provider.Mu().Lock()
 	provider.MDAVerified = true
-	provider.SEKeyBound = true
+	provider.MDAFreshnessVerified = true
 	provider.Mu().Unlock()
 	policy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
@@ -804,6 +1004,53 @@ func TestEnforcedHardwareTrustRequiresCodeIdentity(t *testing.T) {
 	provider.SetCodeAttested(true)
 	if !srv.grantProviderHardwareTrust(provider) {
 		t.Fatal("code-attested provider did not receive hardware trust")
+	}
+}
+
+func TestPreEnforcementHardwareTrustGrantPersistsBeforeReturning(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, st, ServerConfig{}, quietLogger())
+	provider := reg.Register(
+		"atomic-grandfather-candidate", nil, admissionTestRegister())
+	result := admissionTestAttestation("ATOMIC-GRANDFATHER-1")
+	provider.SetAttestationResult(&result)
+
+	if !srv.grantProviderHardwareTrust(provider) {
+		t.Fatal("hardware trust grant failed")
+	}
+	record, err := st.GetProviderRecord(context.Background(), provider.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || record.TrustLevel != string(registry.TrustHardware) ||
+		record.SerialNumber != "ATOMIC-GRANDFATHER-1" {
+		t.Fatalf("grant returned before durable trust commit: %+v", record)
+	}
+}
+
+func TestOfflineAdmissionStatusUsesEffectivePolicyMode(t *testing.T) {
+	srv, _ := testServer(t)
+	machine := myProvider{serialNumber: "OFFLINE-EFFECTIVE-1"}
+	if err := srv.attachHardwareAdmissionState(
+		context.Background(), &machine, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !machine.HardwareAdmitted || machine.HardwareAdmissionRevoked {
+		t.Fatalf("disabled-mode offline admission = %+v", machine)
+	}
+
+	srv.setHardwareAdmissionPolicy(hardwareadmission.Policy{
+		Version: 1, Mode: hardwareadmission.ModeEnforce,
+		MinMemoryGB: 32, CatalogVersion: hardwareadmission.CatalogVersion,
+	})
+	machine = myProvider{serialNumber: "OFFLINE-EFFECTIVE-1"}
+	if err := srv.attachHardwareAdmissionState(
+		context.Background(), &machine, nil); err != nil {
+		t.Fatal(err)
+	}
+	if machine.HardwareAdmitted {
+		t.Fatalf("enforce-mode unadmitted offline machine = %+v", machine)
 	}
 }
 

@@ -18,14 +18,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // persisted state, then apply the responsive sidebar default for first-time
   // visitors on small screens (where the sidebar is a full-screen overlay).
   useEffect(() => {
-    const firstVisit =
-      typeof window !== "undefined" &&
-      window.localStorage.getItem(STORE_NAME) === null;
-    useStore.persist.rehydrate();
+    if (pathname === "/link" || pathname === "/provider-waitlist") return;
+    let firstVisit = false;
+    try {
+      firstVisit =
+        typeof window !== "undefined" &&
+        window.localStorage.getItem(STORE_NAME) === null;
+      useStore.persist.rehydrate();
+    } catch {
+      // Storage is optional. The shell remains usable with in-memory state.
+    }
     if (firstVisit && typeof window !== "undefined" && window.innerWidth < 640) {
       useStore.getState().setSidebarOpen(false);
     }
-  }, []);
+  }, [pathname]);
 
   // Focused public flows own their navigation and do not need the app shell.
   if (pathname === "/link" || pathname === "/provider-waitlist") {

@@ -8,7 +8,10 @@ import { EarningsHero } from "./EarningsHero";
 import { HardwareSelector } from "./HardwareSelector";
 import { ModelSupportList } from "./ModelSupportList";
 import { ProductionReadinessNotice } from "./ProductionReadinessNotice";
-import { ProviderAdmissionNotice } from "./ProviderAdmissionNotice";
+import {
+  ProviderAdmissionNotice,
+  selectedHardwareIsBlocked,
+} from "./ProviderAdmissionNotice";
 import { SetupProviderCTA } from "./SetupProviderCTA";
 import { useEarningsCalculator } from "./useEarningsCalculator";
 
@@ -16,6 +19,7 @@ export default function EarnPage() {
   const { ready, authenticated, login } = useAuth();
   const calc = useEarningsCalculator();
   const providerRequirements = useProviderRequirements();
+  const setupBlocked = selectedHardwareIsBlocked(calc, providerRequirements);
 
   let calculatorContent = (
     <div className="mb-6 rounded-xl border border-dashed border-border-dim bg-bg-secondary/50 px-6 py-10 text-center">
@@ -46,11 +50,13 @@ export default function EarnPage() {
           ready={ready}
           login={login}
         />
-        <SetupProviderCTA
-          authenticated={authenticated}
-          ready={ready}
-          login={login}
-        />
+        {!setupBlocked && (
+          <SetupProviderCTA
+            authenticated={authenticated}
+            ready={ready}
+            login={login}
+          />
+        )}
         <CalculationFlow calc={calc} />
         <ModelSupportList calc={calc} />
       </>

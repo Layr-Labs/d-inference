@@ -229,9 +229,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			revoked_by TEXT NOT NULL DEFAULT '',
 			revocation_reason TEXT NOT NULL DEFAULT ''
 		)`,
-		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_by TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revocation_reason TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revocation_reason TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS hardware_admission_events (
 			id BIGSERIAL PRIMARY KEY,
 			serial_number TEXT NOT NULL,
@@ -257,6 +257,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ON hardware_admission_attempts(account_id, created_at DESC) WHERE account_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_serial
 			ON hardware_admission_attempts(serial_number, created_at DESC) WHERE serial_number != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_created
+			ON hardware_admission_attempts(created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS provider_waitlist_signups (
 			email TEXT PRIMARY KEY,
 			chip TEXT NOT NULL,
@@ -267,6 +269,29 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`DO $$ BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'consented_at'
+			) AND NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'submitted_at'
+			) THEN
+				ALTER TABLE provider_waitlist_signups
+					RENAME COLUMN consented_at TO submitted_at;
+			END IF;
+			ALTER TABLE provider_waitlist_signups
+				ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+			UPDATE provider_waitlist_signups
+				SET submitted_at = COALESCE(submitted_at, created_at, NOW())
+				WHERE submitted_at IS NULL;
+			ALTER TABLE provider_waitlist_signups
+				ALTER COLUMN submitted_at SET NOT NULL;
+		END $$`,
 		`ALTER TABLE provider_waitlist_signups
 			ADD COLUMN IF NOT EXISTS gpu_cores INT NOT NULL DEFAULT 0
 			CHECK (gpu_cores BETWEEN 0 AND 512)`,

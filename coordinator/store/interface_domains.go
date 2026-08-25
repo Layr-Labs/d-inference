@@ -701,6 +701,7 @@ type ProviderStore interface {
 type HardwareAdmissionStore interface {
 	GetActiveHardwareAdmissionPolicy(ctx context.Context) (*hardwareadmission.Policy, error)
 	ActivateHardwareAdmissionPolicy(ctx context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64, liveGrandfathered ...HardwareAdmission) (hardwareadmission.Policy, error)
+	GetHardwareAdmission(ctx context.Context, serialNumber string) (*HardwareAdmission, error)
 	IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error)
 	IsHardwareAdmissionRevoked(ctx context.Context, serialNumber string) (bool, error)
 	AdmitHardware(ctx context.Context, admission HardwareAdmission) error

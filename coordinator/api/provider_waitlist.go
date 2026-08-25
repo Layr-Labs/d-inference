@@ -42,6 +42,8 @@ var providerWaitlistChips = map[string]string{
 	"m5":       "M5",
 	"m5 pro":   "M5 Pro",
 	"m5 max":   "M5 Max",
+	"m5 ultra": "M5 Ultra",
+	"m6":       "M6",
 	"other":    "other",
 }
 
@@ -203,7 +205,12 @@ func validateProviderWaitlistSignup(
 		)
 	}
 
-	chipKey := strings.ToLower(strings.Join(strings.Fields(request.Chip), " "))
+	chipLabel := strings.Join(strings.Fields(request.Chip), " ")
+	if detailStart := strings.LastIndex(chipLabel, " ("); detailStart > 0 &&
+		strings.HasSuffix(chipLabel, ")") {
+		chipLabel = chipLabel[:detailStart]
+	}
+	chipKey := strings.ToLower(chipLabel)
 	chip, ok := providerWaitlistChips[chipKey]
 	if !ok {
 		return store.ProviderWaitlistSignup{}, errors.New(

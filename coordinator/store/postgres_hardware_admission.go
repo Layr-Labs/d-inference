@@ -164,24 +164,43 @@ func (s *PostgresStore) ActivateHardwareAdmissionPolicy(
 	return policy, nil
 }
 
-func (s *PostgresStore) IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error) {
+func (s *PostgresStore) GetHardwareAdmission(
+	ctx context.Context,
+	serialNumber string,
+) (*HardwareAdmission, error) {
 	serial := normalizeHardwareSerial(serialNumber)
 	if serial == "" {
-		return false, nil
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var admitted bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT 1 FROM hardware_admissions
-			WHERE serial_number = $1 AND revoked_at IS NULL
-		)`,
-		serial,
-	).Scan(&admitted); err != nil {
-		return false, fmt.Errorf("store: check hardware admission: %w", err)
+	var admission HardwareAdmission
+	var hardwareJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT serial_number, source, policy_version, hardware, admitted_at,
+		       revoked_at, revoked_by, revocation_reason
+		FROM hardware_admissions
+		WHERE serial_number = $1
+	`, serial).Scan(
+		&admission.SerialNumber, &admission.Source, &admission.PolicyVersion,
+		&hardwareJSON, &admission.AdmittedAt, &admission.RevokedAt,
+		&admission.RevokedBy, &admission.RevocationReason,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return admitted, nil
+	if err != nil {
+		return nil, fmt.Errorf("store: get hardware admission: %w", err)
+	}
+	if err := json.Unmarshal(hardwareJSON, &admission.Hardware); err != nil {
+		return nil, fmt.Errorf("store: decode admitted hardware: %w", err)
+	}
+	return &admission, nil
+}
+
+func (s *PostgresStore) IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error) {
+	admission, err := s.GetHardwareAdmission(ctx, serialNumber)
+	return admission != nil && admission.RevokedAt == nil, err
 }
 
 func (s *PostgresStore) IsHardwareAdmissionRevoked(ctx context.Context, serialNumber string) (bool, error) {
@@ -378,15 +397,26 @@ func (s *PostgresStore) RecordHardwareAdmissionAttempt(ctx context.Context, atte
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// The sequence window bounds rows even when failed transactions leave ID
+	// gaps. One data-modifying CTE makes insertion and pruning atomic.
 	_, err := s.pool.Exec(ctx, `
+		WITH inserted AS (
 		INSERT INTO hardware_admission_attempts (
 			provider_id, serial_number, account_id, policy_version, mode,
 			decision, reason_code, hardware, failed_checks, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		RETURNING id
+		)
+		DELETE FROM hardware_admission_attempts AS attempts
+		USING inserted
+		WHERE attempts.id <= inserted.id - $11
+		   OR attempts.created_at < $12
 	`,
 		attempt.ProviderID, normalizeHardwareSerial(attempt.SerialNumber), attempt.AccountID,
 		attempt.PolicyVersion, attempt.Mode, attempt.Decision, attempt.ReasonCode,
 		attempt.hardwareJSON(), attempt.failedChecksJSON(), attempt.CreatedAt,
+		hardwareAdmissionAttemptMaxEntries,
+		time.Now().UTC().Add(-hardwareAdmissionAttemptRetention),
 	)
 	if err != nil {
 		return fmt.Errorf("store: record hardware admission attempt: %w", err)

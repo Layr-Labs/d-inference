@@ -54,7 +54,8 @@ export default function ProviderWaitlistPage() {
           <p className="mt-5 max-w-xl text-base leading-relaxed text-text-secondary">
             Darkbloom adjusts provider capacity by verified hardware profile.
             Tell us what you run so we can measure demand for future hardware
-            support. Automated eligibility emails are not active yet.
+            support. This form records hardware interest only; it does not
+            subscribe you to automated email.
           </p>
 
           <div className="mt-10 max-w-lg border-l border-border-default pl-5">
@@ -72,7 +73,7 @@ export default function ProviderWaitlistPage() {
               </li>
               <li className="flex gap-3">
                 <span className="font-mono text-xs text-text-tertiary">03</span>
-                Any future email flow will verify address ownership before sending.
+                We review registrations when planning future provider capacity.
               </li>
             </ol>
           </div>

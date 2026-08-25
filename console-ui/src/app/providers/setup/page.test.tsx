@@ -29,6 +29,8 @@ describe("ProviderSetupPage hardware requirements", () => {
     expect(
       screen.queryByText(/currently has no stricter onboarding floor/)
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("darkbloom start")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Setup is paused");
   });
 
   it("links an enforced policy to availability registration", () => {

@@ -8,9 +8,9 @@ Attestation binds a provider machine to an Apple Secure Enclave identity, indepe
 |---|---|---|---|
 | `none` | Open Mode | No attestation provided; consumer is warned. | `coordinator/registry/registry.go:305-342` |
 | `self_signed` | Self-attested | SE-signed blob verified; periodic challenge-response active. | `coordinator/attestation/attestation.go:119-231` |
-| `hardware` | Hardware-attested | MDM-enrolled + Apple MDA certificate chain verified; SE key bound via MDA nonce. | `coordinator/attestation/mda.go:98-186`, `coordinator/api/provider.go:2268-2429` |
+| `hardware` | Hardware-attested | Live SE proof + independent MDM SecurityInfo posture passed. | `coordinator/api/provider.go` |
 
-Private text traffic has an additional per-connection gate: APNs code-identity attestation (Layer 5). The single routing chokepoint is `providerSupportsPrivateTextLocked` in `coordinator/registry/registry.go:305-342`.
+Private text traffic has an additional per-connection gate: APNs code-identity attestation (Layer 5). Enforced new-machine onboarding also keeps the provider unroutable until Layer 3 MDA freshness passes. Thus the `hardware` enum can be visible briefly while admission is still `pending`; it is not, by itself, the complete routing decision. The single routing chokepoint is `providerSupportsPrivateTextLocked` in `coordinator/registry/registry.go:305-342`.
 
 ## Provider trust stack
 
@@ -45,12 +45,17 @@ Code:
 
 Layer 3 proves the device is genuine Apple hardware. The coordinator sends a `DeviceInformation` command requesting `DevicePropertiesAttestation`; the device returns a DER certificate chain signed by Apple's Enterprise Attestation Root CA. The coordinator verifies the chain, extracts device properties from Apple-assigned OIDs, and cross-checks the MDA serial number against the Layer 1 blob.
 
-The coordinator supplies a `DeviceAttestationNonce` equal to SHA-256 of the provider's SE public key. Apple embeds that hash in the `FreshnessCode` OID (`1.2.840.113635.100.8.11.1`), cryptographically binding the SE identity to Apple-attested hardware.
+The coordinator supplies a `DeviceAttestationNonce` equal to SHA-256 of the
+provider's SE public key. Apple embeds that hash in the `FreshnessCode` OID
+(`1.2.840.113635.100.8.11.1`). This proves request freshness and prevents a
+cached MDA chain from being reused across provider-key rotation. It does not
+prove that the application key resides on the MDA device; the system separately
+requires MDA device identity, live SE-key possession, and APNs code identity.
 
 Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
-- MDA dispatch, serial cross-check, and SE key binding: `coordinator/api/provider.go:2342-2429`
+- MDA dispatch, serial cross-check, and freshness correlation: `coordinator/api/provider.go`
 
 ### Layer 4: Challenge-response — fresh security posture every ~5 minutes
 

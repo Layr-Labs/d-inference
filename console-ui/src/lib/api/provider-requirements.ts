@@ -18,9 +18,21 @@ export interface ProviderRequirementsResponse {
 export async function fetchProviderRequirements(
   signal?: AbortSignal
 ): Promise<ProviderRequirementsResponse> {
-  const response = await fetch("/api/provider-requirements", { signal });
-  if (!response.ok) {
-    throw new Error(`Provider requirements unavailable (${response.status})`);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timeout = globalThis.setTimeout(abort, 7_000);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetch("/api/provider-requirements", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Provider requirements unavailable (${response.status})`);
+    }
+    return response.json() as Promise<ProviderRequirementsResponse>;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
   }
-  return response.json() as Promise<ProviderRequirementsResponse>;
 }

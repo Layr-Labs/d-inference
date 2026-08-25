@@ -1,12 +1,41 @@
 package registry
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+type blockingProviderUpsertStore struct {
+	store.Store
+	calls   atomic.Int32
+	started chan struct{}
+	second  chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingProviderUpsertStore) UpsertProvider(
+	ctx context.Context,
+	record store.ProviderRecord,
+) error {
+	switch s.calls.Add(1) {
+	case 1:
+		close(s.started)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	case 2:
+		close(s.second)
+	}
+	return s.Store.UpsertProvider(ctx, record)
+}
 
 func TestHardwareAdmissionGateCannotBeRelaxedBySelfRoute(t *testing.T) {
 	reg := New(testLogger())
@@ -54,6 +83,30 @@ func TestPendingRegistrationStartsUnadmittedEvenBeforeEnforcement(t *testing.T) 
 	}
 	if provider.PersistenceEnabled() {
 		t.Fatal("pending registration enabled persistence before admission")
+	}
+}
+
+func TestFleetGaugesExcludePendingAndRevokedProviders(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetHardwareAdmissionEnforced(true)
+	provider := reg.RegisterPendingHardwareAdmission(
+		"gauge-admission", nil, testRegisterMessage())
+	modelID := provider.Models[0].ID
+
+	if reg.OnlineCount() != 0 || reg.ModelProviderSnapshot()[modelID] != 0 {
+		t.Fatal("pending provider was counted as usable fleet capacity")
+	}
+	if !reg.CommitProviderHardwareAdmission(provider) {
+		t.Fatal("failed to admit current provider")
+	}
+	if reg.OnlineCount() != 1 || reg.ModelProviderSnapshot()[modelID] != 1 {
+		t.Fatal("admitted provider was absent from fleet gauges")
+	}
+	if !reg.SetProviderHardwareRevoked(provider, true) {
+		t.Fatal("failed to revoke current provider")
+	}
+	if reg.OnlineCount() != 0 || reg.ModelProviderSnapshot()[modelID] != 0 {
+		t.Fatal("revoked provider remained in usable fleet gauges")
 	}
 }
 
@@ -105,6 +158,116 @@ func TestStaleAdmissionCallbacksCannotMutateReplacementConnection(t *testing.T) 
 	}
 	if replacement.HardwareAdmissionStatus() {
 		t.Fatal("replacement inherited stale admission")
+	}
+}
+
+func TestStaleTrustGrantCannotPromoteReplacementConnection(t *testing.T) {
+	reg := New(testLogger())
+	stale := reg.RegisterPendingHardwareAdmission(
+		"reused-trust-id", nil, testRegisterMessage())
+	reg.DisconnectProvider(stale)
+	replacement := reg.RegisterPendingHardwareAdmission(
+		stale.ID, nil, testRegisterMessage())
+
+	if reg.GrantProviderHardwareIfCurrent(stale) {
+		t.Fatal("stale MDM callback granted hardware trust")
+	}
+	if stale.GetTrustLevel() == TrustHardware {
+		t.Fatal("stale provider pointer was promoted")
+	}
+	if !reg.GrantProviderHardwareIfCurrent(replacement) {
+		t.Fatal("current provider did not receive hardware trust")
+	}
+}
+
+func TestStaleConnectionCannotOverwriteReplacementPersistence(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	reg := New(testLogger())
+	reg.SetStore(st)
+	stale := reg.RegisterPendingHardwareAdmission(
+		"reused-persistence-id", nil, testRegisterMessage())
+	stale.mu.Lock()
+	stale.persistenceEnabled = true
+	stale.Attested = true
+	stale.TrustLevel = TrustHardware
+	stale.mu.Unlock()
+	reg.DisconnectProvider(stale)
+	replacement := reg.RegisterPendingHardwareAdmission(
+		stale.ID, nil, testRegisterMessage())
+
+	current, err := reg.PersistProviderSyncIfCurrent(
+		context.Background(), stale)
+	if err != nil {
+		t.Fatalf("persist stale provider: %v", err)
+	}
+	if current {
+		t.Fatal("stale provider was treated as the current connection")
+	}
+	if reg.GetProvider(replacement.ID) != replacement {
+		t.Fatal("replacement connection was displaced")
+	}
+	rec, _ := st.GetProviderRecord(context.Background(), stale.ID)
+	if rec != nil {
+		t.Fatal("stale provider overwrote replacement durable state")
+	}
+}
+
+func TestSynchronousTrustGrantSupersedesOlderPersistence(t *testing.T) {
+	memory := store.NewMemory(store.Config{})
+	blocking := &blockingProviderUpsertStore{
+		Store: memory, started: make(chan struct{}),
+		second: make(chan struct{}), release: make(chan struct{}),
+	}
+	reg := New(testLogger())
+	reg.SetStore(blocking)
+	provider := reg.RegisterPendingHardwareAdmission(
+		"serialized-persistence", nil, testRegisterMessage())
+	provider.mu.Lock()
+	provider.persistenceEnabled = true
+	provider.Attested = true
+	provider.TrustLevel = TrustSelfSigned
+	provider.mu.Unlock()
+	if err := memory.OpenProviderSession(
+		context.Background(), provider.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted := make(chan error, 1)
+	go func() {
+		persisted <- reg.PersistProviderSync(context.Background(), provider)
+	}()
+	<-blocking.started
+
+	type grantResult struct {
+		ok  bool
+		err error
+	}
+	granted := make(chan grantResult, 1)
+	go func() {
+		ok, err := reg.GrantProviderHardwareAndPersistIfCurrent(
+			context.Background(), provider, true)
+		granted <- grantResult{ok: ok, err: err}
+	}()
+	select {
+	case <-blocking.second:
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(blocking.release)
+	if err := <-persisted; err != nil {
+		t.Fatal(err)
+	}
+	result := <-granted
+	if result.err != nil || !result.ok {
+		t.Fatalf("grant = (%v,%v), want true,nil", result.ok, result.err)
+	}
+	record, err := memory.GetProviderRecord(
+		context.Background(), provider.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.TrustLevel != string(TrustHardware) || !record.Attested {
+		t.Fatalf("durable trust = (%q,%v), want hardware,true",
+			record.TrustLevel, record.Attested)
 	}
 }
 

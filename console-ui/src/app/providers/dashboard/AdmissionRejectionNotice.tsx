@@ -82,7 +82,7 @@ export function AdmissionRejectionNotice({
             href={waitlistHref(rejection)}
             className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-accent-brand transition-colors hover:text-accent-brand-hover focus-ring"
           >
-          Register hardware interest
+            Register hardware interest
             <ArrowRight size={14} aria-hidden="true" />
           </Link>
         </div>

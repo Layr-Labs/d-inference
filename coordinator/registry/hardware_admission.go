@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
@@ -81,6 +82,34 @@ func (r *Registry) SetProviderHardwareAdmissionFence(
 	}
 	p.mu.Unlock()
 	r.mu.RUnlock()
+	return true
+}
+
+// SetProviderHardwareFromAdmission replaces reward/routing identity fields with
+// the durable admission ledger for legacy attestations that predate signed
+// memory and GPU claims. The exact-connection check prevents a stale callback
+// from changing a replacement provider.
+func (r *Registry) SetProviderHardwareFromAdmission(
+	p *Provider,
+	hardware hardwareadmission.Observed,
+) bool {
+	if p == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if current, ok := r.providers[p.ID]; !ok || current != p {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Hardware.MachineModel = hardware.MachineModel
+	p.Hardware.ChipName = hardware.ChipName
+	p.Hardware.ChipFamily = hardware.ChipFamily
+	p.Hardware.ChipTier = hardware.ChipTier
+	p.Hardware.MemoryGB = hardware.MemoryGB
+	p.Hardware.GPUCores = hardware.GPUCores
+	p.Hardware.MemoryBandwidthGBs = float64(hardware.MemoryBandwidthGBs)
 	return true
 }
 

@@ -154,12 +154,18 @@ export const ENDPOINTS: Endpoint[] = [
     "hardware_model": "Mac16,1",
     "trust_level": "hardware",
     "status": "online",
+    "memory_gb": 128,
+    "gpu_cores": 40,
+    "models": ["example/model"],
     "secure_enclave": true,
     "sip_enabled": true,
     "secure_boot_enabled": true,
+    "authenticated_root_enabled": true,
     "mdm_verified": true,
     "mda_verified": true,
-    "se_public_key": "..."
+    "se_public_key": "...",
+    "mda_os_version": "15.6",
+    "mda_sepos_version": "22.6"
   }]
 }`,
     notes: "Publicly accessible — no authentication required. Hardware serials, UDIDs, and raw Apple certificate chains stay private to the provider and coordinator.",

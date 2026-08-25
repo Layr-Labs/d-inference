@@ -12,6 +12,11 @@ import (
 var ErrHardwareAdmissionPolicyConflict = errors.New("hardware admission policy version conflict")
 var ErrHardwareAdmissionRevoked = errors.New("hardware admission revoked")
 
+const (
+	hardwareAdmissionAttemptMaxEntries = DefaultPruneMaxEntries
+	hardwareAdmissionAttemptRetention  = 180 * 24 * time.Hour
+)
+
 type HardwareAdmission struct {
 	SerialNumber     string                     `json:"serial_number"`
 	Source           string                     `json:"source"`

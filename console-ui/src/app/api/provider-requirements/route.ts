@@ -1,15 +1,25 @@
 import { NextResponse } from "next/server";
-import { cacheControl, coordinatorUrl } from "@/lib/server/coordinator";
+import { coordinatorUrl } from "@/lib/server/coordinator";
 
 export async function GET() {
-  const res = await fetch(`${coordinatorUrl()}/v1/provider-requirements`);
-  if (!res.ok) {
+  try {
+    const res = await fetch(`${coordinatorUrl()}/v1/provider-requirements`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: `Upstream ${res.status}` },
+        { status: res.status, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+    return NextResponse.json(await res.json(), {
+      headers: { "Cache-Control": "no-store" },
+    });
+  } catch {
     return NextResponse.json(
-      { error: `Upstream ${res.status}` },
-      { status: res.status }
+      { error: "Provider requirements upstream timed out" },
+      { status: 504, headers: { "Cache-Control": "no-store" } }
     );
   }
-  return NextResponse.json(await res.json(), {
-    headers: { "Cache-Control": cacheControl(60, 300) },
-  });
 }

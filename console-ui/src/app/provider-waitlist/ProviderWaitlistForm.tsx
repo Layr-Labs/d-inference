@@ -40,6 +40,27 @@ interface APIErrorBody {
   };
 }
 
+function isStoredRegistration(value: unknown): value is StoredRegistration {
+  if (typeof value !== "object" || value === null) return false;
+  const registration = value as Partial<StoredRegistration>;
+  return (
+    typeof registration.chip === "string" &&
+    registration.chip.length > 0 &&
+    typeof registration.memoryGB === "number" &&
+    Number.isInteger(registration.memoryGB) &&
+    registration.memoryGB >= 4 &&
+    registration.memoryGB <= 1024 &&
+    (registration.gpuCores === undefined ||
+      (typeof registration.gpuCores === "number" &&
+        Number.isInteger(registration.gpuCores) &&
+        registration.gpuCores >= 0 &&
+        registration.gpuCores <= 512)) &&
+    typeof registration.otherMachine === "string" &&
+    typeof registration.registeredAt === "string" &&
+    !Number.isNaN(Date.parse(registration.registeredAt))
+  );
+}
+
 function removeStoredRegistration() {
   try {
     window.localStorage.removeItem(PROVIDER_WAITLIST_STORAGE_KEY);
@@ -52,10 +73,8 @@ function readStoredRegistration(): StoredRegistration | null {
   try {
     const raw = window.localStorage.getItem(PROVIDER_WAITLIST_STORAGE_KEY);
     if (!raw) return null;
-    const saved = JSON.parse(raw) as StoredRegistration;
-    if (saved.registeredAt && saved.chip && saved.memoryGB) {
-      return saved;
-    }
+    const saved: unknown = JSON.parse(raw);
+    if (isStoredRegistration(saved)) return saved;
   } catch {
     // Blocked or malformed browser storage must not break the public form.
   }
@@ -72,6 +91,14 @@ function persistStoredRegistration(registration: StoredRegistration) {
   } catch {
     // The API already persisted successfully; confirmation still renders.
   }
+}
+
+function submissionErrorMessage(error: unknown): string {
+  if (error instanceof DOMException && error.name === "TimeoutError") {
+    return "Registration timed out. Please try again.";
+  }
+  if (error instanceof Error) return error.message;
+  return "Registration could not be saved. Please try again.";
 }
 
 function matchingChip(raw: string | null): string | null {
@@ -162,6 +189,7 @@ export function ProviderWaitlistForm() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(10_000),
           body: JSON.stringify({
             email,
             chip,
@@ -203,11 +231,7 @@ export function ProviderWaitlistForm() {
         gpu_cores: gpuCores,
       });
     } catch (submissionError) {
-      setError(
-        submissionError instanceof Error
-          ? submissionError.message
-          : "Registration could not be saved. Please try again."
-      );
+      setError(submissionErrorMessage(submissionError));
     } finally {
       setSubmitting(false);
     }
@@ -238,8 +262,7 @@ export function ProviderWaitlistForm() {
           Hardware interest saved
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-          We stored this registration for capacity planning. Automated
-          eligibility emails are not active yet.
+          We stored this registration for provider capacity planning.
         </p>
         <dl className="mt-6 grid grid-cols-2 gap-4 border-y border-border-dim py-4 text-sm">
           <div>

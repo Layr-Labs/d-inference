@@ -137,6 +137,8 @@ export default function ProviderSetupPage() {
   const providerRequirementsState = useProviderRequirements();
   const providerRequirements = providerRequirementsState.requirements;
   const policy = providerRequirements?.policy;
+  const setupPolicyKnown =
+    providerRequirementsState.status === "ready" && policy !== undefined;
   const hardwareTitle = policy?.min_memory_gb
     ? `${policy.min_memory_gb}GB+ RAM`
     : "Unified Memory";
@@ -242,28 +244,42 @@ export default function ProviderSetupPage() {
       {/* Step by step */}
       <div>
         <h2 className="text-lg font-semibold text-text-primary mb-6">Setup Guide</h2>
-        <div className="space-y-6">
-          {STEPS.map(({ icon: Icon, title, description, command }, i) => (
-            <div key={title} className="flex gap-4">
-              <div className="flex flex-col items-center">
-                <div className="w-10 h-10 rounded-full bg-accent-brand/10 flex items-center justify-center shrink-0">
-                  <span className="text-sm font-bold text-accent-brand">{i + 1}</span>
+        {setupPolicyKnown ? (
+          <div className="space-y-6">
+            {STEPS.map(({ icon: Icon, title, description, command }, i) => (
+              <div key={title} className="flex gap-4">
+                <div className="flex flex-col items-center">
+                  <div className="w-10 h-10 rounded-full bg-accent-brand/10 flex items-center justify-center shrink-0">
+                    <span className="text-sm font-bold text-accent-brand">{i + 1}</span>
+                  </div>
+                  {i < STEPS.length - 1 && (
+                    <div className="w-px flex-1 bg-border-dim mt-2" />
+                  )}
                 </div>
-                {i < STEPS.length - 1 && (
-                  <div className="w-px flex-1 bg-border-dim mt-2" />
-                )}
-              </div>
-              <div className="flex-1 pb-6">
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon size={16} className="text-text-tertiary" />
-                  <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+                <div className="flex-1 pb-6">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Icon size={16} className="text-text-tertiary" />
+                    <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+                  </div>
+                  <p className="text-sm text-text-secondary mb-3">{description}</p>
+                  <CopyableCommand command={command} />
                 </div>
-                <p className="text-sm text-text-secondary mb-3">{description}</p>
-                <CopyableCommand command={command} />
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div role="alert" className="rounded-xl border border-accent-amber/25 bg-accent-amber/10 px-4 py-4 text-sm text-text-secondary">
+            Setup is paused until the coordinator&apos;s current new-machine
+            requirements can be verified.{" "}
+            <Link
+              href="/provider-waitlist"
+              className="font-semibold text-accent-brand hover:text-accent-brand-hover"
+            >
+              Register hardware interest
+            </Link>
+            .
+          </div>
+        )}
       </div>
 
       {/* FAQ */}

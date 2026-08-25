@@ -503,7 +503,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		return false
 	}
 	// A machine qualifying under the hardware policy for the first time must
-	// complete the live MDM + SE-bound Apple MDA path before its positive
+	// complete live MDM and key-correlated Apple MDA checks before its positive
 	// admission is committed. Trust reuse may accelerate reconnects only after
 	// that first durable admission exists.
 	if s.hasPendingHardwareAdmission(providerID) {

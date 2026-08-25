@@ -33,7 +33,8 @@ curl -fsSL https://api.darkbloom.dev/v1/provider-requirements
 Machines that are not currently eligible can register hardware interest with an
 email, chip, memory, optional GPU-core count, or a custom “Others Machines”
 description at `https://console.darkbloom.dev/provider-waitlist`. This is a
-capacity-planning registry; automated eligibility emails are not active yet.
+capacity-planning registry only; submitting does not create an email
+notification subscription.
 
 Operators manage immutable policy versions with
 `scripts/admin.sh hardware-policy get|set`, and can inspect the admitted-machine
@@ -44,12 +45,30 @@ Enforcement requires at least one positive capacity threshold plus configured
 MDM and APNs code-attestation dependencies; the coordinator refuses an unsafe
 activation or startup.
 
+The initial enforced policy is intentionally simple: **48 GiB minimum unified
+memory**, with bandwidth and FP16 thresholds disabled. After deployment, an
+operator activates it using the current policy version returned by `get`:
+
+```bash
+scripts/admin.sh hardware-policy get
+scripts/admin.sh hardware-policy set enforce 48 0 0 <expected-version> \
+  "Launch gate: 48 GiB minimum; other capacity metrics optional"
+```
+
 Bandwidth and FP16 throughput are derived from the coordinator's versioned Apple
 Silicon catalog. They are not accepted from arbitrary provider values. A new
 machine's actual memory and GPU-core count are included in its signed Secure
 Enclave attestation and must match registration; first admission is committed
-only after MDM verification, official-code attestation, and an SE-bound Apple
-Device Attestation.
+only after MDM verification, official-code attestation, and a fresh Apple Device
+Attestation correlated to the live SE public-key digest.
+
+This is an operational capacity gate, not an Apple-attested hardware-SKU proof.
+MDA attests device identity and security state, but not RAM, GPU cores, or the
+residency of an application key named in a caller-selected freshness nonce.
+Those hardware fields remain provider measurements constrained by the
+coordinator catalog. A colluding relay or deliberately modified provider can
+therefore misrepresent capacity; runtime load failures, performance telemetry,
+and operator revocation remain the enforcement backstops for adversarial nodes.
 
 ## Recommended configurations
 

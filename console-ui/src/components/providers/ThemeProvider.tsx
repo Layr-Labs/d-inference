@@ -3,10 +3,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { migrateStorage } from "@/lib/migrate-storage";
 
-// Migrate old eigeninference_* localStorage keys to darkbloom_* before any
-// component reads them. Module-scope call ensures it runs once on bundle load.
-migrateStorage();
-
 type Theme = "light" | "dark";
 
 interface ThemeContextValue {
@@ -28,12 +24,22 @@ export function useTheme() {
 const STORAGE_KEY = "darkbloom-theme";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("light");
+  const [theme, setThemeState] = useState<Theme>(() => {
+    // This initializer runs before descendants render and safely no-ops when
+    // storage is unavailable.
+    migrateStorage();
+    return "light";
+  });
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    const initial = stored || "light";
+    let initial: Theme = "light";
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === "light" || stored === "dark") initial = stored;
+    } catch {
+      // Storage is optional; the in-memory default remains usable.
+    }
     setThemeState(initial);
     document.documentElement.classList.toggle("dark", initial === "dark");
     setMounted(true);
@@ -41,7 +47,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const setTheme = (t: Theme) => {
     setThemeState(t);
-    localStorage.setItem(STORAGE_KEY, t);
+    try {
+      localStorage.setItem(STORAGE_KEY, t);
+    } catch {
+      // Keep the selected theme for this page even when persistence is denied.
+    }
     document.documentElement.classList.toggle("dark", t === "dark");
   };
 

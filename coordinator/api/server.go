@@ -2551,24 +2551,21 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 	}
 }
 
-// publicCORSPaths are endpoints whose GET is unauthenticated, read-only public
-// data. Their GET is served with a wildcard CORS origin so the marketing site
-// (darkbloom.dev) and any third party can read them from the browser. NOTE:
-// some of these paths (e.g. /v1/pricing) ALSO serve authenticated PUT/DELETE —
-// the wildcard applies only to GET; non-GET methods fall through to the
-// credentialed, single-origin CORS below.
-var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+// publicCORSMethods is the exact unauthenticated method that is safe from any
+// browser origin. Other methods on the same path remain single-origin.
+var publicCORSMethods = map[string]string{
+	"/v1/models/catalog":    http.MethodGet,
+	"/v1/pricing":           http.MethodGet,
+	"/v1/stats":             http.MethodGet,
+	"/v1/network/series":    http.MethodGet,
+	"/v1/provider-waitlist": http.MethodPost,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are
 // locked to a single origin derived from the CORS_ORIGIN environment variable
 // (defaulting to the production console domain); a wildcard is never used for
-// those. A GET to a public read-only endpoint (see publicCORSPaths) is readable
-// from any origin, without credentials, so a wildcard is safe and intended.
+// those. Public methods listed above are available from any origin without
+// credentials, so a wildcard is safe and intended.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	origin := s.corsOrigin
 	if origin == "" {
@@ -2586,11 +2583,13 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if publicCORSPaths[r.URL.Path] && effectiveMethod == http.MethodGet {
-			// Public, non-credentialed GET — any origin may read it.
+		publicMethod, publicPath := publicCORSMethods[r.URL.Path]
+		if publicPath && effectiveMethod == publicMethod {
+			// Public, non-credentialed request — any origin may use it.
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", publicMethod+", OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 			w.Header().Set("Vary", "Origin")
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)

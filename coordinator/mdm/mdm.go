@@ -49,8 +49,9 @@ func parseCommandUUID(plistData []byte) string {
 // DeviceAttestationResponse contains the DER-encoded certificate chain
 // from Apple's DevicePropertiesAttestation response.
 type DeviceAttestationResponse struct {
-	UDID      string
-	CertChain [][]byte // DER-encoded certificates, leaf first
+	UDID        string
+	CommandUUID string
+	CertChain   [][]byte // DER-encoded certificates, leaf first
 }
 
 // OnMDACallback is called when a DevicePropertiesAttestation response arrives.
@@ -69,10 +70,10 @@ type Client struct {
 	apiKey  string
 	client  *http.Client
 	logger  *slog.Logger
-	// Per-UDID one-shot channels for webhook response dispatch.
-	// A goroutine calling WaitForSecurityInfo or WaitForDeviceAttestation
-	// registers a channel here; HandleWebhook delivers to it or drops if
-	// nobody is waiting — no shared buffer, no saturation, no busy-spin.
+	// One-shot channels for webhook response dispatch. SecurityInfo has at most
+	// one in-flight request per UDID. Device attestation is keyed by command UUID
+	// because overlapping nonce-specific requests for one UDID must not overwrite
+	// or consume each other's response.
 	waitMu         sync.Mutex
 	secInfoWaiters map[string]chan *SecurityInfoResponse
 	attestWaiters  map[string]chan *DeviceAttestationResponse
@@ -355,36 +356,24 @@ func (c *Client) pushDevice(ctx context.Context, udid string) {
 	}
 }
 
-// SendDeviceAttestationCommand sends a DeviceInformation command requesting
-// DevicePropertiesAttestation from Apple. The device contacts Apple's servers,
-// which return a DER-encoded certificate chain signed by Apple's Enterprise
-// Attestation Root CA. This is the real MDA — Apple vouches for the device.
+// sendDeviceAttestationWithNonce requests DevicePropertiesAttestation from
+// Apple using a caller-assigned command UUID for exact response correlation.
 //
-// If nonce is non-empty, it is included as DeviceAttestationNonce. Apple hashes
-// the nonce and embeds the hash as FreshnessCode (OID 1.2.840.113635.100.8.11.1)
-// in the leaf certificate. This binds arbitrary data (e.g. a SE key hash) to
-// Apple's attestation signature.
-//
-// When a nonce is provided, we send a raw plist command because MicroMDM's
-// DeviceInformation struct doesn't support DeviceAttestationNonce.
-func (c *Client) SendDeviceAttestationCommand(ctx context.Context, udid string, nonce ...string) (string, error) {
-	// Always use raw plist to support DeviceAttestationNonce
-	nonceStr := ""
-	if len(nonce) > 0 {
-		nonceStr = nonce[0]
-	}
-	return c.sendDeviceAttestationWithNonce(ctx, udid, nonceStr)
-}
-
-// sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
-// with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
-// field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
-func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce string) (string, error) {
+// If nonce is non-empty, it is included as DeviceAttestationNonce. Apple embeds
+// the decoded bytes as FreshnessCode (OID 1.2.840.113635.100.8.11.1) in the leaf
+// certificate. This proves freshness and echoes caller-selected data; it does
+// not prove that an application key resides on the device.
+// MicroMDM's structured API lacks this field, so this uses the raw endpoint.
+func (c *Client) sendDeviceAttestationWithNonce(
+	ctx context.Context,
+	udid string,
+	nonce string,
+	commandUUID string,
+) error {
 	// DevicePropertiesAttestation is requested via a DeviceInformation command.
 	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
-		return "", err
+		return err
 	}
-	cmdUUID := uuid.New().String()
 
 	// Build nonce XML if provided
 	nonceXML := ""
@@ -410,53 +399,45 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 	<key>CommandUUID</key>
 	<string>%s</string>
 </dict>
-</plist>`, nonceXML, cmdUUID)
+</plist>`, nonceXML, commandUUID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
 	if err != nil {
-		return "", err
+		return err
 	}
 	req.SetBasicAuth("micromdm", c.apiKey)
 	req.Header.Set("Content-Type", "application/xml")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("mdm send DeviceInformation with nonce failed: %w", err)
+		return fmt.Errorf("mdm send DeviceInformation with nonce failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
-
-	c.trackCommand(cmdUUID, udid, time.Now())
 
 	// Push to trigger device check-in (best-effort; command is already queued).
 	// The raw POST /v1/commands/{udid} endpoint does NOT auto-push (unlike the
 	// structured /v1/commands), so the explicit push is required here.
 	c.pushDevice(ctx, udid)
 
-	return cmdUUID, nil
+	return nil
 }
 
-// WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
-// It returns early if ctx is cancelled (e.g. the provider disconnected), so a
-// teardown isn't blocked for the full timeout.
-func (c *Client) registerDeviceAttestationWaiter(udid string) (<-chan *DeviceAttestationResponse, func()) {
+func (c *Client) registerDeviceAttestationWaiter(
+	commandUUID string,
+) (<-chan *DeviceAttestationResponse, func()) {
 	ch := make(chan *DeviceAttestationResponse, 1)
 	c.waitMu.Lock()
-	c.attestWaiters[udid] = ch
+	c.attestWaiters[commandUUID] = ch
 	c.waitMu.Unlock()
 	return ch, func() {
 		c.waitMu.Lock()
-		// Identity-guarded delete (parity with registerSecurityInfoWaiter): only
-		// remove our own channel. With two overlapping connections for the same
-		// device (same UDID), an unconditional delete could drop a later waiter's
-		// live channel and route its Apple attestation response to the late
-		// callback instead.
-		if cur, ok := c.attestWaiters[udid]; ok && cur == ch {
-			delete(c.attestWaiters, udid)
+		if cur, ok := c.attestWaiters[commandUUID]; ok && cur == ch {
+			delete(c.attestWaiters, commandUUID)
 		}
 		c.waitMu.Unlock()
 	}
@@ -473,12 +454,6 @@ func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationRes
 	}
 }
 
-func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
-	ch, release := c.registerDeviceAttestationWaiter(udid)
-	defer release()
-	return awaitDeviceAttestation(ctx, ch, udid, timeout)
-}
-
 // RequestDeviceAttestation closes the fast-device webhook race by registering
 // the response waiter before enqueueing and pushing the command.
 func (c *Client) RequestDeviceAttestation(
@@ -487,9 +462,13 @@ func (c *Client) RequestDeviceAttestation(
 	nonce string,
 	timeout time.Duration,
 ) (*DeviceAttestationResponse, error) {
-	ch, release := c.registerDeviceAttestationWaiter(udid)
+	commandUUID := uuid.New().String()
+	ch, release := c.registerDeviceAttestationWaiter(commandUUID)
 	defer release()
-	if _, err := c.SendDeviceAttestationCommand(ctx, udid, nonce); err != nil {
+	c.trackCommand(commandUUID, udid, time.Now())
+	if err := c.sendDeviceAttestationWithNonce(
+		ctx, udid, nonce, commandUUID); err != nil {
+		c.consumeCommand(commandUUID, time.Now())
 		return nil, err
 	}
 	return awaitDeviceAttestation(ctx, ch, udid, timeout)
@@ -604,17 +583,18 @@ func (c *Client) HandleWebhook(body []byte) {
 	attestCerts := parseDeviceAttestationPlist(plistData)
 	if attestCerts != nil {
 		resp := &DeviceAttestationResponse{
-			UDID:      webhook.Event.UDID,
-			CertChain: attestCerts,
+			UDID:        webhook.Event.UDID,
+			CommandUUID: cmdUUID,
+			CertChain:   attestCerts,
 		}
 		c.logger.Info("mdm DevicePropertiesAttestation received",
 			"udid", resp.UDID,
 			"cert_count", len(resp.CertChain),
 		)
 		c.waitMu.Lock()
-		ch, waiting := c.attestWaiters[resp.UDID]
+		ch, waiting := c.attestWaiters[cmdUUID]
 		if waiting {
-			delete(c.attestWaiters, resp.UDID)
+			delete(c.attestWaiters, cmdUUID)
 		}
 		c.waitMu.Unlock()
 		if waiting {

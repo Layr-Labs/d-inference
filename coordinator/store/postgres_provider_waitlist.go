@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const providerWaitlistStoreTimeout = 5 * time.Second
+
 func (s *PostgresStore) UpsertProviderWaitlistSignup(
 	ctx context.Context,
 	signup ProviderWaitlistSignup,
@@ -16,6 +18,8 @@ func (s *PostgresStore) UpsertProviderWaitlistSignup(
 	if signup.SubmittedAt.IsZero() {
 		signup.SubmittedAt = time.Now().UTC()
 	}
+	ctx, cancel := context.WithTimeout(ctx, providerWaitlistStoreTimeout)
+	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO provider_waitlist_signups
@@ -46,6 +50,8 @@ func (s *PostgresStore) ListProviderWaitlistSignups(
 	limit int,
 ) ([]ProviderWaitlistSignup, error) {
 	limit = providerWaitlistListLimit(limit)
+	ctx, cancel := context.WithTimeout(ctx, providerWaitlistStoreTimeout)
+	defer cancel()
 	rows, err := s.pool.Query(ctx,
 		`SELECT email, chip, memory_gb, gpu_cores, other_machine,
 		        submitted_at, created_at, updated_at

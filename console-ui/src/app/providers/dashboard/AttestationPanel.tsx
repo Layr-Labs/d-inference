@@ -14,13 +14,15 @@ import {
 import type { MyProvider } from "../types";
 import { formatRelative } from "./format";
 
+const ERROR_TEXT_CLASS = "text-accent-red";
+
 function CheckLine({ ok, label }: { ok: boolean; label: string }) {
   return (
     <div className="flex items-center gap-2 text-xs">
       {ok ? (
         <CheckCircle2 size={12} className="text-accent-green shrink-0" />
       ) : (
-        <XCircle size={12} className="text-accent-red shrink-0" />
+        <XCircle size={12} className={`${ERROR_TEXT_CLASS} shrink-0`} />
       )}
       <span className="text-text-secondary">{label}</span>
     </div>
@@ -67,7 +69,8 @@ export function AttestationPanel({
 }) {
   // Each chain link is "ok" only when all of its sub-checks pass; the spine
   // renders green up to the first broken link so the gap is obvious.
-  const enclaveOK = p.secure_enclave && p.se_key_bound;
+  const mdaFreshnessOK = p.mda_freshness_verified ?? p.se_key_bound;
+  const enclaveOK = p.secure_enclave && mdaFreshnessOK;
   const osOK = p.sip_enabled && p.secure_boot_enabled && p.authenticated_root_enabled && p.runtime_verified;
   const mdmOK = p.trust_level === "hardware";
 
@@ -87,7 +90,10 @@ export function AttestationPanel({
     <div>
       <ChainNode ok={enclaveOK} title="Secure Enclave">
         <CheckLine ok={p.secure_enclave} label="Hardware-bound P-256 identity" />
-        <CheckLine ok={p.se_key_bound} label="SE key bound to MDA nonce" />
+        <CheckLine
+          ok={mdaFreshnessOK}
+          label="MDA nonce matches live SE key digest"
+        />
       </ChainNode>
 
       <ChainNode ok={osOK} title="OS security">
@@ -136,7 +142,7 @@ export function AttestationPanel({
         )}
         <span>
           Runtime:{" "}
-          <span className={p.runtime_verified ? "text-accent-green" : "text-accent-red"}>
+          <span className={p.runtime_verified ? "text-accent-green" : ERROR_TEXT_CLASS}>
             {p.runtime_verified ? "verified" : "unverified"}
           </span>
         </span>

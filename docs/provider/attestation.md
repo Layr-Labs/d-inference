@@ -115,8 +115,9 @@ upgraded to `hardware` and Apple Device Attestation (MDA) is requested.
 (`coordinator/api/provider.go`) — supplies the informational Apple-genuineness
 proof after MDM succeeds: the coordinator asks Apple to sign a device
 attestation certificate, verifies the chain to the Apple Enterprise Attestation
-Root CA, and checks that the MDA serial matches the provider's serial. The MDA
-cert may also bind the SE public key via the `FreshnessCode` OID.
+Root CA, and checks that the MDA serial matches the provider's serial. The
+`FreshnessCode` may match the live SE public-key digest, preventing cross-key
+cached-chain reuse; it does not attest application-key residence on the device.
 
 (An ACME `device-attest-01` client-certificate path used to exist as a second
 trust leg; it was never wired end-to-end and was removed on 2026-07-03.

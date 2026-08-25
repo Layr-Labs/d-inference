@@ -106,6 +106,8 @@ export interface MyProvider {
   mda_verified: boolean;
   hardware_admitted?: boolean;
   hardware_admission_revoked?: boolean;
+  mda_freshness_verified?: boolean;
+  // Legacy wire alias for mda_freshness_verified.
   se_key_bound: boolean;
   se_public_key?: string;
   // X25519 E2E key (same value as /v1/encryption-key); present only for

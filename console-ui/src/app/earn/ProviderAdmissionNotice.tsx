@@ -11,6 +11,26 @@ function waitlistHref(calc: EarningsCalculator): string {
   return `/provider-waitlist?${params.toString()}`;
 }
 
+export function selectedHardwareIsBlocked(
+  calc: EarningsCalculator,
+  requirementsState: ProviderRequirementsState
+): boolean {
+  const policy = requirementsState.requirements?.policy;
+  if (requirementsState.status !== "ready" || !policy) {
+    return true;
+  }
+  if (policy.mode !== "enforce") {
+    return false;
+  }
+  const belowMemory =
+    policy.min_memory_gb > 0 &&
+    calc.effectiveRAM < policy.min_memory_gb;
+  const belowBandwidth =
+    policy.min_memory_bandwidth_gbs > 0 &&
+    calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
+  return belowMemory || belowBandwidth;
+}
+
 export function ProviderAdmissionNotice({
   calc,
   requirementsState,
@@ -58,13 +78,27 @@ export function ProviderAdmissionNotice({
     policy.mode === "enforce" &&
     policy.min_memory_gb > 0 &&
     calc.effectiveRAM < policy.min_memory_gb;
-  const Icon = belowMemoryFloor ? AlertTriangle : ShieldCheck;
+  const belowBandwidthFloor =
+    policy.mode === "enforce" &&
+    policy.min_memory_bandwidth_gbs > 0 &&
+    calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
+  const blocked = belowMemoryFloor || belowBandwidthFloor;
+  const Icon = blocked ? AlertTriangle : ShieldCheck;
+  let blockedTitle = "";
+  let blockedDetail = "";
+  if (belowMemoryFloor) {
+    blockedTitle = "This Mac is below the current new-provider memory floor";
+    blockedDetail = `${calc.effectiveRAM} GiB is selected; policy v${policy.version} requires at least ${policy.min_memory_gb} GiB. This configuration will not be admitted as a new provider.`;
+  } else if (belowBandwidthFloor) {
+    blockedTitle = "This chip is below the current new-provider bandwidth floor";
+    blockedDetail = `${calc.hardware.bandwidthGBs} GB/s is catalogued for ${calc.selectedChip}; policy v${policy.version} requires at least ${policy.min_memory_bandwidth_gbs} GB/s. This configuration will not be admitted as a new provider.`;
+  }
 
   return (
     <section
-      role={belowMemoryFloor ? "alert" : undefined}
+      role={blocked ? "alert" : undefined}
       className={`mb-6 rounded-xl border px-4 py-3 text-sm ${
-        belowMemoryFloor
+        blocked
           ? "border-accent-red/25 bg-accent-red/10"
           : "border-accent-amber/25 bg-accent-amber/10"
       }`}
@@ -73,25 +107,25 @@ export function ProviderAdmissionNotice({
         <Icon
           size={17}
           aria-hidden="true"
-          className={belowMemoryFloor ? "mt-0.5 text-accent-red" : "mt-0.5 text-accent-amber"}
+          className={blocked ? "mt-0.5 text-accent-red" : "mt-0.5 text-accent-amber"}
         />
         <div>
           <p className="font-semibold text-text-primary">
-            {belowMemoryFloor
-              ? "This Mac is below the current new-provider memory floor"
+            {blocked
+              ? blockedTitle
               : `New-machine policy v${policy.version} is ${policy.mode}`}
           </p>
           <p className="mt-1 leading-relaxed text-text-secondary">
-            {belowMemoryFloor
-              ? `${calc.effectiveRAM} GiB is selected; policy v${policy.version} requires at least ${policy.min_memory_gb} GiB. This configuration will not be admitted as a new provider.`
+            {blocked
+              ? blockedDetail
               : "This projection measures model fit and possible earnings, not admission approval. The coordinator verifies the exact chip, GPU-core count, signed hardware, and current policy when a provider connects."}
           </p>
-          {(belowMemoryFloor || policy.mode === "enforce") && (
+          {(blocked || policy.mode === "enforce") && (
             <Link
               href={waitlistHref(calc)}
               className="mt-2 inline-flex font-semibold text-accent-brand hover:text-accent-brand-hover"
             >
-              {belowMemoryFloor
+              {blocked
                 ? "Register this Mac's hardware interest"
                 : "Open hardware interest registration"}
             </Link>

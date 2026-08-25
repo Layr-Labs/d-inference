@@ -134,8 +134,8 @@ func TestAttachCachedMDAProof_ReusesWithoutMDM(t *testing.T) {
 	if !p.MDAVerified {
 		t.Error("MDAVerified must be true after reuse")
 	}
-	if !p.SEKeyBound {
-		t.Error("SEKeyBound must be true (freshness code matched the SE key hash)")
+	if !p.MDAFreshnessVerified {
+		t.Error("MDA freshness must match the live SE public-key digest")
 	}
 	if len(p.MDACertChain) == 0 {
 		t.Error("MDACertChain must remain attached for coordinator-side trust reuse")

@@ -68,9 +68,13 @@ type myProvider struct {
 	HardwareAdmissionRevoked bool `json:"hardware_admission_revoked"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
-	ACMEVerified bool   `json:"acme_verified"`
-	SEKeyBound   bool   `json:"se_key_bound"`
-	SEPublicKey  string `json:"se_public_key,omitempty"`
+	ACMEVerified bool `json:"acme_verified"`
+	// SEKeyBound is a legacy wire name retained for rolling UI compatibility.
+	// It means the MDA freshness nonce matched this connection's SE public-key
+	// digest; Apple does not attest that the application key resides on the Mac.
+	SEKeyBound           bool   `json:"se_key_bound"`
+	MDAFreshnessVerified bool   `json:"mda_freshness_verified"`
+	SEPublicKey          string `json:"se_public_key,omitempty"`
 	// ProviderKey is the machine's X25519 E2E public key, used to resolve
 	// per-node earnings. Same value senders fetch from /v1/encryption-key, so
 	// it is not a secret on the owner's own dashboard. Present only for
@@ -345,13 +349,18 @@ func (s *Server) attachHardwareAdmissionState(
 		mp.HardwareAdmissionRevoked = live.HardwareAdmissionRevokedStatus()
 		return nil
 	}
-	serial := strings.ToUpper(strings.TrimSpace(mp.SerialNumber))
+	serial := strings.ToUpper(strings.TrimSpace(mp.serialNumber))
 	if serial == "" {
 		return nil
 	}
 	revoked, err := s.store.IsHardwareAdmissionRevoked(ctx, serial)
 	if err != nil {
 		return fmt.Errorf("check hardware admission revocation: %w", err)
+	}
+	if !s.hardwareAdmissionEnforcing() {
+		mp.HardwareAdmissionRevoked = revoked
+		mp.HardwareAdmitted = !revoked
+		return nil
 	}
 	admitted, err := s.store.IsHardwareAdmitted(ctx, serial)
 	if err != nil {
@@ -580,7 +589,8 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
-		mp.SEKeyBound = live.SEKeyBound
+		mp.SEKeyBound = live.MDAFreshnessVerified
+		mp.MDAFreshnessVerified = live.MDAFreshnessVerified
 		mp.RuntimeVerified = live.RuntimeVerified
 		mp.PythonHash = live.PythonHash
 		mp.RuntimeHash = live.RuntimeHash

@@ -67,6 +67,27 @@ func (s *MemoryStore) ActivateHardwareAdmissionPolicy(
 	if policy.Mode == hardwareadmission.ModeEnforce && !hadEnforcement {
 		cutoff := policy.CreatedAt
 		policy.GrandfatherCutoffAt = &cutoff
+		grandfathered := make([]HardwareAdmission, 0,
+			len(s.providerRecords)+len(liveGrandfathered))
+		for _, provider := range s.providerRecords {
+			serial := normalizeHardwareSerial(provider.SerialNumber)
+			if serial == "" || provider.TrustLevel != "hardware" {
+				continue
+			}
+			var hardware hardwareadmission.Observed
+			if len(provider.Hardware) > 0 {
+				if err := json.Unmarshal(provider.Hardware, &hardware); err != nil {
+					return hardwareadmission.Policy{},
+						fmt.Errorf("store: decode grandfathered provider hardware: %w", err)
+				}
+			}
+			grandfathered = append(grandfathered, HardwareAdmission{
+				SerialNumber: serial,
+				Hardware:     hardware,
+			})
+		}
+		grandfathered = append(grandfathered, liveGrandfathered...)
+
 		addGrandfathered := func(serial string, hardware hardwareadmission.Observed) {
 			serial = normalizeHardwareSerial(serial)
 			if serial == "" {
@@ -84,21 +105,7 @@ func (s *MemoryStore) ActivateHardwareAdmissionPolicy(
 			}
 			policy.GrandfatheredProviderCount++
 		}
-		for _, provider := range s.providerRecords {
-			serial := normalizeHardwareSerial(provider.SerialNumber)
-			if serial == "" || provider.TrustLevel != "hardware" {
-				continue
-			}
-			var hardware hardwareadmission.Observed
-			if len(provider.Hardware) > 0 {
-				if err := json.Unmarshal(provider.Hardware, &hardware); err != nil {
-					return hardwareadmission.Policy{},
-						fmt.Errorf("store: decode grandfathered provider hardware: %w", err)
-				}
-			}
-			addGrandfathered(serial, hardware)
-		}
-		for _, admission := range liveGrandfathered {
+		for _, admission := range grandfathered {
 			addGrandfathered(admission.SerialNumber, admission.Hardware)
 		}
 	}
@@ -108,15 +115,27 @@ func (s *MemoryStore) ActivateHardwareAdmissionPolicy(
 	return policy, nil
 }
 
-func (s *MemoryStore) IsHardwareAdmitted(_ context.Context, serialNumber string) (bool, error) {
+func (s *MemoryStore) GetHardwareAdmission(
+	_ context.Context,
+	serialNumber string,
+) (*HardwareAdmission, error) {
 	serial := normalizeHardwareSerial(serialNumber)
 	if serial == "" {
-		return false, nil
+		return nil, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	admission, ok := s.hardwareAdmissions[serial]
-	return ok && admission.RevokedAt == nil, nil
+	if !ok {
+		return nil, nil
+	}
+	copy := admission
+	return &copy, nil
+}
+
+func (s *MemoryStore) IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error) {
+	admission, err := s.GetHardwareAdmission(ctx, serialNumber)
+	return admission != nil && admission.RevokedAt == nil, err
 }
 
 func (s *MemoryStore) IsHardwareAdmissionRevoked(_ context.Context, serialNumber string) (bool, error) {
@@ -233,7 +252,8 @@ func (s *MemoryStore) RecordHardwareAdmissionAttempt(_ context.Context, attempt 
 	s.hardwareAdmissionAttemptSeq++
 	attempt.ID = s.hardwareAdmissionAttemptSeq
 	s.hardwareAdmissionAttempts = append(s.hardwareAdmissionAttempts, attempt)
-	if excess := len(s.hardwareAdmissionAttempts) - DefaultPruneMaxEntries; excess > 0 {
+	if excess := len(s.hardwareAdmissionAttempts) -
+		hardwareAdmissionAttemptMaxEntries; excess > 0 {
 		copy(s.hardwareAdmissionAttempts, s.hardwareAdmissionAttempts[excess:])
 		s.hardwareAdmissionAttempts = s.hardwareAdmissionAttempts[:len(s.hardwareAdmissionAttempts)-excess]
 	}

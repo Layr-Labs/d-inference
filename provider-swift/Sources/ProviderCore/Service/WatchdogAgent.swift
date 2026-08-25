@@ -111,7 +111,7 @@ public enum WatchdogAgent: Sendable {
             Thread.sleep(forTimeInterval: 0.2)
         }
         try writePlist(
-            binaryPath: LaunchctlControl.currentExecutablePath(),
+            binaryPath: LaunchctlControl.managedExecutablePath(),
             configPath: configPath,
             environment: environment
         )

@@ -176,6 +176,48 @@ struct SelfUpdaterTests {
         #expect(streamedBudget.receivedBytes == 4)
     }
 
+    @Test("download completion preserves cancellation before continuation attach")
+    func releaseDownloadCompletionPreservesEarlyCancellation() async {
+        let completion = ReleaseArchiveDownloadCompletion()
+        completion.finish(.failure(CancellationError()))
+
+        do {
+            _ = try await withCheckedThrowingContinuation {
+                (
+                    continuation:
+                        CheckedContinuation<(URL, HTTPURLResponse), Error>
+                ) in
+                completion.attach(continuation)
+            }
+            Issue.record("early cancellation was dropped")
+        } catch is CancellationError {
+            // The pre-attach terminal result must resume the later waiter.
+        } catch {
+            Issue.record("unexpected completion error: \(error)")
+        }
+    }
+
+    @Test("download completion delivers cancellation attached first")
+    func releaseDownloadCompletionDeliversAttachedCancellation() async {
+        let completion = ReleaseArchiveDownloadCompletion()
+
+        do {
+            _ = try await withCheckedThrowingContinuation {
+                (
+                    continuation:
+                        CheckedContinuation<(URL, HTTPURLResponse), Error>
+                ) in
+                completion.attach(continuation)
+                completion.finish(.failure(CancellationError()))
+            }
+            Issue.record("attached cancellation was dropped")
+        } catch is CancellationError {
+            // The ordinary attach-before-finish path remains exact-once.
+        } catch {
+            Issue.record("unexpected completion error: \(error)")
+        }
+    }
+
     @Test("release download aborts before an oversized response body")
     func releaseDownloadRejectsOversizedResponse() async throws {
         let artifact = Data(repeating: 0x41, count: 4096)

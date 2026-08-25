@@ -323,6 +323,20 @@ func TestReleaseArchiveEnforcesAggregateExpandedLimit(t *testing.T) {
 	}
 }
 
+func TestReleaseArchiveEnforcesExpandedLimitOnZeroTrailer(t *testing.T) {
+	archive := buildRawReleaseArchiveForTest(
+		rawReleaseTarEntry{name: "empty", typeflag: '0'},
+	)
+	archive = append(archive, bytes.Repeat([]byte{0}, 2*releaseTarBlockSize)...)
+	policy := defaultReleaseArchivePolicy
+	policy.maxExpandedBytes = releaseTarBlockSize
+
+	err := validateReleaseArchive(bytes.NewReader(archive), policy, nil)
+	if err == nil || !strings.Contains(err.Error(), "expanded-size limit") {
+		t.Fatalf("validate error = %v, want expanded-size limit", err)
+	}
+}
+
 func TestReleaseArchiveEnforcesPhysicalHeaderCount(t *testing.T) {
 	var raw bytes.Buffer
 	for index := 0; index <= maxReleaseArchiveEntries; index++ {

@@ -158,6 +158,59 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
+    @Test("release download budget rejects declared and streamed overflow")
+    func releaseDownloadBudgetEnforcesEveryChunk() throws {
+        let knownLengthBudget = ReleaseArchiveDownloadBudget(maximumBytes: 4)
+        #expect(throws: ReleaseArchiveDownloadError.self) {
+            try knownLengthBudget.validateExpectedContentLength(5)
+        }
+        try knownLengthBudget.validateExpectedContentLength(-1)
+
+        var streamedBudget = ReleaseArchiveDownloadBudget(maximumBytes: 4)
+        try streamedBudget.consume(3)
+        try streamedBudget.consume(1)
+        #expect(streamedBudget.receivedBytes == 4)
+        #expect(throws: ReleaseArchiveDownloadError.self) {
+            try streamedBudget.consume(1)
+        }
+        #expect(streamedBudget.receivedBytes == 4)
+    }
+
+    @Test("release download aborts before an oversized response body")
+    func releaseDownloadRejectsOversizedResponse() async throws {
+        let artifact = Data(repeating: 0x41, count: 4096)
+        let mock = MockCoordinator(releaseArtifact: artifact)
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let maximumBytes: UInt64 = 1024
+        let updater = SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            installRoot: nil,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0",
+            maximumReleaseArchiveBytes: maximumBytes
+        )
+        let release = ReleaseInfo(
+            version: "2.0.0",
+            platform: "macos-arm64",
+            url: baseURL
+                .appendingPathComponent("mock-release-artifact")
+                .absoluteString,
+            bundleHash: String(repeating: "0", count: 64)
+        )
+
+        let result = await updater.downloadAndVerify(release: release)
+        guard case .failure(.downloadFailed(let reason)) = result else {
+            Issue.record("oversized release download was not rejected: \(result)")
+            return
+        }
+        #expect(
+            reason.contains(
+                "\(maximumBytes)-byte compressed-size limit"
+            )
+        )
+    }
+
     @Test("ReleaseInfo sha256 compatibility returns bundle hash")
     func releaseInfoShaCompatibility() {
         let hash = String(repeating: "d", count: 64)

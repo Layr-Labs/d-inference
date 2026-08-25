@@ -13,7 +13,7 @@ import (
 // parser-memory, and path-complexity exposure on every release consumer.
 const (
 	maxReleaseArtifactBytes         int64 = 2 << 30 // 2 GiB compressed
-	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB file/metadata payload
+	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB payload + zero trailer
 	maxReleaseArchiveEntries              = 16 * 1024
 	maxReleaseArchivePathBytes            = 4 * 1024
 	maxReleaseArchiveComponentBytes       = 255
@@ -97,7 +97,12 @@ func validateReleaseArchive(
 			return err
 		}
 		if releaseTarBlockIsZero(header) {
-			if err := validateReleaseTarEnd(r, &pending); err != nil {
+			if err := validateReleaseTarEnd(
+				r,
+				&pending,
+				&expandedBytes,
+				policy,
+			); err != nil {
 				return err
 			}
 			return nil
@@ -269,6 +274,8 @@ func releaseTarBlockIsZero(block []byte) bool {
 func validateReleaseTarEnd(
 	r io.Reader,
 	pending *releaseArchivePendingMetadata,
+	expandedBytes *int64,
+	policy releaseArchivePolicy,
 ) error {
 	if pending.path != nil || pending.size != nil {
 		return fmt.Errorf("release archive ends with dangling path or size metadata")
@@ -292,6 +299,13 @@ func validateReleaseTarEnd(
 				if value != 0 {
 					return fmt.Errorf("release archive contains non-zero data after the tar end marker")
 				}
+			}
+			if err := addReleaseExpandedBytes(
+				expandedBytes,
+				int64(n),
+				policy,
+			); err != nil {
+				return err
 			}
 		}
 		if readErr == io.EOF {

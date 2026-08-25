@@ -67,6 +67,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
+    private let maximumReleaseArchiveBytes: UInt64
     private let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
@@ -124,6 +125,8 @@ public struct SelfUpdater: Sendable {
         verifyCodeSignatures: Bool,
         currentVersion: String,
         urlSession: URLSession = .shared,
+        maximumReleaseArchiveBytes: UInt64 =
+            ReleaseArchivePolicy.maxCompressedBytes,
         now: @escaping @Sendable () -> Double = {
             Date().timeIntervalSince1970
         },
@@ -142,6 +145,7 @@ public struct SelfUpdater: Sendable {
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
         self.urlSession = urlSession
+        self.maximumReleaseArchiveBytes = maximumReleaseArchiveBytes
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
     }
@@ -333,12 +337,16 @@ public struct SelfUpdater: Sendable {
         }
 
         do {
-            let (tempFileURL, response) = try await urlSession.download(from: downloadURL)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200
-            else {
-                return .failure(.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"))
+            let (tempFileURL, _) = try await ReleaseArchiveDownloader.download(
+                from: downloadURL,
+                using: urlSession,
+                maximumBytes: maximumReleaseArchiveBytes
+            )
+            var retainDownloadedArchive = false
+            defer {
+                if !retainDownloadedArchive {
+                    try? FileManager.default.removeItem(at: tempFileURL)
+                }
             }
 
             let attributes = try FileManager.default.attributesOfItem(
@@ -346,17 +354,15 @@ public struct SelfUpdater: Sendable {
             guard attributes[.type] as? FileAttributeType == .typeRegular,
                   let compressedSize = attributes[.size] as? NSNumber
             else {
-                try? FileManager.default.removeItem(at: tempFileURL)
                 return .failure(.downloadFailed(
                     "downloaded release archive is not a regular file"))
             }
             guard compressedSize.uint64Value
-                    <= ReleaseArchivePolicy.maxCompressedBytes
+                    <= maximumReleaseArchiveBytes
             else {
-                try? FileManager.default.removeItem(at: tempFileURL)
                 return .failure(.downloadFailed(
                     "release archive exceeds the "
-                        + "\(ReleaseArchivePolicy.maxCompressedBytes)-byte "
+                        + "\(maximumReleaseArchiveBytes)-byte "
                         + "compressed-size limit"))
             }
 
@@ -364,10 +370,10 @@ public struct SelfUpdater: Sendable {
             // not require a second archive-sized in-memory allocation.
             let computedHash = try sha256Hex(file: tempFileURL)
             guard computedHash == release.bundleHash.lowercased() else {
-                try? FileManager.default.removeItem(at: tempFileURL)
                 return .failure(.hashMismatch(expected: release.bundleHash, got: computedHash))
             }
 
+            retainDownloadedArchive = true
             return .success(tempFileURL)
         } catch {
             return .failure(.downloadFailed(error.localizedDescription))

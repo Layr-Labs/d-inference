@@ -404,6 +404,7 @@ sub validate_end {
         last if $read == 0;
         reject("archive contains non-zero data after the tar end marker")
             unless all_zero($chunk);
+        add_expanded($read);
         $trailing += $read;
     }
     reject("archive trailer is not block-aligned")
@@ -508,6 +509,54 @@ if (!$closed) {
 }
 exit(0);
 PERL
+}
+
+download_release_archive() {
+    local url=$1
+    local destination=$2
+    local maximum_bytes=${3:-$RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES}
+    local block_size=512
+    local maximum_blocks
+    local status=0
+    local downloaded_bytes
+
+    case "$maximum_bytes" in
+        ""|*[!0-9]*)
+            fail_install "Release download size limit is invalid."
+            return 1
+            ;;
+    esac
+    if [ "$maximum_bytes" -gt "$RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES" ]; then
+        fail_install \
+            "Release download size limit exceeds the installer policy."
+        return 1
+    fi
+    maximum_blocks=$(( (maximum_bytes + block_size - 1) / block_size ))
+
+    # `--max-filesize` rejects known and modern chunked oversize responses.
+    # RLIMIT_FSIZE is the kernel-enforced fallback on older macOS curl builds:
+    # the transfer cannot grow the destination beyond the configured blocks.
+    (
+        ulimit -f "$maximum_blocks" || exit 74
+        curl -f#L \
+            --max-filesize "$maximum_bytes" \
+            "$url" \
+            -o "$destination"
+    ) || status=$?
+    if [ "$status" -ne 0 ]; then
+        rm -f "$destination"
+        fail_install \
+            "Release download failed or exceeded the ${maximum_bytes}-byte compressed-size limit."
+        return 1
+    fi
+
+    downloaded_bytes=$(wc -c < "$destination" | tr -d '[:space:]')
+    if [ "$downloaded_bytes" -gt "$maximum_bytes" ]; then
+        rm -f "$destination"
+        fail_install \
+            "Release download exceeded the ${maximum_bytes}-byte compressed-size limit."
+        return 1
+    fi
 }
 
 verify_file_hash() {
@@ -2576,6 +2625,15 @@ if [ "${1:-}" = "--preflight-release-archive" ]; then
     exit $?
 fi
 
+if [ "${1:-}" = "--download-release-archive-test" ]; then
+    [ "$#" -eq 4 ] || {
+        echo "usage: $0 --download-release-archive-test <url> <destination> <max-bytes>" >&2
+        exit 64
+    }
+    download_release_archive "$2" "$3" "$4"
+    exit $?
+fi
+
 if [ "${1:-}" = "--install-bundle-test" ]; then
     { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || {
         echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement]" >&2
@@ -2667,7 +2725,13 @@ trap cleanup_download EXIT
 trap 'terminate_download 129' HUP
 trap 'terminate_download 130' INT
 trap 'terminate_download 143' TERM
-curl -f#L "$BUNDLE_URL" -o "$TARBALL"
+if ! download_release_archive \
+    "$BUNDLE_URL" \
+    "$TARBALL" \
+    "$RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES"
+then
+    exit 1
+fi
 
 ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then

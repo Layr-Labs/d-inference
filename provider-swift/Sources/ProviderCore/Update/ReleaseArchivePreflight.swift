@@ -3,7 +3,8 @@ import Foundation
 /// Bounds shared with the coordinator and shell installer. The current signed
 /// release is about 170 MiB compressed and comfortably below 1 GiB expanded;
 /// this envelope leaves substantial app-growth and flat-verifier headroom
-/// while bounding disk, inode, parser-memory, and path-complexity exposure.
+/// while bounding disk, payload/trailer expansion, inode, parser-memory, and
+/// path-complexity exposure.
 struct ReleaseArchivePolicy: Sendable {
     static let maxCompressedBytes: UInt64 = 2 * 1024 * 1024 * 1024
     static let maxExpandedBytes: UInt64 = 4 * 1024 * 1024 * 1024
@@ -368,6 +369,7 @@ private final class ReleaseTarValidator {
                 throw ReleaseArchivePreflightError(
                     "release archive contains non-zero data after the tar end marker")
             }
+            try addExpandedBytes(UInt64(chunk.count))
             let (next, overflow) = trailingBytes.addingReportingOverflow(
                 UInt64(chunk.count))
             guard !overflow else {

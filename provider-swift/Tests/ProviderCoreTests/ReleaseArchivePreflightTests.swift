@@ -268,6 +268,40 @@ struct ReleaseArchivePreflightTests {
             contains: "entry limit")
     }
 
+    @Test("zero trailer bytes share the expanded archive budget")
+    func enforcesExpandedLimitOnZeroTrailer() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let blockSize = 512
+        var raw = rawTarArchive([
+            .init(name: "empty"),
+        ])
+        raw.append(
+            Data(
+                repeating: 0,
+                count: 2 * blockSize
+            )
+        )
+        let archive = try fixture.writeRawArchive(
+            named: "oversized-zero-trailer",
+            raw: raw
+        )
+        let policy = ReleaseArchivePolicy(
+            maxCompressedBytes: ReleaseArchivePolicy.maxCompressedBytes,
+            maxExpandedBytes: UInt64(blockSize),
+            maxEntries: ReleaseArchivePolicy.maxEntries,
+            maxPathBytes: ReleaseArchivePolicy.maxPathBytes,
+            maxComponentBytes: ReleaseArchivePolicy.maxComponentBytes,
+            maxMetadataBytes: ReleaseArchivePolicy.maxMetadataBytes
+        )
+
+        expectPreflightFailure(
+            archive,
+            policy: policy,
+            contains: "expanded-size limit"
+        )
+    }
+
     @Test("rejects malformed checksum trailer and gzip stream")
     func rejectsMalformedArchive() throws {
         let fixture = try ArchivePreflightFixture()

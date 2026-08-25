@@ -254,14 +254,17 @@ struct UpdateRecoveryTransactionTests {
             verifyCodeSignatures: false,
             currentVersion: fixture.oldVersion
         )
-        guard case .success(let staged) = updater.stageBundleForTesting(
+        let result = updater.stageBundleForTesting(
             from: fixture.tarball,
             release: fixture.release,
             installDir: fixture.installRoot
-        ) else {
-            throw FixtureError.stagingFailed
+        )
+        switch result {
+        case .success(let staged):
+            return staged
+        case .failure(let error):
+            throw error
         }
-        return staged
     }
 
     private func downgradeJournalToSchema1(

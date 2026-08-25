@@ -23,6 +23,17 @@ const PROVIDERS_URL = "/api/me/providers";
 const SUMMARY_URL = "/api/me/summary";
 const ADMISSION_ATTEMPTS_URL = "/api/me/provider-admission-attempts";
 
+async function settledJson<T>(
+  result: PromiseSettledResult<Response>
+): Promise<T | null> {
+  if (result.status !== "fulfilled" || !result.value.ok) return null;
+  try {
+    return (await result.value.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export interface FleetData {
   ready: boolean;
   authenticated: boolean;
@@ -98,22 +109,12 @@ export function useFleetData(): FleetData {
       setPollFailed(false);
       setLastUpdatedAt(Date.now());
 
-      if (sRes.status === "fulfilled" && sRes.value.ok) {
-        try {
-          setSummary((await sRes.value.json()) as MySummaryResponse);
-        } catch {
-          /* keep prior summary */
-        }
-      }
-      if (aRes.status === "fulfilled" && aRes.value.ok) {
-        try {
-          const body =
-            (await aRes.value.json()) as HardwareAdmissionAttemptsResponse;
-          setAdmissionAttempts(body.attempts ?? []);
-        } catch {
-          /* keep prior admission history */
-        }
-      }
+      const [nextSummary, attemptBody] = await Promise.all([
+        settledJson<MySummaryResponse>(sRes),
+        settledJson<HardwareAdmissionAttemptsResponse>(aRes),
+      ]);
+      if (nextSummary) setSummary(nextSummary);
+      if (attemptBody) setAdmissionAttempts(attemptBody.attempts ?? []);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!hasDataRef.current) setError(msg);

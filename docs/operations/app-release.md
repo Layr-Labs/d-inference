@@ -237,11 +237,42 @@ Legacy coordinator/self-update asset
       darkbloom-runtime-capabilities/{paged-kernel-v1,fan-helper-v1}
 ```
 
+### Tar expansion safety contract
+
+The registered tar is treated as hostile structure even after its SHA-256
+matches. The coordinator, `scripts/install.sh`, and Swift `SelfUpdater`
+independently walk every raw tar header before extraction with the same limits:
+
+| Bound | Limit | Rationale |
+|---|---:|---|
+| Compressed archive | 2 GiB | Existing coordinator ceiling; over 10× the roughly 170 MiB signed bundle |
+| Aggregate entry payload | 4 GiB | Includes regular-file and metadata payloads; ample room above the current sub-1-GiB expanded app |
+| Raw headers | 16,384 | Includes PAX/GNU metadata headers, bounding inode and parser work |
+| Archive path | 4,096 bytes | Matches the portable filesystem path envelope |
+| Path component | 255 bytes | Matches the APFS component ceiling |
+| One metadata payload | 1 MiB | Supports long paths and Apple metadata without unbounded parser allocation |
+
+Only portable ASCII paths, regular files, and directories are allowed. Bounded
+per-entry PAX metadata and GNU long-name records are understood; links, sparse
+encodings, devices, FIFOs, alternate file-type metadata, absolute/traversing
+paths, duplicate or case-conflicting names, and file/descendant conflicts are
+rejected. Declared sizes use checked octal/base-256/PAX parsing, so negative or
+overflowing sizes fail before payload reads. Two zero end blocks and a
+block-aligned all-zero trailer are required.
+
+Release registration downloads the exact versioned object, verifies its bundle
+hash, performs this complete raw-header walk, and hashes `bin/darkbloom` during
+the same pass before saving the release row. The shell installer uses only
+base-macOS `/usr/bin/perl` and `/usr/bin/gzip`; `SelfUpdater` performs its own
+Swift header walk over a system-gzip stream. Both complete preflight before
+invoking `/usr/bin/tar`.
+
 ## Steps (human-approved release operator)
 
 1. Land source changes; confirm `swift build -c release --product DarkbloomApp`
    builds, then run `scripts/test-bundle-macos-app.sh`,
-   `scripts/test-install-atomic.sh`, and
+   `scripts/test-install-atomic.sh`,
+   `scripts/test-release-archive-safety.sh`, and
    `scripts/test-macos-app-unsigned-debug-lifecycle.sh` locally. The last
    command is intentionally an unsigned DEBUG lifecycle smoke, not a signing
    or relocation qualification.
@@ -252,7 +283,8 @@ Legacy coordinator/self-update asset
    staples the accepted app, rebuilds both final distribution archives, hashes
    them, uploads both to versioned release storage, exposes both as GitHub
    assets for production tags, and registers only the legacy tar in the
-   coordinator release row.
+   coordinator release row. Before its first extraction or upload, the exact
+   final tar passes `scripts/install.sh --preflight-release-archive`.
 3. Review the job log's new guards: bundle DR pinned to
    `io.darkbloom.provider`, CLI signing id pinned, GUI binary free of
    restricted entitlements, and the extracted final zip passing payload,

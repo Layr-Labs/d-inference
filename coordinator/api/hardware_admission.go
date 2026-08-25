@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
@@ -17,6 +16,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 const hardwareAdmissionStoreTimeout = 5 * time.Second

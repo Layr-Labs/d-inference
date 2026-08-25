@@ -13,6 +13,7 @@ func TestHardwareAdmissionGateCannotBeRelaxedBySelfRoute(t *testing.T) {
 	provider.mu.Lock()
 	provider.RuntimeVerified = true
 	provider.LastChallengeVerified = time.Now()
+	provider.ChallengeVerifiedSIP = true
 	provider.mu.Unlock()
 
 	provider.mu.Lock()

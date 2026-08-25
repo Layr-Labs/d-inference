@@ -307,8 +307,8 @@ type Server struct {
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
 	minProviderVersion string
 
-	hardwareAdmissionMu     sync.RWMutex
-	hardwareAdmissionPolicy hardwareadmission.Policy
+	hardwareAdmissionMu        sync.RWMutex
+	hardwareAdmissionPolicy    hardwareadmission.Policy
 	hardwareAdmissionPendingMu sync.Mutex
 	hardwareAdmissionPending   map[string]pendingHardwareAdmission
 

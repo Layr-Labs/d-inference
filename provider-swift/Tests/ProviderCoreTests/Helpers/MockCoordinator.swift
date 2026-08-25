@@ -150,13 +150,19 @@ public actor MockReleaseArtifactGate {
     public init() {}
 
     public func waitUntilRequested(
-        timeout: Duration = .seconds(10)
+        timeout: Duration = .seconds(10),
+        cleanupOnFailure: @Sendable () async -> Void = {}
     ) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while !requested, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        return requested
+        guard requested else {
+            release()
+            await cleanupOnFailure()
+            return false
+        }
+        return true
     }
 
     public func waitBeforeResponse() async {

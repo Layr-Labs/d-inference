@@ -95,7 +95,7 @@ struct UpdateRecoveryTransactionTests {
                         }
                     }
                 )
-                try withLock(store, operation: "schema-1-install-\(point)") {
+                _ = try withLock(store, operation: "schema-1-install-\(point)") {
                     #expect(throws: InjectedCrash.self) {
                         try store.commit(
                             staged: staged,
@@ -151,7 +151,7 @@ struct UpdateRecoveryTransactionTests {
                 }
             }
         )
-        try withLock(store, operation: "rollback-\(point)") {
+        _ = try withLock(store, operation: "rollback-\(point)") {
             #expect(throws: InjectedCrash.self) {
                 _ = try store.rollback(now: 200, reason: "candidate failed to start")
             }
@@ -175,7 +175,7 @@ struct UpdateRecoveryTransactionTests {
                 }
             )
             for attempt in 0..<3 {
-                try withLock(
+                _ = try withLock(
                     repeatedlyCrashing,
                     operation: "repeated-recovery-\(attempt)"
                 ) {

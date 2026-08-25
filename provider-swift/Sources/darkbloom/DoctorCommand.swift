@@ -1,46 +1,6 @@
 import Foundation
 import ArgumentParser
-import CryptoKit
 import ProviderCore
-
-private struct AgentDebugDoctorEntry: Encodable {
-    let hypothesisId: String
-    let location: String
-    let message: String
-    let data: [String: String]
-    let timestamp: Int64
-}
-
-private func agentDebugDoctorFingerprint(_ value: String) -> String {
-    SHA256.hash(data: Data(value.utf8))
-        .prefix(8)
-        .map { String(format: "%02x", $0) }
-        .joined()
-}
-
-private func agentDebugDoctorLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: String]
-) {
-    let entry = AgentDebugDoctorEntry(
-        hypothesisId: hypothesisId,
-        location: location,
-        message: message,
-        data: data,
-        timestamp: Int64(Date().timeIntervalSince1970 * 1_000))
-    guard var encoded = try? JSONEncoder().encode(entry) else { return }
-    encoded.append(0x0A)
-    let path = "/opt/cursor/logs/debug.log"
-    if !FileManager.default.fileExists(atPath: path) {
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-    }
-    guard let handle = FileHandle(forWritingAtPath: path) else { return }
-    handle.seekToEndOfFile()
-    handle.write(encoded)
-    handle.closeFile()
-}
 
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -376,60 +336,6 @@ func buildDoctorChecks(
     return checks
 }
 
-struct ProviderAttestationList: Decodable {
-    let providers: [ProviderAttestation]
-}
-
-struct ProviderAttestation: Decodable {
-    let providerID: String
-    let chipName: String
-    let hardwareModel: String
-    let sePublicKey: String
-    let trustLevel: String
-    let status: String
-    let mdmVerified: Bool
-    let mdaVerified: Bool
-    let secureEnclave: Bool
-    let sipEnabled: Bool
-    let secureBootEnabled: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case providerID = "provider_id"
-        case chipName = "chip_name"
-        case hardwareModel = "hardware_model"
-        case sePublicKey = "se_public_key"
-        case trustLevel = "trust_level"
-        case status
-        case mdmVerified = "mdm_verified"
-        case mdaVerified = "mda_verified"
-        case secureEnclave = "secure_enclave"
-        case sipEnabled = "sip_enabled"
-        case secureBootEnabled = "secure_boot_enabled"
-    }
-}
-
-func selectProviderAttestation(
-    from data: Data,
-    matchingSEPublicKey sePublicKey: String
-) throws -> ProviderAttestation? {
-    let decoded = try JSONDecoder().decode(ProviderAttestationList.self, from: data)
-    let matches = decoded.providers.filter { $0.sePublicKey == sePublicKey }
-    // #region agent log
-    agentDebugDoctorLog(
-        hypothesisId: "C",
-        location: "DoctorCommand.swift:selectProviderAttestation",
-        message: "doctor compared identity with public feed",
-        data: [
-            "feed_count": String(decoded.providers.count),
-            "match_count": String(matches.count),
-            "query_fingerprint": agentDebugDoctorFingerprint(sePublicKey),
-        ])
-    // #endregion
-    return matches
-        .sorted(by: providerTrustSort)
-        .first
-}
-
 func buildCoordinatorDoctorChecks(
     snapshot: RuntimeSnapshot,
     coordinatorOverride: String?
@@ -477,39 +383,15 @@ func buildCoordinatorDoctorChecks(
         return checks
     }
 
-    let debugDaemonState = DaemonStateFile.read()
-    // #region agent log
-    agentDebugDoctorLog(
-        hypothesisId: "B",
-        location: "DoctorCommand.swift:buildCoordinatorDoctorChecks:state",
-        message: "doctor inspected available daemon identity state",
-        data: [
-            "state_present": String(debugDaemonState != nil),
-            "state_pid_alive": String(
-                debugDaemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false),
-            "state_schema": debugDaemonState.map { String($0.schema) } ?? "",
-            "state_has_signer_identity": "false",
-        ])
-    // #endregion
-
     let localSEPublicKey: String
-    do {
-        localSEPublicKey = try PersistentEnclaveKey.loadOrCreate().publicKeyBase64
-        // #region agent log
-        agentDebugDoctorLog(
-            hypothesisId: "B,C",
-            location: "DoctorCommand.swift:buildCoordinatorDoctorChecks:key",
-            message: "doctor loaded identity used for public feed query",
-            data: [
-                "identity_source": "persistent_load_or_create",
-                "key_fingerprint": agentDebugDoctorFingerprint(localSEPublicKey),
-            ])
-        // #endregion
-    } catch {
+    switch resolveDoctorAttestationIdentity(daemonState: DaemonStateFile.read()) {
+    case .available(let publicKey):
+        localSEPublicKey = publicKey
+    case .unavailable(let reason):
         checks.append(.init(
             name: "coordinator trust",
             status: .warn,
-            detail: "local Secure Enclave identity unavailable: \(error.localizedDescription)"
+            detail: reason.detail
         ))
         return checks
     }
@@ -523,7 +405,8 @@ func buildCoordinatorDoctorChecks(
             checks.append(.init(
                 name: "coordinator trust",
                 status: .warn,
-                detail: "no live provider record for this Secure Enclave identity yet"
+                detail: "no live provider record for the running daemon's "
+                    + "attestation identity yet"
             ))
             return checks
         }
@@ -553,18 +436,6 @@ func buildCoordinatorDoctorChecks(
     }
 
     return checks
-}
-
-private func providerTrustSort(_ lhs: ProviderAttestation, _ rhs: ProviderAttestation) -> Bool {
-    func score(_ provider: ProviderAttestation) -> Int {
-        var total = 0
-        if provider.status == "online" { total += 100 }
-        if provider.trustLevel == "hardware" { total += 50 }
-        if provider.mdaVerified { total += 10 }
-        if provider.mdmVerified { total += 5 }
-        return total
-    }
-    return score(lhs) > score(rhs)
 }
 
 private func doctorFetch(urlString: String, timeout: TimeInterval) async throws -> Data {

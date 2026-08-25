@@ -17,45 +17,6 @@ import MLXLMServer
 import os
 #endif
 
-private struct AgentDebugProviderLoopEntry: Encodable {
-    let hypothesisId: String
-    let location: String
-    let message: String
-    let data: [String: String]
-    let timestamp: Int64
-}
-
-private func agentDebugProviderLoopFingerprint(_ value: String) -> String {
-    SHA256.hash(data: Data(value.utf8))
-        .prefix(8)
-        .map { String(format: "%02x", $0) }
-        .joined()
-}
-
-private func agentDebugProviderLoopLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: String]
-) {
-    let entry = AgentDebugProviderLoopEntry(
-        hypothesisId: hypothesisId,
-        location: location,
-        message: message,
-        data: data,
-        timestamp: Int64(Date().timeIntervalSince1970 * 1_000))
-    guard var encoded = try? JSONEncoder().encode(entry) else { return }
-    encoded.append(0x0A)
-    let path = "/opt/cursor/logs/debug.log"
-    if !FileManager.default.fileExists(atPath: path) {
-        _ = FileManager.default.createFile(atPath: path, contents: nil)
-    }
-    guard let handle = FileHandle(forWritingAtPath: path) else { return }
-    handle.seekToEndOfFile()
-    handle.write(encoded)
-    handle.closeFile()
-}
-
 // MARK: - SendHandle (Sendable wrapper for the coordinator send function)
 
 /// Wraps the coordinator's outbound send function so it can be captured in
@@ -749,46 +710,15 @@ public actor ProviderLoop {
                 // it. A key that loads but can't sign would otherwise fail every
                 // attestation challenge silently and pin the box untrusted.
                 let key = try PersistentEnclaveKey.loadOrCreateVerified()
-                // #region agent log
-                agentDebugProviderLoopLog(
-                    hypothesisId: "A",
-                    location: "ProviderLoop.swift:createAttestationSigner:persistent",
-                    message: "provider selected attestation signer",
-                    data: [
-                        "signer_kind": "persistent",
-                        "key_fingerprint": agentDebugProviderLoopFingerprint(key.publicKeyBase64),
-                    ])
-                // #endregion
                 log.info("Using persistent keychain-backed Secure Enclave key for attestation")
                 return key
             } catch {
-                // #region agent log
-                agentDebugProviderLoopLog(
-                    hypothesisId: "A",
-                    location: "ProviderLoop.swift:createAttestationSigner:fallback",
-                    message: "persistent signer failed before fallback",
-                    data: ["error": String(describing: error)])
-                // #endregion
                 log.warning("Persistent SE key unavailable or unusable (\(error)), falling back to ephemeral")
             }
         }
 
         do {
-            let identity = try SecureEnclaveIdentity.createEphemeral()
-            // #region agent log
-            agentDebugProviderLoopLog(
-                hypothesisId: "A",
-                location: "ProviderLoop.swift:createAttestationSigner:ephemeral",
-                message: "provider selected attestation signer",
-                data: [
-                    "signer_kind": "ephemeral",
-                    "signer_available": String(identity != nil),
-                    "key_fingerprint": identity.map {
-                        agentDebugProviderLoopFingerprint($0.publicKeyBase64)
-                    } ?? "",
-                ])
-            // #endregion
-            return identity
+            return try SecureEnclaveIdentity.createEphemeral()
         } catch {
             log.warning("Ephemeral SE identity also unavailable: \(error)")
             return nil

@@ -171,6 +171,16 @@ enum FreshInstallFakeCLI {
           exit 0
         fi
 
+        if [ "$#" -eq 6 ] && [ "$1" = models ] && [ "$2" = download-plan ] && [ "$3" = "mlx-community/Qwen3.5-0.8B-MLX-4bit" ] && [ "$4" = --json ] && [ "$5" = --reserve-bytes ]; then
+          remaining=1048576
+          if [ -f "$machine/download-partial" ]; then
+            remaining=524288
+          fi
+          required=$((remaining + $6))
+          printf '%s\n' "{\"model_id\":\"mlx-community/Qwen3.5-0.8B-MLX-4bit\",\"download_plan\":{\"remaining_bytes\":$remaining,\"reserve_bytes\":$6,\"required_available_bytes\":$required,\"available_bytes\":21474836480,\"has_sufficient_capacity\":true}}"
+          exit 0
+        fi
+
         if [ "$#" -eq 3 ] && [ "$1" = models ] && [ "$2" = list ] && [ "$3" = --json ]; then
           if [ -f "$machine/model-downloaded" ]; then
             printf '%s\n' '{"cacheDirectory":"/fresh-install/cache","filteredByConfig":false,"models":[{"id":"mlx-community/Qwen3.5-0.8B-MLX-4bit","model_type":"text","quantization":"4-bit","size_bytes":1048576,"estimated_memory_gb":0.5}]}'
@@ -180,7 +190,7 @@ enum FreshInstallFakeCLI {
           exit 0
         fi
 
-        if [ "$#" -eq 4 ] && [ "$1" = models ] && [ "$2" = download ] && [ "$3" = "mlx-community/Qwen3.5-0.8B-MLX-4bit" ] && [ "$4" = --json ]; then
+        if [ "$#" -eq 6 ] && [ "$1" = models ] && [ "$2" = download ] && [ "$3" = "mlx-community/Qwen3.5-0.8B-MLX-4bit" ] && [ "$4" = --json ] && [ "$5" = --reserve-bytes ] && [ "$6" -eq 2147483648 ]; then
           download_mode=$(mode download success)
           attempt=0
           if [ -f "$machine/download-attempts" ]; then

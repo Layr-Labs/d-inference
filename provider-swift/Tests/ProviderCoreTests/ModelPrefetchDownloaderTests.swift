@@ -811,7 +811,7 @@ struct ModelPrefetchDownloaderTests {
             availableBytes: nil
         )
         #expect(unknown.availableBytes == nil)
-        #expect(unknown.hasSufficientCapacity)
+        #expect(!unknown.hasSufficientCapacity)
 
         let exact = ModelDownloadStoragePlan(
             remainingBytes: required,
@@ -877,6 +877,72 @@ struct ModelPrefetchDownloaderTests {
                 partBytes: [Int64.max, 3]
             ) == 7
         )
+    }
+
+    @Test("authoritative capacity validation includes reserve and fails closed for app callers")
+    func reserveAwareCapacityValidation() throws {
+        let reserve = ModelDownloadStoragePlan.appReserveBytes
+        let remaining: Int64 = 1_000
+        let exact = remaining + reserve
+
+        try ModelDownloader.validateAvailableCapacity(
+            remainingBytes: remaining,
+            reserveBytes: reserve,
+            availableBytes: exact,
+            unknownCapacityAllowed: false
+        )
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: remaining,
+                reserveBytes: reserve,
+                availableBytes: exact - 1,
+                unknownCapacityAllowed: false
+            )
+        }
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: remaining,
+                reserveBytes: reserve,
+                availableBytes: nil,
+                unknownCapacityAllowed: false
+            )
+        }
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: Int64.max,
+                reserveBytes: 1,
+                availableBytes: Int64.max,
+                unknownCapacityAllowed: false
+            )
+        }
+
+        // Existing non-app callers retain their zero-reserve, unknown-capacity
+        // fallback.
+        try ModelDownloader.validateAvailableCapacity(
+            remainingBytes: remaining,
+            reserveBytes: 0,
+            availableBytes: nil,
+            unknownCapacityAllowed: true
+        )
+    }
+
+    @Test("cache admission lock excludes another downloader until release")
+    func cacheAdmissionLockSerializesDownloaders() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "model-download-lock-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = try await ModelDownloadCacheAdmissionLock.acquire(at: root)
+        #expect(try ModelDownloadCacheAdmissionLock.tryAcquire(at: root) == nil)
+
+        first.release()
+        let second = try #require(
+            try ModelDownloadCacheAdmissionLock.tryAcquire(at: root)
+        )
+        second.release()
     }
 
     @Test("download and app planning share valid-file and part-byte classification")
@@ -1077,11 +1143,17 @@ struct ModelPrefetchDownloaderTests {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         try bigBytes.write(to: stagingDir.appendingPathComponent("model-00001-of-00001.safetensors"))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let reserve: Int64 = 123
+        let exactAvailable = Int64(smallBytes.count) + reserve
+        let downloader = ModelDownloader(
+            r2CDNURL: "https://cdn.example.test",
+            urlSession: makeSession(),
+            availableCapacityProvider: { _ in exactAvailable }
+        )
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FG", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
-        try await downloader.download(model: model)
+        try await downloader.download(model: model, reserveBytes: reserve)
 
         let fetched = PrefetchURLProtocol.fetchedPaths()
         #expect(fetched.contains("/\(prefix)/config.json")) // missing file fetched

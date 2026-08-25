@@ -50,8 +50,7 @@ struct FreshInstallCLIHarnessTests {
             startCLI: ProcessSetupStartCLI(
                 runner: harness.providerRunner(),
                 timeout: .seconds(2)
-            ),
-            availableStorageBytes: { 20 * 1_073_741_824 }
+            )
         )
         let plan = try await preparation.fetchPlan()
         #expect(plan.recommendedModelID == FreshInstallHarness.modelID)
@@ -59,7 +58,10 @@ struct FreshInstallCLIHarnessTests {
         #expect(plan.choices.first?.isInstalled == false)
 
         var downloadEvents: [ModelDownloadStreamEvent] = []
-        for try await event in preparation.downloadEvents(modelID: FreshInstallHarness.modelID) {
+        let events = try await preparation.downloadEvents(
+            modelID: FreshInstallHarness.modelID
+        )
+        for try await event in events {
             downloadEvents.append(event)
         }
         #expect(downloadEvents == [

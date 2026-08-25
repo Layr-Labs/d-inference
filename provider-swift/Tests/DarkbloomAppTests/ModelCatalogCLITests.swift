@@ -69,7 +69,9 @@ struct ModelCatalogCLIRunnerTests {
         now: @escaping @Sendable () -> Date = Date.init,
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
             ProcessIdentity(pid: $0, startTimeMicros: 100)
-        }
+        },
+        downloadAdmission: AppModelDownloadAdmissionController =
+            AppModelDownloadAdmissionController()
     ) -> ProcessModelCatalogCLIRunner {
         ProcessModelCatalogCLIRunner(
             locator: SystemDarkbloomCLILocator(
@@ -80,7 +82,8 @@ struct ModelCatalogCLIRunnerTests {
                 .appendingPathComponent("missing-state-\(UUID().uuidString).json"),
             physicalMemoryBytes: physicalMemoryBytes,
             now: now,
-            processIdentityReader: processIdentityReader
+            processIdentityReader: processIdentityReader,
+            downloadAdmission: downloadAdmission
         )
     }
 
@@ -140,6 +143,21 @@ struct ModelCatalogCLIRunnerTests {
         echo "unexpected args: $@" >&2
         exit 9
         """
+
+    private func downloadCLI(_ downloadBody: String) -> String {
+        """
+        #!/bin/sh
+        if [ "$2" = "download-plan" ]; then
+            echo '{"model_id":"org/m","download_plan":{"remaining_bytes":2048,"reserve_bytes":2147483648,"required_available_bytes":2147485696,"available_bytes":21474856960,"has_sufficient_capacity":true}}'
+            exit 0
+        fi
+        if [ "$2" = "download" ]; then
+        \(downloadBody)
+        fi
+        echo "unexpected args: $@" >&2
+        exit 9
+        """
+    }
 
     @Test("fetchSnapshot merges catalog, local list, daemon warmth, and machine memory")
     func fetchSnapshotMergesSources() async throws {
@@ -289,30 +307,25 @@ struct ModelCatalogCLIRunnerTests {
         let runner = ProcessModelCatalogCLIRunner(locator: NoCLI(), stateFileURL: URL(fileURLWithPath: "/tmp/x"))
         await #expect(throws: ModelCatalogCLIError.self) { try await runner.fetchSnapshot() }
 
-        // And the download stream must fail identically, not hang.
-        do {
-            for try await _ in runner.downloadEvents(modelID: "org/m") {
-                Issue.record("no events expected without a CLI")
-            }
-            Issue.record("expected the stream to throw")
-        } catch {
-            #expect(error as? ModelCatalogCLIError == .cliNotFound)
+        await #expect(throws: ModelCatalogCLIError.self) {
+            _ = try await runner.prepareDownload(modelID: "org/m")
         }
     }
 
     @Test("downloadEvents streams NDJSON lines, skipping malformed ones, then finishes at exit 0")
     func downloadStreamsEvents() async throws {
-        let script = try makeStubCLI(contents: """
-            #!/bin/sh
+        let script = try makeStubCLI(contents: downloadCLI("""
             echo '{"bytes":1024,"event":"progress","file":"config.json","model":"org/m","total":2048}'
             echo 'this is not json and must be skipped'
             echo '{"event":"verifying","model":"org/m"}'
             echo '{"event":"done","model":"org/m"}'
             exit 0
-            """)
+            """))
 
         var events: [ModelDownloadStreamEvent] = []
-        for try await event in runner(script: script).downloadEvents(modelID: "org/m") {
+        let preparation = try await runner(script: script).prepareDownload(modelID: "org/m")
+        let stream = try preparation.start()
+        for try await event in stream {
             events.append(event)
         }
 
@@ -325,17 +338,18 @@ struct ModelCatalogCLIRunnerTests {
 
     @Test("A terminal error event fails the stream with the CLI's message")
     func downloadErrorEvent() async throws {
-        let script = try makeStubCLI(contents: """
-            #!/bin/sh
+        let script = try makeStubCLI(contents: downloadCLI("""
             echo '{"bytes":7,"event":"progress","file":"a.bin","model":"org/m","total":99}'
             echo '{"event":"error","message":"download failed: model gone"}'
             echo '{"error":"irrelevant","note":"should never arrive"}'
             exit 1
-            """)
+            """))
 
         var events: [ModelDownloadStreamEvent] = []
         do {
-            for try await event in runner(script: script).downloadEvents(modelID: "org/m") {
+            let preparation = try await runner(script: script).prepareDownload(modelID: "org/m")
+            let stream = try preparation.start()
+            for try await event in stream {
                 events.append(event)
             }
             Issue.record("expected the stream to throw")
@@ -345,15 +359,49 @@ struct ModelCatalogCLIRunnerTests {
         #expect(events == [.progress(file: "a.bin", bytes: 7, total: 99)])
     }
 
+    @Test("app preflight and download both pass the explicit 2 GiB reserve")
+    func appDownloadArgumentsPinReserveContract() async throws {
+        let transcript = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-argv-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: transcript) }
+        let script = try makeStubCLI(contents: """
+            #!/bin/sh
+            echo "$@" >> "\(transcript.path)"
+            if [ "$2" = "download-plan" ]; then
+                echo '{"model_id":"org/m","download_plan":{"remaining_bytes":9,"reserve_bytes":2147483648,"required_available_bytes":2147483657,"available_bytes":2147483657,"has_sufficient_capacity":true}}'
+                exit 0
+            fi
+            if [ "$2" = "download" ]; then
+                echo '{"event":"done","model":"org/m"}'
+                exit 0
+            fi
+            exit 9
+            """)
+
+        let preparation = try await runner(
+            script: script,
+            downloadAdmission: AppModelDownloadAdmissionController()
+        ).prepareDownload(modelID: "org/m")
+        let stream = try preparation.start()
+        for try await _ in stream {}
+
+        let calls = try String(contentsOf: transcript, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(calls == [
+            "models download-plan org/m --json --reserve-bytes 2147483648",
+            "models download org/m --json --reserve-bytes 2147483648",
+        ])
+    }
+
     @Test("Cancelling the consumer task terminates the child and unblocks the stream")
     func downloadCancellationTerminatesChild() async throws {
         // Emits one event then keeps stdout OPEN for 30s (sleep inherits the
         // write fd): if cancel didn't terminate the child, this test hangs.
-        let script = try makeStubCLI(contents: """
-            #!/bin/sh
+        let script = try makeStubCLI(contents: downloadCLI("""
             echo '{"bytes":10,"event":"progress","file":"big.bin","model":"org/m","total":100}'
             exec sleep 30
-            """)
+            """))
 
         final class ConsumedCount: @unchecked Sendable {
             private let lock = NSLock()
@@ -363,7 +411,8 @@ struct ModelCatalogCLIRunnerTests {
         }
         let consumed = ConsumedCount()
 
-        let stream = runner(script: script).downloadEvents(modelID: "org/m")
+        let preparation = try await runner(script: script).prepareDownload(modelID: "org/m")
+        let stream = try preparation.start()
         let collector = Task { () -> [ModelDownloadStreamEvent] in
             var events: [ModelDownloadStreamEvent] = []
             do {

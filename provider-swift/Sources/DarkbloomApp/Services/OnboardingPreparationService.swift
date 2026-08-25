@@ -35,25 +35,22 @@ enum OnboardingPreparationServiceError: Error, Equatable, LocalizedError, Sendab
 
 protocol OnboardingPreparationServicing: Sendable {
     func fetchPlan() async throws -> OnboardingPreparationPlan
-    func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error>
+    func downloadEvents(
+        modelID: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error>
     func startProvider(modelID: String) async throws
 }
 
 struct OnboardingPreparationService: OnboardingPreparationServicing {
-    private static let downloadHeadroomBytes: Int64 = 2 * 1_073_741_824
-
     let catalog: any ModelCatalogCLIRunning
     let startCLI: any SetupStartCLIRunning
-    let availableStorageBytes: @Sendable () -> UInt64?
 
     init(
         catalog: any ModelCatalogCLIRunning = ProcessModelCatalogCLIRunner(),
-        startCLI: any SetupStartCLIRunning = ProcessSetupStartCLI(),
-        availableStorageBytes: @escaping @Sendable () -> UInt64? = Self.liveAvailableStorageBytes
+        startCLI: any SetupStartCLIRunning = ProcessSetupStartCLI()
     ) {
         self.catalog = catalog
         self.startCLI = startCLI
-        self.availableStorageBytes = availableStorageBytes
     }
 
     func fetchPlan() async throws -> OnboardingPreparationPlan {
@@ -62,7 +59,6 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
             throw OnboardingPreparationServiceError.noCompatibleModel
         }
         let localIDs = Set(snapshot.local.map(\.id))
-        let freeStorage = availableStorageBytes().map(Int64.init(clamping:))
 
         let choices = snapshot.catalog.compactMap { model -> OnboardingModelChoice? in
             guard let minimumMemoryGB = model.minRamGb,
@@ -76,9 +72,8 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
             )
             let installed = localIDs.contains(model.id)
             if !installed, !storageAllowsDownload(
-                fullSizeBytes: sizeBytes,
-                plan: snapshot.downloadPlans[model.id],
-                fallbackAvailableBytes: freeStorage
+                modelID: model.id,
+                plan: snapshot.downloadPlans[model.id]
             ) {
                 return nil
             }
@@ -123,38 +118,24 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
         )
     }
 
-    /// Live app plans come from the bundled CLI, which asks the downloader
-    /// to validate staged files, credit `.part` prefixes, and sample the actual
-    /// cache volume without mutating it. The fallback keeps injected/older test
-    /// adapters usable, but live planning never charges a resumed download the
-    /// full catalog size.
+    /// Screen-load plans only control which choices can be displayed. Starting
+    /// a download always obtains another plan through `prepareDownload`.
     private func storageAllowsDownload(
-        fullSizeBytes: Int64,
-        plan: CLIModelDownloadStoragePlan?,
-        fallbackAvailableBytes: Int64?
+        modelID: String,
+        plan: CLIModelDownloadStoragePlan?
     ) -> Bool {
-        if let plan {
-            let reserve = max(Self.downloadHeadroomBytes, max(0, plan.reserveBytes))
-            let remaining = max(0, plan.remainingBytes)
-            let required = remaining > Int64.max - reserve
-                ? Int64.max
-                : remaining + reserve
-            if let available = plan.availableBytes {
-                return available >= required
-            }
-            return plan.hasSufficientCapacity
-        }
-
-        guard let fallbackAvailableBytes else { return true }
-        let size = max(0, fullSizeBytes)
-        let required = size > Int64.max - Self.downloadHeadroomBytes
-            ? Int64.max
-            : size + Self.downloadHeadroomBytes
-        return fallbackAvailableBytes >= required
+        (try? ValidatedModelDownloadStoragePlan.validate(
+            plan,
+            modelID: modelID
+        )) != nil
     }
 
-    func downloadEvents(modelID: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
-        catalog.downloadEvents(modelID: modelID)
+    func downloadEvents(
+        modelID: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+        let preparation = try await catalog.prepareDownload(modelID: modelID)
+        try Task.checkCancellation()
+        return try preparation.start()
     }
 
     func startProvider(modelID: String) async throws {
@@ -178,10 +159,6 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
         }
     }
 
-    private static func liveAvailableStorageBytes() -> UInt64? {
-        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: "/")
-        return (attributes?[.systemFreeSize] as? NSNumber)?.uint64Value
-    }
 }
 
 struct OnboardingProviderEvidence: Equatable, Sendable {

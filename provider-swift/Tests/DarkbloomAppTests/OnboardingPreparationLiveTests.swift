@@ -115,6 +115,55 @@ struct OnboardingPreparationLiveTests {
         }
     }
 
+    @Test("an uninstalled onboarding choice without a trustworthy plan is hidden")
+    func missingOnboardingPlanFailsClosed() async {
+        let model = catalogModel(
+            id: "catalog/missing-plan",
+            minRAM: 8,
+            size: 1_000
+        )
+        let service = OnboardingPreparationService(
+            catalog: SnapshotCatalogCLI(snapshot: snapshot(
+                catalog: [model],
+                memoryGB: 16
+            )),
+            startCLI: NoopSetupStartCLI()
+        )
+
+        await #expect(throws: OnboardingPreparationServiceError.noCompatibleModel) {
+            try await service.fetchPlan()
+        }
+    }
+
+    @Test("onboarding surfaces a fresh admission refusal instead of starting a stream")
+    func onboardingFreshAdmissionRefusal() async {
+        let model = modelChoice(installed: false)
+        let required = ModelDownloadStorageContract.appReserveBytes + model.sizeBytes
+        let service = PreparationAttemptService(
+            model: model,
+            downloadResults: [.failure(
+                ModelDownloadAdmissionError.insufficientCapacity(
+                    requiredBytes: required,
+                    availableBytes: required - 1
+                )
+            )]
+        )
+        let flow = OnboardingFlowModel(
+            startingAt: .preparation,
+            diagnosticsRunner: nil,
+            accountLinkRunner: nil,
+            enrollmentRunner: nil,
+            preparationService: service
+        )
+
+        await flow.runAutomaticWorkForCurrentStep()
+        flow.startPreparation()
+        #expect(await eventually { flow.preparationPhase == .downloadFailed })
+        #expect(flow.preparationFailureDetail?.contains("Not enough disk space") == true)
+        #expect(service.downloadCalls == 1)
+        #expect(service.startCalls == 0)
+    }
+
     @Test("No-compatible and catalog failures surface in flow and catalog retry recovers")
     func flowCatalogRecovery() async {
         let model = OnboardingModelChoice(
@@ -388,10 +437,33 @@ struct OnboardingPreparationLiveTests {
         snapshot: ModelLibrarySnapshot,
         availableStorageBytes: UInt64 = 100 * 1_073_741_824
     ) -> OnboardingPreparationService {
-        OnboardingPreparationService(
-            catalog: SnapshotCatalogCLI(snapshot: snapshot),
-            startCLI: NoopSetupStartCLI(),
-            availableStorageBytes: { availableStorageBytes }
+        let reserve = Int64(2 * 1_073_741_824)
+        var plans = snapshot.downloadPlans
+        for model in snapshot.catalog where plans[model.id] == nil {
+            let remaining = max(0, model.totalSizeBytes ?? 0)
+            let (required, overflow) = remaining.addingReportingOverflow(reserve)
+            let requiredBytes = overflow ? Int64.max : required
+            let available = Int64(clamping: availableStorageBytes)
+            plans[model.id] = CLIModelDownloadStoragePlan(
+                remainingBytes: remaining,
+                reserveBytes: reserve,
+                requiredAvailableBytes: requiredBytes,
+                availableBytes: available,
+                hasSufficientCapacity: !overflow && available >= requiredBytes
+            )
+        }
+        let plannedSnapshot = ModelLibrarySnapshot(
+            catalog: snapshot.catalog,
+            local: snapshot.local,
+            downloadPlans: plans,
+            warmModelIDs: snapshot.warmModelIDs,
+            servingModelID: snapshot.servingModelID,
+            physicalMemoryGB: snapshot.physicalMemoryGB,
+            fetchedAt: snapshot.fetchedAt
+        )
+        return OnboardingPreparationService(
+            catalog: SnapshotCatalogCLI(snapshot: plannedSnapshot),
+            startCLI: NoopSetupStartCLI()
         )
     }
 
@@ -463,8 +535,17 @@ private struct SnapshotCatalogCLI: ModelCatalogCLIRunning {
 
     func fetchSnapshot() async throws -> ModelLibrarySnapshot { snapshot }
 
-    func downloadEvents(modelID _: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
-        AsyncThrowingStream { $0.finish() }
+    func prepareDownload(modelID: String) async throws -> PreparedModelDownload {
+        let plan = try ValidatedModelDownloadStoragePlan.validate(
+            snapshot.downloadPlans[modelID],
+            modelID: modelID
+        )
+        return PreparedModelDownload(
+            modelID: modelID,
+            plan: plan,
+            start: { AsyncThrowingStream { $0.finish() } },
+            cancel: {}
+        )
     }
 
     func removeModel(modelID _: String) async throws {}
@@ -488,7 +569,9 @@ private final class ScriptedPreparationService: OnboardingPreparationServicing, 
         return try result.get()
     }
 
-    func downloadEvents(modelID _: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+    func downloadEvents(
+        modelID _: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
         AsyncThrowingStream { $0.finish() }
     }
 
@@ -536,15 +619,18 @@ private final class ProviderEvidenceBox: @unchecked Sendable {
 private final class PreparationAttemptService: OnboardingPreparationServicing, @unchecked Sendable {
     private let lock = NSLock()
     private let model: OnboardingModelChoice
+    private var downloadResults: [Result<Void, Error>]
     private var startResults: [Result<Void, Error>]
     private var downloadCallCount = 0
     private var startCallCount = 0
 
     init(
         model: OnboardingModelChoice,
+        downloadResults: [Result<Void, Error>] = [],
         startResults: [Result<Void, Error>] = []
     ) {
         self.model = model
+        self.downloadResults = downloadResults
         self.startResults = startResults
     }
 
@@ -559,8 +645,14 @@ private final class PreparationAttemptService: OnboardingPreparationServicing, @
         )
     }
 
-    func downloadEvents(modelID _: String) -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
-        lock.withLock { downloadCallCount += 1 }
+    func downloadEvents(
+        modelID _: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+        let result: Result<Void, Error>? = lock.withLock {
+            downloadCallCount += 1
+            return downloadResults.isEmpty ? nil : downloadResults.removeFirst()
+        }
+        try result?.get()
         return AsyncThrowingStream { continuation in
             continuation.yield(.progress(file: "weights", bytes: model.sizeBytes, total: model.sizeBytes))
             continuation.yield(.done)

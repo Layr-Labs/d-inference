@@ -162,6 +162,7 @@ extension ModelDownloader {
     internal func downloadManifestModel(
         model: CatalogModel,
         manifest: ModelManifest,
+        reserveBytes: Int64,
         onProgress: (@Sendable (ProgressEvent) -> Void)?,
         onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
@@ -211,9 +212,10 @@ extension ModelDownloader {
             destinations: jobs.map(\.destination)
         )
         let alreadyValid = diskState.alreadyValid
-        try Self.ensureAvailableCapacity(
+        try ensureAvailableCapacity(
             at: snapshotsDir,
-            requiredBytes: diskState.remainingBytes
+            remainingBytes: diskState.remainingBytes,
+            reserveBytes: reserveBytes
         )
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 

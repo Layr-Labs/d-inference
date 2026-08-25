@@ -298,7 +298,7 @@ enum UpdateAtomicFilesystem {
     ) throws {
         #if canImport(Darwin)
         let fullSync: (() -> DurabilitySyncResult)? = {
-            captureSystemCall {
+            captureFcntlCall {
                 fcntl(descriptor, F_FULLFSYNC)
             }
         }
@@ -333,6 +333,14 @@ enum UpdateAtomicFilesystem {
     ) -> DurabilitySyncResult {
         operation() == 0 ? .success : .failure(errno)
     }
+
+    #if canImport(Darwin)
+    private static func captureFcntlCall(
+        _ operation: () -> Int32
+    ) -> DurabilitySyncResult {
+        operation() == -1 ? .failure(errno) : .success
+    }
+    #endif
 
     private static func filesystemError(_ operation: String) -> Error {
         filesystemError(operation, code: errno)

@@ -500,6 +500,13 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
 		return false
 	}
+	// A machine qualifying under the hardware policy for the first time must
+	// complete the live MDM + SE-bound Apple MDA path before its positive
+	// admission is committed. Trust reuse may accelerate reconnects only after
+	// that first durable admission exists.
+	if s.hasPendingHardwareAdmission(providerID) {
+		return false
+	}
 	// (f) require MDM to be configured. The trust-reuse fast-skip is purely an
 	// optimization that REPLACES a live MDM SecurityInfo round-trip; if no MDM
 	// client is wired (no-MDM or misconfigured deploy), the normal path would never

@@ -233,6 +233,12 @@ func (r *Registry) persistProviderNow(p *Provider) {
 	if r.store == nil {
 		return
 	}
+	p.mu.Lock()
+	persistenceEnabled := p.persistenceEnabled
+	p.mu.Unlock()
+	if !persistenceEnabled {
+		return
+	}
 	saferun.Go(r.logger, "registry.persistProvider", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 )
 
 // APIKeyStore covers consumer API-key lifecycle: the legacy single-key helpers,
@@ -693,4 +695,18 @@ type ProviderStore interface {
 
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)
+}
+
+// HardwareAdmissionStore owns the coordinator-controlled policy, the durable
+// positive admission ledger, and bounded operator-facing decision history.
+// Provider session rows are deliberately not used as an admission allowlist:
+// they are keyed by ephemeral connection IDs and can exist before attestation.
+type HardwareAdmissionStore interface {
+	GetActiveHardwareAdmissionPolicy(ctx context.Context) (*hardwareadmission.Policy, error)
+	ActivateHardwareAdmissionPolicy(ctx context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64) (hardwareadmission.Policy, error)
+	IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error)
+	AdmitHardware(ctx context.Context, admission HardwareAdmission) error
+	ListHardwareAdmissions(ctx context.Context, limit int) ([]HardwareAdmission, error)
+	RecordHardwareAdmissionAttempt(ctx context.Context, attempt HardwareAdmissionAttempt) error
+	ListHardwareAdmissionAttempts(ctx context.Context, accountID string, limit int) ([]HardwareAdmissionAttempt, error)
 }

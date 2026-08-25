@@ -1,0 +1,175 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func admissionTestRegister() *protocol.RegisterMessage {
+	return &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MachineModel: "MacBookAir10,1", ChipName: "Apple M1",
+			ChipFamily: "M1", ChipTier: "Base", MemoryGB: 16, GPUCores: 8,
+		},
+		Backend: registry.BackendMLXSwift,
+	}
+}
+
+func admissionTestAttestation(serial string) attestation.VerificationResult {
+	return attestation.VerificationResult{
+		Valid: true, SerialNumber: serial,
+		HardwareModel: "MacBookAir10,1", ChipName: "Apple M1",
+		MemoryGB: 16, GPUCores: 8, Timestamp: time.Now(),
+	}
+}
+
+func TestHardwareAdmissionRejectsNewMachineBelowEnforcedFloor(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 32,
+	})
+	msg := admissionTestRegister()
+	provider := srv.registry.Register("new-low-spec", nil, msg)
+	provider.SetAttestationResult(ptrAdmissionResult(admissionTestAttestation("NEW-LOW-1")))
+
+	if srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, admissionTestAttestation("NEW-LOW-1")) {
+		t.Fatal("new low-spec machine was admitted")
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("rejected provider marked hardware-admitted")
+	}
+	attempts, err := st.ListHardwareAdmissionAttempts(context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].Decision != "rejected" ||
+		attempts[0].ReasonCode != "hardware_below_minimum" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestHardwareAdmissionGrandfathersExistingTrustedSerial(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	now := time.Now()
+	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
+		ID: "legacy-session", SerialNumber: "LEGACY-LOW-1",
+		Hardware: json.RawMessage(`{"memory_gb":16}`), Models: json.RawMessage(`[]`),
+		Backend: registry.BackendMLXSwift, TrustLevel: string(registry.TrustHardware),
+		RegisteredAt: now, LastSeen: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, st, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 32,
+	}, quietLogger())
+	msg := admissionTestRegister()
+	provider := reg.Register("legacy-reconnect", nil, msg)
+
+	if !srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, admissionTestAttestation("LEGACY-LOW-1")) {
+		t.Fatal("grandfathered low-spec machine was rejected")
+	}
+	if !provider.HardwareAdmissionStatus() {
+		t.Fatal("grandfathered provider not marked admitted")
+	}
+}
+
+func TestHardwareAdmissionShadowAllowsAndRecordsWouldReject(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "shadow",
+		HardwareAdmissionMinMemoryGB: 32,
+	})
+	msg := admissionTestRegister()
+	provider := srv.registry.Register("shadow-low", nil, msg)
+	if !srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, admissionTestAttestation("SHADOW-1")) {
+		t.Fatal("shadow policy blocked provider")
+	}
+	attempts, err := st.ListHardwareAdmissionAttempts(context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].Decision != "would_reject" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	msg := admissionTestRegister()
+	provider := srv.registry.Register("new-qualified", nil, msg)
+	result := admissionTestAttestation("NEW-QUALIFIED-1")
+	provider.SetAttestationResult(&result)
+
+	if !srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, result) {
+		t.Fatal("qualified hardware was rejected before identity verification")
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("new hardware admitted before MDA identity binding")
+	}
+	if admitted, _ := st.IsHardwareAdmitted(context.Background(), result.SerialNumber); admitted {
+		t.Fatal("positive admission persisted before MDA identity binding")
+	}
+
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustHardware
+	provider.MDAVerified = true
+	provider.SEKeyBound = true
+	provider.Mu().Unlock()
+	if !srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("bound, qualified hardware did not finalize")
+	}
+	if admitted, err := st.IsHardwareAdmitted(context.Background(), result.SerialNumber); err != nil || !admitted {
+		t.Fatalf("persisted admission = (%v,%v)", admitted, err)
+	}
+}
+
+func TestProviderRequirementsAndAdminPolicyEndpoints(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{AdminKey: "test-key"})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/provider-requirements", nil)
+	getW := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("requirements status = %d: %s", getW.Code, getW.Body.String())
+	}
+	if !strings.Contains(getW.Body.String(), hardwareadmission.CatalogVersion) {
+		t.Fatalf("requirements missing catalog version: %s", getW.Body.String())
+	}
+
+	body := `{"mode":"shadow","min_memory_gb":32,"min_memory_bandwidth_gbs":200,"reason":"rollout","expected_current_version":0}`
+	putReq := httptest.NewRequest(http.MethodPut, "/v1/admin/hardware-admission/policy", strings.NewReader(body))
+	putReq.Header.Set("Authorization", "Bearer test-key")
+	putReq.Header.Set("Content-Type", "application/json")
+	putW := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("admin put status = %d: %s", putW.Code, putW.Body.String())
+	}
+	var policy hardwareadmission.Policy
+	if err := json.Unmarshal(putW.Body.Bytes(), &policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.Version == 0 || policy.Mode != hardwareadmission.ModeShadow || policy.MinMemoryGB != 32 {
+		t.Fatalf("policy = %+v", policy)
+	}
+}
+
+func ptrAdmissionResult(result attestation.VerificationResult) *attestation.VerificationResult {
+	return &result
+}

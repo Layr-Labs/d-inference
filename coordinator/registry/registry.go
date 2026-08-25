@@ -751,6 +751,14 @@ type Provider struct {
 	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
 	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
+	// HardwareAdmitted is the coordinator-owned onboarding decision for this
+	// physical machine. It is independent from TrustLevel: owner self-routing may
+	// relax trust, but it must never bypass an enforced new-machine hardware gate.
+	HardwareAdmitted bool
+	// persistenceEnabled is false while an enforce-mode registration is still
+	// awaiting coordinator hardware admission. Rejected machines must not create
+	// provider/session rows that could later be mistaken for legacy onboarding.
+	persistenceEnabled bool
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
@@ -1669,6 +1677,10 @@ type Registry struct {
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
+	// hardwareAdmissionEnforced turns HardwareAdmitted into a mandatory,
+	// non-relaxable routing/rewards/warming gate. Shadow/disabled policies leave
+	// it false while still evaluating and recording decisions in the API layer.
+	hardwareAdmissionEnforced atomic.Bool
 
 	// pendingModelLoads tracks provider-model pairs that have been sent a
 	// load_model command and are awaiting completion, or are cooling down
@@ -2858,6 +2870,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) &&
 			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
@@ -3096,6 +3109,17 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 // providers that connect before a model is promoted become routable immediately
 // after the catalog is updated.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, true)
+}
+
+// RegisterPendingHardwareAdmission adds a connection behind the mandatory
+// routing gate without creating durable provider/session rows. The API calls
+// ActivateProviderPersistence only after the admission decision commits.
+func (r *Registry) RegisterPendingHardwareAdmission(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, false)
+}
+
+func (r *Registry) register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage, persistenceEnabled bool) *Provider {
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
 	// DecodeTPS=1e9 would otherwise starve all other providers.
@@ -3172,6 +3196,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
 		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
 		TrustLevel:                  TrustNone,
+		HardwareAdmitted:            !r.hardwareAdmissionEnforced.Load(),
+		persistenceEnabled:          persistenceEnabled,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
 		ChallengeVerifiedSIP:        false, // starts false; set true by attestation challenge handler after SIP check
@@ -3208,7 +3234,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Open a session row for this connection (async; durable uptime history).
 	// serial/account are empty here (set after attestation/linking) and are
 	// backfilled by the throttled TouchProviderSession in persistProviderNow.
-	if r.store != nil {
+	if r.store != nil && persistenceEnabled {
 		sessionID := p.ID
 		saferun.Go(r.logger, "registry.openSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3230,7 +3256,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	)
 
 	// Persist provider record to store (async).
-	r.persistProviderNow(p)
+	if persistenceEnabled {
+		r.persistProviderNow(p)
+	}
 
 	return p
 }
@@ -4724,6 +4752,7 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 		eligible := p.AccountID == accountID &&
 			p.Status != StatusOffline &&
 			p.Status != StatusUntrusted &&
+			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&

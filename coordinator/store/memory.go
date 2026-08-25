@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 )
 
 // Compile-time check that MemoryStore implements Store.
@@ -130,6 +132,13 @@ type MemoryStore struct {
 	providerSessions   []ProviderSession
 	providerSessionSeq int64
 
+	// Coordinator-owned provider hardware admission policy and ledger.
+	hardwareAdmissionPolicies   map[int64]hardwareadmission.Policy
+	activeHardwarePolicy        int64
+	hardwareAdmissions          map[string]HardwareAdmission
+	hardwareAdmissionAttempts   []HardwareAdmissionAttempt
+	hardwareAdmissionAttemptSeq int64
+
 	// Inference routing telemetry
 	inferenceRoutes        []InferenceRouteRecord
 	inferenceRouteIndex    map[string]int // request_id/attempt -> index in inferenceRoutes
@@ -191,6 +200,9 @@ func NewMemory(scfg Config) *MemoryStore {
 		serialToProviderID:            make(map[string]string),
 		codeAttestations:              make(map[string]CodeAttestation),
 		providerTrustReuse:            make(map[string]ProviderTrustReuse),
+		hardwareAdmissionPolicies:     make(map[int64]hardwareadmission.Policy),
+		hardwareAdmissions:            make(map[string]HardwareAdmission),
+		hardwareAdmissionAttempts:     make([]HardwareAdmissionAttempt, 0),
 		inferenceRoutes:               make([]InferenceRouteRecord, 0),
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),

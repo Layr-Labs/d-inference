@@ -15,6 +15,33 @@ the models you want to serve.
 | **macOS** | 14 (Sonoma) | Newer is better; install script enforces Darwin + arm64 |
 | **Network** | Outbound HTTPS to coordinator | No inbound port is required |
 
+## New-machine admission policy
+
+The 8 GB figure above is the CLI's absolute ability-to-start floor. The
+coordinator can apply a stricter, runtime-configurable policy to **new public
+provider onboarding** using unified memory, catalogued memory bandwidth, and
+estimated FP16 vector throughput. Existing admitted physical machines are
+grandfathered when enforcement is activated and continue to use the normal live
+trust, runtime-integrity, and routing checks.
+
+Current public requirements are available from:
+
+```bash
+curl -fsSL https://api.darkbloom.dev/v1/provider-requirements
+```
+
+Operators manage immutable policy versions with
+`scripts/admin.sh hardware-policy get|set`, and can inspect the admitted-machine
+inventory with `scripts/admin.sh hardware-policy machines`. A policy should run
+in `shadow` mode before `enforce`; the first enforcement activation atomically
+records the trusted serials already in the fleet as grandfathered.
+
+Bandwidth and FP16 throughput are derived from the coordinator's versioned Apple
+Silicon catalog. They are not accepted from arbitrary provider values. A new
+machine's actual memory and GPU-core count are included in its signed Secure
+Enclave attestation and must match registration; first admission is committed
+only after MDM verification plus an SE-bound Apple Device Attestation.
+
 ## Recommended configurations
 
 | Workload | Mac | RAM | Notes |

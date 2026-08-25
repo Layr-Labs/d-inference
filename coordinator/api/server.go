@@ -38,6 +38,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -305,6 +306,11 @@ type Server struct {
 	// Providers below this version are excluded and told to update.
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
 	minProviderVersion string
+
+	hardwareAdmissionMu     sync.RWMutex
+	hardwareAdmissionPolicy hardwareadmission.Policy
+	hardwareAdmissionPendingMu sync.Mutex
+	hardwareAdmissionPending   map[string]pendingHardwareAdmission
 
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
 	// It can only POST /v1/releases — no admin access.
@@ -734,6 +740,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		hardwareAdmissionPending: make(map[string]pendingHardwareAdmission),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -758,6 +765,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.minProviderVersion = strings.TrimSpace(cfg.MinProviderVersion)
 	s.r2CDNURL = strings.TrimRight(cfg.R2CDNURL, "/")
 	s.releaseKey = cfg.ReleaseKey
+	s.initializeHardwareAdmission(cfg)
 
 	return s
 }
@@ -1794,6 +1802,7 @@ func (s *Server) routes() {
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/provider-admission-attempts", s.requirePrivyAuth(s.handleMyHardwareAdmissionAttempts))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
@@ -1803,6 +1812,7 @@ func (s *Server) routes() {
 	// No auth needed — trust comes from MDM SecurityInfo verification after
 	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
+	s.mux.HandleFunc("GET /v1/provider-requirements", s.handleProviderRequirements)
 
 	// Attestation verification — public, no auth needed.
 	// Users can independently verify Apple's MDA certificate chain.
@@ -1892,6 +1902,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
+	s.mux.HandleFunc("PUT /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
+	s.mux.HandleFunc("GET /v1/admin/hardware-admission/machines", s.requireAuth(s.handleAdminHardwareAdmissionMachines))
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but

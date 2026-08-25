@@ -12,16 +12,20 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
-	Port                string
-	ConsoleURL          string
-	CORSOrigin          string
-	BaseURL             string
-	R2CDNURL            string
-	MinProviderVersion  string
-	AdminKey            string
-	AdminEmails         []string
-	ReleaseKey          string
-	ServiceReservations bool
+	Port                                string
+	ConsoleURL                          string
+	CORSOrigin                          string
+	BaseURL                             string
+	R2CDNURL                            string
+	MinProviderVersion                  string
+	HardwareAdmissionMode               string
+	HardwareAdmissionMinMemoryGB        int
+	HardwareAdmissionMinBandwidthGBs    int
+	HardwareAdmissionMinFP16MilliTFLOPS int
+	AdminKey                            string
+	AdminEmails                         []string
+	ReleaseKey                          string
+	ServiceReservations                 bool
 	// FirstContentDeadlineBase is the fixed term in the request-absolute
 	// first-content budget. Zero keeps the ordinary coordinator default.
 	FirstContentDeadlineBase time.Duration
@@ -48,16 +52,20 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		Port:                env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:          os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:          os.Getenv("CORS_ORIGIN"),
-		BaseURL:             os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:            os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		MinProviderVersion:  os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:            os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:         ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:          os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations: env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		Port:                                env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:                          os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:                          os.Getenv("CORS_ORIGIN"),
+		BaseURL:                             os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:                            os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:                  os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		HardwareAdmissionMode:               env.EnvOr(env.EnvPrefix+"_HARDWARE_ADMISSION_MODE", "disabled"),
+		HardwareAdmissionMinMemoryGB:        env.EnvInt(env.EnvPrefix+"_HARDWARE_ADMISSION_MIN_MEMORY_GB", 0),
+		HardwareAdmissionMinBandwidthGBs:    env.EnvInt(env.EnvPrefix+"_HARDWARE_ADMISSION_MIN_BANDWIDTH_GBS", 0),
+		HardwareAdmissionMinFP16MilliTFLOPS: env.EnvInt(env.EnvPrefix+"_HARDWARE_ADMISSION_MIN_FP16_MILLITFLOPS", 0),
+		AdminKey:                            os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:                         ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:                          os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:                 env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

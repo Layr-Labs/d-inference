@@ -184,6 +184,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		s.clearPendingHardwareAdmission(providerID)
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -303,9 +304,61 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.hardwareAdmissionEnforcing() {
+				provider = s.registry.RegisterPendingHardwareAdmission(providerID, conn, regMsg)
+			} else {
+				provider = s.registry.Register(providerID, conn, regMsg)
+			}
 			s.attachProviderLocation(providerID, provider, r)
+
+			// Resolve account linkage before admission so a rejected machine's
+			// decision is visible only to the account that submitted its token.
+			if regMsg.AuthToken != "" {
+				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+				if err != nil {
+					s.logger.Warn("provider auth token invalid",
+						"provider_id", providerID,
+						"error", err,
+					)
+				} else {
+					provider.Mu().Lock()
+					provider.AccountID = pt.AccountID
+					provider.Mu().Unlock()
+					provider.RebindStableFaultKey()
+					s.logger.Info("provider linked to account",
+						"provider_id", providerID,
+						"account_id", pt.AccountID,
+						"token_label", pt.Label,
+					)
+				}
+			}
+
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+			provider.Mu().Lock()
+			var attestResult *attestation.VerificationResult
+			if provider.AttestationResult != nil {
+				resultCopy := *provider.AttestationResult
+				attestResult = &resultCopy
+			}
+			provider.Mu().Unlock()
+			if attestResult != nil && attestResult.Valid {
+				if !s.evaluateProviderHardwareAdmission(providerID, provider, regMsg, *attestResult) {
+					return
+				}
+			} else if s.hardwareAdmissionEnforcing() {
+				s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+					code: "hardware_identity_required", retryable: false,
+					policy: s.hardwareAdmissionPolicySnapshot(),
+					reason: "New providers must supply a valid attested machine identity before their hardware can be admitted.",
+				})
+				return
+			} else {
+				s.registry.SetProviderHardwareAdmitted(providerID, true)
+			}
+			s.registry.ActivateProviderPersistence(provider)
+			if attestResult != nil && attestResult.SerialNumber != "" && !s.allowDuplicateProviderSerials {
+				s.registry.DisconnectDuplicatesBySerial(providerID, attestResult.SerialNumber)
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -322,31 +375,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"hardware_chip": regMsg.Hardware.ChipName,
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
-
-			// Resolve auth token → account linkage.
-			if regMsg.AuthToken != "" {
-				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil {
-					s.logger.Warn("provider auth token invalid",
-						"provider_id", providerID,
-						"error", err,
-					)
-				} else {
-					provider.Mu().Lock()
-					provider.AccountID = pt.AccountID
-					provider.Mu().Unlock()
-					// Account linkage can be the provider's ONLY stable identity
-					// (Open Mode / invalid attestation → the acct: fallback), and
-					// it lands after the attestation-time bind — re-bind so fault
-					// state keys by identity instead of the session UUID.
-					provider.RebindStableFaultKey()
-					s.logger.Info("provider linked to account",
-						"provider_id", providerID,
-						"account_id", pt.AccountID,
-						"token_label", pt.Label,
-					)
-				}
-			}
 
 			// Store provider version.
 			if regMsg.Version != "" {
@@ -2697,14 +2725,6 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// forcing a fresh, Apple-rate-limited DevicePropertiesAttestation round-trip.
 	s.stageDurableMDAChain(provider, result.SerialNumber)
 
-	// Deduplicate: if another provider connection exists from the same physical
-	// device (same serial number), disconnect it. This prevents multiple
-	// provider processes on the same machine from registering independently
-	// and competing for a single shared vllm-mlx backend.
-	if result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
-		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
-	}
-
 	// Persist provider state after attestation verification.
 	// This captures the attestation result, serial number, and trust level.
 	s.registry.PersistProvider(provider)
@@ -2997,7 +3017,16 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		// MDA proof here too — otherwise a provider upgraded via late SecurityInfo
 		// stays mda_verified=false despite a valid cached chain.
 		if ar := c.provider.GetAttestationResult(); ar != nil {
-			s.attachCachedMDAProof(c.provider.ID, c.provider, *ar)
+			if !s.attachCachedMDAProof(c.provider.ID, c.provider, *ar) &&
+				s.hasPendingHardwareAdmission(c.provider.ID) {
+				attestationCopy := *ar
+				saferun.Go(s.logger, "lateHardwareAdmissionMDA", func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+					defer cancel()
+					s.verifyAppleDeviceAttestation(
+						ctx, c.provider.ID, c.provider, attestationCopy, udid)
+				})
+			}
 		}
 	}
 }
@@ -3189,6 +3218,7 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 		"se_key_bound", true,
 	)
 	s.ddIncr("mda.verification", []string{"outcome:reused"})
+	s.finalizePendingHardwareAdmission(provider)
 	return true
 }
 
@@ -3304,6 +3334,7 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	// durable (Postgres) store this is what makes the proof recoverable across a
 	// coordinator restart.
 	s.registry.PersistProvider(provider)
+	s.finalizePendingHardwareAdmission(provider)
 
 	// Log results.
 	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {

@@ -202,6 +202,48 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
 
+		`CREATE TABLE IF NOT EXISTS hardware_admission_policies (
+			version BIGSERIAL PRIMARY KEY,
+			mode TEXT NOT NULL,
+			min_memory_gb INT NOT NULL DEFAULT 0,
+			min_memory_bandwidth_gbs INT NOT NULL DEFAULT 0,
+			min_fp16_millitflops INT NOT NULL DEFAULT 0,
+			catalog_version TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			grandfather_cutoff_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_state (
+			singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+			active_policy_version BIGINT REFERENCES hardware_admission_policies(version)
+		)`,
+		`INSERT INTO hardware_admission_state (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING`,
+		`CREATE TABLE IF NOT EXISTS hardware_admissions (
+			serial_number TEXT PRIMARY KEY,
+			source TEXT NOT NULL,
+			policy_version BIGINT NOT NULL REFERENCES hardware_admission_policies(version),
+			hardware JSONB NOT NULL DEFAULT '{}'::jsonb,
+			admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_attempts (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			policy_version BIGINT NOT NULL,
+			mode TEXT NOT NULL,
+			decision TEXT NOT NULL,
+			reason_code TEXT NOT NULL DEFAULT '',
+			hardware JSONB NOT NULL DEFAULT '{}'::jsonb,
+			failed_checks JSONB NOT NULL DEFAULT '[]'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_account
+			ON hardware_admission_attempts(account_id, created_at DESC) WHERE account_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_serial
+			ON hardware_admission_attempts(serial_number, created_at DESC) WHERE serial_number != ''`,
+
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,

@@ -27,6 +27,7 @@ import "time"
 // every provider-eligibility decision, in this order:
 //
 //   - status is not offline/untrusted
+//   - coordinator hardware admission is satisfied when enforcement is active
 //   - private-only admission (a private-only box is excluded unless allowPrivate)
 //   - hardware-trust floor (TrustLevel >= minTrust)
 //   - runtime verified
@@ -42,6 +43,9 @@ import "time"
 // enforces. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if r.hardwareAdmissionEnforced.Load() && !p.HardwareAdmitted {
 		return false
 	}
 	if p.PrivateOnly && !allowPrivate {

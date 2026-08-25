@@ -641,6 +641,7 @@ type warmColdReason string
 const (
 	warmColdEligible       warmColdReason = ""
 	warmColdOfflineUntrust warmColdReason = "offline_untrusted_private"
+	warmColdNotAdmitted    warmColdReason = "hardware_not_admitted"
 	warmColdPendingLoad    warmColdReason = "pending_load_or_cooldown"
 	warmColdNotIdle        warmColdReason = "not_idle"
 	warmColdThermal        warmColdReason = "thermal_critical"
@@ -687,6 +688,9 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust
+	}
+	if r.hardwareAdmissionEnforced.Load() && !p.HardwareAdmitted {
+		return warmPoolCandidate{}, warmColdNotAdmitted
 	}
 	if r.providerHasPendingLoad(p.ID) || r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad

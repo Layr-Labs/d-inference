@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ProviderCore
+import ProviderCoreFoundation
 
 @Suite("Enrollment service")
 struct EnrollmentTests {
@@ -121,6 +122,18 @@ struct EnrollmentTests {
 
         #expect(warning == nil)
         #expect(recorder.calls.count == 2)
+    }
+
+    @Test("Profile removal opens the canonical removal pane without enrollment")
+    func profileRemovalUsesCanonicalPane() {
+        let recorder = EnrollmentOpenRecorder()
+        let service = EnrollmentService(openCommand: recorder.run)
+
+        service.openProfilesPaneForRemoval()
+
+        #expect(recorder.calls == [
+            [SystemSettingsProfileRemovalPane.deepLink],
+        ])
     }
 
     @Test("Enrollment rejects unsafe profile responses before filesystem or open side effects")

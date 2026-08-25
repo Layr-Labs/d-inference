@@ -1212,16 +1212,16 @@ assert_retirement_preserves_preexisting_garbage() {
     local expected_phase
     if [ "$kind" = app ]; then
         archive=$VALID
-        crash_point=staged-app-moved
+        crash_point='staged-app-moved'
     else
         archive=$FLAT_LEGACY
-        crash_point=flat-layout-moved
+        crash_point='flat-layout-moved'
     fi
     if [ "$recovery_kind" = committed ]; then
         if [ "$kind" = app ]; then
-            crash_point=app-transaction-committed
+            crash_point='app-transaction-committed'
         else
-            crash_point=flat-transaction-committed
+            crash_point='flat-transaction-committed'
         fi
         expected_phase=committed
     else
@@ -1238,12 +1238,12 @@ assert_retirement_preserves_preexisting_garbage() {
         installer_recovery_assert_manifest_phase "$backup" prepared
     fi
     local transaction_id=${backup##*/.install-backup-}
-    local garbage="$install_dir/.install-garbage-$transaction_id"
+    local garbage_path="$install_dir/.install-garbage-$transaction_id"
     local unrelated_garbage="$ROOT/retirement-collision-unrelated-$kind-$recovery_kind-$label"
-    mkdir "$garbage"
-    printf 'preexisting unrelated garbage\n' > "$garbage/sentinel"
+    mkdir "$garbage_path"
+    printf 'preexisting unrelated garbage\n' > "$garbage_path/sentinel"
     local garbage_identity
-    garbage_identity=$(test_path_identity "$garbage")
+    garbage_identity=$(test_path_identity "$garbage_path")
 
     if bash "$installer" \
         --recover-install-transactions-test "$install_dir"
@@ -1251,11 +1251,11 @@ assert_retirement_preserves_preexisting_garbage() {
         echo "$installer replaced preexisting garbage during retirement" >&2
         return 1
     fi
-    test "$(test_path_identity "$garbage")" = "$garbage_identity"
-    test "$(cat "$garbage/sentinel")" = "preexisting unrelated garbage"
+    test "$(test_path_identity "$garbage_path")" = "$garbage_identity"
+    test "$(cat "$garbage_path/sentinel")" = "preexisting unrelated garbage"
     installer_recovery_assert_manifest_phase "$backup" "$expected_phase"
 
-    mv "$garbage" "$unrelated_garbage"
+    mv "$garbage_path" "$unrelated_garbage"
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test "$(cat "$unrelated_garbage/sentinel")" = \
         "preexisting unrelated garbage"
@@ -1293,23 +1293,23 @@ assert_replaced_garbage_survives_and_owned_garbage_retires() {
             "$installer" "$install_dir" transaction-retired
     fi
 
-    local garbage
-    garbage=$(installer_recovery_only_garbage "$install_dir")
+    local garbage_path
+    garbage_path=$(installer_recovery_only_garbage "$install_dir")
     local expected_phase=committed
     if [ "$recovery_kind" = interrupted ]; then
         expected_phase=rolled_back
     fi
-    installer_recovery_assert_manifest_phase "$garbage" "$expected_phase"
-    local transaction_id=${garbage##*/.install-garbage-}
+    installer_recovery_assert_manifest_phase "$garbage_path" "$expected_phase"
+    local transaction_id=${garbage_path##*/.install-garbage-}
     test -f "$install_dir/.install-ownership-$transaction_id"
 
     local owned_garbage="$ROOT/replaced-garbage-owned-$kind-$recovery_kind-$label"
     local unrelated_garbage="$ROOT/replaced-garbage-unrelated-$kind-$recovery_kind-$label"
-    mv "$garbage" "$owned_garbage"
-    mkdir "$garbage"
-    printf 'same-name unrelated garbage\n' > "$garbage/sentinel"
+    mv "$garbage_path" "$owned_garbage"
+    mkdir "$garbage_path"
+    printf 'same-name unrelated garbage\n' > "$garbage_path/sentinel"
     local replacement_identity
-    replacement_identity=$(test_path_identity "$garbage")
+    replacement_identity=$(test_path_identity "$garbage_path")
 
     if bash "$installer" \
         --recover-install-transactions-test "$install_dir"
@@ -1317,13 +1317,13 @@ assert_replaced_garbage_survives_and_owned_garbage_retires() {
         echo "$installer deleted a replacement garbage tree" >&2
         return 1
     fi
-    test "$(test_path_identity "$garbage")" = "$replacement_identity"
-    test "$(cat "$garbage/sentinel")" = "same-name unrelated garbage"
+    test "$(test_path_identity "$garbage_path")" = "$replacement_identity"
+    test "$(cat "$garbage_path/sentinel")" = "same-name unrelated garbage"
     installer_recovery_assert_manifest_phase \
         "$owned_garbage" "$expected_phase"
 
-    mv "$garbage" "$unrelated_garbage"
-    mv "$owned_garbage" "$garbage"
+    mv "$garbage_path" "$unrelated_garbage"
+    mv "$owned_garbage" "$garbage_path"
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test "$(cat "$unrelated_garbage/sentinel")" = \
         "same-name unrelated garbage"
@@ -1345,18 +1345,18 @@ assert_committed_foreign_recovery_requires_previous_identity() {
     backup=$(installer_recovery_only_backup "$install_dir")
     installer_recovery_assert_manifest_phase "$backup" committed
     local transaction_id=${backup##*/.install-backup-}
-    local preserved="$install_dir/Darkbloom.app.foreign-$transaction_id"
-    mv "$backup/Darkbloom.app" "$preserved"
+    local preserved_path="$install_dir/Darkbloom.app.foreign-$transaction_id"
+    mv "$backup/Darkbloom.app" "$preserved_path"
     local previous_identity
-    previous_identity=$(test_path_identity "$preserved")
+    previous_identity=$(test_path_identity "$preserved_path")
 
     local journaled_previous="$ROOT/foreign-identity-owned-$label"
     local unrelated_previous="$ROOT/foreign-identity-unrelated-$label"
-    mv "$preserved" "$journaled_previous"
-    mkdir "$preserved"
-    printf 'same-name unrelated foreign app\n' > "$preserved/sentinel"
+    mv "$preserved_path" "$journaled_previous"
+    mkdir "$preserved_path"
+    printf 'same-name unrelated foreign app\n' > "$preserved_path/sentinel"
     local replacement_identity
-    replacement_identity=$(test_path_identity "$preserved")
+    replacement_identity=$(test_path_identity "$preserved_path")
 
     if bash "$installer" \
         --recover-install-transactions-test "$install_dir"
@@ -1364,16 +1364,16 @@ assert_committed_foreign_recovery_requires_previous_identity() {
         echo "$installer accepted an unrelated committed foreign app" >&2
         return 1
     fi
-    test "$(test_path_identity "$preserved")" = "$replacement_identity"
-    test "$(cat "$preserved/sentinel")" = \
+    test "$(test_path_identity "$preserved_path")" = "$replacement_identity"
+    test "$(cat "$preserved_path/sentinel")" = \
         "same-name unrelated foreign app"
     installer_recovery_assert_manifest_phase "$backup" committed
 
-    mv "$preserved" "$unrelated_previous"
-    mv "$journaled_previous" "$preserved"
-    test "$(test_path_identity "$preserved")" = "$previous_identity"
+    mv "$preserved_path" "$unrelated_previous"
+    mv "$journaled_previous" "$preserved_path"
+    test "$(test_path_identity "$preserved_path")" = "$previous_identity"
     bash "$installer" --recover-install-transactions-test "$install_dir"
-    test "$(cat "$preserved/previous-only")" = "journaled previous app"
+    test "$(cat "$preserved_path/previous-only")" = "journaled previous app"
     test "$(cat "$unrelated_previous/sentinel")" = \
         "same-name unrelated foreign app"
     installer_recovery_assert_no_transaction_debris \

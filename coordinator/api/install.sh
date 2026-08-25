@@ -2013,37 +2013,34 @@ retire_install_transaction() {
         && [ "$TX_ID" = "$transaction_id" ] \
         || return 1
 
-    if install_path_exists "$garbage"; then
-        # A destination that appeared before our recorded move is not ours.
-        ! install_path_exists "$backup" || return 1
-    else
-        load_installer_ownership_record "$record" || return 1
-        if [ "$OWNERSHIP_KIND" = "staging" ]; then
-            [ "$OWNERSHIP_ID" = "$transaction_id" ] \
-                && [ "$OWNERSHIP_NAME" = \
-                    ".install-staging-$transaction_id" ] \
-                && ! install_path_exists \
-                    "$install_dir/.install-staging-$transaction_id" \
-                || return 1
-            record_installer_owned_tree \
-                "$backup" "$install_dir" "$transaction_id" garbage 1 \
-                ".install-garbage-$transaction_id" \
-                || return 1
-        fi
-        load_installer_ownership_record "$record" \
-            && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
-            && [ "$OWNERSHIP_KIND" = "garbage" ] \
-            && [ "$OWNERSHIP_PHASE" = "owned" ] \
+    # A destination that appeared before our recorded move is not ours.
+    ! install_path_exists "$garbage" || return 1
+    load_installer_ownership_record "$record" || return 1
+    if [ "$OWNERSHIP_KIND" = "staging" ]; then
+        [ "$OWNERSHIP_ID" = "$transaction_id" ] \
             && [ "$OWNERSHIP_NAME" = \
-                ".install-garbage-$transaction_id" ] \
-            && [ -d "$backup" ] \
-            && [ ! -L "$backup" ] \
-            && path_matches_identity "$backup" "$OWNERSHIP_IDENTITY" \
-            && [ "$(path_fingerprint "$backup" \
-                2>/dev/null || true)" = "$OWNERSHIP_FINGERPRINT" ] \
+                ".install-staging-$transaction_id" ] \
+            && ! install_path_exists \
+                "$install_dir/.install-staging-$transaction_id" \
             || return 1
-        durable_move "$backup" "$garbage" || return 1
+        record_installer_owned_tree \
+            "$backup" "$install_dir" "$transaction_id" garbage 1 \
+            ".install-garbage-$transaction_id" \
+            || return 1
     fi
+    load_installer_ownership_record "$record" \
+        && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+        && [ "$OWNERSHIP_KIND" = "garbage" ] \
+        && [ "$OWNERSHIP_PHASE" = "owned" ] \
+        && [ "$OWNERSHIP_NAME" = \
+            ".install-garbage-$transaction_id" ] \
+        && [ -d "$backup" ] \
+        && [ ! -L "$backup" ] \
+        && path_matches_identity "$backup" "$OWNERSHIP_IDENTITY" \
+        && [ "$(path_fingerprint "$backup" \
+            2>/dev/null || true)" = "$OWNERSHIP_FINGERPRINT" ] \
+        || return 1
+    durable_move "$backup" "$garbage" || return 1
     install_test_crash "transaction-retired"
     remove_installer_owned_tree \
         "$install_dir" "$transaction_id" garbage 1

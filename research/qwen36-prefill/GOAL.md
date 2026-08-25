@@ -3,6 +3,37 @@
 Read this file before every action. If a proposed experiment does not serve this
 goal, do not run it.
 
+## 2026-08-24 focus reset — current objective
+
+The owner paused generic cold-prefill optimization. The active goal is now:
+
+> Ship a shipping-quality Qwen 3.6 exact hybrid-state prefix cache and open
+> reviewable PRs once it is ready.
+
+The initial shipping scope is durable RAM prefix reuse only. Simultaneous
+prompt-fork, state-river, routing, mixed-precision, and kernel experiments stay
+default-off and out of the first cache PR unless required for correctness.
+
+Current completion gates:
+
+1. publish the final `mlx-swift-lm` implementation and update the root gitlink;
+2. restore exact Qwen boundaries: all ten K/V rows, thirty GDN states/tails,
+   scalar position, and full-hit frontier logits;
+3. preserve one deterministic cache-enabled numerical posture across donor,
+   miss, disabled-control, partial-hit suffix, and full hit;
+4. pass B1/B2/B4 full/partial parity, cancellation, rollback, tenant-scope,
+   LRU, and hard resident-plus-in-flight memory accounting;
+5. pass the fixed native/canonical semantic quality gate;
+6. expose truthful lookup/match/donation/eviction telemetry with no content;
+7. document cold-miss cost, construction amortization, memory carve, and
+   minimum useful hit rate;
+8. run full nested/provider/coordinator/console tests from a fresh recursive
+   checkout;
+9. receive two independent merge approvals and open the nested and root PRs.
+
+The cold 2.5× research below remains historical context and may resume later.
+It is not the current completion target.
+
 ## One-sentence objective
 
 Make Darkbloom's Qwen 3.6 35B A3B **aggregate continuous-batching prefill** at
@@ -120,11 +151,17 @@ speed (3.140×/5.196× over the full 64-token makespan); 25%/50% correctly
 miss after LRU eviction.
 
 This clears the 2.5× performance threshold for the named reuse-bearing
-workloads without changing weights. It does **not** yet satisfy the full
-merge/ship objective: fork execution evidence, a clean submodule commit,
-and private-history sanitization remain open. Exact-cache cold misses use the
-slower canonical posture; cache-free unrelated prompts remain byte-identical
-to the native engine and are not accelerated.
+workloads without changing weights. The final implementation satisfies the
+code merge objective: exact state, MTP, memory reservations, authenticated
+remote scope transport, capability lifecycle, and live encrypted
+donation→hit behavior have independent approval. Simultaneous prompt forking is
+explicitly disabled in provider serving and remains research-only.
+
+Publication is the remaining gate: the bot cannot push nested commit
+`15a88f6` to `Layr-Labs/mlx-swift-lm`, so a collaborator must publish it
+before the root gitlink can merge and the installed-provider canary can run.
+Exact-cache cold misses use the slower canonical posture; cache-free unrelated
+prompts remain byte-identical to the native engine and are not accelerated.
 
 ## Architecture facts (do not rediscover)
 

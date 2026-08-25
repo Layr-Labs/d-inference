@@ -757,6 +757,9 @@ jobs:
           rm -f "$APP_ARCHIVE" "$LEGACY_BUNDLE"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$APP_ARCHIVE"
           tar czf "$LEGACY_BUNDLE" -C "${{ steps.bundle.outputs.stage }}" .
+          # Apply the same bounded raw-header walk used by clean-machine shell
+          # installs before this exact archive can be extracted or uploaded.
+          scripts/install.sh --preflight-release-archive "$LEGACY_BUNDLE"
           tar tzf "$LEGACY_BUNDLE" | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt

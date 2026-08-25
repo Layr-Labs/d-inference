@@ -382,7 +382,7 @@ private final class ArchivePreflightFixture {
         let source = root.appendingPathComponent("\(name).tar")
         let archive = root.appendingPathComponent("\(name).tar.gz")
         try raw.write(to: source)
-        FileManager.default.createFile(
+        _ = FileManager.default.createFile(
             atPath: archive.path,
             contents: Data())
         let output = try FileHandle(forWritingTo: archive)

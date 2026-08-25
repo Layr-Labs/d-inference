@@ -34,9 +34,480 @@ DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbl
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 
+# Shared with the coordinator and SelfUpdater. The signed bundle is currently
+# about 170 MiB compressed and comfortably below 1 GiB expanded. These bounds
+# leave substantial app-growth and flat-verifier headroom while limiting disk,
+# inode, parser-memory, and path-complexity exposure.
+RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES=2147483648
+RELEASE_ARCHIVE_MAX_EXPANDED_BYTES=4294967296
+RELEASE_ARCHIVE_MAX_ENTRIES=16384
+RELEASE_ARCHIVE_MAX_PATH_BYTES=4096
+RELEASE_ARCHIVE_MAX_COMPONENT_BYTES=255
+RELEASE_ARCHIVE_MAX_METADATA_BYTES=1048576
+
 fail_install() {
     echo "  ✗ $*" >&2
     return 1
+}
+
+preflight_release_archive() {
+    local archive=$1
+    local max_expanded=${2:-$RELEASE_ARCHIVE_MAX_EXPANDED_BYTES}
+    local max_entries=${3:-$RELEASE_ARCHIVE_MAX_ENTRIES}
+
+    /usr/bin/perl - \
+        "$archive" \
+        "$RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES" \
+        "$max_expanded" \
+        "$max_entries" \
+        "$RELEASE_ARCHIVE_MAX_PATH_BYTES" \
+        "$RELEASE_ARCHIVE_MAX_COMPONENT_BYTES" \
+        "$RELEASE_ARCHIVE_MAX_METADATA_BYTES" <<'PERL'
+use strict;
+use warnings;
+use bytes;
+
+my (
+    $archive,
+    $max_compressed,
+    $max_expanded,
+    $max_entries,
+    $max_path,
+    $max_component,
+    $max_metadata,
+) = @ARGV;
+my $block_size = 512;
+my $max_int64 = 9223372036854775807;
+
+sub reject {
+    die "release archive preflight: $_[0]\n";
+}
+
+for my $argument (
+    $max_compressed,
+    $max_expanded,
+    $max_entries,
+    $max_path,
+    $max_component,
+    $max_metadata,
+) {
+    reject("invalid numeric policy") unless defined($argument)
+        && $argument =~ /\A[0-9]+\z/;
+}
+reject("invalid numeric policy") unless $max_entries > 0
+    && $max_path > 0
+    && $max_component > 0;
+
+my @archive_stat = lstat($archive);
+reject("could not inspect archive") unless @archive_stat;
+reject("archive must be a regular file") unless -f _ && !-l _;
+reject("archive exceeds the ${max_compressed}-byte compressed-size limit")
+    if $archive_stat[7] > $max_compressed;
+
+my $gzip_pid = open(
+    my $stream,
+    "-|",
+    "/usr/bin/gzip",
+    "-dc",
+    "--",
+    $archive,
+);
+reject("could not start system gzip") unless defined($gzip_pid);
+binmode($stream);
+
+sub read_exact {
+    my ($count, $allow_eof) = @_;
+    my $result = "";
+    while (length($result) < $count) {
+        my $remaining = $count - length($result);
+        my $read = read($stream, my $chunk, $remaining);
+        reject("could not read decompressed archive: $!") unless defined($read);
+        if ($read == 0) {
+            return undef if $allow_eof && length($result) == 0;
+            reject("archive contains truncated tar data");
+        }
+        $result .= $chunk;
+    }
+    return $result;
+}
+
+sub skip_bytes {
+    my ($count) = @_;
+    while ($count > 0) {
+        my $chunk_size = $count > 65536 ? 65536 : $count;
+        read_exact($chunk_size, 0);
+        $count -= $chunk_size;
+    }
+}
+
+sub skip_padding {
+    my ($size) = @_;
+    my $padding = ($block_size - ($size % $block_size)) % $block_size;
+    skip_bytes($padding);
+}
+
+sub all_zero {
+    return $_[0] !~ /[^\0]/;
+}
+
+sub parse_octal {
+    my ($field, $label) = @_;
+    $field =~ s/\A[\0 ]+//;
+    $field =~ s/[\0 ]+\z//;
+    return 0 if $field eq "";
+    reject("$label is not valid octal") unless $field =~ /\A[0-7]+\z/;
+    my $value = 0;
+    for my $digit (split(//, $field)) {
+        $value = $value * 8 + (ord($digit) - ord("0"));
+    }
+    return $value;
+}
+
+sub parse_tar_number {
+    my ($field, $label) = @_;
+    reject("$label is empty") unless length($field);
+    my @bytes = unpack("C*", $field);
+    return parse_octal($field, $label) unless $bytes[0] & 0x80;
+    reject("$label is negative") if $bytes[0] & 0x40;
+
+    my $value = $bytes[0] & 0x3f;
+    for my $index (1 .. $#bytes) {
+        my $byte = $bytes[$index];
+        reject("$label overflows int64")
+            if $value > int(($max_int64 - $byte) / 256);
+        $value = $value * 256 + $byte;
+    }
+    return $value;
+}
+
+sub parse_decimal {
+    my ($raw, $limit, $label) = @_;
+    reject("$label is empty") unless length($raw);
+    reject("$label is not an unsigned decimal integer")
+        unless $raw =~ /\A[0-9]+\z/;
+    my $value = 0;
+    for my $digit (split(//, $raw)) {
+        my $numeric = ord($digit) - ord("0");
+        reject("$label overflows its supported range")
+            if $numeric > $limit
+                || $value > int(($limit - $numeric) / 10);
+        $value = $value * 10 + $numeric;
+    }
+    return $value;
+}
+
+sub tar_string {
+    my ($field, $label) = @_;
+    my $nul = index($field, "\0");
+    return $field if $nul < 0;
+    my $padding = substr($field, $nul + 1);
+    reject("non-zero padding in tar $label field") unless all_zero($padding);
+    return substr($field, 0, $nul);
+}
+
+sub header_path {
+    my ($header) = @_;
+    my $name = tar_string(substr($header, 0, 100), "name");
+    my $prefix = tar_string(substr($header, 345, 155), "prefix");
+    return $name if $prefix eq "";
+    reject("tar prefix does not use a USTAR header")
+        unless substr($header, 257, 5) eq "ustar";
+    return "$prefix/$name";
+}
+
+sub clean_path {
+    my ($raw) = @_;
+    reject("path is empty") unless length($raw);
+    reject("path exceeds the ${max_path}-byte limit")
+        if length($raw) > $max_path;
+    reject("path is absolute") if substr($raw, 0, 1) eq "/";
+    reject("path contains non-portable bytes")
+        if $raw =~ /[^\x20-\x7e]/;
+    reject("path contains a backslash") if index($raw, "\\") >= 0;
+
+    my @parts;
+    for my $part (split("/", $raw, -1)) {
+        next if $part eq "" || $part eq ".";
+        reject("path contains parent traversal") if $part eq "..";
+        reject("path component exceeds the ${max_component}-byte limit")
+            if length($part) > $max_component;
+        push(@parts, $part);
+    }
+    my $clean = @parts ? join("/", @parts) : ".";
+    reject("normalized path exceeds the ${max_path}-byte limit")
+        if length($clean) > $max_path;
+    return $clean;
+}
+
+sub fold_path {
+    my ($path) = @_;
+    $path =~ tr/A-Z/a-z/;
+    return $path;
+}
+
+sub sparse_pax_key {
+    my ($key) = @_;
+    return $key eq "GNU.sparse"
+        || index($key, "GNU.sparse.") == 0
+        || $key eq "SCHILY.realsize"
+        || index($key, "LIBARCHIVE.sparse") == 0;
+}
+
+sub parse_pax {
+    my ($payload) = @_;
+    my %attributes;
+    my %seen;
+    my $offset = 0;
+    while ($offset < length($payload)) {
+        my $space = index($payload, " ", $offset);
+        reject("malformed PAX metadata") if $space <= $offset;
+        my $record_length = parse_decimal(
+            substr($payload, $offset, $space - $offset),
+            length($payload) - $offset,
+            "PAX record length",
+        );
+        my $prefix_length = $space - $offset + 1;
+        reject("invalid PAX record length")
+            if $record_length <= $prefix_length
+                || $record_length > length($payload) - $offset;
+        my $record_end = $offset + $record_length;
+        reject("PAX record is missing its newline terminator")
+            unless substr($payload, $record_end - 1, 1) eq "\n";
+
+        my $body = substr(
+            $payload,
+            $space + 1,
+            $record_end - $space - 2,
+        );
+        my $equals = index($body, "=");
+        reject("malformed PAX key/value record") if $equals <= 0;
+        my $key = substr($body, 0, $equals);
+        reject("invalid PAX key")
+            unless $key =~ /\A[!-~]+\z/ && index($key, "=") < 0;
+        reject("repeated PAX key $key") if $seen{$key}++;
+        my $value = substr($body, $equals + 1);
+
+        reject("unsupported sparse PAX metadata $key")
+            if sparse_pax_key($key);
+        if ($key eq "path") {
+            $attributes{path} = clean_path($value);
+        } elsif ($key eq "linkpath") {
+            clean_path($value);
+        } elsif ($key eq "size") {
+            $attributes{size} = parse_decimal(
+                $value,
+                $max_int64,
+                "PAX size",
+            );
+        } elsif ($key eq "SCHILY.filetype") {
+            reject("unsupported PAX file-type metadata");
+        }
+        $offset = $record_end;
+    }
+    return \%attributes;
+}
+
+my $expanded = 0;
+sub add_expanded {
+    my ($size) = @_;
+    reject("entry size is negative") if $size < 0;
+    reject("archive exceeds the ${max_expanded}-byte expanded-size limit")
+        if $size > $max_expanded
+            || $expanded > $max_expanded - $size;
+    $expanded += $size;
+}
+
+sub read_metadata {
+    my ($size, $label) = @_;
+    reject("$label metadata exceeds the ${max_metadata}-byte limit")
+        if $size > $max_metadata;
+    add_expanded($size);
+    my $payload = read_exact($size, 0);
+    skip_padding($size);
+    return $payload;
+}
+
+my %nodes;
+my %has_descendants;
+sub add_node {
+    my ($path, $kind) = @_;
+    my $key = fold_path($path);
+    reject("archive root entry must be a directory")
+        if $key eq "." && $kind ne "directory";
+    reject("duplicate or case-conflicting path $path")
+        if exists($nodes{$key});
+    reject("file $path conflicts with descendant entries")
+        if $kind eq "regular" && $has_descendants{$key};
+
+    unless ($key eq ".") {
+        my @parts = split("/", $key, -1);
+        if (@parts > 1) {
+            for my $end (1 .. $#parts) {
+                my $ancestor = join("/", @parts[0 .. $end - 1]);
+                reject("path $path descends through file $ancestor")
+                    if exists($nodes{$ancestor})
+                        && $nodes{$ancestor} ne "directory";
+                $has_descendants{$ancestor} = 1;
+            }
+        }
+    }
+    $nodes{$key} = $kind;
+}
+
+sub validate_checksum {
+    my ($header) = @_;
+    my $stored = parse_octal(
+        substr($header, 148, 8),
+        "header checksum",
+    );
+    my @bytes = unpack("C*", $header);
+    my $sum = 0;
+    for my $index (0 .. $#bytes) {
+        $sum += ($index >= 148 && $index < 156)
+            ? ord(" ")
+            : $bytes[$index];
+    }
+    reject("tar header has an invalid checksum") unless $stored == $sum;
+}
+
+my $pending_path;
+my $pending_size;
+sub merge_path {
+    my ($path) = @_;
+    reject("conflicting path metadata")
+        if defined($pending_path) && $pending_path ne $path;
+    $pending_path = $path;
+}
+
+sub merge_attributes {
+    my ($attributes) = @_;
+    merge_path($attributes->{path}) if exists($attributes->{path});
+    if (exists($attributes->{size})) {
+        reject("conflicting size metadata")
+            if defined($pending_size)
+                && $pending_size != $attributes->{size};
+        $pending_size = $attributes->{size};
+    }
+}
+
+sub validate_end {
+    reject("archive ends with dangling path or size metadata")
+        if defined($pending_path) || defined($pending_size);
+    my $second = read_exact($block_size, 0);
+    reject("archive has an incomplete tar end marker")
+        unless all_zero($second);
+
+    my $trailing = 0;
+    while (1) {
+        my $read = read($stream, my $chunk, 32768);
+        reject("could not read archive trailer: $!") unless defined($read);
+        last if $read == 0;
+        reject("archive contains non-zero data after the tar end marker")
+            unless all_zero($chunk);
+        $trailing += $read;
+    }
+    reject("archive trailer is not block-aligned")
+        if $trailing % $block_size;
+}
+
+sub validate_archive {
+    my $entry_count = 0;
+    while (1) {
+        my $header = read_exact($block_size, 1);
+        reject("archive is missing the tar end marker")
+            unless defined($header);
+        if (all_zero($header)) {
+            validate_end();
+            return;
+        }
+
+        $entry_count++;
+        reject("archive exceeds the ${max_entries}-entry limit")
+            if $entry_count > $max_entries;
+        validate_checksum($header);
+
+        my $raw_path = header_path($header);
+        clean_path($raw_path);
+        my $header_size = parse_tar_number(
+            substr($header, 124, 12),
+            "entry size",
+        );
+        my $typeflag = substr($header, 156, 1);
+
+        if ($typeflag eq "x") {
+            my $payload = read_metadata($header_size, "PAX");
+            merge_attributes(parse_pax($payload));
+            next;
+        }
+        if ($typeflag eq "g") {
+            my $payload = read_metadata($header_size, "global PAX");
+            my $attributes = parse_pax($payload);
+            reject("global PAX metadata must not override path or size")
+                if exists($attributes->{path})
+                    || exists($attributes->{size});
+            next;
+        }
+        if ($typeflag eq "L") {
+            my $long_name = read_metadata(
+                $header_size,
+                "GNU long-name",
+            );
+            $long_name =~ s/[\0\n]+\z//;
+            merge_path(clean_path($long_name));
+            next;
+        }
+        reject("unsupported GNU long-link metadata")
+            if $typeflag eq "K";
+
+        my $path = defined($pending_path)
+            ? $pending_path
+            : clean_path($raw_path);
+        my $size = defined($pending_size)
+            ? $pending_size
+            : $header_size;
+        undef($pending_path);
+        undef($pending_size);
+
+        my $kind;
+        if ($typeflag eq "\0" || $typeflag eq "0") {
+            $kind = "regular";
+        } elsif ($typeflag eq "5") {
+            $kind = "directory";
+            reject("directory $path has a non-zero size") if $size != 0;
+        } else {
+            reject(sprintf(
+                "entry %s uses unsupported node type 0x%02x",
+                $path,
+                ord($typeflag),
+            ));
+        }
+
+        add_node($path, $kind);
+        add_expanded($size);
+        skip_bytes($size);
+        skip_padding($size);
+    }
+}
+
+my $validated = eval {
+    validate_archive();
+    1;
+};
+my $validation_error = $@;
+if (!$validated) {
+    kill("TERM", $gzip_pid);
+    close($stream);
+    print STDERR $validation_error;
+    exit(1);
+}
+
+my $closed = close($stream);
+if (!$closed) {
+    print STDERR "release archive preflight: gzip stream is corrupt or truncated\n";
+    exit(1);
+}
+exit(0);
+PERL
 }
 
 verify_file_hash() {
@@ -1691,6 +2162,10 @@ install_bundle_atomically_locked() {
     local install_dir=$2
     local binary_hash=${3:-}
     local metallib_hash=${4:-}
+    if ! preflight_release_archive "$archive"; then
+        fail_install "Release archive failed structural safety checks."
+        return 1
+    fi
     local transaction_id
     transaction_id="$$-$RANDOM-$(date +%s)"
     local stage="$install_dir/.install-staging-$transaction_id"
@@ -1834,6 +2309,15 @@ if [ "${1:-}" = "--ensure-user-app-shortcut-test" ]; then
         exit 64
     }
     ensure_user_app_shortcut "$2" "$3"
+    exit $?
+fi
+
+if [ "${1:-}" = "--preflight-release-archive" ]; then
+    { [ "$#" -eq 2 ] || [ "$#" -eq 4 ]; } || {
+        echo "usage: $0 --preflight-release-archive <archive> [max-expanded-bytes max-entries]" >&2
+        exit 64
+    }
+    preflight_release_archive "$2" "${3:-}" "${4:-}"
     exit $?
 fi
 

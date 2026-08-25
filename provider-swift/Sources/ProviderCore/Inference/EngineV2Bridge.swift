@@ -203,9 +203,14 @@ public actor EngineV2Bridge {
     /// v0.8.0 MTP and paged-pool fields. Runs for every slot, MTP or not —
     /// see `configureMTPStatus`. Cancelled by `shutdown()`.
     var slotPostureTask: Task<Void, Never>?
+    /// Replaced samplers stay reachable until shutdown joins them. A cancelled
+    /// task may already have passed its cancellation gate and be queued for
+    /// this actor, so dropping its handle during reconfiguration would let it
+    /// outlive both the replacement sampler and engine teardown.
+    var retiredSlotPostureTasks: [Task<Void, Never>] = []
     /// Terminal sampler lifecycle gate. Set before shutdown's first
     /// suspension so actor reentrancy cannot install a replacement task while
-    /// the cancelled sampler is being joined.
+    /// the current and retired samplers are being joined.
     var slotPostureSamplerStopped = false
     var mtpActivationStatus = MTPActivationStatus.disabled(
         .configDisabled, configured: false)
@@ -1020,17 +1025,25 @@ public actor EngineV2Bridge {
     /// await the engine drain.
     public func shutdown() async {
         let statsTask = prefixCacheStatsTask
-        let postureTask = slotPostureTask
+        var postureTasks = retiredSlotPostureTasks
+        if let slotPostureTask {
+            postureTasks.append(slotPostureTask)
+        }
         prefixCacheStatsTask = nil
         statsTask?.cancel()
         slotPostureSamplerStopped = true
-        postureTask?.cancel()
-        // Cancellation does not retract an actor call the sampler already
-        // queued. Retain and join the exact task before tearing down the
-        // engine so no posture work (or temporary strong bridge reference)
-        // can outlive shutdown.
-        _ = await postureTask?.value
+        for task in postureTasks {
+            task.cancel()
+        }
+        // Cancellation does not retract actor calls the samplers already
+        // queued. Join the complete current + retired snapshot before tearing
+        // down the engine so no posture work (or temporary strong bridge
+        // reference) can outlive shutdown.
+        for task in postureTasks {
+            await task.value
+        }
         slotPostureTask = nil
+        retiredSlotPostureTasks.removeAll()
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }

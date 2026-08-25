@@ -59,10 +59,16 @@ private final class PostureTelemetrySink: @unchecked Sendable {
 private final class PagedPoolStubEngine: CBv2Engine, @unchecked Sendable {
     private let inUse: Int
     private let poolBytes: Int
+    private let lock = NSLock()
+    private var _shutdownCount = 0
 
     init(kvBytesInUse: Int, poolBytes: Int) {
         self.inUse = kvBytesInUse
         self.poolBytes = poolBytes
+    }
+
+    var shutdownCount: Int {
+        lock.withLock { _shutdownCount }
     }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
@@ -78,7 +84,67 @@ private final class PagedPoolStubEngine: CBv2Engine, @unchecked Sendable {
             activeTokens: 0)
     }
     func updateKVBytesCapacity(_ bytes: Int) {}
-    func shutdown() async {}
+    func shutdown() async {
+        lock.withLock { _shutdownCount += 1 }
+    }
+}
+
+/// Suspends a sampler after its pre-hop cancellation check and strong bridge
+/// capture, but before it enters the bridge actor.
+private actor SamplerActorHopGate {
+    private var entered = false
+    private var released = false
+    private var resumed = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func hold() async {
+        entered = true
+        let waitingForEntry = enteredWaiters
+        enteredWaiters.removeAll()
+        for waiter in waitingForEntry {
+            waiter.resume()
+        }
+
+        if !released {
+            await withCheckedContinuation { continuation in
+                releaseWaiters.append(continuation)
+            }
+        }
+        resumed = true
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        let waitingForRelease = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waitingForRelease {
+            waiter.resume()
+        }
+    }
+
+    var hasResumed: Bool { resumed }
+}
+
+private final class CompletionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func markCompleted() {
+        lock.withLock { completed = true }
+    }
+
+    var value: Bool {
+        lock.withLock { completed }
+    }
 }
 
 private func makePostureBridge(
@@ -444,6 +510,60 @@ struct MTPPostureTelemetryTests {
         #expect(telemetry.postureCount == afterReconfiguration)
 
         await bridge.shutdown()
+    }
+
+    @Test("shutdown joins a sampler retired before its queued actor hop")
+    func shutdownJoinsSamplerRetiredByReconfiguration() async {
+        let gate = SamplerActorHopGate()
+        let telemetry = PostureTelemetrySink()
+        let engine = PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30)
+        let bridge = makePostureBridge(
+            engine: engine,
+            kvBackendKind: .paged,
+            telemetry: telemetry)
+
+        await bridge.configureMTPStatus(
+            .disabled(.configDisabled, configured: false),
+            metricsInterval: .nanoseconds(1),
+            beforeSamplerActorHopForTesting: {
+                await gate.hold()
+            })
+        await gate.waitUntilEntered()
+
+        // Cancel the sampler held after its cancellation gate, then install no
+        // replacement. This is the reconfiguration shape that used to discard
+        // the only handle shutdown could have joined.
+        await bridge.configureMTPStatus(
+            .disabled(.assistantLoadFailed, configured: true),
+            metricsInterval: .zero)
+        let retiredBeforeShutdown = await bridge.retiredSlotPostureTasks.count
+        #expect(retiredBeforeShutdown == 1)
+
+        let shutdownCompleted = CompletionFlag()
+        let shutdown = Task {
+            await bridge.shutdown()
+            let retiredSamplerResumed = await gate.hasResumed
+            shutdownCompleted.markCompleted()
+            return retiredSamplerResumed
+        }
+
+        // `shutdown()` sets this before its first suspension. Once observable,
+        // it must be suspended on the retired handle: engine teardown and the
+        // shutdown return are both forbidden while the sampler remains held.
+        while !(await bridge.slotPostureSamplerStopped) {
+            await Task.yield()
+        }
+        let retiredDuringShutdown = await bridge.retiredSlotPostureTasks.count
+        #expect(retiredDuringShutdown == 1)
+        #expect(engine.shutdownCount == 0)
+        #expect(!shutdownCompleted.value)
+
+        await gate.release()
+        #expect(await shutdown.value)
+        #expect(shutdownCompleted.value)
+        #expect(engine.shutdownCount == 1)
+        let retiredAfterShutdown = await bridge.retiredSlotPostureTasks.count
+        #expect(retiredAfterShutdown == 0)
     }
 
     @Test("shutdown is terminal and idempotent for the sampler")

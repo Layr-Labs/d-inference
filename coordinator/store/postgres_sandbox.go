@@ -526,7 +526,7 @@ func (s *PostgresStore) MarkSandboxTerminationRequested(
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
-		if scanErr := tx.QueryRow(
+		if scanErr := s.pool.QueryRow(
 			ctx,
 			`SELECT EXISTS (
 				SELECT 1 FROM sandboxes WHERE id = $1 AND account_id = $2

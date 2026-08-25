@@ -5,40 +5,6 @@ import Testing
 
 private let gib: UInt64 = 1024 * 1024 * 1024
 
-private func agentDebugLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: Any]
-) {
-    let payload: [String: Any] = [
-        "hypothesisId": hypothesisId,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": UInt64(Date().timeIntervalSince1970 * 1_000),
-    ]
-    guard let encoded = try? JSONSerialization.data(
-        withJSONObject: payload,
-        options: [.sortedKeys]),
-        let line = String(data: encoded, encoding: .utf8)
-    else { return }
-
-    let path = "/opt/cursor/logs/debug.log"
-    try? FileManager.default.createDirectory(
-        atPath: "/opt/cursor/logs",
-        withIntermediateDirectories: true)
-    if !FileManager.default.fileExists(atPath: path) {
-        FileManager.default.createFile(atPath: path, contents: nil)
-    }
-    if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data((line + "\n").utf8))
-        try? handle.close()
-    }
-    print("AGENT_DEBUG \(line)")
-}
-
 /// The off-actor KV-pool reclaimer. These drive the actor methods directly
 /// (deterministic — the injected `clearCache` runs synchronously on the
 /// reclaimer actor) to pin the shortfall gate, rate-limit, coalescing, and the
@@ -165,51 +131,8 @@ struct KVPoolReclaimerTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "A",
-            location: "KVPoolReclaimerTests.swift:167",
-            message: "before child task creation",
-            data: ["mainThread": Thread.isMainThread])
-        // #endregion
-        let reclaim = Task {
-            // #region agent log
-            agentDebugLog(
-                hypothesisId: "A",
-                location: "KVPoolReclaimerTests.swift:175",
-                message: "child task entered",
-                data: ["mainThread": Thread.isMainThread])
-            // #endregion
-            let result = await reclaimer.sweep()
-            // #region agent log
-            agentDebugLog(
-                hypothesisId: "C",
-                location: "KVPoolReclaimerTests.swift:183",
-                message: "child task exited sweep",
-                data: ["result": result])
-            // #endregion
-            return result
-        }
-        let waitStartedAt = ContinuousClock.now
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "A",
-            location: "KVPoolReclaimerTests.swift:192",
-            message: "before blocking gate wait",
-            data: [:])
-        // #endregion
-        let clearStarted = gate.waitUntilClearStarted()
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "B",
-            location: "KVPoolReclaimerTests.swift:200",
-            message: "blocking gate wait returned",
-            data: [
-                "clearStarted": clearStarted,
-                "elapsedMs": durationMilliseconds(ContinuousClock.now - waitStartedAt),
-            ])
-        // #endregion
-        #expect(clearStarted)
+        let reclaim = Task { await reclaimer.sweep() }
+        await gate.waitUntilClearStarted()
         let failsafe = Task {
             try? await taskSleep(.milliseconds(250))
             gate.releaseClear()
@@ -218,17 +141,6 @@ struct KVPoolReclaimerTests {
         let startedAt = ContinuousClock.now
         let duringClear = reclaimer.telemetrySnapshot()
         let snapshotLatency = ContinuousClock.now - startedAt
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "D",
-            location: "KVPoolReclaimerTests.swift:219",
-            message: "telemetry snapshot sampled",
-            data: [
-                "latencyMs": durationMilliseconds(snapshotLatency),
-                "reclaims": duringClear.reclaims,
-                "sweepSignals": duringClear.sweepSignals,
-            ])
-        // #endregion
         gate.releaseClear()
         failsafe.cancel()
 
@@ -311,25 +223,33 @@ private final class ReclaimSpy: @unchecked Sendable {
 }
 
 private final class BlockingReclaimGate: @unchecked Sendable {
-    private let started = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
+    private var clearStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var released = false
 
     func enterClear() {
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "B",
-            location: "KVPoolReclaimerTests.swift:310",
-            message: "clear closure entered",
-            data: ["mainThread": Thread.isMainThread])
-        // #endregion
-        started.signal()
+        lock.lock()
+        clearStarted = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        lock.unlock()
+        waiters.forEach { $0.resume() }
         release.wait()
     }
 
-    func waitUntilClearStarted() -> Bool {
-        started.wait(timeout: .now() + 2) == .success
+    func waitUntilClearStarted() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            guard !clearStarted else {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            startWaiters.append(continuation)
+            lock.unlock()
+        }
     }
 
     func releaseClear() {
@@ -339,9 +259,4 @@ private final class BlockingReclaimGate: @unchecked Sendable {
         released = true
         release.signal()
     }
-}
-
-private func durationMilliseconds(_ duration: Duration) -> Double {
-    Double(duration.components.seconds) * 1_000
-        + Double(duration.components.attoseconds) / 1e15
 }

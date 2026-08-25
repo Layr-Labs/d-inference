@@ -328,11 +328,11 @@ struct ContributionsLiveTests {
         _ expected: Int,
         from cli: SequencedContributionsCLI
     ) async -> Bool {
-        for _ in 0 ..< 1_000 {
+        for _ in 0 ..< 500 {
             if await cli.requestCount == expected {
                 return true
             }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
         }
         return await cli.requestCount == expected
     }

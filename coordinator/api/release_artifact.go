@@ -55,10 +55,12 @@ var (
 		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
 		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
 	}
-	releaseAppBaseFileSpecs = []releaseArtifactFileSpec{
-		{path: "Darkbloom.app/Contents/MacOS/DarkbloomApp", mode: releaseExecutableMode},
+	releaseLegacyAppBaseFileSpecs = []releaseArtifactFileSpec{
 		{path: "Darkbloom.app/Contents/Info.plist", mode: releaseDataMode},
 		{path: "Darkbloom.app/Contents/embedded.provisionprofile", mode: releaseDataMode},
+	}
+	releaseGUIAppFileSpecs = []releaseArtifactFileSpec{
+		{path: "Darkbloom.app/Contents/MacOS/DarkbloomApp", mode: releaseExecutableMode},
 		{path: "Darkbloom.app/Contents/Resources/Chivo-Regular.ttf", mode: releaseDataMode},
 		{path: "Darkbloom.app/Contents/Resources/Chivo-Medium.ttf", mode: releaseDataMode},
 		{
@@ -95,7 +97,8 @@ var (
 		releaseAppPayloadSpecs,
 	)
 	releaseArtifactFileSpecsByPath = indexReleaseArtifactFileSpecs(
-		releaseAppBaseFileSpecs,
+		releaseLegacyAppBaseFileSpecs,
+		releaseGUIAppFileSpecs,
 		releaseFanCapabilityFileSpecs,
 		releasePagedCapabilityFileSpecs,
 	)
@@ -281,11 +284,12 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 		return fmt.Errorf("metallib_hash does not match bundled mlx.metallib")
 	}
 
+	hasApp := false
 	if collector.hasAppContent {
 		if err := collector.require(releaseAppPayloadSpecs); err != nil {
 			return err
 		}
-		if err := collector.requireFiles(releaseAppBaseFileSpecs); err != nil {
+		if err := collector.requireFiles(releaseLegacyAppBaseFileSpecs); err != nil {
 			return err
 		}
 		for index, appSpec := range releaseAppPayloadSpecs {
@@ -296,6 +300,12 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 					releasePayloadKindName(appSpec.kind),
 				)
 			}
+		}
+		if collector.hasAnyFiles(releaseGUIAppFileSpecs) {
+			if err := collector.requireFiles(releaseGUIAppFileSpecs); err != nil {
+				return err
+			}
+			hasApp = true
 		}
 	}
 
@@ -316,11 +326,21 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 		return err
 	}
 
-	hasApp := collector.hasAppContent
 	release.HasApp = &hasApp
 	release.HasFanHelper = &hasFanHelper
 	release.HasPagedKernel = &hasPagedKernel
 	return nil
+}
+
+func (collector *releasePayloadCollector) hasAnyFiles(
+	specs []releaseArtifactFileSpec,
+) bool {
+	for _, spec := range specs {
+		if _, ok := collector.foundFiles[spec.path]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (collector *releasePayloadCollector) require(specs []releasePayloadSpec) error {

@@ -98,6 +98,10 @@ func TestReleaseRegistrationAcceptsAppAndLegacyBundleLayouts(t *testing.T) {
 			layout:  releaseBundleTestApp,
 			wantApp: true,
 		},
+		{
+			name:   "legacy app wrapper with flat verifier copies",
+			layout: releaseBundleTestLegacyApp,
+		},
 		{name: "legacy flat bundle", layout: releaseBundleTestLegacy},
 	}
 	for _, test := range tests {
@@ -137,6 +141,37 @@ func TestReleaseRegistrationAcceptsAppAndLegacyBundleLayouts(t *testing.T) {
 				t.Fatalf("stored has_paged_kernel = %v, want false", stored.HasPagedKernel)
 			}
 		})
+	}
+}
+
+func TestReleaseRegistrationAcceptsPublishedLegacyAppWrapperShape(t *testing.T) {
+	binary := []byte(
+		"provider:" +
+			releaseFanCapabilityMarker + ":" +
+			releasePagedCapabilityMarker,
+	)
+	fixture := newReleaseBundleTestFixture(releaseBundleTestLegacyApp, binary)
+	fixture.addArtifactFiles(releaseFanCapabilityFileSpecs)
+	fixture.addArtifactFiles(releasePagedCapabilityFileSpecs)
+
+	result := registerReleaseArtifactForTest(t, fixture.build(t), nil)
+	if result.status != http.StatusOK {
+		t.Fatalf(
+			"register legacy app wrapper: status=%d body=%s",
+			result.status,
+			result.body,
+		)
+	}
+	if len(result.releases) != 1 {
+		t.Fatalf("stored releases = %d, want 1", len(result.releases))
+	}
+	stored := result.releases[0]
+	if stored.HasApp == nil || *stored.HasApp {
+		t.Fatalf("stored has_app = %v, want false for legacy wrapper", stored.HasApp)
+	}
+	if stored.HasFanHelper == nil || !*stored.HasFanHelper ||
+		stored.HasPagedKernel == nil || !*stored.HasPagedKernel {
+		t.Fatalf("stored runtime capabilities are incomplete: %+v", stored)
 	}
 }
 

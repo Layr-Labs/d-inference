@@ -13,6 +13,7 @@ type releaseBundleTestLayout uint8
 
 const (
 	releaseBundleTestLegacy releaseBundleTestLayout = iota
+	releaseBundleTestLegacyApp
 	releaseBundleTestApp
 )
 
@@ -71,7 +72,7 @@ func newReleaseBundleTestFixture(
 			},
 		},
 	}
-	if layout == releaseBundleTestApp {
+	if layout != releaseBundleTestLegacy {
 		fixture.entries = append(fixture.entries,
 			releaseBundleTestEntry{
 				name:     "Darkbloom.app/",
@@ -107,16 +108,12 @@ func newReleaseBundleTestFixture(
 				body:     append([]byte(nil), payloads[releasePayloadMetallib]...),
 			},
 		)
-		for _, spec := range releaseAppBaseFileSpecs {
-			fixture.entries = append(
-				fixture.entries,
-				releaseBundleTestEntry{
-					name:     spec.path,
-					mode:     spec.mode,
-					typeflag: tar.TypeReg,
-					body:     []byte("fixture:" + spec.path),
-				},
-			)
+		baseGroups := [][]releaseArtifactFileSpec{releaseLegacyAppBaseFileSpecs}
+		if layout == releaseBundleTestApp {
+			baseGroups = append(baseGroups, releaseGUIAppFileSpecs)
+		}
+		for _, specs := range baseGroups {
+			fixture.addArtifactFiles(specs)
 		}
 	}
 	return fixture

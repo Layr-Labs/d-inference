@@ -65,9 +65,9 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			name:   "missing required app launcher",
 			layout: releaseBundleTestApp,
 			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
-				fixture.remove(releaseAppBaseFileSpecs[0].path)
+				fixture.remove(releaseGUIAppFileSpecs[0].path)
 			},
-			want: releaseAppBaseFileSpecs[0].path,
+			want: releaseGUIAppFileSpecs[0].path,
 		},
 		{
 			name:   "empty binary",
@@ -354,7 +354,7 @@ func TestReleaseRegistrationRejectsIncompleteArtifactCapabilities(t *testing.T) 
 		{
 			name: "app launcher mode is not exact",
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
-				fixture.entry(t, releaseAppBaseFileSpecs[0].path).mode = 0o775
+				fixture.entry(t, releaseGUIAppFileSpecs[0].path).mode = 0o775
 			},
 			want: "DarkbloomApp\" has mode 0775; expected 0755",
 		},

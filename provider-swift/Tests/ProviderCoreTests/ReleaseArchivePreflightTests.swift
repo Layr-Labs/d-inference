@@ -443,10 +443,10 @@ struct ReleaseArchivePreflightTests {
                 "--no-acls",
                 "--no-fflags",
                 "--no-mac-metadata",
-                "--no-xattrs",
                 "--no-same-owner",
             ])
         )
+        #expect(!extractionArguments.contains("--no-xattrs"))
         try BoundedProcess.run(
             URL(fileURLWithPath: "/bin/sh"),
             arguments: [
@@ -468,26 +468,19 @@ struct ReleaseArchivePreflightTests {
     }
 
     #if canImport(Darwin)
-    @Test("extractor strips archive-controlled extended attributes")
-    func extractorStripsExtendedAttributes() throws {
+    @Test("preflight rejects archive-controlled extended attributes")
+    func preflightRejectsExtendedAttributes() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                "release-xattr-extraction-\(UUID().uuidString)",
+                "release-xattr-rejection-\(UUID().uuidString)",
                 isDirectory: true
             )
         let source = root.appendingPathComponent("source", isDirectory: true)
-        let control = root.appendingPathComponent("control", isDirectory: true)
-        let hardened = root.appendingPathComponent(
-            "hardened",
-            isDirectory: true
-        )
         let archive = root.appendingPathComponent("payload.tar.gz")
-        for directory in [source, control, hardened] {
-            try FileManager.default.createDirectory(
-                at: directory.appendingPathComponent("bin", isDirectory: true),
-                withIntermediateDirectories: true
-            )
-        }
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent("bin", isDirectory: true),
+            withIntermediateDirectories: true
+        )
         defer { try? FileManager.default.removeItem(at: root) }
         let sourceBinary = source.appendingPathComponent("bin/darkbloom")
         try Data("binary".utf8).write(to: sourceBinary)
@@ -512,48 +505,77 @@ struct ReleaseArchivePreflightTests {
             ],
             timeout: 10
         )
+        expectPreflightFailure(
+            archive,
+            contains: "unsupported PAX metadata key"
+        )
+    }
+
+    @Test("extractor preserves approved metallib signature metadata")
+    func extractorPreservesCodeSignatureMetadata() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "release-codesign-extraction-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let destination = root.appendingPathComponent(
+            "destination",
+            isDirectory: true
+        )
+        let archive = root.appendingPathComponent("payload.tar.gz")
+        for directory in [source, destination] {
+            try FileManager.default.createDirectory(
+                at: directory.appendingPathComponent("bin", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let metallib = source.appendingPathComponent("bin/mlx.metallib")
+        try Data("metal".utf8).write(to: metallib)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: metallib.path
+        )
+        let attribute = "com.apple.cs.CodeSignature"
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/usr/bin/xattr"),
+            arguments: ["-w", attribute, "signature", metallib.path],
+            timeout: 10
+        )
         try BoundedProcess.run(
             ReleaseArchiveExtractor.executable,
             arguments: [
-                "-xzp",
-                "-f",
+                "--no-acls",
+                "--no-fflags",
+                "--no-mac-metadata",
+                "-czf",
                 archive.path,
                 "-C",
-                control.path,
+                source.path,
+                ".",
             ],
             timeout: 10
         )
+
+        try ReleaseArchivePreflight.validate(archive)
         try ReleaseArchiveExtractor.extract(
             archive: archive,
-            destination: hardened,
+            destination: destination,
             timeout: 10
         )
 
-        func hasAttribute(_ file: URL) -> Bool {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-            process.arguments = ["-p", attribute, file.path]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationReason == .exit
-                    && process.terminationStatus == 0
-            } catch {
-                return false
-            }
-        }
-
-        #expect(
-            hasAttribute(
-                control.appendingPathComponent("bin/darkbloom")
-            )
+        let restored = destination.appendingPathComponent("bin/mlx.metallib")
+        let restoredValue = try BoundedProcess.runCapturingStandardOutput(
+            URL(fileURLWithPath: "/usr/bin/xattr"),
+            arguments: ["-p", attribute, restored.path],
+            timeout: 10
         )
         #expect(
-            !hasAttribute(
-                hardened.appendingPathComponent("bin/darkbloom")
-            )
+            String(decoding: restoredValue, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == "signature"
         )
     }
     #endif

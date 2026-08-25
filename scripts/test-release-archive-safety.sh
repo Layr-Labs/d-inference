@@ -24,6 +24,10 @@ for script in "$CANONICAL" "$EMBEDDED"; do
         'RELEASE_ARCHIVE_MAX_COMPONENT_BYTES=255' "$script"
     grep -Fqx \
         'RELEASE_ARCHIVE_MAX_METADATA_BYTES=1048576' "$script"
+    if grep -F -- '--no-xattrs' "$script" >/dev/null; then
+        echo "$script strips required metallib signature metadata" >&2
+        exit 1
+    fi
 done
 
 cat > "$ROOT/make-tar.pl" <<'PERL'

@@ -759,12 +759,13 @@ jobs:
           LEGACY_BUNDLE="/tmp/$LEGACY_BUNDLE_NAME"
           rm -f "$APP_ARCHIVE" "$LEGACY_BUNDLE"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$APP_ARCHIVE"
+          # mlx.metallib carries its nested code signature in com.apple.cs.*
+          # xattrs. PAX preserves them; the archive preflight rejects all
+          # unrelated xattrs before any extractor sees the bundle.
           COPYFILE_DISABLE=1 /usr/bin/tar \
             --no-acls \
             --no-fflags \
             --no-mac-metadata \
-            --no-xattrs \
-            --format ustar \
             -czf "$LEGACY_BUNDLE" \
             -C "${{ steps.bundle.outputs.stage }}" .
           # Apply the same bounded raw-header walk used by clean-machine shell
@@ -817,7 +818,17 @@ jobs:
           SMOKE_ROOT=/tmp/darkbloom-final-artifact-smoke
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
-          tar xzf "$LEGACY_BUNDLE" -C "$SMOKE_ROOT"
+          # Match installer/updater extraction exactly. Preflight permits only
+          # metallib com.apple.cs.* xattrs, which the deep signature requires.
+          /usr/bin/tar \
+            -xzp \
+            -m \
+            --no-acls \
+            --no-fflags \
+            --no-mac-metadata \
+            --no-same-owner \
+            -f "$LEGACY_BUNDLE" \
+            -C "$SMOKE_ROOT"
           FINAL_APP_BIN="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS"
           FINAL_FLAT_BIN="$SMOKE_ROOT/bin"
           FINAL_APP_METALLIB="$FINAL_APP_BIN/mlx.metallib"

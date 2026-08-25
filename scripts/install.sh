@@ -3221,13 +3221,14 @@ install_bundle_atomically_locked() {
     create_installer_staging \
         "$stage" "$install_dir" "$transaction_id" || return 1
     install_test_crash "staging-created"
+    # Preflight rejects every xattr except the com.apple.cs.* records attached
+    # to mlx.metallib; those records are required for the app's deep signature.
     if ! /usr/bin/tar \
         -xzp \
         -m \
         --no-acls \
         --no-fflags \
         --no-mac-metadata \
-        --no-xattrs \
         --no-same-owner \
         -f "$archive" -C "$stage"
     then

@@ -13,7 +13,6 @@ enum ReleaseArchiveExtractor {
             "--no-acls",
             "--no-fflags",
             "--no-mac-metadata",
-            "--no-xattrs",
             "--no-same-owner",
             "-f",
             archive.path,

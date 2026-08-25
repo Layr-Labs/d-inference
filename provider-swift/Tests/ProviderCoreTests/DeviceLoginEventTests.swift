@@ -14,43 +14,53 @@ import Testing
 @Suite("Device login live events", .serialized)
 struct DeviceLoginEventTests {
     private func withAuthTokenOverride<T: Sendable>(
-        _ body: (URL) async throws -> T
+        _ body: @Sendable (URL) async throws -> T
     ) async throws -> T {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("device-login-events-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let tokenPath = dir.appendingPathComponent("auth_token").path
-        let accountPath = dir.appendingPathComponent("provider_account").path
-        let issuerPath = dir.appendingPathComponent("provider_issuer").path
-        let previousToken = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"]
-        let previousAccount = ProcessInfo.processInfo.environment[
-            "DARKBLOOM_PROVIDER_ACCOUNT_PATH"
-        ]
-        let previousIssuer = ProcessInfo.processInfo.environment[
-            "DARKBLOOM_PROVIDER_ISSUER_PATH"
-        ]
-        setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath, 1)
-        setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", accountPath, 1)
-        setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", issuerPath, 1)
-        defer {
-            if let previousToken {
-                setenv("DARKBLOOM_AUTH_TOKEN_PATH", previousToken, 1)
-            } else {
-                unsetenv("DARKBLOOM_AUTH_TOKEN_PATH")
+        try await credentialEnvironmentTestLock.withLock {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "device-login-events-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            try FileManager.default.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true
+            )
+            let tokenPath = dir.appendingPathComponent("auth_token").path
+            let accountPath = dir.appendingPathComponent("provider_account").path
+            let issuerPath = dir.appendingPathComponent("provider_issuer").path
+            let previousToken = ProcessInfo.processInfo.environment[
+                "DARKBLOOM_AUTH_TOKEN_PATH"
+            ]
+            let previousAccount = ProcessInfo.processInfo.environment[
+                "DARKBLOOM_PROVIDER_ACCOUNT_PATH"
+            ]
+            let previousIssuer = ProcessInfo.processInfo.environment[
+                "DARKBLOOM_PROVIDER_ISSUER_PATH"
+            ]
+            setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath, 1)
+            setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", accountPath, 1)
+            setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", issuerPath, 1)
+            defer {
+                if let previousToken {
+                    setenv("DARKBLOOM_AUTH_TOKEN_PATH", previousToken, 1)
+                } else {
+                    unsetenv("DARKBLOOM_AUTH_TOKEN_PATH")
+                }
+                if let previousAccount {
+                    setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", previousAccount, 1)
+                } else {
+                    unsetenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH")
+                }
+                if let previousIssuer {
+                    setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", previousIssuer, 1)
+                } else {
+                    unsetenv("DARKBLOOM_PROVIDER_ISSUER_PATH")
+                }
+                try? FileManager.default.removeItem(at: dir)
             }
-            if let previousAccount {
-                setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", previousAccount, 1)
-            } else {
-                unsetenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH")
-            }
-            if let previousIssuer {
-                setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", previousIssuer, 1)
-            } else {
-                unsetenv("DARKBLOOM_PROVIDER_ISSUER_PATH")
-            }
-            try? FileManager.default.removeItem(at: dir)
+            return try await body(URL(fileURLWithPath: tokenPath))
         }
-        return try await body(URL(fileURLWithPath: tokenPath))
     }
 
     final class EventRecorder: @unchecked Sendable {

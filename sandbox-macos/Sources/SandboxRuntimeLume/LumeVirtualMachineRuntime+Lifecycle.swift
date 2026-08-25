@@ -583,6 +583,28 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        if releaseCapacity,
+           let capacityArbiter,
+           let scope,
+           try capacityArbiter.deletionConfirmed(
+               scope: scope,
+               virtualMachineName: name
+           )
+        {
+            let owner = LumeVirtualMachineOwnership.Owner(
+                operationScope: scope
+            )
+            guard try await inspect(name: name) == nil else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "deleted VM reappeared after fenced capacity release"
+                )
+            }
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: owner
+            )
+            return
+        }
         try preauthorize(
             scope: scope,
             operation: .delete,
@@ -674,7 +696,7 @@ extension LumeVirtualMachineRuntime {
                 "capacity release requires a fenced lease authorization"
             )
         }
-        try capacityArbiter.release(
+        try capacityArbiter.releaseDeleted(
             scope: scope,
             holding: authorization
         )

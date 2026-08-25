@@ -5,10 +5,12 @@ import SandboxCore
 struct SandboxGenerationHighWatermark: Codable, Equatable {
     let sandboxID: SandboxID
     var generation: SandboxGeneration
+    var releasedFencingToken: SandboxFencingToken? = nil
+    var releasedVirtualMachineName: String? = nil
 }
 
 struct SandboxCapacityState: Codable, Equatable {
-    static let schemaVersion: UInt16 = 4
+    static let schemaVersion: UInt16 = 5
     static let maximumGenerationHighWatermarks = 4_096
 
     let schemaVersion: UInt16
@@ -96,6 +98,68 @@ struct SandboxCapacityState: Codable, Equatable {
             forKey: .generationHighWatermarks
         )
         try container.encode(storageIdentity, forKey: .storageIdentity)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case mode
+        case effectivePolicy
+        case policyRevision
+        case nextFencingToken
+        case leases
+        case generationHighWatermarks
+        case storageIdentity
+    }
+}
+
+private struct SandboxCapacityStateV4: Decodable {
+    let schemaVersion: UInt16
+    let mode: SandboxHostMode
+    let effectivePolicy: SandboxCapacityPolicy
+    let policyRevision: UInt64
+    let nextFencingToken: UInt64
+    let leases: [SandboxCapacityLease]
+    let generationHighWatermarks: [SandboxGenerationHighWatermark]
+    let storageIdentity: SandboxStorageVolumeIdentity
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(
+            UInt16.self,
+            forKey: .schemaVersion
+        )
+        guard schemaVersion == 4 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported legacy capacity state version"
+            )
+        }
+        mode = try container.decode(SandboxHostMode.self, forKey: .mode)
+        effectivePolicy = try container.decode(
+            SandboxCapacityPolicy.self,
+            forKey: .effectivePolicy
+        )
+        policyRevision = try container.decode(
+            UInt64.self,
+            forKey: .policyRevision
+        )
+        nextFencingToken = try container.decode(
+            UInt64.self,
+            forKey: .nextFencingToken
+        )
+        leases = try container.decode(
+            [SandboxCapacityLease].self,
+            forKey: .leases
+        )
+        generationHighWatermarks = try container.decode(
+            [SandboxGenerationHighWatermark].self,
+            forKey: .generationHighWatermarks
+        )
+        storageIdentity = try container.decode(
+            SandboxStorageVolumeIdentity.self,
+            forKey: .storageIdentity
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -234,7 +298,7 @@ struct SandboxCapacityStateStore: Sendable {
                 )
                 requiresWrite = true
             } catch SandboxCapacityError.corruptState {
-                state = try readLegacyV3State(
+                state = try readLegacyState(
                     from: directoryDescriptor,
                     requestedPolicy: requestedPolicy
                 )
@@ -416,13 +480,29 @@ struct SandboxCapacityStateStore: Sendable {
         return state
     }
 
-    private func readLegacyV3State(
+    private func readLegacyState(
         from directoryDescriptor: Int32,
         requestedPolicy: SandboxCapacityPolicy
     ) throws -> SandboxCapacityState {
         let data = try readStateData(from: directoryDescriptor)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
+        if let legacy = try? decoder.decode(
+            SandboxCapacityStateV4.self,
+            from: data
+        ) {
+            let migrated = SandboxCapacityState(
+                mode: legacy.mode,
+                effectivePolicy: legacy.effectivePolicy,
+                policyRevision: legacy.policyRevision,
+                nextFencingToken: legacy.nextFencingToken,
+                leases: legacy.leases,
+                generationHighWatermarks: legacy.generationHighWatermarks,
+                storageIdentity: legacy.storageIdentity
+            )
+            try validate(migrated)
+            return migrated
+        }
         let legacy: SandboxCapacityStateV3
         do {
             legacy = try decoder.decode(
@@ -603,6 +683,17 @@ struct SandboxCapacityStateStore: Sendable {
         let generationSandboxIDs = state.generationHighWatermarks.map(
             \.sandboxID
         )
+        let releasedTokens = state.generationHighWatermarks.compactMap {
+            $0.releasedFencingToken?.rawValue
+        }
+        let releasedNames = state.generationHighWatermarks.compactMap {
+            $0.releasedVirtualMachineName
+        }
+        let releasedSandboxIDs = Set(
+            state.generationHighWatermarks.compactMap {
+                $0.releasedFencingToken == nil ? nil : $0.sandboxID
+            }
+        )
         guard Set(sandboxIDs).count == sandboxIDs.count,
               Set(names).count == names.count,
               Set(tokens).count == tokens.count,
@@ -610,7 +701,17 @@ struct SandboxCapacityStateStore: Sendable {
                   <= SandboxCapacityState.maximumGenerationHighWatermarks,
               Set(generationSandboxIDs).count == generationSandboxIDs.count,
               state.leases.allSatisfy(Self.validate),
-              (tokens.max() ?? 0) < state.nextFencingToken
+              (tokens.max() ?? 0) < state.nextFencingToken,
+              (releasedTokens.max() ?? 0) < state.nextFencingToken,
+              Set(releasedNames).count == releasedNames.count,
+              state.generationHighWatermarks.allSatisfy({
+                  (($0.releasedFencingToken == nil)
+                      == ($0.releasedVirtualMachineName == nil))
+                      && ($0.releasedVirtualMachineName.map { name in
+                          SandboxVirtualMachineNamePolicy.isValid(name)
+                      } ?? true)
+              }),
+              releasedSandboxIDs.isDisjoint(with: Set(sandboxIDs))
         else {
             throw SandboxCapacityError.corruptState
         }

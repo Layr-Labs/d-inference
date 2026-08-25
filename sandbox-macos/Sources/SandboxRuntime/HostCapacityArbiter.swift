@@ -461,6 +461,48 @@ public struct SandboxHostCapacityArbiter: Sendable {
         }
     }
 
+    package func releaseDeleted(
+        scope: SandboxOperationScope,
+        holding authorization: SandboxLeaseMutationAuthorization
+    ) throws {
+        guard authorization.authorizes(scope) else {
+            throw SandboxCapacityError.staleFencingToken
+        }
+        defer { withExtendedLifetime(authorization) {} }
+        try store.update { state in
+            try Self.removeLease(scope: scope, from: &state)
+            guard let index = state.generationHighWatermarks.firstIndex(
+                where: { $0.sandboxID == scope.sandboxID }
+            ), state.generationHighWatermarks[index].generation
+                == scope.generation
+            else {
+                throw SandboxCapacityError.corruptState
+            }
+            state.generationHighWatermarks[index].releasedFencingToken =
+                scope.fencingToken
+            state.generationHighWatermarks[
+                index
+            ].releasedVirtualMachineName = authorization.lease.virtualMachineName
+        }
+    }
+
+    package func deletionConfirmed(
+        scope: SandboxOperationScope,
+        virtualMachineName: String
+    ) throws -> Bool {
+        let state = try store.read()
+        guard !state.leases.contains(where: {
+            $0.scope.sandboxID == scope.sandboxID
+        }), let watermark = state.generationHighWatermarks.first(where: {
+            $0.sandboxID == scope.sandboxID
+        }) else {
+            return false
+        }
+        return watermark.generation == scope.generation
+            && watermark.releasedFencingToken == scope.fencingToken
+            && watermark.releasedVirtualMachineName == virtualMachineName
+    }
+
     public func expiredLeases() throws -> [SandboxCapacityLease] {
         try store.update { state in
             let now = currentDate()
@@ -666,6 +708,12 @@ public struct SandboxHostCapacityArbiter: Sendable {
         if let generationIndex {
             state.generationHighWatermarks[generationIndex].generation =
                 generation
+            state.generationHighWatermarks[
+                generationIndex
+            ].releasedFencingToken = nil
+            state.generationHighWatermarks[
+                generationIndex
+            ].releasedVirtualMachineName = nil
         } else {
             state.generationHighWatermarks.append(
                 SandboxGenerationHighWatermark(

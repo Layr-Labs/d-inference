@@ -860,6 +860,32 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertNotNil(object["policyRevision"])
     }
 
+    func testV4StateMigratesWithoutDroppingActiveAuthority() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let original = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(original)
+        let lease = try original.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-deletion-tombstone-migration",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        try downgradePersistedStateToV4(in: stateDirectory)
+
+        let migrated = try makeArbiter(stateDirectory: stateDirectory)
+        let snapshot = try migrated.snapshot()
+        XCTAssertEqual(snapshot.mode, .sandboxDedicated)
+        XCTAssertEqual(snapshot.leases, [lease])
+        let object = try persistedStateObject(in: stateDirectory)
+        XCTAssertEqual(
+            (object["schemaVersion"] as? NSNumber)?.uint16Value,
+            SandboxCapacityState.schemaVersion
+        )
+    }
+
     func testV3MigrationPublicationUncertaintyRemainsQuarantined()
         throws
     {
@@ -1907,6 +1933,32 @@ final class HostCapacityArbiterTests: XCTestCase {
         object["schemaVersion"] = 3
         object.removeValue(forKey: "effectivePolicy")
         object.removeValue(forKey: "policyRevision")
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
+        )
+    }
+
+    private func downgradePersistedStateToV4(
+        in stateDirectory: URL
+    ) throws {
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        var object = try persistedStateObject(in: stateDirectory)
+        object["schemaVersion"] = 4
+        var highWatermarks = try XCTUnwrap(
+            object["generationHighWatermarks"] as? [[String: Any]]
+        )
+        for index in highWatermarks.indices {
+            highWatermarks[index].removeValue(forKey: "releasedFencingToken")
+            highWatermarks[index].removeValue(
+                forKey: "releasedVirtualMachineName"
+            )
+        }
+        object["generationHighWatermarks"] = highWatermarks
         try JSONSerialization.data(
             withJSONObject: object,
             options: [.sortedKeys]

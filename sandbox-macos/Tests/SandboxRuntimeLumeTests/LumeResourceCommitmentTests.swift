@@ -62,7 +62,7 @@ final class LumeResourceCommitmentTests: XCTestCase {
         )
     }
 
-    func testDeleteAndReleaseRemovesOwnedVMAndCapacityLease() async throws {
+    func testDeleteAndReleasePersistsIdempotentReplayTombstone() async throws {
         let baseline = ResourceCommitmentValues.baseline
         let fixture = try FakeLumeFixture(
             initialState: "stopped",
@@ -88,6 +88,32 @@ final class LumeResourceCommitmentTests: XCTestCase {
                 atPath: fixture.virtualMachineDirectory.path
             )
         )
+
+        let reopenedArbiter = try fixture.makeCapacityArbiter(
+            clock: LumeTestWallClock(
+                Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        )
+        XCTAssertTrue(
+            try reopenedArbiter.deletionConfirmed(
+                scope: context.lease.scope,
+                virtualMachineName: context.lease.virtualMachineName
+            )
+        )
+        XCTAssertFalse(
+            try reopenedArbiter.deletionConfirmed(
+                scope: context.lease.scope,
+                virtualMachineName: "sandbox-unrelated"
+            )
+        )
+        let reopenedRuntime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: reopenedArbiter
+        )
+        try await reopenedRuntime.deleteAndRelease(
+            scope: context.lease.scope,
+            name: context.lease.virtualMachineName
+        )
+        XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
     }
 
     private func assertIndependentDriftIsRejected(

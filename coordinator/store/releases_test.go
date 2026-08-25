@@ -107,6 +107,39 @@ func TestReleases(t *testing.T) {
 	}
 }
 
+func TestPostgresReleaseCapabilitiesRoundTrip(t *testing.T) {
+	s := testPostgresStore(t)
+	platform := uniqueID("macos-arm64-release-capabilities")
+	hasApp := true
+	hasFanHelper := false
+	hasPagedKernel := true
+	release := &Release{
+		Version:        "1.0.0+capability-round-trip",
+		Platform:       platform,
+		Backend:        "mlx-swift",
+		BinaryHash:     "binary",
+		BundleHash:     "bundle",
+		MetallibHash:   "metallib",
+		HasApp:         &hasApp,
+		HasFanHelper:   &hasFanHelper,
+		HasPagedKernel: &hasPagedKernel,
+		URL:            "https://r2.example.com/releases/capability-test.tar.gz",
+	}
+	if err := s.SetRelease(release); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+
+	latest := s.GetLatestRelease(platform)
+	if latest == nil {
+		t.Fatal("expected persisted release")
+	}
+	if latest.HasApp == nil || !*latest.HasApp ||
+		latest.HasFanHelper == nil || *latest.HasFanHelper ||
+		latest.HasPagedKernel == nil || !*latest.HasPagedKernel {
+		t.Fatalf("postgres capability round-trip = %+v", latest)
+	}
+}
+
 func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 	s := NewMemory(Config{})
 

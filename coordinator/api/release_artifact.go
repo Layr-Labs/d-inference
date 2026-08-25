@@ -51,6 +51,7 @@ var (
 	releaseAppRequiredDataPayloadSpecs = []releasePayloadSpec{
 		{path: "Darkbloom.app/Contents/Info.plist", mode: 0o644},
 		{path: "Darkbloom.app/Contents/embedded.provisionprofile", mode: 0o644},
+		{path: "Darkbloom.app/Contents/_CodeSignature/CodeResources", mode: 0o644},
 		{path: "Darkbloom.app/Contents/Resources/Chivo-Regular.ttf", mode: 0o644},
 		{path: "Darkbloom.app/Contents/Resources/Chivo-Medium.ttf", mode: 0o644},
 		{

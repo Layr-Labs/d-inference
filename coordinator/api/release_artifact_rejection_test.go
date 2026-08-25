@@ -62,6 +62,14 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			want: releaseAppRequiredDataPayloadSpecs[1].path,
 		},
 		{
+			name:   "missing app signature envelope",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.remove(releaseAppRequiredDataPayloadSpecs[2].path)
+			},
+			want: releaseAppRequiredDataPayloadSpecs[2].path,
+		},
+		{
 			name:   "missing app enclave",
 			layout: releaseBundleTestApp,
 			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {

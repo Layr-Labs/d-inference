@@ -116,6 +116,70 @@ final class LumeResourceCommitmentTests: XCTestCase {
         XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
     }
 
+    func testDeleteAndReleaseAcknowledgesUnreservedAbsentSandbox() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+        let arbiter = try fixture.makeCapacityArbiter(
+            clock: LumeTestWallClock(
+                Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let scope = SandboxOperationScope(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 1))
+        )
+
+        try await runtime.deleteAndRelease(
+            scope: scope,
+            name: fixture.virtualMachineName
+        )
+
+        XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
+    func testDeleteAndReleaseRejectsUnreservedSandboxArtifacts() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let arbiter = try fixture.makeCapacityArbiter(
+            clock: LumeTestWallClock(
+                Date(timeIntervalSince1970: 2_000_000_000)
+            )
+        )
+        let runtime = try fixture.makeLeaseFencedRuntime(
+            capacityArbiter: arbiter
+        )
+        let scope = SandboxOperationScope(
+            sandboxID: SandboxID(),
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 1)),
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 1))
+        )
+
+        do {
+            try await runtime.deleteAndRelease(
+                scope: scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("unreserved VM artifacts must fail closed")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseNotFound)
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: fixture.virtualMachineDirectory.path
+            )
+        )
+    }
+
     private func assertIndependentDriftIsRejected(
         dimension: ResourceCommitmentDimension
     ) async throws {

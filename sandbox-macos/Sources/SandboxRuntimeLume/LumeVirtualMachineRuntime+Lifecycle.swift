@@ -605,11 +605,18 @@ extension LumeVirtualMachineRuntime {
             )
             return
         }
-        try preauthorize(
-            scope: scope,
-            operation: .delete,
-            virtualMachineName: name
-        )
+        var reservationAbsent = false
+        do {
+            try preauthorize(
+                scope: scope,
+                operation: .delete,
+                virtualMachineName: name
+            )
+        } catch SandboxCapacityError.leaseNotFound
+            where releaseCapacity && scope != nil
+        {
+            reservationAbsent = true
+        }
         let operationLock = try beginOperation(
             releaseCapacity ? "delete-and-release" : "delete",
             name: name
@@ -619,6 +626,21 @@ extension LumeVirtualMachineRuntime {
             withExtendedLifetime(operationLock) {}
         }
 
+        if reservationAbsent {
+            guard let scope else {
+                throw SandboxRuntimeError.unsupported(
+                    "unreserved deletion requires an operation scope"
+                )
+            }
+            guard try await inspect(name: name) == nil else {
+                throw SandboxCapacityError.leaseNotFound
+            }
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: .init(operationScope: scope)
+            )
+            return
+        }
         let leaseAuthorization = try authorize(
             scope: scope,
             operation: .delete,

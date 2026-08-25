@@ -4,6 +4,9 @@ import Foundation
 /// recovery, and rollback. Concrete install-layout operations live in
 /// `UpdateInstallLayout`; callers must hold `UpdateProcessLock`.
 final class UpdateRecoveryStore: @unchecked Sendable {
+    private static let rollbackStagingPrefix = ".rollback-staging-"
+    private static let recoveryRestorePrefix = ".recovery-restore-"
+
     enum FaultPoint: Sendable, Equatable, CaseIterable {
         case predecessorPromoted
         case transactionPersisted
@@ -53,6 +56,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     private struct Transaction: Codable {
+        static let currentSchema = 2
+
         var schema: Int
         var kind: TransactionKind
         var phase: TransactionPhase
@@ -60,6 +65,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         var layout: VerifiedPredecessor.Layout
         var stagingRoot: String
         var createdAt: Double
+        var resultingInstallGeneration: UInt64?
 
         enum CodingKeys: String, CodingKey {
             case schema
@@ -69,6 +75,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             case layout
             case stagingRoot = "staging_root"
             case createdAt = "created_at"
+            case resultingInstallGeneration = "resulting_install_generation"
         }
     }
 
@@ -200,7 +207,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try verifyPredecessor(predecessor)
         try restorePredecessorCopy(
             predecessor,
-            stagingName: ".recovery-restore-\(UUID().uuidString)"
+            stagingName: "\(Self.recoveryRestorePrefix)\(UUID().uuidString)"
         )
         guard try liveMatches(predecessor.release, layout: predecessor.layout) else {
             throw StoreError.interruptedRecoveryFailed(
@@ -209,13 +216,10 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         if transaction.kind == .install {
             state.candidate = nil
             state.current = predecessor.release
+            try writeState(state)
         } else {
-            state.completeRollback(
-                now: now,
-                reason: "recovered an interrupted rollback of \(transaction.target.version)"
-            )
+            try finalizeRecovered(transaction, state: &state, now: now)
         }
-        try writeState(state)
         try cleanupTransaction(transaction)
     }
 
@@ -245,13 +249,14 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             now: now
         )
         var transaction = Transaction(
-            schema: 1,
+            schema: Transaction.currentSchema,
             kind: .install,
             phase: .prepared,
             target: candidate,
             layout: layout,
             stagingRoot: staged.stagingRoot.standardizedFileURL.path,
-            createdAt: now
+            createdAt: now,
+            resultingInstallGeneration: candidate.installGeneration
         )
         try persist(transaction)
         try faultInjector(.transactionPersisted)
@@ -287,20 +292,21 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         }
 
         let stagingRoot = installRoot.appendingPathComponent(
-            ".rollback-staging-\(UUID().uuidString)",
+            "\(Self.rollbackStagingPrefix)\(UUID().uuidString)",
             isDirectory: true
         )
         try copyPredecessor(predecessor, to: stagingRoot)
         try verifyStagedPredecessor(predecessor, at: stagingRoot)
 
         var transaction = Transaction(
-            schema: 1,
+            schema: Transaction.currentSchema,
             kind: .rollback,
             phase: .prepared,
             target: predecessor.release,
             layout: predecessor.layout,
             stagingRoot: stagingRoot.path,
-            createdAt: now
+            createdAt: now,
+            resultingInstallGeneration: rollbackGeneration
         )
         try persist(transaction)
         try faultInjector(.transactionPersisted)
@@ -415,18 +421,74 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 )
             }
         case .rollback:
-            let (generation, overflow) =
+            let generation = try recoveredRollbackGeneration(
+                transaction,
+                state: state
+            )
+            if state.candidate != nil {
+                state.installGeneration = generation
+                state.completeRollback(
+                    now: now,
+                    reason: "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
+                )
+            }
+        }
+        try writeState(state)
+        try faultInjector(.statePersisted)
+    }
+
+    private func recoveredRollbackGeneration(
+        _ transaction: Transaction,
+        state: UpdateRecoveryState
+    ) throws -> UInt64 {
+        if let recorded = transaction.resultingInstallGeneration {
+            if state.candidate == nil {
+                guard rollbackIsAlreadyFinalized(transaction, state: state),
+                      state.installGeneration == recorded
+                else {
+                    throw StoreError.interruptedRecoveryFailed(
+                        "rollback state does not match its recorded install generation")
+                }
+                return recorded
+            }
+            let (expected, overflow) =
                 state.installGeneration.addingReportingOverflow(1)
             guard !overflow else {
                 throw StoreError.corruptState("install generation overflow")
             }
-            state.installGeneration = generation
-            state.completeRollback(
-                now: now,
-                reason: "recovered rollback after \(state.candidate?.failureCount ?? 0) failed starts"
-            )
+            guard recorded == expected else {
+                throw StoreError.corruptTransaction(
+                    "rollback install generation \(recorded) does not follow \(state.installGeneration)")
+            }
+            return recorded
         }
-        try writeState(state)
+
+        // Schema-1 rollback journals did not record the resulting generation.
+        // If their state transition is already durable, retain that generation;
+        // otherwise derive it once from the still-pending candidate state.
+        if rollbackIsAlreadyFinalized(transaction, state: state) {
+            return state.installGeneration
+        }
+        guard state.candidate != nil else {
+            throw StoreError.interruptedRecoveryFailed(
+                "legacy rollback journal has neither pending nor completed state")
+        }
+        let (generation, overflow) =
+            state.installGeneration.addingReportingOverflow(1)
+        guard !overflow else {
+            throw StoreError.corruptState("install generation overflow")
+        }
+        return generation
+    }
+
+    private func rollbackIsAlreadyFinalized(
+        _ transaction: Transaction,
+        state: UpdateRecoveryState
+    ) -> Bool {
+        state.candidate == nil
+            && state.current == transaction.target
+            && state.predecessor?.release == transaction.target
+            && state.quarantine != nil
     }
 
     private func readTransaction() throws -> Transaction {
@@ -439,9 +501,27 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         } catch {
             throw StoreError.corruptTransaction(error.localizedDescription)
         }
-        guard transaction.schema == 1 else {
+        guard transaction.schema == 1
+                || transaction.schema == Transaction.currentSchema
+        else {
             throw StoreError.corruptTransaction(
                 "unsupported schema \(transaction.schema)")
+        }
+        if transaction.schema == 1 {
+            guard transaction.resultingInstallGeneration == nil else {
+                throw StoreError.corruptTransaction(
+                    "schema 1 unexpectedly records a resulting install generation")
+            }
+        } else {
+            guard let generation = transaction.resultingInstallGeneration else {
+                throw StoreError.corruptTransaction(
+                    "schema \(Transaction.currentSchema) is missing its resulting install generation")
+            }
+            if transaction.kind == .install,
+               generation != transaction.target.installGeneration {
+                throw StoreError.corruptTransaction(
+                    "install transaction generation does not match its target")
+            }
         }
         return transaction
     }
@@ -459,6 +539,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
 
     private func cleanupTransaction(_ transaction: Transaction) throws {
         try UpdateAtomicFilesystem.removeDurably(transactionPath)
+        try faultInjector(.transactionRemoved)
         let staging = URL(
             fileURLWithPath: transaction.stagingRoot
         ).standardizedFileURL
@@ -469,15 +550,25 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     private func cleanupOrphanedRecoveryTemps() {
-        guard let entries = try? fm.contentsOfDirectory(
+        if let recoveryEntries = try? fm.contentsOfDirectory(
             at: recoveryRoot,
             includingPropertiesForKeys: nil
-        ) else {
-            return
+        ) {
+            for entry in recoveryEntries
+            where entry.lastPathComponent.hasPrefix(".predecessor-next-") {
+                try? fm.removeItem(at: entry)
+            }
         }
-        for entry in entries
-        where entry.lastPathComponent.hasPrefix(".predecessor-next-") {
-            try? fm.removeItem(at: entry)
+        if let installEntries = try? fm.contentsOfDirectory(
+            at: installRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for entry in installEntries
+            where entry.lastPathComponent.hasPrefix(Self.rollbackStagingPrefix)
+                || entry.lastPathComponent.hasPrefix(Self.recoveryRestorePrefix)
+            {
+                try? fm.removeItem(at: entry)
+            }
         }
     }
 }

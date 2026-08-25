@@ -676,9 +676,10 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = "$APP_BINARY_NAME"
           echo "App identity verified: DR pins io.darkbloom.provider, CLI id pinned, GUI restricted-entitlement-free"
 
-          # Flat layout alongside the .app bundle. Coordinator's release
-          # artifact verifier (release_handlers.go:413) requires bin/darkbloom
-          # to be a regular file — symlinks fail the tar.TypeReg check.
+          # Flat verifier layout alongside the .app bundle. Registration
+          # requires regular executable darkbloom + enclave files and a
+          # non-executable metallib here, then byte-matches all three against
+          # the app copies before making the release visible.
           mkdir -p "$STAGE/bin"
           cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"

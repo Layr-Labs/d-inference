@@ -1,7 +1,6 @@
 package api
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -12,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -337,109 +335,6 @@ func normalizeTemplateHashes(raw string) (string, error) {
 		normalized = append(normalized, name+"="+hash)
 	}
 	return strings.Join(normalized, ","), nil
-}
-
-func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Release) error {
-	downloadURL, err := s.trustedReleaseArtifactURL(release)
-	if err != nil {
-		return err
-	}
-	req := &http.Request{
-		Method: http.MethodGet,
-		URL:    downloadURL,
-		Header: make(http.Header),
-	}
-	req = req.WithContext(ctx)
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("download bundle: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download bundle returned status %d", resp.StatusCode)
-	}
-
-	tmp, err := os.CreateTemp("", "darkbloom-release-*.tar.gz")
-	if err != nil {
-		return fmt.Errorf("create temp bundle: %w", err)
-	}
-	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}()
-
-	bundleHash := sha256.New()
-	limited := io.LimitReader(resp.Body, maxReleaseArtifactBytes+1)
-	n, err := io.Copy(io.MultiWriter(tmp, bundleHash), limited)
-	if err != nil {
-		return fmt.Errorf("read bundle: %w", err)
-	}
-	if n > maxReleaseArtifactBytes {
-		return fmt.Errorf("bundle exceeds maximum size")
-	}
-	actualBundleHash := hex.EncodeToString(bundleHash.Sum(nil))
-	if actualBundleHash != release.BundleHash {
-		return fmt.Errorf("bundle_hash does not match release artifact")
-	}
-
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind bundle: %w", err)
-	}
-
-	gz, err := gzip.NewReader(tmp)
-	if err != nil {
-		return fmt.Errorf("open bundle gzip: %w", err)
-	}
-	defer gz.Close()
-
-	binaryHash := sha256.New()
-	foundBinary := false
-	err = validateReleaseArchive(
-		gz,
-		defaultReleaseArchivePolicy,
-		func(entry releaseArchiveEntry, contents io.Reader) error {
-			if entry.Path != "bin/darkbloom" {
-				return nil
-			}
-			if entry.Kind != releaseArchiveRegular {
-				return fmt.Errorf("bundled provider binary is not a regular file")
-			}
-			if foundBinary {
-				return fmt.Errorf("bundle contains multiple provider binaries")
-			}
-			if entry.Size > maxReleaseProviderBinBytes {
-				return fmt.Errorf("provider binary exceeds maximum size")
-			}
-			n, err := io.Copy(binaryHash, contents)
-			if err != nil {
-				return fmt.Errorf("read provider binary: %w", err)
-			}
-			if n != entry.Size {
-				return fmt.Errorf("provider binary is truncated")
-			}
-			foundBinary = true
-			return nil
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("validate bundle archive: %w", err)
-	}
-	if !foundBinary {
-		return fmt.Errorf("bundle is missing bin/darkbloom")
-	}
-
-	actualBinaryHash := hex.EncodeToString(binaryHash.Sum(nil))
-	if actualBinaryHash != release.BinaryHash {
-		return fmt.Errorf("binary_hash does not match bundled provider binary")
-	}
-	return nil
 }
 
 // handleLatestRelease handles GET /v1/releases/latest.

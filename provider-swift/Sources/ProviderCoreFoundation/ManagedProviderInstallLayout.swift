@@ -15,7 +15,7 @@ public enum ManagedProviderInstallLayout {
     ]
 
     public static func cliURL(homeDirectory: URL) -> URL {
-        cliPathComponents.reduce(homeDirectory.standardizedFileURL) {
+        cliPathComponents.reduce(homeDirectory) {
             $0.appendingPathComponent($1)
         }
     }

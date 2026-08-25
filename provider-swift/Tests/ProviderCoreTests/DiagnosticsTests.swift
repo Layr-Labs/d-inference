@@ -146,12 +146,23 @@ import Testing
 // MARK: - VersionDiagnostic
 
 @Test func versionParseAndCompare() {
-    #expect(VersionDiagnostic.parse("v1.2.3") == [1, 2, 3])
-    #expect(VersionDiagnostic.parse("0.5.15-beta") == [0, 5, 15])
+    #expect(VersionDiagnostic.parse("1.2.3") != nil)
+    #expect(VersionDiagnostic.parse("0.5.15-beta") != nil)
+    #expect(VersionDiagnostic.parse("v1.2.3") == nil)
+    #expect(VersionDiagnostic.parse("01.2.3") == nil)
     #expect(VersionDiagnostic.parse("garbage") == nil)
     #expect(VersionDiagnostic.compare("0.5.15", "0.6.0") == -1)
     #expect(VersionDiagnostic.compare("1.0.0", "1.0.0") == 0)
     #expect(VersionDiagnostic.compare("2.0.0", "1.9.9") == 1)
+    #expect(VersionDiagnostic.compare("1.0.0-rc.1", "1.0.0") == -1)
+    #expect(VersionDiagnostic.compare("1.0.0", "1.0.0-rc.1") == 1)
+    #expect(VersionDiagnostic.compare("1.0.0+build.2", "1.0.0+build.1") == 0)
+    #expect(
+        VersionDiagnostic.compare(
+            "184467440737095516160.0.0",
+            "2.0.0"
+        ) == 1
+    )
 }
 
 @Test func versionDiagnoseBelowMinimumFails() {

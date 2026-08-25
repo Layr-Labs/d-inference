@@ -11,10 +11,19 @@ enum GPTOSSHarmonyTemplateFix {
         isHarmonyModelHint(context.modelId) || isHarmonyModelHint(context.modelType)
     }
 
+    static func effectiveReasoningEffort(
+        _ requested: String?,
+        context: ChatTemplateFixContext
+    ) -> String? {
+        guard applies(to: context), requested == "high" else { return requested }
+        return "medium"
+    }
+
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
-        let bridged = bridgeReasoningContentToThinking(messages)
+        let systemNormalized = LeadingSystemMessageNormalizer.normalize(messages)
+        let bridged = bridgeReasoningContentToThinking(systemNormalized)
         return try splitParallelToolCalls(bridged)
     }
 
@@ -48,9 +57,9 @@ enum GPTOSSHarmonyTemplateFix {
     // `content` rides the FIRST split turn; `thinking` (which Harmony forbids in the
     // same turn as a tool_call) is emitted as a standalone preceding assistant turn.
     //
-    // The only genuinely unnormalizable shape — a following tool RESULT whose
-    // tool_call_id matches none of the assistant's tool_calls — still throws a clean
-    // 400 (invalidToolPayload), so we never silently drop a result.
+    // Calls/results that cannot be paired unambiguously (missing, duplicate,
+    // or unmatched tool_call_id) throw a clean 400 (invalidToolPayload), so
+    // normalization never silently drops or duplicates a result.
     private static func splitParallelToolCalls(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
@@ -78,15 +87,35 @@ enum GPTOSSHarmonyTemplateFix {
                 continue
             }
 
+            var seenToolCallIDs = Set<String>()
+            for call in toolCalls {
+                guard let callMap = call as? [String: any Sendable],
+                      let id = callMap["id"] as? String,
+                      !id.isEmpty
+                else {
+                    continue
+                }
+                guard seenToolCallIDs.insert(id).inserted else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "duplicate assistant tool_call id \(id)")
+                }
+            }
+
             // Gather the contiguous tool-result messages that follow, keyed by id.
             var results: [String: [String: any Sendable]] = [:]
             var resultOrder: [String] = []
             var j = i + 1
             while j < messages.count, (messages[j]["role"] as? String) == "tool" {
-                if let id = messages[j]["tool_call_id"] as? String {
-                    results[id] = messages[j]
-                    resultOrder.append(id)
+                guard let id = messages[j]["tool_call_id"] as? String, !id.isEmpty else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "tool result following split tool_calls requires a non-empty tool_call_id")
                 }
+                guard results[id] == nil else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "duplicate tool result for tool_call_id \(id)")
+                }
+                results[id] = messages[j]
+                resultOrder.append(id)
                 j += 1
             }
 

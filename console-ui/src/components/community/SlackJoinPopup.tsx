@@ -8,20 +8,18 @@ import {
   INVITE_DISMISSED_EVENT,
   INVITE_DISMISSED_KEY,
 } from "@/components/InviteCodeBanner";
+import { useAuth } from "@/hooks/useAuth";
 import { SlackIcon } from "./BrandIcons";
-import { PROVIDER_SLACK_DISMISSED_KEY, SLACK_INVITE_URL } from "./constants";
-import { useIsConnectedProvider } from "./useIsConnectedProvider";
+import { SLACK_INVITE_URL, SLACK_JOIN_DISMISSED_KEY } from "./constants";
 
 // The invite banner owns the bottom-right corner on the chat page; while it
 // can still be visible there, this popup waits its turn.
 function useInviteBannerOccupiesCorner(): boolean {
   const pathname = usePathname();
-  const [inviteDismissed, setInviteDismissed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return localStorage.getItem(INVITE_DISMISSED_KEY) === "1";
-  });
+  const [inviteDismissed, setInviteDismissed] = useState(false);
 
   useEffect(() => {
+    setInviteDismissed(localStorage.getItem(INVITE_DISMISSED_KEY) === "1");
     const onDismissed = () => setInviteDismissed(true);
     window.addEventListener(INVITE_DISMISSED_EVENT, onDismissed);
     return () => window.removeEventListener(INVITE_DISMISSED_EVENT, onDismissed);
@@ -30,34 +28,33 @@ function useInviteBannerOccupiesCorner(): boolean {
   return pathname === "/" && !inviteDismissed;
 }
 
-// Corner popup shown once to users with a connected provider machine,
-// inviting them to the provider Slack channel. Dismissal persists in
-// localStorage (same pattern as InviteCodeBanner).
-export function ProviderSlackPopup() {
-  const [dismissed, setDismissed] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return localStorage.getItem(PROVIDER_SLACK_DISMISSED_KEY) === "1";
-  });
-  // Skip the providers fetch entirely once dismissed.
-  const isProvider = useIsConnectedProvider(!dismissed);
+// One-time corner popup for signed-in users, pointing them at Slack.
+// Dismissal persists in localStorage (same pattern as InviteCodeBanner).
+export function SlackJoinPopup() {
+  const { authenticated } = useAuth();
+  const [dismissed, setDismissed] = useState(true);
   const cornerBusy = useInviteBannerOccupiesCorner();
+
+  useEffect(() => {
+    setDismissed(localStorage.getItem(SLACK_JOIN_DISMISSED_KEY) === "1");
+  }, []);
 
   const dismiss = useCallback(() => {
     setDismissed(true);
-    localStorage.setItem(PROVIDER_SLACK_DISMISSED_KEY, "1");
+    localStorage.setItem(SLACK_JOIN_DISMISSED_KEY, "1");
   }, []);
 
   const handleDismiss = useCallback(() => {
-    trackEvent("provider_slack_popup_dismissed");
+    trackEvent("slack_join_popup_dismissed");
     dismiss();
   }, [dismiss]);
 
   const handleJoin = useCallback(() => {
-    trackEvent("provider_slack_popup_joined");
+    trackEvent("slack_join_popup_joined");
     dismiss();
   }, [dismiss]);
 
-  if (dismissed || !isProvider || cornerBusy) return null;
+  if (!authenticated || dismissed || cornerBusy) return null;
 
   return (
     <div className="fixed bottom-4 right-3 sm:right-6 z-40 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-sm message-animate">
@@ -67,7 +64,7 @@ export function ProviderSlackPopup() {
             <div className="w-7 h-7 rounded-lg bg-bg-elevated border-2 border-border-subtle flex items-center justify-center">
               <SlackIcon size={14} className="text-ink" />
             </div>
-            You&apos;re a provider!
+            Join the Darkbloom Slack
           </div>
           <button
             onClick={handleDismiss}
@@ -80,8 +77,8 @@ export function ProviderSlackPopup() {
 
         <div className="px-4 pb-2">
           <p className="text-xs text-text-tertiary leading-relaxed">
-            We have a Slack channel just for providers. If you have any questions
-            or want updates on the network, come say hi.
+            You&apos;re already on Darkbloom — come join Slack for updates,
+            support, and conversation with other users and providers.
           </p>
         </div>
 
@@ -94,7 +91,7 @@ export function ProviderSlackPopup() {
             className="block w-full py-2 rounded-lg bg-coral border-2 border-ink text-white text-center text-xs font-bold
                        hover:opacity-90 transition-all"
           >
-            Join the provider channel
+            Join Slack
           </a>
         </div>
       </div>

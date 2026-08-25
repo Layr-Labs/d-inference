@@ -24,15 +24,14 @@ private let gptOssModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
 @Suite("reasoning_effort + reasoning_tokens (live gpt-oss)", .serialized)
 struct ReasoningEffortLiveTests {
 
-    /// Fix #1, decisive: the REAL gpt-oss harmony template reads the
-    /// `reasoning_effort` value we inject via `additionalContext` and
-    /// renders the matching `Reasoning: <effort>` system directive. This
-    /// is the exact API path `MultiModelBatchSchedulerEngine` uses.
+    /// Decisive: the REAL gpt-oss Harmony template receives the effective
+    /// effort selected by the production prompt policy. A requested `high`
+    /// must render exactly like `medium`; lower efforts remain distinct.
     @Test(
-        "harmony template renders the injected reasoning_effort",
+        "harmony template renders high reasoning effort as medium",
         .enabled(if: LiveInferenceFixtures.liveTestsEnabled)
     )
-    func templateHonorsReasoningEffort() async throws {
+    func templateDowngradesHighReasoningEffort() async throws {
         let loaded: LiveInferenceFixtures.LoadedBridge
         do {
             loaded = try await LiveInferenceFixtures.loadBridge(
@@ -58,9 +57,15 @@ struct ReasoningEffortLiveTests {
         let messages: [[String: any Sendable]] = [
             ["role": "user", "content": "What is 2+2?"]
         ]
+        let request = OpenAIChatCompletionRequest(
+            model: gptOssModelID,
+            messages: [.init(role: .user, content: .text("What is 2+2?"))])
 
         func renderedPrompt(effort: String?) throws -> String {
-            let ctx: [String: any Sendable]? = effort.map { ["reasoning_effort": $0] }
+            let ctx = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+                for: request,
+                reasoningEffort: effort,
+                modelType: "gpt_oss")
             let tokens = try tokenizer.inner.applyChatTemplate(
                 messages: messages, tools: nil, additionalContext: ctx
             )
@@ -68,14 +73,16 @@ struct ReasoningEffortLiveTests {
         }
 
         let high = try renderedPrompt(effort: "high")
+        let medium = try renderedPrompt(effort: "medium")
         let low = try renderedPrompt(effort: "low")
         let defaulted = try renderedPrompt(effort: nil)
 
-        #expect(high.contains("Reasoning: high"))
+        #expect(high.contains("Reasoning: medium"))
+        #expect(!high.contains("Reasoning: high"))
+        #expect(high == medium)
         #expect(low.contains("Reasoning: low"))
         // No reasoning_effort supplied → template's built-in default.
         #expect(defaulted.contains("Reasoning: medium"))
-        // And the value actually changes the prompt.
         #expect(high != low)
     }
 
@@ -110,8 +117,8 @@ struct ReasoningEffortLiveTests {
             TokenizerHandle(ctx.tokenizer)
         }
 
-        // Wire the engine exactly as ProviderLoop does, with the
-        // reasoning_effort threaded through.
+        // Wire the engine exactly as ProviderLoop does. The requested high
+        // effort is normalized by the prompt policy before Harmony rendering.
         let engine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [gptOssModelID: .init(

@@ -599,6 +599,20 @@ private enum DurableFilesystem {
                     throw filesystemError("open \(entry.path) for full sync")
                 }
                 do {
+                    var openedStatus = stat()
+                    guard fstat(descriptor, &openedStatus) == 0 else {
+                        throw filesystemError(
+                            "inspect \(entry.path) before full sync"
+                        )
+                    }
+                    guard openedStatus.st_mode & mode_t(S_IFMT)
+                            == mode_t(S_IFREG)
+                    else {
+                        throw filesystemError(
+                            "refuse non-regular full sync at \(entry.path)",
+                            code: EFTYPE
+                        )
+                    }
                     try fullSync(descriptor, path: entry.path)
                     guard close(descriptor) == 0 else {
                         throw filesystemError("close \(entry.path) after full sync")
@@ -796,14 +810,19 @@ private enum DurableFilesystem {
             throw filesystemError("open directory \(directory.path) for sync")
         }
         var status = stat()
-        guard fstat(descriptor, &status) == 0,
-              status.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
-        else {
-            let saved = errno == 0 ? ENOTDIR : errno
+        guard fstat(descriptor, &status) == 0 else {
+            let saved = errno
+            _ = close(descriptor)
+            throw filesystemError(
+                "inspect directory \(directory.path) for sync",
+                code: saved
+            )
+        }
+        guard status.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
             _ = close(descriptor)
             throw filesystemError(
                 "refuse non-directory sync at \(directory.path)",
-                code: saved
+                code: ENOTDIR
             )
         }
         let result = fsync(descriptor)

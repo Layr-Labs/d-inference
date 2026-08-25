@@ -60,6 +60,34 @@ func TestDecodeSandboxHostRegister(t *testing.T) {
 	}
 }
 
+func TestSandboxBaseImageIDsMatchHostRuntimeGrammar(t *testing.T) {
+	valid := []string{
+		"a",
+		"macos-tahoe-v1",
+		strings.Repeat("a", 63),
+	}
+	for _, value := range valid {
+		if !ValidSandboxIdentifier(value) {
+			t.Errorf("valid base image ID %q was rejected", value)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"Macos-tahoe-v1",
+		"macos.tahoe",
+		"macos_tahoe",
+		"-macos",
+		"macos-",
+		strings.Repeat("a", 64),
+	}
+	for _, value := range invalid {
+		if ValidSandboxIdentifier(value) {
+			t.Errorf("invalid base image ID %q was accepted", value)
+		}
+	}
+}
+
 func TestDecodeSandboxCoordinatorCommand(t *testing.T) {
 	frame := marshalSandboxFrame(t, validSandboxCommandEnvelope())
 	decoded, err := DecodeSandboxCoordinatorMessage(frame)

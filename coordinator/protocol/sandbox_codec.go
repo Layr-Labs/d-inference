@@ -38,6 +38,7 @@ const (
 
 var (
 	sandboxIdentifierPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	sandboxBaseImagePattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	sandboxErrorCodePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	sandboxEnvironmentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 )
@@ -497,7 +498,7 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
 			validateSandboxResources(value.Resources) != nil ||
-			!sandboxIdentifierPattern.MatchString(value.BaseImageID) ||
+			!sandboxBaseImagePattern.MatchString(value.BaseImageID) ||
 			validateSandboxTimestamp(value.LeaseExpiresAt) != nil {
 			return errors.New("sandbox prepare payload is invalid")
 		}
@@ -583,7 +584,7 @@ func ValidateSandboxCommand(command *SandboxCommandPayload) error {
 }
 
 func ValidSandboxIdentifier(value string) bool {
-	return sandboxIdentifierPattern.MatchString(value)
+	return sandboxBaseImagePattern.MatchString(value)
 }
 
 func ValidSandboxUUID(value string) bool {
@@ -654,7 +655,7 @@ func validSandboxBaseImages(baseImageIDs []string) bool {
 	}
 	seen := make(map[string]struct{}, len(baseImageIDs))
 	for _, baseImageID := range baseImageIDs {
-		if !sandboxIdentifierPattern.MatchString(baseImageID) {
+		if !sandboxBaseImagePattern.MatchString(baseImageID) {
 			return false
 		}
 		if _, duplicate := seen[baseImageID]; duplicate {

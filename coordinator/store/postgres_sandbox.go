@@ -1259,44 +1259,70 @@ func (s *PostgresStore) RecordSandboxCommandDispatch(
 	return nil
 }
 
-func (s *PostgresStore) RecordSandboxCommandCancellationDispatch(
+func (s *PostgresStore) ClaimSandboxCommandCancellationDispatch(
 	ctx context.Context,
 	commandID string,
+	expectedAttempts uint32,
+	retryCutoff time.Time,
 	dispatchedAt time.Time,
-	dispatchError string,
-) error {
-	tag, err := s.pool.Exec(
+) (uint32, bool, error) {
+	var attempt uint32
+	err := s.pool.QueryRow(
 		ctx,
 		`UPDATE sandbox_commands
-		 SET cancel_dispatch_attempts = cancel_dispatch_attempts
-		       + CASE WHEN cancellation_pending THEN 1 ELSE 0 END,
-		     last_cancel_dispatched_at = CASE
-		       WHEN cancellation_pending THEN $2
-		       ELSE last_cancel_dispatched_at
-		     END,
-		     last_cancel_dispatch_error = CASE
-		       WHEN cancellation_pending THEN $3
-		       ELSE last_cancel_dispatch_error
-		     END,
-		     updated_at = CASE
-		       WHEN cancellation_pending THEN GREATEST(updated_at, $2)
-		       ELSE updated_at
-		     END
-		 WHERE id = $1`,
+		 SET cancel_dispatch_attempts = cancel_dispatch_attempts + 1,
+		     last_cancel_dispatched_at = $4,
+		     last_cancel_dispatch_error = '',
+		     updated_at = GREATEST(updated_at, $4)
+		 WHERE id = $1
+		   AND cancellation_pending
+		   AND cancel_dispatch_attempts = $2
+		   AND (
+		     last_cancel_dispatched_at IS NULL
+		     OR last_cancel_dispatched_at <= $3
+		   )
+		 RETURNING cancel_dispatch_attempts`,
 		commandID,
+		expectedAttempts,
+		retryCutoff,
 		dispatchedAt,
-		dispatchError,
-	)
+	).Scan(&attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
 	if err != nil {
-		return fmt.Errorf(
-			"record sandbox command cancellation dispatch: %w",
+		return 0, false, fmt.Errorf(
+			"claim sandbox command cancellation dispatch: %w",
 			err,
 		)
 	}
-	if tag.RowsAffected() != 1 {
-		return ErrNotFound
+	return attempt, true, nil
+}
+
+func (s *PostgresStore) CompleteSandboxCommandCancellationDispatch(
+	ctx context.Context,
+	commandID string,
+	attempt uint32,
+	dispatchError string,
+) (bool, error) {
+	tag, err := s.pool.Exec(
+		ctx,
+		`UPDATE sandbox_commands
+		 SET last_cancel_dispatch_error = $3
+		 WHERE id = $1
+		   AND cancellation_pending
+		   AND cancel_dispatch_attempts = $2`,
+		commandID,
+		attempt,
+		dispatchError,
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"complete sandbox command cancellation dispatch: %w",
+			err,
+		)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *PostgresStore) ListPendingSandboxCommandsByHost(

@@ -68,6 +68,15 @@ func TestCommandCancellationRetriesAcrossSendFailureAndReconnect(t *testing.T) {
 		t.Fatalf("missing-session cancellation error = %v", err)
 	}
 	assertCancellationAttempt(t, backend, command, 1, "host_unavailable", true)
+	timedOut, err = backend.GetSandboxCommand(
+		ctx,
+		command.AccountID,
+		command.SandboxID,
+		command.ID,
+	)
+	if err != nil {
+		t.Fatalf("reload cancellation after missing host: %v", err)
+	}
 
 	failingTransport := &cancellationTestTransport{failuresRemaining: 1}
 	failingSession := registerCancellationTestHost(
@@ -79,6 +88,17 @@ func TestCommandCancellationRetriesAcrossSendFailureAndReconnect(t *testing.T) {
 	)
 	currentTime = now.Add(3 * time.Second)
 	if err := controller.dispatchCommandCancellation(
+		ctx,
+		sandbox,
+		timedOut,
+	); err != nil {
+		t.Fatalf("not-due cancellation claim should deduplicate: %v", err)
+	}
+	assertCancellationAttempt(t, backend, command, 1, "host_unavailable", true)
+	if frames := failingTransport.frames(); len(frames) != 0 {
+		t.Fatalf("not-due cancellation was sent: %d frames", len(frames))
+	}
+	if err := controller.forceDispatchCommandCancellation(
 		ctx,
 		sandbox,
 		timedOut,

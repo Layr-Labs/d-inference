@@ -351,13 +351,20 @@ func TestMemoryPendingCancellationListRotatesDispatchedRows(t *testing.T) {
 		t.Fatalf("list first pending cancellation: pending=%+v error=%v", pending, err)
 	}
 	firstCommandID := pending[0].Command.ID
-	if err := backend.RecordSandboxCommandCancellationDispatch(
+	attempt, claimed, err := backend.ClaimSandboxCommandCancellationDispatch(
 		context.Background(),
 		firstCommandID,
+		pending[0].Command.CancelDispatchAttempts,
+		now,
 		now.Add(2*time.Second),
-		"",
-	); err != nil {
-		t.Fatalf("record first cancellation dispatch: %v", err)
+	)
+	if err != nil || !claimed || attempt != 1 {
+		t.Fatalf(
+			"claim first cancellation dispatch: attempt=%d claimed=%v error=%v",
+			attempt,
+			claimed,
+			err,
+		)
 	}
 	pending, err = backend.ListPendingSandboxCommandCancellations(
 		context.Background(),

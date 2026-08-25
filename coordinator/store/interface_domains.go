@@ -879,14 +879,30 @@ type SandboxStore interface {
 		dispatchError string,
 	) error
 
-	// RecordSandboxCommandCancellationDispatch records one durable cancellation
-	// outbox delivery attempt without acknowledging it.
-	RecordSandboxCommandCancellationDispatch(
+	// ClaimSandboxCommandCancellationDispatch atomically claims one
+	// cancellation outbox delivery attempt before the frame is sent. The claim
+	// is applied only while cancellation remains pending and the durable
+	// attempt count matches expectedAttempts, and when its previous dispatch is
+	// absent or no later than retryCutoff. A successful claim advances the
+	// attempt count, stamps dispatchedAt, and clears the prior dispatch error.
+	ClaimSandboxCommandCancellationDispatch(
 		ctx context.Context,
 		commandID string,
+		expectedAttempts uint32,
+		retryCutoff time.Time,
 		dispatchedAt time.Time,
+	) (attempt uint32, claimed bool, err error)
+
+	// CompleteSandboxCommandCancellationDispatch records the result of a
+	// claimed delivery attempt. The attempt count is a compare-and-swap token:
+	// a stale completion cannot overwrite a newer attempt or an acknowledged
+	// cancellation.
+	CompleteSandboxCommandCancellationDispatch(
+		ctx context.Context,
+		commandID string,
+		attempt uint32,
 		dispatchError string,
-	) error
+	) (completed bool, err error)
 
 	// ListPendingSandboxCommandsByHost returns non-terminal command outbox rows
 	// for reconnect/startup reconciliation.

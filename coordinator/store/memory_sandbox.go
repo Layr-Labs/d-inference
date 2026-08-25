@@ -645,27 +645,49 @@ func (s *MemoryStore) RecordSandboxCommandDispatch(
 	return nil
 }
 
-func (s *MemoryStore) RecordSandboxCommandCancellationDispatch(
+func (s *MemoryStore) ClaimSandboxCommandCancellationDispatch(
 	_ context.Context,
 	commandID string,
+	expectedAttempts uint32,
+	retryCutoff time.Time,
 	dispatchedAt time.Time,
-	dispatchError string,
-) error {
+) (uint32, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	command := s.sandboxCommands[commandID]
-	if command == nil {
-		return ErrNotFound
-	}
-	if !command.CancellationPending {
-		return nil
+	if command == nil ||
+		!command.CancellationPending ||
+		command.CancelDispatchAttempts != expectedAttempts ||
+		(command.LastCancelDispatchedAt != nil &&
+			command.LastCancelDispatchedAt.After(retryCutoff)) {
+		return 0, false, nil
 	}
 	command.CancelDispatchAttempts++
-	command.LastCancelDispatchError = dispatchError
-	command.UpdatedAt = dispatchedAt
+	command.LastCancelDispatchError = ""
+	if dispatchedAt.After(command.UpdatedAt) {
+		command.UpdatedAt = dispatchedAt
+	}
 	lastDispatchedAt := dispatchedAt
 	command.LastCancelDispatchedAt = &lastDispatchedAt
-	return nil
+	return command.CancelDispatchAttempts, true, nil
+}
+
+func (s *MemoryStore) CompleteSandboxCommandCancellationDispatch(
+	_ context.Context,
+	commandID string,
+	attempt uint32,
+	dispatchError string,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	command := s.sandboxCommands[commandID]
+	if command == nil ||
+		!command.CancellationPending ||
+		command.CancelDispatchAttempts != attempt {
+		return false, nil
+	}
+	command.LastCancelDispatchError = dispatchError
+	return true, nil
 }
 
 func (s *MemoryStore) ListPendingSandboxCommandsByHost(

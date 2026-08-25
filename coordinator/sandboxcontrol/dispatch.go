@@ -264,35 +264,76 @@ func (c *Controller) dispatchCommandCancellation(
 	sandbox *store.SandboxRecord,
 	command *store.SandboxCommand,
 ) error {
+	now := c.now().UTC()
+	return c.dispatchCommandCancellationWithCutoff(
+		ctx,
+		sandbox,
+		command,
+		now.Add(-dispatchRetryInterval),
+		now,
+	)
+}
+
+func (c *Controller) forceDispatchCommandCancellation(
+	ctx context.Context,
+	sandbox *store.SandboxRecord,
+	command *store.SandboxCommand,
+) error {
+	now := c.now().UTC()
+	return c.dispatchCommandCancellationWithCutoff(
+		ctx,
+		sandbox,
+		command,
+		now,
+		now,
+	)
+}
+
+func (c *Controller) dispatchCommandCancellationWithCutoff(
+	ctx context.Context,
+	sandbox *store.SandboxRecord,
+	command *store.SandboxCommand,
+	retryCutoff time.Time,
+	dispatchedAt time.Time,
+) error {
 	if sandbox == nil || command == nil || !command.CancellationPending {
 		return store.ErrSandboxConflict
 	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		return c.recordCommandCancellationDispatch(
-			ctx,
-			command.ID,
-			ErrHostUnavailable,
-		)
-	}
-	err := session.Send(
-		ctx,
-		protocol.SandboxTypeCancelCommand,
-		protocol.SandboxCommandControlPayload{
-			OperationID: cancellationOperationID(command.ID),
-			CommandID:   command.ID,
-			Scope: protocol.SandboxScope{
-				SandboxID:    command.SandboxID,
-				Generation:   command.Generation,
-				FencingToken: command.FencingToken,
-			},
-		},
-	)
-	recordErr := c.recordCommandCancellationDispatch(ctx, command.ID, err)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return recordErr
+	attempt, claimed, claimErr := c.claimCommandCancellationDispatch(
+		command,
+		retryCutoff,
+		dispatchedAt,
+	)
+	if claimErr != nil {
+		return claimErr
+	}
+	if !claimed {
+		return nil
+	}
+	session, exists := c.hosts.Session(sandbox.HostID)
+	var err error
+	if !exists {
+		err = ErrHostUnavailable
+	} else {
+		err = session.Send(
+			ctx,
+			protocol.SandboxTypeCancelCommand,
+			protocol.SandboxCommandControlPayload{
+				OperationID: cancellationOperationID(command.ID),
+				CommandID:   command.ID,
+				Scope: protocol.SandboxScope{
+					SandboxID:    command.SandboxID,
+					Generation:   command.Generation,
+					FencingToken: command.FencingToken,
+				},
+			},
+		)
+	}
+	completionErr := c.completeCommandCancellationDispatch(command.ID, attempt, err)
+	return errors.Join(err, completionErr)
 }
 
 func (c *Controller) dispatchSandboxCommandCancellations(
@@ -325,21 +366,36 @@ func (c *Controller) dispatchSandboxCommandCancellations(
 	return nil
 }
 
-func (c *Controller) recordCommandCancellationDispatch(
-	ctx context.Context,
+func (c *Controller) claimCommandCancellationDispatch(
+	command *store.SandboxCommand,
+	retryCutoff time.Time,
+	dispatchedAt time.Time,
+) (uint32, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+	defer cancel()
+	return c.store.ClaimSandboxCommandCancellationDispatch(
+		ctx,
+		command.ID,
+		command.CancelDispatchAttempts,
+		retryCutoff,
+		dispatchedAt,
+	)
+}
+
+func (c *Controller) completeCommandCancellationDispatch(
 	commandID string,
+	attempt uint32,
 	err error,
 ) error {
-	recordErr := c.store.RecordSandboxCommandCancellationDispatch(
+	ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+	defer cancel()
+	_, completionErr := c.store.CompleteSandboxCommandCancellationDispatch(
 		ctx,
 		commandID,
-		c.now().UTC(),
+		attempt,
 		dispatchError(err),
 	)
-	if recordErr != nil {
-		return recordErr
-	}
-	return err
+	return completionErr
 }
 
 func cancellationOperationID(commandID string) string {

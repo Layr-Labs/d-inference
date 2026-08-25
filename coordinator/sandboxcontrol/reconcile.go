@@ -112,8 +112,15 @@ func (c *Controller) reconcileHost(
 	}
 	for index := range pendingCancellations {
 		pending := &pendingCancellations[index]
-		if !newConnection &&
-			!dispatchDue(pending.Command.LastCancelDispatchedAt, now) {
+		if newConnection {
+			_ = c.forceDispatchCommandCancellation(
+				ctx,
+				&pending.Sandbox,
+				&pending.Command,
+			)
+			continue
+		}
+		if !dispatchDue(pending.Command.LastCancelDispatchedAt, now) {
 			continue
 		}
 		_ = c.dispatchCommandCancellation(

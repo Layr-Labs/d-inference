@@ -180,13 +180,20 @@ func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 		t.Fatalf("first pending cancellation count = %d, want 1", len(pending))
 	}
 	firstCommandID := pending[0].Command.ID
-	if err := backend.RecordSandboxCommandCancellationDispatch(
+	attempt, claimed, err := backend.ClaimSandboxCommandCancellationDispatch(
 		ctx,
 		firstCommandID,
+		pending[0].Command.CancelDispatchAttempts,
+		now,
 		now.Add(4*time.Second),
-		"",
-	); err != nil {
-		t.Fatalf("record first cancellation dispatch: %v", err)
+	)
+	if err != nil || !claimed || attempt != 1 {
+		t.Fatalf(
+			"claim first cancellation dispatch: attempt=%d claimed=%v error=%v",
+			attempt,
+			claimed,
+			err,
+		)
 	}
 	pending, err = backend.ListPendingSandboxCommandCancellations(
 		ctx,

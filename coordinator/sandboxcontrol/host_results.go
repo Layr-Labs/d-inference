@@ -153,6 +153,7 @@ func (c *Controller) handleCommandState(
 	if err != nil {
 		return err
 	}
+	now := c.now().UTC()
 	errorCode := ""
 	if payload.ErrorCode != nil {
 		errorCode = *payload.ErrorCode
@@ -170,7 +171,7 @@ func (c *Controller) handleCommandState(
 			StandardError:   payload.StandardError,
 			OutputTruncated: payload.OutputTruncated,
 			ErrorCode:       errorCode,
-			UpdatedAt:       c.now().UTC(),
+			UpdatedAt:       now,
 		},
 	)
 	if err != nil {
@@ -179,7 +180,8 @@ func (c *Controller) handleCommandState(
 	if !command.Terminal() {
 		return nil
 	}
-	if command.CancellationPending {
+	if command.CancellationPending &&
+		dispatchDue(command.LastCancelDispatchedAt, now) {
 		_ = c.dispatchCommandCancellation(ctx, sandbox, command)
 	}
 	if sandbox.TerminationRequested {
@@ -240,7 +242,8 @@ func (c *Controller) handleHostFailure(
 		if err != nil {
 			return staleHostResultError(err)
 		}
-		if command.CancellationPending {
+		if command.CancellationPending &&
+			dispatchDue(command.LastCancelDispatchedAt, now) {
 			_ = c.dispatchCommandCancellation(ctx, sandbox, command)
 		}
 		if sandbox.TerminationRequested {

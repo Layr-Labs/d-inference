@@ -187,6 +187,7 @@ type Server struct {
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
 	modelAliasMutationMu          sync.Mutex              // serializes cross-endpoint alias validation + persistence
+	providerAuthLifecycleMu       sync.Mutex              // serializes provider token registration with revoke+disconnect
 	challengeInterval             time.Duration           // 0 means use DefaultChallengeInterval
 	skipChallenge                 bool                    // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool                    // in-process multi-provider testbed only

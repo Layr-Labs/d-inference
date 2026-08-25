@@ -41,14 +41,13 @@ func sendSelfRouteRequest(t *testing.T, ctx context.Context, tsURL, model, apiKe
 	return resp.StatusCode
 }
 
-// setOwnedProvider points every registered provider's AccountID at accountID,
-// making that account the owner of the machine(s).
-func setOwnedProvider(srv *Server, accountID string) {
+// setOwnedProvider points every registered provider's authenticated token
+// binding at accountID, making that account the owner of the machine(s).
+func setOwnedProvider(t *testing.T, srv *Server, accountID string) {
+	t.Helper()
 	for _, id := range srv.registry.ProviderIDs() {
 		if p := srv.registry.GetProvider(id); p != nil {
-			p.Mu().Lock()
-			p.AccountID = accountID
-			p.Mu().Unlock()
+			bindProviderAccountForBilling(t, srv.store, p, accountID)
 		}
 	}
 }
@@ -75,9 +74,9 @@ func TestSelfRoute_HeaderFreeHappyPath(t *testing.T) {
 	}
 
 	model := "self-route-billing-model"
-	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner) // the machine belongs to the caller
+	setOwnedProvider(t, srv, owner) // the machine belongs to the caller
 
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
@@ -125,9 +124,9 @@ func TestSelfRoute_PerKeyFlagForcesFree(t *testing.T) {
 	}
 
 	model := "self-route-perkey-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
@@ -159,9 +158,9 @@ func TestSelfRouteOnlyKeyUsesOwnedOffCatalogModel(t *testing.T) {
 	}
 
 	model := "local/off-catalog-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "catalog-only-model"}})
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/models", nil)
@@ -236,9 +235,9 @@ func TestSelfRoute_NormalRequestStillBilled(t *testing.T) {
 	}
 
 	model := "self-route-contrast-model"
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 
 	// No header, zero balance → standard billing rejects with 402 before
 	// dispatch (no provider serve needed).
@@ -267,9 +266,9 @@ func TestSelfRoute_NoLinkedMachineReturns409(t *testing.T) {
 	model := "self-route-409-model"
 	// Register a perfectly good provider, but owned by a DIFFERENT account so
 	// the model is in catalog yet the caller owns nothing.
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, "someone-else")
+	setOwnedProvider(t, srv, "someone-else")
 
 	status := sendSelfRouteRequest(t, ctx, ts.URL, model, raw, true)
 	if status != http.StatusConflict {
@@ -296,9 +295,9 @@ func TestSelfRoute_SettlementMismatchFallsBackToPaid(t *testing.T) {
 	initialBalance := ledger.Balance(owner)
 
 	model := "self-route-mismatch-model"
-	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 
 	// Reserve a self-route request on the owned machine (router-equivalent).
 	pr := &registry.PendingRequest{
@@ -381,9 +380,9 @@ func TestSelfRoute_PreferFreeOnOwnedMachine(t *testing.T) {
 	initial := ledger.Balance(owner)
 
 	model := "prefer-owned-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 
 	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
 	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
@@ -420,9 +419,9 @@ func TestSelfRoute_PreferFallsBackToPaid(t *testing.T) {
 	initial := ledger.Balance(caller)
 
 	model := "prefer-fallback-paid-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, "someone-else") // caller owns nothing
+	setOwnedProvider(t, srv, "someone-else") // caller owns nothing
 
 	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
 	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
@@ -453,9 +452,9 @@ func TestSelfRoute_UnfundedFallbackDoesNotPayProvider(t *testing.T) {
 	}
 
 	model := "unfunded-mismatch-model"
-	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 
 	pr := &registry.PendingRequest{
 		RequestID:             "unfunded-req",
@@ -515,9 +514,9 @@ func TestSelfRouteOnlyKeyListsAliasForOwnedCatalogBuild(t *testing.T) {
 
 	const build = "gemma-4-26b-8bit"
 	const alias = "gemma-4-26b"
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, build)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, build)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: build}})
 	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: alias, DesiredBuild: build, Active: true}); err != nil {
 		t.Fatalf("UpsertModelAlias: %v", err)
@@ -577,9 +576,9 @@ func TestSelfRouteModelViewRespectsKeyAllowListAndPickerEndpoint(t *testing.T) {
 	const owner = "owner-allowlist"
 	const build = "gemma-4-26b-8bit"
 	const alias = "gemma-4-26b"
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, build)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, build)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: build}})
 	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: alias, DesiredBuild: build, Active: true}); err != nil {
 		t.Fatalf("UpsertModelAlias: %v", err)
@@ -649,9 +648,9 @@ func TestHeaderSelfRouteSeesOwnedModelView(t *testing.T) {
 	}
 
 	model := "local/off-catalog-header"
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	setOwnedProvider(srv, owner)
+	setOwnedProvider(t, srv, owner)
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "catalog-only-model"}})
 
 	list := func(selfHeader bool) types.ModelListResponse {

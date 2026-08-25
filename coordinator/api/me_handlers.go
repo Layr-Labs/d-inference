@@ -646,24 +646,43 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	// Resolve the record by serial, falling back to treating the token as a
-	// session id (covers never-attested boxes whose card key is the id).
-	rec, err := s.store.GetProviderBySerial(ctx, serial)
-	if err != nil || rec == nil {
-		rec, err = s.store.GetProviderRecord(ctx, serial)
-	}
-	if err != nil || rec == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+	// Resolve ownership from the caller's account-scoped fleet. A global serial
+	// lookup can return a newer record after the physical Mac was transferred to
+	// another account, causing the stale owner to inspect or evict that new
+	// owner's live connection.
+	ownedRecords, err := s.store.ListProvidersByAccount(ctx, user.AccountID)
+	if err != nil {
+		s.logger.Error("list providers for delete failed", "account_id", user.AccountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to remove machine"))
 		return
 	}
-	if rec.AccountID != user.AccountID {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you do not own this machine"))
+	owned := false
+	for i := range ownedRecords {
+		if ownedRecords[i].ID == serial ||
+			(ownedRecords[i].SerialNumber != "" && ownedRecords[i].SerialNumber == serial) {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		// Preserve the existing 403/404 contract without using a global record
+		// to authorize or mutate anything.
+		other, lookupErr := s.store.GetProviderBySerial(ctx, serial)
+		if lookupErr != nil || other == nil {
+			other, lookupErr = s.store.GetProviderRecord(ctx, serial)
+		}
+		if lookupErr == nil && other != nil {
+			writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you do not own this machine"))
+		} else {
+			writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+		}
 		return
 	}
 
 	// Refuse if the machine is currently connected — it would re-register and
-	// the card would return.
-	if s.registry.RemoveProviderBySerial(serial, false) {
+	// the card would return. Account matching is mandatory: a transferred Mac
+	// connected under its new owner does not block deletion of the stale record.
+	if s.registry.HasConnectedProviderForAccountIdentity(user.AccountID, serial) {
 		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
 		return
 	}
@@ -679,9 +698,9 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Best-effort: drop any lingering in-memory entry so an evict-race can't
-	// re-persist the record we just removed.
-	s.registry.RemoveProviderBySerial(serial, true)
+	// Best-effort: drop only a lingering connection still owned by this account,
+	// so a transfer/reconnect race can never disconnect the new owner's session.
+	s.registry.DisconnectProvidersForAccountIdentity(user.AccountID, serial)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted":      true,

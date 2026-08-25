@@ -514,8 +514,12 @@ type Provider struct {
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
-	// Account linkage (set when provider authenticates via device auth token)
-	AccountID string // internal account ID (from device auth flow)
+	// Account linkage is initialized before the provider becomes registry-visible
+	// when registration authenticates with a device token. AuthTokenHash is the
+	// non-secret SHA-256 token identity used for revoke matching and settlement
+	// authorization; the raw bearer token is never retained in memory here.
+	AccountID     string
+	AuthTokenHash string
 
 	// PrivateOnly excludes this machine from the public fleet entirely: it
 	// serves only its owner's self-route requests. Reported at registration.
@@ -2787,6 +2791,15 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 // providers that connect before a model is promoted become routable immediately
 // after the catalog is updated.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, ProviderAuthBinding{})
+}
+
+func (r *Registry) register(
+	id string,
+	conn *websocket.Conn,
+	msg *protocol.RegisterMessage,
+	auth ProviderAuthBinding,
+) *Provider {
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
 	// DecodeTPS=1e9 would otherwise starve all other providers.
@@ -2868,6 +2881,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ChallengeVerifiedSIP:        false, // starts false; set true by attestation challenge handler after SIP check
 		PrivacyCapabilities:         msg.PrivacyCapabilities,
 		TemplateHashes:              CloneStringMap(msg.TemplateHashes),
+		AccountID:                   auth.AccountID,
+		AuthTokenHash:               auth.TokenHash,
 		Status:                      StatusOnline,
 		Conn:                        conn,
 		writer:                      newProviderWriter(conn),
@@ -2897,14 +2912,15 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	r.mu.Unlock()
 
 	// Open a session row for this connection (async; durable uptime history).
-	// serial/account are empty here (set after attestation/linking) and are
-	// backfilled by the throttled TouchProviderSession in persistProviderNow.
+	// Serial is unknown until attestation. Authenticated registrations already
+	// carry their account; TouchProviderSession backfills any remaining fields.
 	if r.store != nil {
 		sessionID := p.ID
+		accountID := p.AccountID
 		saferun.Go(r.logger, "registry.openSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := r.store.OpenProviderSession(ctx, sessionID, "", ""); err != nil {
+			if err := r.store.OpenProviderSession(ctx, sessionID, "", accountID); err != nil {
 				r.logger.Warn("failed to open provider session", "provider_id", sessionID, "error", err)
 			}
 		})
@@ -3828,9 +3844,21 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	r.disconnect(id, nil)
+}
+
+// disconnect removes id only when it still resolves to expected. A nil expected
+// preserves the public Disconnect behavior. Conditional removal is used by
+// identity-scoped lifecycle operations so an old connection selected for
+// teardown cannot evict a replacement that reused the same session id.
+func (r *Registry) disconnect(id string, expected *Provider) bool {
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
+	if ok && expected != nil && p != expected {
+		r.mu.Unlock()
+		return false
+	}
 	if ok {
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
@@ -3893,7 +3921,7 @@ func (r *Registry) Disconnect(id string) {
 	r.mu.Unlock()
 
 	if !ok {
-		return
+		return false
 	}
 	// Removing the last capable provider can turn a queued constrained request
 	// from temporarily capacity-blocked into permanently unservable. Re-run
@@ -3970,6 +3998,7 @@ func (r *Registry) Disconnect(id string) {
 	}
 
 	r.logger.Info("provider disconnected", "provider_id", id)
+	return true
 }
 
 // GetProvider returns a provider by ID, or nil if not found.

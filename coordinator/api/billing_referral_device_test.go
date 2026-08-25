@@ -61,7 +61,7 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	}
 
 	model := "referral-test-model"
-	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Get the provider's account ID for payout verification.

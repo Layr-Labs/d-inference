@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	releaseSemver "github.com/eigeninference/d-inference/coordinator/semver"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -31,7 +32,6 @@ const (
 )
 
 var (
-	releaseVersionPattern      = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
 	releasePlatformPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	releaseTemplateNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
@@ -181,8 +181,8 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 	if release.Version == "" {
 		return fmt.Errorf("version is required")
 	}
-	if !releaseVersionPattern.MatchString(release.Version) {
-		return fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
+	if !releaseSemver.IsValid(release.Version) {
+		return fmt.Errorf("version must be canonical SemVer 2, e.g. 1.2.3 or 1.2.3-dev.1")
 	}
 	if release.Platform == "" {
 		return fmt.Errorf("platform is required")
@@ -250,8 +250,8 @@ func (s *Server) trustedReleaseArtifactURL(release *store.Release) (*url.URL, er
 func expectedReleaseArtifactURL(baseURL, version, platform string) (string, error) {
 	version = strings.TrimSpace(version)
 	platform = strings.TrimSpace(platform)
-	if !releaseVersionPattern.MatchString(version) {
-		return "", fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
+	if !releaseSemver.IsValid(version) {
+		return "", fmt.Errorf("version must be canonical SemVer 2, e.g. 1.2.3 or 1.2.3-dev.1")
 	}
 	if !releasePlatformPattern.MatchString(platform) {
 		return "", fmt.Errorf("platform contains invalid characters")

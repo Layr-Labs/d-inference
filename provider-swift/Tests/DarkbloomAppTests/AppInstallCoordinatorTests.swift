@@ -405,7 +405,7 @@ struct AppInstallCoordinatorTests {
         defer { fixture.remove() }
         let source = try fixture.makeDownloadedApp(payload: "candidate")
         let transaction = fixture.destination.deletingLastPathComponent()
-            .appendingPathComponent(".install-transaction-interrupted")
+            .appendingPathComponent(".install-backup-123-456-789")
         try FileManager.default.createDirectory(
             at: transaction,
             withIntermediateDirectories: true

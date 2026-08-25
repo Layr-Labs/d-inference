@@ -3004,11 +3004,11 @@ func releaseKey(version, platform string) string {
 }
 
 func (s *MemoryStore) SetRelease(release *Release) error {
+	if err := validateReleaseIdentity(release); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if release.Version == "" || release.Platform == "" {
-		return errors.New("version and platform are required")
-	}
 	r := *release
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now()
@@ -3043,9 +3043,13 @@ func (s *MemoryStore) GetLatestRelease(platform string) *Release {
 		if r.Platform != platform || !r.Active {
 			continue
 		}
-		if latest == nil ||
-			releaseVersionGreater(r.Version, latest.Version) ||
-			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+		if latest == nil {
+			latest = r
+			continue
+		}
+		comparison := compareReleaseVersions(r.Version, latest.Version)
+		if comparison > 0 ||
+			(comparison == 0 && r.CreatedAt.After(latest.CreatedAt)) {
 			latest = r
 		}
 	}

@@ -51,9 +51,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	releaseSemver "github.com/eigeninference/d-inference/coordinator/semver"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
-	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -2476,39 +2476,21 @@ func sortedTemplateHashes(accepted map[string]bool) []string {
 	return out
 }
 
-// semverGreater returns true when a has higher SemVer precedence than b,
-// including the numeric/alphanumeric prerelease identifier rules. Invalid
-// non-empty versions sort below valid versions so minimum-version gates fail
-// closed.
+// semverGreater returns true only when both values are canonical SemVer 2 and
+// a has higher precedence than b.
 func semverGreater(a, b string) bool {
-	if a == "" {
-		return false
-	}
-	if b == "" {
-		return true
-	}
-	av := a
-	if !strings.HasPrefix(av, "v") {
-		av = "v" + av
-	}
-	bv := b
-	if !strings.HasPrefix(bv, "v") {
-		bv = "v" + bv
-	}
-	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
-	switch {
-	case aValid && bValid:
-		return semver.Compare(av, bv) > 0
-	case aValid:
-		return true
-	default:
-		return false
-	}
+	comparison, err := releaseSemver.Compare(a, b)
+	return err == nil && comparison > 0
 }
 
-// semverLess returns true if version a is less than version b.
+// semverLess treats an invalid provider version as below a valid required
+// floor. Release metadata is rejected before reaching this comparison.
 func semverLess(a, b string) bool {
-	return semverGreater(b, a)
+	comparison, err := releaseSemver.Compare(a, b)
+	if err == nil {
+		return comparison < 0
+	}
+	return !releaseSemver.IsValid(a) && releaseSemver.IsValid(b)
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider

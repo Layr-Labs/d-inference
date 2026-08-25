@@ -24,8 +24,7 @@ COORDINATOR_VERSION=$(read_version \
     "$ROOT/coordinator/api/server.go" \
     'var LatestProviderVersion =')
 
-SEMVER='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
-if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
+if ! bash "$ROOT/scripts/install.sh" --semver-test "$PROVIDER_VERSION"; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
     exit 1
 fi

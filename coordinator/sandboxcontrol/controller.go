@@ -15,7 +15,7 @@ import (
 
 const (
 	CommandTimeoutSeconds      uint32 = 900
-	LeaseDuration                     = 15 * time.Minute
+	LeaseDuration                     = 30 * time.Minute
 	HostHeartbeatFreshness            = 60 * time.Second
 	MaximumActiveSandboxes            = 2
 	MaximumSandboxesPerAccount        = 2

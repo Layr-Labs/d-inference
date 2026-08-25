@@ -129,46 +129,48 @@ struct ProviderCredentialStoreTests {
     }
 
     private func withCredentialFiles<T: Sendable>(
-        _ body: (CredentialFiles) async throws -> T
+        _ body: @Sendable (CredentialFiles) async throws -> T
     ) async throws -> T {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(
-                "provider-credential-tests-\(UUID().uuidString)",
-                isDirectory: true
+        try await credentialEnvironmentTestLock.withLock {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "provider-credential-tests-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
             )
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        let files = CredentialFiles(
-            directory: directory,
-            token: directory.appendingPathComponent("auth_token")
-        )
-        let overrides = [
-            "DARKBLOOM_AUTH_TOKEN_PATH": files.token.path,
-            "DARKBLOOM_PROVIDER_ACCOUNT_PATH": directory
-                .appendingPathComponent("provider_account").path,
-            "DARKBLOOM_PROVIDER_ISSUER_PATH": directory
-                .appendingPathComponent("provider_issuer").path,
-        ]
-        let previous: [String: String?] = Dictionary(
-            uniqueKeysWithValues: overrides.keys.map {
-                ($0, ProcessInfo.processInfo.environment[$0])
-            }
-        )
-        for (key, value) in overrides {
-            setenv(key, value, 1)
-        }
-        defer {
-            for (key, value) in previous {
-                if let value {
-                    setenv(key, value, 1)
-                } else {
-                    unsetenv(key)
+            let files = CredentialFiles(
+                directory: directory,
+                token: directory.appendingPathComponent("auth_token")
+            )
+            let overrides = [
+                "DARKBLOOM_AUTH_TOKEN_PATH": files.token.path,
+                "DARKBLOOM_PROVIDER_ACCOUNT_PATH": directory
+                    .appendingPathComponent("provider_account").path,
+                "DARKBLOOM_PROVIDER_ISSUER_PATH": directory
+                    .appendingPathComponent("provider_issuer").path,
+            ]
+            let previous: [String: String?] = Dictionary(
+                uniqueKeysWithValues: overrides.keys.map {
+                    ($0, ProcessInfo.processInfo.environment[$0])
                 }
+            )
+            for (key, value) in overrides {
+                setenv(key, value, 1)
             }
-            try? FileManager.default.removeItem(at: directory)
+            defer {
+                for (key, value) in previous {
+                    if let value {
+                        setenv(key, value, 1)
+                    } else {
+                        unsetenv(key)
+                    }
+                }
+                try? FileManager.default.removeItem(at: directory)
+            }
+            return try await body(files)
         }
-        return try await body(files)
     }
 }

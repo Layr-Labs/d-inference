@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct AppInstallationRecovery: Equatable {
+struct AppInstallationRecovery: Equatable, Sendable {
     let destination: URL
     let preservedForeignApp: URL?
 
@@ -10,14 +10,26 @@ struct AppInstallationRecovery: Equatable {
     }
 
     @MainActor
-    @discardableResult
-    func openInstalledApp() -> Bool {
-        openInstalledApp(using: NSWorkspace.shared.open)
+    func openInstalledApp() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.allowsRunningApplicationSubstitution = false
+        NSWorkspace.shared.openApplication(
+            at: destination,
+            configuration: configuration
+        ) { _, error in
+            if let error {
+                NSLog(
+                    "Could not open the managed Darkbloom app at %@: %@",
+                    destination.path,
+                    error.localizedDescription
+                )
+            }
+        }
     }
 
     @MainActor
-    @discardableResult
-    func openInstalledApp(using opener: (URL) -> Bool) -> Bool {
+    func openInstalledApp(using opener: (URL) -> Void) {
         opener(destination)
     }
 }

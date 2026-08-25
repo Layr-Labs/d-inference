@@ -90,7 +90,8 @@ struct ProviderCredentialStoreTests {
             }
 
             #expect(successes == 1)
-            let stored = try #require(ProviderCredentialStore.load())
+            let loaded = try ProviderCredentialStore.load()
+            let stored = try #require(loaded)
             #expect(candidates.contains(stored))
         }
     }
@@ -103,7 +104,8 @@ struct ProviderCredentialStoreTests {
                 accountID: "old-account",
                 coordinatorURL: "https://old.example"
             )
-            let old = try #require(ProviderCredentialStore.load())
+            let loaded = try ProviderCredentialStore.load()
+            let old = try #require(loaded)
 
             try AuthTokenStore.save("new-token")
             try ProviderAccountStore.save("new-account")

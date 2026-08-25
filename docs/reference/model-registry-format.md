@@ -1,6 +1,6 @@
 # Model Registry Format
 
-This document describes the model manifest format, the registration flow, and the alias system. Canonical code: manifest builder in [`provider-swift/Sources/ProviderCoreFoundation/Manifest.swift`](../../provider-swift/Sources/ProviderCoreFoundation/Manifest.swift), registry handlers in [`coordinator/api/model_registry_handlers.go`](../../coordinator/api/model_registry_handlers.go), aliases in [`coordinator/api/model_alias_handlers.go`](../../coordinator/api/model_alias_handlers.go), storage types in [`coordinator/store/interface.go`](../../coordinator/store/interface.go), and the publish script in [`scripts/publish-model.sh`](../../scripts/publish-model.sh).
+This document describes the model manifest format, the registration flow, and the alias system. Canonical code: manifest builder in [`provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`](../../provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift), registry contract in [`coordinator/api/model_manifest_contract.go`](../../coordinator/api/model_manifest_contract.go), registry fetch verification in [`coordinator/api/model_manifest_fetch.go`](../../coordinator/api/model_manifest_fetch.go), handlers in [`coordinator/api/model_registry_handlers.go`](../../coordinator/api/model_registry_handlers.go), aliases in [`coordinator/api/model_alias_handlers.go`](../../coordinator/api/model_alias_handlers.go), storage types in [`coordinator/store/interface.go`](../../coordinator/store/interface.go), and the publish script in [`scripts/publish-model.sh`](../../scripts/publish-model.sh).
 
 ## Manifest JSON schema
 
@@ -46,7 +46,7 @@ incorrect `Content-Length` cannot cause an unbounded allocation.
 3. Concatenate the decoded digests in sorted order into a single SHA-256 hash.
 4. Hex-encode the result.
 
-Implemented in [`aggregateManifestFileHashes`](../../coordinator/api/model_registry_handlers.go) and in the Swift [`ManifestBuilder`](../../provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift).
+Implemented in [`aggregateManifestFileHashes`](../../coordinator/api/model_manifest_contract.go) and in the Swift [`ManifestBuilder`](../../provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift).
 
 ### R2 prefix format
 
@@ -99,7 +99,7 @@ On registration the coordinator:
 5. Sets platform pricing.
 6. Optionally promotes the version.
 
-See [`handleRegisterModel`](../../coordinator/api/model_registry_handlers.go) and [`validateModelManifest`](../../coordinator/api/model_registry_handlers.go).
+See [`handleRegisterModel`](../../coordinator/api/model_registry_handlers.go), [`validateModelManifest`](../../coordinator/api/model_manifest_contract.go), and [`verifyManifestFiles`](../../coordinator/api/model_manifest_fetch.go).
 
 ## Registry entry schema
 

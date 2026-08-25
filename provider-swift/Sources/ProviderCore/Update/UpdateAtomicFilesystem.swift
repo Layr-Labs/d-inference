@@ -282,8 +282,11 @@ enum UpdateAtomicFilesystem {
             switch retrying(fullSync) {
             case .success:
                 return
-            case .failure:
-                break
+            case .failure(let code):
+                // Darwin's F_FULLFSYNC is the durability contract. Falling
+                // back after it fails would turn a power-loss-safe commit into
+                // an ordinary cache flush while reporting success.
+                throw filesystemError(operation, code: code)
             }
         }
 

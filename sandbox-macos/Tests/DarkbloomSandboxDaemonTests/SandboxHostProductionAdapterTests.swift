@@ -50,6 +50,52 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         )
     }
 
+    func testRestartedAdapterReportsFailedForLeaseWithoutVirtualMachine()
+        async throws
+    {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let payload = try fixture.preparePayload(fencingToken: 41)
+        let resources = try XCTUnwrap(payload.resources.resourceSpecification)
+        _ = try fixture.capacity.reserve(
+            authoritativeScope: payload.scope.operationScope,
+            virtualMachineName: Fixture.virtualMachineName(for: payload.scope),
+            resources: resources,
+            bootDiskBytes: SandboxDiskPolicy.alpha.bootDiskBytes.lowerBound,
+            expiresAt: fixture.now.addingTimeInterval(120)
+        )
+
+        let restarted = fixture.restartedAdapter()
+        let heartbeat = try await restarted.heartbeat()
+
+        XCTAssertEqual(heartbeat.leases.count, 1)
+        XCTAssertEqual(
+            heartbeat.leases[0].state,
+            .failed,
+            "a durable lease without a VM after restart must not remain preparing forever"
+        )
+    }
+
+    func testAdmittedPrepareReportsPreparingBeforeVirtualMachineCreation()
+        async throws
+    {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let payload = try fixture.preparePayload(fencingToken: 42)
+        let admission = try await fixture.adapter.admit(.prepare(
+            fixture.envelope(payload: payload, type: .prepare)
+        ))
+
+        let heartbeat = try await fixture.adapter.heartbeat()
+
+        XCTAssertEqual(heartbeat.leases.count, 1)
+        XCTAssertEqual(heartbeat.leases[0].state, .preparing)
+        guard case .operation(let completed) = try await admission.complete() else {
+            return XCTFail("expected prepare operation response")
+        }
+        XCTAssertEqual(completed.state, .ready)
+    }
+
     func testPrepareFailsClosedBeforeReservingWithoutIsolationGates()
         async throws
     {
@@ -349,6 +395,7 @@ private final class Fixture: @unchecked Sendable {
     let now: Date
     let capacity: SandboxHostCapacityArbiter
     let runtime = RecordingSandboxRuntime()
+    let isolationReadiness: SandboxHostIsolationReadiness
     let adapter: SandboxHostProductionAdapter
 
     init(
@@ -360,6 +407,7 @@ private final class Fixture: @unchecked Sendable {
     ) throws {
         let fixedNow = Date(timeIntervalSince1970: 2_000_000_000)
         now = fixedNow
+        self.isolationReadiness = isolationReadiness
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "darkbloom-host-adapter-\(UUID().uuidString)",
             isDirectory: true
@@ -393,6 +441,14 @@ private final class Fixture: @unchecked Sendable {
         _ = try capacity.initialize()
         _ = try capacity.setMode(.sandboxDedicated)
         adapter = SandboxHostProductionAdapter(
+            capacity: capacity,
+            runtime: runtime,
+            isolationReadiness: isolationReadiness
+        )
+    }
+
+    func restartedAdapter() -> SandboxHostProductionAdapter {
+        SandboxHostProductionAdapter(
             capacity: capacity,
             runtime: runtime,
             isolationReadiness: isolationReadiness

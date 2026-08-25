@@ -655,7 +655,7 @@ actor SandboxHostProductionAdapter:
                 scope: lease.scope,
                 name: lease.virtualMachineName
             ) else {
-                return operationStates[lease.scope.sandboxID] ?? .preparing
+                return .failed
             }
             switch record.state {
             case .running:

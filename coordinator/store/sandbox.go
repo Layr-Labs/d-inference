@@ -331,10 +331,14 @@ func applySandboxOperationTransition(
 
 	switch operation.Kind {
 	case SandboxOperationKindRenew:
-		if update.FencingToken <= sandbox.FencingToken {
-			return ErrSandboxConflict
-		}
-		if update.State != SandboxOperationFailed {
+		if update.State == SandboxOperationFailed {
+			if update.FencingToken != sandbox.FencingToken {
+				return ErrSandboxConflict
+			}
+		} else {
+			if update.FencingToken <= sandbox.FencingToken {
+				return ErrSandboxConflict
+			}
 			if update.LeaseExpiresAt == nil ||
 				update.LeaseExpiresAt.Before(sandbox.LeaseExpiresAt) {
 				return ErrSandboxInvalidTransition

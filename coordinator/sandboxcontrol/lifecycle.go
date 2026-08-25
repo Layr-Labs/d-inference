@@ -207,27 +207,27 @@ func (c *Controller) Terminate(
 	}
 	switch sandbox.State {
 	case store.SandboxStateReady:
-		return c.beginStop(ctx, sandbox, true, idempotencyKey)
+		return c.beginTerminationStage(
+			ctx,
+			sandbox,
+			store.SandboxOperationKindStop,
+		)
 	case store.SandboxStateStopped, store.SandboxStateFailed:
-		return c.beginDelete(ctx, sandbox, idempotencyKey)
+		return c.beginTerminationStage(
+			ctx,
+			sandbox,
+			store.SandboxOperationKindDelete,
+		)
 	case store.SandboxStateDeleted:
-		return nil, store.ErrSandboxConflict
+		return c.beginTerminationStage(
+			ctx,
+			sandbox,
+			store.SandboxOperationKindDelete,
+		)
 	case store.SandboxStatePreparing,
 		store.SandboxStateStopping,
 		store.SandboxStateDeleting:
-		pending, err := c.store.ListPendingSandboxOperationsByHost(
-			ctx,
-			sandbox.HostID,
-		)
-		if err != nil {
-			return nil, err
-		}
-		for index := range pending {
-			if pending[index].Sandbox.ID == sandbox.ID {
-				return &pending[index].Operation, nil
-			}
-		}
-		return nil, store.ErrSandboxConflict
+		return c.pendingTerminationOperation(ctx, sandbox)
 	default:
 		return nil, ErrSandboxNotReady
 	}

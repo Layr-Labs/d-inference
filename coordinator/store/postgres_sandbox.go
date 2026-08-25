@@ -402,7 +402,10 @@ func (s *PostgresStore) BeginSandboxOperation(
 			err,
 		)
 	}
-	if activeCommand {
+	if activeCommand &&
+		!(operation.Kind == SandboxOperationKindStop &&
+			operation.DeleteAfterStop &&
+			sandbox.TerminationRequested) {
 		return nil, nil, false, ErrSandboxConflict
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {

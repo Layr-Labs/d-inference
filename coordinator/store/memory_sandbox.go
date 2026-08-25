@@ -232,7 +232,10 @@ func (s *MemoryStore) BeginSandboxOperation(
 	}
 	for _, command := range s.sandboxCommands {
 		if command.SandboxID == operation.SandboxID &&
-			!command.Terminal() {
+			!command.Terminal() &&
+			!(operation.Kind == SandboxOperationKindStop &&
+				operation.DeleteAfterStop &&
+				sandbox.TerminationRequested) {
 			return nil, nil, false, ErrSandboxConflict
 		}
 	}

@@ -148,26 +148,3 @@ func (c *Controller) sweepExpiredLeases(ctx context.Context) error {
 	}
 	return nil
 }
-
-func (c *Controller) driveTermination(
-	ctx context.Context,
-	sandbox *store.SandboxRecord,
-) error {
-	if sandbox == nil || !sandbox.TerminationRequested {
-		return nil
-	}
-	idempotencyKey := sandbox.TerminationIdempotencyKey
-	if idempotencyKey == "" {
-		return store.ErrSandboxConflict
-	}
-	switch sandbox.State {
-	case store.SandboxStateReady:
-		_, err := c.beginStop(ctx, sandbox, true, idempotencyKey)
-		return err
-	case store.SandboxStateStopped, store.SandboxStateFailed:
-		_, err := c.beginDelete(ctx, sandbox, idempotencyKey)
-		return err
-	default:
-		return nil
-	}
-}

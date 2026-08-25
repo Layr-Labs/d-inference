@@ -119,13 +119,6 @@ func (c *Controller) continueSandboxOperation(
 	updated *store.SandboxRecord,
 	applied *store.SandboxOperation,
 ) error {
-	if applied.DeleteAfterStop &&
-		applied.State == protocol.SandboxOperationStopped {
-		if _, err := c.beginDelete(ctx, updated, applied.ID); err != nil {
-			return err
-		}
-		return nil
-	}
 	if applied.Kind == store.SandboxOperationKindPrepare &&
 		applied.State == protocol.SandboxOperationFailed &&
 		!updated.TerminationRequested {

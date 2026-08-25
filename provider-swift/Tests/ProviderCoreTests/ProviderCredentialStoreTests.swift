@@ -6,7 +6,7 @@ import Testing
 struct ProviderCredentialStoreTests {
     @Test("credential use is bound to the issuing coordinator")
     func issuerBinding() async throws {
-        try await withCredentialFiles {
+        try await withCredentialFiles { _ in
             try ProviderCredentialStore.save(
                 token: "token-a",
                 accountID: "account-a",
@@ -51,7 +51,7 @@ struct ProviderCredentialStoreTests {
 
     @Test("concurrent login attempts publish exactly one coherent credential")
     func concurrentPublication() async throws {
-        try await withCredentialFiles {
+        try await withCredentialFiles { _ in
             let candidates = (0..<32).map { index in
                 ProviderCredential(
                     token: "token-\(index)",
@@ -97,7 +97,7 @@ struct ProviderCredentialStoreTests {
 
     @Test("delayed logout cannot delete a newer credential")
     func compareAndDelete() async throws {
-        try await withCredentialFiles {
+        try await withCredentialFiles { _ in
             try ProviderCredentialStore.save(
                 token: "old-token",
                 accountID: "old-account",

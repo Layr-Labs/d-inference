@@ -1669,6 +1669,7 @@ record_installer_owned_tree() {
     local transaction_id=$3
     local kind=$4
     local replace=${5:-0}
+    local recorded_name=${6:-${path##*/}}
     [ -d "$path" ] && [ ! -L "$path" ] || return 1
     local identity
     local fingerprint
@@ -1678,7 +1679,7 @@ record_installer_owned_tree() {
     record=$(installer_ownership_record_path \
         "$install_dir" "$transaction_id") || return 1
     write_installer_ownership_record \
-        "$record" "$transaction_id" "$kind" owned "${path##*/}" \
+        "$record" "$transaction_id" "$kind" owned "$recorded_name" \
         "$identity" "$fingerprint" "$replace"
 }
 
@@ -2026,6 +2027,7 @@ retire_install_transaction() {
                 || return 1
             record_installer_owned_tree \
                 "$backup" "$install_dir" "$transaction_id" garbage 1 \
+                ".install-garbage-$transaction_id" \
                 || return 1
         fi
         load_installer_ownership_record "$record" \

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import DarkbloomApp
@@ -20,6 +21,18 @@ struct AppLaunchLifecycleTests {
         #expect(coordinateCalls == 1)
         #expect(delegate.installState.isReady)
         #expect(delegate.installState.isInteractive)
+
+        let presentation = AppInstallScenePresentation(
+            installState: delegate.installState
+        )
+        guard case .product = presentation.mainContent else {
+            Issue.record("expected product scene content")
+            return
+        }
+        #expect(presentation.showsProductContent)
+        #expect(presentation.showsProviderCommands)
+        #expect(presentation.showsProductSettings)
+        #expect(presentation.showsProviderMenuControls)
     }
 
     @Test("Relocation is resolved before the source app receives lifecycle callbacks")
@@ -75,11 +88,23 @@ struct AppLaunchLifecycleTests {
                 != source.appendingPathComponent("Contents/MacOS/darkbloom")
         )
 
-        var openedURL: URL?
-        recovery.openInstalledApp { url in
-            openedURL = url
+        let presentation = AppInstallScenePresentation(
+            installState: delegate.installState
+        )
+        guard case .recovery = presentation.mainContent else {
+            Issue.record("expected recovery scene content")
+            return
         }
-        #expect(openedURL == destination)
+        #expect(!presentation.showsProductContent)
+        #expect(!presentation.showsProviderCommands)
+        #expect(!presentation.showsProductSettings)
+        #expect(!presentation.showsProviderMenuControls)
+
+        let opener = RecordingInstalledApplicationOpener()
+        recovery.openInstalledApp(using: opener)
+        #expect(opener.openedURL == destination)
+        #expect(opener.createsNewApplicationInstance)
+        #expect(!opener.allowsRunningApplicationSubstitution)
     }
 
     @Test("Installation failure is available to the first scene render")
@@ -104,4 +129,24 @@ struct AppLaunchLifecycleTests {
 
 private enum StubInstallError: Error {
     case failed
+}
+
+@MainActor
+private final class RecordingInstalledApplicationOpener:
+    InstalledApplicationOpening
+{
+    private(set) var openedURL: URL?
+    private(set) var createsNewApplicationInstance = false
+    private(set) var allowsRunningApplicationSubstitution = true
+
+    func openApplication(
+        at applicationURL: URL,
+        configuration: NSWorkspace.OpenConfiguration
+    ) {
+        openedURL = applicationURL
+        createsNewApplicationInstance =
+            configuration.createsNewApplicationInstance
+        allowsRunningApplicationSubstitution =
+            configuration.allowsRunningApplicationSubstitution
+    }
 }

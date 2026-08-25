@@ -12,6 +12,8 @@ public enum ManifestBuilder {
         case directoryNotFound(URL)
         case noFilesFound(URL)
         case fileReadFailed(URL, Swift.Error)
+        case fileSizeOverflow(URL)
+        case tooManyFiles(actual: Int, maximum: Int)
         case invalidModelID(String, reason: String)
         case invalidVersion(String, reason: String)
 
@@ -23,6 +25,10 @@ public enum ManifestBuilder {
                 return "No integrity-relevant files found under: \(url.path)"
             case .fileReadFailed(let url, let underlying):
                 return "Failed to read \(url.path): \(underlying)"
+            case .fileSizeOverflow(let url):
+                return "File size exceeds Int64 for \(url.path)"
+            case .tooManyFiles(let actual, let maximum):
+                return "Manifest contains \(actual) files; maximum is \(maximum)"
             case .invalidModelID(let id, let reason):
                 return "Invalid model id \"\(id)\": \(reason)"
             case .invalidVersion(let v, let reason):
@@ -123,6 +129,11 @@ public enum ManifestBuilder {
         guard !absolutePaths.isEmpty else {
             throw Error.noFilesFound(modelDirectory)
         }
+        guard absolutePaths.count <= ModelManifestContract.maximumFileCount else {
+            throw Error.tooManyFiles(
+                actual: absolutePaths.count,
+                maximum: ModelManifestContract.maximumFileCount)
+        }
 
         // 3) Compute the standardised base path so we can derive relative POSIX
         // paths for each manifest entry. We deliberately DO NOT resolve
@@ -187,13 +198,11 @@ public enum ManifestBuilder {
         // of absolute path. (Cross-checked against
         // `WeightHasher.hashFilesWithRelativeKey` in tests.)
         var aggregator = SHA256()
-        var totalSize: Int64 = 0
         var files: [ManifestFile] = []
         files.reserveCapacity(sorted.count)
 
         for entry in sorted {
             entry.digest.withUnsafeBytes { aggregator.update(bufferPointer: $0) }
-            totalSize += entry.sizeBytes
             let hex = entry.digest.map { String(format: "%02x", $0) }.joined()
             files.append(ManifestFile(
                 path: entry.relativePath,
@@ -203,6 +212,7 @@ public enum ManifestBuilder {
             ))
         }
 
+        let totalSize = try ModelManifestContract.checkedTotalSize(files)
         let aggregateHex = aggregator.finalize().map { String(format: "%02x", $0) }.joined()
 
         // 7) Build manifest.
@@ -211,7 +221,7 @@ public enum ManifestBuilder {
 
         logger.info("Built manifest for \(modelID) v\(version): \(files.count) files, \(totalSize) bytes, aggregate \(aggregateHex.prefix(12))")
 
-        return ModelManifest(
+        let manifest = ModelManifest(
             schemaVersion: schemaVersion,
             modelID: modelID,
             version: version,
@@ -222,6 +232,8 @@ public enum ManifestBuilder {
             files: files,
             createdAt: Date()
         )
+        try ModelManifestContract.validate(manifest)
+        return manifest
     }
 
     // MARK: - Internals
@@ -250,8 +262,6 @@ public enum ManifestBuilder {
     }
 
     private static func hashOne(file: URL, basePrefix: String) throws -> (relativePath: String, digest: SHA256Digest, sizeBytes: Int64, role: String) {
-        let fm = FileManager.default
-
         // (a) Compute the manifest-relative path against the symlink-preserving
         // standardised path. The HuggingFace cache stores every file as a
         // symlink into a `blobs/` directory that lives outside the snapshot
@@ -277,27 +287,11 @@ public enum ManifestBuilder {
         // hand us a Windows-style path.
         let relativePosix = relative.replacingOccurrences(of: "\\", with: "/")
 
-        // (b) Resolve symlinks ONLY when opening the file for reading bytes
-        // and stat'ing the size. This is the point where we want to follow
-        // the HF cache `snapshots/.../foo` → `blobs/<hash>` indirection.
+        // (b) Resolve symlinks ONLY when opening the file. Count the same bytes
+        // fed to SHA-256 so size_bytes cannot drift from the hashed object.
+        // This follows the HF cache `snapshots/.../foo` → `blobs/<hash>`
+        // indirection without changing the manifest-relative path above.
         let readURL = file.resolvingSymlinksInPath()
-
-        let attrs: [FileAttributeKey: Any]
-        do {
-            attrs = try fm.attributesOfItem(atPath: readURL.path)
-        } catch {
-            throw Error.fileReadFailed(file, error)
-        }
-        let sizeBytes: Int64
-        if let size = attrs[.size] as? Int64 {
-            sizeBytes = size
-        } else if let size = attrs[.size] as? UInt64 {
-            sizeBytes = Int64(size)
-        } else if let size = attrs[.size] as? NSNumber {
-            sizeBytes = size.int64Value
-        } else {
-            sizeBytes = 0
-        }
 
         // (S9) Wrap FileHandle open errors so callers see the underlying cause.
         let handle: FileHandle
@@ -311,6 +305,7 @@ public enum ManifestBuilder {
         // Stream the file in 64 KiB chunks so we don't slurp multi-GB
         // safetensors shards into memory.
         var hasher = SHA256()
+        var sizeBytes: Int64 = 0
         while true {
             let chunk: Data
             do {
@@ -319,6 +314,11 @@ public enum ManifestBuilder {
                 throw Error.fileReadFailed(file, error)
             }
             if chunk.isEmpty { break }
+            let (nextSize, overflow) = sizeBytes.addingReportingOverflow(Int64(chunk.count))
+            guard !overflow else {
+                throw Error.fileSizeOverflow(file)
+            }
+            sizeBytes = nextSize
             hasher.update(data: chunk)
         }
         let digest = hasher.finalize()

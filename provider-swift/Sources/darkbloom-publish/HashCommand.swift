@@ -47,6 +47,7 @@ struct HashCommand: AsyncParsableCommand {
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(manifest)
+        try ModelManifestContract.validateEncodedByteCount(data.count)
 
         if let output {
             try data.write(to: URL(fileURLWithPath: output))

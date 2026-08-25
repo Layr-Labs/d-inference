@@ -163,6 +163,13 @@ struct ScheduledDaemonStateWriterTests {
         #expect(state.warmModels.isEmpty)
         #expect(!state.inferenceActive)
 
+        // Shutdown tasks from the retired loop may finish after the handoff.
+        // Their periodic writes must not reclaim the file from the supervisor.
+        let authoritativeOffState = state
+        await loop.writeDaemonState()
+        state = try #require(DaemonStateFile.read(from: files.state))
+        #expect(state == authoritativeOffState)
+
         let refreshedAt = closedAt.addingTimeInterval(60)
         await writer.refresh(schedule: parsed, at: refreshedAt)
         state = try #require(DaemonStateFile.read(from: files.state))

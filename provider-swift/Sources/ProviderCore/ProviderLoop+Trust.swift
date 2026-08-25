@@ -28,6 +28,7 @@ extension ProviderLoop {
     }
 
     internal func persistDaemonState(_ snapshot: DaemonState) {
+        guard ownsDaemonStateFile else { return }
         DaemonStateFile.write(
             snapshot,
             to: daemonStateFileOverride ?? DaemonStateFile.path())
@@ -177,6 +178,7 @@ extension ProviderLoop {
         state.inferenceActive = false
         let snapshot = currentDaemonState(at: date)
         persistDaemonState(snapshot)
+        ownsDaemonStateFile = false
         return snapshot
     }
 

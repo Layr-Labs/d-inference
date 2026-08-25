@@ -377,6 +377,13 @@ public actor ProviderLoop {
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
 
+    /// The serving loop owns `daemon-state.json` until an availability window
+    /// closes. `beginScheduledDowntime` publishes its final snapshot and then
+    /// permanently yields ownership to `ScheduledDaemonStateWriter`; preload
+    /// and capacity tasks can still finish during shutdown, but their late
+    /// writes must not replace the supervisor's authoritative off-window state.
+    internal var ownsDaemonStateFile = true
+
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
     /// (unit tests exercising load/unload paths), so an unrelated test can

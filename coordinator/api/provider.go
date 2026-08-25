@@ -367,6 +367,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			if provider.HardwareAdmissionStatus() {
 				s.registry.ActivateProviderPersistence(provider)
 			}
+			if !s.hardwareAdmissionEnforcing() &&
+				attestResult != nil && attestResult.SerialNumber != "" &&
+				!s.allowDuplicateProviderSerials {
+				s.registry.DisconnectDuplicatesBySerial(
+					providerID, attestResult.SerialNumber)
+			}
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
 				s.metrics.IncCounter("provider_registrations_total",

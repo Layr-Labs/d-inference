@@ -235,12 +235,14 @@ expect_rejection "$(make_fixture trailing)" "non-zero data"
 # The installer itself must reject before creating any archive-controlled
 # staging tree. Its lock/recovery directory may exist, but extraction may not.
 REJECT_INSTALL="$ROOT/rejected-install"
+REJECT_ERROR="$ROOT/rejected-install-error"
 if bash "$CANONICAL" --install-bundle-test \
-    "$LARGE" "$REJECT_INSTALL" "" ""
+    "$LARGE" "$REJECT_INSTALL" "" "" 2>"$REJECT_ERROR"
 then
     echo "installer accepted a large-header archive" >&2
     exit 1
 fi
+grep -F "expanded-size limit" "$REJECT_ERROR" >/dev/null
 for path in "$REJECT_INSTALL"/.install-staging-*; do
     if [ -e "$path" ] || [ -L "$path" ]; then
         echo "installer created staging content before archive approval: $path" >&2

@@ -48,6 +48,29 @@ export function computeWarnings(
   const out: Warning[] = [];
 
   // Blocking: machine receives no requests.
+  if (p.hardware_admission_revoked) {
+    out.push({
+      id: "hardware_admission_revoked",
+      severity: "blocking",
+      title: "Provider admission revoked",
+      detail:
+        "A network operator revoked this machine's provider admission. Threshold rollback does not restore routing; contact Darkbloom support if this was unexpected.",
+    });
+  } else if (
+    p.hardware_admitted === false &&
+    p.status !== "offline" &&
+    p.status !== "untrusted" &&
+    p.status !== "never_seen"
+  ) {
+    out.push({
+      id: "hardware_admission_pending",
+      severity: "blocking",
+      title: "Hardware admission pending",
+      detail:
+        "This connection is not eligible for routing yet. Keep the Mac awake while code identity and Apple device attestation finish.",
+    });
+  }
+
   if (p.status === "untrusted" || p.failed_challenges >= 3) {
     out.push({
       id: "untrusted",
@@ -171,6 +194,7 @@ export function computeWarnings(
 
   if (
     p.trust_level === "hardware" &&
+    p.hardware_admitted !== false &&
     !p.mda_verified &&
     p.status !== "offline" &&
     p.status !== "never_seen"

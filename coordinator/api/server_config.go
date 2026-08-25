@@ -1,11 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 )
 
@@ -74,6 +77,39 @@ func ReadServerConfig() ServerConfig {
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
 	}
+}
+
+func (c ServerConfig) Check() error {
+	for _, item := range []struct {
+		key string
+	}{
+		{key: env.EnvPrefix + "_HARDWARE_ADMISSION_MIN_MEMORY_GB"},
+		{key: env.EnvPrefix + "_HARDWARE_ADMISSION_MIN_BANDWIDTH_GBS"},
+		{key: env.EnvPrefix + "_HARDWARE_ADMISSION_MIN_FP16_MILLITFLOPS"},
+	} {
+		raw, present := os.LookupEnv(item.key)
+		if !present || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil {
+			return fmt.Errorf("%s must be an integer: %w", item.key, err)
+		}
+	}
+	rawMode := c.HardwareAdmissionMode
+	if strings.TrimSpace(rawMode) == "" {
+		rawMode = string(hardwareadmission.ModeDisabled)
+	}
+	mode, err := hardwareadmission.ParseMode(rawMode)
+	if err != nil {
+		return err
+	}
+	return (hardwareadmission.Policy{
+		Mode:                  mode,
+		MinMemoryGB:           c.HardwareAdmissionMinMemoryGB,
+		MinMemoryBandwidthGBs: c.HardwareAdmissionMinBandwidthGBs,
+		MinFP16MilliTFLOPS:    c.HardwareAdmissionMinFP16MilliTFLOPS,
+		CatalogVersion:        hardwareadmission.CatalogVersion,
+	}).ValidateForActivation()
 }
 
 // ParseCommaList splits a comma-separated environment variable and trims

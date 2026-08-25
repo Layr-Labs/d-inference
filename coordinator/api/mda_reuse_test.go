@@ -99,7 +99,9 @@ func reconnectWithStagedChain(t *testing.T, serial, sePubKey string) (*Server, *
 		Backend:  "mlx-swift",
 	}
 	p := reg.Register("prov-mda", nil, regMsg)
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePubKey})
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: sePubKey,
+	})
 
 	// Simulate reconnect: the store has a durable chain; RestoreProviderState stages
 	// it (capping trust to self_signed). Hardware is then re-earned live.
@@ -165,6 +167,140 @@ func mdaVerified(p *registry.Provider) bool {
 	return p.MDAVerified
 }
 
+func TestApplyLateMDABindsExactLiveSEKey(t *testing.T) {
+	const serial, sePub = "SERIAL-LATE", "current-se-public-key"
+	freshness := sha256.Sum256([]byte(sePub))
+	chain, root := mintMDALeafChain(t, serial, freshness[:])
+	defer attestation.OverrideRootCAForTest(root)()
+
+	logger := slog.New(slog.NewTextHandler(
+		io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	reg := registry.New(logger)
+	srv := &Server{registry: reg, logger: logger}
+	provider := reg.Register(
+		"late-mda-current-key", nil,
+		&protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"},
+	)
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: sePub,
+	})
+	provider.SetAttested(true, registry.TrustHardware)
+
+	srv.ApplyLateMDA("", chain)
+	if !mdaVerified(provider) {
+		t.Fatal("fresh late MDA proof was not attached")
+	}
+}
+
+func TestApplyLateMDAStagesUntilSecurityInfoGrantsHardware(t *testing.T) {
+	const serial, sePub = "SERIAL-MDA-FIRST", "mda-first-se-key"
+	freshness := sha256.Sum256([]byte(sePub))
+	chain, root := mintMDALeafChain(t, serial, freshness[:])
+	defer attestation.OverrideRootCAForTest(root)()
+
+	logger := slog.New(slog.NewTextHandler(
+		io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	reg := registry.New(logger)
+	srv := &Server{registry: reg, logger: logger}
+	provider := reg.Register(
+		"late-mda-before-security-info", nil,
+		&protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"},
+	)
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: sePub,
+	})
+	provider.SetAttested(true, registry.TrustSelfSigned)
+
+	srv.ApplyLateMDA("", chain)
+	if mdaVerified(provider) {
+		t.Fatal("MDA proof attached before hardware trust")
+	}
+	if len(provider.StagedMDAChain()) != len(chain) {
+		t.Fatal("key-bound MDA chain was lost before SecurityInfo grant")
+	}
+
+	provider.SetAttested(true, registry.TrustHardware)
+	result := provider.GetAttestationResult()
+	if result == nil || !srv.attachCachedMDAProof(provider.ID, provider, *result) {
+		t.Fatal("staged MDA chain did not attach after hardware trust")
+	}
+	if !mdaVerified(provider) {
+		t.Fatal("MDA proof missing after hardware trust")
+	}
+}
+
+func TestApplyLateMDAFinalizesPendingHardwareAdmission(t *testing.T) {
+	const serial, sePub = "SERIAL-LATE-FINALIZE", "late-finalize-se-key"
+	freshness := sha256.Sum256([]byte(sePub))
+	chain, root := mintMDALeafChain(t, serial, freshness[:])
+	defer attestation.OverrideRootCAForTest(root)()
+
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"late-mda-finalize", nil, admissionTestRegister())
+	result := admissionTestAttestation(serial)
+	result.PublicKey = sePub
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+	provider.SetCodeAttested(true)
+	policy := srv.hardwareAdmissionPolicySnapshot()
+	decision := evaluateHardwareClaims(
+		policy, admissionTestRegister(), result)
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		provider: provider,
+		serial:   serial,
+		policy:   policy,
+		decision: decision,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ApplyLateMDA("", chain)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late MDA finalization deadlocked")
+	}
+
+	if !provider.HardwareAdmissionStatus() || !provider.PersistenceEnabled() {
+		t.Fatal("late MDA did not commit pending hardware admission")
+	}
+	admitted, err := st.IsHardwareAdmitted(context.Background(), serial)
+	if err != nil || !admitted {
+		t.Fatalf("durable admission = (%v,%v), want true,nil", admitted, err)
+	}
+}
+
+func TestApplyLateMDARejectsChainForRotatedSEKey(t *testing.T) {
+	const serial = "SERIAL-LATE-ROTATED"
+	oldFreshness := sha256.Sum256([]byte("old-se-public-key"))
+	chain, root := mintMDALeafChain(t, serial, oldFreshness[:])
+	defer attestation.OverrideRootCAForTest(root)()
+
+	logger := slog.New(slog.NewTextHandler(
+		io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	reg := registry.New(logger)
+	srv := &Server{registry: reg, logger: logger}
+	provider := reg.Register(
+		"late-mda-rotated-key", nil,
+		&protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"},
+	)
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: "new-se-public-key",
+	})
+	provider.SetAttested(true, registry.TrustHardware)
+
+	srv.ApplyLateMDA("", chain)
+	if mdaVerified(provider) {
+		t.Fatal("stale late MDA proof attached after Secure Enclave key rotation")
+	}
+}
+
 // TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect proves the prod path:
 // the chain is recovered from a LIVE store read (not the empty startup
 // storedProviders snapshot), so a provider that earned MDA in a prior connection
@@ -196,7 +332,9 @@ func TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect(t *testing.T) {
 	// New reconnect session: storedProviders is nil/empty (startup snapshot), so the
 	// chain must come from the live store read.
 	p := reg.Register("new-session", nil, &protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"})
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePub})
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: sePub,
+	})
 
 	srv.stageDurableMDAChain(p, serial)
 	if len(p.StagedMDAChain()) == 0 {
@@ -240,7 +378,9 @@ func TestAttachCachedMDAProof_ExpiredChainNotReused(t *testing.T) {
 	reg := registry.New(logger)
 	srv := &Server{registry: reg, logger: logger}
 	p := reg.Register("p", nil, &protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"})
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePub})
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial, PublicKey: sePub,
+	})
 	chainJSON, _ := json.Marshal(chain)
 	p.StageMDAChainFromJSON(chainJSON)
 	p.SetAttested(true, registry.TrustHardware)
@@ -260,7 +400,9 @@ func TestAttachCachedMDAProof_NoStagedChain(t *testing.T) {
 	reg := registry.New(logger)
 	srv := &Server{registry: reg, logger: logger}
 	p := reg.Register("p", nil, &protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"})
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "S", PublicKey: "K"})
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: "S", PublicKey: "K",
+	})
 	p.SetAttested(true, registry.TrustHardware)
 
 	if srv.attachCachedMDAProof("p", p, *p.GetAttestationResult()) {
@@ -278,7 +420,9 @@ func TestAttachCachedMDAProof_RelayRejected(t *testing.T) {
 	defer restore()
 
 	// But THIS connection presents a different SE key and serial.
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "ATTACKER", PublicKey: "attacker-se-key"})
+	p.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: "ATTACKER", PublicKey: "attacker-se-key",
+	})
 
 	if srv.attachCachedMDAProof("prov-mda", p, *p.GetAttestationResult()) {
 		t.Fatal("expected reuse to be rejected when neither SE key nor serial binds")

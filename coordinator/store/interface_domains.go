@@ -703,8 +703,9 @@ type ProviderStore interface {
 // they are keyed by ephemeral connection IDs and can exist before attestation.
 type HardwareAdmissionStore interface {
 	GetActiveHardwareAdmissionPolicy(ctx context.Context) (*hardwareadmission.Policy, error)
-	ActivateHardwareAdmissionPolicy(ctx context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64) (hardwareadmission.Policy, error)
+	ActivateHardwareAdmissionPolicy(ctx context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64, liveGrandfathered ...HardwareAdmission) (hardwareadmission.Policy, error)
 	IsHardwareAdmitted(ctx context.Context, serialNumber string) (bool, error)
+	IsHardwareAdmissionRevoked(ctx context.Context, serialNumber string) (bool, error)
 	AdmitHardware(ctx context.Context, admission HardwareAdmission) error
 	ListHardwareAdmissions(ctx context.Context, limit int) ([]HardwareAdmission, error)
 	RevokeHardwareAdmission(ctx context.Context, serialNumber, actor, reason string) error

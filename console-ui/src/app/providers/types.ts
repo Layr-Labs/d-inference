@@ -105,6 +105,8 @@ export interface MyProvider {
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
   mda_verified: boolean;
+  hardware_admitted?: boolean;
+  hardware_admission_revoked?: boolean;
   se_key_bound: boolean;
   se_public_key?: string;
   // X25519 E2E key (same value as /v1/encryption-key); present only for

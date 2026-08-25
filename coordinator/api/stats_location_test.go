@@ -57,7 +57,7 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 		Country: "United States", CountryCode: "US",
 	})
 	reg.SetHardwareAdmissionEnforced(true)
-	reg.SetProviderHardwareAdmitted("pending-hardware", false)
+	reg.SetProviderHardwareAdmitted(reg.GetProvider("pending-hardware"), false)
 
 	rr := httptest.NewRecorder()
 	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))

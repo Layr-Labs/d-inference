@@ -26,7 +26,7 @@ func TestHardwareAdmissionGateCannotBeRelaxedBySelfRoute(t *testing.T) {
 	}
 	provider.mu.Unlock()
 
-	if !reg.SetProviderHardwareAdmitted(provider.ID, true) {
+	if !reg.SetProviderHardwareAdmitted(provider, true) {
 		t.Fatal("failed to mark provider admitted")
 	}
 	provider.mu.Lock()
@@ -57,17 +57,68 @@ func TestPendingRegistrationStartsUnadmittedEvenBeforeEnforcement(t *testing.T) 
 	}
 }
 
+func TestExplicitRevocationFencesRoutingWhenThresholdGateDisabled(t *testing.T) {
+	reg := New(testLogger())
+	provider := reg.Register("revoked-disabled", nil, testRegisterMessage())
+	if !reg.ProviderHardwareAdmitted(provider) {
+		t.Fatal("disabled threshold gate should initially admit provider")
+	}
+	if !reg.SetProviderHardwareRevoked(provider, true) {
+		t.Fatal("failed to apply live revocation")
+	}
+	if reg.ProviderHardwareAdmitted(provider) {
+		t.Fatal("threshold rollback bypassed explicit revocation")
+	}
+}
+
+func TestAdmissionCommitRejectsDisconnectedConnection(t *testing.T) {
+	reg := New(testLogger())
+	provider := reg.RegisterPendingHardwareAdmission(
+		"disconnect-before-commit", nil, testRegisterMessage())
+	reg.Disconnect(provider.ID)
+
+	if reg.CommitProviderHardwareAdmission(provider) {
+		t.Fatal("disconnected provider committed admission")
+	}
+	if provider.HardwareAdmissionStatus() || provider.PersistenceEnabled() {
+		t.Fatal("stale provider gained admission or persistence")
+	}
+}
+
+func TestStaleAdmissionCallbacksCannotMutateReplacementConnection(t *testing.T) {
+	reg := New(testLogger())
+	stale := reg.RegisterPendingHardwareAdmission(
+		"reused-provider-id", nil, testRegisterMessage())
+	reg.DisconnectProvider(stale)
+	replacement := reg.RegisterPendingHardwareAdmission(
+		stale.ID, nil, testRegisterMessage())
+
+	if reg.SetProviderHardwareAdmitted(stale, true) {
+		t.Fatal("stale callback mutated replacement admission")
+	}
+	if reg.ClaimProviderSerial(stale, "SERIAL-STALE") {
+		t.Fatal("stale callback claimed a serial for replacement")
+	}
+	reg.DisconnectProvider(stale)
+	if reg.GetProvider(replacement.ID) != replacement {
+		t.Fatal("stale disconnect evicted replacement connection")
+	}
+	if replacement.HardwareAdmissionStatus() {
+		t.Fatal("replacement inherited stale admission")
+	}
+}
+
 func TestClaimProviderSerialKeepsFirstVerifiedOwner(t *testing.T) {
 	reg := New(testLogger())
 	first := reg.Register("first", nil, testRegisterMessage())
 	second := reg.Register("second", nil, testRegisterMessage())
 	first.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-CLAIM"})
-	second.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-CLAIM"})
+	second.SetAttestationResult(&attestation.VerificationResult{SerialNumber: " serial-claim "})
 
-	if !reg.ClaimProviderSerial(first.ID, "SERIAL-CLAIM") {
+	if !reg.ClaimProviderSerial(first, "SERIAL-CLAIM") {
 		t.Fatal("first verified claimant did not acquire serial")
 	}
-	if reg.ClaimProviderSerial(second.ID, "SERIAL-CLAIM") {
+	if reg.ClaimProviderSerial(second, "SERIAL-CLAIM") {
 		t.Fatal("second claimant replaced live serial owner")
 	}
 	if reg.GetProvider(first.ID) == nil {
@@ -85,12 +136,12 @@ func TestVerifiedSerialClaimReplacesLegacyOwnerMap(t *testing.T) {
 	legacy.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
 	verified.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
 
-	reg.DisconnectDuplicatesBySerial(legacy.ID, "SERIAL-UPGRADE")
+	reg.DisconnectDuplicatesBySerial(legacy, "SERIAL-UPGRADE")
 	// Re-register the future verified claimant because legacy dedup intentionally
 	// evicted the duplicate under pre-enforcement semantics.
 	verified = reg.Register("verified-owner-2", nil, testRegisterMessage())
 	verified.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
-	if !reg.ClaimProviderSerial(verified.ID, "SERIAL-UPGRADE") {
+	if !reg.ClaimProviderSerial(verified, "SERIAL-UPGRADE") {
 		t.Fatal("legacy owner map blocked independently verified serial claim")
 	}
 	if reg.GetProvider(verified.ID) == nil {
@@ -112,13 +163,13 @@ func TestConcurrentVerifiedSerialClaimsLeaveOneOwner(t *testing.T) {
 		start := make(chan struct{})
 		results := make(chan bool, 2)
 		var wg sync.WaitGroup
-		for _, id := range []string{first.ID, second.ID} {
+		for _, provider := range []*Provider{first, second} {
 			wg.Add(1)
-			go func(providerID string) {
+			go func(provider *Provider) {
 				defer wg.Done()
 				<-start
-				results <- reg.ClaimProviderSerial(providerID, "SERIAL-RACE")
-			}(id)
+				results <- reg.ClaimProviderSerial(provider, "SERIAL-RACE")
+			}(provider)
 		}
 		close(start)
 		wg.Wait()

@@ -756,6 +756,13 @@ type Provider struct {
 	// physical machine. It is independent from TrustLevel: owner self-routing may
 	// relax trust, but it must never bypass an enforced new-machine hardware gate.
 	HardwareAdmitted bool
+	// HardwareAdmissionRevoked is an operator-controlled, mode-independent
+	// routing fence. Rolling threshold enforcement back must never resurrect a
+	// machine whose durable admission was explicitly revoked.
+	HardwareAdmissionRevoked bool
+	// HardwareAdmissionStateUnavailable fails routing closed when the coordinator
+	// cannot verify the revocation ledger for an identified machine.
+	HardwareAdmissionStateUnavailable bool
 	// persistenceEnabled is false while an enforce-mode registration is still
 	// awaiting coordinator hardware admission. Rejected machines must not create
 	// provider/session rows that could later be mistaken for legacy onboarding.
@@ -1114,61 +1121,65 @@ func (p *Provider) GetMDMFailureReason() string {
 	return p.MDMFailureReason
 }
 
-// SetMDAProofIfHardware atomically attaches a late-arriving Apple Device
-// Attestation proof to the provider IFF it currently holds hardware trust and
-// the MDA serial matches the attested serial. Returns true if attached.
-//
-// The trust check and the field writes happen under a single p.mu acquisition on
-// purpose: doing them separately (read GetTrustLevel, then write the fields) is a
-// TOCTOU — a concurrent SetAttested demotion between the check and the write
-// would attach MDA proof to a now-self_signed connection, re-creating the
-// "mda_verified while self_signed" drift. The single lock also closes the data
-// race with handleProviderAttestation, which reads these fields under p.mu.
-func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestation.MDAResult) bool {
-	if mdaResult == nil {
+// SetMDAProofIfHardwareBoundToKey is the strict asynchronous/cached-proof path.
+// It verifies under the same lock that the provider still owns the exact SE key
+// whose freshness digest the caller checked, closing the key-rotation TOCTOU.
+func (p *Provider) SetMDAProofIfHardwareBoundToKey(
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	expectedSEPublicKey string,
+) bool {
+	if mdaResult == nil || !mdaResult.Valid || expectedSEPublicKey == "" {
 		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.TrustLevel != TrustHardware {
+	if p.TrustLevel != TrustHardware ||
+		p.AttestationResult == nil ||
+		!p.AttestationResult.Valid ||
+		p.AttestationResult.PublicKey != expectedSEPublicKey {
 		return false
 	}
-	if p.AttestationResult == nil || mdaResult.DeviceSerial != p.AttestationResult.SerialNumber {
+	if mdaResult.DeviceSerial != "" &&
+		!strings.EqualFold(
+			strings.TrimSpace(mdaResult.DeviceSerial),
+			strings.TrimSpace(p.AttestationResult.SerialNumber)) {
 		return false
 	}
-	p.MDAVerified = true
-	p.MDACertChain = certChain
-	p.MDAResult = mdaResult
+	p.attachMDAProofLocked(certChain, mdaResult, true)
 	return true
 }
 
-// SetMDAProofIfHardwareBound atomically attaches an Apple Device Attestation proof
-// IFF the provider currently holds hardware trust AND the proof binds to THIS
-// machine — either by SE-key freshness (seKeyBound, the FreshnessCode OID equals
-// SHA-256 of this connection's SE public key) OR by a matching attested serial.
-// Returns true if attached. Unlike SetMDAProofIfHardware (which requires a serial
-// match), this accepts an SE-key binding so a privacy-preserving attestation that
-// omits the serial can still be reused. Same single-lock TOCTOU/race rationale as
-// SetMDAProofIfHardware.
-func (p *Provider) SetMDAProofIfHardwareBound(certChain [][]byte, mdaResult *attestation.MDAResult, seKeyBound bool) bool {
-	if mdaResult == nil {
+func (r *Registry) SetProviderMDAProofIfHardwareBoundToKey(
+	p *Provider,
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	expectedSEPublicKey string,
+) bool {
+	if p == nil {
 		return false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.TrustLevel != TrustHardware {
+	r.mu.RLock()
+	current, ok := r.providers[p.ID]
+	if !ok || current != p {
+		r.mu.RUnlock()
 		return false
 	}
-	serialOK := mdaResult.DeviceSerial != "" && p.AttestationResult != nil &&
-		mdaResult.DeviceSerial == p.AttestationResult.SerialNumber
-	if !seKeyBound && !serialOK {
-		return false
-	}
+	attached := p.SetMDAProofIfHardwareBoundToKey(
+		certChain, mdaResult, expectedSEPublicKey)
+	r.mu.RUnlock()
+	return attached
+}
+
+func (p *Provider) attachMDAProofLocked(
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	seKeyBound bool,
+) {
 	p.MDAVerified = true
 	p.MDACertChain = certChain
 	p.MDAResult = mdaResult
 	p.SEKeyBound = seKeyBound
-	return true
 }
 
 // StagedMDAChain returns the durable MDA cert chain restored from the store for
@@ -1179,6 +1190,22 @@ func (p *Provider) StagedMDAChain() [][]byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.restoredMDAChain
+}
+
+// StageMDAChain keeps a verified, live-key-bound MDA chain until hardware trust
+// is available. This closes the valid delivery order where Device Attestation
+// arrives before the late SecurityInfo response that grants hardware trust.
+func (p *Provider) StageMDAChain(chain [][]byte) {
+	if len(chain) == 0 {
+		return
+	}
+	staged := make([][]byte, len(chain))
+	for i := range chain {
+		staged[i] = append([]byte(nil), chain[i]...)
+	}
+	p.mu.Lock()
+	p.restoredMDAChain = staged
+	p.mu.Unlock()
 }
 
 // StageMDAChainFromJSON stages a JSON-encoded ([][]byte) MDA cert chain — recovered
@@ -2877,7 +2904,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) &&
+			r.providerHardwareEligibleLocked(p) &&
 			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
@@ -3121,7 +3148,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 
 // RegisterPendingHardwareAdmission adds a connection behind the mandatory
 // routing gate without creating durable provider/session rows. The API calls
-// ActivateProviderPersistence only after the admission decision commits.
+// CommitProviderHardwareAdmission only after the durable decision commits.
 func (r *Registry) RegisterPendingHardwareAdmission(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
 	return r.register(id, conn, msg, false)
 }
@@ -3285,20 +3312,26 @@ func CloneStringMap(in map[string]string) map[string]string {
 // serial number as the given provider, except the given provider itself.
 // This prevents multiple WebSocket connections from the same physical machine
 // from competing for the same MLX-Swift backend on the host.
-func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
-	if serial == "" {
+func normalizeProviderSerial(serial string) string {
+	return strings.ToUpper(strings.TrimSpace(serial))
+}
+
+func (r *Registry) DisconnectDuplicatesBySerial(keep *Provider, serial string) {
+	serial = normalizeProviderSerial(serial)
+	if keep == nil || serial == "" {
 		return
 	}
+	keepID := keep.ID
 
-	var toEvict []string
+	var toEvict []*Provider
 	r.mu.Lock()
-	if _, exists := r.providers[keepID]; !exists {
+	if current, exists := r.providers[keepID]; !exists || current != keep {
 		r.mu.Unlock()
 		return
 	}
 	if previous := r.serialOwners[serial]; previous != "" && previous != keepID {
-		if _, exists := r.providers[previous]; exists {
-			toEvict = append(toEvict, previous)
+		if prior, exists := r.providers[previous]; exists {
+			toEvict = append(toEvict, prior)
 		}
 	}
 	r.serialOwners[serial] = keepID
@@ -3308,22 +3341,22 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 		}
 		p.mu.Lock()
 		matches := p.AttestationResult != nil &&
-			p.AttestationResult.SerialNumber == serial
+			normalizeProviderSerial(p.AttestationResult.SerialNumber) == serial
 		p.mu.Unlock()
-		if matches && !slices.Contains(toEvict, id) {
-			toEvict = append(toEvict, id)
+		if matches && !slices.Contains(toEvict, p) {
+			toEvict = append(toEvict, p)
 		}
 	}
 	r.mu.Unlock()
 
-	for _, id := range toEvict {
+	for _, duplicate := range toEvict {
 		r.logger.Warn("evicting duplicate provider from same device",
-			"evicted_id", id,
+			"evicted_id", duplicate.ID,
 			"kept_id", keepID,
 			"serial", serial,
 		)
 		// Disconnect closes the socket itself.
-		r.Disconnect(id)
+		r.DisconnectProvider(duplicate)
 	}
 }
 
@@ -3331,20 +3364,22 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 // code-attested live connection owns a serial until it disconnects; concurrent
 // later claimants evict only themselves, so stale eviction lists can never make
 // two verified sessions disconnect each other.
-func (r *Registry) ClaimProviderSerial(providerID, serial string) bool {
-	if providerID == "" || serial == "" {
+func (r *Registry) ClaimProviderSerial(provider *Provider, serial string) bool {
+	serial = normalizeProviderSerial(serial)
+	if provider == nil || provider.ID == "" || serial == "" {
 		return false
 	}
-	var duplicates []string
+	providerID := provider.ID
+	var duplicates []*Provider
 	r.mu.Lock()
-	if _, exists := r.providers[providerID]; !exists {
+	if current, exists := r.providers[providerID]; !exists || current != provider {
 		r.mu.Unlock()
 		return false
 	}
 	if owner := r.verifiedSerialOwners[serial]; owner != "" && owner != providerID {
 		if _, live := r.providers[owner]; live {
 			r.mu.Unlock()
-			r.Disconnect(providerID)
+			r.DisconnectProvider(provider)
 			return false
 		}
 	}
@@ -3355,15 +3390,15 @@ func (r *Registry) ClaimProviderSerial(providerID, serial string) bool {
 		}
 		p.mu.Lock()
 		matches := p.AttestationResult != nil &&
-			p.AttestationResult.SerialNumber == serial
+			normalizeProviderSerial(p.AttestationResult.SerialNumber) == serial
 		p.mu.Unlock()
 		if matches {
-			duplicates = append(duplicates, id)
+			duplicates = append(duplicates, p)
 		}
 	}
 	r.mu.Unlock()
-	for _, id := range duplicates {
-		r.Disconnect(id)
+	for _, duplicate := range duplicates {
+		r.DisconnectProvider(duplicate)
 	}
 	return true
 }
@@ -4226,10 +4261,27 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	r.disconnect(id, nil)
+}
+
+// DisconnectProvider removes p only when it is still the exact live connection
+// registered under its ID. Async admission and attestation callbacks must use
+// this form so a stale callback cannot evict a replacement connection.
+func (r *Registry) DisconnectProvider(p *Provider) {
+	if p == nil {
+		return
+	}
+	r.disconnect(p.ID, p)
+}
+
+func (r *Registry) disconnect(id string, expected *Provider) {
 	var disconnectedModels []string
 	var persistenceEnabled bool
 	r.mu.Lock()
 	p, ok := r.providers[id]
+	if ok && expected != nil && p != expected {
+		ok = false
+	}
 	if ok {
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
@@ -4242,7 +4294,7 @@ func (r *Registry) Disconnect(id string) {
 		p.mu.Lock()
 		persistenceEnabled = p.persistenceEnabled
 		if p.AttestationResult != nil {
-			serial := p.AttestationResult.SerialNumber
+			serial := normalizeProviderSerial(p.AttestationResult.SerialNumber)
 			if serial != "" && r.serialOwners[serial] == id {
 				delete(r.serialOwners, serial)
 			}
@@ -4732,7 +4784,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
-		hardwareAdmitted := !r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted
+		hardwareAdmitted := r.providerHardwareEligibleLocked(p)
 		attested := p.Attested
 		attestResult := p.AttestationResult
 		privateReady := r.providerSupportsPrivateTextLocked(p)
@@ -4825,7 +4877,7 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 		eligible := p.AccountID == accountID &&
 			p.Status != StatusOffline &&
 			p.Status != StatusUntrusted &&
-			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) &&
+			r.providerHardwareEligibleLocked(p) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&
@@ -4916,7 +4968,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
-		hardwareAdmitted := !r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted
+		hardwareAdmitted := r.providerHardwareEligibleLocked(p)
 		privateReady := r.providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
@@ -5083,7 +5135,7 @@ func (r *Registry) CodeAttestationCoverage() (codeAttested, online int) {
 	for _, p := range r.providers {
 		p.mu.Lock()
 		if p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) {
+			r.providerHardwareEligibleLocked(p) {
 			online++
 			if p.CodeAttested {
 				codeAttested++

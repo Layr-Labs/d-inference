@@ -55,6 +55,9 @@ func (c AppConfig) Check() error {
 	if err := c.StoreConfig.Check(); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
+	if err := c.ServerConfig.Check(); err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	if err := c.BillingConfig.Check(); err != nil {
 		return fmt.Errorf("billing: %w", err)
 	}

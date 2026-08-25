@@ -110,7 +110,7 @@ func TestDisconnectDuplicatesBySerial(t *testing.T) {
 	other := reg.Register("other", nil, msg)
 	other.AttestationResult = &attestation.VerificationResult{SerialNumber: "SERIAL-OTHER"}
 
-	reg.DisconnectDuplicatesBySerial("keep", serial)
+	reg.DisconnectDuplicatesBySerial(keep, serial)
 
 	if reg.GetProvider("keep") == nil {
 		t.Error("kept provider should remain registered")

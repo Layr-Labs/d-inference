@@ -45,7 +45,7 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
-	if r.hardwareAdmissionEnforced.Load() && !p.HardwareAdmitted {
+	if !r.providerHardwareEligibleLocked(p) {
 		return false
 	}
 	if p.PrivateOnly && !allowPrivate {

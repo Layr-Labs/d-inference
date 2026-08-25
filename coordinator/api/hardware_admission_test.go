@@ -12,6 +12,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
+	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -85,6 +86,53 @@ func TestHardwareAdmissionGrandfathersExistingTrustedSerial(t *testing.T) {
 	}
 	if !provider.HardwareAdmissionStatus() {
 		t.Fatal("grandfathered provider not marked admitted")
+	}
+}
+
+func TestHardwareAdmissionAllowsStaleReconnectForDurablyAdmittedMachine(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	now := time.Now()
+	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
+		ID: "legacy-session", SerialNumber: "LEGACY-STALE-1",
+		Hardware: json.RawMessage(`{"memory_gb":16}`), Models: json.RawMessage(`[]`),
+		Backend: registry.BackendMLXSwift, TrustLevel: string(registry.TrustHardware),
+		RegisteredAt: now, LastSeen: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, st, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 32,
+	}, quietLogger())
+	msg := admissionTestRegister()
+	provider := reg.Register("legacy-stale-reconnect", nil, msg)
+	result := admissionTestAttestation("LEGACY-STALE-1")
+	result.Timestamp = time.Now().Add(-time.Hour)
+
+	if !srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, result) {
+		t.Fatal("durably admitted provider was rejected for a stale reconnect attestation")
+	}
+	if !provider.HardwareAdmissionStatus() {
+		t.Fatal("durably admitted reconnect was not marked admitted")
+	}
+}
+
+func TestHardwareAdmissionRejectsStaleAttestationForNewMachine(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	msg := admissionTestRegister()
+	provider := srv.registry.Register("new-stale", nil, msg)
+	result := admissionTestAttestation("NEW-STALE-1")
+	result.Timestamp = time.Now().Add(-time.Hour)
+
+	if srv.evaluateProviderHardwareAdmission(provider.ID, provider, msg, result) {
+		t.Fatal("new machine with stale attestation was admitted")
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("stale new machine was marked admitted")
 	}
 }
 
@@ -219,6 +267,293 @@ func TestProviderRequirementsAndAdminPolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestEnforcePolicyActivationRequiresIdentityDependencies(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{AdminKey: "test-key"})
+	body := `{"mode":"enforce","min_memory_gb":32,"reason":"launch","expected_current_version":0}`
+
+	put := func() *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(
+			http.MethodPut,
+			"/v1/admin/hardware-admission/policy",
+			strings.NewReader(body),
+		)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(response, req)
+		return response
+	}
+
+	if response := put(); response.Code != http.StatusConflict {
+		t.Fatalf("missing-dependency status = %d, want 409: %s",
+			response.Code, response.Body.String())
+	}
+
+	srv.SetMDMClient(mdm.NewClient("http://mdm.invalid", "test", quietLogger()))
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		onSend: func(_, _, _, _ string) error { return nil },
+	})
+	if response := put(); response.Code != http.StatusOK {
+		t.Fatalf("ready enforce status = %d, want 200: %s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestHardwareAdmissionStartupReadiness(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	if err := srv.ValidateHardwareAdmissionReadiness(); err == nil {
+		t.Fatal("enforce startup passed without MDM and code attestation")
+	}
+	srv.SetMDMClient(mdm.NewClient(
+		"http://mdm.invalid", "test", quietLogger()))
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		onSend: func(_, _, _, _ string) error { return nil },
+	})
+	if err := srv.ValidateHardwareAdmissionReadiness(); err != nil {
+		t.Fatalf("launch-safe enforce startup rejected: %v", err)
+	}
+}
+
+func TestFirstEnforcementGrandfathersLiveTrustedProvider(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{AdminKey: "test-key"})
+	srv.SetMDMClient(mdm.NewClient("http://mdm.invalid", "test", quietLogger()))
+	srv.SetCodeAttestor(&fakeCodeAttestor{
+		onSend: func(_, _, _, _ string) error { return nil },
+	})
+
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"live-grandfather", nil, admissionTestRegister())
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid:        true,
+		SerialNumber: "LIVE-GRANDFATHER-SERIAL",
+	})
+	provider.SetAttested(true, registry.TrustHardware)
+
+	body := `{"mode":"enforce","min_memory_gb":32,"reason":"launch","expected_current_version":0}`
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/v1/admin/hardware-admission/policy",
+		strings.NewReader(body),
+	)
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+
+	admitted, err := st.IsHardwareAdmitted(
+		context.Background(), "LIVE-GRANDFATHER-SERIAL")
+	if err != nil || !admitted {
+		t.Fatalf("live trusted admission = (%v,%v), want true,nil", admitted, err)
+	}
+	if !provider.HardwareAdmissionStatus() || !provider.PersistenceEnabled() {
+		t.Fatal("live grandfathered provider was not committed")
+	}
+}
+
+func TestThresholdRollbackDoesNotRestoreRevokedProvider(t *testing.T) {
+	srv, st := testServer(t)
+	enforce, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serial = "REVOKED-ROLLBACK-SERIAL"
+	if err := st.AdmitHardware(context.Background(), store.HardwareAdmission{
+		SerialNumber: serial, PolicyVersion: enforce.Version,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeHardwareAdmission(
+		context.Background(), serial, "test", "retired"); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := srv.registry.Register("revoked-rollback", nil, admissionTestRegister())
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial,
+	})
+	srv.setHardwareAdmissionPolicy(enforce)
+	shadow, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeShadow, MinMemoryGB: 16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		enforce.Version,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := srv.applyHardwareAdmissionPolicy(shadow)
+	if err != nil || !applied {
+		t.Fatalf("apply rollback = (%v,%v)", applied, err)
+	}
+	if srv.registry.ProviderHardwareAdmitted(provider) {
+		t.Fatal("shadow rollback restored a revoked provider")
+	}
+	if !provider.HardwareAdmissionRevokedStatus() {
+		t.Fatal("revocation fence was not retained on the live provider")
+	}
+}
+
+type blockingRevocationStore struct {
+	store.Store
+	block   bool
+	checked chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingRevocationStore) IsHardwareAdmissionRevoked(
+	ctx context.Context,
+	serial string,
+) (bool, error) {
+	revoked, err := s.Store.IsHardwareAdmissionRevoked(ctx, serial)
+	if s.block {
+		close(s.checked)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return revoked, err
+}
+
+func TestConcurrentRollbackAndRevocationCannotResurrectProvider(t *testing.T) {
+	base := store.NewMemory(store.Config{})
+	enforce, err := base.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const serial = "REVOKE-ROLLBACK-RACE"
+	if err := base.AdmitHardware(context.Background(), store.HardwareAdmission{
+		SerialNumber: serial, PolicyVersion: enforce.Version,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &blockingRevocationStore{
+		Store: base, checked: make(chan struct{}), release: make(chan struct{}),
+	}
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, wrapped, ServerConfig{AdminKey: "test-key"}, quietLogger())
+	provider := reg.Register("revoke-rollback-race", nil, admissionTestRegister())
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, SerialNumber: serial,
+	})
+	reg.SetProviderHardwareAdmitted(provider, true)
+	shadow, err := base.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeShadow, MinMemoryGB: 16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		enforce.Version,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrapped.block = true
+	rollbackDone := make(chan struct{})
+	go func() {
+		defer close(rollbackDone)
+		_, _ = srv.applyHardwareAdmissionPolicy(shadow)
+	}()
+	<-wrapped.checked
+
+	revokeDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(
+			http.MethodDelete,
+			"/v1/admin/hardware-admission/machines/"+serial,
+			strings.NewReader(`{"reason":"retired"}`),
+		)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(response, req)
+		revokeDone <- response
+	}()
+
+	select {
+	case <-revokeDone:
+		t.Fatal("revocation bypassed the in-flight policy reconciliation lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(wrapped.release)
+	<-rollbackDone
+	response := <-revokeDone
+	if response.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d: %s", response.Code, response.Body.String())
+	}
+	if reg.ProviderHardwareAdmitted(provider) ||
+		!provider.HardwareAdmissionRevokedStatus() {
+		t.Fatal("rollback resurrected concurrently revoked provider")
+	}
+}
+
+func TestDisconnectedProviderDoesNotSpinAdmissionCommit(t *testing.T) {
+	srv, _ := testServer(t)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"disconnected-admission", nil, admissionTestRegister())
+	srv.registry.Disconnect(provider.ID)
+
+	done := make(chan bool, 1)
+	go func() {
+		_, admitted, _ := srv.admitProviderWithoutHardwareEvaluation(provider)
+		done <- admitted
+	}()
+	select {
+	case admitted := <-done:
+		if admitted {
+			t.Fatal("disconnected provider was admitted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disconnected admission commit did not terminate")
+	}
+}
+
+func TestHardwareTrustStatusStaysPendingUntilAdmissionFinalizes(t *testing.T) {
+	srv, _ := testServer(t)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"pending-trust-status", nil, admissionTestRegister())
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		provider: provider,
+		policy:   hardwareadmission.Policy{Version: 1},
+	})
+
+	status, _ := srv.hardwareTrustStatus(provider, "MDM verification passed")
+	if status != "admission_pending" {
+		t.Fatalf("status = %q, want admission_pending", status)
+	}
+	srv.clearPendingHardwareAdmissionForProvider(provider)
+	status, reason := srv.hardwareTrustStatus(
+		provider, "MDM verification passed")
+	if status != "online" || reason != "MDM verification passed" {
+		t.Fatalf("finalized status = (%q,%q)", status, reason)
+	}
+}
+
 type failingHardwarePolicyStore struct {
 	store.Store
 }
@@ -282,6 +617,150 @@ func TestPendingAdmissionGenerationCannotClearNewerPolicy(t *testing.T) {
 	if pending.policy.Version != 2 {
 		t.Fatalf("pending policy = %d, want 2", pending.policy.Version)
 	}
+}
+
+func TestPolicyChangeRechecksHardwareClaimIntegrity(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 8,
+	})
+	const serial = "POLICY-CHANGE-MISMATCH"
+	message := admissionTestRegister()
+	result := admissionTestAttestation(serial)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"policy-change-mismatch", nil, message)
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+	provider.SetCodeAttested(true)
+	provider.Mu().Lock()
+	provider.MDAVerified = true
+	provider.SEKeyBound = true
+	provider.Mu().Unlock()
+	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		provider: provider,
+		serial:   serial,
+		policy:   initialPolicy,
+		decision: evaluateHardwareClaims(initialPolicy, message, result),
+	})
+
+	provider.Mu().Lock()
+	provider.Hardware.MemoryGB = result.MemoryGB * 2
+	provider.Mu().Unlock()
+	nextPolicy, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 8,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		initialPolicy.Version,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.setHardwareAdmissionPolicy(nextPolicy) {
+		t.Fatal("changed policy was not published")
+	}
+
+	if srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("changed policy admitted mismatched hardware claims")
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("mismatched provider became routable")
+	}
+	admitted, err := st.IsHardwareAdmitted(context.Background(), serial)
+	if err != nil || admitted {
+		t.Fatalf("durable admission = (%v,%v), want false,nil", admitted, err)
+	}
+}
+
+func TestStaleFinalizerCannotPersistNewPendingGeneration(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 8,
+	})
+	const serial = "PENDING-GENERATION-RACE"
+	message := admissionTestRegister()
+	result := admissionTestAttestation(serial)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"pending-generation-race", nil, message)
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+	provider.SetCodeAttested(true)
+	provider.Mu().Lock()
+	provider.MDAVerified = true
+	provider.SEKeyBound = true
+	provider.Mu().Unlock()
+	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		provider: provider,
+		serial:   serial,
+		policy:   initialPolicy,
+		decision: evaluateHardwareClaims(initialPolicy, message, result),
+	})
+	nextPolicy, err := st.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 8,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		initialPolicy.Version,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("stale finalizer committed a replacement pending generation")
+	}
+	admitted, err := st.IsHardwareAdmitted(context.Background(), serial)
+	if err != nil || admitted {
+		t.Fatalf("durable admission = (%v,%v), want false,nil", admitted, err)
+	}
+	srv.hardwareAdmissionPendingMu.Lock()
+	pending := srv.hardwareAdmissionPending[provider.ID]
+	srv.hardwareAdmissionPendingMu.Unlock()
+	if pending.policy.Version != nextPolicy.Version {
+		t.Fatalf("pending policy = %d, want %d",
+			pending.policy.Version, nextPolicy.Version)
+	}
+	srv.clearPendingHardwareAdmissionForProvider(provider)
+}
+
+func TestHardUntrustedProviderCannotFinalizeHardwareAdmission(t *testing.T) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 8,
+	})
+	const serial = "HARD-UNTRUSTED-PENDING"
+	message := admissionTestRegister()
+	result := admissionTestAttestation(serial)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"hard-untrusted-pending", nil, message)
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+	provider.SetCodeAttested(true)
+	provider.Mu().Lock()
+	provider.MDAVerified = true
+	provider.SEKeyBound = true
+	provider.Mu().Unlock()
+	policy := srv.hardwareAdmissionPolicySnapshot()
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		provider: provider,
+		serial:   serial,
+		policy:   policy,
+		decision: evaluateHardwareClaims(policy, message, result),
+	})
+	srv.registry.MarkUntrusted(provider.ID)
+
+	if srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("hard-untrusted provider finalized admission")
+	}
+	admitted, err := st.IsHardwareAdmitted(context.Background(), serial)
+	if err != nil || admitted {
+		t.Fatalf("durable admission = (%v,%v), want false,nil", admitted, err)
+	}
+	srv.clearPendingHardwareAdmissionForProvider(provider)
 }
 
 func TestFinalizationWorkerRearmsForNewPendingGeneration(t *testing.T) {

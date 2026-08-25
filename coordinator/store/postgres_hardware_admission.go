@@ -41,11 +41,16 @@ func (s *PostgresStore) GetActiveHardwareAdmissionPolicy(ctx context.Context) (*
 	return &policy, nil
 }
 
-func (s *PostgresStore) ActivateHardwareAdmissionPolicy(ctx context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64) (hardwareadmission.Policy, error) {
+func (s *PostgresStore) ActivateHardwareAdmissionPolicy(
+	ctx context.Context,
+	policy hardwareadmission.Policy,
+	expectedCurrentVersion int64,
+	liveGrandfathered ...HardwareAdmission,
+) (hardwareadmission.Policy, error) {
 	if policy.CatalogVersion == "" {
 		policy.CatalogVersion = hardwareadmission.CatalogVersion
 	}
-	if err := policy.Validate(); err != nil {
+	if err := policy.ValidateForActivation(); err != nil {
 		return hardwareadmission.Policy{}, err
 	}
 
@@ -114,7 +119,7 @@ func (s *PostgresStore) ActivateHardwareAdmissionPolicy(ctx context.Context, pol
 				UPPER(TRIM(serial_number)), 'grandfathered', $1, hardware, $2
 			FROM providers
 			WHERE TRIM(serial_number) <> ''
-			  AND (trust_level = 'hardware' OR mda_verified = TRUE)
+			  AND trust_level = 'hardware'
 			ORDER BY UPPER(TRIM(serial_number)), last_seen DESC
 			ON CONFLICT (serial_number) DO NOTHING
 		`, policy.Version, *policy.GrandfatherCutoffAt)
@@ -122,6 +127,28 @@ func (s *PostgresStore) ActivateHardwareAdmissionPolicy(ctx context.Context, pol
 			return hardwareadmission.Policy{}, fmt.Errorf("store: grandfather existing providers: %w", err)
 		}
 		policy.GrandfatheredProviderCount = int(tag.RowsAffected())
+		for _, admission := range liveGrandfathered {
+			serial := normalizeHardwareSerial(admission.SerialNumber)
+			if serial == "" {
+				continue
+			}
+			hardwareJSON, err := json.Marshal(admission.Hardware)
+			if err != nil {
+				return hardwareadmission.Policy{}, fmt.Errorf(
+					"store: marshal live grandfathered hardware: %w", err)
+			}
+			liveTag, err := tx.Exec(ctx, `
+				INSERT INTO hardware_admissions (
+					serial_number, source, policy_version, hardware, admitted_at
+				) VALUES ($1, 'grandfathered', $2, $3, $4)
+				ON CONFLICT (serial_number) DO NOTHING
+			`, serial, policy.Version, hardwareJSON, *policy.GrandfatherCutoffAt)
+			if err != nil {
+				return hardwareadmission.Policy{}, fmt.Errorf(
+					"store: grandfather live provider: %w", err)
+			}
+			policy.GrandfatheredProviderCount += int(liveTag.RowsAffected())
+		}
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -155,6 +182,26 @@ func (s *PostgresStore) IsHardwareAdmitted(ctx context.Context, serialNumber str
 		return false, fmt.Errorf("store: check hardware admission: %w", err)
 	}
 	return admitted, nil
+}
+
+func (s *PostgresStore) IsHardwareAdmissionRevoked(ctx context.Context, serialNumber string) (bool, error) {
+	serial := normalizeHardwareSerial(serialNumber)
+	if serial == "" {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var revoked bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM hardware_admissions
+			WHERE serial_number = $1 AND revoked_at IS NOT NULL
+		)`,
+		serial,
+	).Scan(&revoked); err != nil {
+		return false, fmt.Errorf("store: check hardware admission revocation: %w", err)
+	}
+	return revoked, nil
 }
 
 func (s *PostgresStore) AdmitHardware(ctx context.Context, admission HardwareAdmission) error {

@@ -40,4 +40,18 @@ describe("Apple Device Attestation (mda_missing) warning", () => {
     const p = makeProvider({ status: "serving", online: true, mda_verified: true });
     expect(computeWarnings(p, ctx).some((w) => w.id === "mda_missing")).toBe(false);
   });
+
+  it("blocks earning while enforced hardware admission is still pending", () => {
+    const p = makeProvider({
+      status: "online",
+      online: true,
+      mda_verified: false,
+      hardware_admitted: false,
+    });
+    const warnings = computeWarnings(p, ctx);
+
+    expect(warnings.some((w) => w.id === "hardware_admission_pending")).toBe(true);
+    expect(warnings.some((w) => w.id === "mda_missing")).toBe(false);
+    expect(deriveRouting(p, warnings)).toBe("blocked");
+  });
 });

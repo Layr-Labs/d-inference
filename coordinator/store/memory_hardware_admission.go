@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -29,11 +30,16 @@ func (s *MemoryStore) GetActiveHardwareAdmissionPolicy(_ context.Context) (*hard
 	return &cp, nil
 }
 
-func (s *MemoryStore) ActivateHardwareAdmissionPolicy(_ context.Context, policy hardwareadmission.Policy, expectedCurrentVersion int64) (hardwareadmission.Policy, error) {
+func (s *MemoryStore) ActivateHardwareAdmissionPolicy(
+	_ context.Context,
+	policy hardwareadmission.Policy,
+	expectedCurrentVersion int64,
+	liveGrandfathered ...HardwareAdmission,
+) (hardwareadmission.Policy, error) {
 	if policy.CatalogVersion == "" {
 		policy.CatalogVersion = hardwareadmission.CatalogVersion
 	}
-	if err := policy.Validate(); err != nil {
+	if err := policy.ValidateForActivation(); err != nil {
 		return hardwareadmission.Policy{}, err
 	}
 
@@ -61,19 +67,39 @@ func (s *MemoryStore) ActivateHardwareAdmissionPolicy(_ context.Context, policy 
 	if policy.Mode == hardwareadmission.ModeEnforce && !hadEnforcement {
 		cutoff := policy.CreatedAt
 		policy.GrandfatherCutoffAt = &cutoff
-		for _, provider := range s.providerRecords {
-			serial := normalizeHardwareSerial(provider.SerialNumber)
-			if serial == "" || (provider.TrustLevel != "hardware" && !provider.MDAVerified) {
-				continue
+		addGrandfathered := func(serial string, hardware hardwareadmission.Observed) {
+			serial = normalizeHardwareSerial(serial)
+			if serial == "" {
+				return
 			}
 			if _, exists := s.hardwareAdmissions[serial]; exists {
-				continue
+				return
 			}
 			s.hardwareAdmissions[serial] = HardwareAdmission{
-				SerialNumber: serial, Source: "grandfathered",
-				PolicyVersion: policy.Version, AdmittedAt: cutoff,
+				SerialNumber:  serial,
+				Source:        "grandfathered",
+				PolicyVersion: policy.Version,
+				Hardware:      hardware,
+				AdmittedAt:    cutoff,
 			}
 			policy.GrandfatheredProviderCount++
+		}
+		for _, provider := range s.providerRecords {
+			serial := normalizeHardwareSerial(provider.SerialNumber)
+			if serial == "" || provider.TrustLevel != "hardware" {
+				continue
+			}
+			var hardware hardwareadmission.Observed
+			if len(provider.Hardware) > 0 {
+				if err := json.Unmarshal(provider.Hardware, &hardware); err != nil {
+					return hardwareadmission.Policy{},
+						fmt.Errorf("store: decode grandfathered provider hardware: %w", err)
+				}
+			}
+			addGrandfathered(serial, hardware)
+		}
+		for _, admission := range liveGrandfathered {
+			addGrandfathered(admission.SerialNumber, admission.Hardware)
 		}
 	}
 
@@ -91,6 +117,17 @@ func (s *MemoryStore) IsHardwareAdmitted(_ context.Context, serialNumber string)
 	defer s.mu.RUnlock()
 	admission, ok := s.hardwareAdmissions[serial]
 	return ok && admission.RevokedAt == nil, nil
+}
+
+func (s *MemoryStore) IsHardwareAdmissionRevoked(_ context.Context, serialNumber string) (bool, error) {
+	serial := normalizeHardwareSerial(serialNumber)
+	if serial == "" {
+		return false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	admission, ok := s.hardwareAdmissions[serial]
+	return ok && admission.RevokedAt != nil, nil
 }
 
 func (s *MemoryStore) AdmitHardware(_ context.Context, admission HardwareAdmission) error {

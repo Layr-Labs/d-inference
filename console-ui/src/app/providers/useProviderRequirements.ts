@@ -6,21 +6,38 @@ import {
   type ProviderRequirementsResponse,
 } from "@/lib/api/provider-requirements";
 
-export function useProviderRequirements() {
-  const [requirements, setRequirements] =
-    useState<ProviderRequirementsResponse | null>(null);
+export interface ProviderRequirementsState {
+  status: "loading" | "ready" | "error";
+  requirements: ProviderRequirementsResponse | null;
+}
+
+export function useProviderRequirements(): ProviderRequirementsState {
+  const [state, setState] = useState<ProviderRequirementsState>({
+    status: "loading",
+    requirements: null,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
-    fetchProviderRequirements(controller.signal)
-      .then(setRequirements)
-      .catch(() => {
-        // The coordinator remains authoritative at registration. Keeping the
-        // static setup fallback visible is better than hiding setup entirely
-        // during a transient public-requirements outage.
-      });
-    return () => controller.abort();
+    let active = true;
+    async function loadRequirements() {
+      try {
+        const requirements = await fetchProviderRequirements(controller.signal);
+        if (active) {
+          setState({ status: "ready", requirements });
+        }
+      } catch {
+        if (active) {
+          setState({ status: "error", requirements: null });
+        }
+      }
+    }
+    void loadRequirements();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, []);
 
-  return requirements;
+  return state;
 }

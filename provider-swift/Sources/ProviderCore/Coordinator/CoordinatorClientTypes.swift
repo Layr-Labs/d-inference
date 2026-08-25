@@ -127,6 +127,9 @@ public enum CoordinatorEvent: Sendable {
 
 // MARK: - Configuration
 
+public typealias RegistrationAttestationProvider =
+    @Sendable () throws -> RawJSON?
+
 public struct CoordinatorClientConfig: Sendable {
     public let url: String
     public let hardware: HardwareInfo
@@ -136,6 +139,7 @@ public struct CoordinatorClientConfig: Sendable {
     public let publicKey: String?
     public let walletAddress: String?
     public let attestation: RawJSON?
+    private let attestationProvider: RegistrationAttestationProvider?
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
@@ -159,6 +163,7 @@ public struct CoordinatorClientConfig: Sendable {
         publicKey: String? = nil,
         walletAddress: String? = nil,
         attestation: RawJSON? = nil,
+        attestationProvider: RegistrationAttestationProvider? = nil,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
@@ -175,6 +180,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.publicKey = publicKey
         self.walletAddress = walletAddress
         self.attestation = attestation
+        self.attestationProvider = attestationProvider
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
@@ -182,6 +188,13 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+    }
+
+    func registrationAttestation() throws -> RawJSON? {
+        if let attestationProvider {
+            return try attestationProvider()
+        }
+        return attestation
     }
 }
 

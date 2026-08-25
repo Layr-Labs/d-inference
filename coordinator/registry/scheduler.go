@@ -1022,7 +1022,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 			p.mu.Unlock()
 			continue
 		}
-		if r.hardwareAdmissionEnforced.Load() && !p.HardwareAdmitted {
+		if !r.providerHardwareEligibleLocked(p) {
 			p.mu.Unlock()
 			continue
 		}

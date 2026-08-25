@@ -51,6 +51,19 @@ import Testing
         reasonCode: "hardware_below_minimum")
     #expect(advice.message.contains("16 GiB"))
     #expect(advice.fix?.contains("grandfathered") == true)
+    #expect(advice.fix?.contains("https://console.darkbloom.dev/provider-waitlist") == true)
+    #expect(TrustReasonCatalog.advice(
+        level: "none",
+        status: "onboarding_rejected",
+        reason: "",
+        reasonCode: "hardware_identity_missing"
+    ).fix?.contains("darkbloom doctor") == true)
+    #expect(TrustReasonCatalog.advice(
+        level: "none",
+        status: "onboarding_rejected",
+        reason: "",
+        reasonCode: "hardware_admission_revoked"
+    ).fix?.contains("contact Darkbloom support") == true)
     #expect(TrustReasonCatalog.level(
         trustLevel: "none", status: "onboarding_rejected") == .fail)
 }

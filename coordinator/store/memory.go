@@ -139,6 +139,9 @@ type MemoryStore struct {
 	hardwareAdmissionAttempts   []HardwareAdmissionAttempt
 	hardwareAdmissionAttemptSeq int64
 
+	// Public provider-capacity interest submissions, keyed by normalized email.
+	providerWaitlistSignups map[string]ProviderWaitlistSignup
+
 	// Inference routing telemetry
 	inferenceRoutes        []InferenceRouteRecord
 	inferenceRouteIndex    map[string]int // request_id/attempt -> index in inferenceRoutes
@@ -203,6 +206,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		hardwareAdmissionPolicies:     make(map[int64]hardwareadmission.Policy),
 		hardwareAdmissions:            make(map[string]HardwareAdmission),
 		hardwareAdmissionAttempts:     make([]HardwareAdmissionAttempt, 0),
+		providerWaitlistSignups:       make(map[string]ProviderWaitlistSignup),
 		inferenceRoutes:               make([]InferenceRouteRecord, 0),
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),

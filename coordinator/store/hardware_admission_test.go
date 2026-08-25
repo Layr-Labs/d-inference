@@ -16,6 +16,7 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			serial := "LEGACY-" + uniqueID(name)
+			mdaOnlySerial := "MDA-ONLY-" + uniqueID(name)
 			if err := backend.UpsertProvider(ctx, ProviderRecord{
 				ID: uniqueID("provider"), SerialNumber: serial,
 				Hardware: json.RawMessage(`{"memory_gb":16}`), Models: json.RawMessage(`[]`),
@@ -23,6 +24,14 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 				RegisteredAt: time.Now(), LastSeen: time.Now(),
 			}); err != nil {
 				t.Fatalf("seed provider: %v", err)
+			}
+			if err := backend.UpsertProvider(ctx, ProviderRecord{
+				ID: uniqueID("mda-only"), SerialNumber: mdaOnlySerial,
+				Hardware: json.RawMessage(`{"memory_gb":16}`), Models: json.RawMessage(`[]`),
+				Backend: "mlx-swift", TrustLevel: "self_signed", MDAVerified: true,
+				RegisteredAt: time.Now(), LastSeen: time.Now(),
+			}); err != nil {
+				t.Fatalf("seed MDA-only provider: %v", err)
 			}
 
 			shadow, err := backend.ActivateHardwareAdmissionPolicy(ctx, hardwareadmission.Policy{
@@ -52,15 +61,26 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 			if admitted, err := backend.IsHardwareAdmitted(ctx, serial); err != nil || !admitted {
 				t.Fatalf("grandfather admitted = (%v,%v), want true,nil", admitted, err)
 			}
+			if admitted, err := backend.IsHardwareAdmitted(
+				ctx, mdaOnlySerial); err != nil || admitted {
+				t.Fatalf("MDA-only grandfather = (%v,%v), want false,nil", admitted, err)
+			}
 			admissions, err := backend.ListHardwareAdmissions(ctx, 10)
 			if err != nil || len(admissions) != 1 || admissions[0].SerialNumber != strings.ToUpper(serial) {
 				t.Fatalf("admissions = (%+v,%v)", admissions, err)
+			}
+			if admissions[0].Hardware.MemoryGB != 16 {
+				t.Fatalf("grandfathered hardware = %+v, want memory_gb 16",
+					admissions[0].Hardware)
 			}
 			if err := backend.RevokeHardwareAdmission(ctx, serial, "test-admin", "retired"); err != nil {
 				t.Fatalf("revoke admission: %v", err)
 			}
 			if admitted, _ := backend.IsHardwareAdmitted(ctx, serial); admitted {
 				t.Fatal("revoked serial remained admitted")
+			}
+			if revoked, err := backend.IsHardwareAdmissionRevoked(ctx, serial); err != nil || !revoked {
+				t.Fatalf("revocation state = (%v,%v), want true,nil", revoked, err)
 			}
 			if err := backend.AdmitHardware(ctx, HardwareAdmission{
 				SerialNumber: serial, PolicyVersion: enforce.Version,
@@ -73,10 +93,44 @@ func TestHardwareAdmissionPolicyAndGrandfathering(t *testing.T) {
 			if admitted, _ := backend.IsHardwareAdmitted(ctx, serial); !admitted {
 				t.Fatal("restored serial did not regain admission")
 			}
+			if revoked, err := backend.IsHardwareAdmissionRevoked(ctx, serial); err != nil || revoked {
+				t.Fatalf("restored revocation state = (%v,%v), want false,nil", revoked, err)
+			}
 
 			active, err := backend.GetActiveHardwareAdmissionPolicy(ctx)
 			if err != nil || active == nil || active.Version != enforce.Version {
 				t.Fatalf("active policy = (%+v,%v)", active, err)
+			}
+		})
+	}
+}
+
+func TestFirstEnforcementGrandfathersLiveTrustedMachine(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			serial := "LIVE-" + uniqueID(name)
+			enforce, err := backend.ActivateHardwareAdmissionPolicy(
+				ctx,
+				hardwareadmission.Policy{
+					Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 32,
+					CatalogVersion: hardwareadmission.CatalogVersion,
+				},
+				0,
+				HardwareAdmission{
+					SerialNumber: serial,
+					Hardware:     hardwareadmission.Observed{MemoryGB: 16},
+				},
+			)
+			if err != nil {
+				t.Fatalf("activate enforce: %v", err)
+			}
+			if enforce.GrandfatheredProviderCount != 1 {
+				t.Fatalf("grandfathered count = %d, want 1",
+					enforce.GrandfatheredProviderCount)
+			}
+			if admitted, err := backend.IsHardwareAdmitted(ctx, serial); err != nil || !admitted {
+				t.Fatalf("live grandfather admission = (%v,%v), want true,nil", admitted, err)
 			}
 		})
 	}
@@ -132,7 +186,8 @@ func TestHardwareAdmissionRejectsStalePolicyCommit(t *testing.T) {
 			_, err = backend.ActivateHardwareAdmissionPolicy(
 				ctx,
 				hardwareadmission.Policy{
-					Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
+					Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 16,
+					CatalogVersion: hardwareadmission.CatalogVersion,
 				},
 				first.Version,
 			)
@@ -145,6 +200,24 @@ func TestHardwareAdmissionRejectsStalePolicyCommit(t *testing.T) {
 			})
 			if !errors.Is(err, ErrHardwareAdmissionPolicyConflict) {
 				t.Fatalf("stale policy admission error = %v", err)
+			}
+		})
+	}
+}
+
+func TestHardwareAdmissionStoreRejectsThresholdlessEnforcement(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, err := backend.ActivateHardwareAdmissionPolicy(
+				context.Background(),
+				hardwareadmission.Policy{
+					Mode:           hardwareadmission.ModeEnforce,
+					CatalogVersion: hardwareadmission.CatalogVersion,
+				},
+				0,
+			)
+			if err == nil {
+				t.Fatal("store activated enforce mode without a capacity threshold")
 			}
 		})
 	}

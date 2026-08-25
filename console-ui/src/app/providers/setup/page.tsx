@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Cpu,
   Monitor,
@@ -133,7 +134,8 @@ const FAQ = [
 ];
 
 export default function ProviderSetupPage() {
-  const providerRequirements = useProviderRequirements();
+  const providerRequirementsState = useProviderRequirements();
+  const providerRequirements = providerRequirementsState.requirements;
   const policy = providerRequirements?.policy;
   const hardwareTitle = policy?.min_memory_gb
     ? `${policy.min_memory_gb}GB+ RAM`
@@ -149,13 +151,21 @@ export default function ProviderSetupPage() {
       ? `${(policy.min_fp16_millitflops / 1000).toFixed(1)} FP16 TFLOPS`
       : null,
   ].filter(Boolean);
-  let hardwareDescription =
-    "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.";
-  if (hardwareMinimums.length > 0 && policy?.mode === "shadow") {
+  let hardwareDescription = "Checking the coordinator's current new-machine policy…";
+  if (providerRequirementsState.status === "error") {
+    hardwareDescription =
+      "Current onboarding requirements are temporarily unavailable. The coordinator remains authoritative when this Mac connects.";
+  } else if (policy?.mode === "disabled") {
+    hardwareDescription =
+      "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.";
+  } else if (hardwareMinimums.length > 0 && policy?.mode === "shadow") {
     hardwareDescription = `Shadow evaluation checks ${hardwareMinimums.join(
       ", "
     )}; it does not block onboarding until enforcement is enabled.`;
-  } else if (hardwareMinimums.length > 0) {
+  } else if (policy?.mode === "shadow") {
+    hardwareDescription =
+      "The coordinator is observing new-machine admission in shadow mode without a capacity floor.";
+  } else if (hardwareMinimums.length > 0 && policy?.mode === "enforce") {
     hardwareDescription = `New providers must meet ${hardwareMinimums.join(
       ", "
     )}. Existing admitted machines remain grandfathered.`;
@@ -201,6 +211,19 @@ export default function ProviderSetupPage() {
             </span>{" "}
             Hardware is verified by the coordinator when the provider connects;
             linking an account alone does not guarantee admission.
+            {policy.mode === "enforce" && (
+              <>
+                {" "}
+                If this Mac is below the current floor,{" "}
+                <Link
+                  href="/provider-waitlist"
+                  className="font-semibold text-accent-brand hover:text-accent-brand-hover"
+                >
+                    register hardware interest
+                </Link>
+                .
+              </>
+            )}
           </div>
         )}
         <div className="grid grid-cols-2 gap-4">

@@ -9,10 +9,13 @@ import { EarningsHero } from "./EarningsHero";
 import { HardwareSelector } from "./HardwareSelector";
 import { ModelSupportList } from "./ModelSupportList";
 import { AssumptionsPanel } from "./AssumptionsPanel";
+import { ProviderAdmissionNotice } from "./ProviderAdmissionNotice";
+import { useProviderRequirements } from "../providers/useProviderRequirements";
 
 export default function EarnPage() {
   const { ready, authenticated, login } = useAuth();
   const calc = useEarningsCalculator();
+  const providerRequirements = useProviderRequirements();
 
   return (
     <div className="flex flex-col h-full">
@@ -25,8 +28,12 @@ export default function EarnPage() {
             What your Apple Silicon Mac could earn serving inference on the Darkbloom network.
           </p>
 
-          <EarningsHero calc={calc} authenticated={authenticated} ready={ready} login={login} />
+          <EarningsHero calc={calc} />
           <HardwareSelector calc={calc} />
+          <ProviderAdmissionNotice
+            calc={calc}
+            requirementsState={providerRequirements}
+          />
           <ModelSupportList calc={calc} />
           <BaseRewardsPanel />
           <AssumptionsPanel calc={calc} />

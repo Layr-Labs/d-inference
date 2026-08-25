@@ -28,13 +28,25 @@ public enum TrustReasonCatalog {
                 message: reason.isEmpty
                     ? "this Mac does not meet the network requirements for new providers."
                     : reason,
-                fix: "use `darkbloom status` to review the reported hardware and current minimums. Existing admitted Macs remain grandfathered.")
-        case "hardware_identity_required":
+                fix: "use `darkbloom status` to review the reported hardware and current minimums. Join the availability list at https://console.darkbloom.dev/provider-waitlist. Existing admitted Macs remain grandfathered.")
+        case "hardware_identity_required", "hardware_identity_missing":
             return DiagnosticAdvice(
                 message: reason.isEmpty
                     ? "the coordinator requires an attested machine identity before onboarding."
                     : reason,
                 fix: "run `darkbloom doctor`, complete enrollment, then `darkbloom restart`.")
+        case "hardware_attestation_stale":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator requires a fresh hardware attestation before onboarding."
+                    : reason,
+                fix: "update the provider, keep the Mac awake, then restart so it can complete a fresh attestation.")
+        case "hardware_admission_revoked":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "a network operator revoked this machine's provider admission."
+                    : reason,
+                fix: "threshold changes cannot restore a revoked machine; contact Darkbloom support if this was unexpected.")
         case "admission_state_unavailable":
             return DiagnosticAdvice(
                 message: reason.isEmpty

@@ -37,7 +37,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/apns"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
@@ -280,6 +279,13 @@ func main() {
 	// submitting telemetry); Close is idempotent and never blocks on in-flight
 	// writes, so it cannot stall shutdown.
 	defer srv.Close()
+
+	// Mandatory source-IP limiter for the unauthenticated provider waitlist.
+	// Unlike account limiters, this has no disable switch: the endpoint accepts
+	// PII from unauthenticated callers and must never run unbounded.
+	waitlistRL := api.NewProviderWaitlistRateLimiter()
+	waitlistRL.StartPruner(ctx, logger, func() { saferun.Recover(logger, "provider_waitlist_ratelimit_pruner") })
+	srv.SetProviderWaitlistRateLimiter(waitlistRL)
 
 	// Per-account rate limiter on consumer (inference) endpoints. The default
 	// is intentionally generous (20 rps / burst 120) — the fleet token-budget
@@ -675,37 +681,7 @@ func main() {
 	if mdmCfg.URL != "" {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
-		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
-			// Parse + verify the Apple cert chain once (not per provider).
-			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-			if err != nil {
-				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-				return
-			}
-			if !mdaResult.Valid {
-				return
-			}
-			// Attach the proof only to a connection that currently holds hardware
-			// trust, atomically (trust check + writes under one lock). A late
-			// DevicePropertiesAttestation can arrive after the device reconnected as
-			// self_signed (RestoreProviderState caps it); attaching MDA to a
-			// self_signed provider is the drift this fix removes — and a separate
-			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
-			// is re-granted this connection.
-			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.SetMDAProofIfHardware(certChain, mdaResult) {
-					// Persist now so the late-arriving chain is durable for reuse on
-					// the next reconnect, rather than waiting on a throttled heartbeat.
-					reg.PersistProvider(p)
-					logger.Info("late MDA cert stored on provider",
-						"provider_id", p.ID,
-						"serial", mdaResult.DeviceSerial,
-						"udid", mdaResult.DeviceUDID,
-						"os_version", mdaResult.OSVersion,
-					)
-				}
-			})
-		})
+		mdmClient.SetOnMDA(srv.ApplyLateMDA)
 
 		// Register callback for late-arriving SecurityInfo responses. When APN
 		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
@@ -778,6 +754,11 @@ func main() {
 		}
 	} else {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
+	}
+
+	if err := srv.ValidateHardwareAdmissionReadiness(); err != nil {
+		logger.Error("refusing to start: hardware admission is not launch-safe", "error", err)
+		os.Exit(1)
 	}
 
 	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire

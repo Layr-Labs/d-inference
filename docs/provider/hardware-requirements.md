@@ -30,17 +30,26 @@ Current public requirements are available from:
 curl -fsSL https://api.darkbloom.dev/v1/provider-requirements
 ```
 
+Machines that are not currently eligible can register hardware interest with an
+email, chip, memory, optional GPU-core count, or a custom “Others Machines”
+description at `https://console.darkbloom.dev/provider-waitlist`. This is a
+capacity-planning registry; automated eligibility emails are not active yet.
+
 Operators manage immutable policy versions with
 `scripts/admin.sh hardware-policy get|set`, and can inspect the admitted-machine
 inventory with `scripts/admin.sh hardware-policy machines`. A policy should run
 in `shadow` mode before `enforce`; the first enforcement activation atomically
 records the trusted serials already in the fleet as grandfathered.
+Enforcement requires at least one positive capacity threshold plus configured
+MDM and APNs code-attestation dependencies; the coordinator refuses an unsafe
+activation or startup.
 
 Bandwidth and FP16 throughput are derived from the coordinator's versioned Apple
 Silicon catalog. They are not accepted from arbitrary provider values. A new
 machine's actual memory and GPU-core count are included in its signed Secure
 Enclave attestation and must match registration; first admission is committed
-only after MDM verification plus an SE-bound Apple Device Attestation.
+only after MDM verification, official-code attestation, and an SE-bound Apple
+Device Attestation.
 
 ## Recommended configurations
 

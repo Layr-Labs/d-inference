@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -475,6 +476,37 @@ func TestTrustReuseFastSkipGrantsOnAllGates(t *testing.T) {
 	}
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
 		t.Fatalf("trust = %q, want hardware after fast-skip grant", lvl)
+	}
+}
+
+func TestTrustReuseFastSkipCannotBypassEnforcedCodeIdentity(t *testing.T) {
+	srv, p, _ := trustReuseFastSkipProvider(t)
+	policy, err := srv.store.ActivateHardwareAdmissionPolicy(
+		context.Background(),
+		hardwareadmission.Policy{
+			Mode:           hardwareadmission.ModeEnforce,
+			MinMemoryGB:    16,
+			CatalogVersion: hardwareadmission.CatalogVersion,
+		},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.setHardwareAdmissionPolicy(policy)
+	srv.trustReuseCache.recordTrust(hardwareReuseRecord(
+		"se-pub-key-bytes", "SERIAL-1", trHashA, srv.trustReuseCache.now()))
+
+	if srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true) {
+		t.Fatal("trust reuse bypassed enforced official-code attestation")
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Fatalf("trust = %q, want self_signed before code attestation", lvl)
+	}
+
+	p.SetCodeAttested(true)
+	if !srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true) {
+		t.Fatal("code-attested provider did not receive reusable hardware trust")
 	}
 }
 

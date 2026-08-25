@@ -1,22 +1,43 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ArrowRight } from "lucide-react";
+import Link from "next/link";
 import type { HardwareAdmissionAttempt } from "../types";
+
+function waitlistHref(attempt: HardwareAdmissionAttempt): string {
+  const hardware = attempt.hardware;
+  const tier = hardware.chip_tier?.trim();
+  let chip = hardware.chip_family?.trim() ?? "";
+  if (chip && tier && tier.toLowerCase() !== "base") {
+    chip += ` ${tier.charAt(0).toUpperCase()}${tier.slice(1).toLowerCase()}`;
+  }
+  if (!chip) {
+    chip =
+      hardware.chip_name?.replace(/^Apple\s+/i, "").trim() ||
+      hardware.machine_model?.trim() ||
+      "";
+  }
+
+  const params = new URLSearchParams();
+  if (chip) params.set("chip", chip);
+  if (hardware.memory_gb) {
+    params.set("memory_gb", String(hardware.memory_gb));
+  }
+  if (hardware.gpu_cores) {
+    params.set("gpu_cores", String(hardware.gpu_cores));
+  }
+  const query = params.toString();
+  return query ? `/provider-waitlist?${query}` : "/provider-waitlist";
+}
 
 export function AdmissionRejectionNotice({
   attempts,
 }: {
   attempts: HardwareAdmissionAttempt[];
 }) {
-  const settledMachines = new Set<string>();
+  const latestMachines = new Set<string>();
   const rejection = attempts.find((attempt) => {
     const machine = attempt.serial_number || attempt.provider_id;
-    if (settledMachines.has(machine)) return false;
-    if (
-      attempt.decision === "admitted" ||
-      attempt.decision === "grandfathered" ||
-      attempt.decision === "rejected"
-    ) {
-      settledMachines.add(machine);
-    }
+    if (latestMachines.has(machine)) return false;
+    latestMachines.add(machine);
     return (
       attempt.decision === "rejected" &&
       attempt.reason_code === "hardware_below_minimum"
@@ -57,6 +78,13 @@ export function AdmissionRejectionNotice({
               ))}
             </ul>
           )}
+          <Link
+            href={waitlistHref(rejection)}
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-accent-brand transition-colors hover:text-accent-brand-hover focus-ring"
+          >
+          Register hardware interest
+            <ArrowRight size={14} aria-hidden="true" />
+          </Link>
         </div>
       </div>
     </section>

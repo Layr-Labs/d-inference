@@ -11,17 +11,7 @@ import type { EarningsCalculator } from "./useEarningsCalculator";
  * to); the top of the range is the full-utilization estimate for the best
  * model that fits.
  */
-export function EarningsHero({
-  calc,
-  authenticated,
-  ready,
-  login,
-}: {
-  calc: EarningsCalculator;
-  authenticated: boolean;
-  ready: boolean;
-  login: () => void;
-}) {
+export function EarningsHero({ calc }: { calc: EarningsCalculator }) {
   const { result, bestModel, monthlyFloor, monthlyEstimate, effectiveRAM, catalogModels } = calc;
 
   const loading = catalogModels.length === 0;
@@ -89,12 +79,7 @@ export function EarningsHero({
               ? `No catalog model fits in ${effectiveRAM} GB yet — you'd still earn the ${fmtUSDWhole(monthlyFloor)}/mo base reward.`
               : `No catalog model fits in ${effectiveRAM} GB yet.`}
           </p>
-          <SmallModelsInterest
-            calc={calc}
-            authenticated={authenticated}
-            ready={ready}
-            login={login}
-          />
+          <SmallModelsInterest calc={calc} />
         </>
       )}
 
@@ -106,7 +91,8 @@ export function EarningsHero({
             network demand — live demand fluctuates and can run below this. The base reward
             requires an attested, healthy machine that stays online ≥90% of each settlement
             period, and is paid from a fixed monthly pool — an earnings floor while eligible,
-            not a guarantee.
+            not a guarantee. Model fit does not confirm new-provider admission; the current
+            coordinator policy is checked separately below.
           </p>
         </div>
       )}

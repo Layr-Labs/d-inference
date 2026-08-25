@@ -147,14 +147,23 @@ PY
 }
 
 cmd_hardware_policy_set() {
-    local mode="${1:?Usage: $0 hardware-policy set <disabled|shadow|enforce> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason]}"
+    local mode="${1:?Usage: $0 hardware-policy set <disabled|shadow|enforce> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason] [--break-glass]}"
     local memory_gb="${2:?memory-gb is required}"
     local bandwidth_gbs="${3:?bandwidth-gbs is required}"
     local fp16_millitflops="${4:?fp16-millitflops is required}"
     local expected_version="${5:?expected-version is required}"
     local reason="${6:-operator policy update}"
+    local break_glass_arg="${7:-}"
+    if [ "$reason" = "--break-glass" ]; then
+        reason="operator break-glass rollback"
+        break_glass_arg="--break-glass"
+    fi
+    if [ -n "$break_glass_arg" ] && [ "$break_glass_arg" != "--break-glass" ]; then
+        echo "Unknown hardware-policy option: $break_glass_arg" >&2
+        exit 1
+    fi
     local body
-    body="$(python3 - "$mode" "$memory_gb" "$bandwidth_gbs" "$fp16_millitflops" "$expected_version" "$reason" <<'PY'
+    body="$(python3 - "$mode" "$memory_gb" "$bandwidth_gbs" "$fp16_millitflops" "$expected_version" "$reason" "$break_glass_arg" <<'PY'
 import json
 import sys
 
@@ -165,6 +174,7 @@ print(json.dumps({
     "min_fp16_millitflops": int(sys.argv[4]),
     "expected_current_version": int(sys.argv[5]),
     "reason": sys.argv[6],
+    "break_glass": sys.argv[7] == "--break-glass",
 }))
 PY
 )"
@@ -217,7 +227,7 @@ case "${1:-help}" in
             machines) cmd_hardware_policy_machines ;;
             revoke) cmd_hardware_policy_revoke "${3:-}" "${4:-}" ;;
             restore) cmd_hardware_policy_restore "${3:-}" "${4:-}" ;;
-            set) cmd_hardware_policy_set "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
+            set) cmd_hardware_policy_set "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}" ;;
             *) echo "Usage: $0 hardware-policy [get|machines|set|revoke|restore]" ;;
         esac
         ;;
@@ -238,7 +248,7 @@ case "${1:-help}" in
         echo "  hardware-policy machines       List admitted machines and recent decisions"
         echo "  hardware-policy revoke <serial> <reason>"
         echo "  hardware-policy restore <serial> <reason>"
-        echo "  hardware-policy set <mode> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason]"
+        echo "  hardware-policy set <mode> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason] [--break-glass]"
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""
         echo "Environment:"

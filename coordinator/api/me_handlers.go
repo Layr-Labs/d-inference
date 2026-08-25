@@ -62,6 +62,11 @@ type myProvider struct {
 	TrustLevel  string `json:"trust_level"`
 	Attested    bool   `json:"attested"`
 	MDAVerified bool   `json:"mda_verified"`
+	// HardwareAdmitted is the coordinator's effective routing decision. Revoked
+	// remains separately visible so owners can distinguish an operator block
+	// from identity verification still in progress.
+	HardwareAdmitted         bool `json:"hardware_admitted"`
+	HardwareAdmissionRevoked bool `json:"hardware_admission_revoked"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
@@ -249,6 +254,9 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if mp.Status == "offline" || mp.Status == "never_seen" {
 		return true
 	}
+	if mp.HardwareAdmissionRevoked || !mp.HardwareAdmitted {
+		return true
+	}
 	if !mp.RuntimeVerified {
 		return true
 	}
@@ -306,6 +314,9 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		if err := s.attachHardwareAdmissionState(ctx, &mp, live); err != nil {
+			return nil, err
+		}
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -319,9 +330,40 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		if err := s.attachHardwareAdmissionState(ctx, &mp, p); err != nil {
+			return nil, err
+		}
+		out = append(out, mp)
 	}
 	return out, nil
+}
+
+func (s *Server) attachHardwareAdmissionState(
+	ctx context.Context,
+	mp *myProvider,
+	live *registry.Provider,
+) error {
+	if live != nil {
+		mp.HardwareAdmitted = s.registry.ProviderHardwareAdmitted(live)
+		mp.HardwareAdmissionRevoked = live.HardwareAdmissionRevokedStatus()
+		return nil
+	}
+	serial := strings.ToUpper(strings.TrimSpace(mp.SerialNumber))
+	if serial == "" {
+		return nil
+	}
+	revoked, err := s.store.IsHardwareAdmissionRevoked(ctx, serial)
+	if err != nil {
+		return fmt.Errorf("check hardware admission revocation: %w", err)
+	}
+	admitted, err := s.store.IsHardwareAdmitted(ctx, serial)
+	if err != nil {
+		return fmt.Errorf("check hardware admission: %w", err)
+	}
+	mp.HardwareAdmissionRevoked = revoked
+	mp.HardwareAdmitted = admitted && !revoked
+	return nil
 }
 
 func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {

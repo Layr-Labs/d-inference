@@ -76,7 +76,23 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyCredentialKind
 )
+
+type credentialKind uint8
+
+const (
+	credentialUnknown credentialKind = iota
+	credentialPrivy
+	credentialAdminKey
+	credentialAPIKey
+	credentialProviderToken
+)
+
+func credentialKindFromContext(ctx context.Context) credentialKind {
+	kind, _ := ctx.Value(ctxKeyCredentialKind).(credentialKind)
+	return kind
+}
 
 // requestIDFromContext returns the per-request correlation ID set by
 // the logging middleware. Empty if the request didn't pass through the
@@ -403,6 +419,10 @@ type Server struct {
 	// Nil means unlimited.
 	financialRateLimiter *ratelimit.Limiter
 
+	// providerWaitlistRateLimiter throttles the unauthenticated provider
+	// availability form by source IP. Nil fails closed in the route.
+	providerWaitlistRateLimiter *ratelimit.Limiter
+
 	// serviceRateLimiter applies an elevated per-account limit to trusted
 	// service accounts (store.RoleService), e.g. an upstream aggregator like
 	// OpenRouter that fans out many end-users behind one key. When nil,
@@ -457,6 +477,12 @@ func (s *Server) SetRateLimiter(rl *ratelimit.Limiter) {
 // balance-mutating endpoints. Pass nil to disable.
 func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
 	s.financialRateLimiter = rl
+}
+
+// SetProviderWaitlistRateLimiter configures the mandatory source-IP limiter
+// for public provider availability signups.
+func (s *Server) SetProviderWaitlistRateLimiter(rl *ratelimit.Limiter) {
+	s.providerWaitlistRateLimiter = rl
 }
 
 // SetServiceRateLimiter configures the elevated limiter used for service-role
@@ -1819,6 +1845,7 @@ func (s *Server) routes() {
 	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 	s.mux.HandleFunc("GET /v1/provider-requirements", s.handleProviderRequirements)
+	s.mux.HandleFunc("POST /v1/provider-waitlist", s.rateLimitProviderWaitlist(s.handleProviderWaitlistSignup))
 
 	// Attestation verification — public, no auth needed.
 	// Users can independently verify Apple's MDA certificate chain.
@@ -1913,6 +1940,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/hardware-admission/machines", s.requireAuth(s.handleAdminHardwareAdmissionMachines))
 	s.mux.HandleFunc("DELETE /v1/admin/hardware-admission/machines/{serial}", s.requireAuth(s.handleAdminRevokeHardwareAdmission))
 	s.mux.HandleFunc("POST /v1/admin/hardware-admission/machines/restore", s.requireAuth(s.handleAdminRestoreHardwareAdmission))
+	s.mux.HandleFunc("GET /v1/admin/provider-waitlist", s.requireAuth(s.handleAdminProviderWaitlist))
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but
@@ -2303,6 +2331,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2310,6 +2339,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialAdminKey)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2317,6 +2347,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		kind := credentialAPIKey
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
@@ -2355,6 +2386,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				// until TTL. GetProviderToken is cheap and provider-token traffic
 				// is low-volume.
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
+				kind = credentialProviderToken
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
@@ -2390,6 +2422,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, kind)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -2423,6 +2456,7 @@ func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 		ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -2563,6 +2597,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

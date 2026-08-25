@@ -6,6 +6,10 @@ const apiMocks = vi.hoisted(() => ({
   fetchModels: vi.fn(),
   fetchPricing: vi.fn(),
 }));
+const GPT_MODEL_ID = "gpt-oss-20b";
+const GPT_MODEL_NAME = "GPT-OSS 20B";
+const GEMMA_MODEL_ID = "gemma-4-26b";
+const GEMMA_MODEL_NAME = "Gemma 4 26B";
 
 vi.mock("@/components/TopBar", () => ({
   TopBar: ({ title }: { title?: string }) => (
@@ -30,22 +34,41 @@ vi.mock("@/lib/api", () => ({
   fetchPricing: apiMocks.fetchPricing,
 }));
 
+vi.mock("@/app/providers/useProviderRequirements", () => ({
+  useProviderRequirements: () => ({
+    status: "ready",
+    requirements: {
+      policy: {
+        version: 0,
+        mode: "disabled",
+        min_memory_gb: 0,
+        min_memory_bandwidth_gbs: 0,
+        min_fp16_millitflops: 0,
+        catalog_version: "apple-silicon-v1",
+      },
+      accepting_new_providers: true,
+      grandfather_existing: true,
+      metric_definitions: {},
+    },
+  }),
+}));
+
 beforeEach(() => {
   apiMocks.fetchModels.mockReset();
   apiMocks.fetchPricing.mockReset();
   apiMocks.fetchModels.mockResolvedValue([
     {
-      id: "gpt-oss-20b",
+      id: GPT_MODEL_ID,
       object: "model",
-      display_name: "GPT-OSS 20B",
+      display_name: GPT_MODEL_NAME,
       size_gb: 12.1,
       min_ram_gb: 24,
       architecture: "MoE",
     },
     {
-      id: "gemma-4-26b",
+      id: GEMMA_MODEL_ID,
       object: "model",
-      display_name: "Gemma 4 26B",
+      display_name: GEMMA_MODEL_NAME,
       size_gb: 28,
       min_ram_gb: 36,
       architecture: "MoE",
@@ -53,34 +76,34 @@ beforeEach(() => {
   ]);
   apiMocks.fetchPricing.mockResolvedValue({
     prices: [
-      { model: "gemma-4-26b", input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
+      { model: GEMMA_MODEL_ID, input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
     ],
   });
 });
 
 describe("model variant dedupe", () => {
   const variants = [
-    { id: "gpt-oss-20b", object: "model", display_name: "GPT-OSS 20B", family: "gpt-oss" },
-    { id: "gemma-4-26b-qat-4bit", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
-    { id: "gemma-4-26b", object: "model", display_name: "Gemma 4 26B", family: "gemma" },
+    { id: GPT_MODEL_ID, object: "model", display_name: GPT_MODEL_NAME, family: "gpt-oss" },
+    { id: "gemma-4-26b-qat-4bit", object: "model", display_name: GEMMA_MODEL_NAME, family: "gemma" },
+    { id: GEMMA_MODEL_ID, object: "model", display_name: GEMMA_MODEL_NAME, family: "gemma" },
     { id: "gemma-4-26b-8bit", object: "model", display_name: "Gemma 4 26B 8-bit (rollback)", family: "gemma" },
   ];
 
   it("strips quant / build suffixes to a base key", () => {
-    expect(baseModelKey("gemma-4-26b-qat-4bit")).toBe("gemma-4-26b");
-    expect(baseModelKey("gemma-4-26b-8bit")).toBe("gemma-4-26b");
-    expect(baseModelKey("gemma-4-26b")).toBe("gemma-4-26b");
-    expect(baseModelKey("gpt-oss-20b")).toBe("gpt-oss-20b");
+    expect(baseModelKey("gemma-4-26b-qat-4bit")).toBe(GEMMA_MODEL_ID);
+    expect(baseModelKey("gemma-4-26b-8bit")).toBe(GEMMA_MODEL_ID);
+    expect(baseModelKey(GEMMA_MODEL_ID)).toBe(GEMMA_MODEL_ID);
+    expect(baseModelKey(GPT_MODEL_ID)).toBe(GPT_MODEL_ID);
   });
 
   it("collapses the catalog to one canonical entry per base model", () => {
     const out = dedupeModelVariants(variants);
-    expect(out.map((m) => m.id).sort()).toEqual(["gemma-4-26b", "gpt-oss-20b"]);
+    expect(out.map((m) => m.id).sort()).toEqual([GEMMA_MODEL_ID, GPT_MODEL_ID]);
   });
 
   it("buildCatalogModels yields exactly two clean models", () => {
     const built = buildCatalogModels(variants, null);
-    expect(built.map((m) => m.name).sort()).toEqual(["GPT-OSS 20B", "Gemma 4 26B"]);
+    expect(built.map((m) => m.name).sort()).toEqual([GPT_MODEL_NAME, GEMMA_MODEL_NAME]);
   });
 });
 
@@ -102,7 +125,7 @@ describe("EarnPage", () => {
     expect(screen.getByText("Needs 36 GB+ of unified memory")).toBeInTheDocument();
   });
 
-  it("lets under-provisioned machines register interest in smaller models", async () => {
+  it("sends under-provisioned machines to durable availability registration", async () => {
     window.localStorage.clear();
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
@@ -111,15 +134,14 @@ describe("EarnPage", () => {
     fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
     fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
 
-    const notifyButton = await screen.findByRole("button", {
-      name: /Notify me when smaller models launch/,
+    const waitlistLink = await screen.findByRole("link", {
+      name: /Register this Mac's hardware interest/,
     });
-    fireEvent.click(notifyButton);
-
-    expect(
-      await screen.findByText(/You're on the list — we'll notify you when smaller models go live/)
-    ).toBeInTheDocument();
-    expect(window.localStorage.getItem("darkbloom.smallModelsInterest")).toContain('"chip":"M1"');
+    expect(waitlistLink).toHaveAttribute(
+      "href",
+      "/provider-waitlist?chip=M1&memory_gb=16"
+    );
+    expect(window.localStorage.getItem("darkbloom.smallModelsInterest")).toBeNull();
   });
 
   it("always prices the best-earning model automatically (read-only list, no selection)", async () => {

@@ -257,6 +257,21 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ON hardware_admission_attempts(account_id, created_at DESC) WHERE account_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_serial
 			ON hardware_admission_attempts(serial_number, created_at DESC) WHERE serial_number != ''`,
+		`CREATE TABLE IF NOT EXISTS provider_waitlist_signups (
+			email TEXT PRIMARY KEY,
+			chip TEXT NOT NULL,
+			memory_gb INT NOT NULL CHECK (memory_gb BETWEEN 4 AND 1024),
+			gpu_cores INT NOT NULL DEFAULT 0 CHECK (gpu_cores BETWEEN 0 AND 512),
+			other_machine TEXT NOT NULL DEFAULT '',
+			submitted_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE provider_waitlist_signups
+			ADD COLUMN IF NOT EXISTS gpu_cores INT NOT NULL DEFAULT 0
+			CHECK (gpu_cores BETWEEN 0 AND 512)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_waitlist_signups_updated
+			ON provider_waitlist_signups(updated_at DESC)`,
 
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,

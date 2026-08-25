@@ -70,6 +70,22 @@ func (p Policy) Validate() error {
 	return nil
 }
 
+// ValidateForActivation rejects an enforcement policy that contains no
+// capacity threshold. Such a policy still checks identity, but silently admits
+// every catalogued machine and is almost always a deployment typo.
+func (p Policy) ValidateForActivation() error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if p.Mode == ModeEnforce &&
+		p.MinMemoryGB == 0 &&
+		p.MinMemoryBandwidthGBs == 0 &&
+		p.MinFP16MilliTFLOPS == 0 {
+		return fmt.Errorf("enforce mode requires at least one positive hardware threshold")
+	}
+	return nil
+}
+
 type Input struct {
 	MachineModel string
 	ChipName     string

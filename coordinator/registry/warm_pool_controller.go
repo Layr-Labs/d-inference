@@ -689,7 +689,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust
 	}
-	if r.hardwareAdmissionEnforced.Load() && !p.HardwareAdmitted {
+	if !r.providerHardwareEligibleLocked(p) {
 		return warmPoolCandidate{}, warmColdNotAdmitted
 	}
 	if r.providerHasPendingLoad(p.ID) || r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {

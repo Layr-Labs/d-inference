@@ -55,6 +55,30 @@ import Testing
     #expect(register.privacyCapabilities?.textBackendInprocess == true)
 }
 
+@Test func registrationRefreshesAttestationForEveryEncoding() throws {
+    let attestations = RegistrationAttestationSequence()
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        attestationProvider: { attestations.next() }
+    )
+
+    let first = try ProviderProtocolCodec.decodeProviderMessage(
+        from: CoordinatorClientCodec.encodeRegistration(from: config))
+    let second = try ProviderProtocolCodec.decodeProviderMessage(
+        from: CoordinatorClientCodec.encodeRegistration(from: config))
+    guard case .register(let firstRegistration) = first,
+          case .register(let secondRegistration) = second
+    else {
+        throw ClientTestFailure.unexpectedMessage
+    }
+
+    #expect(firstRegistration.attestation?.rawBytes != secondRegistration.attestation?.rawBytes)
+    #expect(attestations.value == 2)
+}
+
 @Test func registrationHonorsLateApnsTokenOverride() throws {
     // Provider started without an APNs token (slow APNs / GUI still coming up),
     // so the config carries none. A token that arrives later must override the
@@ -610,4 +634,23 @@ private final class LiveTokenBox: @unchecked Sendable {
     init(_ value: String?) { self.value = value }
     func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
     func set(_ newValue: String?) { lock.lock(); value = newValue; lock.unlock() }
+}
+
+private final class RegistrationAttestationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sequence = 0
+
+    func next() -> RawJSON {
+        lock.lock()
+        sequence += 1
+        let current = sequence
+        lock.unlock()
+        return RawJSON(rawBytes: Data(#"{"sequence":\#(current)}"#.utf8))
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sequence
+    }
 }

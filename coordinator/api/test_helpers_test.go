@@ -47,6 +47,7 @@ func testWithdrawServer(t *testing.T) (*Server, *store.MemoryStore) {
 func withPrivyUser(r *http.Request, user *store.User) *http.Request {
 	ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 	ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+	ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 	return r.WithContext(ctx)
 }
 

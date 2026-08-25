@@ -173,19 +173,23 @@ public final class AttestationBuilder: @unchecked Sendable {
     ///     to this attestation.
     ///   - binaryHash: Optional SHA-256 hex hash of the provider binary. The
     ///     coordinator verifies this matches the expected blessed version.
+    ///   - hardware: The exact hardware snapshot advertised in registration.
+    ///     Supplying it prevents a second fallible system probe from disagreeing
+    ///     with the signed registration claims.
     public func buildAttestation(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        hardware: HardwareInfo? = nil
     ) throws -> SignedAttestation {
-        let hardware = try? HardwareDetector.detect()
+        let signedHardware = hardware ?? (try? HardwareDetector.detect())
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
-            chipName: hardware?.chipName ?? detectChipName(),
+            chipName: signedHardware?.chipName ?? detectChipName(),
             encryptionPublicKey: encryptionPublicKey,
-            gpuCores: hardware?.gpuCores,
-            hardwareModel: hardware?.machineModel ?? detectHardwareModel(),
-            memoryGb: hardware?.memoryGb,
+            gpuCores: signedHardware?.gpuCores,
+            hardwareModel: signedHardware?.machineModel ?? detectHardwareModel(),
+            memoryGb: signedHardware?.memoryGb,
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),
@@ -220,11 +224,13 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// preserve the exact encoding needed for signature verification.
     public func buildAttestationJSON(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        hardware: HardwareInfo? = nil
     ) throws -> Data {
         let signed = try buildAttestation(
             encryptionPublicKey: encryptionPublicKey,
-            binaryHash: binaryHash
+            binaryHash: binaryHash,
+            hardware: hardware
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

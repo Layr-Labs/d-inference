@@ -73,3 +73,16 @@ func TestPolicyValidate(t *testing.T) {
 		t.Fatal("unsupported catalog accepted")
 	}
 }
+
+func TestEnforceActivationRequiresCapacityThreshold(t *testing.T) {
+	if err := (Policy{
+		Mode: ModeEnforce, CatalogVersion: CatalogVersion,
+	}).ValidateForActivation(); err == nil {
+		t.Fatal("zero-threshold enforce policy was accepted")
+	}
+	if err := (Policy{
+		Mode: ModeEnforce, MinMemoryGB: 32, CatalogVersion: CatalogVersion,
+	}).ValidateForActivation(); err != nil {
+		t.Fatalf("positive-threshold enforce policy rejected: %v", err)
+	}
+}

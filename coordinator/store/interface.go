@@ -52,6 +52,7 @@ type Store interface {
 	ProviderEarningsStore
 	ProviderStore
 	HardwareAdmissionStore
+	ProviderWaitlistStore
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry

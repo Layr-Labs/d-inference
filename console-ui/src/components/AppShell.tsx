@@ -27,8 +27,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Device-linking page — no shell
-  if (pathname === "/link") {
+  // Focused public flows own their navigation and do not need the app shell.
+  if (pathname === "/link" || pathname === "/provider-waitlist") {
     return <>{children}</>;
   }
 

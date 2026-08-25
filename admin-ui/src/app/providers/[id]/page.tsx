@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import {
-  getMachineBySerial,
+  getMachineByProviderID,
   getMachineReputation,
   getRecentUsageForProvider,
   type ProviderUsageRow,
@@ -45,7 +45,6 @@ function BoolBadge({ value }: { value: boolean }) {
   );
 }
 
-// A labelled key/value grid. Keeps each section consistent and presentational.
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-2">
@@ -120,18 +119,17 @@ const USAGE_COLUMNS: Column<ProviderUsageRow>[] = [
 export default async function MachineDetailPage({
   params,
 }: {
-  params: Promise<{ serial: string }>;
+  params: Promise<{ id: string }>;
 }) {
-  const { serial } = await params;
+  const { id } = await params;
 
-  const machine = await getMachineBySerial(serial);
+  const machine = await getMachineByProviderID(id);
   if (!machine) {
     return (
       <div className="space-y-4">
         <h1 className="text-lg font-semibold">Machine not found</h1>
         <p className="text-sm text-[var(--text-dim)]">
-          No provider session exists for serial{" "}
-          <span className="mono">{serial}</span>.
+          No provider session exists for provider ID <span className="mono">{id}</span>.
         </p>
       </div>
     );
@@ -142,12 +140,10 @@ export default async function MachineDetailPage({
     getRecentUsageForProvider(machine.id, 20),
   ]);
 
-  // Session history is tolerant of the provider_sessions table not existing yet
-  // (it only appears after a coordinator deploy with session capture).
   let sessions: SessionRow[] = [];
   let sessionsNotDeployed = false;
   try {
-    sessions = await getMachineSessions(serial, 50);
+    sessions = await getMachineSessions(id, 50);
   } catch (err) {
     if (!isUndefinedTable(err)) throw err;
     sessionsNotDeployed = true;
@@ -159,7 +155,7 @@ export default async function MachineDetailPage({
     <div className="space-y-6">
       <header className="space-y-1">
         <div className="flex items-center gap-3">
-          <h1 className="mono text-lg font-semibold">{machine.serial_number}</h1>
+          <h1 className="mono text-lg font-semibold">{machine.id}</h1>
           <OnlineBadge lastSeen={machine.last_seen} />
         </div>
         <p className="text-sm text-[var(--text-dim)]">
@@ -303,10 +299,10 @@ export default async function MachineDetailPage({
         {machine.models.length ? (
           <ul className="space-y-1 text-sm">
             {machine.models.map((m, i) => {
-              const id = typeof m.id === "string" ? m.id : JSON.stringify(m);
+              const modelID = typeof m.id === "string" ? m.id : JSON.stringify(m);
               return (
                 <li key={i} className="mono text-[var(--text-dim)]">
-                  {id}
+                  {modelID}
                 </li>
               );
             })}

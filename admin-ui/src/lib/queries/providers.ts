@@ -2,8 +2,7 @@ import "server-only";
 import { query } from "@/lib/db";
 
 export interface MachineRow {
-  serial_number: string;
-  session_id: string;
+  provider_id: string;
   account_id: string;
   email: string | null;
   chip_name: string | null;
@@ -21,8 +20,8 @@ export interface MachineRow {
   lifetime_tokens_generated: string;
 }
 
-// One row per physical machine (deduped by serial_number, keeping the most
-// recent session row), joined to the owner's email. Ordered by recency.
+// One row per physical machine, deduped by coordinator-private serial number
+// while exposing only the latest opaque provider id to the browser.
 //
 // NOTE on uptime: the schema only persists `last_seen` (a 30s-throttled
 // heartbeat). There is no connect/disconnect history, so "online" is a
@@ -41,8 +40,7 @@ export async function listMachines(limit = 200, offset = 0): Promise<MachineRow[
         WHERE serial_number <> ''
         ORDER BY serial_number, last_seen DESC
      )
-     SELECT l.serial_number,
-            l.id                         AS session_id,
+     SELECT l.id                         AS provider_id,
             l.account_id,
             u.email,
             l.hardware->>'chip_name'     AS chip_name,
@@ -68,9 +66,22 @@ export async function listMachines(limit = 200, offset = 0): Promise<MachineRow[
     [limit, offset],
   );
   return rows.map((r) => ({
-    ...r,
+    provider_id: r.provider_id,
+    account_id: r.account_id,
+    email: r.email,
+    chip_name: r.chip_name,
     memory_gb: r.memory_gb === null ? null : Number(r.memory_gb),
     gpu_cores: r.gpu_cores === null ? null : Number(r.gpu_cores),
+    machine_model: r.machine_model,
+    version: r.version,
+    trust_level: r.trust_level,
+    attested: r.attested,
+    mda_verified: r.mda_verified,
+    model_ids: r.model_ids,
+    last_seen: r.last_seen,
+    registered_at: r.registered_at,
+    lifetime_requests_served: r.lifetime_requests_served,
+    lifetime_tokens_generated: r.lifetime_tokens_generated,
   }));
 }
 

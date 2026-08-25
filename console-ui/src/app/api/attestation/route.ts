@@ -24,38 +24,32 @@ interface AttestationProvider {
   last_challenge_time?: string;
 }
 
-const PUBLIC_ATTESTATION_FIELDS = [
-  "provider_id",
-  "chip_name",
-  "hardware_model",
-  "trust_level",
-  "status",
-  "memory_gb",
-  "gpu_cores",
-  "models",
-  "secure_enclave",
-  "sip_enabled",
-  "secure_boot_enabled",
-  "authenticated_root_enabled",
-  "system_volume_hash",
-  "se_public_key",
-  "mdm_verified",
-  "acme_verified",
-  "mda_verified",
-  "mda_os_version",
-  "mda_sepos_version",
-  "last_challenge_time",
-] as const;
-
 function projectProvider(value: unknown): AttestationProvider | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
-  const source = value as Record<string, unknown>;
-  const projected: Record<string, unknown> = {};
-  for (const key of PUBLIC_ATTESTATION_FIELDS) {
-    if (source[key] !== undefined) projected[key] = source[key];
-  }
-  return projected as AttestationProvider;
+  const source = value as AttestationProvider;
+  return {
+    provider_id: source.provider_id,
+    chip_name: source.chip_name,
+    hardware_model: source.hardware_model,
+    trust_level: source.trust_level,
+    status: source.status,
+    memory_gb: source.memory_gb,
+    gpu_cores: source.gpu_cores,
+    models: source.models,
+    secure_enclave: source.secure_enclave,
+    sip_enabled: source.sip_enabled,
+    secure_boot_enabled: source.secure_boot_enabled,
+    authenticated_root_enabled: source.authenticated_root_enabled,
+    system_volume_hash: source.system_volume_hash,
+    se_public_key: source.se_public_key,
+    mdm_verified: source.mdm_verified,
+    acme_verified: source.acme_verified,
+    mda_verified: source.mda_verified,
+    mda_os_version: source.mda_os_version,
+    mda_sepos_version: source.mda_sepos_version,
+    last_challenge_time: source.last_challenge_time,
+  };
 }
 
 function projectPublicFeed(data: unknown): { providers: AttestationProvider[] } {

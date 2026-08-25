@@ -3,8 +3,8 @@ package api
 // request_introspection.go holds helpers for introspecting and lightly
 // reshaping inbound inference request bodies before routing/dispatch:
 // token and cost estimation (routing vs billing), media/tool detection,
-// remote media-URL rejection and
-// provider-serial allowlist parsing. Most are pure helpers with no Server
+// remote media-URL rejection, and private routing-field stripping. Most are
+// pure helpers with no Server
 // state; the pre-dispatch media-URL rejection (rejectRemoteMediaURLs) hangs
 // off *Server only to record rejection telemetry. Split out of consumer.go
 // to keep the request-handling orchestrator thin.
@@ -19,7 +19,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 

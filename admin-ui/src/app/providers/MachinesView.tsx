@@ -44,16 +44,16 @@ const COLUMNS: ICol<MachineRow>[] = [
       ),
   },
   {
-    key: "serial_number",
-    header: "Serial",
+    key: "provider_id",
+    header: "Provider ID",
     mono: true,
-    sortValue: (m) => m.serial_number,
+    sortValue: (m) => m.provider_id,
     render: (m) => (
       <Link
-        href={`/providers/${m.serial_number}`}
+        href={`/providers/${m.provider_id}`}
         className="text-[var(--accent)] hover:underline"
       >
-        {m.serial_number}
+        {m.provider_id}
       </Link>
     ),
   },
@@ -93,9 +93,9 @@ export function MachinesView({ rows }: { rows: MachineRow[] }) {
       rows={rows}
       columns={COLUMNS}
       searchText={(m) =>
-        `${m.email ?? ""} ${m.serial_number} ${m.chip_name ?? ""} ${m.trust_level} ${m.model_ids.join(" ")}`
+        `${m.email ?? ""} ${m.provider_id} ${m.chip_name ?? ""} ${m.trust_level} ${m.model_ids.join(" ")}`
       }
-      searchPlaceholder="Filter by email, serial, chip, model…"
+      searchPlaceholder="Filter by email, provider ID, chip, model…"
       copyField={(m) => m.email}
       copyLabel="Copy owner emails"
       empty="No machines."

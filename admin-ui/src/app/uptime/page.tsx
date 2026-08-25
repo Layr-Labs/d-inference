@@ -20,16 +20,16 @@ const COLUMNS: Column<SessionRow>[] = [
       ),
   },
   {
-    key: "serial_number",
-    header: "Serial",
+    key: "session_id",
+    header: "Provider ID",
     mono: true,
     render: (s) =>
-      s.serial_number ? (
+      s.session_id ? (
         <Link
-          href={`/providers/${s.serial_number}`}
+          href={`/providers/${s.session_id}`}
           className="text-[var(--accent)] hover:underline"
         >
-          {s.serial_number}
+          {s.session_id}
         </Link>
       ) : (
         <span className="text-[var(--text-faint)]">—</span>

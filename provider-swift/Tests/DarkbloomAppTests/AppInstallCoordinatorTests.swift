@@ -1319,12 +1319,15 @@ struct AppInstallCoordinatorTests {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let source = try fixture.makeDownloadedApp()
-        let executable = source.appendingPathComponent("Contents/MacOS/DarkbloomApp")
-        try FileManager.default.removeItem(at: executable)
-        try FileManager.default.copyItem(
-            at: URL(fileURLWithPath: "/usr/bin/true"),
-            to: executable
-        )
+        let macOS = source.appendingPathComponent("Contents/MacOS")
+        for name in ["DarkbloomApp", "darkbloom", "darkbloom-enclave"] {
+            let executable = macOS.appendingPathComponent(name)
+            try FileManager.default.removeItem(at: executable)
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: "/usr/bin/true"),
+                to: executable
+            )
+        }
         try runTestProcess(
             "/usr/bin/codesign",
             ["--force", "--deep", "--sign", "-", source.path]

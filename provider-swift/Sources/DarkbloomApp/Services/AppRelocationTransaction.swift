@@ -840,20 +840,20 @@ private enum DurableFilesystem {
         at url: URL,
         initialStatus: stat
     ) throws -> AppRelocationTransaction.ArtifactState {
-        let identity = identity(of: initialStatus)
+        let initialIdentity = identity(of: initialStatus)
         let hash = try treeHash(root: url)
         var finalStatus = stat()
         guard lstat(url.path, &finalStatus) == 0 else {
             throw filesystemError("reinspect \(url.path) after hashing")
         }
-        guard identity(of: finalStatus) == identity else {
+        guard identity(of: finalStatus) == initialIdentity else {
             throw filesystemError(
                 "refuse \(url.path), which changed while hashing",
                 code: EBUSY
             )
         }
         return AppRelocationTransaction.ArtifactState(
-            identity: identity,
+            identity: initialIdentity,
             contentHash: hash
         )
     }

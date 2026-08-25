@@ -26,6 +26,42 @@ struct ReleaseArchivePreflightTests {
         try ReleaseArchivePreflight.validate(archive)
     }
 
+    @Test("rejects GNU long-name aliases")
+    func rejectsGNULongNameAliases() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let cases: [(String, Data, String)] = [
+            (
+                "terminal-newline",
+                Data("safe-name\n".utf8),
+                "non-portable bytes"
+            ),
+            (
+                "newline-before-terminator",
+                Data("safe-name\n".utf8) + Data([0]),
+                "non-portable bytes"
+            ),
+            (
+                "data-after-terminator",
+                Data("safe-name".utf8) + Data([0]) + Data("other-name".utf8),
+                "after its NUL terminator"
+            ),
+        ]
+
+        for (name, payload, expected) in cases {
+            let archive = try fixture.writeArchive(
+                named: name,
+                entries: [
+                    .init(
+                        name: "././@LongLink",
+                        typeflag: 76,
+                        body: payload),
+                    .init(name: "placeholder"),
+                ])
+            expectPreflightFailure(archive, contains: expected)
+        }
+    }
+
     @Test("rejects unsafe aliases and file-directory conflicts")
     func rejectsUnsafePaths() throws {
         let fixture = try ArchivePreflightFixture()
@@ -45,6 +81,33 @@ struct ReleaseArchivePreflightTests {
                 "backslash",
                 [.init(name: #"bin\darkbloom"#)],
                 "backslash"
+            ),
+            (
+                "regular-trailing-slash",
+                [.init(name: "regular/")],
+                "ends with a slash"
+            ),
+            (
+                "pax-regular-trailing-slash",
+                [
+                    .init(
+                        name: "PaxHeaders/regular",
+                        typeflag: 120,
+                        body: paxRecord(key: "path", value: "regular/")),
+                    .init(name: "placeholder"),
+                ],
+                "ends with a slash"
+            ),
+            (
+                "gnu-regular-trailing-slash",
+                [
+                    .init(
+                        name: "././@LongLink",
+                        typeflag: 76,
+                        body: Data("regular/".utf8) + Data([0])),
+                    .init(name: "placeholder"),
+                ],
+                "ends with a slash"
             ),
             (
                 "duplicate",
@@ -144,6 +207,11 @@ struct ReleaseArchivePreflightTests {
     func rejectsInvalidBase256Sizes() throws {
         let fixture = try ArchivePreflightFixture()
         defer { fixture.remove() }
+        let nearBoundaryOverflow = Data([
+            0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ])
         let cases: [(String, Data, String)] = [
             (
                 "negative",
@@ -153,6 +221,11 @@ struct ReleaseArchivePreflightTests {
             (
                 "overflow",
                 Data([0x80] + Array(repeating: 0xff, count: 11)),
+                "overflows Int64"
+            ),
+            (
+                "int64-boundary-overflow",
+                nearBoundaryOverflow,
                 "overflows Int64"
             ),
         ]
@@ -180,6 +253,18 @@ struct ReleaseArchivePreflightTests {
                 "GNU.sparse.realsize",
                 "4294967297",
                 "unsupported sparse PAX metadata"
+            ),
+            (
+                "solaris-sparse",
+                "SUN.holesdata",
+                " 512 1024",
+                "unsupported sparse PAX metadata"
+            ),
+            (
+                "int64-boundary-overflow",
+                "size",
+                "9223372036854775808",
+                "overflows"
             ),
             (
                 "overflow",
@@ -217,7 +302,7 @@ struct ReleaseArchivePreflightTests {
         var policy = testPolicy()
         policy = ReleaseArchivePolicy(
             maxCompressedBytes: policy.maxCompressedBytes,
-            maxExpandedBytes: 15,
+            maxExpandedBytes: 2047,
             maxEntries: policy.maxEntries,
             maxPathBytes: policy.maxPathBytes,
             maxComponentBytes: policy.maxComponentBytes,
@@ -266,6 +351,31 @@ struct ReleaseArchivePreflightTests {
             paxArchive,
             policy: oneEntryPolicy,
             contains: "entry limit")
+    }
+
+    @Test("counts tar headers and zero trailer in expanded bytes")
+    func countsCompleteExpandedStream() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        var raw = rawTarArchive([
+            .init(name: "file"),
+        ])
+        raw.append(Data(repeating: 0, count: 512))
+        let archive = try fixture.writeRawArchive(
+            named: "zero-trailer-limit",
+            raw: raw)
+        let policy = ReleaseArchivePolicy(
+            maxCompressedBytes: ReleaseArchivePolicy.maxCompressedBytes,
+            maxExpandedBytes: UInt64(raw.count - 512),
+            maxEntries: ReleaseArchivePolicy.maxEntries,
+            maxPathBytes: ReleaseArchivePolicy.maxPathBytes,
+            maxComponentBytes: ReleaseArchivePolicy.maxComponentBytes,
+            maxMetadataBytes: ReleaseArchivePolicy.maxMetadataBytes)
+
+        expectPreflightFailure(
+            archive,
+            policy: policy,
+            contains: "expanded-size limit")
     }
 
     @Test("rejects malformed checksum trailer and gzip stream")

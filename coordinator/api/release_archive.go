@@ -9,11 +9,11 @@ import (
 
 // Release archives are currently about 170 MiB compressed and comfortably
 // below 1 GiB expanded. These limits leave substantial room for signed app
-// growth and duplicated flat verifier binaries while bounding disk, inode,
-// parser-memory, and path-complexity exposure on every release consumer.
+// growth and duplicated flat verifier binaries while bounding decompression,
+// disk, inode, parser-memory, and path-complexity exposure on every consumer.
 const (
 	maxReleaseArtifactBytes         int64 = 2 << 30 // 2 GiB compressed
-	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB file/metadata payload
+	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB decompressed tar stream
 	maxReleaseArchiveEntries              = 16 * 1024
 	maxReleaseArchivePathBytes            = 4 * 1024
 	maxReleaseArchiveComponentBytes       = 255
@@ -55,8 +55,9 @@ type releaseArchiveEntry struct {
 type releaseArchiveVisitor func(releaseArchiveEntry, io.Reader) error
 
 type releaseArchivePendingMetadata struct {
-	path *string
-	size *int64
+	path                 *string
+	pathHasTrailingSlash bool
+	size                 *int64
 }
 
 type releaseArchivePathTracker struct {
@@ -96,8 +97,20 @@ func validateReleaseArchive(
 		if err != nil {
 			return err
 		}
+		if err := addReleaseExpandedBytes(
+			&expandedBytes,
+			releaseTarBlockSize,
+			policy,
+		); err != nil {
+			return err
+		}
 		if releaseTarBlockIsZero(header) {
-			if err := validateReleaseTarEnd(r, &pending); err != nil {
+			if err := validateReleaseTarEnd(
+				r,
+				&pending,
+				&expandedBytes,
+				policy,
+			); err != nil {
 				return err
 			}
 			return nil
@@ -130,7 +143,11 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive PAX metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(
+				&expandedBytes,
+				headerSize,
+				policy,
+			); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
@@ -149,7 +166,11 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive global PAX metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(
+				&expandedBytes,
+				headerSize,
+				policy,
+			); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
@@ -168,19 +189,29 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive GNU long-name metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(
+				&expandedBytes,
+				headerSize,
+				policy,
+			); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
 			if err != nil {
 				return fmt.Errorf("read release archive GNU long-name metadata: %w", err)
 			}
-			longName := string(bytes.TrimRight(payload, "\x00\n"))
-			cleanName, err := cleanReleaseArchivePath(longName, policy)
+			cleanName, hasTrailingSlash, err := parseReleaseGNULongName(
+				payload,
+				policy,
+			)
 			if err != nil {
 				return fmt.Errorf("release archive GNU long name: %w", err)
 			}
-			if err := mergeReleasePendingPath(&pending, cleanName); err != nil {
+			if err := mergeReleasePendingPath(
+				&pending,
+				cleanName,
+				hasTrailingSlash,
+			); err != nil {
 				return err
 			}
 			continue
@@ -192,8 +223,10 @@ func validateReleaseArchive(
 		if err != nil {
 			return fmt.Errorf("release archive entry path %q: %w", headerPath, err)
 		}
+		pathHasTrailingSlash := strings.HasSuffix(headerPath, "/")
 		if pending.path != nil {
 			effectivePath = *pending.path
+			pathHasTrailingSlash = pending.pathHasTrailingSlash
 		}
 		effectiveSize := headerSize
 		if pending.size != nil {
@@ -205,6 +238,12 @@ func validateReleaseArchive(
 		switch typeflag {
 		case 0, '0':
 			kind = releaseArchiveRegular
+			if pathHasTrailingSlash {
+				return fmt.Errorf(
+					"release archive regular-file path %q ends with a slash",
+					effectivePath,
+				)
+			}
 		case '5':
 			kind = releaseArchiveDirectory
 			if effectiveSize != 0 {
@@ -221,7 +260,11 @@ func validateReleaseArchive(
 		if err := tracker.add(effectivePath, kind); err != nil {
 			return err
 		}
-		if err := addReleaseExpandedBytes(&expandedBytes, effectiveSize, policy); err != nil {
+		if err := addReleaseTarPayloadBytes(
+			&expandedBytes,
+			effectiveSize,
+			policy,
+		); err != nil {
 			return err
 		}
 
@@ -269,6 +312,8 @@ func releaseTarBlockIsZero(block []byte) bool {
 func validateReleaseTarEnd(
 	r io.Reader,
 	pending *releaseArchivePendingMetadata,
+	expandedBytes *int64,
+	policy releaseArchivePolicy,
 ) error {
 	if pending.path != nil || pending.size != nil {
 		return fmt.Errorf("release archive ends with dangling path or size metadata")
@@ -277,6 +322,13 @@ func validateReleaseTarEnd(
 	second, err := readReleaseTarBlock(r)
 	if err != nil {
 		return fmt.Errorf("release archive is missing the second tar end marker: %w", err)
+	}
+	if err := addReleaseExpandedBytes(
+		expandedBytes,
+		releaseTarBlockSize,
+		policy,
+	); err != nil {
+		return err
 	}
 	if !releaseTarBlockIsZero(second) {
 		return fmt.Errorf("release archive has an incomplete tar end marker")
@@ -287,6 +339,13 @@ func validateReleaseTarEnd(
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
+			if err := addReleaseExpandedBytes(
+				expandedBytes,
+				int64(n),
+				policy,
+			); err != nil {
+				return err
+			}
 			trailingBytes += int64(n)
 			for _, value := range buf[:n] {
 				if value != 0 {
@@ -463,11 +522,13 @@ func parseReleasePAX(
 		}
 		switch key {
 		case "path":
-			cleanPath, err := cleanReleaseArchivePath(string(value), policy)
+			rawPath := string(value)
+			cleanPath, err := cleanReleaseArchivePath(rawPath, policy)
 			if err != nil {
 				return attrs, fmt.Errorf("release archive PAX path: %w", err)
 			}
 			attrs.path = &cleanPath
+			attrs.pathHasTrailingSlash = strings.HasSuffix(rawPath, "/")
 		case "linkpath":
 			if _, err := cleanReleaseArchivePath(string(value), policy); err != nil {
 				return attrs, fmt.Errorf("release archive PAX link path: %w", err)
@@ -491,7 +552,8 @@ func releasePAXKeyIsSparse(key string) bool {
 	return key == "GNU.sparse" ||
 		strings.HasPrefix(key, "GNU.sparse.") ||
 		key == "SCHILY.realsize" ||
-		strings.HasPrefix(key, "LIBARCHIVE.sparse")
+		strings.HasPrefix(key, "LIBARCHIVE.sparse") ||
+		key == "SUN.holesdata"
 }
 
 func parseReleaseDecimal(raw []byte, limit int64, label string) (int64, error) {
@@ -517,7 +579,11 @@ func mergeReleasePendingMetadata(
 	attrs releaseArchivePendingMetadata,
 ) error {
 	if attrs.path != nil {
-		if err := mergeReleasePendingPath(pending, *attrs.path); err != nil {
+		if err := mergeReleasePendingPath(
+			pending,
+			*attrs.path,
+			attrs.pathHasTrailingSlash,
+		); err != nil {
 			return err
 		}
 	}
@@ -534,13 +600,40 @@ func mergeReleasePendingMetadata(
 func mergeReleasePendingPath(
 	pending *releaseArchivePendingMetadata,
 	cleanPath string,
+	hasTrailingSlash bool,
 ) error {
-	if pending.path != nil && *pending.path != cleanPath {
+	if pending.path != nil &&
+		(*pending.path != cleanPath ||
+			pending.pathHasTrailingSlash != hasTrailingSlash) {
 		return fmt.Errorf("release archive contains conflicting path metadata")
 	}
 	pathCopy := cleanPath
 	pending.path = &pathCopy
+	pending.pathHasTrailingSlash = hasTrailingSlash
 	return nil
+}
+
+func parseReleaseGNULongName(
+	payload []byte,
+	policy releaseArchivePolicy,
+) (string, bool, error) {
+	pathBytes := payload
+	if nul := bytes.IndexByte(payload, 0); nul >= 0 {
+		for _, value := range payload[nul:] {
+			if value != 0 {
+				return "", false, fmt.Errorf(
+					"contains non-zero bytes after its NUL terminator",
+				)
+			}
+		}
+		pathBytes = payload[:nul]
+	}
+	rawPath := string(pathBytes)
+	cleanPath, err := cleanReleaseArchivePath(rawPath, policy)
+	if err != nil {
+		return "", false, err
+	}
+	return cleanPath, strings.HasSuffix(rawPath, "/"), nil
 }
 
 func cleanReleaseArchivePath(
@@ -651,6 +744,19 @@ func addReleaseExpandedBytes(
 	}
 	*total += size
 	return nil
+}
+
+func addReleaseTarPayloadBytes(
+	total *int64,
+	size int64,
+	policy releaseArchivePolicy,
+) error {
+	if err := addReleaseExpandedBytes(total, size, policy); err != nil {
+		return err
+	}
+	padding := (releaseTarBlockSize - size%releaseTarBlockSize) %
+		releaseTarBlockSize
+	return addReleaseExpandedBytes(total, padding, policy)
 }
 
 func readReleaseTarPayload(r io.Reader, size int64) ([]byte, error) {

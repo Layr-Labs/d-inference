@@ -3,7 +3,7 @@ import Foundation
 /// Bounds shared with the coordinator and shell installer. The current signed
 /// release is about 170 MiB compressed and comfortably below 1 GiB expanded;
 /// this envelope leaves substantial app-growth and flat-verifier headroom
-/// while bounding disk, inode, parser-memory, and path-complexity exposure.
+/// while bounding decompression, disk, inode, parser-memory, and path exposure.
 struct ReleaseArchivePolicy: Sendable {
     static let maxCompressedBytes: UInt64 = 2 * 1024 * 1024 * 1024
     static let maxExpandedBytes: UInt64 = 4 * 1024 * 1024 * 1024
@@ -178,6 +178,7 @@ private enum ReleaseArchiveNodeKind {
 
 private struct ReleaseArchivePendingMetadata {
     var path: String?
+    var pathHasTrailingSlash = false
     var size: UInt64?
 }
 
@@ -257,6 +258,8 @@ private final class ReleaseTarValidator {
                     "release archive is missing the tar end marker")
             }
             let header = [UInt8](blockData)
+            try addExpandedBytes(
+                UInt64(ReleaseArchivePreflight.blockSize))
             if header.allSatisfy({ $0 == 0 }) {
                 try validateEndMarker()
                 return
@@ -296,13 +299,13 @@ private final class ReleaseTarValidator {
                 }
                 continue
             case 76: // L: GNU long name
-                var payload = try readMetadata(
+                let payload = try readMetadata(
                     size: headerSize,
                     label: "GNU long-name")
-                while payload.last == 0 || payload.last == 10 {
-                    payload.removeLast()
-                }
-                try mergePath(try cleanPath(payload))
+                let path = try cleanGNULongName(payload)
+                try mergePath(
+                    path.value,
+                    hasTrailingSlash: path.hasTrailingSlash)
                 continue
             case 75: // K: GNU long link
                 throw ReleaseArchivePreflightError(
@@ -317,6 +320,9 @@ private final class ReleaseTarValidator {
             } else {
                 effectivePath = try cleanPath(headerPath)
             }
+            let pathHasTrailingSlash = pending.path == nil
+                ? headerPath.last == 47
+                : pending.pathHasTrailingSlash
             let effectiveSize = pending.size ?? headerSize
             pending = ReleaseArchivePendingMetadata()
 
@@ -324,6 +330,10 @@ private final class ReleaseTarValidator {
             switch typeflag {
             case 0, 48:
                 kind = .regular
+                guard !pathHasTrailingSlash else {
+                    throw ReleaseArchivePreflightError(
+                        "release archive regular-file path \(effectivePath) ends with a slash")
+                }
             case 53:
                 kind = .directory
                 guard effectiveSize == 0 else {
@@ -340,7 +350,7 @@ private final class ReleaseTarValidator {
             }
 
             try pathTracker.add(effectivePath, kind: kind)
-            try addExpandedBytes(effectiveSize)
+            try addTarPayloadBytes(effectiveSize)
             try stream.skip(effectiveSize)
             try skipPadding(for: effectiveSize)
         }
@@ -357,6 +367,8 @@ private final class ReleaseTarValidator {
             throw ReleaseArchivePreflightError(
                 "release archive is missing the second tar end marker")
         }
+        try addExpandedBytes(
+            UInt64(ReleaseArchivePreflight.blockSize))
         guard second.allSatisfy({ $0 == 0 }) else {
             throw ReleaseArchivePreflightError(
                 "release archive has an incomplete tar end marker")
@@ -364,6 +376,7 @@ private final class ReleaseTarValidator {
 
         var trailingBytes: UInt64 = 0
         while let chunk = try stream.readChunk(maxCount: 32 * 1024) {
+            try addExpandedBytes(UInt64(chunk.count))
             guard chunk.allSatisfy({ $0 == 0 }) else {
                 throw ReleaseArchivePreflightError(
                     "release archive contains non-zero data after the tar end marker")
@@ -492,7 +505,7 @@ private final class ReleaseTarValidator {
             throw ReleaseArchivePreflightError(
                 "release archive \(label) metadata exceeds the \(policy.maxMetadataBytes)-byte limit")
         }
-        try addExpandedBytes(size)
+        try addTarPayloadBytes(size)
         guard let payload = try stream.readExactly(Int(size)) else {
             throw ReleaseArchivePreflightError(
                 "release archive contains truncated \(label) metadata")
@@ -560,6 +573,7 @@ private final class ReleaseTarValidator {
             switch key {
             case "path":
                 attributes.path = try cleanPath(value)
+                attributes.pathHasTrailingSlash = value.last == 47
             case "linkpath":
                 _ = try cleanPath(value)
             case "size":
@@ -583,6 +597,7 @@ private final class ReleaseTarValidator {
             || key.hasPrefix("GNU.sparse.")
             || key == "SCHILY.realsize"
             || key.hasPrefix("LIBARCHIVE.sparse")
+            || key == "SUN.holesdata"
     }
 
     private func parseDecimal(
@@ -614,7 +629,9 @@ private final class ReleaseTarValidator {
 
     private func merge(_ attributes: ReleaseArchivePendingMetadata) throws {
         if let path = attributes.path {
-            try mergePath(path)
+            try mergePath(
+                path,
+                hasTrailingSlash: attributes.pathHasTrailingSlash)
         }
         if let size = attributes.size {
             if let existing = pending.size, existing != size {
@@ -625,12 +642,36 @@ private final class ReleaseTarValidator {
         }
     }
 
-    private func mergePath(_ path: String) throws {
-        if let existing = pending.path, existing != path {
+    private func mergePath(
+        _ path: String,
+        hasTrailingSlash: Bool
+    ) throws {
+        if let existing = pending.path,
+           existing != path
+            || pending.pathHasTrailingSlash != hasTrailingSlash
+        {
             throw ReleaseArchivePreflightError(
                 "release archive contains conflicting path metadata")
         }
         pending.path = path
+        pending.pathHasTrailingSlash = hasTrailingSlash
+    }
+
+    private func cleanGNULongName(
+        _ payload: [UInt8]
+    ) throws -> (value: String, hasTrailingSlash: Bool) {
+        var pathBytes = payload
+        if let nul = payload.firstIndex(of: 0) {
+            guard payload[nul...].allSatisfy({ $0 == 0 }) else {
+                throw ReleaseArchivePreflightError(
+                    "release archive GNU long name contains non-zero bytes after its NUL terminator")
+            }
+            pathBytes = Array(payload[..<nul])
+        }
+        return (
+            try cleanPath(pathBytes),
+            pathBytes.last == 47
+        )
     }
 
     private func cleanPath(_ bytes: [UInt8]) throws -> String {
@@ -696,6 +737,13 @@ private final class ReleaseTarValidator {
                 "release archive exceeds the \(policy.maxExpandedBytes)-byte expanded-size limit")
         }
         expandedBytes = next
+    }
+
+    private func addTarPayloadBytes(_ size: UInt64) throws {
+        try addExpandedBytes(size)
+        let blockSize = UInt64(ReleaseArchivePreflight.blockSize)
+        let padding = (blockSize - size % blockSize) % blockSize
+        try addExpandedBytes(padding)
     }
 
     private func skipPadding(for size: UInt64) throws {

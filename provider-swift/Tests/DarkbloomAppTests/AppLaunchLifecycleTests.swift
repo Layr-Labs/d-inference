@@ -40,6 +40,49 @@ struct AppLaunchLifecycleTests {
         #expect(!delegate.installState.isInteractive)
     }
 
+    @Test("Committed relaunch failure exposes only the managed recovery action")
+    func committedRelaunchFailureUsesManagedDestination() {
+        let destination = URL(
+            fileURLWithPath: "/Users/test/.darkbloom/Darkbloom.app"
+        )
+        let source = URL(
+            fileURLWithPath: "/Users/test/Downloads/Darkbloom.app"
+        )
+
+        let delegate = DarkbloomAppDelegate(
+            destinationURL: destination,
+            coordinate: {
+                .relaunchRequired(
+                    at: destination,
+                    preservedForeignApp: nil
+                )
+            }
+        )
+
+        guard case .relaunchRequired(let recovery) = delegate.installState else {
+            Issue.record("expected focused managed-install recovery")
+            return
+        }
+        #expect(!delegate.installState.isReady)
+        #expect(delegate.installState.isInteractive)
+        #expect(recovery.destination == destination)
+        #expect(
+            recovery.managedCLIURL
+                == destination.appendingPathComponent("Contents/MacOS/darkbloom")
+        )
+        #expect(
+            recovery.managedCLIURL
+                != source.appendingPathComponent("Contents/MacOS/darkbloom")
+        )
+
+        var openedURL: URL?
+        #expect(recovery.openInstalledApp { url in
+            openedURL = url
+            return true
+        })
+        #expect(openedURL == destination)
+    }
+
     @Test("Installation failure is available to the first scene render")
     func failureStateIsResolvedDuringDelegateInitialization() {
         let destination = URL(fileURLWithPath: "/tmp/Darkbloom.app")

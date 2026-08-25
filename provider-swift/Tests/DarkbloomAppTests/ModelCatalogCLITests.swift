@@ -74,7 +74,7 @@ struct ModelCatalogCLIRunnerTests {
         ProcessModelCatalogCLIRunner(
             locator: SystemDarkbloomCLILocator(
                 environment: [SystemDarkbloomCLILocator.environmentKey: script.path],
-                bundleURL: URL(fileURLWithPath: "/tmp")
+                homeDirectory: URL(fileURLWithPath: "/tmp")
             ),
             stateFileURL: stateFileURL ?? FileManager.default.temporaryDirectory
                 .appendingPathComponent("missing-state-\(UUID().uuidString).json"),

@@ -28,8 +28,9 @@ const sandboxCommandSelectColumns = `
 	id::text, sandbox_id::text, account_id, idempotency_key, generation,
 	fencing_token, arguments, environment, working_directory, timeout_seconds,
 	state, exit_code, stdout, stderr, output_truncated, error_code,
-	dispatch_attempts, last_dispatched_at, last_dispatch_error, created_at,
-	started_at, completed_at, updated_at`
+	dispatch_attempts, last_dispatched_at, last_dispatch_error,
+	cancellation_pending, cancel_dispatch_attempts, last_cancel_dispatched_at,
+	last_cancel_dispatch_error, created_at, started_at, completed_at, updated_at`
 
 func (s *PostgresStore) CreateSandbox(
 	ctx context.Context,
@@ -395,32 +396,63 @@ func (s *PostgresStore) BeginSandboxOperation(
 		sandbox.State != operation.PreviousSandboxState ||
 		sandbox.Terminal() ||
 		(sandbox.TerminationRequested &&
-			operation.Kind == SandboxOperationKindRenew) {
+			!isSandboxTerminationStop(operation, sandbox)) {
 		return nil, nil, false, ErrSandboxConflict
 	}
-	var activeCommand bool
+	var activeOperation, activeCommand bool
 	if err := tx.QueryRow(
 		ctx,
-		`SELECT EXISTS (
+		`SELECT
+			EXISTS (
+				SELECT 1
+				FROM sandbox_host_operations
+				WHERE sandbox_id = $1
+				  AND state NOT IN (
+				    'queued', 'ready', 'stopped', 'deleted', 'failed'
+				  )
+			),
+			EXISTS (
 				SELECT 1
 				FROM sandbox_commands
 				WHERE sandbox_id = $1
-				  AND state NOT IN (
-					'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+				  AND (
+				    cancellation_pending OR state NOT IN (
+					  'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+				    )
 				  )
 			)`,
 		sandbox.ID,
-	).Scan(&activeCommand); err != nil {
+	).Scan(&activeOperation, &activeCommand); err != nil {
 		return nil, nil, false, fmt.Errorf(
-			"check active sandbox commands: %w",
+			"check active sandbox work: %w",
 			err,
 		)
 	}
-	if activeCommand &&
-		!(operation.Kind == SandboxOperationKindStop &&
-			operation.DeleteAfterStop &&
-			sandbox.TerminationRequested) {
+	if activeOperation ||
+		(activeCommand && !isSandboxTerminationStop(operation, sandbox)) {
 		return nil, nil, false, ErrSandboxConflict
+	}
+	if activeCommand {
+		operation.State = SandboxOperationQueued
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE sandbox_commands
+			 SET cancellation_pending = TRUE,
+			     updated_at = GREATEST(updated_at, $2)
+			 WHERE sandbox_id = $1
+			   AND (
+			     cancellation_pending OR state NOT IN (
+			       'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+			     )
+			   )`,
+			sandbox.ID,
+			operation.UpdatedAt,
+		); err != nil {
+			return nil, nil, false, fmt.Errorf(
+				"queue sandbox command cancellation: %w",
+				err,
+			)
+		}
 	}
 	if operation.Kind == SandboxOperationKindRenew {
 		fencingToken, err := allocateSandboxFencingToken(
@@ -436,6 +468,15 @@ func (s *PostgresStore) BeginSandboxOperation(
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {
 		return nil, nil, false, err
+	}
+	if operation.State == SandboxOperationQueued {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, false, fmt.Errorf(
+				"commit queued sandbox operation: %w",
+				err,
+			)
+		}
+		return sandbox, cloneSandboxOperation(operation), true, nil
 	}
 	sandbox.State = targetState
 	if operation.Kind == SandboxOperationKindDelete ||
@@ -467,6 +508,150 @@ func (s *PostgresStore) BeginSandboxOperation(
 		)
 	}
 	return sandbox, cloneSandboxOperation(operation), true, nil
+}
+
+func (s *PostgresStore) ActivateQueuedSandboxOperation(
+	ctx context.Context,
+	operationID string,
+	activatedAt time.Time,
+) (*SandboxRecord, *SandboxOperation, bool, error) {
+	if !validSandboxUUID(operationID) || activatedAt.IsZero() {
+		return nil, nil, false, ErrSandboxInvalidTransition
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"begin queued sandbox operation activation: %w",
+			err,
+		)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var sandboxID string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT sandbox_id::text
+		 FROM sandbox_host_operations
+		 WHERE id = $1`,
+		operationID,
+	).Scan(&sandboxID); errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, false, ErrNotFound
+	} else if err != nil {
+		return nil, nil, false, err
+	}
+	sandbox, err := scanSandboxRecord(tx.QueryRow(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		 FROM sandboxes
+		 WHERE id = $1
+		 FOR UPDATE`,
+		sandboxID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, false, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	operation, err := scanSandboxOperation(tx.QueryRow(
+		ctx,
+		`SELECT `+sandboxOperationSelectColumns+`
+		 FROM sandbox_host_operations
+		 WHERE id = $1
+		 FOR UPDATE`,
+		operationID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, false, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if operation.State != SandboxOperationQueued {
+		return sandbox, operation, false, nil
+	}
+	if !isSandboxTerminationStop(operation, sandbox) ||
+		sandbox.State != operation.PreviousSandboxState ||
+		sandbox.Generation != operation.Generation ||
+		sandbox.FencingToken != operation.FencingToken {
+		return nil, nil, false, ErrSandboxConflict
+	}
+	var activeCommand, activeOperation bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT
+		   EXISTS (
+		     SELECT 1
+		     FROM sandbox_commands
+		     WHERE sandbox_id = $1
+		       AND (
+		         cancellation_pending OR state NOT IN (
+		           'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		         )
+		       )
+		   ),
+		   EXISTS (
+		     SELECT 1
+		     FROM sandbox_host_operations
+		     WHERE sandbox_id = $1
+		       AND id <> $2
+		       AND state NOT IN (
+		         'queued', 'ready', 'stopped', 'deleted', 'failed'
+		       )
+		   )`,
+		sandbox.ID,
+		operation.ID,
+	).Scan(&activeCommand, &activeOperation); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"check queued sandbox operation blockers: %w",
+			err,
+		)
+	}
+	if activeCommand {
+		return sandbox, operation, false, nil
+	}
+	if activeOperation {
+		return nil, nil, false, ErrSandboxConflict
+	}
+	operation.State = SandboxOperationPending
+	operation.UpdatedAt = activatedAt
+	sandbox.State = SandboxStateStopping
+	sandbox.ErrorCode = ""
+	sandbox.UpdatedAt = activatedAt
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE sandbox_host_operations
+		 SET state = $2, updated_at = $3
+		 WHERE id = $1`,
+		operation.ID,
+		operation.State,
+		operation.UpdatedAt,
+	); err != nil {
+		return nil, nil, false, sandboxPostgresError(
+			"activate queued sandbox operation",
+			err,
+		)
+	}
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE sandboxes
+		 SET state = $2, error_code = '', updated_at = $3
+		 WHERE id = $1`,
+		sandbox.ID,
+		sandbox.State,
+		sandbox.UpdatedAt,
+	); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"activate queued sandbox state: %w",
+			err,
+		)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"commit queued sandbox operation activation: %w",
+			err,
+		)
+	}
+	return sandbox, operation, true, nil
 }
 
 func (s *PostgresStore) GetSandboxOperation(
@@ -712,14 +897,18 @@ func (s *PostgresStore) CreateSandboxCommand(
 		     SELECT 1
 		     FROM sandbox_host_operations
 		     WHERE sandbox_id = $1
-		       AND state NOT IN ('ready', 'stopped', 'deleted', 'failed')
+		       AND state NOT IN (
+		         'queued', 'ready', 'stopped', 'deleted', 'failed'
+		       )
 		   ),
 		   EXISTS (
 		     SELECT 1
 		     FROM sandbox_commands
 		     WHERE sandbox_id = $1
-		       AND state NOT IN (
-		         'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		       AND (
+		         cancellation_pending OR state NOT IN (
+		           'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		         )
 		       )
 		   )`,
 		sandbox.ID,
@@ -814,8 +1003,10 @@ func (s *PostgresStore) ListActiveSandboxCommands(
 		`SELECT `+sandboxCommandSelectColumns+`
 		 FROM sandbox_commands
 		 WHERE sandbox_id = $1
-		   AND state NOT IN (
-		     'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		   AND (
+		     cancellation_pending OR state NOT IN (
+		       'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		     )
 		   )
 		 ORDER BY created_at`,
 		sandboxID,
@@ -939,7 +1130,8 @@ func (s *PostgresStore) ApplySandboxCommandUpdate(
 		`UPDATE sandbox_commands
 		 SET state = $2, exit_code = $3, stdout = $4, stderr = $5,
 		     output_truncated = $6, error_code = $7, started_at = $8,
-		     completed_at = $9, updated_at = $10
+		     completed_at = $9, cancellation_pending = $10,
+		     updated_at = $11
 		 WHERE id = $1`,
 		command.ID,
 		command.State,
@@ -950,6 +1142,7 @@ func (s *PostgresStore) ApplySandboxCommandUpdate(
 		command.ErrorCode,
 		command.StartedAt,
 		command.CompletedAt,
+		command.CancellationPending,
 		command.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("update sandbox command result: %w", err)
@@ -1066,6 +1259,46 @@ func (s *PostgresStore) RecordSandboxCommandDispatch(
 	return nil
 }
 
+func (s *PostgresStore) RecordSandboxCommandCancellationDispatch(
+	ctx context.Context,
+	commandID string,
+	dispatchedAt time.Time,
+	dispatchError string,
+) error {
+	tag, err := s.pool.Exec(
+		ctx,
+		`UPDATE sandbox_commands
+		 SET cancel_dispatch_attempts = cancel_dispatch_attempts
+		       + CASE WHEN cancellation_pending THEN 1 ELSE 0 END,
+		     last_cancel_dispatched_at = CASE
+		       WHEN cancellation_pending THEN $2
+		       ELSE last_cancel_dispatched_at
+		     END,
+		     last_cancel_dispatch_error = CASE
+		       WHEN cancellation_pending THEN $3
+		       ELSE last_cancel_dispatch_error
+		     END,
+		     updated_at = CASE
+		       WHEN cancellation_pending THEN GREATEST(updated_at, $2)
+		       ELSE updated_at
+		     END
+		 WHERE id = $1`,
+		commandID,
+		dispatchedAt,
+		dispatchError,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"record sandbox command cancellation dispatch: %w",
+			err,
+		)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *PostgresStore) ListPendingSandboxCommandsByHost(
 	ctx context.Context,
 	hostID string,
@@ -1105,6 +1338,59 @@ func (s *PostgresStore) ListPendingSandboxCommandsByHost(
 	}
 	rows.Close()
 
+	result := make([]PendingSandboxCommand, 0, len(commands))
+	for index := range commands {
+		sandbox, err := s.GetSandboxByID(ctx, commands[index].SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PendingSandboxCommand{
+			Sandbox: *sandbox,
+			Command: commands[index],
+		})
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) ListPendingSandboxCommandCancellationsByHost(
+	ctx context.Context,
+	hostID string,
+) ([]PendingSandboxCommand, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxCommandSelectColumns+`
+		 FROM sandbox_commands
+		 WHERE sandbox_id IN (
+		   SELECT id FROM sandboxes WHERE host_id = $1 AND state <> $2
+		 )
+		   AND cancellation_pending
+		 ORDER BY created_at`,
+		hostID,
+		SandboxStateDeleted,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"list pending sandbox command cancellations: %w",
+			err,
+		)
+	}
+	commands := make([]SandboxCommand, 0)
+	for rows.Next() {
+		command, err := scanSandboxCommand(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		commands = append(commands, *command)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf(
+			"list pending sandbox command cancellations: %w",
+			err,
+		)
+	}
+	rows.Close()
 	result := make([]PendingSandboxCommand, 0, len(commands))
 	for index := range commands {
 		sandbox, err := s.GetSandboxByID(ctx, commands[index].SandboxID)
@@ -1292,6 +1578,10 @@ func scanSandboxCommand(row rowScanner) (*SandboxCommand, error) {
 		&command.DispatchAttempts,
 		&command.LastDispatchedAt,
 		&command.LastDispatchError,
+		&command.CancellationPending,
+		&command.CancelDispatchAttempts,
+		&command.LastCancelDispatchedAt,
+		&command.LastCancelDispatchError,
 		&command.CreatedAt,
 		&command.StartedAt,
 		&command.CompletedAt,

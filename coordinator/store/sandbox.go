@@ -23,6 +23,7 @@ const (
 	SandboxStateFailed    = "failed"
 
 	SandboxOperationPending   = "pending"
+	SandboxOperationQueued    = "queued"
 	SandboxOperationPreparing = "preparing"
 	SandboxOperationBooting   = "booting"
 	SandboxOperationReady     = "ready"
@@ -144,6 +145,17 @@ func (o SandboxOperation) SameRequest(other *SandboxOperation) bool {
 		o.DeleteAfterStop == other.DeleteAfterStop
 }
 
+func isSandboxTerminationStop(
+	operation *SandboxOperation,
+	sandbox *SandboxRecord,
+) bool {
+	return operation != nil &&
+		sandbox != nil &&
+		operation.Kind == SandboxOperationKindStop &&
+		operation.DeleteAfterStop &&
+		sandbox.TerminationRequested
+}
+
 type SandboxOperationUpdate struct {
 	OperationID    string
 	SandboxID      string
@@ -156,29 +168,33 @@ type SandboxOperationUpdate struct {
 }
 
 type SandboxCommand struct {
-	ID                string            `json:"id"`
-	SandboxID         string            `json:"sandbox_id"`
-	AccountID         string            `json:"account_id"`
-	IdempotencyKey    string            `json:"idempotency_key"`
-	Generation        uint64            `json:"generation"`
-	FencingToken      uint64            `json:"fencing_token"`
-	Arguments         []string          `json:"arguments"`
-	Environment       map[string]string `json:"environment,omitempty"`
-	WorkingDirectory  string            `json:"working_directory,omitempty"`
-	TimeoutSeconds    uint32            `json:"timeout_seconds"`
-	State             string            `json:"state"`
-	ExitCode          *int32            `json:"exit_code,omitempty"`
-	StandardOutput    string            `json:"stdout,omitempty"`
-	StandardError     string            `json:"stderr,omitempty"`
-	OutputTruncated   bool              `json:"output_truncated"`
-	ErrorCode         string            `json:"error_code,omitempty"`
-	DispatchAttempts  uint32            `json:"dispatch_attempts"`
-	LastDispatchedAt  *time.Time        `json:"last_dispatched_at,omitempty"`
-	LastDispatchError string            `json:"last_dispatch_error,omitempty"`
-	CreatedAt         time.Time         `json:"created_at"`
-	StartedAt         *time.Time        `json:"started_at,omitempty"`
-	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	ID                      string            `json:"id"`
+	SandboxID               string            `json:"sandbox_id"`
+	AccountID               string            `json:"account_id"`
+	IdempotencyKey          string            `json:"idempotency_key"`
+	Generation              uint64            `json:"generation"`
+	FencingToken            uint64            `json:"fencing_token"`
+	Arguments               []string          `json:"arguments"`
+	Environment             map[string]string `json:"environment,omitempty"`
+	WorkingDirectory        string            `json:"working_directory,omitempty"`
+	TimeoutSeconds          uint32            `json:"timeout_seconds"`
+	State                   string            `json:"state"`
+	ExitCode                *int32            `json:"exit_code,omitempty"`
+	StandardOutput          string            `json:"stdout,omitempty"`
+	StandardError           string            `json:"stderr,omitempty"`
+	OutputTruncated         bool              `json:"output_truncated"`
+	ErrorCode               string            `json:"error_code,omitempty"`
+	DispatchAttempts        uint32            `json:"dispatch_attempts"`
+	LastDispatchedAt        *time.Time        `json:"last_dispatched_at,omitempty"`
+	LastDispatchError       string            `json:"last_dispatch_error,omitempty"`
+	CancellationPending     bool              `json:"cancellation_pending"`
+	CancelDispatchAttempts  uint32            `json:"cancel_dispatch_attempts"`
+	LastCancelDispatchedAt  *time.Time        `json:"last_cancel_dispatched_at,omitempty"`
+	LastCancelDispatchError string            `json:"last_cancel_dispatch_error,omitempty"`
+	CreatedAt               time.Time         `json:"created_at"`
+	StartedAt               *time.Time        `json:"started_at,omitempty"`
+	CompletedAt             *time.Time        `json:"completed_at,omitempty"`
+	UpdatedAt               time.Time         `json:"updated_at"`
 }
 
 func (c SandboxCommand) Terminal() bool {
@@ -192,6 +208,10 @@ func (c SandboxCommand) Terminal() bool {
 	default:
 		return false
 	}
+}
+
+func (c SandboxCommand) Active() bool {
+	return !c.Terminal() || c.CancellationPending
 }
 
 func (c SandboxCommand) SameRequest(other *SandboxCommand) bool {
@@ -216,17 +236,18 @@ func (c SandboxCommand) DeadlineReached(at time.Time) bool {
 }
 
 type SandboxCommandUpdate struct {
-	CommandID       string
-	SandboxID       string
-	Generation      uint64
-	FencingToken    uint64
-	State           string
-	ExitCode        *int32
-	StandardOutput  *string
-	StandardError   *string
-	OutputTruncated bool
-	ErrorCode       string
-	UpdatedAt       time.Time
+	CommandID           string
+	SandboxID           string
+	Generation          uint64
+	FencingToken        uint64
+	State               string
+	ExitCode            *int32
+	StandardOutput      *string
+	StandardError       *string
+	OutputTruncated     bool
+	ErrorCode           string
+	RequestCancellation bool
+	UpdatedAt           time.Time
 }
 
 type SandboxAllocationLimits struct {
@@ -292,6 +313,10 @@ func cloneSandboxCommand(command *SandboxCommand) *SandboxCommand {
 	if command.LastDispatchedAt != nil {
 		lastDispatchedAt := *command.LastDispatchedAt
 		cloned.LastDispatchedAt = &lastDispatchedAt
+	}
+	if command.LastCancelDispatchedAt != nil {
+		lastCancelDispatchedAt := *command.LastCancelDispatchedAt
+		cloned.LastCancelDispatchedAt = &lastCancelDispatchedAt
 	}
 	return &cloned
 }
@@ -500,16 +525,25 @@ func applySandboxCommandTransition(
 		command.FencingToken != update.FencingToken {
 		return ErrSandboxConflict
 	}
+	if update.UpdatedAt.IsZero() {
+		return fmt.Errorf("%w: missing update time", ErrSandboxInvalidTransition)
+	}
 	if command.Terminal() {
+		if command.CancellationPending &&
+			isTerminalSandboxCommandState(update.State) {
+			command.CancellationPending = false
+			command.UpdatedAt = update.UpdatedAt
+			return nil
+		}
 		if sandboxCommandReplayEquivalent(command, update) {
 			return nil
 		}
 		return ErrSandboxInvalidTransition
 	}
-	if update.UpdatedAt.IsZero() {
-		return fmt.Errorf("%w: missing update time", ErrSandboxInvalidTransition)
-	}
+	reportedTerminal := isTerminalSandboxCommandState(update.State)
+	requestCancellation := update.RequestCancellation
 	if command.DeadlineReached(update.UpdatedAt) {
+		requestCancellation = requestCancellation || !reportedTerminal
 		empty := ""
 		update.State = SandboxCommandTimedOut
 		update.ExitCode = nil
@@ -532,6 +566,12 @@ func applySandboxCommandTransition(
 	command.OutputTruncated = update.OutputTruncated
 	command.ErrorCode = update.ErrorCode
 	command.UpdatedAt = update.UpdatedAt
+	if reportedTerminal {
+		command.CancellationPending = false
+	}
+	if requestCancellation {
+		command.CancellationPending = true
+	}
 	if update.State == SandboxCommandRunning && command.StartedAt == nil {
 		startedAt := update.UpdatedAt
 		command.StartedAt = &startedAt

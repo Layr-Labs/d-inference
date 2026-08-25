@@ -771,6 +771,20 @@ type SandboxStore interface {
 		err error,
 	)
 
+	// ActivateQueuedSandboxOperation moves a queued termination stop into the
+	// active pending state only after every command and cancellation outbox for
+	// the sandbox has reached a terminal acknowledgement.
+	ActivateQueuedSandboxOperation(
+		ctx context.Context,
+		operationID string,
+		activatedAt time.Time,
+	) (
+		sandbox *SandboxRecord,
+		operation *SandboxOperation,
+		activated bool,
+		err error,
+	)
+
 	// GetSandboxOperation returns one account-owned lifecycle operation.
 	GetSandboxOperation(
 		ctx context.Context,
@@ -865,9 +879,25 @@ type SandboxStore interface {
 		dispatchError string,
 	) error
 
+	// RecordSandboxCommandCancellationDispatch records one durable cancellation
+	// outbox delivery attempt without acknowledging it.
+	RecordSandboxCommandCancellationDispatch(
+		ctx context.Context,
+		commandID string,
+		dispatchedAt time.Time,
+		dispatchError string,
+	) error
+
 	// ListPendingSandboxCommandsByHost returns non-terminal command outbox rows
 	// for reconnect/startup reconciliation.
 	ListPendingSandboxCommandsByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]PendingSandboxCommand, error)
+
+	// ListPendingSandboxCommandCancellationsByHost returns terminal or active
+	// commands whose host execution has not acknowledged cancellation.
+	ListPendingSandboxCommandCancellationsByHost(
 		ctx context.Context,
 		hostID string,
 	) ([]PendingSandboxCommand, error)

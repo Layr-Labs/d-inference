@@ -8,13 +8,17 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 )
 
 func (c *Controller) dispatchOperation(
 	sandbox *store.SandboxRecord,
 	operation *store.SandboxOperation,
 ) error {
-	if sandbox == nil || operation == nil || operation.Terminal() {
+	if sandbox == nil ||
+		operation == nil ||
+		operation.Terminal() ||
+		operation.State == store.SandboxOperationQueued {
 		return store.ErrSandboxConflict
 	}
 	session, exists := c.hosts.Session(sandbox.HostID)
@@ -66,10 +70,7 @@ func (c *Controller) dispatchOperation(
 			},
 		)
 	case store.SandboxOperationKindStop:
-		ctx, cancel := context.WithTimeout(
-			context.Background(),
-			dispatchTimeout,
-		)
+		ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
 		active, err := c.store.ListActiveSandboxCommands(
 			ctx,
 			sandbox.ID,
@@ -79,7 +80,7 @@ func (c *Controller) dispatchOperation(
 			return err
 		}
 		if len(active) > 0 {
-			return c.cancelCommands(session, operation, active)
+			return store.ErrSandboxConflict
 		}
 		return c.sendOperation(
 			session,
@@ -225,35 +226,6 @@ func (c *Controller) sendCommand(
 	return recordErr
 }
 
-func (c *Controller) cancelCommands(
-	session *sandboxhost.Session,
-	operation *store.SandboxOperation,
-	commands []store.SandboxCommand,
-) error {
-	for index := range commands {
-		command := &commands[index]
-		ctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
-		err := session.Send(
-			ctx,
-			protocol.SandboxTypeCancelCommand,
-			protocol.SandboxCommandControlPayload{
-				OperationID: operation.ID,
-				CommandID:   command.ID,
-				Scope: protocol.SandboxScope{
-					SandboxID:    command.SandboxID,
-					Generation:   command.Generation,
-					FencingToken: command.FencingToken,
-				},
-			},
-		)
-		cancel()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (c *Controller) recordOperationDispatch(
 	operationID string,
 	err error,
@@ -285,6 +257,95 @@ func (c *Controller) recordCommandDispatch(commandID string, err error) error {
 		return recordErr
 	}
 	return err
+}
+
+func (c *Controller) dispatchCommandCancellation(
+	ctx context.Context,
+	sandbox *store.SandboxRecord,
+	command *store.SandboxCommand,
+) error {
+	if sandbox == nil || command == nil || !command.CancellationPending {
+		return store.ErrSandboxConflict
+	}
+	session, exists := c.hosts.Session(sandbox.HostID)
+	if !exists {
+		return c.recordCommandCancellationDispatch(
+			ctx,
+			command.ID,
+			ErrHostUnavailable,
+		)
+	}
+	err := session.Send(
+		ctx,
+		protocol.SandboxTypeCancelCommand,
+		protocol.SandboxCommandControlPayload{
+			OperationID: cancellationOperationID(command.ID),
+			CommandID:   command.ID,
+			Scope: protocol.SandboxScope{
+				SandboxID:    command.SandboxID,
+				Generation:   command.Generation,
+				FencingToken: command.FencingToken,
+			},
+		},
+	)
+	recordErr := c.recordCommandCancellationDispatch(ctx, command.ID, err)
+	if err != nil {
+		return err
+	}
+	return recordErr
+}
+
+func (c *Controller) dispatchSandboxCommandCancellations(
+	ctx context.Context,
+	sandbox *store.SandboxRecord,
+) error {
+	if sandbox == nil {
+		return store.ErrSandboxConflict
+	}
+	pending, err := c.store.ListPendingSandboxCommandCancellationsByHost(
+		ctx,
+		sandbox.HostID,
+	)
+	if err != nil {
+		return err
+	}
+	for index := range pending {
+		if pending[index].Sandbox.ID != sandbox.ID {
+			continue
+		}
+		if err := c.dispatchCommandCancellation(
+			ctx,
+			&pending[index].Sandbox,
+			&pending[index].Command,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Controller) recordCommandCancellationDispatch(
+	ctx context.Context,
+	commandID string,
+	err error,
+) error {
+	recordErr := c.store.RecordSandboxCommandCancellationDispatch(
+		ctx,
+		commandID,
+		c.now().UTC(),
+		dispatchError(err),
+	)
+	if recordErr != nil {
+		return recordErr
+	}
+	return err
+}
+
+func cancellationOperationID(commandID string) string {
+	return uuid.NewSHA1(
+		uuid.NameSpaceOID,
+		[]byte("sandbox-command-cancel:"+commandID),
+	).String()
 }
 
 func dispatchError(err error) string {

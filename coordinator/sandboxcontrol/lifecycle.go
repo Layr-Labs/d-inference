@@ -315,7 +315,11 @@ func (c *Controller) beginStop(
 		return nil, ErrIdempotencyConflict
 	}
 	if created {
-		_ = c.dispatchOperation(updatedSandbox, stored)
+		if stored.State == store.SandboxOperationQueued {
+			_ = c.dispatchSandboxCommandCancellations(ctx, updatedSandbox)
+		} else {
+			_ = c.dispatchOperation(updatedSandbox, stored)
+		}
 	}
 	return stored, nil
 }

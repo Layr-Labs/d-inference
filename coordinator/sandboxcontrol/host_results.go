@@ -173,27 +173,23 @@ func (c *Controller) handleCommandState(
 			UpdatedAt:       c.now().UTC(),
 		},
 	)
-	if err != nil || !command.Terminal() {
+	if err != nil {
 		return staleHostResultError(err)
 	}
-	if command.State == store.SandboxCommandTimedOut {
-		c.cancelExpiredCommand(sandbox, command)
+	if !command.Terminal() {
+		return nil
 	}
-	pendingOperations, listErr := c.store.ListPendingSandboxOperationsByHost(
-		ctx,
-		session.HostID(),
-	)
-	if listErr != nil {
-		return listErr
+	if command.CancellationPending {
+		_ = c.dispatchCommandCancellation(ctx, sandbox, command)
 	}
-	for index := range pendingOperations {
-		pending := &pendingOperations[index]
-		if pending.Sandbox.ID == sandbox.ID &&
-			pending.Operation.Kind == store.SandboxOperationKindStop {
-			_ = c.dispatchOperation(&pending.Sandbox, &pending.Operation)
+	if sandbox.TerminationRequested {
+		if err := c.driveTermination(ctx, sandbox); err != nil &&
+			!IsConflict(err) &&
+			!errors.Is(err, ErrHostUnavailable) {
+			return err
 		}
 	}
-	return err
+	return c.activateQueuedTermination(ctx, sandbox)
 }
 
 func (c *Controller) handleHostFailure(
@@ -229,7 +225,7 @@ func (c *Controller) handleHostFailure(
 		return c.continueSandboxOperation(ctx, updated, applied)
 	}
 	if payload.CommandID != nil {
-		_, err := c.store.ApplySandboxCommandUpdate(
+		command, err := c.store.ApplySandboxCommandUpdate(
 			ctx,
 			store.SandboxCommandUpdate{
 				CommandID:    *payload.CommandID,
@@ -241,7 +237,20 @@ func (c *Controller) handleHostFailure(
 				UpdatedAt:    now,
 			},
 		)
-		return staleHostResultError(err)
+		if err != nil {
+			return staleHostResultError(err)
+		}
+		if command.CancellationPending {
+			_ = c.dispatchCommandCancellation(ctx, sandbox, command)
+		}
+		if sandbox.TerminationRequested {
+			if err := c.driveTermination(ctx, sandbox); err != nil &&
+				!IsConflict(err) &&
+				!errors.Is(err, ErrHostUnavailable) {
+				return err
+			}
+		}
+		return c.activateQueuedTermination(ctx, sandbox)
 	}
 	return nil
 }

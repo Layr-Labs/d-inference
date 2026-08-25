@@ -230,7 +230,7 @@ func (s *MemoryStore) BeginSandboxOperation(
 		sandbox.State != operation.PreviousSandboxState ||
 		sandbox.Terminal() ||
 		(sandbox.TerminationRequested &&
-			operation.Kind == SandboxOperationKindRenew) {
+			!isSandboxTerminationStop(operation, sandbox)) {
 		return nil, nil, false, ErrSandboxConflict
 	}
 	if _, exists := s.sandboxOperations[operation.ID]; exists {
@@ -241,16 +241,30 @@ func (s *MemoryStore) BeginSandboxOperation(
 			return nil, nil, false, ErrSandboxConflict
 		}
 	}
+	activeCommand := false
 	for _, command := range s.sandboxCommands {
-		if command.SandboxID == operation.SandboxID &&
-			!command.Terminal() &&
-			!(operation.Kind == SandboxOperationKindStop &&
-				operation.DeleteAfterStop &&
-				sandbox.TerminationRequested) {
-			return nil, nil, false, ErrSandboxConflict
+		if command.SandboxID == operation.SandboxID && command.Active() {
+			activeCommand = true
+			if !isSandboxTerminationStop(operation, sandbox) {
+				return nil, nil, false, ErrSandboxConflict
+			}
 		}
 	}
 	storedOperation := cloneSandboxOperation(operation)
+	if activeCommand {
+		storedOperation.State = SandboxOperationQueued
+		for _, command := range s.sandboxCommands {
+			if command.SandboxID == operation.SandboxID && command.Active() {
+				command.CancellationPending = true
+				command.UpdatedAt = storedOperation.UpdatedAt
+			}
+		}
+		s.sandboxOperations[storedOperation.ID] = storedOperation
+		return cloneSandboxRecord(sandbox),
+			cloneSandboxOperation(storedOperation),
+			true,
+			nil
+	}
 	if storedOperation.Kind == SandboxOperationKindRenew {
 		fencingToken, err := s.allocateSandboxFencingTokenLocked(
 			sandbox.HostID,
@@ -271,6 +285,63 @@ func (s *MemoryStore) BeginSandboxOperation(
 	s.sandboxOperations[storedOperation.ID] = storedOperation
 	return cloneSandboxRecord(sandbox),
 		cloneSandboxOperation(storedOperation),
+		true,
+		nil
+}
+
+func (s *MemoryStore) ActivateQueuedSandboxOperation(
+	_ context.Context,
+	operationID string,
+	activatedAt time.Time,
+) (*SandboxRecord, *SandboxOperation, bool, error) {
+	if !validSandboxUUID(operationID) || activatedAt.IsZero() {
+		return nil, nil, false, ErrSandboxInvalidTransition
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	operation := s.sandboxOperations[operationID]
+	if operation == nil {
+		return nil, nil, false, ErrNotFound
+	}
+	sandbox := s.sandboxes[operation.SandboxID]
+	if sandbox == nil {
+		return nil, nil, false, ErrNotFound
+	}
+	if operation.State != SandboxOperationQueued {
+		return cloneSandboxRecord(sandbox),
+			cloneSandboxOperation(operation),
+			false,
+			nil
+	}
+	if !isSandboxTerminationStop(operation, sandbox) ||
+		sandbox.State != operation.PreviousSandboxState ||
+		sandbox.Generation != operation.Generation ||
+		sandbox.FencingToken != operation.FencingToken {
+		return nil, nil, false, ErrSandboxConflict
+	}
+	for _, command := range s.sandboxCommands {
+		if command.SandboxID == sandbox.ID && command.Active() {
+			return cloneSandboxRecord(sandbox),
+				cloneSandboxOperation(operation),
+				false,
+				nil
+		}
+	}
+	for _, existing := range s.sandboxOperations {
+		if existing.ID != operation.ID &&
+			existing.SandboxID == sandbox.ID &&
+			!existing.Terminal() &&
+			existing.State != SandboxOperationQueued {
+			return nil, nil, false, ErrSandboxConflict
+		}
+	}
+	operation.State = SandboxOperationPending
+	operation.UpdatedAt = activatedAt
+	sandbox.State = SandboxStateStopping
+	sandbox.ErrorCode = ""
+	sandbox.UpdatedAt = activatedAt
+	return cloneSandboxRecord(sandbox),
+		cloneSandboxOperation(operation),
 		true,
 		nil
 }
@@ -447,7 +518,7 @@ func (s *MemoryStore) CreateSandboxCommand(
 		}
 	}
 	for _, active := range s.sandboxCommands {
-		if active.SandboxID == command.SandboxID && !active.Terminal() {
+		if active.SandboxID == command.SandboxID && active.Active() {
 			return nil, false, ErrSandboxConflict
 		}
 	}
@@ -483,7 +554,7 @@ func (s *MemoryStore) ListActiveSandboxCommands(
 	s.mu.RLock()
 	result := make([]SandboxCommand, 0)
 	for _, command := range s.sandboxCommands {
-		if command.SandboxID == sandboxID && !command.Terminal() {
+		if command.SandboxID == sandboxID && command.Active() {
 			result = append(result, *cloneSandboxCommand(command))
 		}
 	}
@@ -574,6 +645,29 @@ func (s *MemoryStore) RecordSandboxCommandDispatch(
 	return nil
 }
 
+func (s *MemoryStore) RecordSandboxCommandCancellationDispatch(
+	_ context.Context,
+	commandID string,
+	dispatchedAt time.Time,
+	dispatchError string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	command := s.sandboxCommands[commandID]
+	if command == nil {
+		return ErrNotFound
+	}
+	if !command.CancellationPending {
+		return nil
+	}
+	command.CancelDispatchAttempts++
+	command.LastCancelDispatchError = dispatchError
+	command.UpdatedAt = dispatchedAt
+	lastDispatchedAt := dispatchedAt
+	command.LastCancelDispatchedAt = &lastDispatchedAt
+	return nil
+}
+
 func (s *MemoryStore) ListPendingSandboxCommandsByHost(
 	_ context.Context,
 	hostID string,
@@ -585,6 +679,34 @@ func (s *MemoryStore) ListPendingSandboxCommandsByHost(
 		if sandbox == nil ||
 			sandbox.HostID != hostID ||
 			command.Terminal() {
+			continue
+		}
+		result = append(result, PendingSandboxCommand{
+			Sandbox: *cloneSandboxRecord(sandbox),
+			Command: *cloneSandboxCommand(command),
+		})
+	}
+	s.mu.RUnlock()
+	sort.Slice(result, func(left, right int) bool {
+		return result[left].Command.CreatedAt.Before(
+			result[right].Command.CreatedAt,
+		)
+	})
+	return result, nil
+}
+
+func (s *MemoryStore) ListPendingSandboxCommandCancellationsByHost(
+	_ context.Context,
+	hostID string,
+) ([]PendingSandboxCommand, error) {
+	s.mu.RLock()
+	result := make([]PendingSandboxCommand, 0)
+	for _, command := range s.sandboxCommands {
+		sandbox := s.sandboxes[command.SandboxID]
+		if sandbox == nil ||
+			sandbox.HostID != hostID ||
+			sandbox.Terminal() ||
+			!command.CancellationPending {
 			continue
 		}
 		result = append(result, PendingSandboxCommand{
@@ -734,6 +856,20 @@ func validateSandboxCommandCreate(command *SandboxCommand) error {
 		len(command.Arguments) == 0 ||
 		command.TimeoutSeconds == 0 ||
 		command.State != SandboxCommandPending ||
+		command.ExitCode != nil ||
+		command.StandardOutput != "" ||
+		command.StandardError != "" ||
+		command.OutputTruncated ||
+		command.ErrorCode != "" ||
+		command.DispatchAttempts != 0 ||
+		command.LastDispatchedAt != nil ||
+		command.LastDispatchError != "" ||
+		command.CancellationPending ||
+		command.CancelDispatchAttempts != 0 ||
+		command.LastCancelDispatchedAt != nil ||
+		command.LastCancelDispatchError != "" ||
+		command.StartedAt != nil ||
+		command.CompletedAt != nil ||
 		command.CreatedAt.IsZero() ||
 		command.UpdatedAt.IsZero() {
 		return ErrSandboxInvalidTransition

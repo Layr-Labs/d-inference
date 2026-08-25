@@ -9,7 +9,7 @@ const sandboxActiveCommandConstraintMigration = `DO $migration$
 					ORDER BY created_at, id
 				) AS active_rank
 			FROM sandbox_commands
-			WHERE state NOT IN (
+			WHERE cancellation_pending OR state NOT IN (
 				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
 			)
 		)
@@ -20,17 +20,51 @@ const sandboxActiveCommandConstraintMigration = `DO $migration$
 			stderr = '',
 			output_truncated = FALSE,
 			error_code = 'upgrade_concurrent_command',
+			cancellation_pending = FALSE,
 			completed_at = COALESCE(command.completed_at, CURRENT_TIMESTAMP),
 			updated_at = GREATEST(command.updated_at, CURRENT_TIMESTAMP)
 		FROM ranked
 		WHERE command.id = ranked.id
 		  AND ranked.active_rank > 1;
+		IF EXISTS (
+			SELECT 1
+			FROM pg_indexes
+			WHERE schemaname = current_schema()
+			  AND indexname = 'idx_sandbox_commands_one_active'
+			  AND indexdef NOT LIKE '%cancellation_pending%'
+		) THEN
+			DROP INDEX idx_sandbox_commands_one_active;
+		END IF;
 		EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS
 			idx_sandbox_commands_one_active
 			ON sandbox_commands(sandbox_id)
-			WHERE state NOT IN (
+			WHERE cancellation_pending OR state NOT IN (
 				''succeeded'', ''failed'', ''timed_out'', ''cancelled'', ''lost''
 			)';
+	END
+	$migration$`
+
+const sandboxActiveOperationConstraintMigration = `DO $migration$
+	BEGIN
+		IF EXISTS (
+			SELECT 1
+			FROM pg_indexes
+			WHERE schemaname = current_schema()
+			  AND indexname = 'idx_sandbox_operations_one_active'
+			  AND indexdef NOT LIKE '%''queued''%'
+		) THEN
+			DROP INDEX idx_sandbox_operations_one_active;
+		END IF;
+		EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS
+			idx_sandbox_operations_one_active
+			ON sandbox_host_operations(sandbox_id)
+			WHERE state NOT IN (
+				''queued'', ''ready'', ''stopped'', ''deleted'', ''failed''
+			)';
+		EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS
+			idx_sandbox_operations_one_queued
+			ON sandbox_host_operations(sandbox_id)
+			WHERE state = ''queued''';
 	END
 	$migration$`
 
@@ -151,9 +185,7 @@ func sandboxSchemaMigrations() []string {
 			ON sandbox_host_operations(account_id, sandbox_id, idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_sandbox_operations_sandbox_created
 			ON sandbox_host_operations(sandbox_id, created_at DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_operations_one_active
-			ON sandbox_host_operations(sandbox_id)
-			WHERE state NOT IN ('ready', 'stopped', 'deleted', 'failed')`,
+		sandboxActiveOperationConstraintMigration,
 
 		`CREATE TABLE IF NOT EXISTS sandbox_commands (
 			id UUID PRIMARY KEY,
@@ -177,6 +209,10 @@ func sandboxSchemaMigrations() []string {
 			dispatch_attempts INTEGER NOT NULL DEFAULT 0,
 			last_dispatched_at TIMESTAMPTZ,
 			last_dispatch_error TEXT NOT NULL DEFAULT '',
+			cancellation_pending BOOLEAN NOT NULL DEFAULT FALSE,
+			cancel_dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+			last_cancel_dispatched_at TIMESTAMPTZ,
+			last_cancel_dispatch_error TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL,
 			started_at TIMESTAMPTZ,
 			completed_at TIMESTAMPTZ,
@@ -189,6 +225,17 @@ func sandboxSchemaMigrations() []string {
 			ADD COLUMN IF NOT EXISTS last_dispatched_at TIMESTAMPTZ`,
 		`ALTER TABLE sandbox_commands
 			ADD COLUMN IF NOT EXISTS last_dispatch_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sandbox_commands
+			ADD COLUMN IF NOT EXISTS cancellation_pending
+			BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE sandbox_commands
+			ADD COLUMN IF NOT EXISTS cancel_dispatch_attempts
+			INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sandbox_commands
+			ADD COLUMN IF NOT EXISTS last_cancel_dispatched_at TIMESTAMPTZ`,
+		`ALTER TABLE sandbox_commands
+			ADD COLUMN IF NOT EXISTS last_cancel_dispatch_error
+			TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sandbox_commands_sandbox_created
 			ON sandbox_commands(sandbox_id, created_at DESC)`,
 		sandboxActiveCommandConstraintMigration,

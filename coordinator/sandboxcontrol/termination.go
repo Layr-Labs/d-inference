@@ -123,6 +123,34 @@ func (c *Controller) pendingTerminationOperation(
 	return nil, store.ErrSandboxConflict
 }
 
+func (c *Controller) activateQueuedTermination(
+	ctx context.Context,
+	sandbox *store.SandboxRecord,
+) error {
+	if sandbox == nil || !sandbox.TerminationRequested {
+		return nil
+	}
+	pending, err := c.store.ListPendingSandboxOperationsByHost(
+		ctx,
+		sandbox.HostID,
+	)
+	if err != nil {
+		return err
+	}
+	for index := range pending {
+		if pending[index].Sandbox.ID != sandbox.ID ||
+			pending[index].Operation.State != store.SandboxOperationQueued {
+			continue
+		}
+		_, err := c.activateQueuedSandboxOperation(ctx, &pending[index])
+		if errors.Is(err, ErrHostUnavailable) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func matchingTerminationStage(
 	operation *store.SandboxOperation,
 	kind string,

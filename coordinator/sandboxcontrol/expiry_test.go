@@ -118,6 +118,9 @@ func TestSweepExpiredCommandsPersistsTimeout(t *testing.T) {
 	}
 	if stored.State != store.SandboxCommandTimedOut ||
 		stored.ErrorCode != "command_deadline_exceeded" ||
+		!stored.CancellationPending ||
+		stored.CancelDispatchAttempts != 1 ||
+		stored.LastCancelDispatchError != "host_unavailable" ||
 		stored.CompletedAt == nil ||
 		!stored.CompletedAt.Equal(now) {
 		t.Fatalf("timed-out command = %+v", stored)

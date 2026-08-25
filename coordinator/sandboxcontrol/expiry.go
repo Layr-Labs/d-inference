@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -18,6 +17,10 @@ func (c *Controller) runLeaseSweeper(ctx context.Context) {
 		if err := c.sweepExpiredCommands(ctx); err != nil &&
 			!errors.Is(err, context.Canceled) {
 			// The next bounded sweep retries durable rows.
+		}
+		if err := c.sweepPendingCommandCancellations(ctx); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			// The next bounded sweep or host reconnect retries durable rows.
 		}
 		if err := c.sweepExpiredLeases(ctx); err != nil &&
 			!errors.Is(err, context.Canceled) {
@@ -65,13 +68,14 @@ func (c *Controller) expireSandboxCommand(
 	command, err := c.store.ApplySandboxCommandUpdate(
 		ctx,
 		store.SandboxCommandUpdate{
-			CommandID:    pending.Command.ID,
-			SandboxID:    pending.Sandbox.ID,
-			Generation:   pending.Command.Generation,
-			FencingToken: pending.Command.FencingToken,
-			State:        store.SandboxCommandTimedOut,
-			ErrorCode:    store.SandboxCommandDeadlineExceeded,
-			UpdatedAt:    now,
+			CommandID:           pending.Command.ID,
+			SandboxID:           pending.Sandbox.ID,
+			Generation:          pending.Command.Generation,
+			FencingToken:        pending.Command.FencingToken,
+			State:               store.SandboxCommandTimedOut,
+			ErrorCode:           store.SandboxCommandDeadlineExceeded,
+			RequestCancellation: true,
+			UpdatedAt:           now,
 		},
 	)
 	if err != nil {
@@ -80,7 +84,7 @@ func (c *Controller) expireSandboxCommand(
 		}
 		return true, err
 	}
-	c.cancelExpiredCommand(&pending.Sandbox, command)
+	_ = c.dispatchCommandCancellation(ctx, &pending.Sandbox, command)
 	if pending.Sandbox.TerminationRequested {
 		if err := c.driveTermination(ctx, &pending.Sandbox); err != nil &&
 			!IsConflict(err) &&
@@ -91,35 +95,36 @@ func (c *Controller) expireSandboxCommand(
 	return true, nil
 }
 
-func (c *Controller) cancelExpiredCommand(
-	sandbox *store.SandboxRecord,
-	command *store.SandboxCommand,
-) {
-	if sandbox == nil || command == nil {
-		return
-	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		return
-	}
-	sendContext, cancel := context.WithTimeout(
-		context.Background(),
-		dispatchTimeout,
-	)
+func (c *Controller) sweepPendingCommandCancellations(
+	ctx context.Context,
+) error {
+	sweepContext, cancel := context.WithTimeout(ctx, dispatchTimeout)
 	defer cancel()
-	_ = session.Send(
-		sendContext,
-		protocol.SandboxTypeCancelCommand,
-		protocol.SandboxCommandControlPayload{
-			OperationID: uuid.NewString(),
-			CommandID:   command.ID,
-			Scope: protocol.SandboxScope{
-				SandboxID:    command.SandboxID,
-				Generation:   command.Generation,
-				FencingToken: command.FencingToken,
-			},
-		},
-	)
+	now := c.now().UTC()
+	for _, host := range c.hosts.Snapshots() {
+		pending, err := c.store.ListPendingSandboxCommandCancellationsByHost(
+			sweepContext,
+			host.HostID,
+		)
+		if err != nil {
+			return err
+		}
+		for index := range pending {
+			command := &pending[index].Command
+			if !dispatchDue(command.LastCancelDispatchedAt, now) {
+				continue
+			}
+			if err := c.dispatchCommandCancellation(
+				sweepContext,
+				&pending[index].Sandbox,
+				command,
+			); err != nil &&
+				!errors.Is(err, ErrHostUnavailable) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Controller) sweepExpiredLeases(ctx context.Context) error {

@@ -34,6 +34,15 @@ func (c *Controller) reconcileHost(
 	now := c.now().UTC()
 	for index := range pendingOperations {
 		pending := &pendingOperations[index]
+		if pending.Operation.State == store.SandboxOperationQueued {
+			if _, err := c.activateQueuedSandboxOperation(
+				ctx,
+				pending,
+			); err != nil && !IsConflict(err) {
+				return err
+			}
+			continue
+		}
 		confirmed, err := c.applyHeartbeatOperationObservation(
 			ctx,
 			pending,
@@ -92,6 +101,26 @@ func (c *Controller) reconcileHost(
 		}
 		_ = c.dispatchCommand(&pending.Sandbox, &pending.Command)
 	}
+	pendingCancellations, err :=
+		c.store.ListPendingSandboxCommandCancellationsByHost(
+			ctx,
+			session.HostID(),
+		)
+	if err != nil {
+		return err
+	}
+	for index := range pendingCancellations {
+		pending := &pendingCancellations[index]
+		if !newConnection &&
+			!dispatchDue(pending.Command.LastCancelDispatchedAt, now) {
+			continue
+		}
+		_ = c.dispatchCommandCancellation(
+			ctx,
+			&pending.Sandbox,
+			&pending.Command,
+		)
+	}
 	c.scheduleMu.Lock()
 	if current, exists := c.hosts.Session(session.HostID()); exists &&
 		current == session {
@@ -99,6 +128,26 @@ func (c *Controller) reconcileHost(
 	}
 	c.scheduleMu.Unlock()
 	return nil
+}
+
+func (c *Controller) activateQueuedSandboxOperation(
+	ctx context.Context,
+	pending *store.PendingSandboxOperation,
+) (bool, error) {
+	if pending == nil ||
+		pending.Operation.State != store.SandboxOperationQueued {
+		return false, nil
+	}
+	sandbox, operation, activated, err :=
+		c.store.ActivateQueuedSandboxOperation(
+			ctx,
+			pending.Operation.ID,
+			c.now().UTC(),
+		)
+	if err != nil || !activated {
+		return activated, err
+	}
+	return true, c.dispatchOperation(sandbox, operation)
 }
 
 func (c *Controller) failUnconfirmedLegacyRenewal(

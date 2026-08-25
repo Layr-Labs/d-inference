@@ -731,12 +731,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
-		// Backfill from existing usage rows.  ON CONFLICT DO NOTHING makes
-		// this idempotent — only runs on first deploy.
-		`INSERT INTO usage_totals (id, total_requests, total_prompt_tokens, total_completion_tokens)
-		 SELECT 1, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
-		 FROM usage
-		 ON CONFLICT (id) DO NOTHING`,
+		`CREATE TABLE IF NOT EXISTS usage_totals_backfill_state (
+			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			cutoff_id BIGINT NOT NULL
+		)`,
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
@@ -1044,6 +1042,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		if _, err := s.pool.Exec(ctx, m); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
+	}
+
+	if err := s.migrateUsageTotals(ctx); err != nil {
+		return err
 	}
 
 	if err := s.migrateWithdrawableBalance(ctx); err != nil {

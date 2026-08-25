@@ -341,11 +341,28 @@ public struct SelfUpdater: Sendable {
                 return .failure(.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"))
             }
 
-            // Verify SHA-256
-            let fileData = try Data(contentsOf: tempFileURL)
-            let digest = SHA256.hash(data: fileData)
-            let computedHash = digest.map { String(format: "%02x", $0) }.joined()
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: tempFileURL.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  let compressedSize = attributes[.size] as? NSNumber
+            else {
+                try? FileManager.default.removeItem(at: tempFileURL)
+                return .failure(.downloadFailed(
+                    "downloaded release archive is not a regular file"))
+            }
+            guard compressedSize.uint64Value
+                    <= ReleaseArchivePolicy.maxCompressedBytes
+            else {
+                try? FileManager.default.removeItem(at: tempFileURL)
+                return .failure(.downloadFailed(
+                    "release archive exceeds the "
+                        + "\(ReleaseArchivePolicy.maxCompressedBytes)-byte "
+                        + "compressed-size limit"))
+            }
 
+            // Stream the digest so even a rejected maximum-size download does
+            // not require a second archive-sized in-memory allocation.
+            let computedHash = try sha256Hex(file: tempFileURL)
             guard computedHash == release.bundleHash.lowercased() else {
                 try? FileManager.default.removeItem(at: tempFileURL)
                 return .failure(.hashMismatch(expected: release.bundleHash, got: computedHash))
@@ -492,6 +509,9 @@ public struct SelfUpdater: Sendable {
             "\(Self.stagingDirPrefix)\(UUID().uuidString)", isDirectory: true)
 
         do {
+            // The complete tar header graph is approved before /usr/bin/tar
+            // writes a single archive-controlled path into the staging tree.
+            try ReleaseArchivePreflight.validate(downloadedFile)
             try fm.createDirectory(at: installDir, withIntermediateDirectories: true)
             // Best-effort removal of staging/backup dirs orphaned by a crash
             // between stage and commit in an earlier process.
@@ -1130,10 +1150,24 @@ public struct SelfUpdater: Sendable {
         throw UpdateError.replaceFailed("release bundle missing \(names[0])")
     }
 
+    private func sha256Hex(file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if data.isEmpty {
+                break
+            }
+            hasher.update(data: data)
+        }
+        return hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     private func verifyHash(file: URL, expected: String, label: String) throws {
-        let data = try Data(contentsOf: file)
-        let digest = SHA256.hash(data: data)
-        let got = digest.map { String(format: "%02x", $0) }.joined()
+        let got = try sha256Hex(file: file)
         guard got == expected.lowercased() else {
             throw UpdateError.hashMismatch(expected: expected, got: "\(label): \(got)")
         }

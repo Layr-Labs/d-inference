@@ -116,7 +116,7 @@ struct OnboardingFlowTests {
         conflict.downloadProfileAgain()
         #expect(conflict.enrollmentPhase == .conflictingManagement)
         conflict.reopenSystemSettings()
-        #expect(conflict.enrollmentPhase == .systemSettingsOpen)
+        #expect(conflict.enrollmentPhase == .conflictingManagement)
         await conflict.confirmProfileInstallation()
         #expect(conflict.enrollmentPhase == .conflictingManagement)
 

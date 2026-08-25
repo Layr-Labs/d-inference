@@ -16,6 +16,7 @@
 /// and optionally cleans up local state.
 
 import Foundation
+import ProviderCoreFoundation
 
 // MARK: - Errors
 
@@ -241,9 +242,7 @@ public struct EnrollmentService: Sendable {
     /// remove the profile. Apple requires user interaction; we cannot remove
     /// it programmatically.
     public func openProfilesPaneForRemoval() {
-        try? openCommand([
-            "x-apple.systempreferences:com.apple.preferences.configurationprofiles"
-        ])
+        SystemSettingsProfileRemovalPane.open(using: openCommand)
     }
 
     private static func runOpen(arguments: [String]) throws {

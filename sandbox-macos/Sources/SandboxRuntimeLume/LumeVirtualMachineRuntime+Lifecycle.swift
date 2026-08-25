@@ -1,0 +1,886 @@
+import Foundation
+import SandboxCore
+import SandboxRuntime
+
+extension LumeVirtualMachineRuntime {
+    func inspect(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws -> SandboxVirtualMachineRecord? {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        try preauthorize(
+            scope: scope,
+            operation: .inspect,
+            virtualMachineName: name
+        )
+        let operationLock = try beginOperation("inspect", name: name)
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
+        guard let capacityArbiter else {
+            throw SandboxRuntimeError.unsupported(
+                "lease-fenced Lume operation requires a capacity arbiter"
+            )
+        }
+        _ = try capacityArbiter.authorize(
+            scope: scope,
+            virtualMachineName: name,
+            operation: .inspect
+        )
+        let record = try await inspect(name: name)
+        let ownership = try LumeVirtualMachineOwnership.presence(
+            name: name,
+            owner: .init(operationScope: scope),
+            in: configuration.storageDirectory
+        )
+        var resourceCommitment:
+            LumeVirtualMachineOwnership.ResourceCommitment?
+        switch (record, ownership) {
+        case (.some, .owned):
+            resourceCommitment =
+                try LumeVirtualMachineOwnership.requireResourceCommitment(
+                    name: name,
+                    owner: .init(operationScope: scope),
+                    in: configuration.storageDirectory
+                )
+        case (.none, .absent):
+            break
+        case (.some, .absent), (.none, .owned):
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) runtime and ownership presence disagree"
+            )
+        }
+        let lease = try capacityArbiter.authorize(
+            scope: scope,
+            virtualMachineName: name,
+            operation: .inspect
+        )
+        if let record, let resourceCommitment {
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: record,
+                ownership: resourceCommitment,
+                lease: lease
+            )
+        }
+        return record
+    }
+
+    public func create(
+        _ specification: SandboxVirtualMachineSpecification
+    ) async throws {
+        try await create(specification, scope: nil)
+    }
+
+    func create(
+        _ specification: SandboxVirtualMachineSpecification,
+        scope: SandboxOperationScope?
+    ) async throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(specification.name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        try preauthorize(
+            scope: scope,
+            operation: .create,
+            virtualMachineName: specification.name,
+            resources: specification.resources,
+            bootDiskBytes: specification.diskBytes
+        )
+        let operationLock = try beginOperation(
+            "create",
+            name: specification.name
+        )
+        defer {
+            endOperation(name: specification.name)
+            withExtendedLifetime(operationLock) {}
+        }
+
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .create,
+            virtualMachineName: specification.name,
+            resources: specification.resources,
+            bootDiskBytes: specification.diskBytes
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        _ = try await validateRuntime()
+        try ensureStorageDirectory()
+        if let existing = try await inspect(name: specification.name) {
+            guard Self.matches(existing, specification: specification),
+                  LumeVirtualMachineOwnership.matches(
+                      specification: specification,
+                      owner: owner,
+                      in: configuration.storageDirectory
+                  )
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "VM \(specification.name) already exists without matching Darkbloom ownership"
+                )
+            }
+            let identity = try LumeVirtualMachineOwnership.requireOwned(
+                name: specification.name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: specification.name,
+                ownership: identity,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+            return
+        }
+        try requireUnlistedVirtualMachineIsUnowned(
+            name: specification.name,
+            owner: owner
+        )
+
+        var sourceOperationName: String?
+        var sourceOperationLock: LumeVirtualMachineOperationLock?
+        if case .localTemplate(let template) = specification.imageSource {
+            guard template != specification.name else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            guard try await inspect(name: template) != nil else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
+                name: template,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: template,
+                ownership: sourceIdentity,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            sourceOperationLock = try beginOperation(
+                "clone-source",
+                name: template
+            )
+            sourceOperationName = template
+        }
+        defer {
+            if let sourceOperationName {
+                endOperation(name: sourceOperationName)
+            }
+            withExtendedLifetime(sourceOperationLock) {}
+        }
+
+        let arguments: [String]
+        var sourceInstallationID: UUID?
+        switch specification.imageSource {
+        case .restoreImage(let url, let unattendedPreset):
+            guard FileManager.default.isReadableFile(atPath: url.path) else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            sourceInstallationID = nil
+            arguments = storageArguments([
+                "create",
+                specification.name,
+                "--os", "macOS",
+                "--cpu", String(specification.resources.cpuCount),
+                "--memory", "\(specification.resources.memoryBytes)B",
+                "--disk-size", "\(specification.diskBytes)B",
+                "--ipsw", url.path,
+                "--unattended", unattendedPreset,
+                "--no-display",
+                "--vnc-port", "0",
+                "--network", "nat",
+            ])
+        case .localTemplate(let template):
+            guard let templateRecord = try await inspect(name: template) else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            guard templateRecord.diskBytes == specification.diskBytes else {
+                throw SandboxRuntimeError.templateBootDiskMismatch(
+                    template: template,
+                    requested: specification.diskBytes,
+                    actual: templateRecord.diskBytes
+                )
+            }
+            let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
+                name: template,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            try LumeVirtualMachineStartIntent.requireAbsent(
+                name: template,
+                ownership: sourceIdentity,
+                owner: .baseTemplate,
+                in: configuration.storageDirectory
+            )
+            sourceInstallationID = sourceIdentity.installationID
+            arguments = [
+                "clone",
+                template,
+                specification.name,
+                "--source-storage", configuration.storageDirectory.path,
+                "--dest-storage", configuration.storageDirectory.path,
+            ]
+        }
+        let creationWorkspace = try workspace.makeCreationWorkspace(
+            name: specification.name
+        )
+
+        do {
+            if let capacityArbiter {
+                _ = try capacityArbiter.validateStorageHeadroom()
+            }
+            _ = try await run(
+                arguments: arguments,
+                timeoutSeconds: configuration.createTimeoutSeconds,
+                operation: "create",
+                environment: creationWorkspace.environment
+            )
+            guard let created = try await inspect(name: specification.name),
+                  created.state == .stopped,
+                  Self.matches(created, specification: specification)
+            else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "Lume create completed without the requested stopped VM"
+                )
+            }
+            try LumeVirtualMachineOwnership.write(
+                specification: specification,
+                owner: owner,
+                sourceInstallationID: sourceInstallationID,
+                to: creationWorkspace.destination
+            )
+        } catch {
+            do {
+                try await cleanupFailedCreationIgnoringCancellation(
+                    workspace: creationWorkspace
+                )
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "create \(specification.name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
+        }
+        do {
+            try await cleanupCreationScratchIgnoringCancellation(
+                workspace: creationWorkspace
+            )
+        } catch {
+            throw SandboxRuntimeError.cleanupFailed(
+                operation: "finish create \(specification.name)",
+                primary: "virtual machine creation completed",
+                cleanup: String(describing: error)
+            )
+        }
+    }
+
+    public func start(name: String) async throws {
+        try await start(name: name, scope: nil)
+    }
+
+    func start(
+        name: String,
+        scope: SandboxOperationScope?
+    ) async throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        try preauthorize(
+            scope: scope,
+            operation: .start,
+            virtualMachineName: name
+        )
+        let operationLock = try beginOperation("start", name: name)
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
+
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .start,
+            virtualMachineName: name
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        guard let existing = try await inspect(name: name) else {
+            throw SandboxRuntimeError.unsupported(
+                "cannot start missing VM \(name)"
+            )
+        }
+        let ownershipCommitment =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: existing,
+            ownership: ownershipCommitment,
+            lease: leaseAuthorization?.lease
+        )
+        let ownership = ownershipCommitment.identity
+        let startIntent = try LumeVirtualMachineStartIntent.presence(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
+        if existing.state == .running {
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                startIntent,
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: existing.state,
+                in: configuration.storageDirectory
+            )
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            return
+        }
+        if existing.state == .starting {
+            let running = try await waitForState(
+                name: name,
+                expected: .running,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: running,
+                ownership: ownershipCommitment,
+                lease: leaseAuthorization?.lease
+            )
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                startIntent,
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: .running,
+                in: configuration.storageDirectory
+            )
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            return
+        }
+        guard existing.state == .stopped else {
+            throw SandboxRuntimeError.unsupported(
+                "cannot start VM \(name) while state is \(existing.state.rawValue)"
+            )
+        }
+        try LumeVirtualMachineStartIntent.requireAbsent(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
+        let intent = try LumeVirtualMachineStartIntent.persist(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            initiatingScope: scope,
+            in: configuration.storageDirectory
+        )
+        let process: SandboxManagedProcess
+        do {
+            process = try processRunner.start(
+                executable: configuration.executable,
+                arguments: storageArguments([
+                    "run",
+                    name,
+                    "--display", "none",
+                    "--vnc", "disabled",
+                ]),
+                environment: workspace.environment,
+                cooperativeControl: LumeLifecycleControl.processControl
+            )
+        } catch {
+            do {
+                try LumeVirtualMachineStartIntent.clearAfterSpawnFailure(
+                    intent,
+                    name: name,
+                    ownership: ownership,
+                    owner: owner,
+                    in: configuration.storageDirectory
+                )
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "start \(name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
+        }
+
+        runningProcesses[name] = process
+        var unresolvedIntent: LumeVirtualMachineStartIntent.Intent? = intent
+        do {
+            let running = try await waitForState(
+                name: name,
+                expected: .running,
+                timeoutSeconds: configuration.commandTimeoutSeconds,
+                process: process
+            )
+            try LumeVirtualMachineResourceCommitment.requireMatch(
+                observed: running,
+                ownership: ownershipCommitment,
+                lease: leaseAuthorization?.lease
+            )
+            try LumeVirtualMachineStartIntent.resolveAfterRunningObserved(
+                .unresolved(intent),
+                name: name,
+                ownership: ownership,
+                owner: owner,
+                observedState: .running,
+                in: configuration.storageDirectory
+            )
+            unresolvedIntent = nil
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+        } catch {
+            do {
+                try await cleanupFailedStartIgnoringCancellation(
+                    name: name,
+                    owner: owner,
+                    ownership: ownershipCommitment,
+                    process: process,
+                    unresolvedIntent: unresolvedIntent,
+                    expectedLease: leaseAuthorization?.lease
+                )
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "start \(name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
+        }
+    }
+
+    public func stop(name: String) async throws {
+        try await stop(name: name, scope: nil)
+    }
+
+    func stop(
+        name: String,
+        scope: SandboxOperationScope?
+    ) async throws {
+        try await performStop(
+            name: name,
+            scope: scope,
+            releaseCapacity: false
+        )
+    }
+
+    func stopAndRelease(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws {
+        try await performStop(
+            name: name,
+            scope: scope,
+            releaseCapacity: true
+        )
+    }
+
+    private func performStop(
+        name: String,
+        scope: SandboxOperationScope?,
+        releaseCapacity: Bool
+    ) async throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        try preauthorize(
+            scope: scope,
+            operation: .stop,
+            virtualMachineName: name
+        )
+        let operationLock = try beginOperation(
+            releaseCapacity ? "release" : "stop",
+            name: name
+        )
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .stop,
+            virtualMachineName: name
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        try await stopWithoutOperationFence(
+            name: name,
+            owner: owner,
+            expectedLease: leaseAuthorization?.lease
+        )
+        if releaseCapacity {
+            guard let capacityArbiter,
+                  let scope,
+                  let leaseAuthorization
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "capacity release requires a fenced lease authorization"
+                )
+            }
+            try capacityArbiter.release(
+                scope: scope,
+                holding: leaseAuthorization
+            )
+        }
+    }
+
+    public func delete(name: String) async throws {
+        try await delete(name: name, scope: nil)
+    }
+
+    func delete(
+        name: String,
+        scope: SandboxOperationScope?
+    ) async throws {
+        try await performDelete(
+            name: name,
+            scope: scope,
+            releaseCapacity: false
+        )
+    }
+
+    func deleteAndRelease(
+        name: String,
+        scope: SandboxOperationScope
+    ) async throws {
+        try await performDelete(
+            name: name,
+            scope: scope,
+            releaseCapacity: true
+        )
+    }
+
+    private func performDelete(
+        name: String,
+        scope: SandboxOperationScope?,
+        releaseCapacity: Bool
+    ) async throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
+        if releaseCapacity,
+           let capacityArbiter,
+           let scope,
+           try capacityArbiter.deletionConfirmed(
+               scope: scope,
+               virtualMachineName: name
+           )
+        {
+            let owner = LumeVirtualMachineOwnership.Owner(
+                operationScope: scope
+            )
+            guard try await inspect(name: name) == nil else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "deleted VM reappeared after fenced capacity release"
+                )
+            }
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: owner
+            )
+            return
+        }
+        var reservationAbsent = false
+        do {
+            try preauthorize(
+                scope: scope,
+                operation: .delete,
+                virtualMachineName: name
+            )
+        } catch SandboxCapacityError.leaseNotFound
+            where releaseCapacity && scope != nil
+        {
+            reservationAbsent = true
+        }
+        let operationLock = try beginOperation(
+            releaseCapacity ? "delete-and-release" : "delete",
+            name: name
+        )
+        defer {
+            endOperation(name: name)
+            withExtendedLifetime(operationLock) {}
+        }
+
+        if reservationAbsent {
+            guard let scope else {
+                throw SandboxRuntimeError.unsupported(
+                    "unreserved deletion requires an operation scope"
+                )
+            }
+            guard try await inspect(name: name) == nil else {
+                throw SandboxCapacityError.leaseNotFound
+            }
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: .init(operationScope: scope)
+            )
+            return
+        }
+        let leaseAuthorization = try authorize(
+            scope: scope,
+            operation: .delete,
+            virtualMachineName: name
+        )
+        defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        guard let existing = try await inspect(name: name) else {
+            try requireUnlistedVirtualMachineIsUnowned(
+                name: name,
+                owner: owner
+            )
+            try releaseCapacityIfRequested(
+                releaseCapacity,
+                scope: scope,
+                authorization: leaseAuthorization
+            )
+            return
+        }
+        let ownershipCommitment =
+            try LumeVirtualMachineOwnership.requireResourceCommitment(
+                name: name,
+                owner: owner,
+                in: configuration.storageDirectory
+            )
+        try LumeVirtualMachineResourceCommitment.requireMatch(
+            observed: existing,
+            ownership: ownershipCommitment,
+            lease: leaseAuthorization?.lease
+        )
+        let ownership = ownershipCommitment.identity
+        try LumeVirtualMachineStartIntent.requireAbsent(
+            name: name,
+            ownership: ownership,
+            owner: owner,
+            in: configuration.storageDirectory
+        )
+        guard existing.state == .stopped || existing.state == .failed else {
+            throw SandboxRuntimeError.unsupported(
+                "refusing to delete VM \(name) while state is \(existing.state.rawValue)"
+            )
+        }
+        _ = try await run(
+            arguments: storageArguments(["delete", name, "--force"]),
+            timeoutSeconds: configuration.commandTimeoutSeconds,
+            operation: "delete"
+        )
+        guard try await inspect(name: name) == nil else {
+            throw SandboxRuntimeError.malformedOutput(
+                "Lume delete completed but VM still exists"
+            )
+        }
+        try releaseCapacityIfRequested(
+            releaseCapacity,
+            scope: scope,
+            authorization: leaseAuthorization
+        )
+    }
+
+    private func releaseCapacityIfRequested(
+        _ releaseCapacity: Bool,
+        scope: SandboxOperationScope?,
+        authorization: SandboxLeaseMutationAuthorization?
+    ) throws {
+        guard releaseCapacity else {
+            return
+        }
+        guard let capacityArbiter,
+              let scope,
+              let authorization
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "capacity release requires a fenced lease authorization"
+            )
+        }
+        try capacityArbiter.releaseDeleted(
+            scope: scope,
+            holding: authorization
+        )
+    }
+
+    func beginOperation(
+        _ operation: String,
+        name: String
+    ) throws -> LumeVirtualMachineOperationLock {
+        if let activeOperation = activeOperations[name] {
+            throw SandboxRuntimeError.operationInProgress(
+                name: name,
+                operation: activeOperation
+            )
+        }
+        let lock = try LumeVirtualMachineOperationLock(
+            workspace: workspace,
+            name: name,
+            operation: operation
+        )
+        activeOperations[name] = operation
+        return lock
+    }
+
+    func endOperation(name: String) {
+        activeOperations.removeValue(forKey: name)
+    }
+
+    private func cleanupFailedCreationIgnoringCancellation(
+        workspace: LumeCreationWorkspace
+    ) async throws {
+        let cleanup = Task.detached {
+            try await workspace.removeAllArtifacts()
+        }
+        try await cleanup.value
+    }
+
+    private func cleanupCreationScratchIgnoringCancellation(
+        workspace: LumeCreationWorkspace
+    ) async throws {
+        let cleanup = Task.detached {
+            try await workspace.removeScratch()
+        }
+        try await cleanup.value
+    }
+
+    func waitForState(
+        name: String,
+        expected: SandboxVirtualMachineState,
+        timeoutSeconds: UInt32,
+        process: SandboxManagedProcess? = nil
+    ) async throws -> SandboxVirtualMachineRecord {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        repeat {
+            let observed = try await inspect(name: name)
+            if let observed, observed.state == expected {
+                return observed
+            }
+            if let process, !process.isRunning {
+                let result = await process.wait()
+                runningProcesses.removeValue(forKey: name)
+                let standardError = String(
+                    decoding: result.standardError,
+                    as: UTF8.self
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw SandboxRuntimeError.commandFailed(
+                    command: "lume start",
+                    exitCode: result.exitCode,
+                    stderr: standardError
+                )
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        } while clock.now < deadline
+        throw SandboxRuntimeError.operationTimedOut(
+            "\(name) -> \(expected.rawValue)"
+        )
+    }
+
+    func waitForStoppedOrAbsent(
+        name: String,
+        timeoutSeconds: UInt32
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        repeat {
+            let state = try await inspect(name: name)?.state
+            if state == nil || state == .stopped {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        } while clock.now < deadline
+        throw SandboxRuntimeError.operationTimedOut(
+            "\(name) -> stopped"
+        )
+    }
+
+    private func waitForGuestReady(
+        name: String,
+        timeoutSeconds: UInt32
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        repeat {
+            let record: SandboxVirtualMachineRecord?
+            do {
+                record = try await LumeGuestReadinessDeadline.run(
+                    clock: clock,
+                    deadline: deadline
+                ) {
+                    try await self.inspect(name: name)
+                }
+            } catch is LumeGuestReadinessDeadlineExceeded {
+                break
+            }
+            if record?.guestReady == true {
+                do {
+                    if try await LumeCredentialedGuestReadinessProbe.run(
+                        runner: processRunner,
+                        executable: configuration.executable,
+                        storagePath: configuration.storageDirectory.path,
+                        environment: workspace.environment,
+                        name: name,
+                        policy: guestReadinessPolicy,
+                        clock: clock,
+                        deadline: deadline
+                    ) {
+                        return
+                    }
+                } catch let error as CancellationError {
+                    throw error
+                } catch is LumeGuestReadinessDeadlineExceeded {
+                    break
+                } catch {
+                    if clock.now >= deadline {
+                        break
+                    }
+                }
+            }
+            guard clock.now < deadline else {
+                break
+            }
+            let retryDeadline = min(
+                clock.now.advanced(by: guestReadinessPolicy.retryDelay),
+                deadline
+            )
+            try await clock.sleep(
+                until: retryDeadline,
+                tolerance: .zero
+            )
+        } while clock.now < deadline
+        throw SandboxRuntimeError.operationTimedOut(
+            "\(name) guest readiness"
+        )
+    }
+
+    private static func matches(
+        _ record: SandboxVirtualMachineRecord,
+        specification: SandboxVirtualMachineSpecification
+    ) -> Bool {
+        record.cpuCount == specification.resources.cpuCount
+            && record.memoryBytes == specification.resources.memoryBytes
+            && record.diskBytes == specification.diskBytes
+    }
+}

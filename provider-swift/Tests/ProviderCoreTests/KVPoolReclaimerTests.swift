@@ -132,7 +132,7 @@ struct KVPoolReclaimerTests {
             proactiveThresholdBytes: 2 * gib)
 
         let reclaim = Task { await reclaimer.sweep() }
-        #expect(gate.waitUntilClearStarted())
+        await gate.waitUntilClearStarted()
         let failsafe = Task {
             try? await taskSleep(.milliseconds(250))
             gate.releaseClear()
@@ -223,18 +223,33 @@ private final class ReclaimSpy: @unchecked Sendable {
 }
 
 private final class BlockingReclaimGate: @unchecked Sendable {
-    private let started = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
+    private var clearStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var released = false
 
     func enterClear() {
-        started.signal()
+        lock.lock()
+        clearStarted = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        lock.unlock()
+        waiters.forEach { $0.resume() }
         release.wait()
     }
 
-    func waitUntilClearStarted() -> Bool {
-        started.wait(timeout: .now() + 2) == .success
+    func waitUntilClearStarted() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            guard !clearStarted else {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            startWaiters.append(continuation)
+            lock.unlock()
+        }
     }
 
     func releaseClear() {

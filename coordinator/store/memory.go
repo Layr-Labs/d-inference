@@ -143,6 +143,13 @@ type MemoryStore struct {
 	floorDrawSeq       int64
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Developer sandboxes — durable in production, process-local in MemoryStore.
+	sandboxes                   map[string]*SandboxRecord
+	sandboxOperations           map[string]*SandboxOperation
+	sandboxCommands             map[string]*SandboxCommand
+	sandboxCommandByIdempotency map[string]string
+	sandboxByIdempotency        map[string]string
+	sandboxNextFencingToken     map[string]uint64
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -197,6 +204,12 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRejections:           make([]RejectionRecord, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
+		sandboxes:                     make(map[string]*SandboxRecord),
+		sandboxOperations:             make(map[string]*SandboxOperation),
+		sandboxCommands:               make(map[string]*SandboxCommand),
+		sandboxCommandByIdempotency:   make(map[string]string),
+		sandboxByIdempotency:          make(map[string]string),
+		sandboxNextFencingToken:       make(map[string]uint64),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{

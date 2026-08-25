@@ -76,12 +76,24 @@ func TestCORSHeaders(t *testing.T) {
 func TestCORSPreflight(t *testing.T) {
 	srv, _ := testServer(t)
 
-	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/sandboxes", nil)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set(
+		"Access-Control-Request-Headers",
+		"Authorization, Content-Type, Idempotency-Key",
+	)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	allowedHeaders := w.Header().Get("Access-Control-Allow-Headers")
+	if !strings.Contains(allowedHeaders, "Idempotency-Key") {
+		t.Errorf(
+			"Access-Control-Allow-Headers = %q, want Idempotency-Key",
+			allowedHeaders,
+		)
 	}
 }
 

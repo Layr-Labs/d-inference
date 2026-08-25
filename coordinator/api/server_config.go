@@ -6,6 +6,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration.
@@ -22,6 +23,7 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
+	SandboxHostAuth     sandboxhost.AuthConfig
 	BaseRewards         BaseRewardsConfig
 	// MediaFetch is the remote media resolution config (mediafetch package).
 	// nil means "read it from the environment in NewServer", which keeps the
@@ -42,6 +44,10 @@ type BaseRewardsConfig struct {
 	AccountCapFrac float64 // EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP (0 = per-machine, no cap)
 }
 
+func (c ServerConfig) Check() error {
+	return c.SandboxHostAuth.Check()
+}
+
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
@@ -55,6 +61,11 @@ func ReadServerConfig() ServerConfig {
 		AdminEmails:         ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:          os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 		ServiceReservations: env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		SandboxHostAuth: sandboxhost.AuthConfig{
+			TokenSHA256JSON: os.Getenv(
+				env.EnvPrefix + "_SANDBOX_HOST_TOKEN_SHA256_JSON",
+			),
+		},
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

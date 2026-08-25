@@ -23,6 +23,11 @@ func ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
 	}
 	_, err = validatePrefixCacheCapabilities(
 		msg.PrefixCacheProtocol, msg.PrefixCacheV2Models, models)
+	if err != nil {
+		return err
+	}
+	_, err = validateExactPrefixCacheModels(
+		msg.PrefixCacheProtocol, msg.ExactPrefixCacheModels, models)
 	return err
 }
 
@@ -114,6 +119,41 @@ func prefixCacheV2CapabilityMap(
 		result[capability.ModelID] = capability
 	}
 	return result
+}
+
+func validateExactPrefixCacheModels(
+	version int,
+	exactModels []string,
+	models map[string]protocol.ModelInfo,
+) (map[string]struct{}, error) {
+	if len(exactModels) == 0 {
+		return nil, nil
+	}
+	if version < 1 {
+		return nil, fmt.Errorf(
+			"%w: exact cache models require scoped cache protocol support",
+			errInvalidPrefixCacheCapability)
+	}
+	result := make(map[string]struct{}, len(exactModels))
+	for _, modelID := range exactModels {
+		if modelID == "" || modelID != strings.TrimSpace(modelID) {
+			return nil, fmt.Errorf(
+				"%w: blank or non-canonical exact cache model",
+				errInvalidPrefixCacheCapability)
+		}
+		if _, exists := models[modelID]; !exists {
+			return nil, fmt.Errorf(
+				"%w: exact cache model %q is not registered",
+				errInvalidPrefixCacheCapability, modelID)
+		}
+		if _, duplicate := result[modelID]; duplicate {
+			return nil, fmt.Errorf(
+				"%w: duplicate exact cache model %q",
+				errInvalidPrefixCacheCapability, modelID)
+		}
+		result[modelID] = struct{}{}
+	}
+	return result, nil
 }
 
 func validLowerHex256(value string) bool {

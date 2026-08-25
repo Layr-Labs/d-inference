@@ -195,10 +195,14 @@ public enum ProviderMessage: Sendable, Equatable {
         /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
-        /// Provider-confirmed prefix-cache protocol version. Omitted by legacy
-        /// providers; only version 2 carries exact, provider-proven ownership.
+        /// Provider-confirmed receipt protocol version. Omitted by legacy
+        /// providers; only version 2 carries provider-proven SSD ownership.
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        /// Concrete loaded slots with an active process-local exact RAM cache.
+        /// This accepts authenticated scope metadata but carries no SSD receipt
+        /// or durable-ownership semantics.
+        public var exactPrefixCacheModels: [String]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
         /// Inference-time tool grammar capability. Protocol 1 is advertised
@@ -227,6 +231,7 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            exactPrefixCacheModels: [String]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
@@ -252,6 +257,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.exactPrefixCacheModels = exactPrefixCacheModels
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
             self.toolConstraintProtocol = toolConstraintProtocol
@@ -277,6 +283,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var apnsEnvironment: String?
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        public var exactPrefixCacheModels: [String]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
 
@@ -291,6 +298,7 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            exactPrefixCacheModels: [String]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
         ) {
@@ -304,6 +312,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.exactPrefixCacheModels = exactPrefixCacheModels
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
         }
@@ -747,6 +756,7 @@ extension ProviderMessage: Codable {
         case apnsEnvironment = "apns_environment"
         case prefixCacheProtocol = "prefix_cache_protocol"
         case prefixCacheV2Models = "prefix_cache_v2_models"
+        case exactPrefixCacheModels = "exact_prefix_cache_models"
         case prefixCacheStatuses = "prefix_cache_statuses"
         case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
@@ -841,6 +851,8 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(r.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(
+                r.exactPrefixCacheModels, forKey: .exactPrefixCacheModels)
             try container.encodeIfPresent(r.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 r.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
@@ -867,6 +879,8 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(h.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(
+                h.exactPrefixCacheModels, forKey: .exactPrefixCacheModels)
             try container.encodeIfPresent(h.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
@@ -1045,6 +1059,8 @@ extension ProviderMessage: Codable {
                 prefixCacheProtocol: try container.decodeIfPresent(Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
                     [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                exactPrefixCacheModels: try container.decodeIfPresent(
+                    [String].self, forKey: .exactPrefixCacheModels),
                 prefixCacheStatuses: try container.decodeIfPresent(
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(
@@ -1070,6 +1086,8 @@ extension ProviderMessage: Codable {
                     Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
                     [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                exactPrefixCacheModels: try container.decodeIfPresent(
+                    [String].self, forKey: .exactPrefixCacheModels),
                 prefixCacheStatuses: try container.decodeIfPresent(
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(

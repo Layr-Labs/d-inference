@@ -35,6 +35,24 @@ func TestProviderInferenceWireMessageCarriesPreparedV2Attempt(t *testing.T) {
 	}
 }
 
+func TestProviderInferenceWireMessageCarriesExactRAMScopeWithoutReceipt(t *testing.T) {
+	pending := &registry.PendingRequest{CacheScope: "authenticated-scope"}
+	encoded, err := json.Marshal(providerInferenceWireMessage(
+		"request", "ephemeral", "ciphertext", pending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded protocol.InferenceRequestMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.CacheScope != pending.CacheScope ||
+		decoded.CacheReceiptNonce != "" ||
+		decoded.PrefixCacheProtocol != 0 {
+		t.Fatalf("scope-only exact RAM metadata changed shape: %+v", decoded)
+	}
+}
+
 func TestProviderInferenceWireMessageOmitsIncompleteCacheAttempt(t *testing.T) {
 	message := providerInferenceWireMessage(
 		"request", "ephemeral", "ciphertext",

@@ -70,6 +70,48 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 	return r, provider, capability
 }
 
+func TestPlanCacheScopeIsAuthenticatedStableAndTenantIsolated(t *testing.T) {
+	r, _, capability := exactTestRegistry(t)
+	r.SetModelCatalog([]CatalogEntry{{
+		ID: "model", WeightHash: capability.ModelAggregateHash,
+	}})
+	input := CachePlanInput{
+		Account:              "tenant-a",
+		Model:                "model",
+		PromptContractID:     capability.PromptContractID,
+		ModelAggregateSHA256: capability.ModelAggregateHash,
+		Body:                 []byte(`{"messages":[{"role":"user","content":"repeat"}]}`),
+	}
+	first := r.PlanCacheScope(input)
+	if !first.scopePresent() || first.present() {
+		t.Fatalf("exact RAM scope should not require SSD boundaries: %+v", first)
+	}
+	if repeated := r.PlanCacheScope(input); repeated.CacheScope != first.CacheScope {
+		t.Fatal("identical authenticated tenant did not receive a stable scope")
+	}
+	otherTenant := input
+	otherTenant.Account = "tenant-b"
+	if other := r.PlanCacheScope(otherTenant); !other.scopePresent() ||
+		other.CacheScope == first.CacheScope {
+		t.Fatalf("distinct tenants were not isolated: first=%+v other=%+v", first, other)
+	}
+	unauthenticated := input
+	unauthenticated.Account = ""
+	if plan := r.PlanCacheScope(unauthenticated); plan.scopePresent() {
+		t.Fatalf("unauthenticated request received a cache scope: %+v", plan)
+	}
+	withoutBody := input
+	withoutBody.Body = nil
+	if plan := r.PlanCacheScope(withoutBody); plan.scopePresent() {
+		t.Fatalf("request without an activation cohort received a cache scope: %+v", plan)
+	}
+	withMedia := input
+	withMedia.HasMedia = true
+	if plan := r.PlanCacheScope(withMedia); plan.scopePresent() {
+		t.Fatalf("media request received an exact RAM scope: %+v", plan)
+	}
+}
+
 func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	r, provider, capability := exactTestRegistry(t)
 	provider.mu.Lock()
@@ -454,6 +496,116 @@ func TestExactRoutingV1ProviderRemainsColdBaseline(t *testing.T) {
 	if r.ApplyPrefixCacheLookup(provider.ID, &protocol.PrefixCacheLookupMessage{}) ||
 		r.ApplyPrefixCacheReady(provider.ID, &protocol.PrefixCacheReadyMessage{}) {
 		t.Fatal("v1 receipt mutated exact routing evidence")
+	}
+}
+
+func TestExactRAMProviderReceivesAuthenticatedScopeWithoutSSDReceipt(t *testing.T) {
+	r, provider, _ := exactTestRegistry(t)
+	provider.mu.Lock()
+	provider.PrefixCacheProtocol = 1
+	provider.PrefixCacheV2Models = nil
+	provider.ExactPrefixCacheModels = map[string]struct{}{"model": {}}
+	provider.mu.Unlock()
+	plan := exactTestPlan(exactTestAnchor(1, "c"))
+	// Exact RAM reuse has no block-boundary or receipt dependency.
+	plan.PromptTokenCount = 0
+	plan.Boundaries = nil
+	pr := &PendingRequest{
+		RequestID: "exact-scope-only",
+		Model:     "model",
+		CachePlan: plan,
+	}
+	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.CacheScope != plan.CacheScope ||
+		pr.CacheReceiptNonce != "" ||
+		pr.PrefixCacheProtocol != 0 ||
+		pr.CacheRoutingParticipates() {
+		t.Fatalf("exact RAM request did not receive scope-only metadata: %+v", pr)
+	}
+}
+
+func TestExactRAMProviderFailsClosedWithoutAuthenticatedScope(t *testing.T) {
+	r, provider, _ := exactTestRegistry(t)
+	provider.mu.Lock()
+	provider.PrefixCacheProtocol = 1
+	provider.PrefixCacheV2Models = nil
+	provider.ExactPrefixCacheModels = map[string]struct{}{"model": {}}
+	provider.mu.Unlock()
+	plan := exactTestPlan(exactTestAnchor(1, "c"))
+	plan.CacheScope = ""
+	pr := &PendingRequest{
+		RequestID: "exact-unscoped",
+		Model:     "model",
+		CachePlan: plan,
+	}
+	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.CacheScope != "" || pr.CacheReceiptNonce != "" ||
+		pr.PrefixCacheProtocol != 0 || pr.CacheRoutingParticipates() {
+		t.Fatalf("unauthenticated exact RAM request received cache metadata: %+v", pr)
+	}
+}
+
+func TestExactRAMAdvertisementDoesNotReplaceSSDReceiptSemantics(t *testing.T) {
+	r, provider, _ := exactTestRegistry(t)
+	provider.mu.Lock()
+	provider.ExactPrefixCacheModels = map[string]struct{}{"model": {}}
+	provider.mu.Unlock()
+	pr := &PendingRequest{
+		RequestID: "ssd-still-v2",
+		Model:     "model",
+		CachePlan: exactTestPlan(exactTestAnchor(1, "d")),
+	}
+	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.CacheReceiptNonce == "" ||
+		pr.CacheScope != pr.CachePlan.CacheScope ||
+		pr.PrefixCacheProtocol != 2 ||
+		!pr.CacheRoutingParticipates() {
+		t.Fatalf("exact RAM advertisement weakened v2 SSD attempt: %+v", pr)
+	}
+}
+
+func TestMixedExactAndSSDTiersUsePerModelMetadata(t *testing.T) {
+	r, provider, capability := exactTestRegistry(t)
+	ssdCapability := capability
+	ssdCapability.ModelID = "ssd-model"
+	provider.mu.Lock()
+	provider.PrefixCacheProtocol = 2
+	provider.PrefixCacheV2Models = map[string]protocol.PrefixCacheV2Capability{
+		"ssd-model": ssdCapability,
+	}
+	provider.ExactPrefixCacheModels = map[string]struct{}{"exact-model": {}}
+	provider.mu.Unlock()
+
+	exact := &PendingRequest{
+		RequestID: "mixed-exact",
+		Model:     "exact-model",
+		CachePlan: exactTestPlan(exactTestAnchor(1, "e")),
+	}
+	if err := r.PrepareCacheAttempt(exact, provider); err != nil {
+		t.Fatal(err)
+	}
+	if exact.CacheScope == "" || exact.CacheReceiptNonce != "" ||
+		exact.PrefixCacheProtocol != 0 || exact.CacheRoutingParticipates() {
+		t.Fatalf("mixed provider attached SSD semantics to exact model: %+v", exact)
+	}
+
+	ssd := &PendingRequest{
+		RequestID: "mixed-ssd",
+		Model:     "ssd-model",
+		CachePlan: exactTestPlan(exactTestAnchor(1, "f")),
+	}
+	if err := r.PrepareCacheAttempt(ssd, provider); err != nil {
+		t.Fatal(err)
+	}
+	if ssd.CacheReceiptNonce == "" || ssd.CacheScope == "" ||
+		ssd.PrefixCacheProtocol != 2 || !ssd.CacheRoutingParticipates() {
+		t.Fatalf("mixed provider lost SSD receipt semantics: %+v", ssd)
 	}
 }
 

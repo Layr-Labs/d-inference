@@ -195,6 +195,7 @@ type RegisterMessage struct {
 	PrivateOnly                 bool                               `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
 	PrefixCacheProtocol         int                                `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
 	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
+	ExactPrefixCacheModels      []string                           `json:"exact_prefix_cache_models,omitempty"` // active process-local exact RAM caches; no SSD receipt semantics
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
 	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
@@ -243,6 +244,9 @@ type HeartbeatMessage struct {
 	// v2 capabilities and a v2 provider authoritatively clearing its live set.
 	PrefixCacheProtocol int                        `json:"prefix_cache_protocol,omitempty"`
 	PrefixCacheV2Models *[]PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
+	// Exact RAM capability is independent of v2 SSD ownership evidence. A
+	// present empty list authoritatively clears the connection-scoped set.
+	ExactPrefixCacheModels *[]string `json:"exact_prefix_cache_models,omitempty"`
 	// Optional pointers preserve old-provider omission versus an authoritative
 	// empty snapshot/counter set from a current provider.
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`

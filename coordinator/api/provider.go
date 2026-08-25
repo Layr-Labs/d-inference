@@ -508,6 +508,18 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
+			if hbMsg.ExactPrefixCacheModels != nil {
+				if _, err := s.registry.UpdateExactPrefixCacheModels(
+					providerID, *hbMsg.ExactPrefixCacheModels,
+				); err != nil {
+					s.logger.Warn("rejecting malformed heartbeat exact-cache capabilities",
+						"provider_id", providerID)
+					s.ddIncr("routing.cache_capability_rejected",
+						[]string{"source:heartbeat", "tier:memory"})
+					// A malformed refresh cannot leave stale scope authorization live.
+					_, _ = s.registry.UpdateExactPrefixCacheModels(providerID, nil)
+				}
+			}
 			s.registry.Heartbeat(providerID, hbMsg)
 			// Emit only from the accepted registry snapshot: malformed values
 			// have been clamped and slot model IDs constrained to this

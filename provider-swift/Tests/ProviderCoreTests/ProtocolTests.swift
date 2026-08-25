@@ -37,6 +37,23 @@ import Testing
         throw TestFailure.unexpectedMessage
     }
     #expect(decoded.prefixCacheV2Models == [capability])
+
+    let exact = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        prefixCacheProtocol: 1,
+        exactPrefixCacheModels: ["model"]))
+    let exactData = try ProviderProtocolCodec.encodeProviderMessage(exact)
+    let exactObject = try jsonObject(exactData)
+    #expect(exactObject["exact_prefix_cache_models"] as? [String] == ["model"])
+    #expect(exactObject["prefix_cache_v2_models"] == nil)
+    guard case .register(let decodedExact) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: exactData)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decodedExact.exactPrefixCacheModels == ["model"])
 }
 
 @Test func prefixCacheTelemetrySnapshotsAreOptionalBoundedWireEnums() throws {
@@ -63,12 +80,14 @@ import Testing
             memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
         prefixCacheProtocol: 1,
         prefixCacheV2Models: [],
+        exactPrefixCacheModels: [],
         prefixCacheStatuses: [status],
         prefixCacheDonationOutcomes: [
             PrefixCacheDonationOutcomeCount(outcome: .writeQueueFull, count: 3)
         ]))
     let data = try ProviderProtocolCodec.encodeProviderMessage(current)
     let object = try jsonObject(data)
+    #expect(object["exact_prefix_cache_models"] as? [String] == [])
     let statusObject = try #require(
         (object["prefix_cache_statuses"] as? [[String: Any]])?.first)
     #expect(statusObject["replay_strategy"] as? String == "frozen_full")
@@ -84,6 +103,7 @@ import Testing
         throw TestFailure.unexpectedMessage
     }
     #expect(decoded.prefixCacheStatuses == [status])
+    #expect(decoded.exactPrefixCacheModels == [])
     #expect(decoded.prefixCacheDonationOutcomes == [
         PrefixCacheDonationOutcomeCount(outcome: .writeQueueFull, count: 3)
     ])
@@ -299,6 +319,7 @@ import Testing
         apnsEnvironment: "production",
         prefixCacheProtocol: 2,
         prefixCacheV2Models: [capability],
+        exactPrefixCacheModels: ["model"],
         prefixCacheStatuses: [cacheStatus],
         prefixCacheDonationOutcomes: [donationOutcome],
         toolConstraintProtocol: 1,
@@ -311,6 +332,7 @@ import Testing
     #expect(object["private_only"] as? Bool == true)
     #expect(object["prefix_cache_protocol"] as? Int == 2)
     #expect((object["prefix_cache_v2_models"] as? [[String: Any]])?.count == 1)
+    #expect(object["exact_prefix_cache_models"] as? [String] == ["model"])
     #expect((object["prefix_cache_statuses"] as? [[String: Any]])?.count == 1)
     #expect((object["prefix_cache_donation_outcomes"] as? [[String: Any]])?.count == 1)
     #expect(object["tool_constraint_protocol"] as? Int == 1)
@@ -325,6 +347,7 @@ import Testing
     #expect(r.apnsEnvironment == "production")
     #expect(r.privateOnly == true)
     #expect(r.prefixCacheV2Models == [capability])
+    #expect(r.exactPrefixCacheModels == ["model"])
     #expect(r.prefixCacheStatuses == [cacheStatus])
     #expect(r.prefixCacheDonationOutcomes == [donationOutcome])
     #expect(r.toolConstraintProtocol == 1)

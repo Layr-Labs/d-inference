@@ -271,6 +271,11 @@ func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage
 	if err != nil {
 		return err
 	}
+	if _, err := validateExactPrefixCacheModels(
+		msg.PrefixCacheProtocol, msg.ExactPrefixCacheModels, models,
+	); err != nil {
+		return err
+	}
 	statuses, reported := sanitizePrefixCacheStatuses(msg.PrefixCacheStatuses, models)
 	statuses, reported = reconcilePrefixCacheStatuses(
 		msg.PrefixCacheProtocol, capabilities, statuses, reported)

@@ -98,14 +98,85 @@ type CachePlanResult struct {
 	SidecarCalled bool
 }
 
-// PlanCacheRoute asks the local sidecar for exact block boundaries. Every
-// failure is fail-cold: inference continues with an empty plan.
+// PlanCacheRoute derives the authenticated scope, then asks the local sidecar
+// for SSD block boundaries. Sidecar failures keep only the scope so an
+// advertised exact RAM tier can proceed while SSD routing remains cold.
 func (r *Registry) PlanCacheRoute(
 	ctx context.Context,
 	client *promptcontract.Client,
 	input CachePlanInput,
 ) CachePlan {
 	return r.PlanCacheRouteWithResult(ctx, client, input).Plan
+}
+
+// PlanCacheScope derives only the authenticated, build-bound tenant scope.
+// This path has no prompt-sidecar, block-boundary, or receipt dependency and
+// is sufficient for an exact process-local RAM cache. Empty means fail-cold.
+func (r *Registry) PlanCacheScope(input CachePlanInput) CachePlan {
+	plan, _ := r.planCacheScope(input)
+	if !plan.scopePresent() {
+		return CachePlan{}
+	}
+	if r.exactCacheScopeActivation(input) != cacheActivationAdmitted {
+		return CachePlan{}
+	}
+	return plan
+}
+
+func (r *Registry) exactCacheScopeActivation(
+	input CachePlanInput,
+) cacheActivationDecision {
+	r.mu.RLock()
+	mode := r.cacheRoutingMode
+	activationKey := append([]byte(nil), r.cacheRouteKeys.activation...)
+	activation := r.cacheActivation
+	r.mu.RUnlock()
+	if mode != CacheRoutingOn {
+		return cacheActivationSampledOut
+	}
+	cohort := cacheActivationCohort(
+		activationKey, input.Account, input.Model, input.Body)
+	return activation.allowScope(cohort)
+}
+
+func (r *Registry) planCacheScope(
+	input CachePlanInput,
+) (CachePlan, CachePlanOutcome) {
+	if r == nil || input.HasMedia ||
+		input.Account == "" || input.Model == "" ||
+		!validLowerHex256(input.PromptContractID) ||
+		!validLowerHex256(input.ModelAggregateSHA256) {
+		return CachePlan{}, CachePlanIneligible
+	}
+
+	r.mu.RLock()
+	mode := r.cacheRoutingMode
+	scopeKey := append([]byte(nil), r.cacheRouteKeys.scope...)
+	catalog, ok := r.modelCatalog[input.Model]
+	r.mu.RUnlock()
+	if mode != CacheRoutingOn {
+		return CachePlan{}, CachePlanOff
+	}
+	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
+	if !ok || !validLowerHex256(aggregateHash) ||
+		aggregateHash != input.ModelAggregateSHA256 {
+		return CachePlan{}, CachePlanIneligible
+	}
+	scope := providerCacheScope(
+		scopeKey,
+		input.Account,
+		input.Model,
+		aggregateHash,
+		input.PromptContractID,
+	)
+	if scope == "" {
+		return CachePlan{}, CachePlanIneligible
+	}
+	return CachePlan{
+		ModelAggregateHash: aggregateHash,
+		PromptContractID:   input.PromptContractID,
+		CacheScope:         scope,
+	}, CachePlanPlanned
 }
 
 // PlanCacheRouteWithResult is the observable form of PlanCacheRoute. It keeps
@@ -117,41 +188,29 @@ func (r *Registry) PlanCacheRouteWithResult(
 	client *promptcontract.Client,
 	input CachePlanInput,
 ) CachePlanResult {
-	if r == nil || client == nil || input.HasMedia ||
-		input.Account == "" || input.Model == "" ||
-		!validLowerHex256(input.PromptContractID) ||
-		!validLowerHex256(input.ModelAggregateSHA256) || len(input.Body) == 0 {
+	scopePlan, scopeOutcome := r.planCacheScope(input)
+	if !scopePlan.scopePresent() {
+		return CachePlanResult{Outcome: scopeOutcome}
+	}
+	if len(input.Body) == 0 {
 		return CachePlanResult{Outcome: CachePlanIneligible}
+	}
+	if client == nil {
+		if r.exactCacheScopeActivation(input) != cacheActivationAdmitted {
+			return CachePlanResult{Outcome: CachePlanSampledOut}
+		}
+		return CachePlanResult{Plan: scopePlan, Outcome: CachePlanIneligible}
 	}
 
 	r.mu.RLock()
-	mode := r.cacheRoutingMode
 	keys := cacheRouteKeys{
 		route:      append([]byte(nil), r.cacheRouteKeys.route...),
-		scope:      append([]byte(nil), r.cacheRouteKeys.scope...),
 		activation: append([]byte(nil), r.cacheRouteKeys.activation...),
 	}
 	activation := r.cacheActivation
-	catalog, ok := r.modelCatalog[input.Model]
 	r.mu.RUnlock()
-	if mode != CacheRoutingOn {
-		return CachePlanResult{Outcome: CachePlanOff}
-	}
-	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
-	if !ok || len(keys.route) == 0 || len(keys.activation) == 0 ||
-		!validLowerHex256(aggregateHash) || aggregateHash != input.ModelAggregateSHA256 {
-		return CachePlanResult{Outcome: CachePlanIneligible}
-	}
-
-	scope := providerCacheScope(
-		keys.scope,
-		input.Account,
-		input.Model,
-		aggregateHash,
-		input.PromptContractID,
-	)
-	if scope == "" {
-		return CachePlanResult{Outcome: CachePlanIneligible}
+	if len(keys.route) == 0 || len(keys.activation) == 0 || activation == nil {
+		return CachePlanResult{Plan: scopePlan, Outcome: CachePlanIneligible}
 	}
 	// The sampling cohort is stable for identical account + resolved model +
 	// provider-bound body so a sampled miss can later donate and hit. Only this
@@ -162,12 +221,12 @@ func (r *Registry) PlanCacheRouteWithResult(
 	case cacheActivationSampledOut:
 		return CachePlanResult{Outcome: CachePlanSampledOut}
 	case cacheActivationThrottled:
-		return CachePlanResult{Outcome: CachePlanThrottled}
+		return CachePlanResult{Plan: scopePlan, Outcome: CachePlanThrottled}
 	}
 	started := time.Now()
 	sidecarPlan, err := client.Plan(ctx, promptcontract.PlanInput{
 		PromptContractID: input.PromptContractID,
-		ScopeID:          scope,
+		ScopeID:          scopePlan.CacheScope,
 		Endpoint:         promptcontract.EndpointChatCompletions,
 		Body:             input.Body,
 	})
@@ -182,19 +241,19 @@ func (r *Registry) PlanCacheRouteWithResult(
 		}
 		activation.recordPlan(outcome)
 		return CachePlanResult{
-			Outcome: outcome, PlanLatency: latency, SidecarCalled: true,
+			Plan: scopePlan, Outcome: outcome, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	if !sidecarPlan.Participating {
 		activation.recordPlan(CachePlanInvalid)
 		return CachePlanResult{
-			Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
+			Plan: scopePlan, Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	if len(sidecarPlan.BlockBoundaries) == 0 {
 		activation.recordPlan(CachePlanNoBoundaries)
 		return CachePlanResult{
-			Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
+			Plan: scopePlan, Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	boundaries := make([]protocol.PrefixCacheAnchor, 0, len(sidecarPlan.BlockBoundaries))
@@ -206,7 +265,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 		if !validV2Anchor(anchor, promptcontract.BlockSize) {
 			activation.recordPlan(CachePlanInvalid)
 			return CachePlanResult{
-				Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
+				Plan: scopePlan, Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 			}
 		}
 		boundaries = append(boundaries, anchor)
@@ -214,9 +273,9 @@ func (r *Registry) PlanCacheRouteWithResult(
 	activation.recordPlan(CachePlanPlanned)
 	return CachePlanResult{
 		Plan: CachePlan{
-			ModelAggregateHash: aggregateHash,
-			PromptContractID:   input.PromptContractID,
-			CacheScope:         scope,
+			ModelAggregateHash: scopePlan.ModelAggregateHash,
+			PromptContractID:   scopePlan.PromptContractID,
+			CacheScope:         scopePlan.CacheScope,
 			PromptTokenCount:   int(sidecarPlan.PromptTokenCount),
 			Boundaries:         boundaries,
 		},

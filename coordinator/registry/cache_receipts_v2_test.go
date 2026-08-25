@@ -223,6 +223,28 @@ func TestValidatePrefixCacheCapabilitiesMixedVersions(t *testing.T) {
 	if _, err := uniqueProviderModels([]protocol.ModelInfo{model, model}); err == nil {
 		t.Fatal("accepted duplicate registered model")
 	}
+	for _, test := range []struct {
+		name      string
+		version   int
+		models    []string
+		wantError bool
+	}{
+		{name: "omitted", version: 1},
+		{name: "exact scope", version: 1, models: []string{"model"}},
+		{name: "protocol zero", version: 0, models: []string{"model"}, wantError: true},
+		{name: "unknown model", version: 1, models: []string{"other"}, wantError: true},
+		{name: "duplicate", version: 1, models: []string{"model", "model"}, wantError: true},
+	} {
+		t.Run("exact "+test.name, func(t *testing.T) {
+			_, err := validateExactPrefixCacheModels(
+				test.version,
+				test.models,
+				map[string]protocol.ModelInfo{model.ID: model})
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, wantError = %v", err, test.wantError)
+			}
+		})
+	}
 }
 
 func TestPrefixCacheV2CapabilityEpochChangeClearsEvidence(t *testing.T) {

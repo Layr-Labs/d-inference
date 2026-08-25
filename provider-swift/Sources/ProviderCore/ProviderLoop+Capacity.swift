@@ -170,6 +170,9 @@ extension ProviderLoop {
             sources: Dictionary(uniqueKeysWithValues: loadedSlots.compactMap { modelId, bridge in
                 bridge.ssdPrefixCache.map { (modelId, $0) }
             }),
+            exactModels: loadedSlots.compactMap { modelId, bridge in
+                bridge.exactPrefixCache == nil ? nil : modelId
+            },
             statuses: loadedSlots.map { _, bridge in bridge.prefixCacheModelStatus() },
             runtimeIdentityAvailable: binaryHash?.isEmpty == false)
 

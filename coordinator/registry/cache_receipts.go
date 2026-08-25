@@ -24,9 +24,10 @@ func newCacheReceiptNonce() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
 }
 
-// PrepareCacheAttempt requests only protocol-v2 exact proof. Protocol-v0
-// providers receive a unique encrypted-body buster; v0/v1 providers otherwise
-// remain ordinary serving candidates without cache preference.
+// PrepareCacheAttempt requests protocol-v2 SSD proof when available. An
+// exact-RAM-capable slot may instead receive only its authenticated tenant
+// scope; that path creates no receipt and no cache-routing evidence.
+// Protocol-v0 providers receive a unique encrypted-body buster.
 func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) error {
 	if r == nil || pr == nil || provider == nil {
 		return nil
@@ -34,6 +35,7 @@ func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) e
 	r.ForgetCacheAttempt(pr)
 	provider.mu.Lock()
 	protocolVersion := provider.PrefixCacheProtocol
+	_, exactScopeCapable := provider.ExactPrefixCacheModels[pr.Model]
 	provider.mu.Unlock()
 	if protocolVersion < 1 {
 		bust, err := newCacheReceiptNonce()
@@ -43,10 +45,21 @@ func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) e
 		pr.LegacyCacheBustKey = legacyCacheBustPrefix + bust
 		return nil
 	}
-	if protocolVersion < 2 || !pr.CachePlan.present() {
+	if !pr.CachePlan.scopePresent() {
 		return nil
 	}
-	return r.PreparePrefixCacheV2Attempt(pr, provider, pr.CachePlan)
+	if protocolVersion >= 2 && pr.CachePlan.present() {
+		if err := r.PreparePrefixCacheV2Attempt(pr, provider, pr.CachePlan); err != nil {
+			return err
+		}
+		if pr.CacheReceiptNonce != "" {
+			return nil
+		}
+	}
+	if exactScopeCapable {
+		pr.CacheScope = pr.CachePlan.CacheScope
+	}
+	return nil
 }
 
 func (r *Registry) ForgetCacheAttempt(pr *PendingRequest) {

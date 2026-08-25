@@ -35,10 +35,17 @@ type CachePlan struct {
 	Boundaries         []protocol.PrefixCacheAnchor
 }
 
-func (p CachePlan) present() bool {
+// scopePresent reports whether the coordinator derived an authenticated,
+// build-bound tenant scope. Exact process-local RAM reuse needs only this
+// subset; SSD routing additionally requires token boundaries and receipts.
+func (p CachePlan) scopePresent() bool {
 	return p.ModelAggregateHash != "" &&
 		p.PromptContractID != "" &&
-		p.CacheScope != "" &&
+		p.CacheScope != ""
+}
+
+func (p CachePlan) present() bool {
+	return p.scopePresent() &&
 		p.PromptTokenCount > 0 &&
 		len(p.Boundaries) > 0
 }

@@ -2,6 +2,18 @@ package registry
 
 import "github.com/eigeninference/d-inference/coordinator/protocol"
 
+func equalStringSet(left, right map[string]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for value := range left {
+		if _, ok := right[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func clonePrefixCacheCapabilities(
 	in map[string]protocol.PrefixCacheV2Capability,
 ) map[string]protocol.PrefixCacheV2Capability {
@@ -131,4 +143,39 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		tracker.recordDonationOutcomes(deltas)
 	}
 	return capabilitiesChanged, nil
+}
+
+// UpdateExactPrefixCacheModels replaces the live scope-only RAM capability
+// set. It is intentionally separate from v2 SSD capability revisions: exact
+// RAM entries are process-local and never create routing holders or receipts.
+func (r *Registry) UpdateExactPrefixCacheModels(
+	providerID string,
+	exactModels []string,
+) (bool, error) {
+	if r == nil {
+		return false, nil
+	}
+	r.mu.RLock()
+	provider := r.providers[providerID]
+	r.mu.RUnlock()
+	if provider == nil {
+		return false, errInvalidPrefixCacheCapability
+	}
+
+	provider.mu.Lock()
+	models, err := uniqueProviderModels(provider.Models)
+	if err != nil {
+		provider.mu.Unlock()
+		return false, err
+	}
+	validated, err := validateExactPrefixCacheModels(
+		provider.PrefixCacheProtocol, exactModels, models)
+	if err != nil {
+		provider.mu.Unlock()
+		return false, err
+	}
+	changed := !equalStringSet(provider.ExactPrefixCacheModels, validated)
+	provider.ExactPrefixCacheModels = validated
+	provider.mu.Unlock()
+	return changed, nil
 }

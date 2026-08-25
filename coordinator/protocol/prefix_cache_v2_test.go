@@ -19,6 +19,40 @@ func TestPrefixCacheV2CapabilityOmittedForLegacyRegistration(t *testing.T) {
 	}
 }
 
+func TestExactPrefixCacheModelsRoundTripIndependentlyFromV2Receipts(t *testing.T) {
+	data, err := json.Marshal(RegisterMessage{
+		Type:                   TypeRegister,
+		PrefixCacheProtocol:    1,
+		ExactPrefixCacheModels: []string{"qwen"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "prefix_cache_v2_models") {
+		t.Fatalf("exact RAM capability leaked v2 SSD capability: %s", data)
+	}
+	var registration RegisterMessage
+	if err := json.Unmarshal(data, &registration); err != nil {
+		t.Fatal(err)
+	}
+	if len(registration.ExactPrefixCacheModels) != 1 ||
+		registration.ExactPrefixCacheModels[0] != "qwen" {
+		t.Fatalf("exact RAM models lost on registration: %+v", registration)
+	}
+
+	empty := []string{}
+	heartbeatData, err := json.Marshal(HeartbeatMessage{
+		Type:                   TypeHeartbeat,
+		ExactPrefixCacheModels: &empty,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(heartbeatData), `"exact_prefix_cache_models":[]`) {
+		t.Fatalf("authoritative exact RAM clear was omitted: %s", heartbeatData)
+	}
+}
+
 func TestPrefixCacheV2MessagesDecodeDistinctPayloads(t *testing.T) {
 	hash := strings.Repeat("a", 64)
 	contract := strings.Repeat("b", 64)

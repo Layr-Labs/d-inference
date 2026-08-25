@@ -170,7 +170,19 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
         self.receiptNonce = Self.nonEmpty(cacheReceiptNonce)
     }
 
-    var cacheEnabled: Bool { scope != nil }
+    /// Scope-only metadata authorizes the process-local exact RAM tier. The
+    /// durable SSD tier additionally requires a receipt nonce so stale or
+    /// malformed capability state cannot silently bypass ownership evidence.
+    func cacheEnabled(
+        exactCacheAvailable: Bool,
+        ssdCacheAvailable: Bool
+    ) -> Bool {
+        guard scope != nil else { return false }
+        if ssdCacheAvailable {
+            return receiptNonce != nil
+        }
+        return exactCacheAvailable
+    }
 
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value,

@@ -119,7 +119,27 @@ func TestCacheActivationUnlimitedByDefault(t *testing.T) {
 	}
 }
 
-func TestPlanCacheRouteOffAndOperationalThrottleFailCold(t *testing.T) {
+func TestCacheActivationScopeHonorsSamplingWithoutConsumingPlanQPS(t *testing.T) {
+	gate := newCacheActivationGate(100, 1)
+	cohort := []byte("12345678-exact-scope")
+	for range 100 {
+		if got := gate.allowScope(cohort); got != cacheActivationAdmitted {
+			t.Fatalf("sampled-in exact scope was rejected: %q", got)
+		}
+	}
+	now := time.Unix(1_700_000_000, 0)
+	if got := gate.allow(cohort, now); got != cacheActivationAdmitted {
+		t.Fatalf("scope-only decisions consumed the sidecar token: %q", got)
+	}
+	if got := gate.allow(cohort, now); got != cacheActivationThrottled {
+		t.Fatalf("sidecar QPS cap was not preserved: %q", got)
+	}
+	if got := newCacheActivationGate(100, 0).allowScope(nil); got != cacheActivationSampledOut {
+		t.Fatalf("missing authenticated cohort was admitted: %q", got)
+	}
+}
+
+func TestPlanCacheRouteOffAndOperationalThrottleKeepOnlyExactScope(t *testing.T) {
 	reg := New(testLogger())
 	client := promptcontract.NewClient(promptcontract.ClientConfig{
 		SocketPath:     filepath.Join(t.TempDir(), "missing-sidecar.sock"),
@@ -151,11 +171,13 @@ func TestPlanCacheRouteOffAndOperationalThrottleFailCold(t *testing.T) {
 		t.Fatalf("stale provision identity reached sidecar after catalog promotion: %+v", stale)
 	}
 	first := reg.PlanCacheRouteWithResult(context.Background(), client, input)
-	if first.Outcome != CachePlanSidecarError || first.Plan.present() {
+	if first.Outcome != CachePlanSidecarError || first.Plan.present() ||
+		!first.Plan.scopePresent() {
 		t.Fatalf("first fail-cold result=%+v", first)
 	}
 	second := reg.PlanCacheRouteWithResult(context.Background(), client, input)
-	if second.Outcome != CachePlanThrottled || second.Plan.present() || second.SidecarCalled {
+	if second.Outcome != CachePlanThrottled || second.Plan.present() ||
+		!second.Plan.scopePresent() || second.SidecarCalled {
 		t.Fatalf("rate-limited fail-cold result=%+v", second)
 	}
 	status := reg.CacheRoutingActivationStatus()
@@ -210,7 +232,8 @@ func TestPlanCacheRouteClassifiesDynamicContractAsHealthyColdOnly(t *testing.T) 
 		PromptContractID: strings.Repeat("b", 64), ModelAggregateSHA256: aggregate,
 		Body: []byte(`{"model":"gpt-oss","messages":[{"role":"user","content":"hi"}]}`),
 	})
-	if result.Outcome != CachePlanColdOnly || result.Plan.present() || !result.SidecarCalled {
+	if result.Outcome != CachePlanColdOnly || result.Plan.present() ||
+		!result.Plan.scopePresent() || !result.SidecarCalled {
 		t.Fatalf("dynamic-time result=%+v", result)
 	}
 	status := reg.CacheRoutingActivationStatus()

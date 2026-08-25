@@ -39,8 +39,9 @@ type CacheRoutingActivationStatus struct {
 //   - deterministic HMAC sampling for a stable account/model/request-body cohort;
 //   - a process-local token bucket that bounds sidecar plan QPS.
 //
-// Both controls only decline cache participation. They never reject, delay, or
-// otherwise change ordinary inference.
+// Sampling declines all cache participation. The token bucket declines only
+// sidecar planning; a sampled-in exact RAM request can still receive its scope.
+// Neither control rejects, delays, or otherwise changes ordinary inference.
 type cacheActivationGate struct {
 	mu sync.Mutex
 
@@ -121,6 +122,25 @@ func (g *cacheActivationGate) allow(cohort []byte, now time.Time) cacheActivatio
 		}
 		g.tokens--
 	}
+	g.admitted++
+	return cacheActivationAdmitted
+}
+
+// allowScope applies only the deterministic rollout cohort. Exact process-local
+// RAM reuse has no sidecar call, so it must not consume or be blocked by the
+// sidecar plan-QPS bucket.
+func (g *cacheActivationGate) allowScope(cohort []byte) cacheActivationDecision {
+	if g == nil {
+		return cacheActivationSampledOut
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.evaluated++
+	if !cacheActivationSampledIn(cohort, g.percent) {
+		g.sampledOut++
+		return cacheActivationSampledOut
+	}
+	g.sampledIn++
 	g.admitted++
 	return cacheActivationAdmitted
 }

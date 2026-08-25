@@ -63,24 +63,29 @@ func (s *Server) planCacheRoute(
 	body []byte,
 	hasMedia bool,
 ) registry.CachePlan {
-	if s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
+	if s.promptArtifacts == nil {
 		return registry.CachePlan{}
 	}
 	status, ok := s.promptArtifacts.Status(model)
 	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
 		return registry.CachePlan{}
 	}
-	if !s.promptPreloader.ReadyFor(status.PromptContractID) {
-		return registry.CachePlan{}
-	}
-	result := s.registry.PlanCacheRouteWithResult(ctx, s.promptContract, registry.CachePlanInput{
+	input := registry.CachePlanInput{
 		Account:              account,
 		Model:                model,
 		PromptContractID:     status.PromptContractID,
 		ModelAggregateSHA256: status.ModelAggregateSHA256,
 		Body:                 body,
 		HasMedia:             hasMedia,
-	})
+	}
+	// Exact process-local RAM reuse needs only the authenticated scope. It
+	// remains available while the SSD prompt sidecar is absent or warming;
+	// block routing and receipts stay disabled until that sidecar is ready.
+	if s.promptContract == nil || s.promptPreloader == nil ||
+		!s.promptPreloader.ReadyFor(status.PromptContractID) {
+		return s.registry.PlanCacheScope(input)
+	}
+	result := s.registry.PlanCacheRouteWithResult(ctx, s.promptContract, input)
 	s.emitExactCachePlan(result)
 	return result.Plan
 }

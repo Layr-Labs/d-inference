@@ -34,6 +34,7 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            exactPrefixCacheModels: prefixCache.exactModels,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
@@ -105,6 +106,7 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            exactPrefixCacheModels: prefixCache.exactModels,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )

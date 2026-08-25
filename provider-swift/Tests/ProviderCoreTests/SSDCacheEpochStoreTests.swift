@@ -232,6 +232,7 @@ struct SSDCacheEpochStoreTests {
         let state = ProviderState()
         state.setPrefixCacheSnapshot(
             sources: [:],
+            exactModels: ["qwen", "qwen"],
             statuses: [PrefixCacheModelStatus(
                 modelId: "model",
                 backend: .contiguous,
@@ -241,8 +242,19 @@ struct SSDCacheEpochStoreTests {
             runtimeIdentityAvailable: false)
         let snapshot = state.prefixCacheV2Advertisement()
         #expect(snapshot.protocolVersion == 1)
+        #expect(snapshot.exactModels.isEmpty)
         #expect(snapshot.statuses.first?.state == .disabled)
         #expect(snapshot.statuses.first?.reason == .runtimeIdentityUnavailable)
+
+        state.setPrefixCacheSnapshot(
+            sources: [:],
+            exactModels: ["qwen", "qwen"],
+            statuses: [],
+            runtimeIdentityAvailable: true)
+        let exact = state.prefixCacheV2Advertisement()
+        #expect(exact.protocolVersion == 1)
+        #expect(exact.models.isEmpty)
+        #expect(exact.exactModels == ["qwen"])
     }
 
     @Test("interrupted binding rebuild cannot publish its invalidating epoch")

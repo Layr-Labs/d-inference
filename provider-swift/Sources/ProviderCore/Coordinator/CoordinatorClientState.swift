@@ -141,6 +141,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
+    private var _exactPrefixCacheModels: [String] = []
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
 
@@ -173,11 +174,13 @@ public final class ProviderState: @unchecked Sendable {
 
     func setPrefixCacheSnapshot(
         sources: [String: SSDPrefixCache],
+        exactModels: [String] = [],
         statuses: [PrefixCacheModelStatus],
         runtimeIdentityAvailable: Bool
     ) {
         lock.withLock {
             _prefixCacheV2Sources = sources
+            _exactPrefixCacheModels = exactModels
             _prefixCacheStatuses = statuses
             _prefixCacheRuntimeIdentityAvailable = runtimeIdentityAvailable
         }
@@ -186,12 +189,14 @@ public final class ProviderState: @unchecked Sendable {
     func prefixCacheV2Advertisement() -> (
         protocolVersion: Int,
         models: [PrefixCacheV2Capability],
+        exactModels: [String],
         statuses: [PrefixCacheModelStatus],
         donationOutcomes: [PrefixCacheDonationOutcomeCount]
     ) {
         let snapshot = lock.withLock {
             (
                 sources: _prefixCacheV2Sources,
+                exactModels: _exactPrefixCacheModels,
                 statuses: _prefixCacheStatuses,
                 runtimeIdentityAvailable: _prefixCacheRuntimeIdentityAvailable
             )
@@ -224,9 +229,13 @@ public final class ProviderState: @unchecked Sendable {
             statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
         models.removeAll { !readyModels.contains($0.modelId) }
         models.sort { $0.modelId < $1.modelId }
+        let exactModels = snapshot.runtimeIdentityAvailable
+            ? Array(Set(snapshot.exactModels)).sorted()
+            : []
         return (
             models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
             models,
+            exactModels,
             statuses,
             PrefixCacheDonationTelemetry.shared.snapshot()
         )

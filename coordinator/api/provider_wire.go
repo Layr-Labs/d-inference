@@ -18,11 +18,14 @@ func providerInferenceWireMessage(
 			Ciphertext:         ciphertext,
 		},
 	}
-	if pr == nil || pr.CacheReceiptNonce == "" || pr.CacheScope == "" {
+	if pr == nil || pr.CacheScope == "" {
+		return message
+	}
+	message.CacheScope = pr.CacheScope
+	if pr.CacheReceiptNonce == "" {
 		return message
 	}
 	message.CacheReceiptNonce = pr.CacheReceiptNonce
-	message.CacheScope = pr.CacheScope
 	if pr.PrefixCacheProtocol > 0 {
 		message.PrefixCacheProtocol = pr.PrefixCacheProtocol
 	}

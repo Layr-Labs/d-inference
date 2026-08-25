@@ -167,7 +167,8 @@ type PendingRequest struct {
 	// meets the floor, the full pool is kept so the request is still served
 	// (cold-dispatch/queue spill is a separate concern). 0 disables it.
 	MinDecodeTPS float64
-	// CachePlan contains exact sidecar block boundaries and opaque build scope.
+	// CachePlan always carries an opaque authenticated build scope when one can
+	// be derived; SSD-capable plans additionally carry sidecar block boundaries.
 	// It is never logged or persisted.
 	CachePlan         CachePlan
 	CacheReceiptNonce string
@@ -536,6 +537,10 @@ type Provider struct {
 	// PrefixCacheV2Models is the validated, connection-scoped capability set
 	// keyed by concrete model ID. It is authoritative for v2 receipt identity.
 	PrefixCacheV2Models map[string]protocol.PrefixCacheV2Capability
+	// ExactPrefixCacheModels names loaded slots with an active process-local
+	// exact RAM cache. Presence authorizes scope-only metadata; it never
+	// implies durable SSD ownership or receipt support.
+	ExactPrefixCacheModels map[string]struct{}
 	// PrefixCacheStatuses is the optional, validated, connection-scoped status
 	// snapshot for concrete loaded model slots. Reported distinguishes current
 	// providers that authoritatively sent [] from old providers that omit it.
@@ -2216,6 +2221,7 @@ func (r *Registry) mergeProviderModels(
 				if !strings.EqualFold(p.Models[i].WeightHash, m.WeightHash) {
 					delete(p.PrefixCacheStatuses, m.ID)
 					delete(p.PrefixCacheV2Models, m.ID)
+					delete(p.ExactPrefixCacheModels, m.ID)
 					p.prefixCacheRevision++
 					cacheStateInvalidated[m.ID] = struct{}{}
 				}
@@ -2270,6 +2276,7 @@ func (r *Registry) mergeProviderModels(
 				delete(p.ToolConstraintModels, m.ID)
 				delete(p.PrefixCacheStatuses, m.ID)
 				delete(p.PrefixCacheV2Models, m.ID)
+				delete(p.ExactPrefixCacheModels, m.ID)
 				p.prefixCacheRevision++
 				cacheStateInvalidated[m.ID] = struct{}{}
 				continue
@@ -2822,6 +2829,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	cacheDonationOutcomes := sanitizePrefixCacheDonationOutcomes(
 		msg.PrefixCacheDonationOutcomes)
 	cacheCapabilities := prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models)
+	exactCacheModels, _ := validateExactPrefixCacheModels(
+		msg.PrefixCacheProtocol, msg.ExactPrefixCacheModels, modelInventory)
 	cacheStatuses, cacheStatusReported = reconcilePrefixCacheStatuses(
 		msg.PrefixCacheProtocol,
 		cacheCapabilities,
@@ -2857,6 +2866,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		DecodeTPS:                   msg.DecodeTPS,
 		PrefixCacheProtocol:         msg.PrefixCacheProtocol,
 		PrefixCacheV2Models:         cacheCapabilities,
+		ExactPrefixCacheModels:      exactCacheModels,
 		PrefixCacheStatuses:         cacheStatuses,
 		PrefixCacheStatusReported:   cacheStatusReported,
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,

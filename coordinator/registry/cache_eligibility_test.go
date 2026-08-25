@@ -336,6 +336,44 @@ func TestPrefixCacheTelemetryOmissionAndRoutingCapabilityStrictness(t *testing.T
 	}
 }
 
+func TestExactPrefixCacheCapabilityRegistrationAndHeartbeatLifecycle(t *testing.T) {
+	reg := cacheEligibilityTestRegistry()
+	msg := protocol.RegisterMessage{
+		Models:                 []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheProtocol:    1,
+		ExactPrefixCacheModels: []string{"model"},
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+		t.Fatal(err)
+	}
+	provider := reg.Register("exact-provider", nil, &msg)
+	provider.mu.Lock()
+	_, registered := provider.ExactPrefixCacheModels["model"]
+	provider.mu.Unlock()
+	if !registered {
+		t.Fatal("registration dropped exact RAM capability")
+	}
+	if changed, err := reg.UpdateExactPrefixCacheModels(
+		provider.ID, []string{"model"},
+	); err != nil || changed {
+		t.Fatalf("identical heartbeat changed capability: changed=%t err=%v", changed, err)
+	}
+	if changed, err := reg.UpdateExactPrefixCacheModels(provider.ID, nil); err != nil || !changed {
+		t.Fatalf("authoritative heartbeat clear failed: changed=%t err=%v", changed, err)
+	}
+	provider.mu.Lock()
+	remaining := len(provider.ExactPrefixCacheModels)
+	provider.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("authoritative heartbeat clear retained %d exact models", remaining)
+	}
+	if _, err := reg.UpdateExactPrefixCacheModels(
+		provider.ID, []string{"not-registered"},
+	); err == nil {
+		t.Fatal("malformed exact RAM heartbeat capability was accepted")
+	}
+}
+
 func TestPrefixCacheReadyStatusCapabilityReconciliation(t *testing.T) {
 	const epoch = "11111111-1111-1111-1111-111111111111"
 	capability := testV2Capability(epoch)

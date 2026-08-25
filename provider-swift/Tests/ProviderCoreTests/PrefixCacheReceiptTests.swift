@@ -16,19 +16,34 @@ struct PrefixCacheReceiptTests {
         let present = RemotePrefixCacheContext(
             cacheScope: "coordinator-account-scope",
             cacheReceiptNonce: "nonce")
-        #expect(present.cacheEnabled)
+        #expect(present.cacheEnabled(
+            exactCacheAvailable: true, ssdCacheAvailable: false))
+        #expect(present.cacheEnabled(
+            exactCacheAvailable: false, ssdCacheAvailable: true))
         #expect(present.scope == "coordinator-account-scope")
         #expect(present.receiptNonce == "nonce")
+
+        let scopeOnly = RemotePrefixCacheContext(
+            cacheScope: "coordinator-account-scope",
+            cacheReceiptNonce: nil)
+        #expect(scopeOnly.cacheEnabled(
+            exactCacheAvailable: true, ssdCacheAvailable: false))
+        #expect(!scopeOnly.cacheEnabled(
+            exactCacheAvailable: false, ssdCacheAvailable: true))
 
         let absent = RemotePrefixCacheContext(
             cacheScope: nil,
             cacheReceiptNonce: "nonce")
-        #expect(!absent.cacheEnabled)
+        #expect(!absent.cacheEnabled(
+            exactCacheAvailable: true, ssdCacheAvailable: false))
+        #expect(!absent.cacheEnabled(
+            exactCacheAvailable: false, ssdCacheAvailable: true))
         #expect(absent.scope == nil)
         #expect(absent.receiptNonce == "nonce")
 
         let blank = RemotePrefixCacheContext(cacheScope: "  \n", cacheReceiptNonce: " ")
-        #expect(!blank.cacheEnabled)
+        #expect(!blank.cacheEnabled(
+            exactCacheAvailable: true, ssdCacheAvailable: false))
         #expect(blank.receiptNonce == nil)
     }
 

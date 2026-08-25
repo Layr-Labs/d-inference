@@ -172,7 +172,14 @@ extension ModelDownloader {
         for i in sizes.indices {
             if i < alreadyValid.count, alreadyValid[i] { continue }
             let have = i < partBytes.count ? max(0, partBytes[i]) : 0
-            total += max(0, sizes[i] - have)
+            let size = max(0, sizes[i])
+            let remaining = size > have ? size - have : 0
+            let (next, overflow) = total.addingReportingOverflow(remaining)
+            // Manifest validation proves this cannot overflow for network
+            // manifests. Fail closed for direct/internal callers by requiring
+            // the maximum possible capacity instead of wrapping negative.
+            if overflow { return Int64.max }
+            total = next
         }
         return total
     }
@@ -200,6 +207,11 @@ extension ModelDownloader {
 private final class PrefetchByteProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var _done: Int64 = 0
-    func add(_ bytes: Int64) { lock.lock(); _done += bytes; lock.unlock() }
+    func add(_ bytes: Int64) {
+        lock.lock()
+        let (next, overflow) = _done.addingReportingOverflow(max(0, bytes))
+        _done = overflow ? Int64.max : next
+        lock.unlock()
+    }
     var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
 }

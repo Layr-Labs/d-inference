@@ -717,6 +717,13 @@ struct ModelPrefetchDownloaderTests {
             sizes: [1_000], alreadyValid: [false], partBytes: [5_000]
         )
         #expect(overlong == 0)
+        // Hostile/direct callers cannot wrap a per-file sum negative and turn
+        // an impossible download into a zero-capacity plan.
+        let overflow = ModelDownloader.remainingBytesToFetch(
+            sizes: [Int64.max, 1],
+            alreadyValid: [false, false]
+        )
+        #expect(overflow == Int64.max)
 
         // End-to-end: pre-stage the large file as valid, leave a tiny file to
         // fetch. The capacity pre-check (now sized to remaining bytes) must NOT

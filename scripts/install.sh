@@ -1826,7 +1826,10 @@ remove_transaction_owned_component() {
     local backup=$1
     local destination=$2
     local candidate_identity=$3
-    local label=$4
+    local candidate_fingerprint=$4
+    local install_dir=$5
+    local label=$6
+    local transaction_id=$7
     local removal
     local crash_label
     removal=$(transaction_component_removal_path "$backup" "$label") \
@@ -1840,13 +1843,23 @@ remove_transaction_owned_component() {
             && ! install_path_exists "$destination" \
             || return 1
     elif install_path_exists "$destination"; then
-        # The recorded root identity is the ownership boundary. Its contents
-        # can have a different fingerprint after an interrupted rm -rf, but a
-        # replacement root must never be removed as transaction-owned data.
+        # The recorded root identity is the first ownership boundary. A
+        # replacement root must never be moved or removed as transaction data.
         [ -d "$destination" ] \
             && [ ! -L "$destination" ] \
             && path_matches_identity "$destination" "$candidate_identity" \
             || return 1
+        if ! path_matches_candidate_state \
+            "$destination" "$candidate_identity" "$candidate_fingerprint"
+        then
+            # No durable deletion state exists yet, so a changed tree is
+            # ambiguous: it may be an older installer's partially deleted
+            # candidate or unrelated same-inode content. Remove it from the
+            # canonical path without deleting that evidence.
+            preserve_unexpected_live_path \
+                "$destination" "$install_dir" "$label" "$transaction_id"
+            return $?
+        fi
         durable_move "$destination" "$removal" || return 1
         install_test_crash "recovery-$crash_label-removal-staged"
     else
@@ -1890,7 +1903,9 @@ restore_transaction_component() {
 
     if [ "$had_previous" -eq 0 ]; then
         remove_transaction_owned_component \
-            "${backup_path%/*}" "$destination" "$candidate_identity" "$label"
+            "${backup_path%/*}" "$destination" \
+            "$candidate_identity" "$candidate_fingerprint" \
+            "$install_dir" "$label" "$transaction_id"
         return $?
     fi
 

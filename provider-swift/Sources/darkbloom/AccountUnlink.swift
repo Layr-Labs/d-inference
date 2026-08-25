@@ -7,6 +7,7 @@ struct AccountUnlinkDependencies {
     var terminateRecordedProvider: () -> Bool
     var revokeToken: (String, String) async throws -> Void
     var deleteCredential: (ProviderCredential?) throws -> Void
+    var deleteLocalCredential: () throws -> Void
 
     @MainActor
     static let live = AccountUnlinkDependencies(
@@ -21,7 +22,8 @@ struct AccountUnlinkDependencies {
                 token: token
             )
         },
-        deleteCredential: ProviderCredentialStore.delete
+        deleteCredential: ProviderCredentialStore.delete,
+        deleteLocalCredential: ProviderCredentialStore.deleteLocalCredential
     )
 }
 
@@ -29,6 +31,7 @@ struct AccountUnlinkDependencies {
 @MainActor
 func unlinkProviderAccount(
     credential: ProviderCredential?,
+    localOnly: Bool = false,
     dependencies: AccountUnlinkDependencies = .live
 ) async throws -> Bool {
     // Stop recovery first so it cannot relaunch a provider between service
@@ -39,7 +42,7 @@ func unlinkProviderAccount(
         throw AccountUnlinkError.providerDidNotStop
     }
 
-    if let credential {
+    if let credential, !localOnly {
         // Revoke before deleting the only local copy. A transient coordinator
         // failure leaves credentials intact so the operator can retry safely.
         try await dependencies.revokeToken(
@@ -47,7 +50,11 @@ func unlinkProviderAccount(
             credential.issuer
         )
     }
-    try dependencies.deleteCredential(credential)
+    if localOnly {
+        try dependencies.deleteLocalCredential()
+    } else {
+        try dependencies.deleteCredential(credential)
+    }
     return credential != nil
 }
 

@@ -69,9 +69,22 @@ struct Unenroll: AsyncParsableCommand {
         }
 
         if proceed {
+            let credential: ProviderCredential?
+            let localOnly: Bool
+            do {
+                credential = try ProviderCredentialStore.load()
+                localOnly = false
+            } catch ProviderCredentialStoreError.incompleteCredential {
+                credential = nil
+                localOnly = true
+            }
             try await unlinkProviderAccount(
-                credential: try ProviderCredentialStore.load()
+                credential: credential,
+                localOnly: localOnly
             )
+            if localOnly {
+                print("  ! Legacy coordinator token could not be revoked because its issuer is unknown.")
+            }
             try LocalDataCleanup.purge(authToken: false)
             print("  ✓ Local data cleaned up.")
         } else {

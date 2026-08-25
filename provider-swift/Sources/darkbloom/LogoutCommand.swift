@@ -8,10 +8,36 @@ struct Logout: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
+    @Flag(
+        name: .long,
+        help: "Remove unverifiable legacy credentials without sending their token to any coordinator."
+    )
+    var localOnly = false
+
     mutating func run() async throws {
+        let hadLocalToken = AuthTokenStore.load() != nil
+        let hadLocalAccount = ProviderAccountStore.load() != nil
+        if localOnly {
+            try await unlinkProviderAccount(
+                credential: nil,
+                localOnly: true
+            )
+            guard hadLocalToken || hadLocalAccount else {
+                print("No local provider credential was present.")
+                print("Provider services are stopped.")
+                return
+            }
+            print("Local provider credentials removed.")
+            if hadLocalToken {
+                print("The coordinator token was not revoked because its issuer could not be verified.")
+                print("Remove this Mac from the issuing account before linking it again.")
+            }
+            return
+        }
+
         let credential = try ProviderCredentialStore.load()
         let hadToken = credential != nil
-        let hadAccount = ProviderAccountStore.load() != nil
+        let hadAccount = hadLocalAccount
         try await unlinkProviderAccount(
             credential: credential
         )

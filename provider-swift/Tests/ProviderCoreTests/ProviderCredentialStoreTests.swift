@@ -49,6 +49,11 @@ struct ProviderCredentialStoreTests {
                     for: "https://configured.example"
                 )
             }
+
+            try ProviderCredentialStore.deleteLocalCredential()
+            let cleared = try ProviderCredentialStore.load()
+            #expect(cleared == nil)
+            #expect(!FileManager.default.fileExists(atPath: files.token.path))
         }
     }
 

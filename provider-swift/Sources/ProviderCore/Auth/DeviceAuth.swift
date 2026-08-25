@@ -186,6 +186,7 @@ public enum DeviceLoginEvent: Sendable, Equatable {
 
 public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
     case alreadyLoggedIn(tokenPrefix: String)
+    case credentialRecoveryRequired
     case coordinatorUnreachable(String)
     case deviceCodeRequestFailed(String)
     case deviceCodeExpired
@@ -196,6 +197,8 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .alreadyLoggedIn(let prefix):
             return "Already logged in (token: \(prefix)...). Run 'darkbloom logout' first to unlink."
+        case .credentialRecoveryRequired:
+            return "The saved login predates coordinator binding. Run 'darkbloom logout --local-only', then log in again."
         case .coordinatorUnreachable(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .deviceCodeRequestFailed(let detail):
@@ -274,16 +277,31 @@ private func runDeviceCodeLogin(
     openBrowser: Bool,
     onEvent: (@Sendable (DeviceLoginEvent) -> Void)?
 ) async throws -> String {
-    // Check if already logged in.
-    if let existingToken = AuthTokenStore.load() {
-        let prefix = String(existingToken.prefix(min(20, existingToken.count)))
+    let existingCredential: ProviderCredential?
+    do {
+        existingCredential = try ProviderCredentialStore.load()
+    } catch ProviderCredentialStoreError.incompleteCredential {
+        throw DeviceAuthError.credentialRecoveryRequired
+    } catch {
+        throw DeviceAuthError.invalidResponse(error.localizedDescription)
+    }
+    if let existingCredential {
+        let prefix = String(
+            existingCredential.token.prefix(
+                min(20, existingCredential.token.count)
+            )
+        )
         throw DeviceAuthError.alreadyLoggedIn(tokenPrefix: prefix)
     }
 
     let baseURL = coordinatorHTTPBase(coordinatorURL)
 
     // Step 1: Request a device code.
-    let codeURL = URL(string: "\(baseURL)/v1/device/code")!
+    guard !baseURL.isEmpty,
+          let codeURL = URL(string: "\(baseURL)/v1/device/code")
+    else {
+        throw DeviceAuthError.invalidResponse("invalid coordinator URL")
+    }
     var codeRequest = URLRequest(url: codeURL)
     codeRequest.httpMethod = "POST"
     codeRequest.timeoutInterval = 10
@@ -326,7 +344,9 @@ private func runDeviceCodeLogin(
     }
 
     // Step 2: Poll for authorization.
-    let tokenURL = URL(string: "\(baseURL)/v1/device/token")!
+    guard let tokenURL = URL(string: "\(baseURL)/v1/device/token") else {
+        throw DeviceAuthError.invalidResponse("invalid coordinator URL")
+    }
     let pollInterval = max(dc.interval, 1) // At least 1 second
     let deadline = Date().addingTimeInterval(TimeInterval(dc.expires_in))
 

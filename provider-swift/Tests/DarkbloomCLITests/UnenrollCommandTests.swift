@@ -22,7 +22,8 @@ struct UnenrollCommandTests {
             deleteCredential: { credential in
                 #expect(credential == nil)
                 try FileManager.default.removeItem(at: files.accountPath)
-            }
+            },
+            deleteLocalCredential: {}
         )
 
         try await unlinkProviderAccount(

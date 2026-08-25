@@ -150,6 +150,16 @@ public enum ProviderCredentialStore: Sendable {
         }
     }
 
+    /// Explicit recovery for credentials created before issuer binding existed.
+    /// No remote revocation is attempted because the issuing origin is unknown.
+    public static func deleteLocalCredential() throws {
+        try ProviderCredentialProcessLock.withLock {
+            try AuthTokenStore.delete()
+            try ProviderAccountStore.delete()
+            try ProviderIssuerStore.delete()
+        }
+    }
+
     private static func loadUnlocked() throws -> ProviderCredential? {
         guard let token = AuthTokenStore.load() else {
             return nil
@@ -188,7 +198,7 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
         case .alreadyLoggedIn:
             "this Mac is already linked to a provider account"
         case .incompleteCredential:
-            "the saved provider credential has no verifiable account or issuer; unlink locally and sign in again"
+            "the saved provider credential has no verifiable account or issuer; run `darkbloom logout --local-only`, then sign in again"
         case .issuerMismatch(let expected, let actual):
             "the saved provider credential belongs to \(actual), not \(expected); switch back or sign out before changing coordinators"
         case .credentialChanged:

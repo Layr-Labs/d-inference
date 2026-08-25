@@ -248,8 +248,12 @@ struct DeviceLoginEventTests {
 
     @Test("An existing login short-circuits with an .error event before any network call")
     func loginEmitsErrorWhenAlreadyLoggedIn() async throws {
-        try await withAuthTokenOverride { tokenPath in
-            try AuthTokenStore.save("existing-token-with-20-plus-characters")
+        try await withAuthTokenOverride { _ in
+            try ProviderCredentialStore.save(
+                token: "existing-token-with-20-plus-characters",
+                accountID: "existing-account",
+                coordinatorURL: "http://127.0.0.1:1"
+            )
 
             let recorder = EventRecorder()
             do {
@@ -276,7 +280,30 @@ struct DeviceLoginEventTests {
             }
             #expect(message.hasPrefix("Already logged in"))
             #expect(recorder.events.first?.isTerminal == true)
-            _ = tokenPath
+        }
+    }
+
+    @Test("A legacy credential fails with an actionable local recovery command")
+    func legacyCredentialEmitsRecoveryGuidance() async throws {
+        try await withAuthTokenOverride { _ in
+            try AuthTokenStore.save("legacy-token-without-issuer")
+
+            let recorder = EventRecorder()
+            await #expect(throws: DeviceAuthError.credentialRecoveryRequired) {
+                _ = try await performDeviceCodeLogin(
+                    coordinatorURL: "http://127.0.0.1:1",
+                    onDisplayCode: { _, _, _ in },
+                    openBrowser: false,
+                    onEvent: { recorder.record($0) }
+                )
+            }
+
+            guard case .error(let message) = recorder.events.first else {
+                Issue.record("unexpected events: \(recorder.events)")
+                return
+            }
+            #expect(message.contains("logout --local-only"))
+            #expect(recorder.events.count == 1)
         }
     }
 }

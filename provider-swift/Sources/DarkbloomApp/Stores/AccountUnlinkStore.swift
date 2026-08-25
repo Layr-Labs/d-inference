@@ -29,12 +29,12 @@ final class AccountUnlinkStore {
     @ObservationIgnored
     private let timeout: Duration
     @ObservationIgnored
-    private let refreshAfterSuccess: @MainActor @Sendable () async -> Void
+    private let refreshAfterSuccess: @MainActor @Sendable () async throws -> Void
 
     init(
         cli: any ProviderCLIRunning = ProcessProviderCLIRunner(),
         timeout: Duration = .seconds(90),
-        refreshAfterSuccess: @escaping @MainActor @Sendable () async -> Void
+        refreshAfterSuccess: @escaping @MainActor @Sendable () async throws -> Void
     ) {
         self.cli = cli
         self.timeout = timeout
@@ -55,7 +55,7 @@ final class AccountUnlinkStore {
             }
             // Account/session state must not move until the CLI has completed
             // revocation and local credential deletion successfully.
-            await refreshAfterSuccess()
+            try await refreshAfterSuccess()
             state = .succeeded
         } catch is CancellationError {
             state = .failed(message: AccountUnlinkPresentation.interruptedMessage)

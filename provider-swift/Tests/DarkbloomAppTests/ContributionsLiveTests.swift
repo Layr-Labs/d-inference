@@ -324,6 +324,57 @@ struct ContributionsLiveTests {
         #expect(store.snapshot?.lifetimeJobs == 9)
     }
 
+    @Test("logout clears financial state immediately and rejects the late response")
+    @MainActor
+    func logoutClearsAndInvalidatesInFlightAccount() async throws {
+        let cli = SequencedContributionsCLI()
+        let store = ContributionsStore(cli: cli)
+        let initial = Task { await store.refresh() }
+        #expect(await waitForRequestCount(1, from: cli))
+        await cli.succeed(request: 0, with: payload(earned: 700_000, jobs: 7))
+        await initial.value
+        #expect(store.snapshot?.earnedLifetime == MicroUSD(700_000))
+
+        let accountARefresh = Task { await store.refresh() }
+        #expect(await waitForRequestCount(2, from: cli))
+        store.accountSessionDidChange(isSignedIn: false)
+
+        #expect(store.snapshot == nil)
+        #expect(store.filteredLedger.isEmpty)
+        guard case .unavailable(let message) = store.availability else {
+            Issue.record("Logout must immediately hide account data")
+            return
+        }
+        #expect(message.contains("Sign in"))
+
+        await cli.succeed(request: 1, with: payload(earned: 999_000, jobs: 99))
+        await accountARefresh.value
+        #expect(store.snapshot == nil)
+    }
+
+    @Test("an account-A response cannot overwrite account B after a switch")
+    @MainActor
+    func accountSwitchRejectsPriorResponse() async throws {
+        let cli = SequencedContributionsCLI()
+        let store = ContributionsStore(cli: cli)
+        let accountA = Task { await store.refresh() }
+        #expect(await waitForRequestCount(1, from: cli))
+
+        store.accountSessionDidChange(isSignedIn: true)
+        #expect(store.snapshot == nil)
+        #expect(store.availability == .loading)
+        let accountB = Task { await store.refresh() }
+        #expect(await waitForRequestCount(2, from: cli))
+
+        await cli.succeed(request: 1, with: payload(earned: 800_000, jobs: 8))
+        await accountB.value
+        await cli.succeed(request: 0, with: payload(earned: 100_000, jobs: 1))
+        await accountA.value
+
+        #expect(store.snapshot?.earnedLifetime == MicroUSD(800_000))
+        #expect(store.snapshot?.lifetimeJobs == 8)
+    }
+
     private func waitForRequestCount(
         _ expected: Int,
         from cli: SequencedContributionsCLI

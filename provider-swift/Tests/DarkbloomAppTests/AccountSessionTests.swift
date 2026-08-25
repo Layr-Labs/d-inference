@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import DarkbloomApp
 
@@ -11,6 +12,7 @@ struct AccountSessionTests {
     final class StubAccountSession: AccountSessionManaging, @unchecked Sendable {
         var token: String?
         var signInResult: Result<String, Error> = .failure(AccountSessionError.cancelled)
+        var signOutError: (any Error)?
         var signInCallCount = 0
         var signOutCallCount = 0
 
@@ -22,8 +24,9 @@ struct AccountSessionTests {
             self.token = token
             return token
         }
-        func signOut() {
+        func signOut() throws {
             signOutCallCount += 1
+            if let signOutError { throw signOutError }
             token = nil
         }
     }
@@ -67,7 +70,7 @@ struct AccountSessionTests {
             self.token = token
             return true
         }
-        func clearToken() { token = nil }
+        func clearToken() throws { token = nil }
     }
 
     // MARK: Wire fixtures (minimal shapes matching me_handlers.go)
@@ -207,6 +210,23 @@ struct AccountSessionTests {
         #expect(KeychainSessionStore.accessGroup == "dev.darkbloom.app.shared")
     }
 
+    @Test("Keychain deletion surfaces Security.framework failures")
+    func keychainDeleteFailureSurfaces() {
+        let access = KeychainItemAccess(
+            copyMatching: { _, _ in errSecItemNotFound },
+            add: { _, _ in errSecSuccess },
+            update: { _, _ in errSecSuccess },
+            delete: { _ in errSecInteractionNotAllowed }
+        )
+        let store = KeychainSessionStore(keychain: access)
+
+        #expect(throws: KeychainSessionStoreError.clearFailed(
+            status: errSecInteractionNotAllowed
+        )) {
+            try store.clearToken()
+        }
+    }
+
     // MARK: Session check + refresh transitions
 
     @Test("start() resolves to signed-out when no token is persisted; to loading when one is")
@@ -344,6 +364,77 @@ struct AccountSessionTests {
         #expect(store.snapshot == nil)
         #expect(session.signOutCallCount == 1)
         #expect(session.token == nil) // no repeated 401 storms on next start()
+    }
+
+    @Test("A summary 401 expires the session instead of becoming partial data")
+    @MainActor
+    func summarySessionExpiredSignsOut() async {
+        let session = StubAccountSession()
+        session.token = "expired-summary-token"
+        let fleet = StubFleet(providers: Self.providersWire(), summary: Self.summaryWire())
+        fleet.summaryResult = .failure(FleetClientError.sessionExpired)
+        let store = makeLiveStore(session: session, fleet: fleet)
+
+        await store.refreshLive(at: Self.referenceDate)
+
+        guard case .signedOut = store.availability else {
+            Issue.record("A summary 401 must collapse the session, got \(store.availability)")
+            return
+        }
+        #expect(store.snapshot == nil)
+        #expect(session.signOutCallCount == 1)
+        #expect(session.token == nil)
+    }
+
+    @Test("A failed keychain clear never publishes signed-out state")
+    @MainActor
+    func signOutClearFailurePreservesSignedInState() async throws {
+        struct ClearFailure: LocalizedError {
+            var errorDescription: String? { "Keychain is locked." }
+        }
+        let session = StubAccountSession()
+        session.token = "token-1"
+        let fleet = StubFleet(providers: Self.providersWire(), summary: Self.summaryWire())
+        let store = makeLiveStore(session: session, fleet: fleet)
+        await store.refreshLive(at: Self.referenceDate)
+        let original = try #require(store.snapshot)
+        session.signOutError = ClearFailure()
+
+        #expect(throws: ClearFailure.self) {
+            try store.signOut()
+        }
+
+        #expect(session.token == "token-1")
+        #expect(store.snapshot == original)
+        guard case .ready = store.availability else {
+            Issue.record("Failed keychain clear changed state to \(store.availability)")
+            return
+        }
+    }
+
+    @Test("A 401 plus failed keychain clear retains data and surfaces the failure")
+    @MainActor
+    func expiryClearFailureIsVisible() async throws {
+        struct ClearFailure: LocalizedError {
+            var errorDescription: String? { "Keychain is locked." }
+        }
+        let session = StubAccountSession()
+        session.token = "expired-token"
+        let fleet = StubFleet(providers: Self.providersWire(), summary: Self.summaryWire())
+        let store = makeLiveStore(session: session, fleet: fleet)
+        await store.refreshLive(at: Self.referenceDate)
+        session.signOutError = ClearFailure()
+        fleet.providersResult = .failure(FleetClientError.sessionExpired)
+
+        await store.refreshLive(at: Self.referenceDate.addingTimeInterval(30))
+
+        #expect(session.token == "expired-token")
+        #expect(store.snapshot != nil)
+        guard case .staleRetained(_, _, let message, _) = store.availability else {
+            Issue.record("Failed clear must not publish signed-out: \(store.availability)")
+            return
+        }
+        #expect(message.contains("Keychain is locked"))
     }
 
     @Test("Missing token on refresh resolves to signed-out without calling the session")
@@ -535,7 +626,7 @@ struct AccountSessionTests {
 
     @Test("signOut clears the persisted token and collapses the account view")
     @MainActor
-    func signOutClearsSession() async {
+    func signOutClearsSession() async throws {
         let session = StubAccountSession()
         session.token = "token-1"
         let fleet = StubFleet(providers: Self.providersWire(), summary: Self.summaryWire())
@@ -543,7 +634,7 @@ struct AccountSessionTests {
         await store.refreshLive(at: Self.referenceDate)
         #expect(store.snapshot != nil)
 
-        store.signOut()
+        try store.signOut()
 
         guard case .signedOut = store.availability else {
             Issue.record("Sign-out must collapse to the signed-out state")
@@ -556,7 +647,7 @@ struct AccountSessionTests {
 
     @Test("Mode dispatch: fixture stores keep synchronous preview behavior through the shared API")
     @MainActor
-    func modeDispatchKeepsFixturesDeterministic() async {
+    func modeDispatchKeepsFixturesDeterministic() async throws {
         let fixture = MyMacsStore(fixture: .signedOut)
         #expect(fixture.mode == .fixture)
 
@@ -577,7 +668,7 @@ struct AccountSessionTests {
             fleet: StubFleet(providers: Self.providersWire())
         )
         #expect(live.mode == .live)
-        live.signOut() // must not touch preview fixtures
+        try live.signOut() // must not touch preview fixtures
         guard case .signedOut = live.availability else {
             Issue.record("Live sign-out collapses the account view")
             return

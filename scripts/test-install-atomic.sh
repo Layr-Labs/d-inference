@@ -1044,7 +1044,8 @@ assert_fresh_recovery_rejects_replacement() {
         exit 1
     fi
 
-    rm -rf "$destination"
+    local displaced="$ROOT/fresh-replacement-original-$label-$kind"
+    mv "$destination" "$displaced"
     mkdir -p "$destination"
     printf 'unrelated replacement\n' > "$destination/foreign-payload"
     local replacement_identity
@@ -1061,6 +1062,7 @@ assert_fresh_recovery_rejects_replacement() {
         test "$(test_path_identity "$destination")" = "$replacement_identity"
         test "$(cat "$destination/foreign-payload")" = \
             "unrelated replacement"
+        test -e "$displaced"
         shopt -s nullglob
         local backups=("$install_dir"/.install-backup-*)
         test "${#backups[@]}" -eq 1
@@ -1107,10 +1109,14 @@ assert_fresh_recovery_removes_partial_candidate() {
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test ! -e "$destination"
     test ! -L "$destination"
-    bash "$installer" --recover-install-transactions-test "$install_dir"
     shopt -s nullglob
+    local preserved=("$install_dir"/Darkbloom.app.interrupted-*)
+    test "${#preserved[@]}" -eq 1
+    test ! -e "${preserved[0]}/Contents/MacOS/darkbloom"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
     local backups=("$install_dir"/.install-backup-*)
     test "${#backups[@]}" -eq 0
+    test -e "${preserved[0]}"
 }
 
 assert_recovery_preserves_mutated_candidate_and_restores_previous() {

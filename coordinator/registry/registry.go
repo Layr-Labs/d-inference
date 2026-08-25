@@ -3325,6 +3325,47 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	}
 }
 
+// ClaimProviderSerial is the enforce-mode identity fence. The first
+// code-attested live connection owns a serial until it disconnects; concurrent
+// later claimants evict only themselves, so stale eviction lists can never make
+// two verified sessions disconnect each other.
+func (r *Registry) ClaimProviderSerial(providerID, serial string) bool {
+	if providerID == "" || serial == "" {
+		return false
+	}
+	var duplicates []string
+	r.mu.Lock()
+	if _, exists := r.providers[providerID]; !exists {
+		r.mu.Unlock()
+		return false
+	}
+	if owner := r.serialOwners[serial]; owner != "" && owner != providerID {
+		if _, live := r.providers[owner]; live {
+			r.mu.Unlock()
+			r.Disconnect(providerID)
+			return false
+		}
+	}
+	r.serialOwners[serial] = providerID
+	for id, p := range r.providers {
+		if id == providerID {
+			continue
+		}
+		p.mu.Lock()
+		matches := p.AttestationResult != nil &&
+			p.AttestationResult.SerialNumber == serial
+		p.mu.Unlock()
+		if matches {
+			duplicates = append(duplicates, id)
+		}
+	}
+	r.mu.Unlock()
+	for _, id := range duplicates {
+		r.Disconnect(id)
+	}
+	return true
+}
+
 // RemoveProviderBySerial reports whether any currently-connected provider
 // matches the identity (serial OR session id) and, if force is set, evicts them
 // from the in-memory map. The DELETE endpoint calls it first with force=false

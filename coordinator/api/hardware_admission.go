@@ -204,6 +204,56 @@ func (s *Server) hardwareAdmissionEnforcing() bool {
 	return s.hardwareAdmissionPolicySnapshot().Mode == hardwareadmission.ModeEnforce
 }
 
+func (s *Server) commitProviderAdmissionState(
+	provider *registry.Provider,
+	expected hardwareadmission.Policy,
+	durableAdmission bool,
+) bool {
+	if provider == nil {
+		return false
+	}
+	s.hardwareAdmissionApplyMu.Lock()
+	defer s.hardwareAdmissionApplyMu.Unlock()
+	current := s.hardwareAdmissionPolicySnapshot()
+	if current.Version != expected.Version || current.Mode != expected.Mode {
+		return false
+	}
+	if current.Mode == hardwareadmission.ModeEnforce && !durableAdmission {
+		return false
+	}
+	s.registry.SetProviderHardwareAdmitted(provider.ID, true)
+	s.registry.ActivateProviderPersistence(provider)
+	if current.Mode != hardwareadmission.ModeEnforce &&
+		!s.allowDuplicateProviderSerials {
+		if result := provider.GetAttestationResult(); result != nil &&
+			result.Valid && result.SerialNumber != "" {
+			s.registry.DisconnectDuplicatesBySerial(
+				provider.ID, result.SerialNumber)
+		}
+	}
+	return true
+}
+
+func (s *Server) admitProviderWithoutHardwareEvaluation(
+	provider *registry.Provider,
+) (hardwareadmission.Policy, bool, error) {
+	for {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), hardwareAdmissionStoreTimeout)
+		policy, err := s.refreshHardwareAdmissionPolicy(ctx)
+		cancel()
+		if err != nil {
+			return hardwareadmission.Policy{}, false, err
+		}
+		if policy.Mode == hardwareadmission.ModeEnforce {
+			return policy, false, nil
+		}
+		if s.commitProviderAdmissionState(provider, policy, false) {
+			return policy, true, nil
+		}
+	}
+}
+
 func (s *Server) evaluateProviderHardwareAdmission(
 	providerID string,
 	provider *registry.Provider,
@@ -221,7 +271,10 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		})
 	}
 	if policy.Mode == hardwareadmission.ModeDisabled {
-		s.registry.SetProviderHardwareAdmitted(providerID, true)
+		if !s.commitProviderAdmissionState(provider, policy, false) {
+			return s.evaluateProviderHardwareAdmission(
+				providerID, provider, regMsg, attestResult)
+		}
 		return true
 	}
 	attestationAge := time.Since(attestResult.Timestamp)
@@ -247,7 +300,10 @@ func (s *Server) evaluateProviderHardwareAdmission(
 			})
 		}
 		if admitted {
-			s.registry.SetProviderHardwareAdmitted(providerID, true)
+			if !s.commitProviderAdmissionState(provider, policy, true) {
+				return s.evaluateProviderHardwareAdmission(
+					providerID, provider, regMsg, attestResult)
+			}
 			s.recordHardwareAdmissionAttempt(ctx, provider, serial, policy, "grandfathered", "", hardwareadmission.Decision{
 				Allowed: true, MeetsThresholds: true,
 				Observed: canonicalHardwareObserved(attestResult),
@@ -259,7 +315,10 @@ func (s *Server) evaluateProviderHardwareAdmission(
 	decision := evaluateHardwareClaims(policy, regMsg, attestResult)
 
 	if policy.Mode == hardwareadmission.ModeShadow {
-		s.registry.SetProviderHardwareAdmitted(providerID, true)
+		if !s.commitProviderAdmissionState(provider, policy, false) {
+			return s.evaluateProviderHardwareAdmission(
+				providerID, provider, regMsg, attestResult)
+		}
 		outcome := "passed"
 		reasonCode := ""
 		if !decision.MeetsThresholds {
@@ -555,7 +614,13 @@ func (s *Server) providerCodeIdentityReady(provider *registry.Provider) {
 	if result := provider.GetAttestationResult(); result != nil &&
 		result.Valid && result.SerialNumber != "" &&
 		!s.allowDuplicateProviderSerials {
-		s.registry.DisconnectDuplicatesBySerial(provider.ID, result.SerialNumber)
+		if s.hardwareAdmissionEnforcing() {
+			if !s.registry.ClaimProviderSerial(provider.ID, result.SerialNumber) {
+				return
+			}
+		} else {
+			s.registry.DisconnectDuplicatesBySerial(provider.ID, result.SerialNumber)
+		}
 	}
 	s.finalizeOrScheduleHardwareAdmission(provider)
 }
@@ -859,7 +924,7 @@ func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.P
 			s.stagePendingHardwareAdmission(candidate.provider.ID, pendingHardwareAdmission{
 				serial: serial, policy: policy, decision: decision,
 			})
-			s.finalizeOrScheduleHardwareAdmission(candidate.provider)
+			s.schedulePendingHardwareAdmissionFinalization(candidate.provider)
 			continue
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)

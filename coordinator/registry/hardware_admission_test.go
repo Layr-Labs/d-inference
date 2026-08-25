@@ -3,6 +3,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 func TestHardwareAdmissionGateCannotBeRelaxedBySelfRoute(t *testing.T) {
@@ -51,5 +53,26 @@ func TestPendingRegistrationStartsUnadmittedEvenBeforeEnforcement(t *testing.T) 
 	}
 	if provider.PersistenceEnabled() {
 		t.Fatal("pending registration enabled persistence before admission")
+	}
+}
+
+func TestClaimProviderSerialKeepsFirstVerifiedOwner(t *testing.T) {
+	reg := New(testLogger())
+	first := reg.Register("first", nil, testRegisterMessage())
+	second := reg.Register("second", nil, testRegisterMessage())
+	first.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-CLAIM"})
+	second.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-CLAIM"})
+
+	if !reg.ClaimProviderSerial(first.ID, "SERIAL-CLAIM") {
+		t.Fatal("first verified claimant did not acquire serial")
+	}
+	if reg.ClaimProviderSerial(second.ID, "SERIAL-CLAIM") {
+		t.Fatal("second claimant replaced live serial owner")
+	}
+	if reg.GetProvider(first.ID) == nil {
+		t.Fatal("first serial owner was evicted")
+	}
+	if reg.GetProvider(second.ID) != nil {
+		t.Fatal("duplicate serial claimant remained connected")
 	}
 }

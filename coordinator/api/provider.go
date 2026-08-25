@@ -354,24 +354,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				if !s.evaluateProviderHardwareAdmission(providerID, provider, regMsg, *attestResult) {
 					return
 				}
-			} else if s.hardwareAdmissionEnforcing() {
-				s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
-					code: "hardware_identity_required", retryable: false,
-					policy: s.hardwareAdmissionPolicySnapshot(),
-					reason: "New providers must supply a valid attested machine identity before their hardware can be admitted.",
-				})
-				return
 			} else {
-				s.registry.SetProviderHardwareAdmitted(providerID, true)
-			}
-			if provider.HardwareAdmissionStatus() {
-				s.registry.ActivateProviderPersistence(provider)
-			}
-			if !s.hardwareAdmissionEnforcing() &&
-				attestResult != nil && attestResult.SerialNumber != "" &&
-				!s.allowDuplicateProviderSerials {
-				s.registry.DisconnectDuplicatesBySerial(
-					providerID, attestResult.SerialNumber)
+				policy, admitted, err := s.admitProviderWithoutHardwareEvaluation(provider)
+				if err != nil {
+					s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+						code: "admission_state_unavailable", retryable: true,
+						reason: "The coordinator could not verify provider admission state. It will retry automatically.",
+					})
+					return
+				}
+				if !admitted {
+					s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
+						code: "hardware_identity_required", retryable: false,
+						policy: policy,
+						reason: "New providers must supply a valid attested machine identity before their hardware can be admitted.",
+					})
+					return
+				}
 			}
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -2890,6 +2889,9 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// through a passing SE challenge that restores Status, after which a later loop
 	// iteration grants cleanly. (A hard untrust already stops the loop via
 	// ChallengeShouldStop.)
+	if s.hardwareAdmissionEnforcing() && !provider.GetCodeAttested() {
+		return mdmVerifyTransient
+	}
 	if !provider.GrantHardwareIfNotUntrusted() {
 		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
 		return mdmVerifyTransient
@@ -2971,12 +2973,14 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		p.Mu().Lock()
 		trust := p.TrustLevel
 		valid := p.AttestationResult != nil && p.AttestationResult.Valid
+		codeAttested := p.CodeAttested
 		serial := ""
 		if p.AttestationResult != nil {
 			serial = p.AttestationResult.SerialNumber
 		}
 		p.Mu().Unlock()
-		if trust == registry.TrustSelfSigned && valid && serial != "" {
+		if trust == registry.TrustSelfSigned && valid && serial != "" &&
+			(!s.hardwareAdmissionEnforcing() || codeAttested) {
 			candidates = append(candidates, candidate{provider: p, serial: serial})
 		}
 	})
@@ -2991,6 +2995,9 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		// check-and-grant is a single lock (closes the TOCTOU); recovery from a
 		// transient untrust flows through a passing SE challenge. Mirrors
 		// verifyProviderViaMDM.
+		if s.hardwareAdmissionEnforcing() && !c.provider.GetCodeAttested() {
+			continue
+		}
 		if !c.provider.GrantHardwareIfNotUntrusted() {
 			continue
 		}
@@ -3265,6 +3272,9 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
 func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) bool {
+	if s.hardwareAdmissionEnforcing() && !provider.GetCodeAttested() {
+		return false
+	}
 	// Fast path: reuse a still-valid, SE-key-bound Apple attestation recovered from
 	// the durable store instead of requesting a fresh one. This skips the
 	// rate-limited APNs round-trip entirely on reconnect/restart and is what keeps

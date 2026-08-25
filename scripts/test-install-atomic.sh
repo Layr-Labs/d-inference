@@ -694,6 +694,43 @@ test_shell_refuses_app_relocation_journal \
 test_shell_refuses_app_relocation_journal \
     "$REPO_ROOT/coordinator/api/install.sh" embedded
 
+test_shell_refuses_self_update_candidate() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/self-update-candidate-$label"
+    local state="$install_dir/recovery/state.json"
+    mkdir -p "$install_dir/recovery"
+
+    printf '{"schema":1,"candidate":null}\n' > "$state"
+    bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+
+    printf '{"schema":1,"candidate":{"release":{"version":"2.0.0"}}}\n' \
+        > "$state"
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer ignored a committed SelfUpdater candidate" >&2
+        return 1
+    fi
+    test "$(cat "$state")" \
+        = '{"schema":1,"candidate":{"release":{"version":"2.0.0"}}}'
+
+    printf 'not-json\n' > "$state"
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer accepted malformed SelfUpdater state" >&2
+        return 1
+    fi
+    test "$(cat "$state")" = "not-json"
+}
+
+test_shell_refuses_self_update_candidate \
+    "$REPO_ROOT/scripts/install.sh" source
+test_shell_refuses_self_update_candidate \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
+
 write_existing_bundle() {
     local app=$1
     local bundle_id=$2

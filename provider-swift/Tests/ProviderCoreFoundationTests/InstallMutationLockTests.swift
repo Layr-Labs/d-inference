@@ -127,6 +127,57 @@ struct InstallMutationLockTests {
         }
     }
 
+    @Test("one-shot installers distinguish stable and pending updater state")
+    func selfUpdateCandidateScan() throws {
+        for (candidate, shouldBlock) in [
+            (NSNull() as Any, false),
+            (["release": ["version": "2.0.0"]] as Any, true),
+        ] {
+            let root = try makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let state = InstallMutationLock.selfUpdateStateURL(in: root)
+            try FileManager.default.createDirectory(
+                at: state.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONSerialization.data(withJSONObject: [
+                "schema": 1,
+                "candidate": candidate,
+            ]).write(to: state)
+
+            let pending = try InstallMutationLock.pendingSelfUpdateCandidate(
+                in: root
+            )
+            #expect((pending != nil) == shouldBlock)
+        }
+    }
+
+    @Test("updater state inspection rejects symlinks and malformed state")
+    func selfUpdateCandidateScanFailsClosed() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = InstallMutationLock.selfUpdateStateURL(in: root)
+        let outside = root.appendingPathComponent("outside.json")
+        try FileManager.default.createDirectory(
+            at: state.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"schema":1,"candidate":null}"#.utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            atPath: state.path,
+            withDestinationPath: outside.path
+        )
+
+        #expect(throws: InstallMutationLock.LockError.self) {
+            try InstallMutationLock.pendingSelfUpdateCandidate(in: root)
+        }
+        try FileManager.default.removeItem(at: state)
+        try Data("not-json".utf8).write(to: state)
+        #expect(throws: InstallMutationLock.LockError.self) {
+            try InstallMutationLock.pendingSelfUpdateCandidate(in: root)
+        }
+    }
+
     #if canImport(Darwin)
     @Test("macOS shell flock interoperates and a killed owner needs no takeover")
     func shellFlockInteropAndCrashRecovery() throws {

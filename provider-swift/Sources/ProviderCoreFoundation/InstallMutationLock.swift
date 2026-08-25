@@ -17,8 +17,10 @@ public final class InstallMutationLock: @unchecked Sendable {
     public static let legacyUpdateLockRelativePath = "recovery/update.lock"
     public static let selfUpdateTransactionRelativePath =
         "recovery/transaction.json"
+    public static let selfUpdateStateRelativePath = "recovery/state.json"
     public static let appRelocationTransactionFileName =
         ".app-relocation-transaction.json"
+    private static let maximumSelfUpdateStateBytes = 1024 * 1024
 
     public enum LockError: Error, LocalizedError, Sendable {
         case unavailable(path: String, reason: String)
@@ -127,6 +129,10 @@ public final class InstallMutationLock: @unchecked Sendable {
         installRoot.appendingPathComponent(selfUpdateTransactionRelativePath)
     }
 
+    public static func selfUpdateStateURL(in installRoot: URL) -> URL {
+        installRoot.appendingPathComponent(selfUpdateStateRelativePath)
+    }
+
     public static func appRelocationTransactionURL(
         in installRoot: URL
     ) -> URL {
@@ -161,6 +167,111 @@ public final class InstallMutationLock: @unchecked Sendable {
             fileManager: fileManager,
             includeAppRelocation: false
         )
+    }
+
+    /// A committed SelfUpdater candidate remains transaction-owned until it is
+    /// promoted or rolled back. One-shot installers must not replace those
+    /// live bytes merely because `recovery/transaction.json` was removed.
+    public static func pendingSelfUpdateCandidate(
+        in installRoot: URL
+    ) throws -> URL? {
+        let stateURL = selfUpdateStateURL(in: installRoot)
+        let descriptor = open(
+            stateURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            if errno == ENOENT {
+                return nil
+            }
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: posixMessage()
+            )
+        }
+        defer { _ = close(descriptor) }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: posixMessage()
+            )
+        }
+        guard status.st_mode & S_IFMT == S_IFREG else {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: "self-update state is not a regular file"
+            )
+        }
+        guard status.st_size >= 0,
+              status.st_size <= off_t(maximumSelfUpdateStateBytes)
+        else {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: "self-update state exceeds the size limit"
+            )
+        }
+
+        var data = Data()
+        data.reserveCapacity(Int(status.st_size))
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes {
+                read(descriptor, $0.baseAddress, $0.count)
+            }
+            if count < 0, errno == EINTR {
+                continue
+            }
+            guard count >= 0 else {
+                throw LockError.unavailable(
+                    path: stateURL.path,
+                    reason: posixMessage()
+                )
+            }
+            if count == 0 {
+                break
+            }
+            guard data.count <= maximumSelfUpdateStateBytes - count else {
+                throw LockError.unavailable(
+                    path: stateURL.path,
+                    reason: "self-update state exceeds the size limit"
+                )
+            }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: "self-update state is invalid JSON: "
+                    + error.localizedDescription
+            )
+        }
+        guard let state = object as? [String: Any],
+              let schema = state["schema"] as? NSNumber,
+              schema.intValue == 1
+        else {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: "self-update state has an unsupported schema"
+            )
+        }
+        guard let candidate = state["candidate"],
+              !(candidate is NSNull)
+        else {
+            return nil
+        }
+        guard candidate is [String: Any] else {
+            throw LockError.unavailable(
+                path: stateURL.path,
+                reason: "self-update candidate has an invalid shape"
+            )
+        }
+        return stateURL
     }
 
     private static func pendingTransaction(

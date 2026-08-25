@@ -428,6 +428,13 @@ struct AppInstallCoordinator {
                 path: selfUpdate.path
             )
         }
+        if let candidateState = try InstallMutationLock
+            .pendingSelfUpdateCandidate(in: installRoot)
+        {
+            throw AppInstallCoordinatorError.pendingInstallRecovery(
+                path: candidateState.path
+            )
+        }
         if let shellInstall = try InstallMutationLock.pendingShellInstallTransaction(
             in: installRoot,
             fileManager: fileManager

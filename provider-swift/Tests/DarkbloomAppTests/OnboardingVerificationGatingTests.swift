@@ -48,6 +48,24 @@ struct OnboardingVerificationGatingTests {
         DaemonStateFile.write(state, to: fixture.stateURL)
     }
 
+    private func writeConnectionTruth(
+        _ truth: CoordinatorConnectionTruth,
+        to fixture: Fixture
+    ) {
+        let state = DaemonState(
+            pid: Int32(ProcessInfo.processInfo.processIdentifier),
+            processIdentity: ProcessIdentity.current(),
+            version: "0.0.0-test",
+            writtenAt: Date().timeIntervalSince1970,
+            startedAt: fixture.writtenAt,
+            trust: truth.trust,
+            currentModel: Self.modelID,
+            warmModels: [Self.modelID],
+            connectivity: truth.connectivity
+        )
+        DaemonStateFile.write(state, to: fixture.stateURL)
+    }
+
     private func trust(status: String, level: String = "self_signed") -> DaemonState.Trust {
         DaemonState.Trust(
             trustLevel: level,
@@ -133,6 +151,87 @@ struct OnboardingVerificationGatingTests {
 
         flow.continueToNextStep()
         #expect(flow.step == .complete)
+    }
+
+    @Test("verified → disconnected → reconnected requires fresh verified runtime truth")
+    func verifiedDisconnectReconnectVerified() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(stateURL: fixture.stateURL)
+        var truth = CoordinatorConnectionTruth()
+        let now = Date().timeIntervalSince1970
+
+        truth.recordConnected(at: now)
+        #expect(truth.recordTrustStatus(
+            trustLevel: "hardware",
+            status: "verified",
+            reason: "MDM verification passed",
+            at: now + 1
+        ))
+        writeConnectionTruth(truth, to: fixture)
+
+        await flow.runAutomaticWorkForCurrentStep()
+        #expect(flow.verificationPhase == .hardwareTrusted)
+        #expect(flow.canContinue)
+        var snapshot = DaemonRuntimeService.mapFromDisk(
+            stateFileURL: fixture.stateURL,
+            providerName: "This Mac",
+            localEndpointReader: { nil },
+            processIdentityReader: ProcessIdentity.read(pid:),
+            serviceLoaded: { true }
+        )
+        #expect(snapshot.trust.state == .verified)
+        #expect(AppFlowBootstrapEvidence(snapshot: snapshot).canOpenProductWithoutOnboarding)
+
+        truth.recordDisconnected(reason: "WebSocket transport closed", at: now + 2)
+        writeConnectionTruth(truth, to: fixture)
+
+        #expect(!flow.canContinue)
+        snapshot = DaemonRuntimeService.mapFromDisk(
+            stateFileURL: fixture.stateURL,
+            providerName: "This Mac",
+            localEndpointReader: { nil },
+            processIdentityReader: ProcessIdentity.read(pid:),
+            serviceLoaded: { true }
+        )
+        #expect(snapshot.runState == .attention)
+        #expect(snapshot.trust.state == .failed)
+        #expect(snapshot.connectivity?.isConnected == false)
+        #expect(!AppFlowBootstrapEvidence(snapshot: snapshot).canOpenProductWithoutOnboarding)
+
+        truth.recordConnected(at: now + 3)
+        writeConnectionTruth(truth, to: fixture)
+
+        #expect(!flow.canContinue)
+        snapshot = DaemonRuntimeService.mapFromDisk(
+            stateFileURL: fixture.stateURL,
+            providerName: "This Mac",
+            localEndpointReader: { nil },
+            processIdentityReader: ProcessIdentity.read(pid:),
+            serviceLoaded: { true }
+        )
+        #expect(snapshot.connectivity?.isConnected == true)
+        #expect(snapshot.trust.state == .failed)
+        #expect(!AppFlowBootstrapEvidence(snapshot: snapshot).canOpenProductWithoutOnboarding)
+
+        #expect(truth.recordTrustStatus(
+            trustLevel: "hardware",
+            status: "verified",
+            reason: "fresh MDM verification",
+            at: now + 4
+        ))
+        writeConnectionTruth(truth, to: fixture)
+
+        #expect(flow.canContinue)
+        snapshot = DaemonRuntimeService.mapFromDisk(
+            stateFileURL: fixture.stateURL,
+            providerName: "This Mac",
+            localEndpointReader: { nil },
+            processIdentityReader: ProcessIdentity.read(pid:),
+            serviceLoaded: { true }
+        )
+        #expect(snapshot.trust.state == .verified)
+        #expect(AppFlowBootstrapEvidence(snapshot: snapshot).canOpenProductWithoutOnboarding)
     }
 
     @Test("mda_verified trust level alone also unlocks the gate")

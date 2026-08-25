@@ -23,7 +23,7 @@ extension CoordinatorClient {
             } catch {
                 if shutdownRequested { break }
 
-                eventContinuation?.yield(.disconnected)
+                eventContinuation?.yield(.disconnected(reason: error.localizedDescription))
                 let delay = backoff.nextDelay()
                 let reachable = reachability.isReachable
                 logger.warning(.coordinatorConnectionFailed)

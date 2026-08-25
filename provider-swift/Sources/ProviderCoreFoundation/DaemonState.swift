@@ -72,11 +72,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     ///   - "scheduled-active": a window matched at `writtenAt`.
     ///   - "scheduled-off": no window matched at `writtenAt`.
     ///
-    /// Note the scheduled-off caveat: the supervised serving loop only exists
-    /// INSIDE a window, so a `scheduled-off` file ages out of freshness fast —
-    /// the mode records the posture at `writtenAt`, and `nextChangeAtEpoch`
-    /// (the same wall-clock horizon `durationUntilNextActive`/`durationUntilInactive`
-    /// computed for the supervisor) tells the reader when it flips.
+    /// Outside a window, the scheduling supervisor keeps this record fresh even
+    /// though no serving `ProviderLoop` exists. `nextChangeAtEpoch` is the same
+    /// wall-clock horizon `durationUntilNextActive`/`durationUntilInactive`
+    /// computes for that supervisor, and tells readers when the posture expires.
     public struct SchedulePosture: Codable, Sendable, Equatable {
         /// "always" | "scheduled-active" | "scheduled-off" (see type docs).
         public var mode: String
@@ -250,11 +249,29 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public struct Connectivity: Codable, Sendable, Equatable {
+        public enum Status: String, Codable, Sendable {
+            case connected
+            case disconnected
+        }
+
         public var reconnectCount: Int
         public var lastError: String?
-        public init(reconnectCount: Int, lastError: String?) {
+        /// nil means the writer predates authoritative transport-state
+        /// reporting. Readers must not infer connected or disconnected from
+        /// absence.
+        public var status: Status?
+        public var changedAt: Double?
+
+        public init(
+            reconnectCount: Int,
+            lastError: String?,
+            status: Status? = nil,
+            changedAt: Double? = nil
+        ) {
             self.reconnectCount = reconnectCount
             self.lastError = lastError
+            self.status = status
+            self.changedAt = changedAt
         }
     }
 

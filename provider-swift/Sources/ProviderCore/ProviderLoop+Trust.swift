@@ -24,24 +24,28 @@ extension ProviderLoop {
     /// Best-effort and cheap; safe to call from the trust handler and the
     /// periodic capacity loop.
     internal func writeDaemonState() {
+        persistDaemonState(currentDaemonState())
+    }
+
+    internal func persistDaemonState(_ snapshot: DaemonState) {
         DaemonStateFile.write(
-            currentDaemonState(),
+            snapshot,
             to: daemonStateFileOverride ?? DaemonStateFile.path())
     }
 
     /// The snapshot `writeDaemonState` persists. Split out so a test can
     /// assert its contents without a global `DARKBLOOM_STATE_FILE` override
     /// racing every other suite.
-    internal func currentDaemonState() -> DaemonState {
+    internal func currentDaemonState(at date: Date = Date()) -> DaemonState {
         let cap = state.backendCapacity
-        let writtenAt = Date().timeIntervalSince1970
+        let writtenAt = date.timeIntervalSince1970
         return DaemonState(
             pid: getpid(),
             processIdentity: ProcessIdentity.current(),
             version: ProviderCore.version,
             writtenAt: writtenAt,
             startedAt: startedAtEpoch,
-            trust: lastTrustStatus,
+            trust: coordinatorConnectionTruth.trust,
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             inferenceActive: state.inferenceActive,
@@ -72,6 +76,7 @@ extension ProviderLoop {
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
                     idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            connectivity: coordinatorConnectionTruth.connectivity,
             schedule: schedulePostureForState(at: writtenAt),
             identity: DaemonState.Identity(
                 providerName: loopConfig.config.provider.name,
@@ -91,28 +96,11 @@ extension ProviderLoop {
     /// carrying a stale "scheduled-active" banner through the close is
     /// precisely the lie this field exists to prevent.
     internal func schedulePostureForState(at writtenAt: Double) -> DaemonState.SchedulePosture {
-        guard let scheduleConfig = loopConfig.config.schedule,
-              let schedule = Schedule.from(config: scheduleConfig)
-        else {
-            return DaemonState.SchedulePosture(mode: "always", summary: "always available")
-        }
-
-        let date = Date(timeIntervalSince1970: writtenAt)
-        if schedule.isActive(at: date) {
-            // Same horizon the supervisor sleeps against while active
-            // (`durationUntilInactive`); nil → unknown boundary, carried as
-            // nil rather than guessed.
-            let remaining = schedule.durationUntilInactive(from: date)
-            return DaemonState.SchedulePosture(
-                mode: "scheduled-active",
-                summary: schedule.describe(),
-                nextChangeAtEpoch: remaining.map { writtenAt + $0 })
-        }
-        let wait = schedule.durationUntilNextActive(from: date)
-        return DaemonState.SchedulePosture(
-            mode: "scheduled-off",
-            summary: schedule.describe(),
-            nextChangeAtEpoch: writtenAt + wait)
+        let schedule = loopConfig.config.schedule.flatMap { Schedule.from(config: $0) }
+        return DaemonSchedulePostureResolver.resolve(
+            schedule: schedule,
+            at: Date(timeIntervalSince1970: writtenAt)
+        )
     }
 
     /// The set of models this daemon still wants to serve, for the
@@ -147,15 +135,71 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func handleTrustStatus(trustLevel: String, status: String, reason: String) {
+    internal func handleCoordinatorConnected(at date: Date = Date()) {
+        coordinatorConnectionTruth.recordConnected(at: date.timeIntervalSince1970)
+        persistDaemonState(currentDaemonState(at: date))
+    }
+
+    internal func handleCoordinatorDisconnected(
+        reason: String,
+        at date: Date = Date(),
+        incrementsReconnectCount: Bool = true
+    ) {
+        coordinatorConnectionTruth.recordDisconnected(
+            reason: reason,
+            at: date.timeIntervalSince1970,
+            incrementsReconnectCount: incrementsReconnectCount
+        )
+        persistDaemonState(currentDaemonState(at: date))
+    }
+
+    internal func handleCoordinatorEventStreamEnded(at date: Date = Date()) {
+        guard coordinatorConnectionTruth.connectivity.status != .disconnected else {
+            return
+        }
+        handleCoordinatorDisconnected(
+            reason: "Coordinator connection stopped.",
+            at: date,
+            incrementsReconnectCount: false
+        )
+    }
+
+    /// Transfer daemon-state authority from the serving loop to the scheduling
+    /// supervisor when an availability window closes. The returned snapshot is
+    /// the supervisor's seed; it carries session counters while explicitly
+    /// revoking connection/trust and serving activity.
+    public func beginScheduledDowntime(at date: Date = Date()) -> DaemonState {
+        coordinatorConnectionTruth.recordDisconnected(
+            reason: "Outside configured availability schedule.",
+            at: date.timeIntervalSince1970,
+            incrementsReconnectCount: false
+        )
+        state.inferenceActive = false
+        let snapshot = currentDaemonState(at: date)
+        persistDaemonState(snapshot)
+        return snapshot
+    }
+
+    internal func handleTrustStatus(
+        trustLevel: String,
+        status: String,
+        reason: String,
+        at date: Date = Date()
+    ) {
         logger.info("Trust status update: level=\(trustLevel) status=\(status)")
 
         // Cache + persist so `darkbloom status`/`doctor` can show the operator
         // the coordinator's reason (otherwise it is only in the logs).
-        lastTrustStatus = DaemonState.Trust(
-            trustLevel: trustLevel, status: status, reason: reason,
-            receivedAt: Date().timeIntervalSince1970)
-        writeDaemonState()
+        guard coordinatorConnectionTruth.recordTrustStatus(
+            trustLevel: trustLevel,
+            status: status,
+            reason: reason,
+            at: date.timeIntervalSince1970
+        ) else {
+            logger.warning("Ignoring trust status received without a live coordinator connection")
+            return
+        }
+        persistDaemonState(currentDaemonState(at: date))
     }
 
 }

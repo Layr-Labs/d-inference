@@ -67,7 +67,7 @@ enum DaemonSnapshotMapping {
             version: state?.version ?? "unknown",
             pid: isRunning ? state?.pid : nil,
             startedAt: isRunning ? state.map { Date(timeIntervalSince1970: $0.startedAt) } : nil,
-            trust: mapTrust(state?.trust),
+            trust: mapTrust(state),
             availability: mapAvailability(
                 state: state,
                 runState: runState,
@@ -84,7 +84,12 @@ enum DaemonSnapshotMapping {
             lastProblem: resolveProblem(inputs: inputs, runState: runState),
             localEndpoint: mapLocalEndpoint(inputs: inputs, isRunning: isRunning, isFresh: isFresh),
             connectivity: state?.connectivity.map {
-                ProviderConnectivitySnapshot(reconnectCount: $0.reconnectCount, lastError: $0.lastError)
+                ProviderConnectivitySnapshot(
+                    reconnectCount: $0.reconnectCount,
+                    lastError: $0.lastError,
+                    isConnected: $0.status.map { $0 == .connected },
+                    updatedAt: $0.changedAt.map(Date.init(timeIntervalSince1970:))
+                )
             },
             system: isRunning && isFresh ? state?.system.map {
                 ProviderSystemSnapshot(memoryPressure: $0.memoryPressure, cpuUsage: $0.cpuUsage, thermalState: $0.thermalState)
@@ -131,6 +136,9 @@ enum DaemonSnapshotMapping {
         }
         if state.inferenceActive {
             return .serving
+        }
+        if state.connectivity?.status == .disconnected {
+            return .attention
         }
         if let trust = state.trust,
            failingTrustStatuses.contains(trust.status.lowercased()) {
@@ -229,7 +237,23 @@ enum DaemonSnapshotMapping {
         return !state.isStale(now: now)
     }
 
-    private static func mapTrust(_ trust: DaemonState.Trust?) -> ProviderTrustSnapshot {
+    private static func mapTrust(_ state: DaemonState?) -> ProviderTrustSnapshot {
+        if state?.connectivity?.status == .disconnected {
+            let trust = state?.trust
+            let changedAt = state?.connectivity?.changedAt
+            let trustLevel = trust?.trustLevel ?? ""
+            return ProviderTrustSnapshot(
+                state: .failed,
+                level: trustLevel.isEmpty ? "Offline" : trustLevel,
+                reason: state?.connectivity?.lastError
+                    ?? trust?.reason
+                    ?? "The provider is disconnected from the network.",
+                guidance: nil,
+                updatedAt: changedAt.map(Date.init(timeIntervalSince1970:))
+                    ?? trust.map { Date(timeIntervalSince1970: $0.receivedAt) }
+            )
+        }
+        let trust = state?.trust
         guard let trust else {
             return ProviderTrustSnapshot(
                 state: .unknown,

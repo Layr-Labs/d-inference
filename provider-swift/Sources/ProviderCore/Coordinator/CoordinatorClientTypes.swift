@@ -11,7 +11,7 @@ import os
 
 public enum CoordinatorEvent: Sendable {
     case connected
-    case disconnected
+    case disconnected(reason: String)
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
     /// i.e. base64 already stripped. `senderPublicKey` is the consumer's
     /// 32-byte X25519 ephemeral public key, also decoded.

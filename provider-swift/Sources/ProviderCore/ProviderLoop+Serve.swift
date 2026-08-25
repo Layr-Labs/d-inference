@@ -226,9 +226,14 @@ extension ProviderLoop {
             for await event in events {
                 switch event {
                 case .connected:
+                    handleCoordinatorConnected()
                     logger.info(.coordinatorConnected)
 
-                case .disconnected:
+                case .disconnected(let reason):
+                    // Persist transport loss and revoke any verified trust
+                    // BEFORE waiting for in-flight cancellation. App/bootstrap
+                    // readers must fail closed as soon as the socket is gone.
+                    handleCoordinatorDisconnected(reason: reason)
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -298,6 +303,7 @@ extension ProviderLoop {
         }
 
         logger.info(.coordinatorEventStreamEnded)
+        handleCoordinatorEventStreamEnded()
         isShuttingDown = true
         idleMonitorTask?.cancel()
         idleMonitorTask = nil

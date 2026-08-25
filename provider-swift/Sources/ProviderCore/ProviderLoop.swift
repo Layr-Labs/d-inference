@@ -424,12 +424,15 @@ public actor ProviderLoop {
     /// the FIRST load doesn't re-read weights already hashed at startup.
     internal var modelHashFingerprints: [String: String]
 
-    /// Diagnostics: the most recent trust_status from the coordinator and the
-    /// most recent model-load failure, plus the daemon start time. Persisted to
-    /// the daemon state file so `darkbloom status`/`doctor` can show the
-    /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
-    /// (not ContinuousClock) so it survives across the CLI process boundary.
-    internal var lastTrustStatus: DaemonState.Trust?
+    /// Authoritative coordinator transport + trust truth. A disconnect
+    /// immediately replaces any verified status with `offline`; reconnecting
+    /// does not restore it until a fresh `trust_status` arrives.
+    internal var coordinatorConnectionTruth = CoordinatorConnectionTruth()
+    /// Diagnostics: the most recent model-load failure plus the daemon start
+    /// time. Persisted to the daemon state file so `darkbloom status`/`doctor`
+    /// can show the operator WHY they are / aren't earning. Start time uses
+    /// wall-clock epoch (not ContinuousClock) so it survives across the CLI
+    /// process boundary.
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is

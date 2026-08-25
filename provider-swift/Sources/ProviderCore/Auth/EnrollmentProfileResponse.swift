@@ -52,11 +52,67 @@ enum EnrollmentProfileResponse {
         // response field and accepting only its first member could hide a
         // proxy-injected HTML/JSON type.
         guard !rawValue.contains(",") else { return false }
-        let baseType = rawValue
-            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-            .first?
+        let components = rawValue.split(
+            separator: ";",
+            omittingEmptySubsequences: false
+        )
+        guard let baseType = components.first?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return baseType?.caseInsensitiveCompare(supportedMediaType)
+        else {
+            return false
+        }
+        guard baseType.caseInsensitiveCompare(supportedMediaType)
             == .orderedSame
+        else {
+            return false
+        }
+        return components.dropFirst().allSatisfy(isSafeParameter)
+    }
+
+    private static func isSafeParameter(_ component: Substring) -> Bool {
+        let parameter = component.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let pair = parameter.split(
+            separator: "=",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard pair.count == 2, isToken(pair[0]) else { return false }
+        let value = pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.first == "\"", value.last == "\"", value.count >= 2 {
+            return isSafeQuotedValue(value.dropFirst().dropLast())
+        }
+        return isToken(value)
+    }
+
+    private static func isToken<S: StringProtocol>(_ value: S) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)
+                || (byte >= 0x41 && byte <= 0x5A)
+                || (byte >= 0x61 && byte <= 0x7A)
+                || "!#$%&'*+-.^_`|~".utf8.contains(byte)
+        }
+    }
+
+    private static func isSafeQuotedValue(
+        _ value: Substring
+    ) -> Bool {
+        var escaped = false
+        for byte in value.utf8 {
+            if escaped {
+                guard byte == 0x09 || (byte >= 0x20 && byte < 0x7F) else {
+                    return false
+                }
+                escaped = false
+            } else if byte == 0x5C {
+                escaped = true
+            } else if byte == 0x22
+                || (byte != 0x09 && (byte < 0x20 || byte >= 0x7F))
+            {
+                return false
+            }
+        }
+        return !escaped
     }
 }

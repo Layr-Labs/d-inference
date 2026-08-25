@@ -177,6 +177,56 @@ struct RemoteExactPrefixCacheIntegrationTests {
             tokenizer: tokenizer))
     }
 
+    private func dispatchRemoteRequest(
+        loop: ProviderLoop,
+        authenticatedScope: String?,
+        cacheReceiptNonce: String? = nil
+    ) async throws -> Int {
+        let body = try JSONEncoder().encode(ChatCompletionRequest(
+            model: modelID,
+            messages: [.init(role: "user", content: "repeatable prompt")],
+            max_tokens: 1,
+            stream: true))
+        let consumer = NodeKeyPair.generate()
+        let providerPublicKey = await loop.keyPair.publicKeyBytes
+        let encrypted = try consumer.encryptPayload(
+            recipientPublicKey: providerPublicKey,
+            plaintext: body)
+        let wire = try ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(.init(
+            requestId: "remote-\(UUID().uuidString)",
+            encryptedBody: encrypted,
+            cacheReceiptNonce: cacheReceiptNonce,
+            cacheScope: authenticatedScope)))
+        guard case .inferenceRequest(let inbound) =
+            try ProviderProtocolCodec.decodeCoordinatorMessage(from: wire)
+        else {
+            throw RemoteExactPrefixCacheTestFailure.unexpectedMessage
+        }
+        let inboundEncrypted = try #require(inbound.encryptedBody)
+        let ciphertext = try #require(Data(base64Encoded: inboundEncrypted.ciphertext))
+        let senderPublicKey = try #require(
+            Data(base64Encoded: inboundEncrypted.ephemeralPublicKey))
+        let recorder = RemoteExactOutboundRecorder()
+        await loop.handleInferenceRequest(
+            requestId: inbound.requestId,
+            ciphertext: ciphertext,
+            senderPublicKey: senderPublicKey,
+            cacheReceiptNonce: inbound.cacheReceiptNonce,
+            authenticatedCacheScope: inbound.cacheScope,
+            prefixCacheProtocol: inbound.prefixCacheProtocol,
+            send: SendHandle(recorder.send))
+        for await message in recorder.stream {
+            switch message {
+            case .inferenceComplete, .inferenceError:
+                break
+            default:
+                continue
+            }
+            break
+        }
+        return recorder.receiptCount
+    }
+
     private func makeSSDCache() throws -> (cache: SSDPrefixCache, root: URL) {
         let dedicatedRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -260,51 +310,11 @@ struct RemoteExactPrefixCacheIntegrationTests {
         #expect(advertisement.models.isEmpty)
         #expect(advertisement.exactModels == [modelID])
 
-        let body = try JSONEncoder().encode(ChatCompletionRequest(
-            model: modelID,
-            messages: [.init(role: "user", content: "repeatable prompt")],
-            max_tokens: 1,
-            stream: true))
-        let consumer = NodeKeyPair.generate()
-        let providerPublicKey = await loop.keyPair.publicKeyBytes
-        let encrypted = try consumer.encryptPayload(
-            recipientPublicKey: providerPublicKey,
-            plaintext: body)
-        let wire = try ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(.init(
-            requestId: "remote-\(UUID().uuidString)",
-            encryptedBody: encrypted,
-            cacheReceiptNonce: cacheReceiptNonce,
-            cacheScope: authenticatedScope)))
-        guard case .inferenceRequest(let inbound) =
-            try ProviderProtocolCodec.decodeCoordinatorMessage(from: wire)
-        else {
-            throw RemoteExactPrefixCacheTestFailure.unexpectedMessage
-        }
-        let inboundEncrypted = try #require(inbound.encryptedBody)
-        let ciphertext = try #require(Data(base64Encoded: inboundEncrypted.ciphertext))
-        let senderPublicKey = try #require(
-            Data(base64Encoded: inboundEncrypted.ephemeralPublicKey))
-        let recorder = RemoteExactOutboundRecorder()
-        await loop.handleInferenceRequest(
-            requestId: inbound.requestId,
-            ciphertext: ciphertext,
-            senderPublicKey: senderPublicKey,
-            cacheReceiptNonce: inbound.cacheReceiptNonce,
-            authenticatedCacheScope: inbound.cacheScope,
-            prefixCacheProtocol: inbound.prefixCacheProtocol,
-            send: SendHandle(recorder.send))
-        for await message in recorder.stream {
-            switch message {
-            case .inferenceComplete, .inferenceError:
-                break
-            default:
-                continue
-            }
-            break
-        }
-
+        let receiptCount = try await dispatchRemoteRequest(
+            loop: loop,
+            authenticatedScope: authenticatedScope,
+            cacheReceiptNonce: cacheReceiptNonce)
         let request = try #require(engine.submitted.first)
-        let receiptCount = recorder.receiptCount
         await bridge.shutdown()
         return (request, receiptCount)
     }
@@ -326,6 +336,54 @@ struct RemoteExactPrefixCacheIntegrationTests {
         #expect(!blank.request.prefixCacheEnabled)
         #expect(blank.request.cacheSalt == nil)
         #expect(blank.receiptCount == 0)
+    }
+
+    @Test("repeated encrypted remote requests donate and hit the live exact cache")
+    func liveRemoteDonationThenHit() async throws {
+        let loop = try makeLoop()
+        let tokenizer = RemoteExactTokenizer()
+        let exactCache = ExactPrefixCacheV2(config: .init(
+            modelIdentity: "verified-live-model",
+            policyIdentity: "exact-live-policy",
+            maxBytes: 1 << 20))
+        let live = makeRemoteExactLiveEngine(cache: exactCache)
+        let bridge = EngineV2Bridge(
+            engine: live.engine,
+            modelId: modelID,
+            tokenizer: TokenizerHandle(tokenizer),
+            eosTokenIds: [2],
+            exactPrefixCache: exactCache,
+            exactPrefixCacheConfigured: true,
+            exactPrefixCacheReason: "ready")
+        await loop.installModelSlotForTesting(
+            modelId: modelID,
+            container: makeContainer(tokenizer: tokenizer),
+            tokenizer: TokenizerHandle(tokenizer),
+            engineV2: bridge,
+            modelType: "qwen3_5_moe")
+
+        let scope = "coordinator-authenticated-live-tenant"
+        let coldReceipts = try await dispatchRemoteRequest(
+            loop: loop,
+            authenticatedScope: scope)
+        let afterCold = exactCache.stats()
+        let prefillRowsAfterCold = live.model.prefillRows
+
+        let warmReceipts = try await dispatchRemoteRequest(
+            loop: loop,
+            authenticatedScope: scope)
+        let afterWarm = exactCache.stats()
+        let prefillRowsAfterWarm = live.model.prefillRows
+        await bridge.shutdown()
+
+        #expect(coldReceipts == 0)
+        #expect(warmReceipts == 0)
+        #expect(afterCold.misses == 1)
+        #expect(afterCold.donations == 1)
+        #expect(prefillRowsAfterCold == 1)
+        #expect(afterWarm.hits == 1)
+        #expect(afterWarm.donations == 1)
+        #expect(prefillRowsAfterWarm == prefillRowsAfterCold)
     }
 
     @Test("mixed exact and SSD cache keeps scope-only authorization on the engine")

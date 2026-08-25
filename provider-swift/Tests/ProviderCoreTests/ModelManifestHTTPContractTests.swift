@@ -248,17 +248,18 @@ private final class ManifestContractHTTPServer: @unchecked Sendable {
             task.cancel()
             throw URLError(.cannotConnectToHost)
         }
-        lock.lock()
-        serverTask = task
-        lock.unlock()
+        lock.withLock {
+            serverTask = task
+        }
         return URL(string: "http://127.0.0.1:\(port)")!
     }
 
     func shutdown() async {
-        lock.lock()
-        let task = serverTask
-        serverTask = nil
-        lock.unlock()
+        let task = lock.withLock {
+            let task = serverTask
+            serverTask = nil
+            return task
+        }
         task?.cancel()
         _ = await task?.value
     }

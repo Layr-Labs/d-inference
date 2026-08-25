@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import DarkbloomApp
+import ProviderCoreFoundation
 
 @Suite("App install coordinator")
 struct AppInstallCoordinatorTests {
@@ -397,6 +398,33 @@ struct AppInstallCoordinatorTests {
         }
         #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
         #expect(try String(contentsOf: transaction, encoding: .utf8) == "{}")
+    }
+
+    @Test("relocation refuses a committed SelfUpdater candidate")
+    func pendingSelfUpdateCandidateMustResolveFirst() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = try fixture.makeDownloadedApp(payload: "one-shot")
+        let state = InstallMutationLock.selfUpdateStateURL(
+            in: fixture.installRoot
+        )
+        try FileManager.default.createDirectory(
+            at: state.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let stateData = Data(
+            #"{"schema":1,"candidate":{"release":{"version":"2.0.0"}}}"#.utf8
+        )
+        try stateData.write(to: state)
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor()
+            ).coordinate()
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+        #expect(try Data(contentsOf: state) == stateData)
     }
 
     @Test("relocation refuses a pending shell installer transaction")

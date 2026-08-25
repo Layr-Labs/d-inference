@@ -946,6 +946,66 @@ pause_install_lock_startup_for_test() {
     done
 }
 
+reject_pending_self_update_candidate() {
+    local install_dir=$1
+    local state="$install_dir/recovery/state.json"
+    local status=0
+    if /usr/bin/perl -MFcntl=:DEFAULT,:mode -MJSON::PP=decode_json -e '
+        use strict;
+        use warnings;
+
+        my ($path, $maximum) = @ARGV;
+        sysopen(my $handle, $path, O_RDONLY | O_NOFOLLOW)
+            or exit($!{ENOENT} ? 0 : 2);
+        my @status = stat($handle);
+        @status && S_ISREG($status[2]) or die
+            "SelfUpdater state is not a regular file: $path\n";
+        $status[7] >= 0 && $status[7] <= $maximum or die
+            "SelfUpdater state exceeds the size limit: $path\n";
+
+        my $json = "";
+        while (1) {
+            my $count = sysread($handle, my $chunk, 16384);
+            if (!defined($count)) {
+                next if $!{EINTR};
+                die "Could not read SelfUpdater state $path: $!\n";
+            }
+            last if $count == 0;
+            length($json) <= $maximum - $count or die
+                "SelfUpdater state exceeds the size limit: $path\n";
+            $json .= $chunk;
+        }
+        close($handle) or die "Could not close SelfUpdater state $path: $!\n";
+
+        my $state = eval { decode_json($json) };
+        ref($state) eq "HASH" or die
+            "SelfUpdater state is invalid JSON: $path\n";
+        exists($state->{schema})
+            && !ref($state->{schema})
+            && "$state->{schema}" eq "1"
+            or die "SelfUpdater state has an unsupported schema: $path\n";
+        exit(0) unless exists($state->{candidate})
+            && defined($state->{candidate});
+        ref($state->{candidate}) eq "HASH" or die
+            "SelfUpdater candidate has an invalid shape: $path\n";
+        exit(42);
+    ' "$state" 1048576
+    then
+        return 0
+    else
+        status=$?
+    fi
+
+    if [ "$status" -eq 42 ]; then
+        fail_install \
+            "A SelfUpdater candidate needs promotion or rollback before the shell installer can run."
+    else
+        fail_install \
+            "SelfUpdater recovery state could not be safely inspected before installation."
+    fi
+    return 1
+}
+
 locked_install_dispatch() {
     local install_dir=$1
     local action=$2
@@ -964,6 +1024,7 @@ locked_install_dispatch() {
             "A SelfUpdater transaction needs recovery before the shell installer can run."
         return 1
     fi
+    reject_pending_self_update_candidate "$install_dir" || return 1
 
     case "$action" in
         install_bundle_atomically_locked|install_lock_noop|\
@@ -1042,9 +1103,8 @@ with_app_install_lock() {
         my $child;
         my $pending_signal;
         my $terminate_deadline;
-        my $kill_deadline;
+        my $kill_sent = 0;
         my $terminate_grace = 1.0;
-        my $kill_settle_grace = 1.0;
 
         END {
             # The shell normally removes this generated dispatcher. The lock
@@ -1180,10 +1240,10 @@ with_app_install_lock() {
 
             my $now = time();
             if (defined($terminate_deadline)
-                && !defined($kill_deadline)
+                && !$kill_sent
                 && $now >= $terminate_deadline) {
                 signal_locked_body("KILL");
-                $kill_deadline = $now + $kill_settle_grace;
+                $kill_sent = 1;
             }
 
             if (!$reaped) {
@@ -1205,10 +1265,10 @@ with_app_install_lock() {
             }
             if (defined($terminate_deadline)) {
                 last if $reaped && !locked_body_group_is_alive();
-                # SIGKILL cannot interrupt an uninterruptible kernel wait.
-                # Release the owner locks after a bounded settle period rather
-                # than leaving every future installer blocked indefinitely.
-                last if defined($kill_deadline) && time() >= $kill_deadline;
+                # Never release exclusion while any descendant can still
+                # resume mutation. TERM gets a bounded grace period; KILL is
+                # then sent once and the lock owner remains until the kernel
+                # reports both the direct child and its process group gone.
             }
             sleep(0.05);
         }

@@ -13,6 +13,7 @@ actor SandboxHostOutboundWriter {
     private let encoder: JSONEncoder
     private var nextSequence: UInt64 = 1
     private var pending: PendingWrite?
+    private var closed = false
 
     init(
         transport: any SandboxHostControlTransport,
@@ -43,6 +44,9 @@ actor SandboxHostOutboundWriter {
         type: SandboxControlMessageType,
         payload: Payload
     ) async throws where Payload: Codable & Equatable & Sendable {
+        guard !closed else {
+            throw SandboxHostControlTransportError.disconnected
+        }
         let envelope = SandboxControlEnvelope(
             type: type,
             hostID: hostID,
@@ -80,6 +84,10 @@ actor SandboxHostOutboundWriter {
     }
 
     func close() async {
+        guard !closed else {
+            return
+        }
+        closed = true
         pending?.task.cancel()
         pending = nil
         await transport.close()

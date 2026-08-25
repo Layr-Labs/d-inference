@@ -188,6 +188,8 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
     private var outbound: [String] = []
     private var receives = 0
     private var closes = 0
+    private var responseSeen = false
+    private var responseWaiter: CheckedContinuation<String, Error>?
 
     init(inboundMode: InboundMode) {
         self.inboundMode = inboundMode
@@ -199,11 +201,28 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
 
     func send(text: String) async throws {
         outbound.append(text)
+        if let data = text.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+           object["type"] as? String
+                == SandboxControlMessageType.commandState.rawValue
+        {
+            responseSeen = true
+            responseWaiter?.resume(
+                throwing: SandboxHostControlTransportError.disconnected
+            )
+            responseWaiter = nil
+        }
     }
 
     func receiveText() async throws -> String {
         guard receives == 0 else {
-            throw SandboxHostControlTransportError.disconnected
+            if responseSeen {
+                throw SandboxHostControlTransportError.disconnected
+            }
+            return try await withCheckedThrowingContinuation {
+                responseWaiter = $0
+            }
         }
         receives += 1
         let registration = try JSONDecoder().decode(
@@ -252,6 +271,10 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
 
     func close() async {
         closes += 1
+        responseWaiter?.resume(
+            throwing: SandboxHostControlTransportError.disconnected
+        )
+        responseWaiter = nil
     }
 
     func connectedRequest() -> URLRequest? {

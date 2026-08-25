@@ -544,6 +544,14 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
 
+          # Packaged post-sign smoke: the release-candidate evaluator must be
+          # exposed by the exact signed main executable. This checks command
+          # wiring/help only; CI never downloads or runs model weights.
+          SIGNED_BENCHMARK_HELP=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$APP/Contents/MacOS/$CLI_NAME" benchmark --help)
+          printf '%s\n' "$SIGNED_BENCHMARK_HELP" \
+            | grep -F -- '--scheduler-prefill-decision'
+
           # Persistent Secure Enclave key requires keychain-access-groups
           # bound to the team-scoped access group. If the entitlement is
           # missing, providers fall back to ephemeral SE keys and PR #146

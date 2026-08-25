@@ -75,6 +75,15 @@ type kvBackendAttribution struct {
 	Fallback string
 }
 
+// dispatchSlotAttribution is one immutable provider/model/slot-backend
+// observation. The ordinary serving latch and sticky terminal snapshots use
+// the same shape so terminal precedence never needs parallel provider fields.
+type dispatchSlotAttribution struct {
+	providerID string
+	model      string
+	backend    kvBackendAttribution
+}
+
 // newUnknownKVBackendAttribution is the honest "no serving slot" pair: unknown
 // on both dimensions, never a real backend and never `none`.
 func newUnknownKVBackendAttribution() kvBackendAttribution {
@@ -116,6 +125,29 @@ func (s *Server) providerKVBackendAttribution(p *registry.Provider, model string
 	}
 	backend, fallback := p.SlotKVBackendTags(model)
 	return kvBackendAttribution{Backend: backend, Fallback: fallback}
+}
+
+func (d *dispatchState) providerSlotAttribution(
+	provider *registry.Provider,
+	model string,
+) dispatchSlotAttribution {
+	if provider == nil || provider.ID == "" {
+		return dispatchSlotAttribution{
+			model:   model,
+			backend: newUnknownKVBackendAttribution(),
+		}
+	}
+	if d.servedKVSlot.providerID == provider.ID &&
+		d.servedKVSlot.model == model {
+		// Preserve the dispatch-time observation if the failing slot vanished
+		// from a later heartbeat during teardown.
+		return d.servedKVSlot
+	}
+	return dispatchSlotAttribution{
+		providerID: provider.ID,
+		model:      model,
+		backend:    d.s.providerKVBackendAttribution(provider, model),
+	}
 }
 
 // emitRequestBackendLatency records the per-request TTFT and decode-throughput
@@ -173,15 +205,13 @@ func (d *dispatchState) noteServingSlot() {
 // re-latch sites maintain: the latch always names the slot whose failure would
 // be the terminal one — the last slot still racing.
 //
-// EXCEPTION — a latched deterministic verdict freezes the latch. Once
-// shouldStopFailover/latchDeterministicLoser has latched d.unservable or
-// d.terminalClientError, the terminal response IS that verdict (the 4xx/422/
-// 429 of the slot that produced it), regardless of what a still-racing backup
-// does next. Re-latching to the backup would book the PRIMARY's controlling
-// 4xx under the backup's backend. latchTerminalAttribution pins the latch to
-// the verdict slot at the moment the verdict latches; this guard keeps it
-// there. A backup that goes on to WIN is unaffected: commit-path reads go
-// through the live d.pr (see kvBackendAttribution), not this latch.
+// EXCEPTION — a latched terminal verdict freezes the ordinary latch. This
+// includes deterministic client/unservable verdicts and a genuine fault
+// snapshot. Re-latching to a later neutral racer would book the controlling
+// terminal under the wrong backend. Genuine faults carry their own immutable
+// dispatchSlotAttribution and may replace one another atomically. A backup that
+// goes on to WIN is unaffected: commit-path reads go through the live d.pr (see
+// kvBackendAttribution), not the terminal snapshot.
 func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
 	if pr == nil || pr.ProviderID == "" {
 		return
@@ -189,15 +219,18 @@ func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
 	if d.attributionLatchFrozen() {
 		return
 	}
-	d.servedKVBackend = d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
-	d.servedKVProviderID, d.servedKVModel = pr.ProviderID, pr.Model
+	d.servedKVSlot = dispatchSlotAttribution{
+		providerID: pr.ProviderID,
+		model:      pr.Model,
+		backend:    d.s.kvBackendAttribution(pr.ProviderID, pr.Model),
+	}
 }
 
-// attributionLatchFrozen reports whether a deterministic terminal verdict has
-// latched — from that point the outcome attribution belongs to the slot whose
-// verdict controls the terminal response, and must not follow later racers.
+// attributionLatchFrozen reports whether a terminal verdict has latched — from
+// that point the outcome attribution belongs to the controlling verdict and
+// must not follow later neutral racers.
 func (d *dispatchState) attributionLatchFrozen() bool {
-	return d.unservable || d.terminalClientError
+	return d.genuineFault != nil || d.unservable || d.terminalClientError
 }
 
 // latchTerminalAttribution pins the outcome attribution to the provider whose
@@ -208,8 +241,7 @@ func (d *dispatchState) latchTerminalAttribution(provider *registry.Provider) {
 	if provider == nil || provider.ID == "" {
 		return
 	}
-	d.servedKVBackend = d.s.providerKVBackendAttribution(provider, d.model)
-	d.servedKVProviderID, d.servedKVModel = provider.ID, d.model
+	d.servedKVSlot = d.providerSlotAttribution(provider, d.model)
 }
 
 // kvBackendAttribution is the KV-backend metric pair for this dispatch. It
@@ -233,19 +265,45 @@ func (d *dispatchState) latchTerminalAttribution(provider *registry.Provider) {
 // latch survives this save while the live return value stays truthful.
 func (d *dispatchState) kvBackendAttribution() kvBackendAttribution {
 	if pr := d.pr; pr != nil && pr.ProviderID != "" {
-		if pr.ProviderID == d.servedKVProviderID && pr.Model == d.servedKVModel {
-			return d.servedKVBackend
+		if d.genuineFault != nil {
+			// A sticky speculative loser must not contaminate a survivor that
+			// produces content. Live content always names its own serving slot;
+			// the terminal snapshot is consulted only after no live winner remains.
+			return d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
+		}
+		if pr.ProviderID == d.servedKVSlot.providerID &&
+			pr.Model == d.servedKVSlot.model {
+			return d.servedKVSlot.backend
 		}
 		att := d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
 		if !d.attributionLatchFrozen() {
-			d.servedKVBackend = att
-			d.servedKVProviderID, d.servedKVModel = pr.ProviderID, pr.Model
+			d.servedKVSlot = dispatchSlotAttribution{
+				providerID: pr.ProviderID,
+				model:      pr.Model,
+				backend:    att,
+			}
 		}
 		return att
 	}
-	if d.servedKVProviderID == "" {
+	if d.servedKVSlot.providerID == "" {
 		// Never latched: no attempt ever reached a slot.
 		return newUnknownKVBackendAttribution()
 	}
-	return d.servedKVBackend
+	return d.servedKVSlot.backend
+}
+
+// exhaustedKVBackendAttribution applies the same terminal precedence as the
+// exhausted status resolver. A dominant sticky fault owns an immutable slot
+// observation captured with that fault; every other terminal uses the ordinary
+// serving latch. Keeping this decision beside the status-selected snapshot
+// prevents final status and request-outcome attribution from naming different
+// attempts.
+func (d *dispatchState) exhaustedKVBackendAttribution(
+	failure dispatchTerminalFailure,
+	stickyFault bool,
+) kvBackendAttribution {
+	if stickyFault {
+		return failure.attribution.backend
+	}
+	return d.kvBackendAttribution()
 }

@@ -240,5 +240,8 @@ public enum ProviderCore {
     // 0.8.10 passes retained Gemma latch variables before exec in installer,
     // self-update, and paged-preflight runtime-smoke children so eager MLX
     // initialization cannot latch safe R1 off before validation runs.
-    public static let version = "0.8.10"
+    // 0.8.11 conserves the first-content deadline end to end, rejects
+    // unreachable work before the client clock expires, and defaults CBv2
+    // partial-prefill scheduling to FCFS with an explicit cap-zero rollback.
+    public static let version = "0.8.11"
 }

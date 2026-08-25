@@ -31,11 +31,18 @@ import (
 // setupTTFTFailoverServer mirrors setupFailoverServer but returns the *Server
 // so the test can flip the hard TTFT gate (the failover harness hides it).
 func setupTTFTFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, *Server, *httptest.Server) {
+	return setupTTFTFailoverServerWithConfig(t, ServerConfig{})
+}
+
+func setupTTFTFailoverServerWithConfig(
+	t *testing.T,
+	cfg ServerConfig,
+) (*registry.Registry, *store.MemoryStore, *Server, *httptest.Server) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, cfg, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -204,7 +211,7 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	refunds := 0
-	deadline := ttftDeadline(6)
+	deadline := srv.FirstContentDeadline(6)
 	d := &dispatchState{
 		s:                     srv,
 		w:                     w,
@@ -266,12 +273,12 @@ func TestTTFTTerminalRejectKillSwitch(t *testing.T) {
 	}
 }
 
-// TestDispatch_MidLadderTTFTReject_KillSwitchRestoresLooping proves the kill
-// switch end-to-end: with EIGENINFERENCE_TTFT_TERMINAL_REJECT=false the
-// mid-ladder rejection falls back to the legacy retry loop, which re-runs the
-// doomed scan to maxDispatchAttempts and returns the dispatch-exhausted 429
-// with one ttft_429 row per futile attempt.
-func TestDispatch_MidLadderTTFTReject_KillSwitchRestoresLooping(t *testing.T) {
+// TestDispatch_MidLadderTTFTReject_KillSwitchLoopsButRetainsFault proves the
+// kill switch end-to-end: with EIGENINFERENCE_TTFT_TERMINAL_REJECT=false the
+// mid-ladder rejection falls back to the legacy retry loop and re-runs the
+// doomed scan to maxDispatchAttempts. The per-attempt TTFT rows remain, but a
+// genuine provider 500 observed in the same ladder owns the final response.
+func TestDispatch_MidLadderTTFTReject_KillSwitchLoopsButRetainsFault(t *testing.T) {
 	t.Setenv(envTTFTTerminalReject, "false")
 	reg, st, srv, ts := setupTTFTFailoverServer(t)
 	srv.SetTTFTHardReject(true)
@@ -296,11 +303,11 @@ func TestDispatch_MidLadderTTFTReject_KillSwitchRestoresLooping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chat request: %v", err)
 	}
-	if status != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429; body = %s", status, body)
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want genuine provider 500; body = %s", status, body)
 	}
-	if !strings.Contains(body, "attempt(s)") {
-		t.Errorf("kill switch must restore the legacy dispatch-exhausted response; body = %s", body)
+	if !strings.Contains(body, "attempt(s)") || !strings.Contains(body, "provider_error") {
+		t.Errorf("kill-switch ladder must surface the retained provider fault; body = %s", body)
 	}
 	if got := settleTTFT429Routes(t, st); got <= 1 {
 		t.Errorf("ttft_429 route rows = %d, want the legacy multi-attempt ladder (> 1)", got)

@@ -127,6 +127,9 @@ func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
 	// Send provider on the response channel in a goroutine.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
+		if !req.offerAssignment(provider, nil) {
+			return
+		}
 		req.ResponseCh <- provider
 	}()
 

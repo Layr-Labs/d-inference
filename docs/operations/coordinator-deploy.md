@@ -31,7 +31,7 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | MicroMDM | Port 9002, same container, **state on the persistent disk** (see below) |
 | Database | AWS RDS PostgreSQL (external, `EIGENINFERENCE_DATABASE_URL`) |
 | Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), prompt artifacts, and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. Any old `step-ca/` tree is retired migration residue; no step-ca process is running and it must not be restored as an active dependency. |
-| Images | Cloud Build trigger builds on every master push → `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` |
+| Candidate image | Active deploys require `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:${CANDIDATE_COMMIT}`, tagged by the full 40-character commit SHA; a missing full-commit tag blocks deployment |
 | Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves custom values, exact-migrates only explicitly retired defaults, fails if the observed live tuning set is incomplete, and adds absent release defaults. |
 | Fallback | The previous container is kept stopped for forensics. Restart it only when its immutable image digest is on the reviewed marker-safe allowlist; pre-`backfill_withdrawable_balance_v1` images are never rollback targets. |
 
@@ -40,9 +40,13 @@ The live host still has stale Caddy `/acme/*` routing and lacks
 reload Caddy during a coordinator swap because that reconnects the
 provider fleet; the static certificate and loaded config remain in place.
 
-## v0.7.13 release order
+## Historical v0.7.13 release order (non-executable)
 
-Shipping code and activating optimizations are separate operations:
+This records the v0.7.13 rollout sequence for incident archaeology. Do not use
+its literal version as a current release input; executable procedures below
+require a validated `CANDIDATE_VERSION`.
+
+Shipping code and activating optimizations were separate operations:
 
 1. Confirm the deployed coordinator already exposes
    `providers.unreported_loaded_models`, `lifecycle.donation_outcomes`, and
@@ -250,6 +254,31 @@ cache state is trustworthy) before investigating or changing code.
 
 ## Steps — coordinator deploy (prod)
 
+> **Human-only production mutation.** Agents may perform only remote build
+> metadata and health reads. Every VM state change—including `docker pull`,
+> env refresh, drain, stop/remove, rollback, and `docker run`—is human-only.
+
+Set and validate the reviewed candidate identity in the local operator shell.
+The version is unprefixed; the commit is exactly 40 lowercase hexadecimal
+characters. A same-version image built from any other commit is not the
+candidate:
+
+```bash
+: "${CANDIDATE_VERSION:?set CANDIDATE_VERSION to the unprefixed X.Y.Z candidate}"
+: "${CANDIDATE_COMMIT:?set CANDIDATE_COMMIT to the reviewed 40-character commit}"
+if [[ ! "$CANDIDATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid CANDIDATE_VERSION: $CANDIDATE_VERSION (want X.Y.Z)" >&2
+  exit 2
+fi
+if [[ ! "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "invalid CANDIDATE_COMMIT: want exactly 40 lowercase hex characters" >&2
+  exit 2
+fi
+readonly CANDIDATE_VERSION CANDIDATE_COMMIT
+CANDIDATE_IMAGE="us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:${CANDIDATE_COMMIT}"
+readonly CANDIDATE_IMAGE
+```
+
 ### 1. Confirm the image is built
 
 Cloud Build builds every master push automatically. Before trusting that image,
@@ -259,19 +288,50 @@ inline Docker step ([#554](https://github.com/Layr-Labs/d-inference/issues/554))
 and blocks the coordinator deploy:
 
 ```bash
-gcloud builds triggers describe prod-build \
+if ! gcloud builds triggers describe prod-build \
   --project=darkbloom-mainnet \
-  --format='value(filename)' | grep -Fx 'deploy/gcp/cloudbuild-prod.yaml'
+  --format='value(filename)' | grep -Fx 'deploy/gcp/cloudbuild-prod.yaml'; then
+  echo "production trigger does not use the reviewed build config" >&2
+  exit 2
+fi
 ```
 
-Then confirm your commit's image exists:
+Then require a successful build for that exact reviewed commit:
 
 ```bash
-gcloud builds list --project darkbloom-mainnet --limit 5 \
-  --format 'table(createTime.date(tz=LOCAL),substitutions.SHORT_SHA,status)'
+if ! git fetch origin master; then
+  echo "failed to refresh origin/master" >&2
+  exit 2
+fi
+if [[ "$(git rev-parse origin/master)" != "$CANDIDATE_COMMIT" ]]; then
+  echo "origin/master does not equal CANDIDATE_COMMIT" >&2
+  exit 2
+fi
+BUILT_COMMIT=$(gcloud builds list \
+  --project darkbloom-mainnet \
+  --filter="substitutions.COMMIT_SHA=$CANDIDATE_COMMIT AND status=SUCCESS" \
+  --limit=1 \
+  --format='value(substitutions.COMMIT_SHA)')
+if [[ "$BUILT_COMMIT" != "$CANDIDATE_COMMIT" ]]; then
+  echo "no successful production build for CANDIDATE_COMMIT" >&2
+  exit 2
+fi
+CANDIDATE_DIGEST=$(gcloud artifacts docker images describe "$CANDIDATE_IMAGE" \
+  --project=darkbloom-mainnet \
+  --format='value(image_summary.digest)')
+if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "full-commit CANDIDATE_IMAGE is unavailable; do not fall back to a short tag" >&2
+  exit 2
+fi
+readonly CANDIDATE_DIGEST
+printf 'candidate image=%s digest=%s\n' "$CANDIDATE_IMAGE" "$CANDIDATE_DIGEST"
 ```
 
-The image tag is the 7-char short SHA of the master commit.
+The candidate image tag is the full reviewed commit, as captured in
+`CANDIDATE_IMAGE`; build success alone is insufficient. If the checked-in build
+pipeline has not published that full-commit tag, stop and fix the publication
+path rather than substituting a short tag or another image carrying the same
+version.
 
 ### 2. Pre-swap checks
 
@@ -321,25 +381,68 @@ psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(qu
 psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted = false;"
 ```
 
-Then, on the VM: pull the image and snapshot current health.
+Then, on the VM, set the same reviewed version, commit, and `CANDIDATE_DIGEST`
+reported by step 1 in the shell that will perform the swap and verification.
+Local variables do not cross SSH, so repeat every validation and derive the one
+candidate image again.
 
 ```bash
-sudo docker pull us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
-curl -s localhost:8080/health   # note the provider count for post-swap comparison
-curl -s localhost:8080/v1/cache/status | jq -S \
+: "${CANDIDATE_VERSION:?set CANDIDATE_VERSION to the unprefixed X.Y.Z candidate}"
+: "${CANDIDATE_COMMIT:?set CANDIDATE_COMMIT to the reviewed 40-character commit}"
+: "${CANDIDATE_DIGEST:?set CANDIDATE_DIGEST to step 1's sha256 digest}"
+if [[ ! "$CANDIDATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid CANDIDATE_VERSION: $CANDIDATE_VERSION (want X.Y.Z)" >&2
+  exit 2
+fi
+if [[ ! "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "invalid CANDIDATE_COMMIT: want exactly 40 lowercase hex characters" >&2
+  exit 2
+fi
+if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "invalid CANDIDATE_DIGEST: want sha256 plus 64 lowercase hex characters" >&2
+  exit 2
+fi
+readonly CANDIDATE_VERSION CANDIDATE_COMMIT CANDIDATE_DIGEST
+CANDIDATE_IMAGE="us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:${CANDIDATE_COMMIT}"
+readonly CANDIDATE_IMAGE
+if ! sudo docker pull "$CANDIDATE_IMAGE"; then
+  echo "full-commit candidate pull failed; cached images are not deployable" >&2
+  exit 2
+fi
+PULLED_REPO_DIGESTS=$(sudo docker image inspect "$CANDIDATE_IMAGE" \
+  --format '{{json .RepoDigests}}')
+EXPECTED_REPO_DIGEST="${CANDIDATE_IMAGE%:*}@${CANDIDATE_DIGEST}"
+if ! printf '%s' "$PULLED_REPO_DIGESTS" |
+  jq -e --arg want "$EXPECTED_REPO_DIGEST" 'index($want) != null' >/dev/null; then
+  echo "pulled CANDIDATE_IMAGE does not match step 1's immutable digest" >&2
+  exit 2
+fi
+readonly EXPECTED_REPO_DIGEST
+printf 'candidate image=%s digest=%s\n' "$CANDIDATE_IMAGE" "$EXPECTED_REPO_DIGEST"
+if ! curl -fsS localhost:8080/health; then
+  echo "current coordinator health is unavailable" >&2
+  exit 2
+fi
+if ! curl -fsS localhost:8080/v1/cache/status | jq -S \
   '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}' \
-  > /tmp/darkbloom-cache-controls.before.json
-sudo sh -c 'umask 077
+  > /tmp/darkbloom-cache-controls.before.json; then
+  echo "failed to capture pre-swap cache controls" >&2
+  exit 2
+fi
+if ! sudo sh -c 'umask 077
   awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ ||
              $1 == "EIGENINFERENCE_CACHE_MASTER_KEY" { print }'\'' \
     /etc/d-inference/env |
     LC_ALL=C sort |
     sha256sum |
     awk '\''{ print $1 }'\'' \
-    > /tmp/darkbloom-cache-env.pre-refresh.sha256'
+    > /tmp/darkbloom-cache-env.pre-refresh.sha256'; then
+  echo "failed to capture pre-refresh cache environment" >&2
+  exit 2
+fi
 ```
 
-### 3. Env changes (if any)
+### 3. Refresh env and capture rollback
 
 The current host was observed with `/etc/d-inference` mounted as tmpfs, so most
 backups and the live file would disappear on reboot. An operator with explicit
@@ -347,7 +450,7 @@ human approval must migrate it to the boot disk once before using the refresh
 script:
 
 ```bash
-# Human operator or explicitly human-approved agent only. Preserve ownership and mode.
+# Human operator only. Preserve ownership and mode.
 sudo install -d -m 0700 /var/lib/darkbloom-env
 sudo cp -p /etc/d-inference/env /var/lib/darkbloom-env/env
 sudo umount /etc/d-inference
@@ -368,33 +471,79 @@ sudo install -m 0644 deploy/gcp/prod/darkbloom-env-refresh.service \
 sudo systemctl daemon-reload
 sudo systemctl enable darkbloom-env-refresh.service
 
-sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
+if ! sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
   DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
-  /usr/local/sbin/darkbloom-refresh-env --check
-sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
+  /usr/local/sbin/darkbloom-refresh-env --check; then
+  echo "production env refresh check failed" >&2
+  exit 2
+fi
+if ! REFRESH_OUTPUT=$(sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
   DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
-  /usr/local/sbin/darkbloom-refresh-env --apply
+  /usr/local/sbin/darkbloom-refresh-env --apply); then
+  echo "production env refresh apply failed" >&2
+  exit 2
+fi
+printf '%s\n' "$REFRESH_OUTPUT"
+PREVIOUS_ENV_BACKUP=${REFRESH_OUTPUT##*backup=}
+if [[ ! "$PREVIOUS_ENV_BACKUP" =~ ^/etc/d-inference/env\.bak\.[0-9]{8}T[0-9]{6}Z$ ]]; then
+  echo "refresh did not return a validated env backup path" >&2
+  exit 2
+fi
+if ! sudo test -f "$PREVIOUS_ENV_BACKUP" || sudo test -L "$PREVIOUS_ENV_BACKUP" ||
+   [[ "$(sudo stat -c '%U:%G:%a' "$PREVIOUS_ENV_BACKUP")" != "root:root:600" ]]; then
+  echo "env backup is not a root-owned 0600 regular file" >&2
+  exit 2
+fi
+PREVIOUS_ENV_BACKUP_SHA256=$(sudo sha256sum "$PREVIOUS_ENV_BACKUP" | awk '{print $1}')
+if [[ ! "$PREVIOUS_ENV_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "env backup checksum capture failed" >&2
+  exit 2
+fi
+readonly PREVIOUS_ENV_BACKUP PREVIOUS_ENV_BACKUP_SHA256
 
 # Verify every non-secret rollout control. Custom production values are
 # authoritative; do not proceed if the refresh changed an approved value.
+for key in \
+  EIGENINFERENCE_CACHE_ROUTING_MODE \
+  EIGENINFERENCE_CACHE_ROUTING_PERCENT \
+  EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS \
+  EIGENINFERENCE_PROMPT_SIDECAR_ENABLED; do
+  count=$(sudo awk -F= -v key="$key" \
+    '$1 == key && length($2) > 0 { n++ } END { print n + 0 }' \
+    /etc/d-inference/env)
+  if [[ "$count" != "1" ]]; then
+    echo "$key must appear exactly once with a non-empty value" >&2
+    exit 2
+  fi
+done
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
-# 10s races OpenRouter's silent-upstream cancel and reproduces error-0.
-sudo grep -Fx 'EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL=5s' \
-  /etc/d-inference/env
+# No bytes are emitted before first content. Keep the production absolute-clock
+# base at 9s; the coordinator adds 1ms per estimated prompt token.
+if ! sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' \
+  /etc/d-inference/env; then
+  echo "production first-content deadline is not the required 9000ms" >&2
+  exit 2
+fi
 # Snapshot every cache-routing value after refresh and immediately before the
 # swap. This provider release permits no cache-control edit, so require equality
 # with the pre-refresh digest. Only digests are emitted; the key is never printed.
-sudo sh -c 'umask 077
+if ! sudo sh -c 'umask 077
   awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ ||
              $1 == "EIGENINFERENCE_CACHE_MASTER_KEY" { print }'\'' \
     /etc/d-inference/env |
     LC_ALL=C sort |
     sha256sum |
     awk '\''{ print $1 }'\'' \
-    > /tmp/darkbloom-cache-env.pre-swap.sha256'
-sudo cmp /tmp/darkbloom-cache-env.pre-refresh.sha256 \
-  /tmp/darkbloom-cache-env.pre-swap.sha256
+    > /tmp/darkbloom-cache-env.pre-swap.sha256'; then
+  echo "failed to capture pre-swap cache environment" >&2
+  exit 2
+fi
+if ! sudo cmp /tmp/darkbloom-cache-env.pre-refresh.sha256 \
+  /tmp/darkbloom-cache-env.pre-swap.sha256; then
+  echo "cache-routing environment changed during refresh" >&2
+  exit 2
+fi
 ```
 
 The check prints only safe key names, never existing values. The apply step
@@ -429,59 +578,156 @@ Rules learned the hard way:
   ([`coordinator/api/inference_admission.go:493-591`](../../coordinator/api/inference_admission.go#L493-L591)).
 - **`error-0` is a client-side cancel, not a status we emit.** OpenRouter drops
   the connection at ~10s when no response bytes have arrived, which Caddy logs
-  as status 0; every production sample terminated at 9.99–10.4s. The SSE prefill
-  keepalive only starts ticking after dispatch, so a 10s interval could never
-  fire before that deadline. 5s is required, not merely preferred
-  ([`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)).
+  as status 0; every production sample terminated at 9.99–10.4s. The
+  coordinator intentionally emits no headers or body bytes before the first
+  content-bearing chunk, preserving a real HTTP 429 on pre-content exhaustion.
+  Its request-absolute clock starts at HTTP receipt and is not reset by queueing,
+  provider acceptance, boilerplate, writer handoff, speculation, or failover.
+  Production sets the base to 9000ms and adds 1ms per estimated prompt token
+  ([`coordinator/api/first_token_clock.go`](../../coordinator/api/first_token_clock.go),
+  [`coordinator/api/dispatch_terminal_write.go`](../../coordinator/api/dispatch_terminal_write.go)).
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
   boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
   falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively
   down (2026-07-04 incident: ~6 minutes of near-zero traffic).
 
+Before executing the human-only swap, set `APPROVED_PREVIOUS_IMAGE` to the exact
+`sha256:` image ID from the reviewed marker-safe rollback allowlist. The block
+captures the running container's immutable image independently and refuses to
+proceed unless the two IDs match:
+
 ```bash
+: "${APPROVED_PREVIOUS_IMAGE:?set from the reviewed marker-safe rollback allowlist}"
+: "${PREVIOUS_ENV_BACKUP:?run required env refresh before swap}"
+: "${PREVIOUS_ENV_BACKUP_SHA256:?capture env backup checksum before swap}"
+if [[ ! "$APPROVED_PREVIOUS_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "invalid APPROVED_PREVIOUS_IMAGE: want sha256 plus 64 lowercase hex characters" >&2
+  exit 2
+fi
+PREVIOUS_IMAGE=$(sudo docker inspect --format '{{.Image}}' coordinator)
+if [[ ! "$PREVIOUS_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "running coordinator did not resolve to an immutable image ID" >&2
+  exit 2
+fi
+if [[ "$PREVIOUS_IMAGE" != "$APPROVED_PREVIOUS_IMAGE" ]]; then
+  echo "running coordinator image is not the reviewed rollback image" >&2
+  exit 2
+fi
+if ! sudo docker image inspect "$PREVIOUS_IMAGE" \
+  --format 'previous image id={{.Id}} repo digests={{json .RepoDigests}}'; then
+  echo "previous image inspection failed" >&2
+  exit 2
+fi
+readonly PREVIOUS_IMAGE
 FALLBACK=coordinator_fallback_$(date +%Y%m%d-%H%M%S)
-sudo docker rename coordinator $FALLBACK
-sudo docker stop -t 630 $FALLBACK
-sudo docker run -d --name coordinator \
+readonly FALLBACK
+ROLLBACK_STATE=/var/lib/darkbloom-deploy/rollback-state
+if ! sudo install -d -m 0700 /var/lib/darkbloom-deploy ||
+   ! sudo sh -c \
+     'set -eu
+      umask 077
+      tmp=$(mktemp /var/lib/darkbloom-deploy/.rollback-state.XXXXXX)
+      trap '\''rm -f "$tmp"'\'' 0
+      printf "%s\n%s\n%s\n%s\n" "$1" "$2" "$3" "$4" > "$tmp"
+      chown root:root "$tmp"
+      chmod 0600 "$tmp"
+      mv -fT "$tmp" "$5"
+      trap - 0' \
+     sh "$PREVIOUS_IMAGE" "$PREVIOUS_ENV_BACKUP" \
+     "$PREVIOUS_ENV_BACKUP_SHA256" "$FALLBACK" "$ROLLBACK_STATE"; then
+  echo "failed to persist root-only rollback state" >&2
+  exit 2
+fi
+if ! sudo test -f "$ROLLBACK_STATE" || sudo test -L "$ROLLBACK_STATE" ||
+   [[ "$(sudo stat -c '%U:%G:%a' "$ROLLBACK_STATE")" != "root:root:600" ]] ||
+   ! sudo awk 'END { exit NR == 4 ? 0 : 1 }' "$ROLLBACK_STATE"; then
+  echo "persisted rollback state failed post-write validation" >&2
+  exit 2
+fi
+readonly ROLLBACK_STATE
+if ! sudo docker rename coordinator "$FALLBACK"; then
+  echo "failed to rename current coordinator; swap aborted" >&2
+  exit 2
+fi
+if ! sudo docker stop -t 630 "$FALLBACK"; then
+  echo "failed to stop previous coordinator; do not start a second container" >&2
+  exit 2
+fi
+if ! sudo docker run -d --name coordinator \
   --network host \
   --restart unless-stopped \
   --stop-timeout 630 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
-  us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
+  "$CANDIDATE_IMAGE"; then
+  echo "candidate coordinator failed to start; use persisted rollback state" >&2
+  exit 2
+fi
 ```
 
 Startup takes ~15–40 s (MicroMDM init + migrations + listeners). If health does not
 respond after ~60 s, suspect a migration stuck behind a DB lock — re-run the
-`pg_stat_activity` query from step 2 and kill the blocking PID (`select
-pg_terminate_backend(<pid>)`); do **not** restart the container again.
+`pg_stat_activity` query from step 2 and pass the identified blocking PID to
+`pg_terminate_backend`; do **not** restart the container again.
 
 ### 5. Verify
 
 ```bash
 # Health + provider reconnection ramp (fleet reconnects within ~1 min)
-curl -s localhost:8080/health
-# Require the deployed commit/version/date embedded by cloudbuild-prod.yaml.
-curl -s localhost:8080/health | jq -e \
-  '.version == "0.7.13" and
-   (.build_commit | test("^[0-9a-f]{40}$")) and
-   .build_date != "unknown"'
+HEALTH_JSON=$(curl -fsS localhost:8080/health)
+printf '%s\n' "$HEALTH_JSON"
+# Require this container to reference the one candidate image and require the
+# binary's embedded version and full build commit to match both reviewed values.
+RUNNING_IMAGE=$(sudo docker inspect --format '{{.Config.Image}}' coordinator)
+if [[ "$RUNNING_IMAGE" != "$CANDIDATE_IMAGE" ]]; then
+  echo "running container does not reference CANDIDATE_IMAGE" >&2
+  exit 2
+fi
+if ! sudo docker image inspect "$CANDIDATE_IMAGE" --format '{{.Id}}'; then
+  echo "candidate image disappeared after startup" >&2
+  exit 2
+fi
+VERIFY_REPO_DIGESTS=$(sudo docker image inspect "$CANDIDATE_IMAGE" \
+  --format '{{json .RepoDigests}}')
+if ! printf '%s' "$VERIFY_REPO_DIGESTS" |
+  jq -e --arg want "$EXPECTED_REPO_DIGEST" 'index($want) != null' >/dev/null; then
+  echo "candidate image digest changed before verification" >&2
+  exit 2
+fi
+if ! printf '%s' "$HEALTH_JSON" | jq -e \
+  --arg version "$CANDIDATE_VERSION" \
+  --arg commit "$CANDIDATE_COMMIT" \
+  '.version == $version and
+   .build_commit == $commit and
+   .build_date != "unknown"'; then
+  echo "health identity does not match candidate version and commit" >&2
+  exit 2
+fi
 # Cache controls are operator state, not release defaults. Require byte-for-byte
 # preservation across the swap.
-diff -u /tmp/darkbloom-cache-controls.before.json \
+if ! diff -u /tmp/darkbloom-cache-controls.before.json \
   <(curl -s localhost:8080/v1/cache/status | jq -S \
-    '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}')
-sudo sh -c 'umask 077
+    '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}'); then
+  echo "cache controls changed across coordinator swap" >&2
+  exit 2
+fi
+if ! sudo sh -c 'umask 077
   awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ ||
              $1 == "EIGENINFERENCE_CACHE_MASTER_KEY" { print }'\'' \
     /etc/d-inference/env |
     LC_ALL=C sort |
     sha256sum |
     awk '\''{ print $1 }'\'' \
-    > /tmp/darkbloom-cache-env.after.sha256'
-sudo cmp /tmp/darkbloom-cache-env.pre-swap.sha256 \
-  /tmp/darkbloom-cache-env.after.sha256
-curl -s localhost:8080/v1/cache/status | jq -e \
+    > /tmp/darkbloom-cache-env.after.sha256'; then
+  echo "failed to snapshot post-swap cache environment" >&2
+  exit 2
+fi
+if ! sudo cmp /tmp/darkbloom-cache-env.pre-swap.sha256 \
+  /tmp/darkbloom-cache-env.after.sha256; then
+  echo "cache environment changed across coordinator swap" >&2
+  exit 2
+fi
+if ! curl -fsS localhost:8080/v1/cache/status | jq -e \
   '.sidecar.enabled == true and
    .sidecar.ready == true and
    .sidecar.restarts == 0 and
@@ -504,7 +750,10 @@ curl -s localhost:8080/v1/cache/status | jq -e \
    .sidecar.planner.plans.timed_out == 0 and
    .prompt_artifacts.ready > 0 and
    .prompt_artifacts.pending == 0 and
-   .prompt_artifacts.failed == 0'
+   .prompt_artifacts.failed == 0'; then
+  echo "cache status verification failed" >&2
+  exit 2
+fi
 
 # Trust rebuild: hardware upgrades should dominate within ~2 minutes.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded to hardware trust"
@@ -547,18 +796,76 @@ and the marker-preserving existing-schema path is
 [`coordinator/store/postgres_withdrawable_migration.go:182-217`](../../coordinator/store/postgres_withdrawable_migration.go#L182-L217).
 
 ```bash
-# Use an immutable digest from the release's reviewed marker-safe allowlist.
-# A mutable tag, stopped container name, or source-file presence is not proof.
-FALLBACK_IMAGE=us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator@sha256:<reviewed-digest>
-sudo docker stop -t 630 coordinator && sudo docker rm coordinator
-sudo cp /etc/d-inference/env.bak.<timestamp> /etc/d-inference/env
-sudo docker run -d --name coordinator \
+# Reload only the root-owned state persisted before swap. Do not reconstruct an
+# image or env path from a tag, stopped-container name, or timestamp.
+ROLLBACK_STATE=/var/lib/darkbloom-deploy/rollback-state
+if ! sudo test -f "$ROLLBACK_STATE" || sudo test -L "$ROLLBACK_STATE" ||
+   [[ "$(sudo stat -c '%U:%G:%a' "$ROLLBACK_STATE")" != "root:root:600" ]] ||
+   ! sudo awk 'END { exit NR == 4 ? 0 : 1 }' "$ROLLBACK_STATE"; then
+  echo "persisted rollback state is missing or unsafe" >&2
+  exit 2
+fi
+PREVIOUS_IMAGE=$(sudo awk 'NR == 1 { print; exit }' "$ROLLBACK_STATE")
+PREVIOUS_ENV_BACKUP=$(sudo awk 'NR == 2 { print; exit }' "$ROLLBACK_STATE")
+PREVIOUS_ENV_BACKUP_SHA256=$(sudo awk 'NR == 3 { print; exit }' "$ROLLBACK_STATE")
+FALLBACK=$(sudo awk 'NR == 4 { print; exit }' "$ROLLBACK_STATE")
+if [[ ! "$PREVIOUS_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+   [[ ! "$PREVIOUS_ENV_BACKUP" =~ ^/etc/d-inference/env\.bak\.[0-9]{8}T[0-9]{6}Z$ ]] ||
+   [[ ! "$PREVIOUS_ENV_BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+   [[ ! "$FALLBACK" =~ ^coordinator_fallback_[0-9]{8}-[0-9]{6}$ ]]; then
+  echo "invalid captured rollback state" >&2
+  exit 2
+fi
+if ! sudo test -f "$PREVIOUS_ENV_BACKUP" || sudo test -L "$PREVIOUS_ENV_BACKUP" ||
+   [[ "$(sudo stat -c '%U:%G:%a' "$PREVIOUS_ENV_BACKUP")" != "root:root:600" ]] ||
+   [[ "$(sudo sha256sum "$PREVIOUS_ENV_BACKUP" | awk '{print $1}')" != "$PREVIOUS_ENV_BACKUP_SHA256" ]]; then
+  echo "captured environment backup failed integrity checks" >&2
+  exit 2
+fi
+if ! sudo docker image inspect "$PREVIOUS_IMAGE" --format '{{.Id}}'; then
+  echo "captured previous image is unavailable" >&2
+  exit 2
+fi
+if ! CONTAINER_NAMES=$(sudo docker container ls -a --format '{{.Names}}'); then
+  echo "failed to enumerate containers before rollback" >&2
+  exit 2
+fi
+if grep -Fxq "$FALLBACK" <<<"$CONTAINER_NAMES"; then
+  if [[ "$(sudo docker inspect --format '{{.Image}}' "$FALLBACK")" != "$PREVIOUS_IMAGE" ]]; then
+    echo "persisted fallback container does not match PREVIOUS_IMAGE" >&2
+    exit 2
+  fi
+  if ! FALLBACK_RUNNING=$(sudo docker inspect --format '{{.State.Running}}' "$FALLBACK") ||
+     [[ ! "$FALLBACK_RUNNING" =~ ^(true|false)$ ]]; then
+    echo "failed to determine fallback runtime state" >&2
+    exit 2
+  fi
+  if [[ "$FALLBACK_RUNNING" == "true" ]] &&
+     ! sudo docker stop -t 630 "$FALLBACK"; then
+    echo "failed to stop the running fallback; do not start another host-network container" >&2
+    exit 2
+  fi
+fi
+if grep -Fxq coordinator <<<"$CONTAINER_NAMES"; then
+  if ! sudo docker stop -t 630 coordinator || ! sudo docker rm coordinator; then
+    echo "failed to stop and remove candidate coordinator" >&2
+    exit 2
+  fi
+fi
+if ! sudo cp "$PREVIOUS_ENV_BACKUP" /etc/d-inference/env; then
+  echo "failed to restore captured environment backup" >&2
+  exit 2
+fi
+if ! sudo docker run -d --name coordinator \
   --network host \
   --restart unless-stopped \
   --stop-timeout 630 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
-  "$FALLBACK_IMAGE"
+  "$PREVIOUS_IMAGE"; then
+  echo "rollback coordinator failed to start" >&2
+  exit 2
+fi
 ```
 
 Providers reconnect automatically after a marker-safe recovery (the live registry is
@@ -600,7 +907,13 @@ exists** — fixed by registering the release, not by bumping code.
 Before a tag exists, run:
 
 ```bash
-./scripts/check-release-version.sh 0.7.13
+: "${CANDIDATE_VERSION:?set CANDIDATE_VERSION to the unprefixed X.Y.Z candidate}"
+if [[ ! "$CANDIDATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid CANDIDATE_VERSION: $CANDIDATE_VERSION (want X.Y.Z)" >&2
+  exit 2
+fi
+export CANDIDATE_VERSION
+./scripts/check-release-version.sh "$CANDIDATE_VERSION"
 ./scripts/sync-install-embed.sh check
 ```
 
@@ -609,7 +922,7 @@ final archived CLI, and app plist. It does not mutate source to manufacture
 agreement.
 
 ```bash
-git tag -a v0.7.13 -m "Release v0.7.13"
+git tag -a "v$CANDIDATE_VERSION" -m "Release v$CANDIDATE_VERSION"
 git push origin master --tags
 ```
 
@@ -690,7 +1003,7 @@ The two `ALLOW_*` overrides are deliberately *not* boot errors — dev deploymen
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Startup hangs, no health response >60 s | Migration stuck behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<blocking pid>)`. Do NOT restart the container repeatedly — restarts stack migrations (2026-07-03 outage) |
+| Startup hangs, no health response >60 s | Migration stuck behind an RDS relation lock | Use `pg_stat_activity` to identify the blocker, then pass that exact PID to `pg_terminate_backend`. Do NOT restart the container repeatedly — restarts stack migrations (2026-07-03 outage) |
 | Fleet drops to `self_signed`, "device not found in MDM" storms | Container started **without** `-v /mnt/disks/userdata:/mnt/disks/userdata` → blank MicroMDM BoltDB | Stop container, re-run with the mount (2026-07-04 incident) |
 | `/v1/models` empty or providers show `self_signed` | MicroMDM not running or API key mismatch | Verify `MICROMDM_API_KEY` == `EIGENINFERENCE_MDM_API_KEY`; check container logs |
 | Port conflict / crash loop on start | Another host-network container still running | `docker ps`, stop the old one first — one at a time |

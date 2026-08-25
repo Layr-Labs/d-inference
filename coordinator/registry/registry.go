@@ -66,14 +66,30 @@ func BackendUsesSwiftRuntime(backend string) bool {
 	return backend == BackendMLXSwift
 }
 
+// ProviderChunk carries a response chunk with its coordinator ingress time.
+// ReceivedAt retains time.Now's monotonic component, so deadline comparisons
+// remain correct while a chunk waits in a buffered channel.
+type ProviderChunk struct {
+	Data       string
+	ReceivedAt time.Time
+}
+
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
-	Attempt    int
-	ProviderID string
+	Attempt int
+	// FirstContentBudgetMS is the positive remaining first-content budget for
+	// this dispatch attempt. It is an in-memory carrier for the provider wire;
+	// zero means no budget is attached.
+	FirstContentBudgetMS int64
+	// FirstContentDeadline is the request-absolute first-content deadline.
+	// Queue drain and provider-writer dequeue refresh their attempt-local
+	// ceilings from this timestamp; zero preserves legacy relative behavior.
+	FirstContentDeadline time.Time
+	ProviderID           string
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string
@@ -194,7 +210,7 @@ type PendingRequest struct {
 	// successful completion can reconcile any positive actual-output delta.
 	TokenAdmission TokenAdmission
 	AcceptedCh     chan struct{}           // signalled when provider accepts request
-	ChunkCh        chan string             // SSE data chunks
+	ChunkCh        chan ProviderChunk      // SSE data chunks stamped at ingress
 	CompleteCh     chan protocol.UsageInfo // closed after usage sent
 	ErrorCh        chan protocol.InferenceErrorMessage
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
@@ -248,6 +264,21 @@ type PendingRequest struct {
 	// timingMu (written in the dispatch/handler goroutine, read in the provider
 	// read-loop goroutine).
 	contentCommitted bool
+	// Provider ingress arbitration is guarded by one lock so the read loop and
+	// the absolute-deadline timer have a total order. A chunk is marked pending
+	// before decrypt/classification; completion is marked before asynchronous
+	// settlement.
+	firstContentIngressMu     sync.Mutex
+	chunkIngressPendingAt     time.Time
+	firstContentIngressAt     time.Time
+	completionIngressAt       time.Time
+	completionIngressCh       chan struct{}
+	completionIngressSignaled bool
+	emptyCompletionMu         sync.Mutex
+	emptyCompletionEnabled    bool
+	emptyCompletionResolved   bool
+	emptyCompletionAccepted   bool
+	emptyCompletionDecision   chan struct{}
 	// rateOutcomeCounted marks that this request's ONE capacity-503 rate
 	// outcome (capacity_rate.go denominator) was recorded by the commit-time
 	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
@@ -257,6 +288,236 @@ type PendingRequest struct {
 	// the first reject so event ordering cannot distort the five-minute rate.
 	// Guarded by timingMu like contentCommitted (same writer/reader goroutines).
 	rateOutcomeCounted bool
+}
+
+// BeginProviderChunkIngress timestamps a provider chunk under the same lock
+// used by deadline arbitration, before decrypt/classification can yield.
+func (pr *PendingRequest) BeginProviderChunkIngress() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	receivedAt := time.Now()
+	pr.chunkIngressPendingAt = receivedAt
+	pr.firstContentIngressMu.Unlock()
+	return receivedAt
+}
+
+// FinishProviderChunkIngress resolves the pending chunk classification and
+// reports whether it is the attempt's first content-bearing chunk.
+func (pr *PendingRequest) FinishProviderChunkIngress(
+	receivedAt time.Time,
+	contentBearing bool,
+) bool {
+	if pr == nil {
+		return false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	if pr.chunkIngressPendingAt.Equal(receivedAt) {
+		pr.chunkIngressPendingAt = time.Time{}
+	}
+	if !contentBearing || !pr.firstContentIngressAt.IsZero() {
+		return false
+	}
+	pr.firstContentIngressAt = receivedAt
+	return true
+}
+
+func (pr *PendingRequest) HasFirstContentIngress() bool {
+	if pr == nil {
+		return false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return !pr.firstContentIngressAt.IsZero()
+}
+
+func (pr *PendingRequest) markCompletionIngressLocked(receivedAt time.Time) time.Time {
+	if pr.completionIngressAt.IsZero() {
+		pr.completionIngressAt = receivedAt
+	}
+	if pr.completionIngressCh == nil {
+		pr.completionIngressCh = make(chan struct{})
+	}
+	if !pr.completionIngressSignaled {
+		close(pr.completionIngressCh)
+		pr.completionIngressSignaled = true
+	}
+	return pr.completionIngressAt
+}
+
+// MarkCompletionIngress records a supplied completion-ingress timestamp.
+func (pr *PendingRequest) MarkCompletionIngress(receivedAt time.Time) time.Time {
+	if pr == nil || receivedAt.IsZero() {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.markCompletionIngressLocked(receivedAt)
+}
+
+// MarkCompletionIngressNow timestamps completion under the same lock used by
+// deadline arbitration, eliminating the timestamp-to-publication race.
+func (pr *PendingRequest) MarkCompletionIngressNow() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.markCompletionIngressLocked(time.Now())
+}
+
+func (pr *PendingRequest) CompletionIngressSignal() <-chan struct{} {
+	if pr == nil {
+		return nil
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	if pr.completionIngressCh == nil {
+		pr.completionIngressCh = make(chan struct{})
+	}
+	return pr.completionIngressCh
+}
+
+// CompletionArrivedByFirstContentDeadline reports whether a clean terminal
+// entered before the request-absolute first-content deadline.
+func (pr *PendingRequest) CompletionArrivedByFirstContentDeadline() bool {
+	if pr == nil || pr.FirstContentDeadline.IsZero() {
+		return false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	receivedAt := pr.completionIngressAt
+	return !receivedAt.IsZero() && !receivedAt.After(pr.FirstContentDeadline)
+}
+
+// FirstContentIngressArrivedByDeadline reports whether deadline arbitration
+// must wait for an on-time chunk under classification/delivery or an on-time
+// completion under settlement.
+func (pr *PendingRequest) FirstContentIngressArrivedByDeadline() bool {
+	if pr == nil || pr.FirstContentDeadline.IsZero() {
+		return false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	for _, receivedAt := range []time.Time{
+		pr.chunkIngressPendingAt,
+		pr.firstContentIngressAt,
+		pr.completionIngressAt,
+	} {
+		if !receivedAt.IsZero() && !receivedAt.After(pr.FirstContentDeadline) {
+			return true
+		}
+	}
+	return false
+}
+
+// OnTimeEmptyCompletionIngress returns the ingress time of an on-time clean
+// completion that had no preceding content-bearing chunk.
+func (pr *PendingRequest) OnTimeEmptyCompletionIngress() (time.Time, bool) {
+	if pr == nil || pr.FirstContentDeadline.IsZero() {
+		return time.Time{}, false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	receivedAt := pr.completionIngressAt
+	ok := pr.firstContentIngressAt.IsZero() &&
+		!receivedAt.IsZero() &&
+		!receivedAt.After(pr.FirstContentDeadline)
+	return receivedAt, ok
+}
+
+// ContentIngressAtOrBefore reports whether content is being classified or has
+// been classified with an ingress timestamp no later than cutoff.
+func (pr *PendingRequest) ContentIngressAtOrBefore(cutoff time.Time) bool {
+	if pr == nil || cutoff.IsZero() {
+		return false
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	for _, receivedAt := range []time.Time{
+		pr.chunkIngressPendingAt,
+		pr.firstContentIngressAt,
+	} {
+		if !receivedAt.IsZero() && !receivedAt.After(cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+// EnableSpeculativeEmptyCompletionArbitration prevents an empty completion
+// from settling until the dispatch owner decides which speculative racer won.
+func (pr *PendingRequest) EnableSpeculativeEmptyCompletionArbitration() {
+	if pr == nil {
+		return
+	}
+	pr.emptyCompletionMu.Lock()
+	if !pr.emptyCompletionEnabled {
+		pr.emptyCompletionEnabled = true
+		pr.emptyCompletionDecision = make(chan struct{})
+	}
+	pr.emptyCompletionMu.Unlock()
+}
+
+// ResolveSpeculativeEmptyCompletion releases a waiting completion as the
+// winner (accepted=true) or loser.
+func (pr *PendingRequest) ResolveSpeculativeEmptyCompletion(accepted bool) {
+	if pr == nil {
+		return
+	}
+	pr.emptyCompletionMu.Lock()
+	if pr.emptyCompletionEnabled && !pr.emptyCompletionResolved {
+		pr.emptyCompletionResolved = true
+		pr.emptyCompletionAccepted = accepted
+		close(pr.emptyCompletionDecision)
+	}
+	pr.emptyCompletionMu.Unlock()
+}
+
+// AwaitSpeculativeEmptyCompletionDecision blocks only when speculative
+// arbitration was enabled, and reports whether this attempt may settle.
+func (pr *PendingRequest) AwaitSpeculativeEmptyCompletionDecision() (accepted, waited bool) {
+	if pr == nil {
+		return true, false
+	}
+	pr.emptyCompletionMu.Lock()
+	if !pr.emptyCompletionEnabled {
+		pr.emptyCompletionMu.Unlock()
+		return true, false
+	}
+	decision := pr.emptyCompletionDecision
+	pr.emptyCompletionMu.Unlock()
+	<-decision
+	pr.emptyCompletionMu.Lock()
+	accepted = pr.emptyCompletionAccepted
+	pr.emptyCompletionMu.Unlock()
+	return accepted, true
+}
+
+// RefreshFirstContentBudget updates the wire budget and, when hard TTFT
+// admission is enabled, its scheduler ceiling from the same absolute clock.
+// It returns false after expiry. Positive sub-millisecond remainders are
+// represented as 1ms because zero means "field absent" on the wire.
+func (pr *PendingRequest) RefreshFirstContentBudget(now time.Time) bool {
+	if pr == nil || pr.FirstContentDeadline.IsZero() {
+		return true
+	}
+	remaining := pr.FirstContentDeadline.Sub(now)
+	if remaining <= 0 {
+		pr.FirstContentBudgetMS = 0
+		return false
+	}
+	budgetMS := remaining.Milliseconds()
+	if budgetMS < 1 {
+		budgetMS = 1
+	}
+	pr.FirstContentBudgetMS = budgetMS
+	if pr.MaxTTFTMs > 0 {
+		pr.MaxTTFTMs = float64(budgetMS)
+	}
+	return true
 }
 
 // MarkCacheTerminalTelemetryEmitted claims the single terminal cache-selection
@@ -722,6 +983,28 @@ func (p *Provider) RemovePending(requestID string) *PendingRequest {
 	return pr
 }
 
+// RemovePendingForFirstContentTimeout atomically rechecks provider ingress
+// while holding pending ownership. deferred is true when an on-time event won
+// the deadline race and timeout cleanup must wait for its delivery/settlement.
+func (p *Provider) RemovePendingForFirstContentTimeout(
+	requestID string,
+) (pr *PendingRequest, deferred bool) {
+	p.mu.Lock()
+	pr = p.pendingReqs[requestID]
+	if pr != nil && pr.FirstContentIngressArrivedByDeadline() {
+		p.mu.Unlock()
+		return nil, true
+	}
+	if pr != nil {
+		pr = p.removePendingLocked(requestID)
+	}
+	p.mu.Unlock()
+	if pr != nil && p.registry != nil {
+		p.registry.MarkCacheAttemptTerminal(pr)
+	}
+	return pr, false
+}
+
 // removePendingLocked removes and returns a pending request. Caller must hold p.mu.
 func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
 	pr := p.pendingReqs[requestID]
@@ -734,6 +1017,32 @@ func (p *Provider) GetPending(requestID string) *PendingRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.pendingReqs[requestID]
+}
+
+// BeginPendingChunkIngress atomically resolves pending ownership and publishes
+// the chunk-ingress marker against concurrent RemovePending cleanup.
+func (p *Provider) BeginPendingChunkIngress(requestID string) (*PendingRequest, time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr := p.pendingReqs[requestID]
+	if pr == nil {
+		return nil, time.Time{}
+	}
+	return pr, pr.BeginProviderChunkIngress()
+}
+
+// MarkPendingCompletionIngressNow atomically resolves pending ownership and
+// publishes completion ingress before asynchronous settlement.
+func (p *Provider) MarkPendingCompletionIngressNow(
+	requestID string,
+) (*PendingRequest, time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr := p.pendingReqs[requestID]
+	if pr == nil {
+		return nil, time.Time{}
+	}
+	return pr, pr.MarkCompletionIngressNow()
 }
 
 // SetAttested updates attestation state (thread-safe).

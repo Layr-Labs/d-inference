@@ -178,7 +178,7 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 		ConsumerKey:        "svc-complete",
 		ReservedMicroUSD:   500_000,
 		ServiceReservation: true,
-		ChunkCh:            make(chan string, 1),
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
 		CompleteCh:         make(chan protocol.UsageInfo, 1),
 		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 	}

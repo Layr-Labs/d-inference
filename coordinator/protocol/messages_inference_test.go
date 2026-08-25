@@ -137,6 +137,62 @@ func TestInferenceRequestMarshal(t *testing.T) {
 	}
 }
 
+func TestInferenceRequestFirstContentBudgetIsOptionalOuterAndCompatible(t *testing.T) {
+	msg := InferenceRequestMessage{
+		Type:                 TypeInferenceRequest,
+		RequestID:            "req-budget",
+		FirstContentBudgetMS: 2750,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer map[string]any
+	if err := json.Unmarshal(data, &outer); err != nil {
+		t.Fatal(err)
+	}
+	if got := outer["first_content_budget_ms"]; got != float64(2750) {
+		t.Fatalf("first_content_budget_ms = %#v, want 2750", got)
+	}
+	body, ok := outer["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("body = %#v, want JSON object", outer["body"])
+	}
+	if _, nested := body["first_content_budget_ms"]; nested {
+		t.Fatalf("first_content_budget_ms must be outer wire metadata: %s", data)
+	}
+
+	var decoded InferenceRequestMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.FirstContentBudgetMS != 2750 {
+		t.Fatalf("FirstContentBudgetMS = %d, want 2750", decoded.FirstContentBudgetMS)
+	}
+
+	without, err := json.Marshal(InferenceRequestMessage{
+		Type:      TypeInferenceRequest,
+		RequestID: "req-no-budget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(without, []byte("first_content_budget_ms")) {
+		t.Fatalf("zero budget must be omitted: %s", without)
+	}
+
+	legacyWithUnknown := []byte(
+		`{"type":"inference_request","request_id":"legacy","body":{},"future_outer_field":{"enabled":true}}`,
+	)
+	var legacy InferenceRequestMessage
+	if err := json.Unmarshal(legacyWithUnknown, &legacy); err != nil {
+		t.Fatalf("legacy request with unknown field must decode: %v", err)
+	}
+	if legacy.RequestID != "legacy" || legacy.FirstContentBudgetMS != 0 {
+		t.Fatalf("legacy request decoded incorrectly: %+v", legacy)
+	}
+}
+
 func TestInferenceRequestCacheFieldsAreOptionalAndOuter(t *testing.T) {
 	msg := InferenceRequestMessage{Type: TypeInferenceRequest, RequestID: "req"}
 	without, err := json.Marshal(msg)

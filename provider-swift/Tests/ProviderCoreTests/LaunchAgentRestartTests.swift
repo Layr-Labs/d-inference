@@ -56,7 +56,42 @@ struct LaunchAgentEnvironmentTests {
 
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
-        #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_PREFIX_CACHE": "",
+            EngineV2Factory.maxPartialPrefillsKey: "",
+            PrefillDeadlineMode.environmentKey: "",
+            "UNRELATED_SECRET": "excluded",
+        ])
+        #expect(out.isEmpty)
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: out) == 1)
+        #expect(PrefillDeadlineMode.resolve(environment: out) == .off)
+    }
+
+    @Test func forwardsPrefillOperationalControlsUnchanged() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+            PrefillDeadlineMode.environmentKey: "enforce",
+            "UNRELATED_SECRET": "excluded",
+        ])
+        #expect(out == [
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+            PrefillDeadlineMode.environmentKey: "enforce",
+        ])
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: out) == nil)
+        #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
+    }
+
+    @Test func preservesMalformedNonEmptyControlsForRuntimeFailOpen() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",
+            PrefillDeadlineMode.environmentKey: "invalid",
+        ])
+        #expect(out == [
+            EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",
+            PrefillDeadlineMode.environmentKey: "invalid",
+        ])
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: out) == nil)
+        #expect(PrefillDeadlineMode.resolve(environment: out) == .off)
     }
 
     @Test func forwardsResourceDebugOptOutToDaemon() {
@@ -150,6 +185,43 @@ struct LaunchAgentEnvironmentTests {
 
 @Suite("LaunchAgent service plist")
 struct LaunchAgentServicePlistTests {
+    @Test(
+        "installed service plist retains prefill controls for launchd restarts",
+        arguments: [PrefillDeadlineMode.off, PrefillDeadlineMode.enforce]
+    )
+    func prefillControlsSurviveInstallAndRestart(mode: PrefillDeadlineMode) throws {
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [
+                EngineV2Factory.maxPartialPrefillsKey: "0",
+                PrefillDeadlineMode.environmentKey: mode.rawValue,
+                "UNRELATED_SECRET": "excluded",
+            ]
+        )
+
+        // Installation serializes this dictionary to disk. Both manual and
+        // watchdog restarts kickstart the same provider job, so this persisted
+        // EnvironmentVariables map is the environment used after either path.
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+        let installed = try #require(
+            PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        #expect((installed["EnvironmentVariables"] as? [String: String]) == [
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+            PrefillDeadlineMode.environmentKey: mode.rawValue,
+        ])
+    }
+
     @Test func autoStartsAtLoadAndForwardsAllowlistedEnv() {
         let plist = LaunchAgent.makeServicePlist(
             label: "io.darkbloom.provider",

@@ -187,7 +187,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 		Model:                 model,
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    256,
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -247,7 +247,7 @@ func TestRoutingMetrics_NoProviderEmitsNoProvider(t *testing.T) {
 		RequestID:          "req-noprovider",
 		Model:              model,
 		RequestedMaxTokens: 256,
-		ChunkCh:            make(chan string, 1),
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
 		CompleteCh:         make(chan protocol.UsageInfo, 1),
 		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -299,7 +299,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 		RequestID:          "req-overcap",
 		Model:              model,
 		RequestedMaxTokens: 256,
-		ChunkCh:            make(chan string, 1),
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
 		CompleteCh:         make(chan protocol.UsageInfo, 1),
 		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -508,7 +508,7 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 		Model:                 model,
 		EstimatedPromptTokens: 50,
 		RequestedMaxTokens:    128,
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}

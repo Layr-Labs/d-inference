@@ -151,7 +151,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.10"
+var LatestProviderVersion = "0.8.11"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -236,8 +236,9 @@ type Server struct {
 	binaryHashEnforce bool
 
 	// ttftHardReject controls how the per-request TTFT admission ceiling
-	// (5s+1ms/token) behaves when the best ESTIMATED time-to-first-token exceeds
-	// it. The estimate's prefill term is not provider-measured and runs ~10x
+	// (configured base + 1ms/token) behaves when the best ESTIMATED
+	// time-to-first-token exceeds it. The estimate's prefill term is not
+	// provider-measured and runs ~10x
 	// pessimistic (see resolvedPrefillTPS), which made the legacy hard gate 429
 	// the majority of serveable requests above ~550 prompt tokens. Default false:
 	// the ceiling is a SOFT routing preference — when at least one provider passed
@@ -245,6 +246,12 @@ type Server struct {
 	// provider instead of being rejected. Set true
 	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
 	ttftHardReject bool
+
+	// firstContentDeadlineBase is the fixed term in the request-absolute
+	// first-content budget. It is immutable after startup and instance-owned:
+	// concurrent test servers can exercise production and unit-test postures
+	// without racing on process-global state.
+	firstContentDeadlineBase time.Duration
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator
 	// takes out of public/prefer-owner routing: every matching request is answered
@@ -279,17 +286,6 @@ type Server struct {
 	// to maxDispatchAttempts. Set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to
 	// restore the pre-fix behavior (string-only classifyRejection failover).
 	disableClientErrorStop bool
-
-	// prefillKeepaliveInterval enables SSE keepalives during long prefill:
-	// when > 0, a STREAMING request that has been dispatched but not yet produced
-	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
-	// every interval until the first chunk or a terminal error, so OpenRouter's
-	// fetch timeout does not fire and fail us over mid-prefill. The zero value
-	// disables it; production sets it ON (defaultPrefillKeepaliveInterval, 10s, in
-	// cmd/coordinator). 0 keeps the deferred-commit / invisible-failover behavior.
-	// Set via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration). See
-	// prefill_keepalive.go.
-	prefillKeepaliveInterval time.Duration
 
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
@@ -713,26 +709,31 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	if cfg.MediaFetch != nil {
 		mediaFetchCfg = *cfg.MediaFetch
 	}
+	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
+	if firstContentDeadlineBase <= 0 {
+		firstContentDeadlineBase = defaultFirstContentDeadlineBase
+	}
 
 	s := &Server{
-		registry:             reg,
-		store:                st,
-		ledger:               payments.NewLedger(st),
-		logger:               logger,
-		mux:                  http.NewServeMux(),
-		knownRuntimeManifest: &RuntimeManifest{},
-		metrics:              NewMetrics(),
-		telemetryLimiter:     newTelemetryLimiter(),
-		readCache:            newTTLCache(),
-		geoResolver:          newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:          make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:   newCodeAttestThrottle(),
-		trustReuseCache:      newTrustReuseCache(),
-		settlements:          newSettlementHolder(),
-		zombieCanceller:      newZombieStreamCanceller(),
-		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:        mediafetch.NewResolver(mediaFetchCfg, logger),
+		registry:                 reg,
+		store:                    st,
+		ledger:                   payments.NewLedger(st),
+		logger:                   logger,
+		mux:                      http.NewServeMux(),
+		knownRuntimeManifest:     &RuntimeManifest{},
+		metrics:                  NewMetrics(),
+		telemetryLimiter:         newTelemetryLimiter(),
+		readCache:                newTTLCache(),
+		geoResolver:              newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:              make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:       newCodeAttestThrottle(),
+		trustReuseCache:          newTrustReuseCache(),
+		settlements:              newSettlementHolder(),
+		zombieCanceller:          newZombieStreamCanceller(),
+		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase: firstContentDeadlineBase,
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1163,16 +1164,6 @@ func (s *Server) SetServabilityGate(enabled bool) {
 // to maxDispatchAttempts). Default (false) = stop enabled. Call before serving.
 func (s *Server) SetDisableClientErrorStop(disabled bool) {
 	s.disableClientErrorStop = disabled
-}
-
-// SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.
-// <= 0 disables it. Production enables it by default (see cmd/coordinator). See
-// the prefillKeepaliveInterval field. Call before serving starts.
-func (s *Server) SetPrefillKeepaliveInterval(d time.Duration) {
-	if d < 0 {
-		d = 0
-	}
-	s.prefillKeepaliveInterval = d
 }
 
 // SetLongPromptThreshold configures the estimated-prompt-token count at/above

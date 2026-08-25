@@ -230,12 +230,27 @@ Smart admission also adds reason codes to the rejection ledger (surfaced via
 These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
 value `unservable_429`.
 
-Two env flags tune the behavior:
+The relevant environment controls are:
 
 | Env flag | Type | Default | Effect |
 |---|---|---|---|
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
-| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `5s` (on) | SSE prefill keepalives during long prefill. The first keepalive fires one interval in, safely before OpenRouter's observed ~10s silent-upstream timeout, so only long prefills commit HTTP 200 early. Set `0` to disable ([`coordinator/cmd/coordinator/main.go:60-65`](../../coordinator/cmd/coordinator/main.go#L60-L65), [`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)). |
+| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | milliseconds | `5000` in code; `9000` in production | Sets the fixed term in the live request-absolute first-content budget. The coordinator adds `1ms × estimated_prompt_tokens`; invalid values keep the 5000ms ordinary default. |
+
+Streaming deliberately writes no status, headers, SSE comments, or body bytes
+before the first content-bearing provider chunk. Role-only and lifecycle
+boilerplate stays inside the deferred-commit path, so a pre-content terminal can
+still be returned as a real HTTP 429 instead of an already-committed HTTP 200
+([`coordinator/api/dispatch_terminal_write.go`](../../coordinator/api/dispatch_terminal_write.go),
+[`coordinator/api/consumer.go`](../../coordinator/api/consumer.go)).
+
+The first-content clock is `request received_at + configured base +
+1ms × estimated_prompt_tokens`. It is absolute across queueing, provider-writer
+handoff, speculative dispatch, failover, and accepted/boilerplate events; none of
+those phases resets it. Production binds the 9000ms base to each server instance
+before startup, avoiding mutable process-global deadline state
+([`coordinator/api/first_token_clock.go`](../../coordinator/api/first_token_clock.go),
+[`coordinator/api/server_config.go`](../../coordinator/api/server_config.go)).
 
 Both counters keep the metadata-only, low-cardinality invariant: `request_outcome`
 carries only `model`, `class` and `kv_backend`, and `unservable_reclassified` only

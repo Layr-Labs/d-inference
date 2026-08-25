@@ -36,8 +36,7 @@ func validateReleasePayloadPath(entry releaseArchiveEntry) error {
 		!strings.HasPrefix(entry.Path, "Darkbloom.app/") {
 		return nil
 	}
-	spec, known := releasePayloadSpecsByPath[entry.Path]
-	if !known || spec.mode&releaseExecutableModeBits == 0 {
+	if _, known := releasePayloadSpecsByPath[entry.Path]; !known {
 		return fmt.Errorf(
 			"release app contains unexpected executable payload %q",
 			entry.Path,

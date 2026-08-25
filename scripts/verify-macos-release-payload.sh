@@ -16,12 +16,10 @@ APP=$1
 
 file_mode() {
     local target=$1
-    local mode
-    mode=$(/usr/bin/stat -f '%Lp' "$target" 2>/dev/null || true)
-    if [ -z "$mode" ]; then
-        mode=$(/usr/bin/stat -c '%a' "$target" 2>/dev/null || true)
-    fi
-    printf '%s\n' "$mode"
+    case "$(uname)" in
+        Darwin) /usr/bin/stat -f '%Lp' "$target" ;;
+        *) /usr/bin/stat -c '%a' "$target" ;;
+    esac
 }
 
 require_regular() {

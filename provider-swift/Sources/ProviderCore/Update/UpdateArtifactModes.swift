@@ -33,9 +33,20 @@ struct UpdateArtifactModes: Equatable, Sendable {
     }
 
     func matches(_ record: InstalledReleaseRecord) -> Bool {
-        (record.binaryMode == nil || record.binaryMode == binary)
-            && (record.enclaveMode == nil || record.enclaveMode == enclave)
-            && (record.metallibMode == nil || record.metallibMode == metallib)
+        switch (
+            record.binaryMode,
+            record.enclaveMode,
+            record.metallibMode
+        ) {
+        case (nil, nil, nil):
+            return true
+        case let (.some(binary), .some(enclave), .some(metallib)):
+            return self.binary == binary
+                && self.enclave == enclave
+                && self.metallib == metallib
+        default:
+            return false
+        }
     }
 
     private static func regularFileMode(_ url: URL) throws -> UInt32 {

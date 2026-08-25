@@ -43,6 +43,63 @@ struct ReleaseArchiveDownloadBudget {
     }
 }
 
+final class ReleaseArchiveDownloadCompletion: @unchecked Sendable {
+    typealias Output = (URL, HTTPURLResponse)
+
+    private enum State {
+        case waiting
+        case attached(CheckedContinuation<Output, Error>)
+        case finished(Result<Output, Error>)
+        case resumed
+    }
+
+    private let lock = NSLock()
+    private var state = State.waiting
+
+    func attach(_ continuation: CheckedContinuation<Output, Error>) {
+        lock.lock()
+        switch state {
+        case .waiting:
+            state = .attached(continuation)
+            lock.unlock()
+        case .finished(let result):
+            state = .resumed
+            lock.unlock()
+            resume(continuation, with: result)
+        case .attached, .resumed:
+            lock.unlock()
+            preconditionFailure("release download continuation attached more than once")
+        }
+    }
+
+    func finish(_ result: Result<Output, Error>) {
+        lock.lock()
+        switch state {
+        case .waiting:
+            state = .finished(result)
+            lock.unlock()
+        case .attached(let continuation):
+            state = .resumed
+            lock.unlock()
+            resume(continuation, with: result)
+        case .finished, .resumed:
+            lock.unlock()
+        }
+    }
+
+    private func resume(
+        _ continuation: CheckedContinuation<Output, Error>,
+        with result: Result<Output, Error>
+    ) {
+        switch result {
+        case .success(let download):
+            continuation.resume(returning: download)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+}
+
 enum ReleaseArchiveDownloader {
     static func download(
         from url: URL,
@@ -81,11 +138,7 @@ private final class ReleaseArchiveDownloadDelegate:
     private var response: HTTPURLResponse?
     private var terminalError: Error?
     private var handedOff = false
-
-    private let continuationLock = NSLock()
-    private var continuation:
-        CheckedContinuation<(URL, HTTPURLResponse), Error>?
-    private var resumed = false
+    private let completion = ReleaseArchiveDownloadCompletion()
 
     init(maximumBytes: UInt64) throws {
         var template = Array(
@@ -128,9 +181,7 @@ private final class ReleaseArchiveDownloadDelegate:
         _ continuation:
             CheckedContinuation<(URL, HTTPURLResponse), Error>
     ) {
-        continuationLock.lock()
-        self.continuation = continuation
-        continuationLock.unlock()
+        completion.attach(continuation)
     }
 
     func urlSession(
@@ -197,44 +248,24 @@ private final class ReleaseArchiveDownloadDelegate:
 
         if let terminalError {
             try? FileManager.default.removeItem(at: destination)
-            finish(.failure(terminalError))
+            completion.finish(.failure(terminalError))
             return
         }
         if let error {
             try? FileManager.default.removeItem(at: destination)
-            finish(.failure(error))
+            completion.finish(.failure(error))
             return
         }
         guard let response else {
             try? FileManager.default.removeItem(at: destination)
-            finish(.failure(ReleaseArchiveDownloadError(
+            completion.finish(.failure(ReleaseArchiveDownloadError(
                 message: "release download completed without an HTTP response"
             )))
             return
         }
 
         handedOff = true
-        finish(.success((destination, response)))
-    }
-
-    private func finish(
-        _ result: Result<(URL, HTTPURLResponse), Error>
-    ) {
-        continuationLock.lock()
-        guard !resumed, let continuation else {
-            continuationLock.unlock()
-            return
-        }
-        resumed = true
-        self.continuation = nil
-        continuationLock.unlock()
-
-        switch result {
-        case .success(let download):
-            continuation.resume(returning: download)
-        case .failure(let error):
-            continuation.resume(throwing: error)
-        }
+        completion.finish(.success((destination, response)))
     }
 
     private static func posixError(

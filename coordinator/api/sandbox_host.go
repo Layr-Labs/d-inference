@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/sandboxcontrol"
 	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
@@ -158,9 +158,7 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func sandboxHostResultConflict(err error) bool {
-	return errors.Is(err, store.ErrNotFound) ||
-		errors.Is(err, store.ErrSandboxConflict) ||
-		errors.Is(err, store.ErrSandboxInvalidTransition)
+	return sandboxcontrol.IsStaleHostResult(err)
 }
 
 func sandboxHostCredentials(r *http.Request) (string, string, bool) {

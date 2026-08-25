@@ -79,11 +79,11 @@ func (c *Controller) handleOperationState(
 		payload.OperationID,
 	)
 	if err != nil {
-		return err
+		return staleHostResultError(err)
 	}
 	if operation.SandboxID != sandbox.ID ||
 		operation.Kind != payload.Operation {
-		return store.ErrSandboxConflict
+		return staleHostResultError(store.ErrSandboxConflict)
 	}
 	var leaseExpiresAt *time.Time
 	if operation.Kind == store.SandboxOperationKindRenew &&
@@ -109,7 +109,7 @@ func (c *Controller) handleOperationState(
 		},
 	)
 	if err != nil {
-		return err
+		return staleHostResultError(err)
 	}
 	return c.continueSandboxOperation(ctx, updated, applied)
 }
@@ -174,7 +174,7 @@ func (c *Controller) handleCommandState(
 		},
 	)
 	if err != nil || !command.Terminal() {
-		return err
+		return staleHostResultError(err)
 	}
 	pendingOperations, listErr := c.store.ListPendingSandboxOperationsByHost(
 		ctx,
@@ -221,7 +221,7 @@ func (c *Controller) handleHostFailure(
 			},
 		)
 		if err != nil {
-			return err
+			return staleHostResultError(err)
 		}
 		return c.continueSandboxOperation(ctx, updated, applied)
 	}
@@ -238,7 +238,7 @@ func (c *Controller) handleHostFailure(
 				UpdatedAt:    now,
 			},
 		)
-		return err
+		return staleHostResultError(err)
 	}
 	return nil
 }
@@ -252,17 +252,35 @@ func (c *Controller) authorizeHostScope(
 	if err != nil {
 		return nil, err
 	}
-	if sandbox.HostID != session.HostID() ||
-		sandbox.Generation != scope.Generation {
+	if sandbox.HostID != session.HostID() {
 		return nil, store.ErrSandboxConflict
+	}
+	if sandbox.Generation != scope.Generation {
+		return nil, staleHostResultError(store.ErrSandboxConflict)
 	}
 	if scope.FencingToken != sandbox.FencingToken {
 		// A renewal response is the sole legitimate authority advance. Its
 		// operation transition performs the monotonic-token check.
 		operationAdvance := scope.FencingToken > sandbox.FencingToken
 		if !operationAdvance {
-			return nil, store.ErrSandboxConflict
+			return nil, staleHostResultError(store.ErrSandboxConflict)
 		}
 	}
 	return sandbox, nil
+}
+
+func IsStaleHostResult(err error) bool {
+	return errors.Is(err, ErrStaleHostResult)
+}
+
+func staleHostResultError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, store.ErrNotFound) ||
+		errors.Is(err, store.ErrSandboxConflict) ||
+		errors.Is(err, store.ErrSandboxInvalidTransition) {
+		return fmt.Errorf("%w: %v", ErrStaleHostResult, err)
+	}
+	return err
 }

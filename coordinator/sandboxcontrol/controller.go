@@ -30,6 +30,7 @@ var (
 	ErrHostUnavailable     = errors.New("sandbox host unavailable")
 	ErrSandboxNotReady     = errors.New("sandbox is not ready")
 	ErrIdempotencyConflict = errors.New("sandbox idempotency key payload conflict")
+	ErrStaleHostResult     = errors.New("stale sandbox host result")
 )
 
 type CreateRequest struct {
@@ -291,9 +292,12 @@ func (c *Controller) selectHostLocked(
 		if err != nil {
 			return nil, 0, err
 		}
-		observed := make(map[string]struct{}, len(snapshot.Heartbeat.Leases))
+		observed := make(
+			map[string]protocol.SandboxHostLeaseObservation,
+			len(snapshot.Heartbeat.Leases),
+		)
 		for _, lease := range snapshot.Heartbeat.Leases {
-			observed[lease.Scope.SandboxID] = struct{}{}
+			observed[lease.Scope.SandboxID] = lease
 		}
 		availableCPU := snapshot.Heartbeat.AvailableCPU
 		availableMemory := snapshot.Heartbeat.AvailableMemory
@@ -304,7 +308,8 @@ func (c *Controller) selectHostLocked(
 				sandbox.FencingToken < ^uint64(0) {
 				nextFence = sandbox.FencingToken + 1
 			}
-			if _, alreadyObserved := observed[sandbox.ID]; alreadyObserved {
+			if lease, alreadyObserved := observed[sandbox.ID]; alreadyObserved &&
+				sandboxLeaseMatchesRecord(lease, &sandbox) {
 				continue
 			}
 			usedSlots++
@@ -369,4 +374,19 @@ func sandboxScope(sandbox *store.SandboxRecord) protocol.SandboxScope {
 		Generation:   sandbox.Generation,
 		FencingToken: sandbox.FencingToken,
 	}
+}
+
+func sandboxLeaseMatchesRecord(
+	lease protocol.SandboxHostLeaseObservation,
+	sandbox *store.SandboxRecord,
+) bool {
+	if sandbox == nil ||
+		lease.Scope.SandboxID != sandbox.ID ||
+		lease.Scope.Generation != sandbox.Generation ||
+		lease.Scope.FencingToken != sandbox.FencingToken ||
+		!sandboxResourcesMatchRecord(lease.Resources, sandbox) {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, lease.LeaseExpiresAt)
+	return err == nil && expiresAt.Equal(sandbox.LeaseExpiresAt)
 }

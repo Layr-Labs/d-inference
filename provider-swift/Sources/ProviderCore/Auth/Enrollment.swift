@@ -61,6 +61,8 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     case serialNumberUnavailable
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
+    case invalidProfileResponse(String)
+    case profileResponseTooLarge(maximumBytes: Int)
     case profileWriteFailed(String)
     case profileOpenFailed(String)
     case systemSettingsOpenFailed(String)
@@ -74,6 +76,11 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
             return "Failed to reach coordinator: \(detail)"
         case .coordinatorReturnedHTTP(let status, let body):
             return "Coordinator returned HTTP \(status): \(body)"
+        case .invalidProfileResponse(let detail):
+            return "Coordinator returned an invalid enrollment profile: \(detail)"
+        case .profileResponseTooLarge(let maximumBytes):
+            return "Coordinator returned an enrollment profile larger than the "
+                + "\(maximumBytes)-byte safety limit."
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
         case .profileOpenFailed(let detail):
@@ -122,23 +129,54 @@ public struct EnrollmentResult: Sendable {
 public struct EnrollmentService: Sendable {
     typealias OpenCommand = @Sendable ([String]) throws -> Void
     typealias Pause = @Sendable () async throws -> Void
+    typealias ProfileRequest =
+        @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    typealias EnrollmentStateReader =
+        @Sendable (String) -> MDMEnrollmentState
+    typealias SerialNumberReader = @Sendable () -> String?
 
     private let openCommand: OpenCommand
     private let pauseBeforeOpeningSettings: Pause
+    private let requestProfile: ProfileRequest
+    private let enrollmentStateReader: EnrollmentStateReader
+    private let serialNumberReader: SerialNumberReader
+    private let profileDirectory: URL
 
     public init() {
         openCommand = Self.runOpen
         pauseBeforeOpeningSettings = {
             try await Task.sleep(for: .seconds(1))
         }
+        requestProfile = { request in
+            try await URLSession.shared.data(for: request)
+        }
+        enrollmentStateReader = { coordinatorURL in
+            checkMDMEnrollment(coordinatorURL: coordinatorURL)
+        }
+        serialNumberReader = macHardwareSerialNumber
+        profileDirectory = FileManager.default.temporaryDirectory
     }
 
     init(
         openCommand: @escaping OpenCommand,
-        pauseBeforeOpeningSettings: @escaping Pause = {}
+        pauseBeforeOpeningSettings: @escaping Pause = {},
+        requestProfile: @escaping ProfileRequest = { request in
+            try await URLSession.shared.data(for: request)
+        },
+        enrollmentStateReader: @escaping EnrollmentStateReader = {
+            coordinatorURL in
+            checkMDMEnrollment(coordinatorURL: coordinatorURL)
+        },
+        serialNumberReader: @escaping SerialNumberReader =
+            macHardwareSerialNumber,
+        profileDirectory: URL = FileManager.default.temporaryDirectory
     ) {
         self.openCommand = openCommand
         self.pauseBeforeOpeningSettings = pauseBeforeOpeningSettings
+        self.requestProfile = requestProfile
+        self.enrollmentStateReader = enrollmentStateReader
+        self.serialNumberReader = serialNumberReader
+        self.profileDirectory = profileDirectory
     }
 
     /// Request a per-device enrollment profile and (on macOS) open the
@@ -155,10 +193,10 @@ public struct EnrollmentService: Sendable {
         coordinatorURL: String,
         openSystemSettings: Bool = true
     ) async throws -> EnrollmentResult {
-        switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
+        switch enrollmentStateReader(coordinatorURL) {
         case .enrolledDarkbloom:
             return EnrollmentResult(
-                serialNumber: macHardwareSerialNumber() ?? "<unknown>",
+                serialNumber: serialNumberReader() ?? "<unknown>",
                 profilePath: URL(fileURLWithPath: "/dev/null"),
                 alreadyEnrolled: true,
                 profileOpened: false
@@ -172,7 +210,7 @@ public struct EnrollmentService: Sendable {
             break
         }
 
-        guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
+        guard let serial = serialNumberReader(), !serial.isEmpty else {
             throw EnrollmentError.serialNumberUnavailable
         }
 
@@ -192,17 +230,14 @@ public struct EnrollmentService: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await requestProfile(request)
         } catch {
             throw EnrollmentError.coordinatorRequestFailed(error.localizedDescription)
         }
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw EnrollmentError.coordinatorReturnedHTTP(http.statusCode, body: body)
-        }
+        try EnrollmentProfileResponse.validate(data: data, response: response)
 
-        let profilePath = URL(fileURLWithPath: NSTemporaryDirectory())
+        let profilePath = profileDirectory
             .appendingPathComponent("Darkbloom-Enroll-\(serial).mobileconfig")
         do {
             try data.write(to: profilePath, options: .atomic)

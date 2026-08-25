@@ -48,6 +48,14 @@ struct EnrollmentTests {
             (.serialNumberUnavailable, "Could not read hardware serial number from ioreg."),
             (.coordinatorRequestFailed("nope"), "Failed to reach coordinator: nope"),
             (.coordinatorReturnedHTTP(503, body: "x"), "Coordinator returned HTTP 503: x"),
+            (
+                .invalidProfileResponse("wrong media type"),
+                "Coordinator returned an invalid enrollment profile: wrong media type"
+            ),
+            (
+                .profileResponseTooLarge(maximumBytes: 1024),
+                "Coordinator returned an enrollment profile larger than the 1024-byte safety limit."
+            ),
             (.profileWriteFailed("eperm"), "Failed to write enrollment profile: eperm"),
             (
                 .profileOpenFailed("open exited 1"),
@@ -115,6 +123,167 @@ struct EnrollmentTests {
         #expect(recorder.calls.count == 2)
     }
 
+    @Test("Enrollment rejects unsafe profile responses before filesystem or open side effects")
+    func invalidProfileResponsesHaveNoSideEffects() async throws {
+        let endpoint = try #require(URL(string: "https://api.darkbloom.dev/v1/enroll"))
+        let validHeaders = [
+            "Content-Type": EnrollmentProfileResponse.supportedMediaType,
+        ]
+        let cases = [
+            InvalidProfileResponse(
+                name: "non-HTTP",
+                data: Data("profile".utf8),
+                response: URLResponse(
+                    url: endpoint,
+                    mimeType: EnrollmentProfileResponse.supportedMediaType,
+                    expectedContentLength: 7,
+                    textEncodingName: nil
+                )
+            ),
+            InvalidProfileResponse(
+                name: "redirect",
+                data: Data("profile".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 302,
+                    headers: validHeaders
+                )
+            ),
+            InvalidProfileResponse(
+                name: "HTML",
+                data: Data("<html>sign in</html>".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: ["Content-Type": "text/html; charset=utf-8"]
+                )
+            ),
+            InvalidProfileResponse(
+                name: "JSON",
+                data: Data(#"{"error":"no profile"}"#.utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: ["Content-Type": "application/json"]
+                )
+            ),
+            InvalidProfileResponse(
+                name: "wrong media type",
+                data: Data("profile".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: ["Content-Type": "application/octet-stream"]
+                )
+            ),
+            InvalidProfileResponse(
+                name: "missing media type",
+                data: Data("profile".utf8),
+                response: httpResponse(endpoint, status: 200)
+            ),
+            InvalidProfileResponse(
+                name: "empty body",
+                data: Data(),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: validHeaders
+                )
+            ),
+            InvalidProfileResponse(
+                name: "oversized body",
+                data: Data(
+                    repeating: 0x41,
+                    count: EnrollmentProfileResponse.maximumBytes + 1
+                ),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: validHeaders
+                )
+            ),
+        ]
+
+        for invalid in cases {
+            let fixture = try EnrollmentProfileFixture()
+            defer { fixture.remove() }
+            let recorder = EnrollmentOpenRecorder()
+            let service = EnrollmentService(
+                openCommand: recorder.run,
+                requestProfile: { _ in
+                    (invalid.data, invalid.response)
+                },
+                enrollmentStateReader: { _ in .notEnrolled },
+                serialNumberReader: { fixture.serial },
+                profileDirectory: fixture.root
+            )
+
+            do {
+                _ = try await service.enroll(
+                    coordinatorURL: "https://api.darkbloom.dev",
+                    openSystemSettings: true
+                )
+                Issue.record("accepted unsafe \(invalid.name) response")
+            } catch is EnrollmentError {
+                // Expected: every response is invalid for a distinct reason.
+            } catch {
+                Issue.record("unexpected \(invalid.name) error: \(error)")
+            }
+
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: fixture.profilePath.path
+                ),
+                "wrote \(invalid.name) response"
+            )
+            #expect(recorder.calls.isEmpty, "opened \(invalid.name) response")
+            #expect(
+                try FileManager.default.contentsOfDirectory(
+                    atPath: fixture.root.path
+                ).isEmpty
+            )
+        }
+    }
+
+    @Test("Enrollment accepts a bounded 2xx profile with normalized media type")
+    func validProfileResponseWritesThenOpens() async throws {
+        let fixture = try EnrollmentProfileFixture()
+        defer { fixture.remove() }
+        let endpoint = try #require(
+            URL(string: "https://api.darkbloom.dev/v1/enroll")
+        )
+        let profile = Data("signed-mobileconfig".utf8)
+        let response = httpResponse(
+            endpoint,
+            status: 201,
+            headers: [
+                "Content-Type":
+                    "Application/X-Apple-Aspen-Config; charset=\"binary\"",
+            ]
+        )
+        let recorder = EnrollmentOpenRecorder()
+        let service = EnrollmentService(
+            openCommand: recorder.run,
+            requestProfile: { _ in (profile, response) },
+            enrollmentStateReader: { _ in .notEnrolled },
+            serialNumberReader: { fixture.serial },
+            profileDirectory: fixture.root
+        )
+
+        let result = try await service.enroll(
+            coordinatorURL: "https://api.darkbloom.dev",
+            openSystemSettings: true
+        )
+
+        #expect(result.profilePath == fixture.profilePath)
+        #expect(result.profileOpened)
+        #expect(try Data(contentsOf: fixture.profilePath) == profile)
+        #expect(recorder.calls == [
+            [fixture.profilePath.path],
+            ["x-apple.systempreferences:com.apple.Profiles-Settings.extension"],
+        ])
+    }
+
     @Test("LocalDataCleanup.purge removes only requested files")
     func purgeRespectsFlags() throws {
         // Create a temp scratch dir to model a fake home directory; we
@@ -133,6 +302,51 @@ struct EnrollmentTests {
             secureEnclaveKey: false
         )
         // No-op should always succeed.
+    }
+}
+
+private struct InvalidProfileResponse {
+    let name: String
+    let data: Data
+    let response: URLResponse
+}
+
+private func httpResponse(
+    _ url: URL,
+    status: Int,
+    headers: [String: String] = [:]
+) -> HTTPURLResponse {
+    HTTPURLResponse(
+        url: url,
+        statusCode: status,
+        httpVersion: "HTTP/1.1",
+        headerFields: headers
+    )!
+}
+
+private struct EnrollmentProfileFixture {
+    let root: URL
+    let serial = "SERIAL1234"
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "enrollment-profile-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+    }
+
+    var profilePath: URL {
+        root.appendingPathComponent(
+            "Darkbloom-Enroll-\(serial).mobileconfig"
+        )
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
     }
 }
 

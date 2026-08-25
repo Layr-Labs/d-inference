@@ -92,6 +92,10 @@ actor SandboxHostOutboundWriter {
         pending = nil
         await transport.close()
     }
+
+    package func nextSequenceForTesting() -> UInt64 {
+        nextSequence
+    }
 }
 
 actor SandboxHostInboundAuthority {

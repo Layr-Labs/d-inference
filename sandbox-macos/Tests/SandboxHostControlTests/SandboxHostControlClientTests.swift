@@ -101,6 +101,93 @@ final class SandboxHostControlClientTests: XCTestCase {
                 capabilities: capabilities
             )
         )
+        XCTAssertThrowsError(
+            try SandboxHostControlConfiguration(
+                coordinatorURL: URL(
+                    string: "ws://api.example.test/ws/sandbox-host"
+                )!,
+                hostID: Self.hostID,
+                token: Self.token,
+                capabilities: capabilities,
+                allowInsecureLoopback: true
+            )
+        )
+        XCTAssertNoThrow(
+            try SandboxHostControlConfiguration(
+                coordinatorURL: URL(
+                    string: "ws://127.0.0.1/ws/sandbox-host"
+                )!,
+                hostID: Self.hostID,
+                token: Self.token,
+                capabilities: capabilities,
+                allowInsecureLoopback: true
+            )
+        )
+    }
+
+    func testOutboundWriterPreservesWireOrderAcrossSuspension() async throws {
+        let transport = SequencingControlTransport()
+        let writer = SandboxHostOutboundWriter(
+            transport: transport,
+            hostID: Self.hostID,
+            connectionEpoch: UUID()
+        )
+        let first = Task {
+            try await writer.send(
+                type: SandboxControlMessageType.drain,
+                payload: SandboxWireDrain(
+                    operationID: UUID(),
+                    reason: "first"
+                )
+            )
+        }
+        await transport.waitForFirstSend()
+        let second = Task {
+            try await writer.send(
+                type: SandboxControlMessageType.drain,
+                payload: SandboxWireDrain(
+                    operationID: UUID(),
+                    reason: "second"
+                )
+            )
+        }
+        while await writer.nextSequenceForTesting() != 3 {
+            await Task.yield()
+        }
+        await transport.releaseFirstSend()
+        try await first.value
+        try await second.value
+        let completedSequences = await transport.completedSequences()
+        XCTAssertEqual(completedSequences, [1, 2])
+    }
+
+    func testCancellationClosesBlockedReceiveAndRejectsConcurrentRun() async throws {
+        let transport = BlockingReceiveControlTransport()
+        let client = SandboxHostControlClient(
+            configuration: try configuration(),
+            heartbeatSource: FixedHeartbeatSource(),
+            messageHandler: RecordingMessageHandler(),
+            transportFactory: { transport }
+        )
+        let running = Task {
+            try await client.runSingleConnection()
+        }
+        await transport.waitUntilReceiving()
+        do {
+            try await client.runSingleConnection()
+            XCTFail("concurrent run was accepted")
+        } catch SandboxHostControlClientError.alreadyRunning {
+        }
+
+        running.cancel()
+        do {
+            try await running.value
+            XCTFail("cancelled run completed successfully")
+        } catch is CancellationError {
+        } catch SandboxHostControlTransportError.disconnected {
+        }
+        let closeCount = await transport.closeCount()
+        XCTAssertEqual(closeCount, 1)
     }
 
     private func configuration() throws -> SandboxHostControlConfiguration {
@@ -131,6 +218,119 @@ final class SandboxHostControlClientTests: XCTestCase {
         workspaceSizesBytes: [25 * SandboxResourcePolicy.gibibyte],
         supportsGPU: true
     )
+}
+
+private actor SequencingControlTransport: SandboxHostControlTransport {
+    private var sends = 0
+    private var firstEntered = false
+    private var firstEnteredWaiter: CheckedContinuation<Void, Never>?
+    private var firstRelease: CheckedContinuation<Void, Never>?
+    private var completed: [UInt64] = []
+
+    func connect(request _: URLRequest) async throws {
+    }
+
+    func send(text: String) async throws {
+        sends += 1
+        let sequence = try Self.sequence(in: text)
+        if sends == 1 {
+            await withCheckedContinuation {
+                firstRelease = $0
+                firstEntered = true
+                firstEnteredWaiter?.resume()
+                firstEnteredWaiter = nil
+            }
+        }
+        completed.append(sequence)
+    }
+
+    func receiveText() async throws -> String {
+        throw SandboxHostControlTransportError.disconnected
+    }
+
+    func ping() async throws {
+    }
+
+    func close() async {
+    }
+
+    func waitForFirstSend() async {
+        if firstEntered {
+            return
+        }
+        await withCheckedContinuation {
+            firstEnteredWaiter = $0
+        }
+    }
+
+    func releaseFirstSend() {
+        firstRelease?.resume()
+        firstRelease = nil
+    }
+
+    func completedSequences() -> [UInt64] {
+        completed
+    }
+
+    private static func sequence(in text: String) throws -> UInt64 {
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(text.utf8)
+            ) as? [String: Any]
+        )
+        return try XCTUnwrap(
+            (object["sequence"] as? NSNumber)?.uint64Value
+        )
+    }
+}
+
+private actor BlockingReceiveControlTransport: SandboxHostControlTransport {
+    private var receiveWaiter: CheckedContinuation<String, Error>?
+    private var receiving = false
+    private var receivingWaiter: CheckedContinuation<Void, Never>?
+    private var closes = 0
+
+    func connect(request _: URLRequest) async throws {
+    }
+
+    func send(text _: String) async throws {
+    }
+
+    func receiveText() async throws -> String {
+        try await withCheckedThrowingContinuation {
+            receiveWaiter = $0
+            receiving = true
+            receivingWaiter?.resume()
+            receivingWaiter = nil
+        }
+    }
+
+    func ping() async throws {
+    }
+
+    func close() async {
+        guard closes == 0 else {
+            return
+        }
+        closes = 1
+        receiveWaiter?.resume(
+            throwing: SandboxHostControlTransportError.disconnected
+        )
+        receiveWaiter = nil
+    }
+
+    func waitUntilReceiving() async {
+        if receiving {
+            return
+        }
+        await withCheckedContinuation {
+            receivingWaiter = $0
+        }
+    }
+
+    func closeCount() -> Int {
+        closes
+    }
 }
 
 private struct FixedHeartbeatSource: SandboxHostHeartbeatSource {

@@ -116,8 +116,9 @@ public enum LaunchAgent: Sendable {
         configPath: URL? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
-        // Determine the binary path (current executable)
-        let binaryPath = currentExecutablePath()
+        // Persist only the canonical managed app CLI. Deriving this from the
+        // current process could pin launchd to Downloads or App Translocation.
+        let binaryPath = LaunchctlControl.managedExecutablePath()
 
         // If already loaded, unload first so we pick up plist changes.
         if isLoaded() {
@@ -534,12 +535,6 @@ public enum LaunchAgent: Sendable {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
-    }
-
-    /// Resolve the current executable path. Falls back to ~/.darkbloom/bin/darkbloom.
-    /// Shared with `WatchdogAgent` via `LaunchctlControl`.
-    private static func currentExecutablePath() -> String {
-        LaunchctlControl.currentExecutablePath()
     }
 
 }

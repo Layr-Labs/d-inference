@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Provider CLI locator + process runner")
 struct ProviderCLITests {
+    private static let redirectableManagedComponents = [
+        ".darkbloom",
+        "Darkbloom.app",
+        "Contents",
+        "MacOS",
+        "darkbloom",
+    ]
+
     // MARK: Locator
 
     @Test("DARKBLOOM_CLI_PATH wins over every install location")
@@ -17,7 +25,7 @@ struct ProviderCLITests {
         #expect(locator.locate() == URL(fileURLWithPath: "/tmp/fake-darkbloom"))
     }
 
-    @Test("Shipping lookup returns only the managed app CLI")
+    @Test("Shipping lookup accepts the canonical all-regular managed app CLI")
     func locatorUsesOnlyManagedAppCLI() throws {
         let fixture = try CLILocatorFixture()
         defer { fixture.remove() }
@@ -47,19 +55,15 @@ struct ProviderCLITests {
         #expect(locator.locate() == nil)
     }
 
-    @Test("The managed CLI endpoint cannot be a symlink to a source bundle")
-    func locatorRejectsManagedCLISymlink() throws {
+    @Test(
+        "Every managed path component rejects symbolic-link redirection",
+        arguments: redirectableManagedComponents
+    )
+    func locatorRejectsManagedPathSymlink(component: String) throws {
         let fixture = try CLILocatorFixture()
         defer { fixture.remove() }
-        try fixture.makeExecutable(at: fixture.sourceCLI)
-        try FileManager.default.createDirectory(
-            at: fixture.managedCLI.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createSymbolicLink(
-            atPath: fixture.managedCLI.path,
-            withDestinationPath: fixture.sourceCLI.path
-        )
+        try fixture.makeExecutable(at: fixture.managedCLI)
+        try fixture.redirectManagedComponentWithSymlink(component)
 
         let locator = SystemDarkbloomCLILocator(
             environment: [:],
@@ -67,6 +71,51 @@ struct ProviderCLITests {
         )
 
         #expect(locator.locate() == nil)
+    }
+
+    @Test("A symbolic link above the home directory cannot redirect lookup")
+    func locatorRejectsSymlinkedHomeAncestor() throws {
+        let fixture = try CLILocatorFixture()
+        defer { fixture.remove() }
+        try fixture.makeExecutable(at: fixture.managedCLI)
+        let redirectedHome = try fixture.makeSymlinkedHomeAncestor()
+
+        let locator = SystemDarkbloomCLILocator(
+            environment: [:],
+            homeDirectory: redirectedHome
+        )
+
+        #expect(locator.locate() == nil)
+    }
+
+    @Test("A managed directory replaced between identity passes is rejected")
+    func locatorRejectsManagedDirectoryReplacementRace() throws {
+        let fixture = try CLILocatorFixture()
+        defer { fixture.remove() }
+        try fixture.makeExecutable(at: fixture.managedCLI)
+
+        let located = try ManagedCLIPathValidator().validatedCLIURL(
+            homeDirectory: fixture.home
+        ) {
+            try fixture.replaceManagedComponent("Darkbloom.app")
+        }
+
+        #expect(located == nil)
+    }
+
+    @Test("The executable replaced between identity passes is rejected")
+    func locatorRejectsExecutableReplacementRace() throws {
+        let fixture = try CLILocatorFixture()
+        defer { fixture.remove() }
+        try fixture.makeExecutable(at: fixture.managedCLI)
+
+        let located = try ManagedCLIPathValidator().validatedCLIURL(
+            homeDirectory: fixture.home
+        ) {
+            try fixture.replaceManagedComponent("darkbloom")
+        }
+
+        #expect(located == nil)
     }
 
     // MARK: Runner (real /bin processes)
@@ -132,10 +181,19 @@ private struct CLILocatorFixture {
     let home: URL
 
     init() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "darkbloom-cli-locator-\(UUID().uuidString)",
-            isDirectory: true
+        let unresolvedRoot =
+            FileManager.default.temporaryDirectory.appendingPathComponent(
+                "darkbloom-cli-locator-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: unresolvedRoot,
+            withIntermediateDirectories: true
         )
+        // `temporaryDirectory` commonly starts with `/var`, a macOS symlink.
+        // Resolve the fixture root so tests exercise the same no-symlink
+        // ancestor policy as a real `/Users/<name>` home directory.
+        root = unresolvedRoot.resolvingSymlinksInPath()
         home = root.appendingPathComponent("Home", isDirectory: true)
         try FileManager.default.createDirectory(
             at: home,
@@ -167,7 +225,67 @@ private struct CLILocatorFixture {
         )
     }
 
+    func redirectManagedComponentWithSymlink(_ component: String) throws {
+        let target = try managedComponent(named: component)
+        let redirected = root.appendingPathComponent(
+            "redirected-\(component.replacingOccurrences(of: ".", with: "_"))-\(UUID().uuidString)"
+        )
+        try FileManager.default.moveItem(at: target, to: redirected)
+        try FileManager.default.createSymbolicLink(
+            atPath: target.path,
+            withDestinationPath: redirected.path
+        )
+    }
+
+    func replaceManagedComponent(_ component: String) throws {
+        let target = try managedComponent(named: component)
+        let preserved = root.appendingPathComponent(
+            "preserved-\(component.replacingOccurrences(of: ".", with: "_"))-\(UUID().uuidString)"
+        )
+        try FileManager.default.moveItem(at: target, to: preserved)
+        try makeExecutable(at: managedCLI)
+    }
+
+    func makeSymlinkedHomeAncestor() throws -> URL {
+        let linkedParent = root.appendingPathComponent(
+            "linked-home-parent",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: linkedParent.path,
+            withDestinationPath: root.path
+        )
+        return linkedParent.appendingPathComponent("Home", isDirectory: true)
+    }
+
+    private func managedComponent(named component: String) throws -> URL {
+        switch component {
+        case ".darkbloom":
+            home.appendingPathComponent(".darkbloom", isDirectory: true)
+        case "Darkbloom.app":
+            home.appendingPathComponent(
+                ".darkbloom/Darkbloom.app",
+                isDirectory: true
+            )
+        case "Contents":
+            home.appendingPathComponent(
+                ".darkbloom/Darkbloom.app/Contents",
+                isDirectory: true
+            )
+        case "MacOS":
+            managedCLI.deletingLastPathComponent()
+        case "darkbloom":
+            managedCLI
+        default:
+            throw UnknownManagedComponent(name: component)
+        }
+    }
+
     func remove() {
         try? FileManager.default.removeItem(at: root)
     }
+}
+
+private struct UnknownManagedComponent: Error {
+    let name: String
 }

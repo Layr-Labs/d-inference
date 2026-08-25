@@ -27,8 +27,11 @@ struct SelfUpdaterConcurrencyTests {
         let update = Task {
             await updater.update()
         }
-        guard await gate.waitUntilRequested() else {
+        guard await gate.waitUntilRequested(cleanupOnFailure: {
             update.cancel()
+            _ = await update.value
+            await mock.shutdown()
+        }) else {
             Issue.record("release transfer never reached the deterministic gate")
             return
         }
@@ -79,8 +82,11 @@ struct SelfUpdaterConcurrencyTests {
         let staleTask = Task {
             await updater.update()
         }
-        guard await gate.waitUntilRequested() else {
+        guard await gate.waitUntilRequested(cleanupOnFailure: {
             staleTask.cancel()
+            _ = await staleTask.value
+            await mock.shutdown()
+        }) else {
             Issue.record("stale release transfer never reached the deterministic gate")
             return
         }
@@ -140,8 +146,11 @@ struct SelfUpdaterConcurrencyTests {
         let staleTask = Task {
             await staleUpdater.update()
         }
-        guard await staleGate.waitUntilRequested() else {
+        guard await staleGate.waitUntilRequested(cleanupOnFailure: {
             staleTask.cancel()
+            _ = await staleTask.value
+            await staleMock.shutdown()
+        }) else {
             Issue.record("stale release transfer never reached the deterministic gate")
             return
         }

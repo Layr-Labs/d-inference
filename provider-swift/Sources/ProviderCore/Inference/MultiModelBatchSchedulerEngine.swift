@@ -77,6 +77,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
     private let reasoningEffort: String?
+    /// Sealed-body `enable_thinking` / `chat_template_kwargs.enable_thinking`
+    /// when nested `reasoning.enabled` is absent (issue #639).
+    private let enableThinkingOverride: Bool?
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -111,6 +114,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// requests have no such trusted boundary and must reject that metadata.
     private let allowInternalToolSchemaMetadata: Bool
 
+    /// Constructor value, falling back to local-HTTP task-local controls.
+    private var effectiveReasoningEffort: String? {
+        reasoningEffort ?? ThinkingRequestControls.current?.reasoningEffort
+    }
+
+    private var effectiveEnableThinking: Bool? {
+        enableThinkingOverride ?? ThinkingRequestControls.current?.enableThinkingOverride
+    }
+
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
         ensureLoaded: @escaping @Sendable (String) async throws -> Void = { _ in },
@@ -118,6 +130,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
+        enableThinkingOverride: Bool? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -131,6 +144,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
+        self.enableThinkingOverride = enableThinkingOverride
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -170,6 +184,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
+        self.enableThinkingOverride = nil
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -359,7 +374,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, reasoningEffort)
+                        container, visionRequest, effectiveReasoningEffort, effectiveEnableThinking)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -516,7 +531,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                reasoningEffort: effectiveReasoningEffort,
+                enableThinkingOverride: effectiveEnableThinking)
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",

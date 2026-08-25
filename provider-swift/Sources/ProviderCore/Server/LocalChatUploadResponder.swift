@@ -99,6 +99,10 @@ where Inner.Context == BasicRequestContext {
             }
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
+            // Batch items share the outer body probe only for the array
+            // envelope; per-item thinking flags aren't re-extracted from
+            // each element (batch path is text-oriented). Prefer nested
+            // `reasoning.enabled` on each element when needed.
             var responses: [OpenAIChatCompletionResponse] = []
             for chatRequest in requests {
                 responses.append(try await service.createChatCompletion(request: chatRequest))
@@ -111,14 +115,23 @@ where Inner.Context == BasicRequestContext {
         case .success(let decoded): chatRequest = decoded
         case .failure(let badRequest): return badRequest
         }
-        // Same service entry points as the upstream handler; pre-stream
-        // throws (unknown model, admission refusal) travel to
-        // `CORSResponder`'s status mapping unchanged.
-        if chatRequest.stream == true {
-            let frames = try await service.streamChatCompletionFrames(request: chatRequest)
-            return Self.sseResponse(frames)
+        // Recover thinking controls dropped by the upstream OpenAI request
+        // shape (same sealed-body probes as the coordinator path — #639).
+        let bodyData = Data(buffer: buffer)
+        let thinkingControls = ThinkingRequestControls(
+            reasoningEffort: ProviderLoop.extractReasoningEffort(from: bodyData),
+            enableThinkingOverride: ProviderLoop.extractEnableThinking(from: bodyData)
+        )
+        return try await ThinkingRequestControls.$current.withValue(thinkingControls) {
+            // Same service entry points as the upstream handler; pre-stream
+            // throws (unknown model, admission refusal) travel to
+            // `CORSResponder`'s status mapping unchanged.
+            if chatRequest.stream == true {
+                let frames = try await service.streamChatCompletionFrames(request: chatRequest)
+                return Self.sseResponse(frames)
+            }
+            return try Self.jsonResponse(try await service.createChatCompletion(request: chatRequest))
         }
-        return try Self.jsonResponse(try await service.createChatCompletion(request: chatRequest))
     }
 
     /// Decode with Hummingbird's default `requestDecoder` configuration

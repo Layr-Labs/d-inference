@@ -53,24 +53,50 @@ pub fn normalize(
     }
 
     let mut additional_context = Map::new();
-    if let Some(effort) = body
+    let effort = body
         .get("reasoning_effort")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .map(|value| value.to_owned());
+    if let Some(effort) = effort.as_deref() {
         additional_context.insert("reasoning_effort".into(), Value::String(effort.into()));
     }
+
+    // Precedence matches provider-swift templateAdditionalContext (#639 / PR #677):
+    // 1) nested reasoning.enabled  2) top-level / chat_template_kwargs enable_thinking
+    // 3) none-like reasoning_effort → false (not "minimal")
+    let mut enable_thinking: Option<bool> = None;
     match body.get("reasoning") {
         None | Some(Value::Null) => {}
         Some(Value::Object(reasoning)) => match reasoning.get("enabled") {
             None | Some(Value::Null) => {}
             Some(Value::Bool(enabled)) => {
-                additional_context.insert("enable_thinking".into(), Value::Bool(*enabled));
+                enable_thinking = Some(*enabled);
             }
             Some(_) => return Err(NormalizeError::InvalidMessages),
         },
         Some(_) => return Err(NormalizeError::InvalidMessages),
+    }
+    if enable_thinking.is_none() {
+        if let Some(Value::Bool(enabled)) = body.get("enable_thinking") {
+            enable_thinking = Some(*enabled);
+        } else if let Some(Value::Object(kwargs)) = body.get("chat_template_kwargs") {
+            if let Some(Value::Bool(enabled)) = kwargs.get("enable_thinking") {
+                enable_thinking = Some(*enabled);
+            }
+        }
+    }
+    if enable_thinking.is_none() {
+        if let Some(effort) = effort.as_deref() {
+            let lower = effort.to_ascii_lowercase();
+            if matches!(lower.as_str(), "none" | "off" | "0") {
+                enable_thinking = Some(false);
+            }
+        }
+    }
+    if let Some(enabled) = enable_thinking {
+        additional_context.insert("enable_thinking".into(), Value::Bool(enabled));
     }
 
     let mut normalized_body = Map::new();
@@ -1823,6 +1849,56 @@ mod tests {
         ] {
             assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
         }
+    }
+
+    #[test]
+    fn enable_thinking_matches_provider_precedence() {
+        // nested reasoning.enabled wins
+        let nested = json!({
+            "model": "fixture",
+            "messages": [{"role": "user", "content": "x"}],
+            "enable_thinking": false,
+            "reasoning": {"enabled": true},
+            "reasoning_effort": "none"
+        });
+        let n = normalize(nested.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(n.additional_context.get("enable_thinking"), Some(&Value::Bool(true)));
+
+        // top-level enable_thinking
+        let top = json!({
+            "model": "fixture",
+            "messages": [{"role": "user", "content": "x"}],
+            "enable_thinking": false
+        });
+        let t = normalize(top.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(t.additional_context.get("enable_thinking"), Some(&Value::Bool(false)));
+
+        // chat_template_kwargs
+        let kwargs = json!({
+            "model": "fixture",
+            "messages": [{"role": "user", "content": "x"}],
+            "chat_template_kwargs": {"enable_thinking": false}
+        });
+        let k = normalize(kwargs.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(k.additional_context.get("enable_thinking"), Some(&Value::Bool(false)));
+
+        // none effort disables; minimal does not
+        let none = json!({
+            "model": "fixture",
+            "messages": [{"role": "user", "content": "x"}],
+            "reasoning_effort": "none"
+        });
+        let no = normalize(none.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(no.additional_context.get("enable_thinking"), Some(&Value::Bool(false)));
+
+        let minimal = json!({
+            "model": "fixture",
+            "messages": [{"role": "user", "content": "x"}],
+            "reasoning_effort": "minimal"
+        });
+        let m = normalize(minimal.as_object().unwrap().clone(), None).unwrap();
+        assert!(m.additional_context.get("enable_thinking").is_none());
+        assert_eq!(m.additional_context.get("reasoning_effort"), Some(&Value::String("minimal".into())));
     }
 
     proptest! {

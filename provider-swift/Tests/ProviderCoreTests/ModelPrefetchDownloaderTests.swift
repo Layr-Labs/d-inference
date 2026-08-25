@@ -793,6 +793,35 @@ struct ModelPrefetchDownloaderTests {
         #expect(!incorrectlyChargedAsFresh.hasSufficientCapacity)
     }
 
+    @Test("download storage plans distinguish known zero from unknown capacity")
+    func storagePlanPreservesCapacityTruth() {
+        let required = Int64(1_000)
+
+        let zero = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: 0
+        )
+        #expect(zero.availableBytes == 0)
+        #expect(!zero.hasSufficientCapacity)
+
+        let unknown = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: nil
+        )
+        #expect(unknown.availableBytes == nil)
+        #expect(unknown.hasSufficientCapacity)
+
+        let exact = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: required
+        )
+        #expect(exact.availableBytes == required)
+        #expect(exact.hasSufficientCapacity)
+    }
+
     @Test("download and app planning share valid-file and part-byte classification")
     func sharedManifestDiskInspection() throws {
         let directory = FileManager.default.temporaryDirectory

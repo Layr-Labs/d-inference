@@ -134,10 +134,21 @@ const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
 	END IF;
 END $$`
 
-const postgresMigrationAdvisoryLockID int64 = 0x44424D4947524154
+const (
+	postgresMigrationAdvisoryLockID            int64 = 0x44424D4947524154
+	postgresMigrationAdvisoryLockRetryInterval       = 100 * time.Millisecond
+)
 
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
+	return s.withMigrationLock(ctx, func() error {
+		return s.migrateLocked(ctx)
+	})
+}
+
+// migrateLocked runs every startup migration phase while the caller holds the
+// database-wide PostgreSQL migration advisory lock.
+func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 	migrations := []string{
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
@@ -1043,7 +1054,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 	migrations = append(migrations, sandboxSchemaMigrations()...)
 
-	if err := s.executeSchemaMigrations(ctx, migrations); err != nil {
+	if err := s.executeSchemaMigrationsLocked(ctx, migrations); err != nil {
 		return err
 	}
 
@@ -1064,9 +1075,36 @@ func (s *PostgresStore) executeSchemaMigrations(
 	ctx context.Context,
 	migrations []string,
 ) error {
+	return s.withMigrationLock(ctx, func() error {
+		return s.executeSchemaMigrationsLocked(ctx, migrations)
+	})
+}
+
+func (s *PostgresStore) executeSchemaMigrationsLocked(
+	ctx context.Context,
+	migrations []string,
+) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	for _, migration := range migrations {
+		if _, err := conn.Exec(ctx, migration); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) withMigrationLock(
+	ctx context.Context,
+	run func() error,
+) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration lock connection: %w", err)
 	}
 	unlocked := false
 	defer func() {
@@ -1082,17 +1120,11 @@ func (s *PostgresStore) executeSchemaMigrations(
 		conn.Release()
 	}()
 
-	if _, err := conn.Exec(
-		ctx,
-		`SELECT pg_advisory_lock($1)`,
-		postgresMigrationAdvisoryLockID,
-	); err != nil {
+	if err := acquirePostgresMigrationLock(ctx, conn); err != nil {
 		return fmt.Errorf("acquire migration advisory lock: %w", err)
 	}
-	for _, migration := range migrations {
-		if _, err := conn.Exec(ctx, migration); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
-		}
+	if err := run(); err != nil {
+		return err
 	}
 
 	var released bool
@@ -1108,6 +1140,39 @@ func (s *PostgresStore) executeSchemaMigrations(
 	}
 	unlocked = true
 	return nil
+}
+
+func acquirePostgresMigrationLock(
+	ctx context.Context,
+	conn *pgxpool.Conn,
+) error {
+	retry := time.NewTicker(postgresMigrationAdvisoryLockRetryInterval)
+	defer retry.Stop()
+
+	for {
+		var acquired bool
+		if err := conn.QueryRow(
+			ctx,
+			`SELECT pg_try_advisory_lock($1)`,
+			postgresMigrationAdvisoryLockID,
+		).Scan(&acquired); err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
+
+		// A blocking pg_advisory_lock call keeps the waiter's virtual
+		// transaction open. CREATE INDEX CONCURRENTLY on the lock holder then
+		// waits for that virtual transaction, while the waiter waits for the
+		// holder: an application-level deadlock. Retrying the non-blocking form
+		// leaves no database transaction open between attempts.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-retry.C:
+		}
+	}
 }
 
 // ensureProviderEarningsJobIndex creates the partial UNIQUE index that backs the

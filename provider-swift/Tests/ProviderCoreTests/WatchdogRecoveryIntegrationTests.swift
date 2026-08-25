@@ -106,6 +106,39 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate == nil)
     }
 
+    @Test("pre-existing one-shot install is not reported as this tick's update")
+    func preexistingOneShotInstallIsNotReportedAsUpdate() async throws {
+        let fixture = try UpdateRecoveryFixture(
+            oldVersion: "1.0.0",
+            newVersion: "2.0.0"
+        )
+        defer { fixture.cleanup() }
+        try fixture.installCompetingApp(version: "3.0.0")
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.installGeneration == 0)
+        #expect(state.candidate == nil)
+    }
+
     @Test("third failed start restores predecessor and quarantines candidate")
     func threeFailureRollback() async throws {
         let context = try await installedCandidate()
@@ -969,8 +1002,10 @@ struct WatchdogRecoveryIntegrationTests {
         // layout already exchanged. Pre-fix, the tick kickstarted that
         // unfinalized tree with NO candidate attempt recorded — a crash of
         // the new binary would never be charged toward rollback. The fix
-        // replays the journal before kickstart.
-        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        // replays the journal before kickstart. Although `update` reported
+        // replacement failure, that replay finalized v2 as the launch target,
+        // so final restart accounting must report the real transition.
+        #expect(outcome == .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil))
         #expect(restarts.value == 1)
         let store = recoveryStore(fixture)
         #expect(!FileManager.default.fileExists(

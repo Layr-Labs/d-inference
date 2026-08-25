@@ -737,16 +737,22 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
 
 		// Provider log reports — providers upload 24h unified logs for debugging.
+		// serial_number is retained only as a rollback-compatible legacy column.
+		// The write guard and one-time scrub keep it empty.
 		`CREATE TABLE IF NOT EXISTS provider_log_reports (
 			id BIGSERIAL PRIMARY KEY,
-			serial_number TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
 			provider_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL DEFAULT '',
 			log_data BYTEA NOT NULL,
 			log_size_bytes BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+		`ALTER TABLE provider_log_reports ALTER COLUMN serial_number SET DEFAULT ''`,
+		providerLogReportSerialGuardFunction,
+		providerLogReportSerialGuardTrigger,
+		providerLogReportSerialScrubMigration,
+		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 
 		// Provider sessions — durable connect→disconnect history for uptime/downtime.
 		// One row per websocket connection; disconnected_at IS NULL while open.
@@ -5038,8 +5044,8 @@ func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64,
 
 	var reportID int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO provider_log_reports (serial_number, provider_id, account_id, log_data, log_size_bytes)
-		 VALUES ('', '', $1, $2, $3)
+		`INSERT INTO provider_log_reports (account_id, log_data, log_size_bytes)
+		 VALUES ($1, $2, $3)
 		 RETURNING id`,
 		accountID, logData, int64(len(logData)),
 	).Scan(&reportID)

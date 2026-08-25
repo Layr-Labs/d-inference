@@ -51,6 +51,58 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.predecessor?.release.metallibMode != nil)
     }
 
+    @Test("watchdog restart accounting follows a one-shot install that wins during download")
+    func oneShotInstallWinsDuringWatchdogDownload() async throws {
+        let fixture = try UpdateRecoveryFixture(
+            oldVersion: "1.0.0",
+            newVersion: "2.0.0"
+        )
+        defer { fixture.cleanup() }
+        let gate = MockReleaseArtifactGate()
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact,
+            releaseArtifactGate: gate
+        )
+        let baseURL = try await mock.start()
+        defer {
+            Task {
+                await gate.release()
+                await mock.shutdown()
+            }
+        }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+        let recovery = Task {
+            await service.recoverDownProvider(
+                autoUpdateEnabled: true,
+                now: 100
+            )
+        }
+        guard await gate.waitUntilRequested() else {
+            recovery.cancel()
+            Issue.record("watchdog release transfer never reached the deterministic gate")
+            return
+        }
+
+        try fixture.installCompetingApp(version: "3.0.0")
+        await gate.release()
+
+        #expect(
+            await recovery.value
+                == .restartIssued(updatedTo: "3.0.0", rolledBackTo: nil)
+        )
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.installGeneration == 0)
+        #expect(state.candidate == nil)
+    }
+
     @Test("third failed start restores predecessor and quarantines candidate")
     func threeFailureRollback() async throws {
         let context = try await installedCandidate()

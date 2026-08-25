@@ -146,27 +146,22 @@ public struct MockVersionFixture: Sendable {
 public actor MockReleaseArtifactGate {
     private var requested = false
     private var released = false
-    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init() {}
 
-    public func waitUntilRequested() async {
-        if requested { return }
-        await withCheckedContinuation { continuation in
-            requestWaiters.append(continuation)
+    public func waitUntilRequested(
+        timeout: Duration = .seconds(10)
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !requested, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
         }
+        return requested
     }
 
     public func waitBeforeResponse() async {
-        if !requested {
-            requested = true
-            let waiters = requestWaiters
-            requestWaiters.removeAll()
-            for waiter in waiters {
-                waiter.resume()
-            }
-        }
+        requested = true
         if released { return }
         await withCheckedContinuation { continuation in
             releaseWaiters.append(continuation)

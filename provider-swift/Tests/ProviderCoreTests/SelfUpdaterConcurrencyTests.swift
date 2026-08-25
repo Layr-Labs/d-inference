@@ -27,7 +27,11 @@ struct SelfUpdaterConcurrencyTests {
         let update = Task {
             await updater.update()
         }
-        await gate.waitUntilRequested()
+        guard await gate.waitUntilRequested() else {
+            update.cancel()
+            Issue.record("release transfer never reached the deterministic gate")
+            return
+        }
 
         let mutation = fixture.installRoot.appendingPathComponent(
             "concurrent-installer-mutation"
@@ -49,6 +53,61 @@ struct SelfUpdaterConcurrencyTests {
             return
         }
         #expect(try fixture.liveBinaryContents() == "1.0.0-darkbloom")
+    }
+
+    @Test("completed one-shot app install wins over stale downloaded release")
+    func stalePreparedReleaseCannotOverwriteOneShotInstall() async throws {
+        let fixture = try UpdateRecoveryFixture(
+            oldVersion: "1.0.0",
+            newVersion: "2.0.0"
+        )
+        defer { fixture.cleanup() }
+        let gate = MockReleaseArtifactGate()
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact,
+            releaseArtifactGate: gate
+        )
+        let baseURL = try await mock.start()
+        defer {
+            Task {
+                await gate.release()
+                await mock.shutdown()
+            }
+        }
+        let updater = fixture.updater(baseURL: baseURL)
+        let staleTask = Task {
+            await updater.update()
+        }
+        guard await gate.waitUntilRequested() else {
+            staleTask.cancel()
+            Issue.record("stale release transfer never reached the deterministic gate")
+            return
+        }
+
+        try fixture.installCompetingApp(version: "3.0.0")
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+
+        await gate.release()
+        guard case .alreadyUpToDate(let version) = await staleTask.value else {
+            Issue.record(
+                "stale v2 preparation did not yield to one-shot v3 install"
+            )
+            return
+        }
+        #expect(version == "3.0.0")
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+
+        let state = try UpdateRecoveryStore(
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false
+        ).loadState()
+        #expect(state.installGeneration == 0)
+        #expect(state.candidate == nil)
+        let leftovers = try FileManager.default.contentsOfDirectory(
+            atPath: fixture.installRoot.path
+        ).filter { $0.hasPrefix(".update-staging-") }
+        #expect(leftovers.isEmpty)
     }
 
     @Test("completed competing update wins over stale downloaded release")
@@ -81,7 +140,11 @@ struct SelfUpdaterConcurrencyTests {
         let staleTask = Task {
             await staleUpdater.update()
         }
-        await staleGate.waitUntilRequested()
+        guard await staleGate.waitUntilRequested() else {
+            staleTask.cancel()
+            Issue.record("stale release transfer never reached the deterministic gate")
+            return
+        }
 
         let winnerMock = MockCoordinator(
             release: winner.mockReleaseFixture(),

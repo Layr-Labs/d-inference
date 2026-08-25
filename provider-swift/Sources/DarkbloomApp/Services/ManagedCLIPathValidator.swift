@@ -49,12 +49,22 @@ struct ManagedCLIPathValidator {
     private func traversalComponents(homeDirectory: URL) -> [String]? {
         guard homeDirectory.isFileURL else { return nil }
 
-        let standardizedHome = homeDirectory.standardizedFileURL
-        guard standardizedHome.path == homeDirectory.path else {
+        let path = homeDirectory.path
+        let lexicalComponents = path.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+        guard path.hasPrefix("/"),
+              !lexicalComponents.contains("."),
+              !lexicalComponents.contains("..")
+        else {
             return nil
         }
 
-        let absoluteComponents = standardizedHome.pathComponents
+        // Do not call `standardizedFileURL` here. On macOS Foundation rewrites
+        // the canonical `/private/var` path back through the `/var` symlink,
+        // which defeats the descriptor walk's no-symlink guarantee.
+        let absoluteComponents = homeDirectory.pathComponents
         guard absoluteComponents.first == "/" else { return nil }
 
         return Array(absoluteComponents.dropFirst())

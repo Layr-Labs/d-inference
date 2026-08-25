@@ -25,11 +25,33 @@ var errProviderWriterStopped = errors.New(providerWriteDrainErrorString)
 var errProviderWriterQueueFull = errors.New("provider websocket writer queue full")
 var errProviderWriteTimeout = errors.New("provider websocket write timeout")
 
+// TextFrameWriteMetadata describes the writer-owned handoff of a deferred
+// frame. The caller receives it synchronously and remains the sole owner of any
+// request-state mutation derived from the handoff.
+type TextFrameWriteMetadata struct {
+	DequeuedAt time.Time
+}
+
+// TextFrameBuilder constructs a data-lane frame only after it reaches the head
+// of the provider writer queue. Builders must be fast, side-effect-free, and
+// capture only immutable state. dequeuedAt is the writer's monotonic timestamp
+// for budget calculations and subsequent caller-owned timing attribution.
+type TextFrameBuilder func(dequeuedAt time.Time) ([]byte, error)
+
+// TextFrameHandoff runs synchronously on the submitting goroutine after the
+// writer has built the frame and before it may expose bytes to the socket.
+type TextFrameHandoff func(TextFrameWriteMetadata)
+
 type providerWriteRequest struct {
-	ctx   context.Context
-	data  []byte
-	done  chan error
-	state atomic.Int32 // 0 queued, 1 canceled before start, 2 started
+	ctx        context.Context
+	data       []byte
+	builder    TextFrameBuilder
+	done       chan error
+	handoff    chan TextFrameWriteMetadata
+	handoffAck chan struct{}
+	// 0 queued, 1 canceled, 2 building, 3 awaiting owner ack, 4 writing,
+	// 5 write completed.
+	state atomic.Int32
 }
 
 // providerWriter serializes all writes to one provider WebSocket through a
@@ -77,6 +99,11 @@ type providerWriter struct {
 	// timeoutFor overrides the per-frame write timeout in tests. Nil means
 	// the default providerWriteTimeout schedule.
 	timeoutFor func(frameBytes int) time.Duration
+	// writeFrameForTest replaces the socket handoff in deterministic unit tests.
+	writeFrameForTest func([]byte) error
+	// afterWriteCompleteForTest pauses after the 4→5 ownership transition and
+	// before publishing done, for deterministic completion/cancellation races.
+	afterWriteCompleteForTest func()
 }
 
 func newProviderWriter(conn *websocket.Conn) *providerWriter {
@@ -119,6 +146,17 @@ func (w *providerWriter) write(ctx context.Context, data []byte) error {
 	return w.writeLane(ctx, data, false)
 }
 
+func (w *providerWriter) writeDeferred(
+	ctx context.Context,
+	builder TextFrameBuilder,
+	onHandoff TextFrameHandoff,
+) (TextFrameWriteMetadata, error) {
+	if builder == nil {
+		return TextFrameWriteMetadata{}, errors.New("provider websocket frame builder is nil")
+	}
+	return w.writeRequest(ctx, &providerWriteRequest{builder: builder}, false, onHandoff)
+}
+
 // writeControl is write() on the priority control lane.
 func (w *providerWriter) writeControl(ctx context.Context, data []byte) error {
 	return w.writeLane(ctx, data, true)
@@ -145,38 +183,154 @@ func (w *providerWriter) checkAccept(ctx context.Context) (context.Context, erro
 }
 
 func (w *providerWriter) writeLane(ctx context.Context, data []byte, control bool) error {
+	_, err := w.writeRequest(ctx, &providerWriteRequest{
+		data: append([]byte(nil), data...),
+	}, control, nil)
+	return err
+}
+
+func (w *providerWriter) writeRequest(
+	ctx context.Context,
+	req *providerWriteRequest,
+	control bool,
+	onHandoff TextFrameHandoff,
+) (TextFrameWriteMetadata, error) {
+	var metadata TextFrameWriteMetadata
 	ctx, err := w.checkAccept(ctx)
 	if err != nil {
-		return err
+		return metadata, err
 	}
-	req := &providerWriteRequest{
-		ctx:  ctx,
-		data: append([]byte(nil), data...),
-		done: make(chan error, 1),
+	req.ctx = ctx
+	req.done = make(chan error, 1)
+	if req.builder != nil {
+		req.handoff = make(chan TextFrameWriteMetadata, 1)
+		req.handoffAck = make(chan struct{})
 	}
+	handoff := req.handoff
+	handoffAck := req.handoffAck
 	lane := w.queue
 	if control {
 		lane = w.control
 	}
 	if err := w.submit(lane, req); err != nil {
-		return err
+		return metadata, err
 	}
+	acceptHandoff := func(handedOff TextFrameWriteMetadata) {
+		metadata = handedOff
+		if !handedOff.DequeuedAt.IsZero() && onHandoff != nil {
+			onHandoff(handedOff)
+		}
+		if handoffAck != nil {
+			close(handoffAck)
+			handoffAck = nil
+		}
+		handoff = nil
+	}
+	takeReadyHandoff := func() {
+		if handoff == nil {
+			return
+		}
+		select {
+		case handedOff := <-handoff:
+			acceptHandoff(handedOff)
+		default:
+		}
+	}
+	for {
+		select {
+		case handedOff := <-handoff:
+			acceptHandoff(handedOff)
+		case err := <-req.done:
+			// Deferred terminal paths publish their handoff decision before
+			// done. Drain it so select ordering cannot erase dequeue metadata.
+			takeReadyHandoff()
+			return metadata, err
+		case <-ctx.Done():
+			select {
+			case err := <-req.done:
+				takeReadyHandoff()
+				return metadata, err
+			default:
+			}
+			for {
+				switch req.state.Load() {
+				case 0:
+					if !req.state.CompareAndSwap(0, 1) {
+						continue
+					}
+					return metadata, ctx.Err()
+				case 2:
+					// Cancel a builder without waiting for it. Its immutable
+					// snapshot may finish later, but the 2→3 handoff CAS will
+					// fail and no frame can reach the socket.
+					if !req.state.CompareAndSwap(2, 1) {
+						continue
+					}
+					return metadata, ctx.Err()
+				case 3:
+					// The frame is waiting for the submitting owner to
+					// acknowledge its timing metadata. Cancellation wins the
+					// 3→4 transition, so no socket bytes can follow cleanup.
+					if !req.state.CompareAndSwap(3, 1) {
+						continue
+					}
+					return metadata, ctx.Err()
+				case 4:
+					// A frame is already in the non-preemptible WebSocket
+					// write. Closing the connection is the only way to return
+					// at the request deadline without letting that frame
+					// outlive dispatch cleanup.
+					if !req.state.CompareAndSwap(4, 1) {
+						continue
+					}
+					w.closeNow()
+					if handoff != nil {
+						select {
+						case handedOff := <-handoff:
+							acceptHandoff(handedOff)
+						case <-req.done:
+							takeReadyHandoff()
+						case <-w.done:
+							takeReadyHandoff()
+						}
+					}
+					return metadata, ctx.Err()
+				case 5:
+					// The complete frame is already on the wire. Keep the
+					// healthy connection and report the authoritative write
+					// result. Request-context cancellation is handled by the
+					// dispatch owner after it takes ownership of the sent frame.
+					return metadata, nil
+				default:
+					return metadata, ctx.Err()
+				}
+			}
+		case <-w.done:
+			takeReadyHandoff()
+			return metadata, writeResultAfterWriterStop(ctx, req)
+		}
+	}
+}
+
+func writeResultAfterWriterStop(
+	ctx context.Context,
+	req *providerWriteRequest,
+) error {
+	// Writer shutdown may race the per-request completion publication. A
+	// buffered request result is authoritative: in particular, a fully written
+	// frame must not be reclassified as stopped and trigger cleanup/refunds.
 	select {
 	case err := <-req.done:
 		return err
-	case <-ctx.Done():
-		if req.state.CompareAndSwap(0, 1) {
-			return ctx.Err()
-		}
-		select {
-		case err := <-req.done:
-			return err
-		case <-w.done:
-			return errProviderWriterStopped
-		}
-	case <-w.done:
-		return errProviderWriterStopped
+	default:
 	}
+	if req.state.Load() == 5 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errProviderWriterStopped
 }
 
 // enqueue queues a control-plane frame fire-and-forget on the priority lane.
@@ -245,7 +399,12 @@ func (w *providerWriter) run() {
 // serve writes one queued frame. It returns false when the writer must exit
 // (write failure): the socket is closed and both lanes are drained first.
 func (w *providerWriter) serve(req *providerWriteRequest) bool {
-	if (req.ctx != nil && req.ctx.Err() != nil) || !req.state.CompareAndSwap(0, 2) {
+	startedState := int32(4)
+	if req.builder != nil {
+		startedState = 2
+	}
+	if (req.ctx != nil && req.ctx.Err() != nil) ||
+		!req.state.CompareAndSwap(0, startedState) {
 		if req.done != nil {
 			if req.ctx != nil && req.ctx.Err() != nil {
 				req.done <- req.ctx.Err()
@@ -255,13 +414,86 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		}
 		return true
 	}
-	if err := w.writeFrame(req.data); err != nil {
+	data := req.data
+	if req.builder != nil {
+		dequeuedAt := time.Now()
+		var err error
+		data, err = req.builder(dequeuedAt)
+		if err != nil {
+			req.handoff <- TextFrameWriteMetadata{}
+			if req.done != nil {
+				req.done <- err
+			}
+			return true
+		}
+		// Atomically transfer the immutable frame from building to socket
+		// handoff. Context cancellation can claim state 2 first, in which case
+		// the builder is allowed to finish but its frame is discarded.
+		if (req.ctx != nil && req.ctx.Err() != nil) ||
+			!req.state.CompareAndSwap(2, 3) {
+			req.handoff <- TextFrameWriteMetadata{}
+			if req.done != nil {
+				if req.ctx != nil && req.ctx.Err() != nil {
+					req.done <- req.ctx.Err()
+				} else {
+					req.done <- context.Canceled
+				}
+			}
+			return true
+		}
+		req.handoff <- TextFrameWriteMetadata{DequeuedAt: dequeuedAt}
+		select {
+		case <-req.handoffAck:
+		case <-req.ctx.Done():
+			req.state.CompareAndSwap(3, 1)
+			if req.done != nil {
+				req.done <- req.ctx.Err()
+			}
+			return true
+		case <-w.stop:
+			if req.done != nil {
+				req.done <- errProviderWriterStopped
+			}
+			return false
+		}
+		if !req.state.CompareAndSwap(3, 4) {
+			if req.done != nil {
+				if req.ctx != nil && req.ctx.Err() != nil {
+					req.done <- req.ctx.Err()
+				} else {
+					req.done <- context.Canceled
+				}
+			}
+			return true
+		}
+	}
+	writeFrame := w.writeFrame
+	if w.writeFrameForTest != nil {
+		writeFrame = w.writeFrameForTest
+	}
+	if err := writeFrame(data); err != nil {
 		if req.done != nil {
 			req.done <- err
 		}
 		w.closeNow()
 		w.drainAll(err)
 		return false
+	}
+	if !req.state.CompareAndSwap(4, 5) {
+		// Cancellation won the write-completion race. Ensure the connection is
+		// unusable before dispatch cleanup can release the request reservation.
+		w.closeNow()
+		if req.done != nil {
+			if req.ctx != nil && req.ctx.Err() != nil {
+				req.done <- req.ctx.Err()
+			} else {
+				req.done <- context.Canceled
+			}
+		}
+		return false
+	}
+	if w.afterWriteCompleteForTest != nil {
+		w.afterWriteCompleteForTest()
 	}
 	if req.done != nil {
 		req.done <- nil
@@ -367,6 +599,27 @@ func (p *Provider) WriteText(ctx context.Context, data []byte) error {
 		return errProviderWriterStopped
 	}
 	return w.write(ctx, data)
+}
+
+// WriteTextDeferred serializes a data-lane frame whose bytes are constructed at
+// dequeue time, immediately before socket handoff. It preserves the same FIFO,
+// strict control-lane priority, and non-preemptible in-flight write semantics as
+// WriteText. onHandoff runs on the caller before socket exposure.
+func (p *Provider) WriteTextDeferred(
+	ctx context.Context,
+	builder TextFrameBuilder,
+	onHandoff TextFrameHandoff,
+) (TextFrameWriteMetadata, error) {
+	if p == nil {
+		return TextFrameWriteMetadata{}, errors.New("provider is nil")
+	}
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	if w == nil {
+		return TextFrameWriteMetadata{}, errProviderWriterStopped
+	}
+	return w.writeDeferred(ctx, builder, onHandoff)
 }
 
 // WriteTextControl is WriteText on the priority control lane. Use it for

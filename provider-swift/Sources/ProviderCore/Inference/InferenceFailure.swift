@@ -62,6 +62,7 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     case requestExceedsNodeBudget = "request_exceeds_node_budget"
     case requestExceedsBatchTokenBudget = "request_exceeds_batch_token_budget"
     case capacityBusy = "capacity_busy"
+    case deadlineUnreachable = "deadline_unreachable"
     case cancelled
     case clientError = "client_error"
     case toolNoncompliance = "tool_noncompliance"

@@ -25,6 +25,7 @@ const (
 	errorReasonRequestExceedsNodeBudget  = "request_exceeds_node_budget"
 	errorReasonRequestExceedsBatchBudget = "request_exceeds_batch_token_budget"
 	errorReasonCapacityBusy              = "capacity_busy"
+	errorReasonDeadlineUnreachable       = "deadline_unreachable"
 	errorReasonCancelled                 = "cancelled"
 	errorReasonProviderError             = "provider_error"
 	errorReasonClientError               = "client_error"
@@ -43,6 +44,11 @@ const (
 // format / unsupported media). The request is malformed by shape — identical on
 // every provider — so it is NOT a provider fault and NOT an admission mismatch.
 const errorClassClientError = "client_error"
+
+// errorClassDeadlineUnreachable keeps provider pre-content deadline refusals
+// distinct from generic provider faults and generic transient capacity in route
+// telemetry. The provider is healthy; only this attempt's remaining SLA failed.
+const errorClassDeadlineUnreachable = errorReasonDeadlineUnreachable
 
 // isJinjaTemplateErrorReason reports whether a provider-supplied error_reason
 // identifies a DETERMINISTIC chat-template render failure (the DAR-329/341
@@ -75,16 +81,26 @@ func isJinjaTemplateErrorReason(reason string) bool {
 //     outside the allowed set / exceeded the deferred content limit) —
 //     output-dependent, a re-sample can comply.
 //
-// This is the single reason vocabulary shared by the reputation exemption
-// (handleInferenceError: no RecordJobFailure) and the dispatch-path breaker
-// exemption (dispatchState.noteProviderError: no inference-error /
-// node-health / stable-identity / capacity-cooldown feeds): a malformed tool
-// history or an unlucky sample must never quarantine a healthy provider.
-// Capacity and cancel exemptions are status/string-driven and stay with
-// their call sites — this helper is strictly the structured-REASON list.
+// This is the request/model-fault subset of the structured reasons exempted
+// from reputation and provider-health tracking. The complete health-neutral
+// vocabulary is isProviderHealthNeutralErrorReason, which also includes the
+// request-clock-specific deadline_unreachable reason.
 func isNonProviderFaultErrorReason(reason string) bool {
 	return isJinjaTemplateErrorReason(reason) ||
 		normalizeInferenceErrorReason(reason) == errorReasonToolNoncompliance
+}
+
+func isDeadlineUnreachableErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonDeadlineUnreachable
+}
+
+// isProviderHealthNeutralErrorReason is the shared gate for reputation and all
+// provider-health/capacity trackers. Request/model faults remain neutral as
+// before; deadline_unreachable joins them because it describes the coordinator
+// supplied remaining SLA, not provider sickness or capacity dishonesty.
+func isProviderHealthNeutralErrorReason(reason string) bool {
+	return isNonProviderFaultErrorReason(reason) ||
+		isDeadlineUnreachableErrorReason(reason)
 }
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
@@ -111,6 +127,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonRequestExceedsNodeBudget:  {},
 	errorReasonRequestExceedsBatchBudget: {},
 	errorReasonCapacityBusy:              {},
+	errorReasonDeadlineUnreachable:       {},
 	errorReasonCancelled:                 {},
 	errorReasonProviderError:             {},
 	errorReasonClientError:               {},
@@ -290,6 +307,13 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
 	msg = normalizeInferenceErrorForInternalUse(msg)
+	if isDeadlineUnreachableErrorReason(msg.ErrorReason) {
+		out := pendingRouteOutcomeWithReason(
+			pr, finalStatusError, errorClassDeadlineUnreachable,
+			msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+		applyAttemptUsage(out, msg.AttemptUsage)
+		return out
+	}
 	if isTerminalClientErrorCode(msg.StatusCode) || isNonProviderFaultErrorReason(msg.ErrorReason) {
 		// Deterministic non-provider fault: a 4xx status the provider maps for
 		// malformed bodies, OR a structured non-provider-fault reason — jinja_*

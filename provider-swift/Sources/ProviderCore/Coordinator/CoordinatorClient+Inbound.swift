@@ -15,9 +15,10 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
-    internal func handleIncomingText(_ text: String) async {
-        guard let data = text.data(using: .utf8) else { return }
-
+    internal func handleIncomingFrame(
+        _ data: Data,
+        receivedAt: ContinuousClock.Instant
+    ) async {
         let parsed: CoordinatorMessage
         do {
             parsed = try CoordinatorClientCodec.decodeIncomingMessage(from: data)
@@ -29,6 +30,14 @@ extension CoordinatorClient {
         switch parsed {
         case .inferenceRequest(let request):
             let requestId = request.requestId
+            // The receive callback anchored this before executor scheduling,
+            // UTF-8 materialization, JSON parsing, logging, validation, or
+            // base64 decoding. Downstream work must not restart the clock.
+            let firstContentDeadline = request.firstContentBudgetMs.map {
+                FirstContentDeadline(
+                    relativeBudgetMilliseconds: $0,
+                    receivedAt: receivedAt)
+            }
             logger.info("Received inference request: \(requestId)")
 
             guard let encrypted = request.encryptedBody else {
@@ -72,7 +81,8 @@ extension CoordinatorClient {
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
-                toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol
+                toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
+                firstContentDeadline: firstContentDeadline
             ))
 
         case .cancel(let cancel):

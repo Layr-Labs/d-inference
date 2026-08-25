@@ -359,9 +359,10 @@ public enum ProviderMessage: Sendable, Equatable {
         public let statusCode: UInt16
         /// Normalized, privacy-safe failure reason (DAR-341). One of the shared
         /// `error_reason` vocabulary values — "jinja_channel_tags",
-        /// "jinja_null_bridge", "jinja_template", "model_load" — or nil when the
-        /// provider cannot confidently classify the failure (the coordinator then
-        /// derives a reason from status/class). Omitted on the wire when nil.
+        /// "jinja_null_bridge", "jinja_template", "model_load",
+        /// "deadline_unreachable", and the bounded capacity/client reasons — or
+        /// nil when the provider cannot confidently classify the failure.
+        /// Omitted on the wire when nil.
         public let errorReason: InferenceErrorReason?
         /// Typed terminal cause for this error (closed vocabulary, mirrored by
         /// the coordinator's Go `terminal_cause` field). Present for CBv2
@@ -1269,6 +1270,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var requestId: String
         public var body: JSONValue
         public var encryptedBody: EncryptedPayload?
+        /// Positive time remaining for this dispatch attempt to produce its
+        /// first content-bearing chunk. Nil preserves the legacy wire shape.
+        public var firstContentBudgetMs: Int64?
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
@@ -1278,6 +1282,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             requestId: String,
             body: JSONValue = .null,
             encryptedBody: EncryptedPayload? = nil,
+            firstContentBudgetMs: Int64? = nil,
             cacheReceiptNonce: String? = nil,
             cacheScope: String? = nil,
             prefixCacheProtocol: Int? = nil,
@@ -1286,6 +1291,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.requestId = requestId
             self.body = body
             self.encryptedBody = encryptedBody
+            self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
@@ -1400,6 +1406,7 @@ extension CoordinatorMessage: Codable {
         case requestId = "request_id"
         case body
         case encryptedBody = "encrypted_body"
+        case firstContentBudgetMs = "first_content_budget_ms"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
@@ -1422,6 +1429,9 @@ extension CoordinatorMessage: Codable {
             try container.encode(r.requestId, forKey: .requestId)
             try container.encode(r.body, forKey: .body)
             try container.encodeIfPresent(r.encryptedBody, forKey: .encryptedBody)
+            if let firstContentBudgetMs = r.firstContentBudgetMs, firstContentBudgetMs > 0 {
+                try container.encode(firstContentBudgetMs, forKey: .firstContentBudgetMs)
+            }
             try container.encodeIfPresent(r.cacheReceiptNonce, forKey: .cacheReceiptNonce)
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
@@ -1481,6 +1491,8 @@ extension CoordinatorMessage: Codable {
                 requestId: try container.decode(String.self, forKey: .requestId),
                 body: try container.decodeIfPresent(JSONValue.self, forKey: .body) ?? .null,
                 encryptedBody: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedBody),
+                firstContentBudgetMs: try container.decodeIfPresent(
+                    Int64.self, forKey: .firstContentBudgetMs),
                 cacheReceiptNonce: try container.decodeIfPresent(String.self, forKey: .cacheReceiptNonce),
                 cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope),
                 prefixCacheProtocol: try container.decodeIfPresent(

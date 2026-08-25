@@ -51,11 +51,15 @@ func withPrivyUser(r *http.Request, user *store.User) *http.Request {
 }
 
 func testServer(t *testing.T) (*Server, *store.MemoryStore) {
+	return testServerWithConfig(t, ServerConfig{})
+}
+
+func testServerWithConfig(t *testing.T, cfg ServerConfig) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, cfg, logger)
 	return srv, st
 }
 

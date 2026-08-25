@@ -42,6 +42,10 @@ var ErrQueueTimeout = errors.New("request queue timeout")
 // ttft_too_slow 429 instead of a queue timeout.
 var ErrQueueTTFTTooSlow = errors.New("all providers for queued request exceed the TTFT target")
 
+// ErrQueueFirstContentDeadline is returned when the request-absolute
+// first-content clock expires while waiting in the coordinator queue.
+var ErrQueueFirstContentDeadline = errors.New("queued request first-content deadline expired")
+
 // ErrQueueToolConstraintUnavailable is returned when a constrained waiter can
 // no longer be served by any explicit-capability provider. Old providers may
 // still serve auto/ordinary requests, but required/named/none never downgrade.
@@ -58,6 +62,14 @@ type QueuedRequest struct {
 	EnqueuedAt time.Time
 	DoneCh     chan struct{} // closed when the waiter is no longer interested
 	doneOnce   sync.Once
+
+	assignmentMu sync.Mutex
+	assignment   *queuedProviderAssignment
+
+	// beforeAssignmentSend is a deterministic test seam for cancellation at
+	// the exact reserve-to-waiter ownership boundary. Production requests leave
+	// it nil.
+	beforeAssignmentSend func()
 
 	// Decision captures the cost breakdown of the routing decision that
 	// dispatched (or terminally failed) this queued request. Populated by
@@ -76,6 +88,11 @@ type QueuedRequest struct {
 	FailureReason error
 }
 
+type queuedProviderAssignment struct {
+	provider *Provider
+	cleanup  func()
+}
+
 func (r *QueuedRequest) init() {
 	if r.ResponseCh == nil {
 		r.ResponseCh = make(chan *Provider, 1)
@@ -90,11 +107,61 @@ func (r *QueuedRequest) markDone() {
 		r.init()
 		close(r.DoneCh)
 	})
+	r.rejectAssignment()
 }
 
 func (r *QueuedRequest) Done() <-chan struct{} {
 	r.init()
 	return r.DoneCh
+}
+
+// offerAssignment publishes a scheduler-owned reservation. The scheduler keeps
+// cleanup ownership until WaitForProviderContext explicitly accepts the offer.
+// A waiter that already canceled rejects the offer before it can be published.
+func (r *QueuedRequest) offerAssignment(provider *Provider, cleanup func()) bool {
+	r.init()
+	r.assignmentMu.Lock()
+	defer r.assignmentMu.Unlock()
+	select {
+	case <-r.DoneCh:
+		return false
+	default:
+	}
+	if r.assignment != nil {
+		return false
+	}
+	r.assignment = &queuedProviderAssignment{
+		provider: provider,
+		cleanup:  cleanup,
+	}
+	return true
+}
+
+// acceptAssignment is the waiter acknowledgement that transfers reservation
+// cleanup ownership from the scheduler to the dispatch caller.
+func (r *QueuedRequest) acceptAssignment(provider *Provider) bool {
+	r.assignmentMu.Lock()
+	defer r.assignmentMu.Unlock()
+	if r.assignment == nil || r.assignment.provider != provider {
+		return false
+	}
+	r.assignment = nil
+	return true
+}
+
+// rejectAssignment releases a scheduler-owned reservation exactly once. It is
+// called by every cancellation/timeout path and may race offerAssignment.
+func (r *QueuedRequest) rejectAssignment() {
+	var cleanup func()
+	r.assignmentMu.Lock()
+	if r.assignment != nil {
+		cleanup = r.assignment.cleanup
+		r.assignment = nil
+	}
+	r.assignmentMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
 // failWithReason terminally rejects the waiter with a specific cause. If the
@@ -211,13 +278,28 @@ func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRe
 
 	select {
 	case p := <-req.ResponseCh:
-		req.markDone()
 		if p == nil {
+			req.markDone()
 			if req.FailureReason != nil {
 				return nil, req.FailureReason
 			}
 			return nil, ErrQueueTimeout
 		}
+		if err := ctx.Err(); err != nil {
+			req.markDone()
+			return nil, err
+		}
+		if !req.EnqueuedAt.IsZero() && time.Since(req.EnqueuedAt) >= q.maxWait {
+			req.markDone()
+			return nil, ErrQueueTimeout
+		}
+		if !req.acceptAssignment(p) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, ErrQueueTimeout
+		}
+		req.markDone()
 		return p, nil
 	case <-timer.C:
 		// Remove the request from the queue

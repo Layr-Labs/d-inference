@@ -128,6 +128,7 @@ struct CoordinatorIntegrationTests {
             requestId: requestId,
             providerPublicKeyBase64: providerKeys.publicKeyBase64,
             chatRequestJSON: chatJSON,
+            firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
             cacheScope: "authenticated-account-route"
         )
@@ -149,11 +150,17 @@ struct CoordinatorIntegrationTests {
             for await event in events {
                 switch event {
                 case .inferenceRequest(
-                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _
+                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _,
+                    let firstContentDeadline
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
+                    guard let firstContentDeadline else {
+                        Issue.record("missing first-content deadline")
+                        continue
+                    }
+                    #expect(firstContentDeadline.instant > ContinuousClock.now)
                     guard let key = senderKey else {
                         Issue.record("missing sender public key")
                         continue

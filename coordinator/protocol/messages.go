@@ -596,10 +596,14 @@ type InferenceRequestMessage struct {
 	RequestID string               `json:"request_id"`
 	Body      InferenceRequestBody `json:"body,omitempty"`
 	// E2E encrypted request body (set when provider has a public key)
-	EncryptedBody       *EncryptedPayload `json:"encrypted_body,omitempty"`
-	CacheReceiptNonce   string            `json:"cache_receipt_nonce,omitempty"`
-	CacheScope          string            `json:"cache_scope,omitempty"`
-	PrefixCacheProtocol int               `json:"prefix_cache_protocol,omitempty"`
+	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
+	// FirstContentBudgetMS is the positive time remaining for this dispatch
+	// attempt to produce its first content-bearing chunk. Zero preserves the
+	// legacy wire shape by omitting the field.
+	FirstContentBudgetMS int64  `json:"first_content_budget_ms,omitempty"`
+	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
+	CacheScope           string `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.

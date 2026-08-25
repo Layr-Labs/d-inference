@@ -592,7 +592,7 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 			RequestID:  "dummy-" + string(rune('a'+i)),
 			ProviderID: providerID,
 			Model:      model,
-			ChunkCh:    make(chan string, 1),
+			ChunkCh:    make(chan registry.ProviderChunk, 1),
 			CompleteCh: make(chan protocol.UsageInfo, 1),
 			ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		}

@@ -41,6 +41,7 @@ extension ProviderLoop {
         terminalCause: InferenceTerminalCause?
     ) -> InferenceErrorReason? {
         if error is CancellationError { return .cancelled }
+        if error is PreContentDeadlineFailure { return .deadlineUnreachable }
         if let typed = classifyTypedInferenceErrorReason(error) { return typed }
         if let cause = terminalCause {
             switch cause {
@@ -130,6 +131,7 @@ extension ProviderLoop {
             || errorReason == .requestExceedsNodeBudget
             || errorReason == .requestExceedsBatchTokenBudget
             || errorReason == .capacityBusy
+            || errorReason == .deadlineUnreachable
         {
             return .capacity
         }
@@ -231,6 +233,9 @@ extension ProviderLoop {
         // as a 500 provider error anywhere.
         if error is CancellationError {
             return 499
+        }
+        if error is PreContentDeadlineFailure {
+            return 503
         }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {

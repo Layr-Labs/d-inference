@@ -363,15 +363,20 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context): (Data?, NWConnection.ContentContext?) =
+            let (data, context, receivedAt):
+                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
                         connection.receiveMessage { data, context, _isComplete, error in
+                            // Stamp at the transport callback before executor
+                            // scheduling or any UTF-8/String materialization can
+                            // consume the coordinator's relative deadline.
+                            let receivedAt = ContinuousClock.now
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context))
+                            cont.resume(returning: (data, context, receivedAt))
                         }
                     }
                 } onCancel: {
@@ -405,9 +410,7 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            if let text = String(data: data, encoding: .utf8) {
-                await handleIncomingText(text)
-            }
+            await handleIncomingFrame(data, receivedAt: receivedAt)
         }
     }
 

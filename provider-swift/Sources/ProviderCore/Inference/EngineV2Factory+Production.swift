@@ -117,6 +117,31 @@ extension EngineV2Factory {
     /// and the measured winner with trust + prompt narrowing.
     public static let defaultSoloPrefillStripeTokens = 2048
 
+    /// Env override for the concurrent-partial-prefill cap.
+    public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
+
+    /// Serving default for the concurrent-partial-prefill cap.
+    ///
+    /// Cap 1 serializes partial prefills in submission order. This is a global
+    /// production policy for every CBv2 model built by this factory; operators
+    /// can immediately restore unlimited interleave with the environment
+    /// override documented below.
+    public static let defaultMaxConcurrentPartialPrefills: Int? = 1
+
+    /// Resolve the cap: absent env uses cap 1; a positive integer overrides it.
+    /// Setting `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0` is the immediate rollback
+    /// to historical unlimited interleave. Other non-positive or malformed
+    /// explicit values also fail open to unlimited behavior.
+    public static func maxConcurrentPartialPrefills(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        guard let raw = environment[maxPartialPrefillsKey] else {
+            return defaultMaxConcurrentPartialPrefills
+        }
+        guard let value = Int(raw), value > 0 else { return nil }
+        return value
+    }
+
     /// Resolve the solo-stripe setting: absent env -> the serving default;
     /// an explicit value above the plain chunk overrides; any other
     /// explicit value (`0`, garbage, <= plain chunk) DISARMS — the escape
@@ -131,6 +156,23 @@ extension EngineV2Factory {
         }
         guard let value = Int(raw), value > plainChunk else { return nil }
         return value
+    }
+
+    /// Construct the scheduler configuration used by every production backend.
+    /// Kept as one pure seam so tests verify the fields actually handed to
+    /// `EngineV2`, not only the individual environment parsers.
+    static func productionSchedulerConfig(
+        maxConcurrentRequests: Int,
+        environment: [String: String]
+    ) -> CBv2SchedulerConfig {
+        var config = CBv2SchedulerConfig(
+            maxConcurrentRequests: max(1, maxConcurrentRequests))
+        config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
+            abovePlainChunk: config.prefillChunkSize,
+            environment: environment)
+        config.maxConcurrentPartialPrefills =
+            Self.maxConcurrentPartialPrefills(environment: environment)
+        return config
     }
 
     /// Clamp a KV admission ceiling to physical unified memory. A ceiling
@@ -814,14 +856,9 @@ extension EngineV2Factory {
         // paged pool's `maxPrefillChunk` below AND is the instance the
         // engine runs on — `assembleProductionBuild` reads it back off the
         // preparation and sets only `enablePrefixCache`.
-        var schedulerConfig = CBv2SchedulerConfig(
-            maxConcurrentRequests: max(1, maxConcurrentRequests))
-        schedulerConfig.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
-            abovePlainChunk: schedulerConfig.prefillChunkSize,
+        let schedulerConfig = productionSchedulerConfig(
+            maxConcurrentRequests: maxConcurrentRequests,
             environment: environment)
-        schedulerConfig.maxConcurrentPartialPrefills =
-            environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
-            .flatMap { $0 > 0 ? $0 : nil }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(

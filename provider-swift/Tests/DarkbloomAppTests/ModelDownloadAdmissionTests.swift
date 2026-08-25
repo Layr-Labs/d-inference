@@ -10,17 +10,16 @@ struct ModelDownloadAdmissionTests {
     @Test("decoded plans are recomputed locally and malformed states fail closed")
     func validatesDecodedFields() {
         let valid = makePlan(remaining: 1_000, available: reserve + 1_000)
-        #expect(
-            try? ValidatedModelDownloadStoragePlan.validate(
-                valid,
-                modelID: "org/model"
-            ) == .init(
-                remainingBytes: 1_000,
-                reserveBytes: reserve,
-                requiredAvailableBytes: reserve + 1_000,
-                availableBytes: reserve + 1_000
-            )
+        let validated = try? ValidatedModelDownloadStoragePlan.validate(
+            valid,
+            modelID: "org/model"
         )
+        #expect(validated == ValidatedModelDownloadStoragePlan(
+            remainingBytes: 1_000,
+            reserveBytes: reserve,
+            requiredAvailableBytes: reserve + 1_000,
+            availableBytes: reserve + 1_000
+        ))
 
         let invalid: [CLIModelDownloadStoragePlan?] = [
             nil,

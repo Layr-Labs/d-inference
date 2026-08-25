@@ -284,6 +284,28 @@ func TestPendingAdmissionGenerationCannotClearNewerPolicy(t *testing.T) {
 	}
 }
 
+func TestFinalizationWorkerRearmsForNewPendingGeneration(t *testing.T) {
+	srv, _ := testServer(t)
+	provider := srv.registry.Register(
+		"provider-worker-handoff", nil, admissionTestRegister())
+	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
+		policy: hardwareadmission.Policy{Version: 2},
+	})
+	srv.hardwareAdmissionPendingMu.Lock()
+	srv.hardwareAdmissionFinalizeRetry[provider.ID] = struct{}{}
+	srv.hardwareAdmissionPendingMu.Unlock()
+
+	srv.finishHardwareAdmissionFinalizationRetry(provider)
+
+	srv.hardwareAdmissionPendingMu.Lock()
+	_, rearmed := srv.hardwareAdmissionFinalizeRetry[provider.ID]
+	srv.hardwareAdmissionPendingMu.Unlock()
+	if !rearmed {
+		t.Fatal("new pending generation lost its finalization worker")
+	}
+	srv.clearPendingHardwareAdmission(provider.ID)
+}
+
 func TestEnforcedHardwareTrustRequiresCodeIdentity(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.setHardwareAdmissionPolicy(hardwareadmission.Policy{

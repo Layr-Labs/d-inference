@@ -613,11 +613,7 @@ func (s *Server) schedulePendingHardwareAdmissionFinalization(provider *registry
 	s.hardwareAdmissionFinalizeRetry[provider.ID] = struct{}{}
 	s.hardwareAdmissionPendingMu.Unlock()
 	saferun.Go(s.logger, "hardwareAdmissionFinalize", func() {
-		defer func() {
-			s.hardwareAdmissionPendingMu.Lock()
-			delete(s.hardwareAdmissionFinalizeRetry, provider.ID)
-			s.hardwareAdmissionPendingMu.Unlock()
-		}()
+		defer s.finishHardwareAdmissionFinalizationRetry(provider)
 		for attempt := 1; ; attempt++ {
 			delay := time.Duration(attempt) * 2 * time.Second
 			if delay > 30*time.Second {
@@ -633,6 +629,21 @@ func (s *Server) schedulePendingHardwareAdmissionFinalization(provider *registry
 			}
 		}
 	})
+}
+
+func (s *Server) finishHardwareAdmissionFinalizationRetry(
+	provider *registry.Provider,
+) {
+	if provider == nil {
+		return
+	}
+	s.hardwareAdmissionPendingMu.Lock()
+	delete(s.hardwareAdmissionFinalizeRetry, provider.ID)
+	_, stillPending := s.hardwareAdmissionPending[provider.ID]
+	s.hardwareAdmissionPendingMu.Unlock()
+	if stillPending && s.registry.GetProvider(provider.ID) == provider {
+		s.schedulePendingHardwareAdmissionFinalization(provider)
+	}
 }
 
 func (s *Server) finalizeOrScheduleHardwareAdmission(provider *registry.Provider) {

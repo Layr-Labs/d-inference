@@ -22,6 +22,57 @@ struct UpdateRecoveryTransactionTests {
     private static let rollbackFaultPoints: [UpdateRecoveryStore.FaultPoint] =
         journalFaultPoints + [.transactionRemoved]
 
+    @Test("flat release fixture archives regular executable payloads")
+    func flatReleaseFixtureMatchesBundleSemantics() throws {
+        let fixture = try UpdateRecoveryFixture(layout: .flat)
+        defer { fixture.cleanup() }
+        let fm = FileManager.default
+        let releaseBin = fixture.root.appendingPathComponent(
+            "release-source/bin",
+            isDirectory: true
+        )
+
+        try ReleaseArchivePreflight.validate(fixture.tarball)
+        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+            let values = try releaseBin.appendingPathComponent(name)
+                .resourceValues(forKeys: [
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey,
+                ])
+            #expect(values.isRegularFile == true)
+            #expect(values.isSymbolicLink != true)
+        }
+        for name in ["darkbloom", "darkbloom-enclave"] {
+            #expect(
+                fm.isExecutableFile(
+                    atPath: releaseBin.appendingPathComponent(name).path
+                )
+            )
+        }
+
+        let legacyName = "eigeninference-enclave"
+        #expect(
+            !UpdateAtomicFilesystem.itemExists(
+                releaseBin.appendingPathComponent(legacyName)
+            )
+        )
+        #expect(
+            try fm.destinationOfSymbolicLink(
+                atPath: fixture.installRoot
+                    .appendingPathComponent("bin/\(legacyName)").path
+            ) == "darkbloom-enclave"
+        )
+
+        let staged = try stagedBundle(for: fixture)
+        defer { staged.discard() }
+        #expect(
+            try fm.destinationOfSymbolicLink(
+                atPath: staged.stagingRoot
+                    .appendingPathComponent("bin/\(legacyName)").path
+            ) == "darkbloom-enclave"
+        )
+    }
+
     @Test("every rollback boundary is idempotent across repeated recovery")
     func rollbackFaultBoundariesAreIdempotent() throws {
         #expect(

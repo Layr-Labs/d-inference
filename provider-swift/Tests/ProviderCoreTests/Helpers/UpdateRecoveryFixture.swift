@@ -46,7 +46,10 @@ struct UpdateRecoveryFixture {
             try Self.writeApp(version: oldVersion, root: installRoot)
             try Self.writeCanonicalLinks(root: installRoot)
         } else {
-            try Self.writeFlat(version: oldVersion, root: installRoot)
+            try Self.writeInstalledFlatLayout(
+                version: oldVersion,
+                root: installRoot
+            )
         }
         for (relativePath, contents) in preservedFiles {
             let file = installRoot.appendingPathComponent(relativePath)
@@ -70,7 +73,10 @@ struct UpdateRecoveryFixture {
                 )
             }
         } else {
-            try Self.writeFlat(version: newVersion, root: releaseSource)
+            try Self.writeFlatReleasePayload(
+                version: newVersion,
+                root: releaseSource
+            )
         }
 
         try Self.runTar(source: releaseSource, destination: tarball)
@@ -154,9 +160,7 @@ struct UpdateRecoveryFixture {
         let appBin = contents.appendingPathComponent("MacOS")
         try fm.createDirectory(at: appBin, withIntermediateDirectories: true)
         try Data("<plist/>".utf8).write(to: contents.appendingPathComponent("Info.plist"))
-        try Data("\(version)-darkbloom".utf8).write(to: appBin.appendingPathComponent("darkbloom"))
-        try Data("\(version)-enclave".utf8).write(to: appBin.appendingPathComponent("darkbloom-enclave"))
-        try Data("\(version)-metallib".utf8).write(to: appBin.appendingPathComponent("mlx.metallib"))
+        try writePayloadFiles(version: version, to: appBin)
     }
 
     static func writeCanonicalLinks(root: URL) throws {
@@ -181,22 +185,51 @@ struct UpdateRecoveryFixture {
         )
     }
 
-    static func writeFlat(version: String, root: URL) throws {
+    private static func writeInstalledFlatLayout(
+        version: String,
+        root: URL
+    ) throws {
         let fm = FileManager.default
         let bin = root.appendingPathComponent("bin")
-        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
-        try Data("\(version)-darkbloom".utf8).write(
-            to: bin.appendingPathComponent("darkbloom")
-        )
-        try Data("\(version)-enclave".utf8).write(
-            to: bin.appendingPathComponent("darkbloom-enclave")
-        )
-        try Data("\(version)-metallib".utf8).write(
-            to: bin.appendingPathComponent("mlx.metallib")
-        )
+        try writeFlatReleasePayload(version: version, root: root)
         try fm.createSymbolicLink(
             atPath: bin.appendingPathComponent("eigeninference-enclave").path,
             withDestinationPath: "darkbloom-enclave"
+        )
+    }
+
+    /// Real release archives contain only regular payload files. The legacy
+    /// enclave symlink belongs to the installed layout and is created by the
+    /// updater after archive validation and extraction.
+    private static func writeFlatReleasePayload(
+        version: String,
+        root: URL
+    ) throws {
+        let fm = FileManager.default
+        let bin = root.appendingPathComponent("bin")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        try writePayloadFiles(version: version, to: bin)
+    }
+
+    private static func writePayloadFiles(
+        version: String,
+        to bin: URL
+    ) throws {
+        let fm = FileManager.default
+        let darkbloom = bin.appendingPathComponent("darkbloom")
+        let enclave = bin.appendingPathComponent("darkbloom-enclave")
+        try Data("\(version)-darkbloom".utf8).write(to: darkbloom)
+        try Data("\(version)-enclave".utf8).write(to: enclave)
+        try Data("\(version)-metallib".utf8).write(
+            to: bin.appendingPathComponent("mlx.metallib")
+        )
+        try fm.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: darkbloom.path
+        )
+        try fm.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: enclave.path
         )
     }
 

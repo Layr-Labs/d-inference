@@ -1,9 +1,8 @@
-import CryptoKit
-import Darwin
 import Foundation
 import ProviderCoreFoundation
 
-/// Crash- and power-loss-durable publication of a verified app bundle.
+/// Crash- and power-loss-durable publication of a verified app bundle and its
+/// canonical bin directory.
 ///
 /// Callers must hold `InstallMutationLock.acquireForOneShotInstall` for every
 /// operation. The fixed journal is deliberately visible to the CLI updater and
@@ -12,11 +11,24 @@ import ProviderCoreFoundation
 struct AppRelocationTransaction {
     enum FaultPoint: String, CaseIterable {
         case journalPersisted
-        case liveStateMutated
-        case liveStateRecorded
-        case previousStateMoved
-        case previousStateRecorded
-        case ownedPreviousRemoved
+        case appLiveStateMutated
+        case appLiveStateRecorded
+        case binLiveStateMutated
+        case binLiveStateRecorded
+        case appPreviousStateMoved
+        case appPreviousStateRecorded
+        case binPreviousStateMoved
+        case binPreviousStateRecorded
+        case ownedAppPreviousRetired
+        case appPreviousRetirementRecorded
+        case binPreviousRetired
+        case binPreviousRetirementRecorded
+        case appRemovalAuthorized
+        case appPreviousRemoved
+        case appRemovalRecorded
+        case binRemovalAuthorized
+        case binPreviousRemoved
+        case binRemovalRecorded
         case journalRemoved
     }
 
@@ -47,8 +59,8 @@ struct AppRelocationTransaction {
                 "The app relocation transaction at \(path) cannot be recovered "
                     + "without risking user data: \(reason)"
             case .invalidStaging(let path):
-                "The verified app staging path is outside the managed transaction "
-                    + "namespace: \(path)"
+                "A verified relocation staging path is outside the managed "
+                    + "transaction namespace: \(path)"
             case .filesystem(let operation, let reason):
                 "The app relocation transaction could not \(operation): \(reason)"
             }
@@ -57,48 +69,54 @@ struct AppRelocationTransaction {
 
     private enum Phase: String, Codable {
         case prepared
-        case liveInstalled = "live_installed"
-        case previousResolved = "previous_resolved"
-    }
-
-    fileprivate struct ArtifactState: Codable, Equatable {
-        let identity: String
-        let contentHash: String
-
-        enum CodingKeys: String, CodingKey {
-            case identity
-            case contentHash = "content_hash"
-        }
+        case appLiveInstalled = "app_live_installed"
+        case binLiveInstalled = "bin_live_installed"
+        case appPreviousResolved = "app_previous_resolved"
+        case binPreviousResolved = "bin_previous_resolved"
+        case appPreviousRetired = "app_previous_retired"
+        case binPreviousRetired = "bin_previous_retired"
+        case appRemovalAuthorized = "app_removal_authorized"
+        case appRemoved = "app_removed"
+        case binRemovalAuthorized = "bin_removal_authorized"
+        case binRemoved = "bin_removed"
     }
 
     private struct Journal: Codable {
         let schema: Int
         let transactionID: String
         var phase: Phase
-        let candidate: ArtifactState
-        let previousKind: PreviousKind
-        let previous: ArtifactState?
+        let appCandidate: AppRelocationArtifactState
+        let binCandidate: AppRelocationArtifactState
+        let previousAppKind: PreviousKind
+        let previousApp: AppRelocationArtifactState?
+        let previousBin: AppRelocationArtifactState?
 
         enum CodingKeys: String, CodingKey {
             case schema
             case transactionID = "transaction_id"
             case phase
-            case candidate
-            case previousKind = "previous_kind"
-            case previous
+            case appCandidate = "app_candidate"
+            case binCandidate = "bin_candidate"
+            case previousAppKind = "previous_app_kind"
+            case previousApp = "previous_app"
+            case previousBin = "previous_bin"
         }
     }
 
-    private static let schema = 1
-    private static let stagingPrefix = ".Darkbloom.app.relocation-"
-    private static let previousPrefix = ".Darkbloom.app.previous-"
-    private static let foreignPrefix = "Darkbloom.app.foreign-"
+    private static let schema = 2
+    private static let appStagingPrefix = ".Darkbloom.app.relocation-"
+    private static let appPreviousPrefix = ".Darkbloom.app.previous-"
+    private static let appGarbagePrefix = ".Darkbloom.app.garbage-"
+    private static let foreignAppPrefix = "Darkbloom.app.foreign-"
+    private static let binPreviousPrefix = ".bin.previous-"
+    private static let binGarbagePrefix = ".bin.garbage-"
     private static let journalTemporaryPrefix =
         ".\(InstallMutationLock.appRelocationTransactionFileName).tmp-"
     private static let maximumJournalBytes = 64 * 1024
 
     private let installRoot: URL
-    private let destinationURL: URL
+    private let appDestinationURL: URL
+    private let binDestinationURL: URL
     private let fileManager: FileManager
     private let faultInjector: (FaultPoint) throws -> Void
 
@@ -108,8 +126,11 @@ struct AppRelocationTransaction {
         faultInjector: @escaping (FaultPoint) throws -> Void = { _ in }
     ) {
         self.installRoot = installRoot.standardizedFileURL
-        self.destinationURL = installRoot
+        appDestinationURL = installRoot
             .appendingPathComponent("Darkbloom.app", isDirectory: true)
+            .standardizedFileURL
+        binDestinationURL = installRoot
+            .appendingPathComponent("bin", isDirectory: true)
             .standardizedFileURL
         self.fileManager = fileManager
         self.faultInjector = faultInjector
@@ -117,15 +138,15 @@ struct AppRelocationTransaction {
 
     static func hasPendingTransaction(
         in installRoot: URL,
-        fileManager: FileManager = .default
+        fileManager _: FileManager = .default
     ) -> Bool {
-        DurableFilesystem.itemExists(
+        AppRelocationFilesystem.itemExists(
             InstallMutationLock.appRelocationTransactionURL(in: installRoot)
         )
     }
 
     /// Complete the single recorded transaction, or return nil when there is
-    /// no journal. Every accepted state is identified by both inode identity
+    /// no journal. Every accepted endpoint is identified by both inode identity
     /// and a complete content hash; all other combinations fail closed.
     func recover() throws -> RecoveryResult? {
         guard Self.hasPendingTransaction(
@@ -138,9 +159,10 @@ struct AppRelocationTransaction {
         return try complete(&journal)
     }
 
-    /// Remove only unjournaled artifacts from this helper's strict UUID
-    /// namespace. This runs under the install lock, so none can belong to a
-    /// concurrently staging app process.
+    /// Remove only unjournaled candidates from this helper's strict UUID
+    /// namespaces. Predecessor, foreign, and garbage paths are intentionally
+    /// excluded: deleting one without its authentic journal could destroy the
+    /// only copy of user data.
     func cleanupUnjournaledArtifacts() throws {
         guard !Self.hasPendingTransaction(
             in: installRoot,
@@ -162,12 +184,15 @@ struct AppRelocationTransaction {
             )
         }
 
-        var removedAny = false
         for entry in entries {
             let name = entry.lastPathComponent
             let suffix: String?
-            if name.hasPrefix(Self.stagingPrefix) {
-                suffix = String(name.dropFirst(Self.stagingPrefix.count))
+            if name.hasPrefix(Self.appStagingPrefix) {
+                suffix = String(name.dropFirst(Self.appStagingPrefix.count))
+            } else if name.hasPrefix(AppRelocationBinLayout.candidatePrefix) {
+                suffix = String(
+                    name.dropFirst(AppRelocationBinLayout.candidatePrefix.count)
+                )
             } else if name.hasPrefix(Self.journalTemporaryPrefix) {
                 suffix = String(name.dropFirst(Self.journalTemporaryPrefix.count))
             } else {
@@ -176,26 +201,18 @@ struct AppRelocationTransaction {
             guard let suffix, Self.isCanonicalTransactionID(suffix) else {
                 continue
             }
-            do {
-                try fileManager.removeItem(at: entry)
-                removedAny = true
-            } catch {
-                throw TransactionError.filesystem(
-                    operation: "remove orphaned app relocation artifact \(entry.path)",
-                    reason: error.localizedDescription
-                )
-            }
-        }
-        if removedAny {
-            try DurableFilesystem.syncDirectory(installRoot)
+            try AppRelocationFilesystem.removeDurably(entry)
         }
     }
 
-    /// Publish `stagingURL` as the live app. Ownership of the staging path
-    /// transfers to the transaction once the journal has been published.
+    /// Publish both candidates as one forward-recoverable installation.
+    /// Ownership of both staging paths transfers to the transaction once the
+    /// journal has been durably published.
     func install(
-        stagingURL: URL,
-        previousKind: PreviousKind
+        appStagingURL: URL,
+        binStagingURL: URL,
+        previousAppKind: PreviousKind,
+        expectedPreviousBin: AppRelocationArtifactState?
     ) throws -> RecoveryResult {
         guard !Self.hasPendingTransaction(
             in: installRoot,
@@ -204,47 +221,81 @@ struct AppRelocationTransaction {
             throw TransactionError.pendingTransaction(path: journalURL.path)
         }
 
-        let staging = stagingURL.standardizedFileURL
-        guard staging.deletingLastPathComponent() == installRoot,
-              staging.lastPathComponent.hasPrefix(Self.stagingPrefix)
+        let appStaging = appStagingURL.standardizedFileURL
+        guard appStaging.deletingLastPathComponent() == installRoot,
+              appStaging.lastPathComponent.hasPrefix(Self.appStagingPrefix)
         else {
-            throw TransactionError.invalidStaging(path: staging.path)
+            throw TransactionError.invalidStaging(path: appStaging.path)
         }
         let transactionID = String(
-            staging.lastPathComponent.dropFirst(Self.stagingPrefix.count)
+            appStaging.lastPathComponent.dropFirst(Self.appStagingPrefix.count)
         )
         guard Self.isCanonicalTransactionID(transactionID) else {
-            throw TransactionError.invalidStaging(path: staging.path)
+            throw TransactionError.invalidStaging(path: appStaging.path)
+        }
+        let binStaging = binStagingURL.standardizedFileURL
+        guard binStaging == self.binStagingURL(transactionID: transactionID) else {
+            throw TransactionError.invalidStaging(path: binStaging.path)
+        }
+        guard try AppRelocationFilesystem.pathKind(at: appStaging) == .directory,
+              try AppRelocationFilesystem.pathKind(at: binStaging) == .directory
+        else {
+            throw TransactionError.invalidStaging(
+                path: "\(appStaging.path), \(binStaging.path)"
+            )
         }
 
-        try DurableFilesystem.fullySyncTree(staging)
-        let candidate = try DurableFilesystem.state(at: staging)
-        let previous = try DurableFilesystem.optionalState(at: destinationURL)
-        switch previousKind {
+        let appCandidate = try AppRelocationFilesystem.synchronizedState(
+            at: appStaging
+        )
+        let binCandidate = try AppRelocationFilesystem.synchronizedState(
+            at: binStaging
+        )
+        let previousApp = try AppRelocationFilesystem.synchronizedOptionalState(
+            at: appDestinationURL
+        )
+        switch previousAppKind {
         case .absent:
-            guard previous == nil else {
+            guard previousApp == nil else {
                 throw ambiguous(
-                    "destination appeared after ownership classification"
+                    "app destination appeared after ownership classification"
                 )
             }
         case .owned, .foreign:
-            guard previous != nil else {
+            guard previousApp != nil else {
                 throw ambiguous(
-                    "destination disappeared after ownership classification"
+                    "app destination disappeared after ownership classification"
                 )
             }
+        }
+
+        let previousBinKind = try AppRelocationFilesystem.pathKind(
+            at: binDestinationURL
+        )
+        guard previousBinKind == nil || previousBinKind == .directory else {
+            throw ambiguous("live bin path is not a real directory")
+        }
+        let previousBin = try AppRelocationFilesystem.synchronizedOptionalState(
+            at: binDestinationURL
+        )
+        guard previousBin == expectedPreviousBin else {
+            throw ambiguous(
+                "live bin directory changed after its canonical candidate was copied"
+            )
         }
 
         let journal = Journal(
             schema: Self.schema,
             transactionID: transactionID,
             phase: .prepared,
-            candidate: candidate,
-            previousKind: previousKind,
-            previous: previous
+            appCandidate: appCandidate,
+            binCandidate: binCandidate,
+            previousAppKind: previousAppKind,
+            previousApp: previousApp,
+            previousBin: previousBin
         )
         try validate(journal)
-        try ensureInitialAuxiliaryPathIsAvailable(for: journal)
+        try ensureInitialAuxiliaryPathsAreAvailable(for: journal)
         try persist(journal)
         try faultInjector(.journalPersisted)
 
@@ -256,23 +307,55 @@ struct AppRelocationTransaction {
         InstallMutationLock.appRelocationTransactionURL(in: installRoot)
     }
 
-    private func stagingURL(for journal: Journal) -> URL {
+    private func appStagingURL(for journal: Journal) -> URL {
         installRoot.appendingPathComponent(
-            "\(Self.stagingPrefix)\(journal.transactionID)",
+            "\(Self.appStagingPrefix)\(journal.transactionID)",
             isDirectory: true
         )
     }
 
-    private func previousURL(for journal: Journal) -> URL {
+    private func binStagingURL(for journal: Journal) -> URL {
+        binStagingURL(transactionID: journal.transactionID)
+    }
+
+    private func binStagingURL(transactionID: String) -> URL {
         installRoot.appendingPathComponent(
-            "\(Self.previousPrefix)\(journal.transactionID)",
+            "\(AppRelocationBinLayout.candidatePrefix)\(transactionID)",
+            isDirectory: true
+        ).standardizedFileURL
+    }
+
+    private func appPreviousURL(for journal: Journal) -> URL {
+        installRoot.appendingPathComponent(
+            "\(Self.appPreviousPrefix)\(journal.transactionID)",
             isDirectory: true
         )
     }
 
-    private func foreignURL(for journal: Journal) -> URL {
+    private func appGarbageURL(for journal: Journal) -> URL {
         installRoot.appendingPathComponent(
-            "\(Self.foreignPrefix)\(journal.transactionID)",
+            "\(Self.appGarbagePrefix)\(journal.transactionID)",
+            isDirectory: true
+        )
+    }
+
+    private func foreignAppURL(for journal: Journal) -> URL {
+        installRoot.appendingPathComponent(
+            "\(Self.foreignAppPrefix)\(journal.transactionID)",
+            isDirectory: true
+        )
+    }
+
+    private func binPreviousURL(for journal: Journal) -> URL {
+        installRoot.appendingPathComponent(
+            "\(Self.binPreviousPrefix)\(journal.transactionID)",
+            isDirectory: true
+        )
+    }
+
+    private func binGarbageURL(for journal: Journal) -> URL {
+        installRoot.appendingPathComponent(
+            "\(Self.binGarbagePrefix)\(journal.transactionID)",
             isDirectory: true
         )
     }
@@ -282,173 +365,586 @@ struct AppRelocationTransaction {
             try validate(journal)
             switch journal.phase {
             case .prepared:
-                try installLiveCandidate(journal)
-                journal.phase = .liveInstalled
+                try installLiveApp(journal)
+                journal.phase = .appLiveInstalled
                 try persist(journal)
-                try faultInjector(.liveStateRecorded)
-            case .liveInstalled:
-                try resolvePrevious(journal)
-                journal.phase = .previousResolved
+                try faultInjector(.appLiveStateRecorded)
+            case .appLiveInstalled:
+                try installLiveBin(journal)
+                journal.phase = .binLiveInstalled
                 try persist(journal)
-                try faultInjector(.previousStateRecorded)
-            case .previousResolved:
+                try faultInjector(.binLiveStateRecorded)
+            case .binLiveInstalled:
+                try resolvePreviousApp(journal)
+                journal.phase = .appPreviousResolved
+                try persist(journal)
+                try faultInjector(.appPreviousStateRecorded)
+            case .appPreviousResolved:
+                try resolvePreviousBin(journal)
+                journal.phase = .binPreviousResolved
+                try persist(journal)
+                try faultInjector(.binPreviousStateRecorded)
+            case .binPreviousResolved:
+                try retirePreviousApp(journal)
+                journal.phase = .appPreviousRetired
+                try persist(journal)
+                try faultInjector(.appPreviousRetirementRecorded)
+            case .appPreviousRetired:
+                try retirePreviousBin(journal)
+                journal.phase = .binPreviousRetired
+                try persist(journal)
+                try faultInjector(.binPreviousRetirementRecorded)
+            case .binPreviousRetired:
+                try authorizePreviousAppRemoval(journal)
+                journal.phase = .appRemovalAuthorized
+                try persist(journal)
+                try faultInjector(.appRemovalAuthorized)
+            case .appRemovalAuthorized:
+                try removePreviousApp(journal)
+                try faultInjector(.appPreviousRemoved)
+                journal.phase = .appRemoved
+                try persist(journal)
+                try faultInjector(.appRemovalRecorded)
+            case .appRemoved:
+                try authorizePreviousBinRemoval(journal)
+                journal.phase = .binRemovalAuthorized
+                try persist(journal)
+                try faultInjector(.binRemovalAuthorized)
+            case .binRemovalAuthorized:
+                try removePreviousBin(journal)
+                try faultInjector(.binPreviousRemoved)
+                journal.phase = .binRemoved
+                try persist(journal)
+                try faultInjector(.binRemovalRecorded)
+            case .binRemoved:
                 let result = try finish(journal)
-                try DurableFilesystem.removeDurably(journalURL)
+                try AppRelocationFilesystem.removeDurably(journalURL)
                 try faultInjector(.journalRemoved)
                 return result
             }
         }
     }
 
-    private func installLiveCandidate(_ journal: Journal) throws {
-        let staging = stagingURL(for: journal)
-        let destination = try DurableFilesystem.optionalState(at: destinationURL)
-        let staged = try DurableFilesystem.optionalState(at: staging)
+    private func installLiveApp(_ journal: Journal) throws {
+        let staging = appStagingURL(for: journal)
+        let destination = try AppRelocationFilesystem.optionalState(
+            at: appDestinationURL
+        )
+        let staged = try AppRelocationFilesystem.optionalState(at: staging)
 
-        switch journal.previousKind {
+        switch journal.previousAppKind {
         case .absent:
-            guard journal.previous == nil else {
-                throw corrupt("absent predecessor carries a recorded state")
+            guard journal.previousApp == nil else {
+                throw corrupt("absent app predecessor carries a recorded state")
             }
-            if staged == journal.candidate, destination == nil {
-                try DurableFilesystem.renameExclusive(
+            if staged == journal.appCandidate, destination == nil {
+                try AppRelocationFilesystem.renameExclusive(
                     staging,
-                    to: destinationURL
+                    to: appDestinationURL
                 )
-                try faultInjector(.liveStateMutated)
-            } else if staged == nil, destination == journal.candidate {
+                try faultInjector(.appLiveStateMutated)
+            } else if staged == nil, destination == journal.appCandidate {
                 // The rename reached disk before the phase journal did.
             } else {
                 throw ambiguous(
-                    "fresh install is neither wholly staged nor wholly live"
+                    "fresh app install is neither wholly staged nor wholly live"
                 )
             }
         case .owned, .foreign:
-            guard let previous = journal.previous else {
-                throw corrupt("existing predecessor has no recorded state")
+            guard let previous = journal.previousApp else {
+                throw corrupt("existing app predecessor has no recorded state")
             }
-            if staged == journal.candidate, destination == previous {
-                try DurableFilesystem.exchange(staging, destinationURL)
-                try faultInjector(.liveStateMutated)
-            } else if staged == previous, destination == journal.candidate {
+            if staged == journal.appCandidate, destination == previous {
+                try AppRelocationFilesystem.exchange(staging, appDestinationURL)
+                try faultInjector(.appLiveStateMutated)
+            } else if staged == previous, destination == journal.appCandidate {
                 // The exchange reached disk before the phase journal did.
             } else {
                 throw ambiguous(
-                    "replacement endpoints do not match either side of the "
-                        + "recorded atomic exchange"
+                    "app endpoints do not match either side of the recorded exchange"
                 )
             }
         }
     }
 
-    private func resolvePrevious(_ journal: Journal) throws {
-        guard try DurableFilesystem.optionalState(at: destinationURL)
-                == journal.candidate
+    private func installLiveBin(_ journal: Journal) throws {
+        guard try AppRelocationFilesystem.optionalState(at: appDestinationURL)
+                == journal.appCandidate
         else {
-            throw ambiguous("live destination no longer matches the candidate")
+            throw ambiguous("live app no longer matches the candidate")
         }
+        let staging = binStagingURL(for: journal)
+        let destination = try AppRelocationFilesystem.optionalState(
+            at: binDestinationURL
+        )
+        let staged = try AppRelocationFilesystem.optionalState(at: staging)
 
-        let staging = stagingURL(for: journal)
-        switch journal.previousKind {
+        if let previous = journal.previousBin {
+            if staged == journal.binCandidate, destination == previous {
+                try AppRelocationFilesystem.exchange(staging, binDestinationURL)
+                try faultInjector(.binLiveStateMutated)
+            } else if staged == previous, destination == journal.binCandidate {
+                // The exchange reached disk before the phase journal did.
+            } else {
+                throw ambiguous(
+                    "bin endpoints do not match either side of the recorded exchange"
+                )
+            }
+        } else if staged == journal.binCandidate, destination == nil {
+            try AppRelocationFilesystem.renameExclusive(
+                staging,
+                to: binDestinationURL
+            )
+            try faultInjector(.binLiveStateMutated)
+        } else if staged == nil, destination == journal.binCandidate {
+            // The rename reached disk before the phase journal did.
+        } else {
+            throw ambiguous(
+                "fresh bin install is neither wholly staged nor wholly live"
+            )
+        }
+    }
+
+    private func resolvePreviousApp(_ journal: Journal) throws {
+        try verifyLiveCandidates(journal, requireBin: true)
+        let staging = appStagingURL(for: journal)
+        switch journal.previousAppKind {
         case .absent:
-            guard journal.previous == nil,
-                  try DurableFilesystem.optionalState(at: staging) == nil
+            guard journal.previousApp == nil,
+                  try AppRelocationFilesystem.optionalState(at: staging) == nil
             else {
-                throw ambiguous("fresh install unexpectedly has a predecessor")
+                throw ambiguous("fresh app install unexpectedly has a predecessor")
             }
         case .owned:
-            guard let previous = journal.previous else {
-                throw corrupt("owned predecessor has no recorded state")
+            guard let previous = journal.previousApp else {
+                throw corrupt("owned app predecessor has no recorded state")
             }
-            let retired = previousURL(for: journal)
-            let stagedState = try DurableFilesystem.optionalState(at: staging)
-            let retiredState = try DurableFilesystem.optionalState(at: retired)
-            if stagedState == previous, retiredState == nil {
-                try DurableFilesystem.renameExclusive(staging, to: retired)
-                try faultInjector(.previousStateMoved)
-            } else if stagedState == nil, retiredState == previous {
-                // The retirement rename reached disk before the phase journal.
-            } else {
-                throw ambiguous(
-                    "owned predecessor is not exactly at its staged or retired path"
-                )
-            }
+            try resolve(
+                state: previous,
+                from: staging,
+                to: appPreviousURL(for: journal),
+                description: "owned app predecessor",
+                faultPoint: .appPreviousStateMoved
+            )
         case .foreign:
-            guard let previous = journal.previous else {
-                throw corrupt("foreign predecessor has no recorded state")
+            guard let previous = journal.previousApp else {
+                throw corrupt("foreign app predecessor has no recorded state")
             }
-            let preserved = foreignURL(for: journal)
-            let stagedState = try DurableFilesystem.optionalState(at: staging)
-            let preservedState = try DurableFilesystem.optionalState(at: preserved)
-            if stagedState == previous, preservedState == nil {
-                try DurableFilesystem.renameExclusive(staging, to: preserved)
-                try faultInjector(.previousStateMoved)
-            } else if stagedState == nil, preservedState == previous {
-                // The preservation rename reached disk before the phase journal.
-            } else {
+            try resolve(
+                state: previous,
+                from: staging,
+                to: foreignAppURL(for: journal),
+                description: "foreign app predecessor",
+                faultPoint: .appPreviousStateMoved
+            )
+        }
+    }
+
+    private func resolvePreviousBin(_ journal: Journal) throws {
+        try verifyLiveCandidates(journal, requireBin: true)
+        let staging = binStagingURL(for: journal)
+        guard let previous = journal.previousBin else {
+            guard try AppRelocationFilesystem.optionalState(at: staging) == nil else {
+                throw ambiguous("fresh bin install unexpectedly has a predecessor")
+            }
+            return
+        }
+        try resolve(
+            state: previous,
+            from: staging,
+            to: binPreviousURL(for: journal),
+            description: "bin predecessor",
+            faultPoint: .binPreviousStateMoved
+        )
+    }
+
+    private func resolve(
+        state: AppRelocationArtifactState,
+        from source: URL,
+        to destination: URL,
+        description: String,
+        faultPoint: FaultPoint
+    ) throws {
+        let sourceState = try AppRelocationFilesystem.optionalState(at: source)
+        let destinationState = try AppRelocationFilesystem.optionalState(
+            at: destination
+        )
+        if sourceState == state, destinationState == nil {
+            try AppRelocationFilesystem.renameExclusive(source, to: destination)
+            try faultInjector(faultPoint)
+        } else if sourceState == nil, destinationState == state {
+            // The rename reached disk before the phase journal did.
+        } else {
+            throw ambiguous(
+                "\(description) is not exactly at its staged or resolved path"
+            )
+        }
+    }
+
+    private func retirePreviousApp(_ journal: Journal) throws {
+        try verifyReadyToRetireApp(journal)
+        let retired = appPreviousURL(for: journal)
+        let garbage = appGarbageURL(for: journal)
+        switch journal.previousAppKind {
+        case .owned:
+            guard let previous = journal.previousApp else {
+                throw corrupt("owned app predecessor has no recorded state")
+            }
+            try retire(
+                state: previous,
+                from: retired,
+                to: garbage,
+                description: "owned app predecessor",
+                faultPoint: .ownedAppPreviousRetired
+            )
+        case .absent, .foreign:
+            guard try AppRelocationFilesystem.optionalState(at: retired) == nil,
+                  try AppRelocationFilesystem.optionalState(at: garbage) == nil
+            else {
                 throw ambiguous(
-                    "foreign predecessor is not preserved exactly once"
+                    "non-owned app predecessor appeared in the cleanup namespace"
                 )
             }
         }
+    }
+
+    private func retirePreviousBin(_ journal: Journal) throws {
+        try verifyRetiredApp(journal)
+        let retired = binPreviousURL(for: journal)
+        let garbage = binGarbageURL(for: journal)
+        guard let previous = journal.previousBin else {
+            guard try AppRelocationFilesystem.optionalState(at: retired) == nil,
+                  try AppRelocationFilesystem.optionalState(at: garbage) == nil
+            else {
+                throw ambiguous(
+                    "fresh bin install has content in the cleanup namespace"
+                )
+            }
+            return
+        }
+        try retire(
+            state: previous,
+            from: retired,
+            to: garbage,
+            description: "bin predecessor",
+            faultPoint: .binPreviousRetired
+        )
+    }
+
+    private func retire(
+        state: AppRelocationArtifactState,
+        from source: URL,
+        to garbage: URL,
+        description: String,
+        faultPoint: FaultPoint
+    ) throws {
+        let sourceState = try AppRelocationFilesystem.optionalState(at: source)
+        let garbageState = try AppRelocationFilesystem.optionalState(at: garbage)
+        if sourceState == state, garbageState == nil {
+            try AppRelocationFilesystem.renameExclusive(source, to: garbage)
+            try faultInjector(faultPoint)
+        } else if sourceState == nil, garbageState == state {
+            // The retirement rename reached disk before the phase journal did.
+        } else {
+            throw ambiguous(
+                "\(description) is not exactly at its resolved or garbage path"
+            )
+        }
+    }
+
+    private func authorizePreviousAppRemoval(_ journal: Journal) throws {
+        try verifyRetiredBin(journal)
+        switch journal.previousAppKind {
+        case .owned:
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: appGarbageURL(for: journal)
+                  ) == previous
+            else {
+                throw ambiguous(
+                    "owned app predecessor changed before cleanup authorization"
+                )
+            }
+        case .absent, .foreign:
+            guard try AppRelocationFilesystem.optionalState(
+                at: appGarbageURL(for: journal)
+            ) == nil else {
+                throw ambiguous("unexpected app garbage cannot be authorized")
+            }
+        }
+    }
+
+    private func removePreviousApp(_ journal: Journal) throws {
+        guard journal.previousAppKind == .owned else { return }
+        guard let previous = journal.previousApp else {
+            throw corrupt("owned app predecessor has no recorded state")
+        }
+        try removeAuthorizedGarbage(
+            appGarbageURL(for: journal),
+            expected: previous,
+            description: "owned app predecessor"
+        )
+    }
+
+    private func authorizePreviousBinRemoval(_ journal: Journal) throws {
+        try verifyAppRemoved(journal)
+        guard let previous = journal.previousBin else {
+            guard try AppRelocationFilesystem.optionalState(
+                at: binGarbageURL(for: journal)
+            ) == nil else {
+                throw ambiguous("unexpected bin garbage cannot be authorized")
+            }
+            return
+        }
+        guard try AppRelocationFilesystem.optionalState(
+            at: binGarbageURL(for: journal)
+        ) == previous else {
+            throw ambiguous(
+                "bin predecessor changed before cleanup authorization"
+            )
+        }
+    }
+
+    private func removePreviousBin(_ journal: Journal) throws {
+        guard let previous = journal.previousBin else { return }
+        try removeAuthorizedGarbage(
+            binGarbageURL(for: journal),
+            expected: previous,
+            description: "bin predecessor"
+        )
+    }
+
+    private func removeAuthorizedGarbage(
+        _ garbage: URL,
+        expected: AppRelocationArtifactState,
+        description: String
+    ) throws {
+        guard let identity = try AppRelocationFilesystem.optionalIdentity(
+            at: garbage
+        ) else {
+            return
+        }
+        guard identity == expected.identity else {
+            throw ambiguous(
+                "\(description) garbage path was replaced after cleanup authorization"
+            )
+        }
+        // The authorization phase is durable before recursive deletion begins.
+        // A restart can therefore continue a partial deletion by root identity
+        // without accepting a replacement path.
+        try AppRelocationFilesystem.removeDurably(garbage)
     }
 
     private func finish(_ journal: Journal) throws -> RecoveryResult {
-        guard try DurableFilesystem.optionalState(at: destinationURL)
-                == journal.candidate
+        try verifyLiveCandidates(journal, requireBin: true)
+        guard try AppRelocationFilesystem.optionalState(
+            at: appStagingURL(for: journal)
+        ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: binStagingURL(for: journal)
+              ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: appPreviousURL(for: journal)
+              ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: appGarbageURL(for: journal)
+              ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: binPreviousURL(for: journal)
+              ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: binGarbageURL(for: journal)
+              ) == nil
         else {
-            throw ambiguous("committed destination no longer matches the candidate")
-        }
-        guard try DurableFilesystem.optionalState(
-            at: stagingURL(for: journal)
-        ) == nil else {
-            throw ambiguous("transaction staging path still exists after resolution")
+            throw ambiguous(
+                "transaction-owned staging or predecessor cleanup is incomplete"
+            )
         }
 
-        switch journal.previousKind {
+        switch journal.previousAppKind {
         case .absent:
-            guard journal.previous == nil else {
-                throw corrupt("absent predecessor carries a recorded state")
+            guard journal.previousApp == nil else {
+                throw corrupt("absent app predecessor carries a recorded state")
+            }
+            return RecoveryResult(preservedForeignApp: nil)
+        case .owned:
+            guard journal.previousApp != nil else {
+                throw corrupt("owned app predecessor has no recorded state")
             }
             return RecoveryResult(preservedForeignApp: nil)
         case .foreign:
-            guard let previous = journal.previous,
-                  try DurableFilesystem.optionalState(
-                    at: foreignURL(for: journal)
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: foreignAppURL(for: journal)
                   ) == previous
             else {
                 throw ambiguous("preserved foreign app changed or disappeared")
             }
             return RecoveryResult(
-                preservedForeignApp: foreignURL(for: journal)
+                preservedForeignApp: foreignAppURL(for: journal)
             )
-        case .owned:
-            guard journal.previous != nil else {
-                throw corrupt("owned predecessor has no recorded state")
-            }
-            // `previousResolved` is persisted only after the complete
-            // predecessor was verified at this transaction-owned path. A
-            // restart may therefore continue a partially completed recursive
-            // deletion without mistaking it for foreign live content.
-            try DurableFilesystem.removeDurably(previousURL(for: journal))
-            try faultInjector(.ownedPreviousRemoved)
-            return RecoveryResult(preservedForeignApp: nil)
         }
     }
 
-    private func ensureInitialAuxiliaryPathIsAvailable(
+    private func verifyLiveCandidates(
+        _ journal: Journal,
+        requireBin: Bool
+    ) throws {
+        guard try AppRelocationFilesystem.optionalState(at: appDestinationURL)
+                == journal.appCandidate
+        else {
+            throw ambiguous("live app no longer matches the candidate")
+        }
+        if requireBin {
+            guard try AppRelocationFilesystem.optionalState(at: binDestinationURL)
+                    == journal.binCandidate
+            else {
+                throw ambiguous("live bin no longer matches the candidate")
+            }
+        }
+    }
+
+    private func verifyReadyToRetireApp(_ journal: Journal) throws {
+        try verifyLiveCandidates(journal, requireBin: true)
+        guard try AppRelocationFilesystem.optionalState(
+            at: appStagingURL(for: journal)
+        ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: binStagingURL(for: journal)
+              ) == nil
+        else {
+            throw ambiguous("staging remains before predecessor retirement")
+        }
+
+        switch journal.previousAppKind {
+        case .absent:
+            guard journal.previousApp == nil,
+                  try AppRelocationFilesystem.optionalState(
+                    at: appPreviousURL(for: journal)
+                  ) == nil,
+                  try AppRelocationFilesystem.optionalState(
+                    at: appGarbageURL(for: journal)
+                  ) == nil
+            else {
+                throw ambiguous("fresh app install has an unexpected predecessor")
+            }
+        case .owned:
+            guard let previous = journal.previousApp else {
+                throw corrupt("owned app predecessor has no recorded state")
+            }
+            let resolved = try AppRelocationFilesystem.optionalState(
+                at: appPreviousURL(for: journal)
+            )
+            let garbage = try AppRelocationFilesystem.optionalState(
+                at: appGarbageURL(for: journal)
+            )
+            guard (resolved == previous && garbage == nil)
+                    || (resolved == nil && garbage == previous)
+            else {
+                throw ambiguous(
+                    "owned app predecessor is not at a recoverable retirement endpoint"
+                )
+            }
+        case .foreign:
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: foreignAppURL(for: journal)
+                  ) == previous
+            else {
+                throw ambiguous("foreign app predecessor is not preserved")
+            }
+        }
+
+        if let previous = journal.previousBin {
+            guard try AppRelocationFilesystem.optionalState(
+                at: binPreviousURL(for: journal)
+            ) == previous else {
+                throw ambiguous("bin predecessor is not resolved")
+            }
+        }
+    }
+
+    private func verifyRetiredApp(_ journal: Journal) throws {
+        try verifyLiveCandidates(journal, requireBin: true)
+        switch journal.previousAppKind {
+        case .owned:
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: appPreviousURL(for: journal)
+                  ) == nil,
+                  try AppRelocationFilesystem.optionalState(
+                    at: appGarbageURL(for: journal)
+                  ) == previous
+            else {
+                throw ambiguous("owned app predecessor is not retired")
+            }
+        case .absent:
+            guard journal.previousApp == nil else {
+                throw corrupt("absent app predecessor carries a recorded state")
+            }
+        case .foreign:
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: foreignAppURL(for: journal)
+                  ) == previous
+            else {
+                throw ambiguous("foreign app predecessor is not preserved")
+            }
+        }
+    }
+
+    private func verifyRetiredBin(_ journal: Journal) throws {
+        try verifyRetiredApp(journal)
+        guard try AppRelocationFilesystem.optionalState(
+            at: binPreviousURL(for: journal)
+        ) == nil else {
+            throw ambiguous("bin predecessor remains at its resolved path")
+        }
+        if let previous = journal.previousBin {
+            guard try AppRelocationFilesystem.optionalState(
+                at: binGarbageURL(for: journal)
+            ) == previous else {
+                throw ambiguous("bin predecessor is not retired")
+            }
+        }
+    }
+
+    private func verifyAppRemoved(_ journal: Journal) throws {
+        try verifyLiveCandidates(journal, requireBin: true)
+        guard try AppRelocationFilesystem.optionalState(
+            at: appPreviousURL(for: journal)
+        ) == nil,
+              try AppRelocationFilesystem.optionalState(
+                at: appGarbageURL(for: journal)
+              ) == nil
+        else {
+            throw ambiguous("owned app predecessor cleanup is incomplete")
+        }
+        if journal.previousAppKind == .foreign {
+            guard let previous = journal.previousApp,
+                  try AppRelocationFilesystem.optionalState(
+                    at: foreignAppURL(for: journal)
+                  ) == previous
+            else {
+                throw ambiguous("preserved foreign app changed or disappeared")
+            }
+        }
+    }
+
+    private func ensureInitialAuxiliaryPathsAreAvailable(
         for journal: Journal
     ) throws {
-        let path: URL?
-        switch journal.previousKind {
-        case .absent:
-            path = nil
-        case .owned:
-            path = previousURL(for: journal)
-        case .foreign:
-            path = foreignURL(for: journal)
+        var paths = [
+            appPreviousURL(for: journal),
+            appGarbageURL(for: journal),
+            foreignAppURL(for: journal),
+            binPreviousURL(for: journal),
+            binGarbageURL(for: journal),
+        ]
+        if journal.previousAppKind != .foreign {
+            paths.removeAll { $0 == foreignAppURL(for: journal) }
         }
-        if let path, DurableFilesystem.itemExists(path) {
+        for path in paths where AppRelocationFilesystem.itemExists(path) {
             throw ambiguous(
                 "transaction auxiliary path already exists at \(path.path)"
             )
@@ -458,7 +954,7 @@ struct AppRelocationTransaction {
     private func readJournal() throws -> Journal {
         let data: Data
         do {
-            data = try DurableFilesystem.readRegularFile(
+            data = try AppRelocationFilesystem.readRegularFile(
                 journalURL,
                 maximumBytes: Self.maximumJournalBytes
             )
@@ -481,7 +977,7 @@ struct AppRelocationTransaction {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         do {
-            try DurableFilesystem.writeAtomically(
+            try AppRelocationFilesystem.writeAtomically(
                 encoder.encode(journal),
                 to: journalURL
             )
@@ -500,20 +996,36 @@ struct AppRelocationTransaction {
         guard Self.isCanonicalTransactionID(journal.transactionID) else {
             throw corrupt("transaction identifier is not a canonical UUID")
         }
-        guard Self.isValidArtifactState(journal.candidate) else {
+        guard Self.isValidArtifactState(journal.appCandidate),
+              Self.isValidArtifactState(journal.binCandidate)
+        else {
             throw corrupt("candidate identity or content hash is invalid")
         }
-        switch journal.previousKind {
+        switch journal.previousAppKind {
         case .absent:
-            guard journal.previous == nil else {
-                throw corrupt("absent predecessor includes state")
+            guard journal.previousApp == nil else {
+                throw corrupt("absent app predecessor includes state")
             }
         case .owned, .foreign:
-            guard let previous = journal.previous,
+            guard let previous = journal.previousApp,
                   Self.isValidArtifactState(previous)
             else {
-                throw corrupt("existing predecessor state is invalid")
+                throw corrupt("existing app predecessor state is invalid")
             }
+        }
+        if let previousBin = journal.previousBin,
+           !Self.isValidArtifactState(previousBin) {
+            throw corrupt("existing bin predecessor state is invalid")
+        }
+
+        let states = [
+            journal.appCandidate,
+            journal.binCandidate,
+            journal.previousApp,
+            journal.previousBin,
+        ].compactMap { $0 }
+        guard Set(states.map(\.identity)).count == states.count else {
+            throw corrupt("multiple relocation endpoints share one inode identity")
         }
     }
 
@@ -522,7 +1034,9 @@ struct AppRelocationTransaction {
         return uuid.uuidString.lowercased() == value
     }
 
-    private static func isValidArtifactState(_ state: ArtifactState) -> Bool {
+    private static func isValidArtifactState(
+        _ state: AppRelocationArtifactState
+    ) -> Bool {
         isValidIdentity(state.identity) && isLowercaseSHA256(state.contentHash)
     }
 
@@ -549,486 +1063,5 @@ struct AppRelocationTransaction {
 
     private func ambiguous(_ reason: String) -> TransactionError {
         .ambiguousRecovery(path: journalURL.path, reason: reason)
-    }
-}
-
-private enum DurableFilesystem {
-    static func itemExists(_ url: URL) -> Bool {
-        var status = stat()
-        return lstat(url.path, &status) == 0
-    }
-
-    static func optionalState(
-        at url: URL
-    ) throws -> AppRelocationTransaction.ArtifactState? {
-        var status = stat()
-        if lstat(url.path, &status) != 0 {
-            if errno == ENOENT {
-                return nil
-            }
-            throw filesystemError("inspect \(url.path)")
-        }
-        return try state(at: url, initialStatus: status)
-    }
-
-    static func state(
-        at url: URL
-    ) throws -> AppRelocationTransaction.ArtifactState {
-        var status = stat()
-        guard lstat(url.path, &status) == 0 else {
-            throw filesystemError("inspect \(url.path)")
-        }
-        return try state(at: url, initialStatus: status)
-    }
-
-    static func fullySyncTree(_ root: URL) throws {
-        let entries = try treeEntries(root)
-        var directories: [URL] = []
-        for entry in entries {
-            var status = stat()
-            guard lstat(entry.path, &status) == 0 else {
-                throw filesystemError("inspect \(entry.path)")
-            }
-            switch status.st_mode & mode_t(S_IFMT) {
-            case mode_t(S_IFREG):
-                let descriptor = open(
-                    entry.path,
-                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW
-                )
-                guard descriptor >= 0 else {
-                    throw filesystemError("open \(entry.path) for full sync")
-                }
-                do {
-                    var openedStatus = stat()
-                    guard fstat(descriptor, &openedStatus) == 0 else {
-                        throw filesystemError(
-                            "inspect \(entry.path) before full sync"
-                        )
-                    }
-                    guard openedStatus.st_mode & mode_t(S_IFMT)
-                            == mode_t(S_IFREG)
-                    else {
-                        throw filesystemError(
-                            "refuse non-regular full sync at \(entry.path)",
-                            code: EFTYPE
-                        )
-                    }
-                    try fullSync(descriptor, path: entry.path)
-                    guard close(descriptor) == 0 else {
-                        throw filesystemError("close \(entry.path) after full sync")
-                    }
-                } catch {
-                    _ = close(descriptor)
-                    throw error
-                }
-            case mode_t(S_IFDIR):
-                directories.append(entry)
-            case mode_t(S_IFLNK):
-                continue
-            default:
-                throw filesystemError(
-                    "refuse unsupported file type at \(entry.path)",
-                    code: EFTYPE
-                )
-            }
-        }
-        for directory in directories.sorted(by: {
-            $0.pathComponents.count > $1.pathComponents.count
-        }) {
-            try syncDirectory(directory)
-        }
-        try syncDirectory(root.deletingLastPathComponent())
-    }
-
-    static func writeAtomically(_ data: Data, to destination: URL) throws {
-        let directory = destination.deletingLastPathComponent()
-        let temporary = directory.appendingPathComponent(
-            ".\(destination.lastPathComponent).tmp-\(UUID().uuidString.lowercased())"
-        )
-        let descriptor = open(
-            temporary.path,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            mode_t(0o600)
-        )
-        guard descriptor >= 0 else {
-            throw filesystemError("create \(temporary.path)")
-        }
-        var descriptorIsOpen = true
-        var shouldRemove = true
-        defer {
-            if descriptorIsOpen {
-                _ = close(descriptor)
-            }
-            if shouldRemove {
-                try? FileManager.default.removeItem(at: temporary)
-            }
-        }
-
-        try data.withUnsafeBytes { bytes in
-            guard var pointer = bytes.baseAddress else { return }
-            var remaining = bytes.count
-            while remaining > 0 {
-                let written = Darwin.write(descriptor, pointer, remaining)
-                if written < 0, errno == EINTR {
-                    continue
-                }
-                guard written > 0 else {
-                    throw filesystemError("write \(temporary.path)")
-                }
-                remaining -= written
-                pointer = pointer.advanced(by: written)
-            }
-        }
-        try fullSync(descriptor, path: temporary.path)
-        guard close(descriptor) == 0 else {
-            throw filesystemError("close \(temporary.path)")
-        }
-        descriptorIsOpen = false
-        guard rename(temporary.path, destination.path) == 0 else {
-            throw filesystemError(
-                "publish \(temporary.path) as \(destination.path)"
-            )
-        }
-        shouldRemove = false
-        try syncDirectory(directory)
-    }
-
-    static func readRegularFile(
-        _ url: URL,
-        maximumBytes: Int
-    ) throws -> Data {
-        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw filesystemError("open \(url.path)")
-        }
-        defer { _ = close(descriptor) }
-
-        var status = stat()
-        guard fstat(descriptor, &status) == 0 else {
-            throw filesystemError("inspect \(url.path)")
-        }
-        guard status.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
-            throw filesystemError(
-                "refuse non-regular journal at \(url.path)",
-                code: EFTYPE
-            )
-        }
-        guard status.st_size >= 0,
-              status.st_size <= off_t(maximumBytes)
-        else {
-            throw filesystemError(
-                "refuse oversized journal at \(url.path)",
-                code: EFBIG
-            )
-        }
-
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes {
-                Darwin.read(descriptor, $0.baseAddress, $0.count)
-            }
-            if count < 0, errno == EINTR {
-                continue
-            }
-            guard count >= 0 else {
-                throw filesystemError("read \(url.path)")
-            }
-            if count == 0 {
-                return data
-            }
-            guard data.count + count <= maximumBytes else {
-                throw filesystemError(
-                    "refuse oversized journal at \(url.path)",
-                    code: EFBIG
-                )
-            }
-            data.append(contentsOf: buffer.prefix(count))
-        }
-    }
-
-    static func exchange(_ first: URL, _ second: URL) throws {
-        guard first.deletingLastPathComponent().standardizedFileURL
-                == second.deletingLastPathComponent().standardizedFileURL
-        else {
-            throw filesystemError(
-                "refuse cross-directory app exchange",
-                code: EXDEV
-            )
-        }
-        guard renameatx_np(
-            AT_FDCWD,
-            first.path,
-            AT_FDCWD,
-            second.path,
-            UInt32(RENAME_SWAP)
-        ) == 0 else {
-            throw filesystemError("exchange \(first.path) with \(second.path)")
-        }
-        try syncDirectory(first.deletingLastPathComponent())
-    }
-
-    static func renameExclusive(_ source: URL, to destination: URL) throws {
-        guard source.deletingLastPathComponent().standardizedFileURL
-                == destination.deletingLastPathComponent().standardizedFileURL
-        else {
-            throw filesystemError(
-                "refuse cross-directory app rename",
-                code: EXDEV
-            )
-        }
-        guard renameatx_np(
-            AT_FDCWD,
-            source.path,
-            AT_FDCWD,
-            destination.path,
-            UInt32(RENAME_EXCL)
-        ) == 0 else {
-            throw filesystemError(
-                "rename \(source.path) to \(destination.path)"
-            )
-        }
-        try syncDirectory(source.deletingLastPathComponent())
-    }
-
-    static func removeDurably(_ url: URL) throws {
-        guard itemExists(url) else { return }
-        do {
-            try FileManager.default.removeItem(at: url)
-        } catch {
-            throw AppRelocationTransaction.TransactionError.filesystem(
-                operation: "remove \(url.path)",
-                reason: error.localizedDescription
-            )
-        }
-        try syncDirectory(url.deletingLastPathComponent())
-    }
-
-    static func syncDirectory(_ directory: URL) throws {
-        let descriptor = open(directory.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw filesystemError("open directory \(directory.path) for sync")
-        }
-        var status = stat()
-        guard fstat(descriptor, &status) == 0 else {
-            let saved = errno
-            _ = close(descriptor)
-            throw filesystemError(
-                "inspect directory \(directory.path) for sync",
-                code: saved
-            )
-        }
-        guard status.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
-            _ = close(descriptor)
-            throw filesystemError(
-                "refuse non-directory sync at \(directory.path)",
-                code: ENOTDIR
-            )
-        }
-        let result = fsync(descriptor)
-        let saved = errno
-        _ = close(descriptor)
-        guard result == 0 else {
-            throw filesystemError(
-                "sync directory \(directory.path)",
-                code: saved
-            )
-        }
-    }
-
-    private static func state(
-        at url: URL,
-        initialStatus: stat
-    ) throws -> AppRelocationTransaction.ArtifactState {
-        let initialIdentity = identity(of: initialStatus)
-        let hash = try treeHash(root: url)
-        var finalStatus = stat()
-        guard lstat(url.path, &finalStatus) == 0 else {
-            throw filesystemError("reinspect \(url.path) after hashing")
-        }
-        guard identity(of: finalStatus) == initialIdentity else {
-            throw filesystemError(
-                "refuse \(url.path), which changed while hashing",
-                code: EBUSY
-            )
-        }
-        return AppRelocationTransaction.ArtifactState(
-            identity: initialIdentity,
-            contentHash: hash
-        )
-    }
-
-    private static func identity(of status: stat) -> String {
-        "\(UInt64(status.st_dev)):\(UInt64(status.st_ino))"
-    }
-
-    private static func treeHash(root: URL) throws -> String {
-        let entries = try treeEntries(root).sorted {
-            relativePath($0, under: root) < relativePath($1, under: root)
-        }
-        var hasher = SHA256()
-        for entry in entries {
-            var status = stat()
-            guard lstat(entry.path, &status) == 0 else {
-                throw filesystemError("inspect \(entry.path) while hashing")
-            }
-            let relative = relativePath(entry, under: root)
-            let permissions = String(status.st_mode & mode_t(0o7777))
-            switch status.st_mode & mode_t(S_IFMT) {
-            case mode_t(S_IFDIR):
-                hashFields(["directory", relative, permissions], into: &hasher)
-            case mode_t(S_IFLNK):
-                let target: String
-                do {
-                    target = try FileManager.default.destinationOfSymbolicLink(
-                        atPath: entry.path
-                    )
-                } catch {
-                    throw AppRelocationTransaction.TransactionError.filesystem(
-                        operation: "read symbolic link \(entry.path)",
-                        reason: error.localizedDescription
-                    )
-                }
-                hashFields(
-                    ["symlink", relative, permissions, target],
-                    into: &hasher
-                )
-            case mode_t(S_IFREG):
-                hashFields(
-                    [
-                        "file",
-                        relative,
-                        permissions,
-                        try regularFileHash(entry),
-                    ],
-                    into: &hasher
-                )
-            default:
-                throw filesystemError(
-                    "refuse unsupported file type at \(entry.path)",
-                    code: EFTYPE
-                )
-            }
-        }
-        return hasher.finalize().map {
-            String(format: "%02x", $0)
-        }.joined()
-    }
-
-    private static func regularFileHash(_ url: URL) throws -> String {
-        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            throw filesystemError("open \(url.path) for hashing")
-        }
-        defer { _ = close(descriptor) }
-        var status = stat()
-        guard fstat(descriptor, &status) == 0,
-              status.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG)
-        else {
-            throw filesystemError("refuse non-regular file at \(url.path)")
-        }
-
-        var hasher = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
-        while true {
-            let count = buffer.withUnsafeMutableBytes {
-                Darwin.read(descriptor, $0.baseAddress, $0.count)
-            }
-            if count < 0, errno == EINTR {
-                continue
-            }
-            guard count >= 0 else {
-                throw filesystemError("read \(url.path) for hashing")
-            }
-            if count == 0 {
-                break
-            }
-            hasher.update(data: Data(buffer.prefix(count)))
-        }
-        return hasher.finalize().map {
-            String(format: "%02x", $0)
-        }.joined()
-    }
-
-    private static func treeEntries(_ root: URL) throws -> [URL] {
-        var rootStatus = stat()
-        guard lstat(root.path, &rootStatus) == 0 else {
-            throw filesystemError("inspect tree root \(root.path)")
-        }
-        var entries = [root]
-        guard rootStatus.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
-            return entries
-        }
-
-        var enumerationError: Error?
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: nil,
-            options: [],
-            errorHandler: { _, error in
-                enumerationError = error
-                return false
-            }
-        ) else {
-            throw filesystemError(
-                "enumerate \(root.path)",
-                code: EIO
-            )
-        }
-        while let entry = enumerator.nextObject() as? URL {
-            entries.append(entry)
-        }
-        if let enumerationError {
-            throw AppRelocationTransaction.TransactionError.filesystem(
-                operation: "enumerate \(root.path)",
-                reason: enumerationError.localizedDescription
-            )
-        }
-        return entries
-    }
-
-    private static func relativePath(_ url: URL, under root: URL) -> String {
-        if url.standardizedFileURL == root.standardizedFileURL {
-            return "."
-        }
-        let rootPath = root.standardizedFileURL.path + "/"
-        let path = url.standardizedFileURL.path
-        guard path.hasPrefix(rootPath) else {
-            return path
-        }
-        return String(path.dropFirst(rootPath.count))
-    }
-
-    private static func hashFields(
-        _ fields: [String],
-        into hasher: inout SHA256
-    ) {
-        for field in fields {
-            let data = Data(field.utf8)
-            var length = UInt64(data.count).bigEndian
-            withUnsafeBytes(of: &length) {
-                hasher.update(data: Data($0))
-            }
-            hasher.update(data: data)
-        }
-    }
-
-    private static func fullSync(_ descriptor: Int32, path: String) throws {
-        guard fsync(descriptor) == 0 else {
-            throw filesystemError("sync \(path)")
-        }
-        guard fcntl(descriptor, F_FULLFSYNC) == 0 else {
-            throw filesystemError("fully sync \(path)")
-        }
-    }
-
-    private static func filesystemError(
-        _ operation: String,
-        code: Int32 = errno
-    ) -> AppRelocationTransaction.TransactionError {
-        .filesystem(
-            operation: operation,
-            reason: String(cString: strerror(code))
-        )
     }
 }

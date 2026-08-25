@@ -85,6 +85,175 @@ struct AppInstallCoordinatorTests {
         #expect(executor.invocations[3].arguments == ["-n", fixture.destination.path])
     }
 
+    @Test("flat bin is migrated to the canonical app-relative links")
+    func flatBinMigratesToCanonicalLinks() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.makeFlatBin()
+        let source = try fixture.makeDownloadedApp(payload: "app-layout")
+
+        let result = try fixture.coordinator(
+            source: source,
+            executor: RecordingExecutor()
+        ).coordinate()
+
+        #expect(result == .relocated(to: fixture.destination, preservedForeignApp: nil))
+        #expect(try fixture.payload(at: fixture.destination) == "app-layout")
+        try fixture.expectCanonicalBin()
+        try fixture.expectNoRelocationTransactionArtifacts()
+    }
+
+    @Test("bin migration preserves every unmanaged entry")
+    func unmanagedBinEntriesArePreserved() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.makeFlatBin()
+        let customTool = fixture.bin.appendingPathComponent("custom-tool")
+        try Data("user-tool".utf8).write(to: customTool)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o751],
+            ofItemAtPath: customTool.path
+        )
+        let nested = fixture.bin.appendingPathComponent(
+            "plugins/config.json"
+        )
+        try FileManager.default.createDirectory(
+            at: nested.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"user":true}"#.utf8).write(to: nested)
+        let userLink = fixture.bin.appendingPathComponent("current-config")
+        try FileManager.default.createSymbolicLink(
+            atPath: userLink.path,
+            withDestinationPath: "plugins/config.json"
+        )
+        let source = try fixture.makeDownloadedApp()
+
+        _ = try fixture.coordinator(
+            source: source,
+            executor: RecordingExecutor()
+        ).coordinate()
+
+        try fixture.expectCanonicalBin()
+        #expect(try String(contentsOf: customTool, encoding: .utf8) == "user-tool")
+        #expect(
+            try FileManager.default.attributesOfItem(atPath: customTool.path)[
+                .posixPermissions
+            ] as? NSNumber == NSNumber(value: 0o751)
+        )
+        #expect(try String(contentsOf: nested, encoding: .utf8) == #"{"user":true}"#)
+        #expect(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: userLink.path
+            ) == "plugins/config.json"
+        )
+        try fixture.expectNoRelocationTransactionArtifacts()
+    }
+
+    @Test("symlink and file bin paths are rejected without mutation")
+    func unsafeBinRootsArePreserved() throws {
+        for kind in ["symlink", "file"] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            try FileManager.default.createDirectory(
+                at: fixture.installRoot,
+                withIntermediateDirectories: true
+            )
+            let outside = fixture.root.appendingPathComponent(
+                "outside-\(kind)",
+                isDirectory: true
+            )
+            if kind == "symlink" {
+                try FileManager.default.createDirectory(
+                    at: outside,
+                    withIntermediateDirectories: true
+                )
+                try Data("outside-user-data".utf8).write(
+                    to: outside.appendingPathComponent("sentinel")
+                )
+                try FileManager.default.createSymbolicLink(
+                    atPath: fixture.bin.path,
+                    withDestinationPath: outside.path
+                )
+            } else {
+                try Data("user-owned-bin-file".utf8).write(to: fixture.bin)
+            }
+            let source = try fixture.makeDownloadedApp()
+
+            #expect(throws: AppInstallCoordinatorError.self) {
+                try fixture.coordinator(
+                    source: source,
+                    executor: RecordingExecutor()
+                ).coordinate()
+            }
+
+            #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+            if kind == "symlink" {
+                #expect(
+                    try FileManager.default.destinationOfSymbolicLink(
+                        atPath: fixture.bin.path
+                    ) == outside.path
+                )
+                #expect(
+                    try String(
+                        contentsOf: outside.appendingPathComponent("sentinel"),
+                        encoding: .utf8
+                    ) == "outside-user-data"
+                )
+            } else {
+                #expect(
+                    try String(contentsOf: fixture.bin, encoding: .utf8)
+                        == "user-owned-bin-file"
+                )
+            }
+            try fixture.expectNoRelocationTransactionArtifacts()
+        }
+    }
+
+    @Test("required app payload files are verified before publication")
+    func incompleteAppPayloadIsRejected() throws {
+        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let source = try fixture.makeDownloadedApp()
+            try FileManager.default.removeItem(
+                at: source.appendingPathComponent("Contents/MacOS/\(name)")
+            )
+
+            #expect(throws: AppInstallCoordinatorError.self) {
+                try fixture.coordinator(
+                    source: source,
+                    executor: RecordingExecutor()
+                ).coordinate()
+            }
+
+            #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+            #expect(!FileManager.default.fileExists(atPath: fixture.bin.path))
+            try fixture.expectNoRelocationTransactionArtifacts()
+        }
+    }
+
+    @Test("open failure after commit keeps the source app running")
+    func relaunchFailureDoesNotInvalidateCommit() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.makeFlatBin()
+        let source = try fixture.makeDownloadedApp(payload: "committed")
+        let executor = RecordingExecutor(failOpen: true)
+
+        let result = try fixture.coordinator(
+            source: source,
+            executor: executor
+        ).coordinate()
+
+        #expect(result == .continueLaunch)
+        #expect(try fixture.payload(at: fixture.destination) == "committed")
+        #expect(try fixture.payload(at: source) == "committed")
+        #expect(executor.didOpen(fixture.destination))
+        try fixture.expectCanonicalBin()
+        try fixture.expectNoRelocationTransactionArtifacts()
+    }
+
     @Test("shortcut failure cannot invalidate a committed installation")
     func shortcutFailureIsBestEffort() throws {
         let fixture = try Fixture()
@@ -453,14 +622,28 @@ struct AppInstallCoordinatorTests {
     func freshRelocationFaultBoundaries() throws {
         let points: [AppRelocationTransaction.FaultPoint] = [
             .journalPersisted,
-            .liveStateMutated,
-            .liveStateRecorded,
-            .previousStateRecorded,
+            .appLiveStateMutated,
+            .appLiveStateRecorded,
+            .binLiveStateMutated,
+            .binLiveStateRecorded,
+            .appPreviousStateRecorded,
+            .binPreviousStateMoved,
+            .binPreviousStateRecorded,
+            .appPreviousRetirementRecorded,
+            .binPreviousRetired,
+            .binPreviousRetirementRecorded,
+            .appRemovalAuthorized,
+            .appPreviousRemoved,
+            .appRemovalRecorded,
+            .binRemovalAuthorized,
+            .binPreviousRemoved,
+            .binRemovalRecorded,
             .journalRemoved,
         ]
         for point in points {
             let fixture = try Fixture()
             defer { fixture.remove() }
+            try fixture.makeFlatBin()
             let source = try fixture.makeDownloadedApp(
                 payload: "fresh-\(point.rawValue)"
             )
@@ -487,6 +670,7 @@ struct AppInstallCoordinatorTests {
                 try fixture.payload(at: fixture.destination)
                     == "fresh-\(point.rawValue)"
             )
+            try fixture.expectCanonicalBin()
             try fixture.expectNoRelocationTransactionArtifacts()
         }
     }
@@ -495,16 +679,30 @@ struct AppInstallCoordinatorTests {
     func ownedRelocationFaultBoundaries() throws {
         let points: [AppRelocationTransaction.FaultPoint] = [
             .journalPersisted,
-            .liveStateMutated,
-            .liveStateRecorded,
-            .previousStateMoved,
-            .previousStateRecorded,
-            .ownedPreviousRemoved,
+            .appLiveStateMutated,
+            .appLiveStateRecorded,
+            .binLiveStateMutated,
+            .binLiveStateRecorded,
+            .appPreviousStateMoved,
+            .appPreviousStateRecorded,
+            .binPreviousStateMoved,
+            .binPreviousStateRecorded,
+            .ownedAppPreviousRetired,
+            .appPreviousRetirementRecorded,
+            .binPreviousRetired,
+            .binPreviousRetirementRecorded,
+            .appRemovalAuthorized,
+            .appPreviousRemoved,
+            .appRemovalRecorded,
+            .binRemovalAuthorized,
+            .binPreviousRemoved,
+            .binRemovalRecorded,
             .journalRemoved,
         ]
         for point in points {
             let fixture = try Fixture()
             defer { fixture.remove() }
+            try fixture.makeFlatBin()
             _ = try fixture.makeApp(
                 at: fixture.destination,
                 identifier: shippingBundleIdentifier,
@@ -536,6 +734,7 @@ struct AppInstallCoordinatorTests {
                 try fixture.payload(at: fixture.destination)
                     == "owned-\(point.rawValue)"
             )
+            try fixture.expectCanonicalBin()
             try fixture.expectNoRelocationTransactionArtifacts()
         }
     }
@@ -544,15 +743,29 @@ struct AppInstallCoordinatorTests {
     func foreignRelocationFaultBoundaries() throws {
         let points: [AppRelocationTransaction.FaultPoint] = [
             .journalPersisted,
-            .liveStateMutated,
-            .liveStateRecorded,
-            .previousStateMoved,
-            .previousStateRecorded,
+            .appLiveStateMutated,
+            .appLiveStateRecorded,
+            .binLiveStateMutated,
+            .binLiveStateRecorded,
+            .appPreviousStateMoved,
+            .appPreviousStateRecorded,
+            .binPreviousStateMoved,
+            .binPreviousStateRecorded,
+            .appPreviousRetirementRecorded,
+            .binPreviousRetired,
+            .binPreviousRetirementRecorded,
+            .appRemovalAuthorized,
+            .appPreviousRemoved,
+            .appRemovalRecorded,
+            .binRemovalAuthorized,
+            .binPreviousRemoved,
+            .binRemovalRecorded,
             .journalRemoved,
         ]
         for point in points {
             let fixture = try Fixture()
             defer { fixture.remove() }
+            try fixture.makeFlatBin()
             _ = try fixture.makeApp(
                 at: fixture.destination,
                 identifier: "com.example.foreign",
@@ -586,48 +799,96 @@ struct AppInstallCoordinatorTests {
                         == "foreign-\(point.rawValue)"
                 )
             }
+            try fixture.expectCanonicalBin()
             try fixture.expectNoRelocationTransactionArtifacts()
         }
     }
 
-    @Test("foreign recovery remains idempotent across repeated process deaths")
-    func repeatedForeignRecoveryIsIdempotent() throws {
-        let fixture = try Fixture()
-        defer { fixture.remove() }
-        _ = try fixture.makeApp(
-            at: fixture.destination,
-            identifier: "com.example.foreign",
-            payload: "foreign-original"
-        )
-        let source = try fixture.makeDownloadedApp(payload: "candidate")
-        let interruptions: [AppRelocationTransaction.FaultPoint] = [
-            .liveStateMutated,
-            .liveStateRecorded,
-            .previousStateMoved,
-            .previousStateRecorded,
-        ]
-
-        for point in interruptions {
-            #expect(throws: AppInstallCoordinatorError.self) {
-                try fixture.coordinator(
-                    source: source,
-                    executor: RecordingExecutor(),
-                    relocationFaultInjector: failOnce(at: point)
-                ).coordinate()
+    @Test("fresh, owned, and foreign recovery tolerate repeated process deaths")
+    func repeatedRecoveryIsIdempotent() throws {
+        for destinationKind in ["fresh", "owned", "foreign"] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            try fixture.makeFlatBin()
+            if destinationKind == "owned" {
+                _ = try fixture.makeApp(
+                    at: fixture.destination,
+                    identifier: shippingBundleIdentifier,
+                    version: "1.0.0",
+                    payload: "owned-original"
+                )
+            } else if destinationKind == "foreign" {
+                _ = try fixture.makeApp(
+                    at: fixture.destination,
+                    identifier: "com.example.foreign",
+                    payload: "foreign-original"
+                )
             }
-        }
+            let source = try fixture.makeApp(
+                at: fixture.home.appendingPathComponent(
+                    "Downloads/Darkbloom.app"
+                ),
+                identifier: shippingBundleIdentifier,
+                version: "2.0.0",
+                payload: "candidate-\(destinationKind)"
+            )
+            var interruptions: [AppRelocationTransaction.FaultPoint] = [
+                .appLiveStateMutated,
+                .appLiveStateRecorded,
+                .binLiveStateMutated,
+                .binLiveStateRecorded,
+            ]
+            if destinationKind != "fresh" {
+                interruptions.append(.appPreviousStateMoved)
+            }
+            interruptions += [
+                .appPreviousStateRecorded,
+                .binPreviousStateMoved,
+                .binPreviousStateRecorded,
+            ]
+            if destinationKind == "owned" {
+                interruptions.append(.ownedAppPreviousRetired)
+            }
+            interruptions += [
+                .appPreviousRetirementRecorded,
+                .binPreviousRetired,
+                .binPreviousRetirementRecorded,
+                .appRemovalAuthorized,
+                .appPreviousRemoved,
+                .appRemovalRecorded,
+                .binRemovalAuthorized,
+                .binPreviousRemoved,
+                .binRemovalRecorded,
+            ]
 
-        _ = try fixture.coordinator(
-            source: source,
-            executor: RecordingExecutor()
-        ).coordinate()
-        #expect(try fixture.payload(at: fixture.destination) == "candidate")
-        let preserved = try fixture.foreignAppURLs()
-        #expect(preserved.count == 1)
-        if let preservedApp = preserved.first {
-            #expect(try fixture.payload(at: preservedApp) == "foreign-original")
+            for point in interruptions {
+                #expect(throws: AppInstallCoordinatorError.self) {
+                    try fixture.coordinator(
+                        source: source,
+                        executor: RecordingExecutor(),
+                        relocationFaultInjector: failOnce(at: point)
+                    ).coordinate()
+                }
+            }
+
+            _ = try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor()
+            ).coordinate()
+            #expect(
+                try fixture.payload(at: fixture.destination)
+                    == "candidate-\(destinationKind)"
+            )
+            let preserved = try fixture.foreignAppURLs()
+            #expect(preserved.count == (destinationKind == "foreign" ? 1 : 0))
+            if let preservedApp = preserved.first {
+                #expect(
+                    try fixture.payload(at: preservedApp) == "foreign-original"
+                )
+            }
+            try fixture.expectCanonicalBin()
+            try fixture.expectNoRelocationTransactionArtifacts()
         }
-        try fixture.expectNoRelocationTransactionArtifacts()
     }
 
     @Test("managed app startup completes an interrupted exchange and hands off")
@@ -653,7 +914,7 @@ struct AppInstallCoordinatorTests {
             try fixture.coordinator(
                 source: source,
                 executor: RecordingExecutor(),
-                relocationFaultInjector: failOnce(at: .liveStateMutated)
+                relocationFaultInjector: failOnce(at: .appLiveStateMutated)
             ).coordinate()
         }
 
@@ -670,6 +931,46 @@ struct AppInstallCoordinatorTests {
         )
         #expect(try fixture.payload(at: fixture.destination) == "candidate")
         #expect(executor.didOpen(fixture.destination))
+        try fixture.expectNoRelocationTransactionArtifacts()
+    }
+
+    @Test("open failure after managed-path recovery keeps the app interactive")
+    func recoveredCommitRelaunchFailureContinuesLaunch() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.makeFlatBin()
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: shippingBundleIdentifier,
+            version: "1.0.0",
+            payload: "owned-predecessor"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent(
+                "Downloads/Darkbloom.app"
+            ),
+            identifier: shippingBundleIdentifier,
+            version: "2.0.0",
+            payload: "candidate"
+        )
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor(),
+                relocationFaultInjector: failOnce(at: .appLiveStateMutated)
+            ).coordinate()
+        }
+        let executor = RecordingExecutor(failOpen: true)
+
+        let result = try fixture.coordinator(
+            source: fixture.destination,
+            executor: executor
+        ).coordinate()
+
+        #expect(result == .continueLaunch)
+        #expect(try fixture.payload(at: fixture.destination) == "candidate")
+        #expect(executor.didOpen(fixture.destination))
+        try fixture.expectCanonicalBin()
         try fixture.expectNoRelocationTransactionArtifacts()
     }
 
@@ -707,11 +1008,17 @@ struct AppInstallCoordinatorTests {
         ))
     }
 
-    @Test("candidate and predecessor hash changes make recovery fail closed")
-    func recoveryVerifiesBothRecordedContentHashes() throws {
-        for target in ["candidate", "predecessor"] {
+    @Test("app and bin candidate or predecessor tampering fails closed")
+    func recoveryVerifiesAllRecordedContentHashes() throws {
+        for target in [
+            "app-candidate",
+            "app-predecessor",
+            "bin-candidate",
+            "bin-predecessor",
+        ] {
             let fixture = try Fixture()
             defer { fixture.remove() }
+            try fixture.makeFlatBin()
             _ = try fixture.makeApp(
                 at: fixture.destination,
                 identifier: shippingBundleIdentifier,
@@ -734,14 +1041,23 @@ struct AppInstallCoordinatorTests {
                     relocationFaultInjector: failOnce(at: .journalPersisted)
                 ).coordinate()
             }
-            let changedApp = target == "candidate"
-                ? fixture.relocationStaging
-                : fixture.destination
-            try Data("changed-after-journal".utf8).write(
-                to: changedApp.appendingPathComponent(
+            let changedPath: URL
+            switch target {
+            case "app-candidate":
+                changedPath = fixture.relocationStaging.appendingPathComponent(
                     "Contents/MacOS/DarkbloomApp"
                 )
-            )
+            case "app-predecessor":
+                changedPath = fixture.destination.appendingPathComponent(
+                    "Contents/MacOS/DarkbloomApp"
+                )
+            case "bin-candidate":
+                changedPath = fixture.binRelocationStaging
+                    .appendingPathComponent("unmanaged-tamper")
+            default:
+                changedPath = fixture.bin.appendingPathComponent("darkbloom")
+            }
+            try Data("changed-after-journal".utf8).write(to: changedPath)
 
             #expect(throws: AppInstallCoordinatorError.self) {
                 try fixture.coordinator(
@@ -753,9 +1069,99 @@ struct AppInstallCoordinatorTests {
                 atPath: fixture.relocationJournal.path
             ))
             #expect(
-                try fixture.payload(at: changedApp) == "changed-after-journal"
+                try String(contentsOf: changedPath, encoding: .utf8)
+                    == "changed-after-journal"
             )
         }
+    }
+
+    @Test("authorized cleanup refuses replacement app and bin garbage paths")
+    func cleanupAuthorizationIsBoundToRecordedInodes() throws {
+        let cases: [(name: String, point: AppRelocationTransaction.FaultPoint)] = [
+            ("app", .appRemovalAuthorized),
+            ("bin", .binRemovalAuthorized),
+        ]
+        for item in cases {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            try fixture.makeFlatBin()
+            _ = try fixture.makeApp(
+                at: fixture.destination,
+                identifier: shippingBundleIdentifier,
+                version: "1.0.0",
+                payload: "owned-predecessor"
+            )
+            let source = try fixture.makeApp(
+                at: fixture.home.appendingPathComponent(
+                    "Downloads/Darkbloom.app"
+                ),
+                identifier: shippingBundleIdentifier,
+                version: "2.0.0",
+                payload: "candidate"
+            )
+
+            #expect(throws: AppInstallCoordinatorError.self) {
+                try fixture.coordinator(
+                    source: source,
+                    executor: RecordingExecutor(),
+                    relocationFaultInjector: failOnce(at: item.point)
+                ).coordinate()
+            }
+
+            let garbage = item.name == "app"
+                ? fixture.appRelocationGarbage
+                : fixture.binRelocationGarbage
+            try FileManager.default.removeItem(at: garbage)
+            try Data("user-replacement".utf8).write(to: garbage)
+
+            #expect(throws: AppInstallCoordinatorError.self) {
+                try fixture.coordinator(
+                    source: source,
+                    executor: RecordingExecutor()
+                ).coordinate()
+            }
+            #expect(
+                try String(contentsOf: garbage, encoding: .utf8)
+                    == "user-replacement"
+            )
+            #expect(FileManager.default.fileExists(
+                atPath: fixture.relocationJournal.path
+            ))
+        }
+    }
+
+    @Test("corrupt fixed journal is preserved and recovery fails closed")
+    func corruptJournalIsNeverGuessedOrDeleted() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.makeFlatBin()
+        let source = try fixture.makeDownloadedApp(payload: "candidate")
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor(),
+                relocationFaultInjector: failOnce(at: .journalPersisted)
+            ).coordinate()
+        }
+        let corrupt = Data(#"{"schema":2,"phase":"prepared"}"#.utf8)
+        try corrupt.write(to: fixture.relocationJournal)
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor()
+            ).coordinate()
+        }
+
+        #expect(try Data(contentsOf: fixture.relocationJournal) == corrupt)
+        #expect(!FileManager.default.fileExists(atPath: fixture.destination.path))
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.relocationStaging.path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.binRelocationStaging.path
+        ))
     }
 
     @Test("foreign user shortcut file is preserved exactly")
@@ -1021,13 +1427,16 @@ private final class RecordingExecutor: AppInstallCommandExecuting {
     private(set) var invocations: [Invocation] = []
     private let rejectedCodeSignTargets: Set<String>
     private let rejectStagedSignature: Bool
+    private let failOpen: Bool
 
     init(
         rejectedCodeSignTargets: Set<String> = [],
-        rejectStagedSignature: Bool = false
+        rejectStagedSignature: Bool = false,
+        failOpen: Bool = false
     ) {
         self.rejectedCodeSignTargets = rejectedCodeSignTargets
         self.rejectStagedSignature = rejectStagedSignature
+        self.failOpen = failOpen
     }
 
     func run(_ executable: URL, arguments: [String]) throws {
@@ -1050,6 +1459,12 @@ private final class RecordingExecutor: AppInstallCommandExecuting {
             try FileManager.default.copyItem(
                 at: URL(fileURLWithPath: arguments[arguments.count - 2]),
                 to: URL(fileURLWithPath: arguments[arguments.count - 1])
+            )
+        }
+        if executable.path == "/usr/bin/open", failOpen {
+            throw AppInstallCoordinatorError.commandFailed(
+                command: executable.path,
+                status: 1
             )
         }
     }
@@ -1119,6 +1534,10 @@ private struct Fixture {
         destination.deletingLastPathComponent()
     }
 
+    var bin: URL {
+        installRoot.appendingPathComponent("bin", isDirectory: true)
+    }
+
     var relocationJournal: URL {
         installRoot.appendingPathComponent(
             ".app-relocation-transaction.json"
@@ -1128,6 +1547,27 @@ private struct Fixture {
     var relocationStaging: URL {
         installRoot.appendingPathComponent(
             ".Darkbloom.app.relocation-00000000-0000-0000-0000-000000000001",
+            isDirectory: true
+        )
+    }
+
+    var binRelocationStaging: URL {
+        installRoot.appendingPathComponent(
+            ".bin.relocation-00000000-0000-0000-0000-000000000001",
+            isDirectory: true
+        )
+    }
+
+    var appRelocationGarbage: URL {
+        installRoot.appendingPathComponent(
+            ".Darkbloom.app.garbage-00000000-0000-0000-0000-000000000001",
+            isDirectory: true
+        )
+    }
+
+    var binRelocationGarbage: URL {
+        installRoot.appendingPathComponent(
+            ".bin.garbage-00000000-0000-0000-0000-000000000001",
             isDirectory: true
         )
     }
@@ -1197,12 +1637,22 @@ private struct Fixture {
             format: .xml,
             options: 0
         ).write(to: contents.appendingPathComponent("Info.plist"))
-        let executable = macOS.appendingPathComponent("DarkbloomApp")
-        try Data(payload.utf8).write(to: executable)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: executable.path
-        )
+        let payloads: [(name: String, contents: String, executable: Bool)] = [
+            ("DarkbloomApp", payload, true),
+            ("darkbloom", "\(payload)-cli", true),
+            ("darkbloom-enclave", "\(payload)-enclave", true),
+            ("mlx.metallib", "\(payload)-metallib", false),
+        ]
+        for item in payloads {
+            let destination = macOS.appendingPathComponent(item.name)
+            try Data(item.contents.utf8).write(to: destination)
+            if item.executable {
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: destination.path
+                )
+            }
+        }
         return appURL
     }
 
@@ -1215,6 +1665,36 @@ private struct Fixture {
             atPath: shortcut.path,
             withDestinationPath: target.path
         )
+    }
+
+    func makeFlatBin() throws {
+        try FileManager.default.createDirectory(
+            at: bin,
+            withIntermediateDirectories: true
+        )
+        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+            let path = bin.appendingPathComponent(name)
+            try Data("legacy-\(name)".utf8).write(to: path)
+        }
+        try FileManager.default.createSymbolicLink(
+            atPath: bin.appendingPathComponent("eigeninference-enclave").path,
+            withDestinationPath: "darkbloom-enclave"
+        )
+    }
+
+    func expectCanonicalBin() throws {
+        for link in AppRelocationBinLayout.canonicalLinks {
+            let path = bin.appendingPathComponent(link.name)
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: path.path
+            )
+            #expect(attributes[.type] as? FileAttributeType == .typeSymbolicLink)
+            #expect(
+                try FileManager.default.destinationOfSymbolicLink(
+                    atPath: path.path
+                ) == link.target
+            )
+        }
     }
 
     func expectValidShortcut() throws {
@@ -1243,6 +1723,10 @@ private struct Fixture {
         #expect(!entries.contains {
             $0.hasPrefix(".Darkbloom.app.relocation-")
                 || $0.hasPrefix(".Darkbloom.app.previous-")
+                || $0.hasPrefix(".Darkbloom.app.garbage-")
+                || $0.hasPrefix(".bin.relocation-")
+                || $0.hasPrefix(".bin.previous-")
+                || $0.hasPrefix(".bin.garbage-")
                 || $0.hasPrefix("..app-relocation-transaction.json.tmp-")
         })
     }

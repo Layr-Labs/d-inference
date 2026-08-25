@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 /// Side-effect-free disk admission result for a model download.
 ///
@@ -9,7 +10,7 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
     /// Keep this much free after an app-initiated download. The downloader's
     /// normal capacity gate accepts an explicit reserve so non-app callers can
     /// continue to pass zero.
-    public static let appReserveBytes: Int64 = 2 * 1_073_741_824
+    public static let appReserveBytes = ModelDownloadStorageContract.appReserveBytes
 
     public let remainingBytes: Int64
     public let reserveBytes: Int64
@@ -36,10 +37,8 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
         self.reserveBytes = reserve
         requiredAvailableBytes = required
         self.availableBytes = available
-        // Preserve the downloader's existing fail-open behavior when the
-        // filesystem does not report usable capacity.
         hasSufficientCapacity = !requiredOverflow
-            && (available.map { $0 >= required } ?? true)
+            && (available.map { $0 >= required } ?? false)
     }
 }
 
@@ -92,7 +91,7 @@ extension ModelDownloader {
         let remaining = try await remainingForegroundDownloadBytes(for: model)
         let snapshotsDirectory = Self.cacheSnapshotDirectory(for: model.id)
             .deletingLastPathComponent()
-        let available = try Self.availableCapacity(at: snapshotsDirectory)
+        let available = try availableCapacityProvider(snapshotsDirectory)
         return ModelDownloadStoragePlan(
             remainingBytes: remaining,
             reserveBytes: reserveBytes,
@@ -155,7 +154,7 @@ extension ModelDownloader {
         }
     }
 
-    private static func catalogSizeBytes(_ model: CatalogModel) -> Int64 {
+    static func catalogSizeBytes(_ model: CatalogModel) -> Int64 {
         if let exact = model.totalSizeBytes {
             return max(0, exact)
         }

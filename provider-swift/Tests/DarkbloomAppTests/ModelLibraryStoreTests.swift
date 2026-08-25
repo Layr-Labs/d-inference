@@ -3,7 +3,7 @@ import Testing
 
 @Test("An offline catalog keeps cached models visible and blocks new downloads")
 @MainActor
-func offlineCatalogUsesCachedModels() {
+func offlineCatalogUsesCachedModels() async {
     let store = ModelLibraryStore(fixture: .catalogOffline)
 
     guard case .offline(_, let showingCachedResults) = store.catalogState else {
@@ -15,7 +15,7 @@ func offlineCatalogUsesCachedModels() {
 
     let model = store.models.first { !$0.isInstalled && $0.isAvailableFromCatalog }
     #expect(model != nil)
-    #expect(store.beginDownload(modelID: model?.id ?? "missing") == .unavailable(
+    #expect(await store.beginDownload(modelID: model?.id ?? "missing") == .unavailable(
         "Reconnect to refresh the catalog before downloading."
     ))
 
@@ -28,15 +28,15 @@ func offlineCatalogUsesCachedModels() {
 
 @Test("A model that exceeds available memory requires an explicit confirmation")
 @MainActor
-func incompatibleModelRequiresConfirmation() {
+func incompatibleModelRequiresConfirmation() async {
     let store = ModelLibraryStore(fixture: .tooLarge)
     let modelID = store.selectedModelID ?? "missing"
 
-    #expect(store.beginDownload(modelID: modelID) == .requiresCompatibilityConfirmation(
+    #expect(await store.beginDownload(modelID: modelID) == .requiresCompatibilityConfirmation(
         requiredMemoryGB: 48,
         availableMemoryGB: 32
     ))
-    #expect(store.beginDownload(
+    #expect(await store.beginDownload(
         modelID: modelID,
         allowingIncompatibleModel: true
     ) == .applied)
@@ -50,7 +50,7 @@ func incompatibleModelRequiresConfirmation() {
 
 @Test("A byte-resumable download preserves its prefix and reaches verification")
 @MainActor
-func resumableDownloadPreservesProgress() {
+func resumableDownloadPreservesProgress() async {
     let store = ModelLibraryStore(fixture: .resumableDownload)
     let modelID = store.selectedModelID ?? "missing"
 
@@ -61,7 +61,7 @@ func resumableDownloadPreservesProgress() {
     #expect(paused.isResumed)
     #expect(paused.fractionComplete > 0.4)
 
-    #expect(store.resumeDownload(modelID: modelID) == .applied)
+    #expect(await store.resumeDownload(modelID: modelID) == .applied)
     #expect(store.advanceDownload(modelID: modelID) == .applied)
 
     guard case .downloading(let advanced) = store.selectedModel?.installation else {
@@ -83,7 +83,7 @@ func resumableDownloadPreservesProgress() {
 
 @Test("A verification mismatch starts a clean download instead of resuming corrupt bytes")
 @MainActor
-func verificationMismatchRestartsCleanly() {
+func verificationMismatchRestartsCleanly() async {
     let store = ModelLibraryStore(fixture: .failedVerification)
     let modelID = store.selectedModelID ?? "missing"
 
@@ -94,7 +94,7 @@ func verificationMismatchRestartsCleanly() {
     #expect(failure.reason == .verificationMismatch)
     #expect(!failure.isResumable)
 
-    #expect(store.beginDownload(modelID: modelID) == .applied)
+    #expect(await store.beginDownload(modelID: modelID) == .applied)
     guard case .downloading(let progress) = store.selectedModel?.installation else {
         Issue.record("A retry should start a clean transfer")
         return

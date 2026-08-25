@@ -46,11 +46,11 @@ func modelActionErrorsRemainSelective() {
 
 @Test("Transfer task identity changes by phase, not by every byte tick")
 @MainActor
-func transferTaskIdentityIsStableWithinPhase() {
+func transferTaskIdentityIsStableWithinPhase() async {
     let store = ModelLibraryStore()
     let modelID = store.models.first { !$0.isInstalled && $0.fit.canRunOnThisMac }?.id ?? "missing"
 
-    #expect(store.beginDownload(modelID: modelID) == .applied)
+    #expect(await store.beginDownload(modelID: modelID) == .applied)
     let initialSignature = ModelLibraryPresentation.activeTransferSignature(for: store.activeTransfers)
     #expect(store.advanceDownload(modelID: modelID) == .applied)
     let advancedSignature = ModelLibraryPresentation.activeTransferSignature(for: store.activeTransfers)

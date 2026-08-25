@@ -1,6 +1,7 @@
 import Foundation
 import ArgumentParser
 import ProviderCore
+import ProviderCoreFoundation
 
 struct Models: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -14,7 +15,13 @@ struct Models: AsyncParsableCommand {
 
         With no subcommand, shows the full catalog.
         """,
-        subcommands: [Catalog.self, List.self, Download.self, Remove.self],
+        subcommands: [
+            Catalog.self,
+            List.self,
+            DownloadPlan.self,
+            Download.self,
+            Remove.self,
+        ],
         defaultSubcommand: Catalog.self
     )
 }
@@ -218,6 +225,92 @@ private struct ModelsCatalogPlanOutput: Encodable {
     }
 }
 
+// MARK: - download-plan
+
+extension Models {
+    struct DownloadPlan: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "download-plan",
+            abstract: "Inspect resumable bytes and free space without downloading."
+        )
+
+        @OptionGroup var configOptions: ConfigOptions
+
+        @Argument(help: "Model ID (or s3 name) to inspect.")
+        var modelID: String
+
+        @Option(help: "Override coordinator URL.")
+        var coordinator: String?
+
+        @Flag(help: "Emit the machine-readable storage plan.")
+        var json = false
+
+        @Option(help: "Bytes that must remain free after the download.")
+        var reserveBytes: Int64 = 0
+
+        func validate() throws {
+            guard reserveBytes >= 0 else {
+                throw ValidationError("--reserve-bytes must be non-negative")
+            }
+        }
+
+        mutating func run() async throws {
+            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
+            let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
+            let catalog: [CatalogModel]
+            do {
+                catalog = try await client.fetchCatalog(typeFilter: nil)
+            } catch let error as ModelCatalogError {
+                printError("could not fetch catalog: \(error)")
+                throw ExitCode.failure
+            }
+            guard let entry = catalog.first(where: {
+                $0.id == modelID || $0.s3Name == modelID
+            }) else {
+                printError("model '\(modelID)' is not in the coordinator catalog")
+                throw ExitCode.failure
+            }
+
+            let downloader = ModelDownloader(catalogClient: client)
+            let plan: ModelDownloadStoragePlan
+            do {
+                plan = try await downloader.storagePlan(
+                    for: entry,
+                    reserveBytes: reserveBytes
+                )
+            } catch let error as ModelCatalogError {
+                printError("could not plan model download: \(error)")
+                throw ExitCode.failure
+            }
+
+            if json {
+                try printJSON(ModelsDownloadPlanOutput(
+                    modelID: entry.id,
+                    downloadPlan: plan
+                ))
+            } else {
+                let available = plan.availableBytes.map(String.init) ?? "unknown"
+                print("Model: \(entry.id)")
+                print("Remaining bytes: \(plan.remainingBytes)")
+                print("Reserve bytes: \(plan.reserveBytes)")
+                print("Required available bytes: \(plan.requiredAvailableBytes)")
+                print("Available bytes: \(available)")
+            }
+        }
+    }
+}
+
+private struct ModelsDownloadPlanOutput: Encodable {
+    let modelID: String
+    let downloadPlan: ModelDownloadStoragePlan
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case downloadPlan = "download_plan"
+    }
+}
+
 // MARK: - download
 
 extension Models {
@@ -239,6 +332,15 @@ extension Models {
 
         @Flag(help: "Emit newline-delimited JSON download events on stdout instead of human progress output.")
         var json = false
+
+        @Option(help: "Bytes that must remain free after the download.")
+        var reserveBytes: Int64 = 0
+
+        func validate() throws {
+            guard reserveBytes >= 0 else {
+                throw ValidationError("--reserve-bytes must be non-negative")
+            }
+        }
 
         mutating func run() async throws {
             let emitter = ModelsDownloadEventEmitter()
@@ -276,7 +378,10 @@ extension Models {
                 catalogClient: client,
                 runtimeCapabilities: runtimeCapabilities)
             do {
-                try await downloader.download(model: entry) { progress in
+                try await downloader.download(
+                    model: entry,
+                    reserveBytes: reserveBytes
+                ) { progress in
                     let mb = Double(progress.bytesDownloaded) / 1_048_576
                     print("  ✓ \(progress.file)  \(String(format: "%.1f MB", mb))")
                 }
@@ -299,9 +404,13 @@ extension Models {
         ) async throws {
             let downloader = ModelDownloader(r2CDNURL: r2CDN, catalogClient: client)
             do {
-                try await downloader.download(model: entry, onEvent: { event in
+                try await downloader.download(
+                    model: entry,
+                    reserveBytes: reserveBytes,
+                    onEvent: { event in
                     emitter.emit(event, model: entry.id)
-                })
+                    }
+                )
             } catch is CancellationError {
                 // Terminated mid-download (e.g. the app's parent process killed
                 // us): the staged `.part` bytes stay on disk for a later resume.

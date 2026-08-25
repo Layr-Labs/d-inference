@@ -382,7 +382,7 @@ extension Models {
                     model: entry,
                     reserveBytes: reserveBytes,
                     onEvent: { event in
-                    emitter.emit(event, model: entry.id)
+                        emitter.emit(event, model: entry.id)
                     }
                 )
             } catch is CancellationError {

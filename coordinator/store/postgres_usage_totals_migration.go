@@ -76,6 +76,17 @@ func (s *PostgresStore) prepareUsageTotalsMigration(ctx context.Context) (usageT
 	if err := acquireUsageTotalsMigrationLock(ctx, tx); err != nil {
 		return usageTotalsMigrationPreparation{}, err
 	}
+	// CREATE TABLE IF NOT EXISTS is not safe when separate transactions race
+	// to create the same relation: PostgreSQL can reject one on its internal
+	// pg_type uniqueness constraint. Keep the checkpoint DDL behind the same
+	// advisory lock that serializes the migration state machine.
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS usage_totals_backfill_state (
+			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			cutoff_id BIGINT NOT NULL
+		)`); err != nil {
+		return usageTotalsMigrationPreparation{}, fmt.Errorf("create backfill checkpoint table: %w", err)
+	}
 
 	var applied, counterExists bool
 	if err := tx.QueryRow(ctx,

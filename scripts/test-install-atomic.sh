@@ -863,6 +863,8 @@ for installer_label in source embedded; do
         "$fault_installer" "$installer_label" link-darkbloom-enclave
 done
 
+source "$REPO_ROOT/scripts/test-install-recovery-fixtures.sh"
+
 assert_interrupted_app_transaction_recovers() {
     local installer=$1
     local label=$2
@@ -880,28 +882,12 @@ assert_interrupted_app_transaction_recovers() {
     ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
     ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived injected crash $crash_point" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" "$crash_point"
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
-    local debris
-    for debris in \
-        "$install_dir"/.install-backup-* \
-        "$install_dir"/.install-staging-*
-    do
-        if [ -e "$debris" ] || [ -L "$debris" ]; then
-            echo "installer recovery left transaction debris: $debris" >&2
-            exit 1
-        fi
-    done
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "interrupted app transaction recovery"
     local preserved_count=0
     local preserved_path=""
     local candidate
@@ -974,22 +960,10 @@ assert_recovery_is_restart_safe() {
     ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
     ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the setup crash for recovery restart" >&2
-        exit 1
-    fi
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=recovery-app-restored \
-        bash "$installer" --recover-install-transactions-test "$install_dir"
-    then
-        echo "$installer survived the injected recovery crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" staged-app-moved
+    installer_recovery_expect_recovery_crash \
+        "$installer" "$install_dir" recovery-app-restored
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
@@ -1033,16 +1007,8 @@ assert_fresh_recovery_rejects_replacement() {
         crash_point=flat-layout-moved
     fi
 
-    artifact_hashes "$archive"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the fresh-install crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$archive" "$install_dir" "$crash_point"
 
     local displaced="$ROOT/fresh-replacement-original-$label-$kind"
     mv "$destination" "$displaced"
@@ -1091,16 +1057,8 @@ assert_fresh_recovery_removes_partial_candidate() {
     local install_dir="$ROOT/partial-fresh-candidate-$label"
     local destination="$install_dir/Darkbloom.app"
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the in-place candidate setup crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" staged-app-moved
 
     local candidate_identity
     candidate_identity=$(test_path_identity "$destination")
@@ -1126,16 +1084,8 @@ assert_recovery_preserves_mutated_candidate_and_restores_previous() {
     local destination="$install_dir/Darkbloom.app"
     write_existing_bundle "$destination" com.example.foreign
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the mutated candidate setup crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" staged-app-moved
 
     printf 'created after crash\n' > "$destination/created-after-crash"
     bash "$installer" --recover-install-transactions-test "$install_dir"
@@ -1178,16 +1128,11 @@ assert_committed_app_mutation_rolls_back() {
     ln -s ../previous-enclave "$bin_dir/darkbloom-enclave"
     ln -s previous-legacy-enclave "$bin_dir/eigeninference-enclave"
 
-    artifact_hashes "$VALID"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=app-transaction-committed \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the committed app setup crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" app-transaction-committed
+    local transaction_backup
+    transaction_backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$transaction_backup" committed
 
     local mutated_root
     local marker_path
@@ -1231,8 +1176,8 @@ assert_committed_app_mutation_rolls_back() {
         test "$(cat "${preserved[0]}/same-inode-bin-mutation")" = \
             "same-inode-bin-mutation"
     fi
-    local backups=("$install_dir"/.install-backup-*)
-    test "${#backups[@]}" -eq 0
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "committed app mutation recovery"
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test "$(cat "$destination/predecessor-payload")" = \
@@ -1326,16 +1271,8 @@ assert_interrupted_flat_transaction_recovers() {
 
     run_install_with "$installer" "$FLAT_LEGACY" "$install_dir"
     printf 'previous-only\n' > "$install_dir/bin/previous-only"
-    artifact_hashes "$FLAT_LEGACY"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$crash_point" \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$FLAT_LEGACY" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived injected flat crash $crash_point" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$FLAT_LEGACY" "$install_dir" "$crash_point"
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test -x "$install_dir/bin/darkbloom"
@@ -1345,16 +1282,8 @@ assert_interrupted_flat_transaction_recovers() {
     else
         test ! -e "$install_dir/bin/previous-only"
     fi
-    local debris
-    for debris in \
-        "$install_dir"/.install-backup-* \
-        "$install_dir"/.install-staging-*
-    do
-        if [ -e "$debris" ] || [ -L "$debris" ]; then
-            echo "flat installer recovery left transaction debris: $debris" >&2
-            exit 1
-        fi
-    done
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "interrupted flat transaction recovery"
 }
 
 assert_interrupted_flat_transaction_recovers \
@@ -1370,7 +1299,6 @@ assert_interrupted_flat_transaction_recovers \
 
 # Historical journal compatibility and the recovery-only crash boundaries use
 # the real signed/flat artifacts and filesystem helpers initialized above.
-source "$REPO_ROOT/scripts/test-install-recovery-fixtures.sh"
 source "$REPO_ROOT/scripts/test-install-recovery-checkpoints.sh"
 source "$REPO_ROOT/scripts/test-install-recovery-compatibility.sh"
 
@@ -1382,16 +1310,12 @@ assert_committed_flat_mutation_rolls_back() {
 
     run_install_with "$installer" "$FLAT_LEGACY" "$install_dir"
     printf 'known-good predecessor\n' > "$bin_dir/previous-only"
-    artifact_hashes "$FLAT_LEGACY"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=flat-transaction-committed \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$FLAT_LEGACY" "$install_dir" \
-            "$BINARY_HASH" "$METALLIB_HASH" "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the committed flat setup crash" >&2
-        exit 1
-    fi
+    installer_recovery_expect_install_crash \
+        "$installer" "$FLAT_LEGACY" "$install_dir" \
+        flat-transaction-committed
+    local transaction_backup
+    transaction_backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$transaction_backup" committed
 
     local candidate_identity
     candidate_identity=$(test_path_identity "$bin_dir")
@@ -1412,8 +1336,8 @@ assert_committed_flat_mutation_rolls_back() {
     test "${#preserved[@]}" -eq 1
     grep -aF "same-inode-flat-mutation" \
         "${preserved[0]}/darkbloom" >/dev/null
-    local backups=("$install_dir"/.install-backup-*)
-    test "${#backups[@]}" -eq 0
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "committed flat mutation recovery"
 
     bash "$installer" --recover-install-transactions-test "$install_dir"
     test "$(cat "$bin_dir/previous-only")" = "known-good predecessor"
@@ -1436,36 +1360,32 @@ assert_fresh_rollback_restarts_after_partial_removal() {
         setup_crash="flat-layout-moved"
     fi
 
-    artifact_hashes "$archive"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$setup_crash" \
-        PATH="$CLT_SHIMS:$PATH" \
-        bash "$installer" --install-bundle-test \
-            "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
-        echo "$installer survived the fresh rollback setup crash" >&2
-        exit 1
+    installer_recovery_expect_install_crash \
+        "$installer" "$archive" "$install_dir" "$setup_crash"
+    local candidate_path="$install_dir/bin"
+    if [ "$component" = app ]; then
+        candidate_path="$install_dir/Darkbloom.app"
     fi
+    local candidate_identity
+    candidate_identity=$(test_path_identity "$candidate_path")
 
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="recovery-$component-removal-partial" \
-        bash "$installer" --recover-install-transactions-test "$install_dir"
-    then
-        echo "$installer survived the second rollback interruption" >&2
-        exit 1
-    fi
+    installer_recovery_expect_recovery_crash \
+        "$installer" "$install_dir" "recovery-$component-removal-partial"
 
     shopt -s nullglob
-    local backups=("$install_dir"/.install-backup-*)
-    test "${#backups[@]}" -eq 1
-    test -f "${backups[0]}/.transaction"
-    test -d "${backups[0]}/.rollback-$component"
-    test ! -L "${backups[0]}/.rollback-$component"
+    local transaction_backup
+    transaction_backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$transaction_backup" prepared
+    test -d "$transaction_backup/.rollback-$component"
+    test ! -L "$transaction_backup/.rollback-$component"
+    test "$(test_path_identity "$transaction_backup/.rollback-$component")" = \
+        "$candidate_identity"
     if [ "$component" = app ]; then
         test ! -e \
-            "${backups[0]}/.rollback-app/Contents/MacOS/darkbloom"
+            "$transaction_backup/.rollback-app/Contents/MacOS/darkbloom"
         test ! -e "$install_dir/Darkbloom.app"
     else
-        test ! -e "${backups[0]}/.rollback-bin/darkbloom"
+        test ! -e "$transaction_backup/.rollback-bin/darkbloom"
         test ! -e "$install_dir/bin"
     fi
 
@@ -1474,10 +1394,8 @@ assert_fresh_rollback_restarts_after_partial_removal() {
     test ! -L "$install_dir/Darkbloom.app"
     test ! -e "$install_dir/bin"
     test ! -L "$install_dir/bin"
-    backups=("$install_dir"/.install-backup-*)
-    local staging=("$install_dir"/.install-staging-*)
-    test "${#backups[@]}" -eq 0
-    test "${#staging[@]}" -eq 0
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "partial fresh rollback recovery"
 
     # A third run proves the completed recovery remains idempotent.
     bash "$installer" --recover-install-transactions-test "$install_dir"

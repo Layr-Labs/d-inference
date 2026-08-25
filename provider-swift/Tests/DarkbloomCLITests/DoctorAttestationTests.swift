@@ -8,8 +8,10 @@ import Testing
 struct DoctorAttestationTests {
     @Test("fresh running daemon selects its injected ephemeral signer identity")
     func selectsRunningDaemonEphemeralIdentity() throws {
+        let process = ProcessIdentity(pid: 42, startTimeMicros: 123_456)
         let state = DaemonState(
             pid: 42,
+            processIdentity: process,
             version: "test",
             writtenAt: 100,
             startedAt: 50,
@@ -17,7 +19,7 @@ struct DoctorAttestationTests {
         let resolution = resolveDoctorAttestationIdentity(
             daemonState: state,
             now: 120,
-            processAlive: { $0 == 42 })
+            readProcessIdentity: { $0 == 42 ? process : nil })
         guard case .available(let publicKey) = resolution else {
             Issue.record("fresh running daemon identity was not selected")
             return
@@ -65,26 +67,30 @@ struct DoctorAttestationTests {
         #expect(provider.providerID == "ephemeral-session")
     }
 
-    @Test("missing, stopped, stale, and legacy daemon identity never guesses a key")
+    @Test("missing, mismatched, stale, and legacy daemon identity never guesses a key")
     func unavailableDaemonIdentitiesWarn() {
         #expect(
             resolveDoctorAttestationIdentity(
-                daemonState: nil, now: 120, processAlive: { _ in true })
+                daemonState: nil, now: 120, readProcessIdentity: { _ in nil })
                 == .unavailable(.daemonStateMissing))
 
+        let process = ProcessIdentity(pid: 42, startTimeMicros: 123_456)
         let current = DaemonState(
             pid: 42,
+            processIdentity: process,
             version: "test",
             writtenAt: 100,
             startedAt: 50,
             attestationPublicKey: "active-key")
         #expect(
             resolveDoctorAttestationIdentity(
-                daemonState: current, now: 120, processAlive: { _ in false })
-                == .unavailable(.daemonNotRunning))
+                daemonState: current,
+                now: 120,
+                readProcessIdentity: { _ in ProcessIdentity(pid: 42, startTimeMicros: 999) })
+                == .unavailable(.daemonProcessMismatch))
         #expect(
             resolveDoctorAttestationIdentity(
-                daemonState: current, now: 200, processAlive: { _ in true })
+                daemonState: current, now: 200, readProcessIdentity: { _ in process })
                 == .unavailable(.daemonStateStale(ageSeconds: 100)))
 
         let legacy = DaemonState(
@@ -94,8 +100,48 @@ struct DoctorAttestationTests {
             startedAt: 50)
         #expect(
             resolveDoctorAttestationIdentity(
-                daemonState: legacy, now: 120, processAlive: { _ in true })
+                daemonState: legacy, now: 120, readProcessIdentity: { _ in process })
+                == .unavailable(.daemonProcessIdentityNotReported))
+
+        let legacySigner = DaemonState(
+            pid: 42,
+            version: "old",
+            writtenAt: 100,
+            startedAt: 50,
+            attestationPublicKey: "unattributed-key")
+        #expect(
+            resolveDoctorAttestationIdentity(
+                daemonState: legacySigner, now: 120, readProcessIdentity: { _ in process })
+                == .unavailable(.daemonProcessIdentityNotReported))
+
+        let noSigner = DaemonState(
+            pid: 42,
+            processIdentity: process,
+            version: "test",
+            writtenAt: 100,
+            startedAt: 50)
+        #expect(
+            resolveDoctorAttestationIdentity(
+                daemonState: noSigner, now: 120, readProcessIdentity: { _ in process })
                 == .unavailable(.signerIdentityNotReported))
+    }
+
+    @Test("Secure Enclave diagnosis uses resolved identity without creating a key")
+    func secureEnclaveDiagnosisUsesDaemonState() {
+        let active = SEKeySelfTest.run(
+            identity: .available(publicKey: "active-key"),
+            secureEnclaveAvailable: true)
+        #expect(active.level == .pass)
+
+        let stopped = SEKeySelfTest.run(
+            identity: .unavailable(.daemonProcessMismatch),
+            secureEnclaveAvailable: true)
+        #expect(stopped.level == .warn)
+
+        let unavailable = SEKeySelfTest.run(
+            identity: .unavailable(.signerIdentityNotReported),
+            secureEnclaveAvailable: true)
+        #expect(unavailable.level == .warn)
     }
 
     @Test("matches the redacted feed by Secure Enclave key")

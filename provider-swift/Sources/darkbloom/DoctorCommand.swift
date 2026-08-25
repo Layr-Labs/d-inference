@@ -49,7 +49,7 @@ struct Doctor: AsyncParsableCommand {
         print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
         let daemonState = DaemonStateFile.read()
-        let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
 
         // §16.5: did this box serve the KV backend it was configured for,

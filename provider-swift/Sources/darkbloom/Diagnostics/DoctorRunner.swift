@@ -13,14 +13,18 @@ enum DoctorRunner {
         var out: [Diagnostic] = []
         let now = Date().timeIntervalSince1970
         let state = DaemonStateFile.read()
-        let daemonUp = state.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonUp = doctorDaemonProcessMatches(daemonState: state)
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
 
-        // ---- Attestation key (local, no daemon needed) ----
-        let se = SEKeySelfTest.run()
-        out.append(Diagnostic(section: .attestationKey, name: "se key sign test",
+        // ---- Attestation key (read-only daemon state) ----
+        let attestationIdentity = resolveDoctorAttestationIdentity(
+            daemonState: state,
+            now: now)
+        let se = SEKeySelfTest.run(
+            identity: attestationIdentity)
+        out.append(Diagnostic(section: .attestationKey, name: "active se key",
                               level: se.level, message: se.message, fix: se.fix))
 
         // ---- APNs code-identity readiness (local) ----

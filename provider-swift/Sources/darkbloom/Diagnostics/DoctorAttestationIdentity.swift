@@ -3,7 +3,8 @@ import ProviderCore
 
 enum DoctorAttestationIdentityUnavailable: Equatable {
     case daemonStateMissing
-    case daemonNotRunning
+    case daemonProcessIdentityNotReported
+    case daemonProcessMismatch
     case daemonStateStale(ageSeconds: Int)
     case signerIdentityNotReported
 
@@ -12,9 +13,12 @@ enum DoctorAttestationIdentityUnavailable: Equatable {
         case .daemonStateMissing:
             return "cannot match coordinator trust: no readable daemon state; "
                 + "start or restart the provider and retry"
-        case .daemonNotRunning:
-            return "cannot match coordinator trust: daemon state belongs to a provider "
-                + "process that is not running"
+        case .daemonProcessIdentityNotReported:
+            return "cannot match coordinator trust: daemon state does not identify the "
+                + "exact provider process; restart with the current provider version"
+        case .daemonProcessMismatch:
+            return "cannot match coordinator trust: daemon state does not belong to the "
+                + "currently running provider process"
         case .daemonStateStale(let ageSeconds):
             return "cannot match coordinator trust: running daemon state is stale "
                 + "(last update \(ageSeconds)s ago); wait for a fresh update or restart the provider"
@@ -30,19 +34,39 @@ enum DoctorAttestationIdentityResolution: Equatable {
     case unavailable(DoctorAttestationIdentityUnavailable)
 }
 
+func doctorDaemonProcessMatches(
+    daemonState: DaemonState?,
+    readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
+) -> Bool {
+    guard
+        let daemonState,
+        let recordedProcess = daemonState.processIdentity,
+        recordedProcess.pid == daemonState.pid
+    else {
+        return false
+    }
+    return readProcessIdentity(recordedProcess.pid) == recordedProcess
+}
+
 /// Resolves the exact attestation identity owned by the live provider process.
 /// `doctor` must not load or create a Secure Enclave key: the daemon may be
 /// using an injected or ephemeral signer that differs from any persistent key.
 func resolveDoctorAttestationIdentity(
     daemonState: DaemonState?,
     now: Double = Date().timeIntervalSince1970,
-    processAlive: (Int32) -> Bool = daemonProcessAlive
+    readProcessIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
 ) -> DoctorAttestationIdentityResolution {
     guard let daemonState else {
         return .unavailable(.daemonStateMissing)
     }
-    guard processAlive(daemonState.pid) else {
-        return .unavailable(.daemonNotRunning)
+    guard daemonState.processIdentity != nil else {
+        return .unavailable(.daemonProcessIdentityNotReported)
+    }
+    guard doctorDaemonProcessMatches(
+        daemonState: daemonState,
+        readProcessIdentity: readProcessIdentity
+    ) else {
+        return .unavailable(.daemonProcessMismatch)
     }
     guard !daemonState.isStale(now: now) else {
         return .unavailable(

@@ -1,12 +1,37 @@
 # Changelog
 
-## Release candidate v0.8.11 (not shipped; 2026-08-24)
+## Release candidate v0.8.12 (not shipped; 2026-08-25)
 
-> **Release status:** planning and integration only. No `v0.8.11` tag, signed
-> provider bundle, release registration, coordinator deployment, or fleet
-> rollout exists. The checked-in provider source and coordinator fallback
-> constants are `0.8.11`; the latest shipped provider version and tag remain
-> `v0.8.10`.
+- **Default atomic first-token deadline admission on** — Explicit typed TOML is
+  authoritative: `"off"` disables and `"enforce"` enforces regardless of the
+  legacy environment. An absent key inherits that environment, where only exact
+  lowercase `off` disables and every other value securely enforces. Optional
+  serialization preserves absence. Edit `provider.toml` and use ordinary
+  `darkbloom restart` for rollback, restore, or legacy-environment inheritance;
+  the linked report gives the exact settings.
+- **Keep the safety envelope unchanged** — Forecasting still requires a
+  propagated deadline, an initialized isolated cold-prefill EWMA, a text-only
+  request, phase-specific rates, and an authoritative capacity-guaranteed
+  scheduler projection. Multimodal requests remain outside forecast admission.
+- **Keep cap-0 a functional serving rollback** —
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0` still restores unlimited partial
+  prefill interleave. That posture cannot produce the proven bounded projection,
+  so it bypasses forecast admission and uses ordinary submission while hard
+  absolute expiry remains active. It does not rewrite the deadline-mode setting.
+- Provider and coordinator fallback version authorities move together to
+  `0.8.12`; there is no new protocol.
+
+Release rationale, limitations, compatibility, and rollout gates:
+[`docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md`](docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md).
+
+## v0.8.11 (shipped; 2026-08-24)
+
+> **Post-publication status (2026-08-25):** `v0.8.11` was tagged, published, and
+> registered as the active provider release. The candidate notes below are
+> retained as the pre-publication decision record; their blocker/no-shipment
+> language describes the state when they were written. The shipped resolver
+> still defaulted atomic deadline admission to `off`; v0.8.12 is the activation
+> change.
 
 ### Candidate integration status
 
@@ -93,8 +118,8 @@
 
 ---
 
-The entries below are shipped releases. The latest shipped provider release at
-the time this candidate was recorded is `v0.8.10`.
+The entries below are earlier shipped releases. At the time the v0.8.11
+candidate notes above were recorded, the latest shipped provider was `v0.8.10`.
 
 ## v0.8.10 (2026-08-21)
 

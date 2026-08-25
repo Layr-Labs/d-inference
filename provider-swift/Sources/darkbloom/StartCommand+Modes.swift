@@ -95,6 +95,7 @@ extension Start {
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
+                prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtp: config.backend.mtp,
                 mtpDrafterPath: config.backend.mtpDrafterPath
             ),

@@ -11,8 +11,9 @@ fail() {
     exit 64
 }
 APP=$1
-[ -d "$APP" ] && [ ! -L "$APP" ] \
-    || fail "artifact must be a real Darkbloom.app directory"
+if [ ! -d "$APP" ] || [ -L "$APP" ]; then
+    fail "artifact must be a real Darkbloom.app directory"
+fi
 
 file_mode() {
     local target=$1
@@ -26,8 +27,9 @@ require_regular() {
     local path=$1
     local mode=$2
     local label=$3
-    [ -f "$path" ] && [ ! -L "$path" ] \
-        || fail "$label must be a regular non-symlink file"
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        fail "$label must be a regular non-symlink file"
+    fi
     [ "$(file_mode "$path")" = "$mode" ] \
         || fail "$label must have mode 0$mode"
 }
@@ -50,8 +52,9 @@ child_is_allowed() {
 require_exact_children() {
     local directory=$1
     shift
-    [ -d "$directory" ] && [ ! -L "$directory" ] \
-        || fail "required directory is missing: $directory"
+    if [ ! -d "$directory" ] || [ -L "$directory" ]; then
+        fail "required directory is missing: $directory"
+    fi
     local path
     local child
     while IFS= read -r -d '' path; do
@@ -158,9 +161,10 @@ for marker in \
     "$resources/darkbloom-runtime-capabilities/fan-helper-v1" \
     "$resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 do
-    [ "$(wc -c < "$marker" | tr -d '[:space:]')" = "2" ] \
-        && [ "$(tr -d '\n' < "$marker")" = "1" ] \
-        || fail "capability marker must contain exactly 1 followed by newline: $marker"
+    if [ "$(wc -c < "$marker" | tr -d '[:space:]')" != "2" ] \
+        || [ "$(tr -d '\n' < "$marker")" != "1" ]; then
+        fail "capability marker must contain exactly 1 followed by newline: $marker"
+    fi
 done
 
 paged_count=$(

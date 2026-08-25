@@ -68,18 +68,26 @@ VALID="$ROOT/valid/Darkbloom.app"
 make_fixture "$VALID"
 "$VERIFIER" "$VALID"
 
+# Mutation strings intentionally expand $1 in the child bash process.
+# shellcheck disable=SC2016
 expect_rejected missing \
     'rm -f "$1/Contents/MacOS/darkbloom-enclave"'
+# shellcheck disable=SC2016
 expect_rejected extra \
     'printf "extra\n" > "$1/Contents/MacOS/unexpected-helper"; chmod 0755 "$1/Contents/MacOS/unexpected-helper"'
+# shellcheck disable=SC2016
 expect_rejected extra-resource \
     'printf "extra\n" > "$1/Contents/Resources/unexpected.dat"; chmod 0644 "$1/Contents/Resources/unexpected.dat"'
+# shellcheck disable=SC2016
 expect_rejected symlink \
     'rm -f "$1/Contents/MacOS/darkbloom-enclave"; ln -s darkbloom "$1/Contents/MacOS/darkbloom-enclave"'
+# shellcheck disable=SC2016
 expect_rejected executable-mode \
     'chmod 0775 "$1/Contents/MacOS/darkbloom"'
+# shellcheck disable=SC2016
 expect_rejected resource-mode \
     'chmod 0755 "$1/Contents/Resources/Chivo-Regular.ttf"'
+# shellcheck disable=SC2016
 expect_rejected invalid-marker \
     'printf "enabled\n" > "$1/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"'
 

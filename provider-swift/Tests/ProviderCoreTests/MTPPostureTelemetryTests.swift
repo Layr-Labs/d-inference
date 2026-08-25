@@ -31,6 +31,12 @@ private final class PostureTelemetrySink: @unchecked Sendable {
     var posture: TelemetryEvent? {
         events.last { $0.fields?["operation"]?.description == "engine_v2_slot_posture" }
     }
+
+    var postureCount: Int {
+        events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+        }.count
+    }
 }
 
 /// Engine stub reporting a paged pool that is partly occupied. `kvBytesInUse`
@@ -416,6 +422,84 @@ struct MTPPostureTelemetryTests {
         let afterShutdown = telemetry.events.count
         try await Task.sleep(for: .milliseconds(200))
         #expect(telemetry.events.count == afterShutdown)
+    }
+
+    @Test("reconfiguration stops the prior sampler")
+    func reconfigurationStopsPriorSampler() async throws {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged,
+            telemetry: telemetry)
+        await bridge.configureMTPStatus(
+            .disabled(.configDisabled, configured: false),
+            metricsInterval: .milliseconds(20))
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while telemetry.postureCount < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(telemetry.postureCount >= 2, "the prior sampler never ticked")
+
+        await bridge.configureMTPStatus(
+            .disabled(.assistantLoadFailed, configured: true),
+            metricsInterval: .seconds(600))
+        let afterReconfiguration = telemetry.postureCount
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(telemetry.postureCount == afterReconfiguration)
+
+        await bridge.shutdown()
+    }
+
+    @Test("shutdown is terminal and idempotent for the sampler")
+    func repeatedShutdownDoesNotRestartSampler() async throws {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged,
+            telemetry: telemetry)
+        await bridge.configureMTPStatus(
+            .disabled(.configDisabled, configured: false),
+            metricsInterval: .milliseconds(20))
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while telemetry.postureCount < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(telemetry.postureCount >= 2, "sampler never ticked")
+
+        await bridge.shutdown()
+        await bridge.shutdown()
+        let afterShutdown = telemetry.postureCount
+
+        await bridge.configureMTPStatus(
+            .disabled(.assistantLoadFailed, configured: true),
+            metricsInterval: .milliseconds(1))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(telemetry.postureCount == afterShutdown)
+    }
+
+    @Test("an idle sampler does not retain its bridge")
+    func idleSamplerDoesNotRetainBridge() async throws {
+        let telemetry = PostureTelemetrySink()
+        var bridge: EngineV2Bridge? = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged,
+            telemetry: telemetry)
+        weak var weakBridge = bridge
+
+        await bridge?.configureMTPStatus(
+            .disabled(.configDisabled, configured: false),
+            metricsInterval: .milliseconds(200))
+        #expect(telemetry.postureCount == 1)
+
+        bridge = nil
+        #expect(weakBridge == nil)
+
+        // Let the orphaned weak-capture task wake and observe that the bridge
+        // is gone; it must not emit or keep itself alive through the actor.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(telemetry.postureCount == 1)
     }
 
     @Test("a zero interval disables the sampler entirely")

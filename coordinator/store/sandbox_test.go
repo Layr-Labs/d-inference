@@ -237,6 +237,20 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 				t.Fatalf("begin renewal: %v", err)
 			}
 			renewedExpiry := renew.RequestedLeaseExpiresAt
+			if _, _, err := backend.ApplySandboxOperationUpdate(
+				ctx,
+				SandboxOperationUpdate{
+					OperationID:    renew.ID,
+					SandboxID:      sandbox.ID,
+					Generation:     1,
+					FencingToken:   10,
+					State:          SandboxOperationReady,
+					LeaseExpiresAt: &renewedExpiry,
+					UpdatedAt:      now.Add(6 * time.Second),
+				},
+			); !errors.Is(err, ErrSandboxConflict) {
+				t.Fatalf("renewal without fence advancement error = %v", err)
+			}
 			renewed, _, err := backend.ApplySandboxOperationUpdate(
 				ctx,
 				SandboxOperationUpdate{
@@ -246,7 +260,7 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 					FencingToken:   11,
 					State:          SandboxOperationReady,
 					LeaseExpiresAt: &renewedExpiry,
-					UpdatedAt:      now.Add(6 * time.Second),
+					UpdatedAt:      now.Add(7 * time.Second),
 				},
 			)
 			if err != nil {
@@ -266,7 +280,7 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 						FencingToken:   11,
 						State:          SandboxOperationReady,
 						LeaseExpiresAt: &renewedExpiry,
-						UpdatedAt:      now.Add(7 * time.Second),
+						UpdatedAt:      now.Add(8 * time.Second),
 					},
 				)
 			if err != nil ||
@@ -285,7 +299,7 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 				accountID,
 				sandbox.ID,
 				terminationKey,
-				now.Add(8*time.Second),
+				now.Add(9*time.Second),
 			)
 			if err != nil ||
 				!terminating.TerminationRequested ||
@@ -323,8 +337,8 @@ func TestSandboxStoreFencedLifecycleAndCommandIdempotency(t *testing.T) {
 				FencingToken:            terminating.FencingToken,
 				PreviousSandboxState:    terminating.State,
 				RequestedLeaseExpiresAt: now.Add(90 * time.Minute),
-				CreatedAt:               now.Add(9 * time.Second),
-				UpdatedAt:               now.Add(9 * time.Second),
+				CreatedAt:               now.Add(10 * time.Second),
+				UpdatedAt:               now.Add(10 * time.Second),
 			}
 			if _, _, _, err := backend.BeginSandboxOperation(
 				ctx,

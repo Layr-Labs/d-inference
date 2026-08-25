@@ -19,6 +19,12 @@ const maxLogReportBodySize = 10 << 20 // 10 MB
 // authenticates through requireAuth before this handler runs; callers receive
 // an opaque support ID instead of supplying or receiving hardware identity.
 func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("serial") {
+		writeJSON(w, http.StatusUpgradeRequired,
+			errorResponse("upgrade_required", "update darkbloom before uploading support reports"))
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxLogReportBodySize+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))

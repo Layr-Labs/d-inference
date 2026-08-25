@@ -76,6 +76,12 @@ func TestProviderLogUploadValidatesInputAndSize(t *testing.T) {
 			body:       strings.NewReader(strings.Repeat("x", maxLogReportBodySize+1)),
 			wantStatus: http.StatusRequestEntityTooLarge,
 		},
+		{
+			name:       "legacy identity query requires upgrade",
+			path:       "/v1/provider/log-report?serial=PRIVATE-SERIAL",
+			body:       strings.NewReader("diagnostics"),
+			wantStatus: http.StatusUpgradeRequired,
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -87,7 +93,10 @@ func TestProviderLogUploadValidatesInputAndSize(t *testing.T) {
 			srv.handleUploadLogReport(recorder, req)
 
 			if recorder.Code != testCase.wantStatus {
-				t.Fatalf("status = %d, want %d", recorder.Code, testCase.wantStatus)
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, testCase.wantStatus, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), "PRIVATE-SERIAL") {
+				t.Fatalf("rejected upload echoed device identity: %s", recorder.Body.String())
 			}
 			if _, err := memoryStore.GetLogReport(1); err == nil {
 				t.Fatal("invalid upload was stored")

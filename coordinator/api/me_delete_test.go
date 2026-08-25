@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,17 +28,16 @@ func seedProviderRecord(t *testing.T, st *store.MemoryStore, id, serial, account
 }
 
 type deleteProviderResp struct {
-	Deleted     bool   `json:"deleted"`
-	Serial      string `json:"serial"`
-	RowsRemoved int    `json:"rows_removed"`
+	Deleted     bool `json:"deleted"`
+	RowsRemoved int  `json:"rows_removed"`
 }
 
 func TestDeleteMyProvider_OwnerSucceeds(t *testing.T) {
 	srv, st := newKeyTestServer(t)
 	seedProviderRecord(t, st, "p1", "SER-1", "acct-1")
 
-	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-1", "", "acct-1")
-	r.SetPathValue("serial", "SER-1")
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/p1", "", "acct-1")
+	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -50,6 +50,9 @@ func TestDeleteMyProvider_OwnerSucceeds(t *testing.T) {
 	}
 	if !resp.Deleted || resp.RowsRemoved != 1 {
 		t.Fatalf("resp = %+v, want deleted=true rows_removed=1", resp)
+	}
+	if strings.Contains(w.Body.String(), "SER-1") || strings.Contains(w.Body.String(), `"serial"`) {
+		t.Fatalf("delete response exposed serial data: %s", w.Body.String())
 	}
 
 	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-1"); rec != nil {
@@ -65,8 +68,8 @@ func TestDeleteMyProvider_CrossAccount403(t *testing.T) {
 	srv, st := newKeyTestServer(t)
 	seedProviderRecord(t, st, "p1", "SER-1", "acct-1")
 
-	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-1", "", "acct-2")
-	r.SetPathValue("serial", "SER-1")
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/p1", "", "acct-2")
+	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -82,8 +85,8 @@ func TestDeleteMyProvider_Anon401(t *testing.T) {
 	srv, st := newKeyTestServer(t)
 	seedProviderRecord(t, st, "p1", "SER-1", "acct-1")
 
-	r := httptest.NewRequest(http.MethodDelete, "/v1/me/providers/SER-1", nil)
-	r.SetPathValue("serial", "SER-1")
+	r := httptest.NewRequest(http.MethodDelete, "/v1/me/providers/p1", nil)
+	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -96,7 +99,7 @@ func TestDeleteMyProvider_NotFound404(t *testing.T) {
 	srv, _ := newKeyTestServer(t)
 
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/NOPE", "", "acct-1")
-	r.SetPathValue("serial", "NOPE")
+	r.SetPathValue("id", "NOPE")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -113,8 +116,8 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	live := srv.registry.Register("live-p", nil, &protocol.RegisterMessage{})
 	live.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SER-ON"})
 
-	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-ON", "", "acct-1")
-	r.SetPathValue("serial", "SER-ON")
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/live-p", "", "acct-1")
+	r.SetPathValue("id", "live-p")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -133,8 +136,8 @@ func TestDeleteMyProvider_MultiRowSameSerial(t *testing.T) {
 	seedProviderRecord(t, st, "a", "SER-D", "acct-1")
 	seedProviderRecord(t, st, "b", "SER-D", "acct-1")
 
-	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-D", "", "acct-1")
-	r.SetPathValue("serial", "SER-D")
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/a", "", "acct-1")
+	r.SetPathValue("id", "a")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 
@@ -145,6 +148,53 @@ func TestDeleteMyProvider_MultiRowSameSerial(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.RowsRemoved != 2 {
 		t.Fatalf("rows_removed = %d, want 2", resp.RowsRemoved)
+	}
+}
+
+func TestMyProvidersRedactsDeviceIdentity(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	attestationJSON, err := json.Marshal(attestation.VerificationResult{
+		SerialNumber: "PRIVATE-SERIAL",
+		PublicKey:    "se-public-key",
+	})
+	if err != nil {
+		t.Fatalf("marshal attestation: %v", err)
+	}
+	certJSON, err := json.Marshal([][]byte{[]byte("identity-bearing-leaf")})
+	if err != nil {
+		t.Fatalf("marshal cert chain: %v", err)
+	}
+	if err := st.UpsertProvider(context.Background(), store.ProviderRecord{
+		ID:                "opaque-provider-id",
+		AccountID:         "acct-1",
+		SerialNumber:      "PRIVATE-SERIAL",
+		AttestationResult: attestationJSON,
+		MDACertChain:      certJSON,
+		LastSeen:          time.Now(),
+	}); err != nil {
+		t.Fatalf("seed provider record: %v", err)
+	}
+
+	r := reqWithUser(http.MethodGet, "/v1/me/providers", "", "acct-1")
+	w := httptest.NewRecorder()
+	srv.handleMyProviders(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	for _, secret := range []string{
+		"PRIVATE-SERIAL",
+		"identity-bearing-leaf",
+		`"serial_number"`,
+		`"mda_serial"`,
+		`"mda_udid"`,
+		`"mda_cert_chain_b64"`,
+	} {
+		if strings.Contains(w.Body.String(), secret) {
+			t.Fatalf("provider dashboard response leaked %q: %s", secret, w.Body.String())
+		}
+	}
+	if !strings.Contains(w.Body.String(), `"id":"opaque-provider-id"`) {
+		t.Fatalf("provider response omitted opaque id: %s", w.Body.String())
 	}
 }
 
@@ -162,7 +212,7 @@ func TestDeleteMyProvider_RouteWiring(t *testing.T) {
 	// without ever reaching the handler. We assert the route resolves to a
 	// non-404, non-405 status (auth rejection), proving the DELETE pattern is
 	// registered and distinct from GET /v1/me/providers.
-	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/me/providers/SER-W", nil)
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/me/providers/p1", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

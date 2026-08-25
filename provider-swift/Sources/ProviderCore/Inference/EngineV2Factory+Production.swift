@@ -142,6 +142,17 @@ extension EngineV2Factory {
         return value
     }
 
+    /// Atomic first-token projection is proven only for serialized partial
+    /// prefill. Cap 0/unlimited is a serving rollback, so production must skip
+    /// the bounded forecast API rather than ask it to fail closed on an
+    /// unsupported scheduler posture. Positive caps above one are likewise
+    /// outside the current proof.
+    static func prefillDeadlineProjectionSupported(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        maxConcurrentPartialPrefills(environment: environment) == 1
+    }
+
     /// Resolve the solo-stripe setting: absent env -> the serving default;
     /// an explicit value above the plain chunk overrides; any other
     /// explicit value (`0`, garbage, <= plain chunk) DISARMS — the escape

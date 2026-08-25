@@ -40,6 +40,7 @@ extension ProviderLoop {
             version: ProviderCore.version,
             writtenAt: Date().timeIntervalSince1970,
             startedAt: startedAtEpoch,
+            attestationPublicKey: signer?.publicKeyBase64,
             trust: lastTrustStatus,
             currentModel: state.currentModel,
             warmModels: state.warmModels,

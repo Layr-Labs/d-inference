@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_OPTIONS } from "@/app/earn/calc";
+import { HARDWARE_OPTIONS } from "@/app/earn/calc";
 import { PUBLIC_COORDINATOR_URL } from "@/lib/coordinator-url";
 import { trackEvent } from "@/lib/google-analytics";
 import { Check, ClipboardList, LockKeyhole } from "lucide-react";
@@ -11,6 +11,17 @@ export const PROVIDER_WAITLIST_STORAGE_KEY =
   "darkbloom_provider_waitlist_registration_v1";
 
 const OTHER_CHIP = "other";
+const CHIP_OPTIONS = Array.from(
+  HARDWARE_OPTIONS.reduce((options, hardware) => {
+    const memory = options.get(hardware.chip) ?? new Set<number>();
+    for (const memoryGB of hardware.ramOptions) memory.add(memoryGB);
+    options.set(hardware.chip, memory);
+    return options;
+  }, new Map<string, Set<number>>())
+).map(([chip, memory]) => ({
+  chip,
+  ramOptions: Array.from(memory).sort((a, b) => a - b),
+}));
 const ALL_MEMORY_OPTIONS = Array.from(
   new Set(CHIP_OPTIONS.flatMap((option) => option.ramOptions))
 ).sort((a, b) => a - b);

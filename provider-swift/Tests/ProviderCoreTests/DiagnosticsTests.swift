@@ -206,6 +206,7 @@ private func tmpStateURL() -> URL {
     defer { try? FileManager.default.removeItem(at: url) }
     let state = DaemonState(
         pid: 4711, version: "0.5.15", writtenAt: 1000, startedAt: 900,
+        attestationPublicKey: "active-signer-key",
         trust: .init(trustLevel: "self_signed", status: "online", reason: "awaiting", receivedAt: 950),
         currentModel: "qwen", warmModels: ["qwen"], inferenceActive: true,
         stats: .init(requestsServed: 412, tokensGenerated: 98231, usageGaps: 3))
@@ -215,6 +216,34 @@ private func tmpStateURL() -> URL {
     #expect(read?.trust?.reason == "awaiting")
     #expect(read?.stats.usageGaps == 3)
     #expect(read?.currentModel == "qwen")
+    #expect(read?.attestationPublicKey == "active-signer-key")
+}
+
+@Test("daemon state written before signer identity was added still decodes")
+func legacyDaemonStateWithoutAttestationIdentityDecodes() throws {
+    let url = tmpStateURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let legacyJSON = """
+        {
+          "schema": 1,
+          "pid": 4711,
+          "version": "0.8.1",
+          "written_at": 1000,
+          "started_at": 900,
+          "warm_models": [],
+          "inference_active": false,
+          "stats": {
+            "requests_served": 0,
+            "tokens_generated": 0,
+            "usage_gaps": 0
+          }
+        }
+        """
+    try Data(legacyJSON.utf8).write(to: url)
+
+    let state = try #require(DaemonStateFile.read(from: url))
+    #expect(state.pid == 4711)
+    #expect(state.attestationPublicKey == nil)
 }
 
 @Test func daemonStateStaleness() {
@@ -247,6 +276,38 @@ private func tmpStateURL() -> URL {
     #expect(daemonProcessAlive(pid: getpid()) == true)
     #expect(daemonProcessAlive(pid: 0) == false)
     #expect(daemonProcessAlive(pid: 999_999) == false) // almost certainly dead
+}
+
+private struct EphemeralTestSigner: AttestationSigner {
+    let publicKeyBase64: String
+    func sign(_ data: Data) throws -> Data { Data() }
+}
+
+@Test("daemon state persists the injected ephemeral signer's identity")
+func daemonStatePersistsInjectedEphemeralSignerIdentity() async throws {
+    let url = tmpStateURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let signer = EphemeralTestSigner(publicKeyBase64: "ephemeral-active-signer")
+    let loop = try ProviderLoop(
+        config: ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "test", chipName: "test", chipFamily: .unknown,
+                chipTier: .unknown, memoryGb: 32, memoryAvailableGb: 28,
+                cpuCores: CpuCores(total: 8, performance: 4, efficiency: 4),
+                gpuCores: 10, memoryBandwidthGbs: 100),
+            models: [],
+            config: ProviderConfig(
+                provider: ProviderSettings(name: "daemon-identity-test"),
+                backend: BackendSettings(),
+                coordinator: CoordinatorSettings())),
+        purgeLegacyFiles: false,
+        attestationSigner: signer)
+    await loop.setDaemonStateFileForTesting(url)
+    await loop.writeDaemonState()
+
+    let state = try #require(DaemonStateFile.read(from: url))
+    #expect(state.attestationPublicKey == signer.publicKeyBase64)
 }
 
 // MARK: - DaemonSlotPostureBuilder (§16.5 per-slot KV/MTP inventory)

@@ -2,18 +2,13 @@ package api
 
 // P2 routing-failover integration tests (integrator pass).
 //
-// These exercise the shape-keyed inference-error breaker and the
-// allowlist-aware capability fast-fail end-to-end against a real coordinator
+// These exercise the shape-keyed inference-error breaker and capability
+// fast-fail end-to-end against a real coordinator
 // (httptest server, in-memory store, real registry) and the scripted
 // fake-provider harness in failover_integration_test.go. They complement the
 // registry-level unit tests in registry/error_cooldown_test.go and
 // registry/scheduler_test.go by driving the full consumer dispatch path:
 //
-//   - TestConstrainedToolsFailFast_AllowlistBelowFloor: a provider_serials
-//     allowlist pins routing to a below-tools-floor provider while a capable
-//     PUBLIC provider exists. The tools request must fail FAST (503, < ~5s),
-//     not pass the trait-blind capacity preflight and queue for 120s — proving
-//     HasToolCapableProviderForModel honors allowedSerials.
 //   - TestShapeKeyedBreaker_ToolsTrippedBaseStillRoutes: a provider returns 500
 //     to TWO tool requests (tripping the "tools" cooldown) but a plain
 //     (no-tools) request to the SAME provider still routes and succeeds; and a
@@ -25,11 +20,9 @@ package api
 //     provider is the cooled one fast-fails (no 120s queue) — the shape-keyed
 //     cooldown is consulted inside QuickCapacityCheck / the capability gate.
 //
-// INTEGRATION-NOTE: all three depend on both halves of the routing-failover
-// work — the registry shape-keyed breaker / allowlist-aware capability checks
-// AND the consumer dispatch wiring (PendingRequest.Traits from the parsed body,
-// RecordInferenceError on terminals, allowedProviderSerials into the
-// capability fast-fail). They fail against either half alone.
+// INTEGRATION-NOTE: both depend on the registry shape-keyed breaker and the
+// consumer dispatch wiring (PendingRequest.Traits from the parsed body and
+// RecordInferenceError on terminals). They fail against either half alone.
 //
 // The speculative "both racers stall after the preamble feeds 504 into the
 // breaker" arm (consumer.go ~2573) is NOT covered here: the both-missed arm
@@ -51,30 +44,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// buildChatBodyWithSerials is buildChatBody plus a provider_serials allowlist,
-// so a request can constrain routing to a specific attested-serial set exactly
-// as a sandbox/allowlisted account does.
-func buildChatBodyWithSerials(t *testing.T, model string, stream bool, tools []map[string]any, serials []string) string {
-	t.Helper()
-	body := map[string]any{
-		"model":      model,
-		"messages":   []map[string]any{{"role": "user", "content": "p2 failover test prompt"}},
-		"stream":     stream,
-		"max_tokens": 64,
-	}
-	if tools != nil {
-		body["tools"] = tools
-	}
-	if len(serials) > 0 {
-		body["provider_serials"] = serials
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal chat body: %v", err)
-	}
-	return string(data)
-}
-
 // bodyHasTools reports whether a decrypted request body carries a non-empty
 // tools array — the dimension a shape-aware fake provider branches on.
 func bodyHasTools(body []byte) bool {
@@ -88,72 +57,6 @@ func bodyHasTools(body []byte) bool {
 		return false
 	}
 	return len(parsed.Tools) > 0
-}
-
-// ---------------------------------------------------------------------------
-// Test: constrained tools fail-fast when the allowlist names only a
-// below-floor provider, even though a capable public provider exists.
-// ---------------------------------------------------------------------------
-
-func TestConstrainedToolsFailFast_AllowlistBelowFloor(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	model := "constrained-tools-model"
-
-	// Sandbox provider: in the allowlist, but below the 0.6.3 tools floor — it
-	// can never serve a tools request.
-	sandbox := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "sandbox", Version: "0.5.16", DecodeTPS: 100, Serial: "SANDBOX-1",
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
-	})
-	// Public provider: tool-capable (0.6.4) but NOT in the allowlist, so it must
-	// not satisfy the constrained request.
-	public := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "public", Version: "0.6.4", DecodeTPS: 200, Serial: "PUBLIC-1",
-		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
-	})
-
-	// Tools request pinned to the sandbox serial → fast clean 503, no dispatch.
-	start := time.Now()
-	status, body, err := postChat(ctx, ts.URL, "test-key",
-		buildChatBodyWithSerials(t, model, true, weatherTools("string"), []string{"SANDBOX-1"}))
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("constrained tools request: %v", err)
-	}
-	if status != http.StatusServiceUnavailable {
-		t.Errorf("constrained tools request: status = %d, want 503; body = %s", status, body)
-	}
-	if !strings.Contains(body, "tool calls") {
-		t.Errorf("error body does not name tool support as the cause; body = %s", body)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("constrained tools fail-fast took %s — the request queued instead of failing fast (allowedSerials not honored?)", elapsed)
-	}
-	if got := sandbox.dispatchCount(); got != 0 {
-		t.Errorf("sandbox (below floor) received %d dispatch(es), want 0", got)
-	}
-	if got := public.dispatchCount(); got != 0 {
-		t.Errorf("public provider received %d dispatch(es) for an allowlist-pinned request, want 0 — a public provider must not satisfy a constrained tools request", got)
-	}
-
-	// Sanity: the SAME tools request WITHOUT the allowlist routes to the public
-	// capable provider — proving the 503 above is the allowlist constraint, not
-	// a missing-capability false positive.
-	status, body, err = postChat(ctx, ts.URL, "test-key",
-		buildChatBody(t, model, true, weatherTools("string")))
-	if err != nil {
-		t.Fatalf("unconstrained tools request: %v", err)
-	}
-	if status != http.StatusOK {
-		t.Fatalf("unconstrained tools request: status = %d, want 200; body = %s", status, body)
-	}
-	if !strings.Contains(body, markerFor("public")) {
-		t.Errorf("unconstrained tools request not served by the public capable provider; body = %s", body)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +91,11 @@ func TestShapeKeyedBreaker_ToolsTrippedBaseStillRoutes(t *testing.T) {
 	// A is deterministically preferred (high TPS) so it gets the first dispatch.
 	// It crashes on tools, serves base. B is a tool-capable fallback.
 	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200, Serial: "A-1",
+		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
 		Models: []failoverModelSpec{{ID: model}}, Script: shapeAwareScript(model),
 	})
 	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1, Serial: "B-1",
+		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
 		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
 	})
 
@@ -279,7 +182,7 @@ func TestCooledToolsPair_ExcludedFromPreflight(t *testing.T) {
 
 	// The ONLY tool-capable provider for this model. It crashes on tools.
 	only := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
-		Name: "only", Version: "0.6.4", DecodeTPS: 100, Serial: "ONLY-1",
+		Name: "only", Version: "0.6.4", DecodeTPS: 100,
 		Models: []failoverModelSpec{{ID: model}}, Script: shapeAwareScript(model),
 	})
 

@@ -26,7 +26,7 @@ export function SetupProviderCTA({
                 Ready to start earning?
               </h3>
               <p className="text-sm text-text-secondary">
-                Sign in to set up your provider node and start earning from your Mac.
+                Sign in to set up your Mac as a provider.
               </p>
             </div>
           </div>
@@ -57,7 +57,7 @@ export function SetupProviderCTA({
                 Turn your Mac into a provider
               </h3>
               <p className="text-sm text-text-secondary">
-                Set up your Apple Silicon Mac to serve inference and earn from the Darkbloom network.
+                Set up your Apple Silicon Mac to serve inference and earn on Darkbloom.
               </p>
             </div>
           </div>
@@ -71,7 +71,7 @@ export function SetupProviderCTA({
                        hover:bg-accent-brand-hover
                        transition-colors shrink-0"
           >
-            Setup Provider <ArrowRight size={14} />
+            Set Up Provider <ArrowRight size={14} />
           </Link>
         </div>
       )}

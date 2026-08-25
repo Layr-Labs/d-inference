@@ -193,14 +193,10 @@ SE key + version.
 
 ## Public attestation endpoint
 
-Anyone can inspect provider attestations:
+Anyone can inspect privacy-redacted provider trust status:
 
 ```bash
-# All providers
 curl https://api.darkbloom.dev/v1/providers/attestation
-
-# Specific provider
-curl https://api.darkbloom.dev/v1/providers/<provider_id>/attestation
 ```
 
 The response is built by `handleProviderAttestation`
@@ -213,12 +209,13 @@ The response is built by `handleProviderAttestation`
 | `mdm_verified` | `true` for `hardware` trust via MDM |
 | `acme_verified` | Deprecated — always `false` (the ACME leg was removed 2026-07-03; kept on the wire because shipped provider builds decode it as required) |
 | `mda_verified` | `true` if Apple MDA chain verified |
-| `mda_cert_chain_b64` | Base64 DER certificates for independent verification |
 | `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled` | Latest verified posture |
 | `se_public_key` | SE P-256 public key |
 
-The response also includes Apple root CA URLs and instructions for verifying the
-MDA chain independently.
+The response deliberately omits hardware serials, UDIDs, and the raw MDA
+certificate chain. The coordinator verifies Apple's chain and serial binding
+internally; returning the leaf certificate would reveal the identifiers stored
+in its signed OIDs.
 
 ## Troubleshooting attestation
 

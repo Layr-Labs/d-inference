@@ -3,43 +3,25 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"regexp"
 
 	"github.com/google/uuid"
 )
 
-// enrollRequest is the JSON body for POST /v1/enroll.
-type enrollRequest struct {
-	SerialNumber string `json:"serial_number"`
-}
-
-var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
-
-// handleEnroll generates a per-device .mobileconfig containing MDM
-// enrollment (SCEP + MDM payloads).
+// handleEnroll generates a generic .mobileconfig containing MDM enrollment
+// (SCEP + MDM payloads).
 //
-// No authentication required — the serial number is not secret. Trust comes
-// from MDM SecurityInfo verification after enrollment, not from possession of
-// the profile.
+// The request body is intentionally empty. Older providers may still send a
+// serial_number field during rollout; Go's JSON decoder ignores it and the
+// coordinator never stores, logs, or embeds it. MicroMDM learns the device
+// identity from the authenticated MDM check-in, and trust comes from subsequent
+// SecurityInfo/MDA verification rather than possession of this generic profile.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	var req enrollRequest
+	var req struct{}
 	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
 		return
 	}
 
-	if req.SerialNumber == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "serial_number is required"))
-		return
-	}
-
-	if !serialRegex.MatchString(req.SerialNumber) {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid serial number format"))
-		return
-	}
-
-	s.logger.Info("generating enrollment + attestation profile",
-		"serial_number", req.SerialNumber,
-	)
+	s.logger.Info("generating enrollment + attestation profile")
 
 	// Use the configured canonical base URL (EIGENINFERENCE_BASE_URL) for the
 	// SCEP/MDM enrollment endpoints. Critically, since the profile is now
@@ -50,7 +32,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// Host when no canonical URL is set (local/dev).
 	baseURL := s.resolveBaseURL(r)
 
-	body := []byte(generateCombinedProfile(req.SerialNumber, baseURL))
+	body := []byte(generateCombinedProfile(baseURL))
 
 	// CMS-sign the profile so macOS shows it as signed at install time. Signing is
 	// install-time trust only (does not affect the SCEP/MDM chain inside). If
@@ -63,7 +45,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		signed, err := s.profileSigner.Sign(body)
 		if err != nil {
 			s.logger.Error("profile signing failed — serving unsigned profile",
-				"serial_number", req.SerialNumber, "error", err)
+				"error", err)
 			s.ddIncr("enroll.profile_sign_error", nil)
 		} else {
 			body = signed
@@ -73,7 +55,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	// A signed .mobileconfig keeps the same MIME type as an unsigned one.
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Darkbloom-Enroll-%s.mobileconfig"`, req.SerialNumber))
+	w.Header().Set("Content-Disposition", `attachment; filename="Darkbloom-Enroll.mobileconfig"`)
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 }
@@ -87,10 +69,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 // removed — hardware trust is earned via MDM SecurityInfo. Re-enrolling with
 // this profile replaces the old one in place, dropping the dormant payload.)
 //
-// Display strings are branded "Darkbloom"; functional identifiers are deliberately
-// NOT renamed so existing installs keep working and re-enrolls update in place: the
-// io.darkbloom.enroll.* PayloadIdentifiers + SCEP/MDM PayloadUUIDs (macOS keys
-// profile identity on these), and the MDM push Topic (tied to the APNs cert).
+// Display strings are branded "Darkbloom"; functional identifiers are stable so
+// re-enrolls update in place: the io.darkbloom.enroll* PayloadIdentifiers +
+// SCEP/MDM PayloadUUIDs (macOS keys profile identity on these), and the MDM push
+// Topic (tied to the APNs cert). No identifier contains device identity.
 //
 // AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
 // This is strictly read-only MDM — no device control or personal data access.
@@ -110,7 +92,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //	Bit 10 (1024) — Security-related queries (SIP, SecureBoot) ✓ REQUESTED
 //	Bit 11 (2048) — Change device settings                     ✗ NOT requested
 //	Bit 12 (4096) — App management                             ✗ NOT requested
-func generateCombinedProfile(serialNumber, baseURL string) string {
+func generateCombinedProfile(baseURL string) string {
 	profileUUID := uuid.New().String()
 
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -206,7 +188,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadDisplayName</key>
   <string>Darkbloom Provider Enrollment</string>
   <key>PayloadIdentifier</key>
-  <string>io.darkbloom.enroll.%s</string>
+  <string>io.darkbloom.enroll</string>
   <key>PayloadOrganization</key>
   <string>Darkbloom</string>
   <key>PayloadType</key>
@@ -216,5 +198,5 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadVersion</key>
   <integer>1</integer>
 </dict>
-</plist>`, baseURL, baseURL, baseURL, serialNumber, profileUUID)
+</plist>`, baseURL, baseURL, baseURL, profileUUID)
 }

@@ -100,7 +100,6 @@ export interface MyProvider {
   models: MyModelInfo[];
   backend?: string;
   version?: string;
-  serial_number?: string;
 
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
@@ -117,9 +116,6 @@ export interface MyProvider {
   secure_boot_enabled: boolean;
   authenticated_root_enabled: boolean;
   system_volume_hash?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-  mda_udid?: string;
   mda_os_version?: string;
   mda_sepos_version?: string;
 

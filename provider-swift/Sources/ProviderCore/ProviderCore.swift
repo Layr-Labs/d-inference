@@ -243,5 +243,10 @@ public enum ProviderCore {
     // 0.8.11 conserves the first-content deadline end to end, rejects
     // unreachable work before the client clock expires, and defaults CBv2
     // partial-prefill scheduling to FCFS with an explicit cap-zero rollback.
-    public static let version = "0.8.11"
+    // 0.8.12 makes atomic first-token deadline admission the secure provider
+    // default for eligible text requests. Exact
+    // DARKBLOOM_PREFILL_DEADLINE_MODE=off is the direct forecast rollback;
+    // FCFS cap zero restores unlimited interleave and necessarily bypasses the
+    // bounded forecast while preserving hard absolute expiry.
+    public static let version = "0.8.12"
 }

@@ -359,7 +359,6 @@ fi
 
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
 MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
-SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
 MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
 echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
@@ -484,13 +483,13 @@ fi
 
 if [ "$ALREADY_ENROLLED" = true ]; then
     echo "  Already enrolled ✓"
-elif [ -n "$SERIAL" ]; then
+else
     echo "  Requesting enrollment profile from coordinator..."
-    PROFILE_PATH="/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig"
-    rm -f "$PROFILE_PATH" 2>/dev/null
+    PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX")"
+    PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"
     if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
         -H "Content-Type: application/json" \
-        -d "{\"serial_number\": \"$SERIAL\"}" \
+        -d '{}' \
         -o "$PROFILE_PATH" 2>/dev/null; then
         echo ""
         echo "  ┌──────────────────────────────────────────────────┐"
@@ -525,8 +524,6 @@ elif [ -n "$SERIAL" ]; then
     else
         echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi
-else
-    echo "  Enrollment ⚠ (could not read serial number — enroll later with: darkbloom enroll)"
 fi
 
 # ─── Step 5: Optional starter model ──────────────────────────

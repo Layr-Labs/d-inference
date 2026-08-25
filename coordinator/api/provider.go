@@ -3413,7 +3413,8 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		return false
 	}
 
-	// Apple Device Attestation verified — store proof for user verification.
+	// Apple Device Attestation verified — store the proof for coordinator-side
+	// trust decisions and reuse. Public APIs expose only the redacted verdict.
 	// Acquire provider lock since these fields are read by HTTP handlers
 	// (handleProviderAttestation, handleChatCompletions) concurrently.
 	seKeyBound := false
@@ -3469,15 +3470,14 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	return seKeyBound
 }
 
-// handleProviderAttestation returns the attestation proof for all providers.
-// Users can independently verify the Apple MDA certificate chain against
-// Apple's public Enterprise Attestation Root CA.
+// handleProviderAttestation returns privacy-redacted trust status for all providers.
+// Device identity and raw MDA certificates stay coordinator-private because
+// Apple's leaf certificate embeds the hardware serial number and UDID.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`
 		ChipName      string `json:"chip_name"`
 		HardwareModel string `json:"hardware_model"`
-		SerialNumber  string `json:"serial_number"`
 		TrustLevel    string `json:"trust_level"`
 		Status        string `json:"status"`
 
@@ -3503,13 +3503,11 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// it as a required field.
 		ACMEVerified bool `json:"acme_verified"`
 
-		// Apple Device Attestation (MDA) — certificate chain signed by Apple
-		MDAVerified   bool     `json:"mda_verified"`
-		MDACertChain  []string `json:"mda_cert_chain_b64,omitempty"`
-		MDASerial     string   `json:"mda_serial,omitempty"`
-		MDAUDID       string   `json:"mda_udid,omitempty"`
-		MDAOSVersion  string   `json:"mda_os_version,omitempty"`
-		MDASepVersion string   `json:"mda_sepos_version,omitempty"`
+		// Apple Device Attestation (MDA), verified coordinator-side. The raw
+		// certificate chain is intentionally not part of this public DTO.
+		MDAVerified   bool   `json:"mda_verified"`
+		MDAOSVersion  string `json:"mda_os_version,omitempty"`
+		MDASepVersion string `json:"mda_sepos_version,omitempty"`
 	}
 
 	var providers []providerAttestation
@@ -3525,7 +3523,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		status := p.Status
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
-		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
 		// challenge goroutine, so its slice header must be read under p.mu. Copy
@@ -3560,7 +3557,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName
 			pa.HardwareModel = attestResult.HardwareModel
-			pa.SerialNumber = attestResult.SerialNumber
 			pa.SecureEnclave = attestResult.SecureEnclaveAvailable
 			pa.SIPEnabled = attestResult.SIPEnabled
 			pa.SecureBootEnabled = attestResult.SecureBootEnabled
@@ -3569,37 +3565,15 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			pa.SEPublicKey = attestResult.PublicKey
 		}
 
-		// Include the MDA cert chain + parsed fields for independent verification
-		// ONLY for a connection currently holding hardware trust — same gate as the
-		// mda_verified boolean above. The late-MDA callback (main.go) can attach a
-		// cert chain to a provider that has since reconnected as self_signed; without
-		// this gate the endpoint would emit mda_verified=false alongside a non-empty
-		// mda_cert_chain_b64/serial/udid, which is exactly the drift this fix removes.
-		if isHardware {
-			if len(mdaCertChain) > 0 {
-				for _, der := range mdaCertChain {
-					pa.MDACertChain = append(pa.MDACertChain, base64.StdEncoding.EncodeToString(der))
-				}
-			}
-			if mdaResult != nil {
-				pa.MDASerial = mdaResult.DeviceSerial
-				pa.MDAUDID = mdaResult.DeviceUDID
-				pa.MDAOSVersion = mdaResult.OSVersion
-				pa.MDASepVersion = mdaResult.SepOSVersion
-			}
+		if isHardware && mdaResult != nil {
+			pa.MDAOSVersion = mdaResult.OSVersion
+			pa.MDASepVersion = mdaResult.SepOSVersion
 		}
 
 		providers = append(providers, pa)
 	})
 
-	resp := map[string]any{
-		"providers":                providers,
-		"apple_root_ca_url":        "https://www.apple.com/certificateauthority/",
-		"apple_enterprise_root_ca": "Apple Enterprise Attestation Root CA",
-		"verification_instructions": "Download each provider's mda_cert_chain_b64, decode from base64 to DER, " +
-			"then verify the certificate chain against Apple's Enterprise Attestation Root CA. " +
-			"If verification passes, Apple has confirmed this is a real Apple device with the attested properties.",
-	}
+	resp := map[string]any{"providers": providers}
 	writeJSON(w, http.StatusOK, resp)
 }
 

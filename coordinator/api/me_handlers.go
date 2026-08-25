@@ -12,7 +12,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -56,7 +55,7 @@ type myProvider struct {
 	Models       []protocol.ModelInfo `json:"models"`
 	Backend      string               `json:"backend,omitempty"`
 	Version      string               `json:"version,omitempty"`
-	SerialNumber string               `json:"serial_number,omitempty"`
+	serialNumber string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -76,17 +75,14 @@ type myProvider struct {
 	// per-node earnings. Same value senders fetch from /v1/encryption-key, so
 	// it is not a secret on the owner's own dashboard. Present only for
 	// currently-online machines (it is not persisted on ProviderRecord).
-	ProviderKey       string   `json:"provider_key,omitempty"`
-	SecureEnclave     bool     `json:"secure_enclave"`
-	SIPEnabled        bool     `json:"sip_enabled"`
-	SecureBootEnabled bool     `json:"secure_boot_enabled"`
-	AuthenticatedRoot bool     `json:"authenticated_root_enabled"`
-	SystemVolumeHash  string   `json:"system_volume_hash,omitempty"`
-	MDACertChain      []string `json:"mda_cert_chain_b64,omitempty"`
-	MDASerial         string   `json:"mda_serial,omitempty"`
-	MDAUDID           string   `json:"mda_udid,omitempty"`
-	MDAOSVersion      string   `json:"mda_os_version,omitempty"`
-	MDASEPVersion     string   `json:"mda_sepos_version,omitempty"`
+	ProviderKey       string `json:"provider_key,omitempty"`
+	SecureEnclave     bool   `json:"secure_enclave"`
+	SIPEnabled        bool   `json:"sip_enabled"`
+	SecureBootEnabled bool   `json:"secure_boot_enabled"`
+	AuthenticatedRoot bool   `json:"authenticated_root_enabled"`
+	SystemVolumeHash  string `json:"system_volume_hash,omitempty"`
+	MDAOSVersion      string `json:"mda_os_version,omitempty"`
+	MDASEPVersion     string `json:"mda_sepos_version,omitempty"`
 
 	// Runtime integrity
 	RuntimeVerified bool   `json:"runtime_verified"`
@@ -460,8 +456,8 @@ func liveMatchesEmittedIdentity(p *registry.Provider, emitted []myProvider) bool
 }
 
 func emittedIdentity(mp *myProvider) string {
-	if mp.SerialNumber != "" {
-		return "serial:" + mp.SerialNumber
+	if mp.serialNumber != "" {
+		return "serial:" + mp.serialNumber
 	}
 	if mp.SEPublicKey != "" {
 		return "sekey:" + mp.SEPublicKey
@@ -509,7 +505,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.AccountID = rec.AccountID
 		mp.Backend = rec.Backend
 		mp.Version = rec.Version
-		mp.SerialNumber = rec.SerialNumber
+		mp.serialNumber = rec.SerialNumber
 		mp.TrustLevel = rec.TrustLevel
 		mp.Attested = rec.Attested
 		mp.MDAVerified = rec.MDAVerified
@@ -546,7 +542,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 			var ar attestation.VerificationResult
 			if err := json.Unmarshal(rec.AttestationResult, &ar); err == nil {
 				if ar.SerialNumber != "" {
-					mp.SerialNumber = ar.SerialNumber
+					mp.serialNumber = ar.SerialNumber
 				}
 				if ar.PublicKey != "" {
 					mp.SEPublicKey = ar.PublicKey
@@ -556,14 +552,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 				mp.SecureBootEnabled = ar.SecureBootEnabled
 				mp.AuthenticatedRoot = ar.AuthenticatedRootEnabled
 				mp.SystemVolumeHash = ar.SystemVolumeHash
-			}
-		}
-		if len(rec.MDACertChain) > 0 {
-			var ders [][]byte
-			if err := json.Unmarshal(rec.MDACertChain, &ders); err == nil {
-				for _, der := range ders {
-					mp.MDACertChain = append(mp.MDACertChain, base64.StdEncoding.EncodeToString(der))
-				}
 			}
 		}
 		// Default to offline; will be overwritten below if we have a live snapshot.
@@ -615,7 +603,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult
 			if ar.SerialNumber != "" {
-				mp.SerialNumber = ar.SerialNumber
+				mp.serialNumber = ar.SerialNumber
 			}
 			if ar.PublicKey != "" {
 				mp.SEPublicKey = ar.PublicKey
@@ -626,15 +614,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 			mp.AuthenticatedRoot = ar.AuthenticatedRootEnabled
 			mp.SystemVolumeHash = ar.SystemVolumeHash
 		}
-		if len(live.MDACertChain) > 0 {
-			mp.MDACertChain = mp.MDACertChain[:0]
-			for _, der := range live.MDACertChain {
-				mp.MDACertChain = append(mp.MDACertChain, base64.StdEncoding.EncodeToString(der))
-			}
-		}
 		if live.MDAResult != nil {
-			mp.MDASerial = live.MDAResult.DeviceSerial
-			mp.MDAUDID = live.MDAResult.DeviceUDID
 			mp.MDAOSVersion = live.MDAResult.OSVersion
 			mp.MDASEPVersion = live.MDAResult.SepOSVersion
 		}
@@ -667,7 +647,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 	return mp
 }
 
-// handleDeleteMyProvider handles DELETE /v1/me/providers/{serial}.
+// handleDeleteMyProvider handles DELETE /v1/me/providers/{id}.
 //
 // Removes an offline/retired machine's persisted record(s) so it stops
 // reappearing in GET /v1/me/providers. Ownership-checked: the caller's account
@@ -680,20 +660,18 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return // 401 already written
 	}
 
-	serial := strings.TrimSpace(r.PathValue("serial"))
-	if serial == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "missing serial"))
+	providerID := strings.TrimSpace(r.PathValue("id"))
+	if providerID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "missing provider id"))
 		return
 	}
 
 	ctx := r.Context()
 
-	// Resolve the record by serial, falling back to treating the token as a
-	// session id (covers never-attested boxes whose card key is the id).
-	rec, err := s.store.GetProviderBySerial(ctx, serial)
-	if err != nil || rec == nil {
-		rec, err = s.store.GetProviderRecord(ctx, serial)
-	}
+	// The public route accepts only the opaque provider session id. Resolve the
+	// stable hardware identity internally so serials never enter URLs or API
+	// payloads while reconnect rows are still removed together.
+	rec, err := s.store.GetProviderRecord(ctx, providerID)
 	if err != nil || rec == nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
 		return
@@ -703,16 +681,21 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	stableIdentity := rec.ID
+	if rec.SerialNumber != "" {
+		stableIdentity = rec.SerialNumber
+	}
+
 	// Refuse if the machine is currently connected — it would re-register and
 	// the card would return.
-	if s.registry.RemoveProviderBySerial(serial, false) {
+	if s.registry.RemoveProviderBySerial(stableIdentity, false) {
 		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
 		return
 	}
 
-	n, err := s.store.DeleteProvidersBySerial(ctx, user.AccountID, serial)
+	n, err := s.store.DeleteProvidersBySerial(ctx, user.AccountID, stableIdentity)
 	if err != nil {
-		s.logger.Error("delete provider failed", "account_id", user.AccountID, "serial", serial, "error", err)
+		s.logger.Error("delete provider failed", "account_id", user.AccountID, "provider_id", providerID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to remove machine"))
 		return
 	}
@@ -723,11 +706,10 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 
 	// Best-effort: drop any lingering in-memory entry so an evict-race can't
 	// re-persist the record we just removed.
-	s.registry.RemoveProviderBySerial(serial, true)
+	s.registry.RemoveProviderBySerial(stableIdentity, true)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted":      true,
-		"serial":       serial,
 		"rows_removed": n,
 	})
 }

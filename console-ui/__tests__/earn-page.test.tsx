@@ -1,38 +1,41 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { dedupeModelVariants, baseModelKey, buildCatalogModels } from "@/app/earn/calc";
+import { createRequire } from "node:module";
+import { describe, expect, it, vi } from "vitest";
+import {
+  CALCULATOR_MODELS,
+  DEFAULT_DUTY_CYCLE_PERCENT,
+  DECODE_BANDWIDTH_EFFICIENCY,
+  HARDWARE_OPTIONS,
+  calculateCapacityRevenue,
+} from "@/app/earn/calc";
+import {
+  MIN_PROVIDER_MEMORY_GB,
+  PROVIDER_HARDWARE_OPTIONS,
+} from "@/app/earn/providerReadiness";
 
-const apiMocks = vi.hoisted(() => ({
-  fetchModels: vi.fn(),
-  fetchPricing: vi.fn(),
-}));
-const GPT_MODEL_ID = "gpt-oss-20b";
-const GPT_MODEL_NAME = "GPT-OSS 20B";
-const GEMMA_MODEL_ID = "gemma-4-26b";
-const GEMMA_MODEL_NAME = "Gemma 4 26B";
+const MACBOOK_PRO = "MacBook Pro";
+const MAC_STUDIO = "Mac Studio";
+const M4_MAX = "M4 Max (16-core CPU)";
+const BEST_ESTIMATE = "Best current estimate";
+const MONTHLY_EARNING = "Estimated monthly earning";
+const QWEN_DISPLAY_NAME = "Qwen3.6 35B A3B";
 
 vi.mock("@/components/TopBar", () => ({
-  TopBar: ({ title }: { title?: string }) => (
-    <div data-testid="topbar">{title}</div>
-  ),
+  TopBar: ({ title }: { title?: string }) => <div data-testid="topbar">{title}</div>,
 }));
-
 vi.mock("@/hooks/useAuth", () => ({
-  useAuth: () => ({
-    ready: true,
-    authenticated: true,
-    login: vi.fn(),
-  }),
+  useAuth: () => ({ ready: true, authenticated: true, login: vi.fn() }),
 }));
+vi.mock("@/lib/google-analytics", () => ({ trackEvent: vi.fn() }));
 
-vi.mock("@/lib/google-analytics", () => ({
-  trackEvent: vi.fn(),
-}));
-
-vi.mock("@/lib/api", () => ({
-  fetchModels: apiMocks.fetchModels,
-  fetchPricing: apiMocks.fetchPricing,
-}));
+const requireFromTest = createRequire(import.meta.url);
+const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as {
+  HARDWARE_OPTIONS: typeof HARDWARE_OPTIONS;
+  MIN_PROVIDER_MEMORY_GB: number;
+  PROVIDER_HARDWARE_OPTIONS: typeof PROVIDER_HARDWARE_OPTIONS;
+  CALCULATOR_MODELS: typeof CALCULATOR_MODELS;
+  calculateCapacityRevenue: typeof calculateCapacityRevenue;
+};
 
 vi.mock("@/app/providers/useProviderRequirements", () => ({
   useProviderRequirements: () => ({
@@ -53,133 +56,143 @@ vi.mock("@/app/providers/useProviderRequirements", () => ({
   }),
 }));
 
-beforeEach(() => {
-  apiMocks.fetchModels.mockReset();
-  apiMocks.fetchPricing.mockReset();
-  apiMocks.fetchModels.mockResolvedValue([
-    {
-      id: GPT_MODEL_ID,
-      object: "model",
-      display_name: GPT_MODEL_NAME,
-      size_gb: 12.1,
-      min_ram_gb: 24,
-      architecture: "MoE",
-    },
-    {
-      id: GEMMA_MODEL_ID,
-      object: "model",
-      display_name: GEMMA_MODEL_NAME,
-      size_gb: 28,
-      min_ram_gb: 36,
-      architecture: "MoE",
-    },
-  ]);
-  apiMocks.fetchPricing.mockResolvedValue({
-    prices: [
-      { model: GEMMA_MODEL_ID, input_price: 65_000, output_price: 200_000, input_usd: "$0.0650", output_usd: "$0.2000" },
-    ],
+function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
+  fireEvent.change(screen.getByLabelText("Mac model"), { target: { value: macType } });
+  fireEvent.change(screen.getByLabelText("Chip family"), { target: { value: chip } });
+  fireEvent.change(screen.getByLabelText("Unified memory"), {
+    target: { value: String(ram) },
   });
-});
+}
 
-describe("model variant dedupe", () => {
-  const variants = [
-    { id: GPT_MODEL_ID, object: "model", display_name: GPT_MODEL_NAME, family: "gpt-oss" },
-    { id: "gemma-4-26b-qat-4bit", object: "model", display_name: GEMMA_MODEL_NAME, family: "gemma" },
-    { id: GEMMA_MODEL_ID, object: "model", display_name: GEMMA_MODEL_NAME, family: "gemma" },
-    { id: "gemma-4-26b-8bit", object: "model", display_name: "Gemma 4 26B 8-bit (rollback)", family: "gemma" },
-  ];
-
-  it("strips quant / build suffixes to a base key", () => {
-    expect(baseModelKey("gemma-4-26b-qat-4bit")).toBe(GEMMA_MODEL_ID);
-    expect(baseModelKey("gemma-4-26b-8bit")).toBe(GEMMA_MODEL_ID);
-    expect(baseModelKey(GEMMA_MODEL_ID)).toBe(GEMMA_MODEL_ID);
-    expect(baseModelKey(GPT_MODEL_ID)).toBe(GPT_MODEL_ID);
+describe("earnings projection", () => {
+  it("pins the three supported models, active weights, and output prices", () => {
+    expect(CALCULATOR_MODELS.map((model) => model.displayName)).toEqual([
+      QWEN_DISPLAY_NAME,
+      "Gemma 4 26B A4B",
+      "GPT-OSS 20B",
+    ]);
+    expect(CALCULATOR_MODELS.map((model) => model.activeParameterCount)).toEqual([
+      3_000_000_000,
+      4_000_000_000,
+      3_600_000_000,
+    ]);
+    expect(CALCULATOR_MODELS.map((model) => model.outputPriceMicroUSDPerMillion)).toEqual([
+      700_000,
+      220_000,
+      69_000,
+    ]);
   });
 
-  it("collapses the catalog to one canonical entry per base model", () => {
-    const out = dedupeModelVariants(variants);
-    expect(out.map((m) => m.id).sort()).toEqual([GEMMA_MODEL_ID, GPT_MODEL_ID]);
+  it("uses 65% of bandwidth, active weights, output pricing, and duty cycle", () => {
+    const hardware = HARDWARE_OPTIONS.find(
+      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
+    )!;
+    const model = CALCULATOR_MODELS[0];
+    const estimate = calculateCapacityRevenue(model, hardware, 48, 50)!;
+    expect(estimate.activeWeightGBPerToken).toBeCloseTo((3 * 22) / 35, 12);
+    expect(estimate.decodeTokensPerSecond).toBeCloseTo(
+      (hardware.bandwidthGBs * DECODE_BANDWIDTH_EFFICIENCY) / ((3 * 22) / 35),
+      12,
+    );
+    expect(estimate.activeSecondsPerMonth).toBe(360 * 60 * 60);
+    expect(estimate.outputPriceUSDPerMillion).toBe(0.7);
   });
 
-  it("buildCatalogModels yields exactly two clean models", () => {
-    const built = buildCatalogModels(variants, null);
-    expect(built.map((m) => m.name).sort()).toEqual([GPT_MODEL_NAME, GEMMA_MODEL_NAME]);
+  it("keeps the console and homepage data mapping and projection identical", () => {
+    const hardware = HARDWARE_OPTIONS.find(
+      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
+    )!;
+    expect(landingCore.CALCULATOR_MODELS).toEqual(CALCULATOR_MODELS);
+    expect(
+      landingCore.calculateCapacityRevenue(
+        landingCore.CALCULATOR_MODELS[0],
+        hardware,
+        48,
+        50,
+      ),
+    ).toEqual(
+      calculateCapacityRevenue(CALCULATOR_MODELS[0], hardware, 48, 50),
+    );
+  });
+
+  it("keeps only supported provider families and includes the new profiles", () => {
+    expect(landingCore.HARDWARE_OPTIONS).toEqual(HARDWARE_OPTIONS);
+    expect(landingCore.MIN_PROVIDER_MEMORY_GB).toBe(MIN_PROVIDER_MEMORY_GB);
+    expect(landingCore.PROVIDER_HARDWARE_OPTIONS).toEqual(PROVIDER_HARDWARE_OPTIONS);
+    expect(new Set(PROVIDER_HARDWARE_OPTIONS.map((option) => option.macType))).toEqual(
+      new Set([MACBOOK_PRO, "Mac Mini", MAC_STUDIO, "Mac Pro"]),
+    );
+    expect(
+      HARDWARE_OPTIONS.find((option) => option.macType === "Mac Mini" && option.chip === "M6"),
+    ).toMatchObject({ bandwidthGBs: 170, ramOptions: [16, 24, 32] });
+    expect(
+      HARDWARE_OPTIONS.find(
+        (option) => option.macType === MAC_STUDIO && option.chip === "M5 Ultra",
+      ),
+    ).toMatchObject({ bandwidthGBs: 1200, ramOptions: [96, 256, 512] });
   });
 });
 
 describe("EarnPage", () => {
-  it("shows the floor-only hero when no catalog model fits the selected hardware", async () => {
+  it("requires separate Mac, chip, and memory choices", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-    await screen.findAllByText(/Runs in your 48 GB/);
-
-    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
-    fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
-
-    // Nothing fits in 16 GB (min RAM is 24/36 in the fixture) and the 16 GB
-    // floor tier is $0 — the hero degrades honestly instead of disappearing.
-    expect(
-      await screen.findByText(/No catalog model fits in 16 GB/)
-    ).toBeInTheDocument();
-    expect(screen.getByText("Needs 24 GB+ of unified memory")).toBeInTheDocument();
-    expect(screen.getByText("Needs 36 GB+ of unified memory")).toBeInTheDocument();
-  });
-
-  it("sends under-provisioned machines to durable availability registration", async () => {
-    window.localStorage.clear();
-    const EarnPage = (await import("@/app/earn/page")).default;
-    render(<EarnPage />);
-    await screen.findAllByText(/Runs in your 48 GB/);
-
-    fireEvent.change(screen.getByLabelText("Chip"), { target: { value: "M1" } });
-    fireEvent.change(screen.getByLabelText("Unified memory"), { target: { value: "16" } });
-
-    const waitlistLink = await screen.findByRole("link", {
-      name: /Register this Mac's hardware interest/,
-    });
-    expect(waitlistLink).toHaveAttribute(
-      "href",
-      "/provider-waitlist?chip=M1&memory_gb=16"
+    expect(screen.getByText("Your estimate will appear here")).toBeInTheDocument();
+    expect(screen.getByLabelText("Chip family")).toBeDisabled();
+    expect(screen.getByLabelText("Unified memory")).toBeDisabled();
+    selectMac();
+    expect(await screen.findByText(BEST_ESTIMATE)).toBeInTheDocument();
+    expect(screen.getByLabelText("Duty cycle")).toHaveValue(
+      String(DEFAULT_DUTY_CYCLE_PERCENT),
     );
-    expect(window.localStorage.getItem("darkbloom.smallModelsInterest")).toBeNull();
   });
 
-  it("always prices the best-earning model automatically (read-only list, no selection)", async () => {
+  it("offers only Mac families that can enter the provider flow", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-
-    // GPT-OSS 20B out-earns Gemma on the default M4 Max (fewer active params →
-    // higher decode throughput) so it gets the badge; both fit in 48 GB.
-    expect(await screen.findByText("Best earner")).toBeInTheDocument();
-    expect(screen.getByText(/Runs in your 48 GB \(12 GB weights\)/)).toBeInTheDocument();
-    expect(screen.getByText(/Runs in your 48 GB \(28 GB weights\)/)).toBeInTheDocument();
-
-    // The list is read-only — no model checkboxes/buttons to mis-toggle.
-    expect(screen.queryByRole("button", { name: /GPT-OSS 20B/ })).not.toBeInTheDocument();
+    expect(
+      Array.from(
+        (screen.getByLabelText("Mac model") as HTMLSelectElement).options,
+        (option) => option.textContent,
+      ),
+    ).toEqual(["Select model", MACBOOK_PRO, "Mac Mini", MAC_STUDIO, "Mac Pro"]);
   });
 
-  it("presents earnings as a floor→estimate range with the base reward additive", async () => {
+  it("shows the capacity flow, prominent caveat, and setup CTA in order", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-
-    // Default hardware is M4 Max / 48GB → 48GB base-reward tier = $16/mo floor
-    // (appears in both the hero chip and the formula breakdown).
-    expect((await screen.findAllByText(/\$16\/mo/)).length).toBeGreaterThan(0);
-    expect(screen.getByText("Base rewards (earnings floor)")).toBeInTheDocument();
-    // Assumptions decomposition shows the floor added on top of usage.
-    expect(screen.getByText("+ $16")).toBeInTheDocument();
+    selectMac();
+    expect(await screen.findByText(BEST_ESTIMATE)).toBeInTheDocument();
+    expect(screen.getAllByText(QWEN_DISPLAY_NAME).length).toBeGreaterThan(0);
+    expect(screen.getByText("3. Single-stream decode speed")).toBeInTheDocument();
+    expect(screen.getByText("6. OpenRouter output pricing")).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent("Estimated earning, not guaranteed.");
+    const setup = screen.getByText("Turn your Mac into a provider");
+    const flow = screen.getByText("How this estimate is calculated");
+    expect(setup.compareDocumentPosition(flow) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
-  it("bakes electricity in as a fixed assumption with no user input", async () => {
-    const { DEFAULT_ELEC_COST_PER_KWH } = await import("@/app/earn/calc");
-    const { useEarningsCalculator } = await import("@/app/earn/useEarningsCalculator");
-    const { renderHook } = await import("@testing-library/react");
-    const { result } = renderHook(() => useEarningsCalculator());
-
-    expect(result.current.elecCostNum).toBe(DEFAULT_ELEC_COST_PER_KWH);
-
+  it("updates the earning when duty cycle changes", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-    expect(screen.queryByLabelText(/Electricity cost/i)).not.toBeInTheDocument();
+    selectMac();
+    await screen.findByText(BEST_ESTIMATE);
+    const before = screen.getByText(MONTHLY_EARNING).parentElement?.textContent;
+    fireEvent.change(screen.getByLabelText("Duty cycle"), { target: { value: "25" } });
+    const after = screen.getByText(MONTHLY_EARNING).parentElement?.textContent;
+    expect(after).not.toBe(before);
+  });
+
+  it("invites interest instead of enrollment below 48 GB", async () => {
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+    selectMac(MACBOOK_PRO, "M4 Pro", 24);
+    expect(
+      await screen.findByText("We're starting with Macs that have 48 GB or more"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Register this Mac's hardware interest" }),
+    ).toHaveAttribute("href", "/provider-waitlist?chip=M4+Pro&memory_gb=24");
+    expect(screen.queryByText(MONTHLY_EARNING)).not.toBeInTheDocument();
   });
 });

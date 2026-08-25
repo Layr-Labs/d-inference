@@ -25,8 +25,6 @@ export function RemoveMachineButton({
   const addToast = useToastStore((s) => s.addToast);
   const [removing, setRemoving] = useState(false);
 
-  // The stable machine identity the coordinator's DELETE path resolves against.
-  const serial = provider.serial_number || provider.id;
   const chipName = provider.hardware.chip_name || "this machine";
 
   async function handleRemove() {
@@ -43,7 +41,7 @@ export function RemoveMachineButton({
         addToast("Sign in again to remove this machine.", "error");
         return;
       }
-      await deleteProvider(token, serial);
+      await deleteProvider(token, provider.id);
       addToast("Machine removed.", "success");
       onRemoved?.();
     } catch (err) {

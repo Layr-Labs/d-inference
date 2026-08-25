@@ -1,19 +1,21 @@
 "use client";
 
-import { ArrowRight, ClipboardList } from "lucide-react";
 import Link from "next/link";
+import { ArrowRight, ClipboardList } from "lucide-react";
 import { trackEvent } from "@/lib/google-analytics";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
-/**
- * Shown when the selected hardware can't run any current catalog model:
- * sends the visitor to the durable provider availability form with their
- * calculator selections prefilled.
- */
+type InterestVariant = "smaller-models" | "production-readiness";
+
 export function SmallModelsInterest({
   calc,
+  variant = "smaller-models",
 }: {
   calc: EarningsCalculator;
+  authenticated?: boolean;
+  ready?: boolean;
+  login?: () => void;
+  variant?: InterestVariant;
 }) {
   const params = new URLSearchParams({
     chip: calc.selectedChip,
@@ -26,15 +28,15 @@ export function SmallModelsInterest({
         href={`/provider-waitlist?${params.toString()}`}
         onClick={() =>
           trackEvent("provider_waitlist_opened", {
-            source: "earn_page",
+            source:
+              variant === "production-readiness"
+                ? "earn_page_production_readiness"
+                : "earn_page_smaller_models",
             chip: calc.selectedChip,
             memory_gb: calc.effectiveRAM,
           })
         }
-        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg
-                   bg-accent-brand text-white font-medium text-sm
-                   hover:bg-accent-brand-hover
-                   transition-colors focus-ring"
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent-brand px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-brand-hover focus-ring"
       >
         <ClipboardList size={14} />
         Register this Mac&apos;s hardware interest

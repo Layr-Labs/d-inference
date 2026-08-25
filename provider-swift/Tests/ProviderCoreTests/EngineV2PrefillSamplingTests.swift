@@ -520,6 +520,26 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             kvBudget: budget)
     }
 
+    private func makeProductionBridge(
+        engine: PrefillScriptEngine,
+        configuredMode: PrefillDeadlineMode? = nil,
+        environment: [String: String]
+    ) throws -> EngineV2Bridge {
+        try EngineV2Factory.makeBridge(
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [],
+            prefillDeadlineMode: configuredMode,
+            runtimePolicyEnvironment: environment,
+            makeEngine: {
+                EngineV2Factory.ProductionBuild(
+                    engine: engine,
+                    fixedRequestBytes: 0,
+                    kvBackendKind: .contiguous,
+                    kvBackendFallbackReason: nil)
+            })
+    }
+
     private func ampleBudget() -> GlobalKVCacheBudget {
         let gib: UInt64 = 1_073_741_824
         return GlobalKVCacheBudget(
@@ -603,7 +623,14 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
     @Test("enforce mode carries absolute monotonic deadline and conservative phase rates")
     func enforceUsesAtomicAdmission() async throws {
         let engine = PrefillScriptEngine()
-        let bridge = makeBridge(engine: engine, mode: .enforce)
+        let bridge = try makeProductionBridge(
+            engine: engine,
+            environment: [
+                PrefillDeadlineMode.environmentKey: "enforce",
+                EngineV2Factory.maxPartialPrefillsKey: "1",
+            ])
+        #expect(await bridge.prefillDeadlineMode == .enforce)
+        #expect(await bridge.prefillDeadlineProjectionEnabled)
         let measured = try await measureColdPrefillRate(
             bridge: bridge,
             engine: engine)
@@ -631,6 +658,42 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(engine.ordinarySubmissionCount == 1)
         #expect(await bridge._testLivePumpCount() == 1)
         try await finishLatestSubmission(stream, engine: engine)
+    }
+
+    @Test("cap zero bypasses atomic forecast but preserves serving and hard expiry")
+    func capZeroUsesOrdinarySubmission() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = try makeProductionBridge(
+            engine: engine,
+            environment: [
+                PrefillDeadlineMode.environmentKey: "enforce",
+                EngineV2Factory.maxPartialPrefillsKey: "0",
+            ])
+        #expect(await bridge.prefillDeadlineMode == .enforce)
+        #expect(!(await bridge.prefillDeadlineProjectionEnabled))
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+
+        let liveDeadline = deadline()
+        let stream = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "cap-zero-serving-rollback",
+            firstContentDeadline: liveDeadline)
+        #expect(engine.deadlineAdmissions.isEmpty)
+        #expect(engine.ordinarySubmissionCount == 2)
+        try await finishLatestSubmission(stream, engine: engine)
+
+        let expired = deadline(budgetMilliseconds: 0, elapsedMilliseconds: 1)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "cap-zero-expired",
+                firstContentDeadline: expired)
+        }
+        #expect(engine.deadlineAdmissions.isEmpty)
+        #expect(engine.ordinarySubmissionCount == 2)
     }
 
     @Test("deadline policy supplies independently observed decode rate")
@@ -705,7 +768,14 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
     @Test("live off, missing deadline, unmeasured rate, and multimodal requests fail open")
     func failOpenCasesUseOrdinarySubmit() async throws {
         let offEngine = PrefillScriptEngine()
-        let offBridge = makeBridge(engine: offEngine, mode: .off)
+        let offBridge = try makeProductionBridge(
+            engine: offEngine,
+            configuredMode: .off,
+            environment: [
+                EngineV2Factory.maxPartialPrefillsKey: "1",
+            ])
+        #expect(await offBridge.prefillDeadlineMode == .off)
+        #expect(await offBridge.prefillDeadlineProjectionEnabled)
         _ = try await measureColdPrefillRate(bridge: offBridge, engine: offEngine)
         offEngine.setDeadlineBehavior(.reject)
         let offStream = try await offBridge.submitTokenized(

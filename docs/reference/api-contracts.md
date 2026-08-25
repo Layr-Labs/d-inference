@@ -54,7 +54,6 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `response_format` | object | no | `json_object`, `json_schema` |
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
-| `provider_serial` / `provider_serials` | string / array | no | Darkbloom-specific routing allowlist; stripped before forwarding |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
 
 The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).

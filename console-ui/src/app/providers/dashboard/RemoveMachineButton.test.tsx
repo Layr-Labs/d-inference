@@ -30,20 +30,20 @@ beforeEach(() => {
 });
 
 describe("RemoveMachineButton", () => {
-  it("confirms, deletes by serial_number, toasts success, and calls onRemoved", async () => {
+  it("confirms, deletes by opaque provider id, toasts success, and calls onRemoved", async () => {
     const onRemoved = vi.fn();
     render(
-      <RemoveMachineButton provider={makeProvider({ serial_number: "SER-1", id: "p1" })} onRemoved={onRemoved} />
+      <RemoveMachineButton provider={makeProvider({ id: "p1" })} onRemoved={onRemoved} />
     );
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
 
-    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "SER-1"));
+    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "p1"));
     await waitFor(() => expect(onRemoved).toHaveBeenCalled());
     expect(addToast).toHaveBeenCalledWith("Machine removed.", "success");
   });
 
-  it("falls back to the provider id when serial_number is empty", async () => {
-    render(<RemoveMachineButton provider={makeProvider({ serial_number: "", id: "p9" })} />);
+  it("uses the provider id directly", async () => {
+    render(<RemoveMachineButton provider={makeProvider({ id: "p9" })} />);
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
     await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "p9"));
   });

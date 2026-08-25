@@ -56,14 +56,14 @@ describe("POST /api/device/approve", () => {
 });
 
 describe("GET /api/attestation?summary=1", () => {
-  it("returns a slim count + last_verified instead of the full blob", async () => {
+  it("returns only count + last_verified from the status feed", async () => {
     upstream.fetch.mockResolvedValueOnce(
       ok({
         providers: [
           { trust_level: "hardware", last_challenge_time: "2026-06-22T10:00:00Z" },
           { trust_level: "hardware", last_challenge_time: "2026-06-22T11:00:00Z" },
           { trust_level: "none", last_challenge_time: "2026-06-22T12:00:00Z" },
-          // huge cert chains that should NOT reach the client
+          // Defense in depth: unexpected identity-bearing fields stay out.
           { trust_level: "hardware", mda_cert_chain_b64: ["x".repeat(1000)] },
         ],
       }),
@@ -76,11 +76,26 @@ describe("GET /api/attestation?summary=1", () => {
     expect(JSON.stringify(data)).not.toContain("mda_cert_chain");
   });
 
-  it("returns the full blob without summary", async () => {
-    upstream.fetch.mockResolvedValueOnce(ok({ providers: [{ trust_level: "hardware" }] }));
+  it("allowlists public status fields from the full upstream feed", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      ok({
+        providers: [{
+          provider_id: "provider-1",
+          trust_level: "hardware",
+          serial_number: "PRIVATE-SERIAL",
+          mda_serial: "PRIVATE-MDA-SERIAL",
+          mda_udid: "PRIVATE-UDID",
+          mda_cert_chain_b64: ["identity-bearing-leaf"],
+        }],
+        verification_instructions: "decode the identity-bearing leaf",
+      }),
+    );
     const { GET } = await import("@/app/api/attestation/route");
     const res = await GET(req("/api/attestation"));
     const data = await res.json();
-    expect(data.providers).toHaveLength(1);
+    expect(data).toEqual({
+      providers: [{ provider_id: "provider-1", trust_level: "hardware" }],
+    });
+    expect(JSON.stringify(data)).not.toMatch(/serial|udid|cert_chain|identity-bearing/i);
   });
 });

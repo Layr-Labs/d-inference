@@ -29,6 +29,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var version: String
     public var writtenAt: Double // epoch seconds; staleness check
     public var startedAt: Double // epoch seconds; uptime
+    /// Public key of the exact `AttestationSigner` this daemon uses for
+    /// registration and challenges. `doctor` uses this value to correlate the
+    /// running daemon with the coordinator's public attestation feed; it must
+    /// never load or create a second key to guess the daemon's identity.
+    /// Optional so state files written by older daemons continue to decode.
+    public var attestationPublicKey: String?
     public var trust: Trust?
     public var currentModel: String?
     public var warmModels: [String]
@@ -218,6 +224,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         version: String,
         writtenAt: Double,
         startedAt: Double,
+        attestationPublicKey: String? = nil,
         trust: Trust? = nil,
         currentModel: String? = nil,
         warmModels: [String] = [],
@@ -235,6 +242,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.version = version
         self.writtenAt = writtenAt
         self.startedAt = startedAt
+        self.attestationPublicKey = attestationPublicKey
         self.trust = trust
         self.currentModel = currentModel
         self.warmModels = warmModels

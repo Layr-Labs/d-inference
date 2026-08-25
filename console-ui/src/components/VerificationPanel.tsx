@@ -2,24 +2,18 @@
 
 import { useState } from "react";
 import type { TrustMetadata } from "@/lib/api";
-import { maskSerial } from "@/lib/format";
 import { useVerificationMode } from "@/components/providers/verification-mode";
 import { TrustExplainerModal } from "./TrustExplainerModal";
-import { useDeviceVerification } from "./verification/useDeviceVerification";
 import { NormalMode } from "./verification/NormalMode";
 import { TechnicalMode } from "./verification/TechnicalMode";
 import { ShieldCheck, Shield, ChevronDown, Code, Eye } from "lucide-react";
 
-// Thin orchestrator: owns only the expand/mode/explainer UI state and composes
-// the verification hook + the two mode bodies (proposal F7). The heavy X.509
-// verifier is lazy-loaded by useDeviceVerification (perf F4).
+// Thin orchestrator for the coordinator-verified trust state returned with each
+// inference response. Raw identity-bearing MDA certificates are never fetched.
 export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   const { mode, toggle } = useVerificationMode();
   const [open, setOpen] = useState(false);
   const [showExplainer, setShowExplainer] = useState(false);
-  const { verifying, verifySteps, verifyResult, providerDetail, verify } =
-    useDeviceVerification(trust);
-
   const isHardware = trust.trustLevel === "hardware";
 
   const Icon = isHardware ? ShieldCheck : Shield;
@@ -33,12 +27,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
       : "Hardware Verified"
     : "Unverified";
 
-  const displaySerial = trust.providerSerial
-    ? mode === "normal" ? maskSerial(trust.providerSerial) : trust.providerSerial
-    : "";
-  const chipLabel = trust.providerChip
-    ? `${trust.providerChip}${displaySerial ? ` · ${displaySerial}` : ""}`
-    : "";
+  const chipLabel = trust.providerChip;
 
   return (
     <>
@@ -94,20 +83,9 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
               <NormalMode
                 trust={trust}
                 onOpenExplainer={() => setShowExplainer(true)}
-                verifySteps={verifySteps}
-                verifyResult={verifyResult}
-                verifying={verifying}
-                onVerify={verify}
               />
             ) : (
-              <TechnicalMode
-                trust={trust}
-                verifySteps={verifySteps}
-                verifyResult={verifyResult}
-                verifying={verifying}
-                onVerify={verify}
-                providerDetail={providerDetail}
-              />
+              <TechnicalMode trust={trust} />
             )}
           </div>
         )}

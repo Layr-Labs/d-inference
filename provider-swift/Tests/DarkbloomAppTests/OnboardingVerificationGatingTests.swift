@@ -162,12 +162,13 @@ struct OnboardingVerificationGatingTests {
         let now = Date().timeIntervalSince1970
 
         truth.recordConnected(at: now)
-        #expect(truth.recordTrustStatus(
+        let acceptedInitialStatus = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "MDM verification passed",
             at: now + 1
-        ))
+        )
+        #expect(acceptedInitialStatus)
         writeConnectionTruth(truth, to: fixture)
 
         await flow.runAutomaticWorkForCurrentStep()
@@ -214,12 +215,13 @@ struct OnboardingVerificationGatingTests {
         #expect(snapshot.trust.state == .failed)
         #expect(!AppFlowBootstrapEvidence(snapshot: snapshot).canOpenProductWithoutOnboarding)
 
-        #expect(truth.recordTrustStatus(
+        let acceptedFreshStatus = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "fresh MDM verification",
             at: now + 4
-        ))
+        )
+        #expect(acceptedFreshStatus)
         writeConnectionTruth(truth, to: fixture)
 
         #expect(flow.canContinue)

@@ -3945,12 +3945,19 @@ func (r *Registry) disconnect(id string, expected *Provider) bool {
 		if pr.ErrorCh != nil {
 			func() {
 				defer func() { recover() }()
-				pr.ErrorCh <- protocol.InferenceErrorMessage{
+				disconnectError := protocol.InferenceErrorMessage{
 					Type:             protocol.TypeInferenceError,
 					RequestID:        reqID,
 					Error:            "provider disconnected",
 					StatusCode:       502,
 					CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+				}
+				// A terminal race may already have filled the one-slot channel.
+				// That request is already cancelled; never let teardown block
+				// while holding p.mu, especially on synchronous token revoke.
+				select {
+				case pr.ErrorCh <- disconnectError:
+				default:
 				}
 			}()
 			func() {

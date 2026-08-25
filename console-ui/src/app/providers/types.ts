@@ -156,6 +156,34 @@ export interface MyProvidersResponse {
   challenge_max_age_seconds: number;
 }
 
+export interface HardwareAdmissionFailure {
+  code: string;
+  metric: string;
+  observed: number;
+  required: number;
+  unit: string;
+}
+
+export interface HardwareAdmissionAttempt {
+  id: number;
+  provider_id: string;
+  serial_number?: string;
+  policy_version: number;
+  mode: string;
+  decision: string;
+  reason_code?: string;
+  hardware: MyHardware & {
+    fp16_millitflops?: number;
+    catalog_known?: boolean;
+  };
+  failed_checks?: HardwareAdmissionFailure[];
+  created_at: string;
+}
+
+export interface HardwareAdmissionAttemptsResponse {
+  attempts: HardwareAdmissionAttempt[];
+}
+
 // Response from DELETE /v1/me/providers/{serial}.
 export interface DeleteProviderResponse {
   deleted: boolean;

@@ -21,6 +21,7 @@ import { MachineGrid } from "./MachineGrid";
 import { TrustFooter } from "./TrustFooter";
 import { OnboardingState } from "./OnboardingState";
 import { SignInGate, LoadingState, ErrorState } from "./states";
+import { AdmissionRejectionNotice } from "./AdmissionRejectionNotice";
 
 export function ProviderDashboard() {
   const {
@@ -29,6 +30,7 @@ export function ProviderDashboard() {
     login,
     providersResp,
     summary,
+    admissionAttempts,
     ctx,
     loading,
     refreshing,
@@ -66,6 +68,7 @@ export function ProviderDashboard() {
   if (providers.length === 0) {
     return (
       <Shell>
+        <AdmissionRejectionNotice attempts={admissionAttempts} />
         <OnboardingState />
       </Shell>
     );
@@ -73,6 +76,7 @@ export function ProviderDashboard() {
 
   return (
     <Shell>
+      <AdmissionRejectionNotice attempts={admissionAttempts} />
       <DashboardHeader
         total={providers.length}
         online={onlineCount(providers)}

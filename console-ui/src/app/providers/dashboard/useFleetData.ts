@@ -10,12 +10,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
-import type { MyProvidersResponse, MySummaryResponse } from "../types";
+import type {
+  HardwareAdmissionAttempt,
+  HardwareAdmissionAttemptsResponse,
+  MyProvidersResponse,
+  MySummaryResponse,
+} from "../types";
 import type { RoutingCtx } from "./routing";
 
 const REFRESH_MS = 15_000;
 const PROVIDERS_URL = "/api/me/providers";
 const SUMMARY_URL = "/api/me/summary";
+const ADMISSION_ATTEMPTS_URL = "/api/me/provider-admission-attempts";
 
 export interface FleetData {
   ready: boolean;
@@ -23,6 +29,7 @@ export interface FleetData {
   login: () => void;
   providersResp: MyProvidersResponse | null;
   summary: MySummaryResponse | null;
+  admissionAttempts: HardwareAdmissionAttempt[];
   ctx: RoutingCtx;
   /** True only during the very first load (before any data arrives). */
   loading: boolean;
@@ -48,6 +55,9 @@ export function useFleetData(): FleetData {
   const { ready, authenticated, login, getAccessToken } = useAuth();
   const [providersResp, setProvidersResp] = useState<MyProvidersResponse | null>(null);
   const [summary, setSummary] = useState<MySummaryResponse | null>(null);
+  const [admissionAttempts, setAdmissionAttempts] = useState<
+    HardwareAdmissionAttempt[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,9 +79,10 @@ export function useFleetData(): FleetData {
       const headers = { Authorization: `Bearer ${token}` };
 
       // Providers is required; summary is best-effort.
-      const [pRes, sRes] = await Promise.allSettled([
+      const [pRes, sRes, aRes] = await Promise.allSettled([
         fetch(PROVIDERS_URL, { headers, cache: "no-store" }),
         fetch(SUMMARY_URL, { headers, cache: "no-store" }),
+        fetch(ADMISSION_ATTEMPTS_URL, { headers, cache: "no-store" }),
       ]);
 
       if (pRes.status !== "fulfilled" || !pRes.value.ok) {
@@ -92,6 +103,15 @@ export function useFleetData(): FleetData {
           setSummary((await sRes.value.json()) as MySummaryResponse);
         } catch {
           /* keep prior summary */
+        }
+      }
+      if (aRes.status === "fulfilled" && aRes.value.ok) {
+        try {
+          const body =
+            (await aRes.value.json()) as HardwareAdmissionAttemptsResponse;
+          setAdmissionAttempts(body.attempts ?? []);
+        } catch {
+          /* keep prior admission history */
         }
       }
     } catch (e) {
@@ -118,6 +138,7 @@ export function useFleetData(): FleetData {
     login,
     providersResp,
     summary,
+    admissionAttempts,
     ctx: DEFAULT_CTX_FROM(providersResp),
     loading,
     refreshing,

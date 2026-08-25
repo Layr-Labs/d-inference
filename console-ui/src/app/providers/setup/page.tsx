@@ -13,6 +13,7 @@ import {
   Copy,
   Check,
 } from "lucide-react";
+import { useProviderRequirements } from "../useProviderRequirements";
 
 function CopyableCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -89,7 +90,7 @@ const REQUIREMENTS = [
   {
     icon: Cpu,
     title: "Apple Silicon Mac",
-    description: "M1, M2, M3, or M4 series (any tier). GPU inference runs natively on the Neural Engine and GPU.",
+    description: "M1 through M5 series. GPU inference runs natively with MLX on unified-memory Apple Silicon.",
   },
   {
     icon: Monitor,
@@ -132,6 +133,37 @@ const FAQ = [
 ];
 
 export default function ProviderSetupPage() {
+  const providerRequirements = useProviderRequirements();
+  const policy = providerRequirements?.policy;
+  const hardwareTitle = policy?.min_memory_gb
+    ? `${policy.min_memory_gb}GB+ RAM`
+    : "Unified Memory";
+  const hardwareMinimums = [
+    policy?.min_memory_gb
+      ? `${policy.min_memory_gb} GiB memory`
+      : null,
+    policy?.min_memory_bandwidth_gbs
+      ? `${policy.min_memory_bandwidth_gbs} GB/s bandwidth`
+      : null,
+    policy?.min_fp16_millitflops
+      ? `${(policy.min_fp16_millitflops / 1000).toFixed(1)} FP16 TFLOPS`
+      : null,
+  ].filter(Boolean);
+  const requirementCards = REQUIREMENTS.map((requirement) =>
+    requirement.title === "16GB+ RAM"
+      ? {
+          ...requirement,
+          title: hardwareTitle,
+          description:
+            hardwareMinimums.length > 0
+              ? `New providers must meet ${hardwareMinimums.join(
+                  ", "
+                )}. Existing admitted machines remain grandfathered.`
+              : "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.",
+        }
+      : requirement
+  );
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-12">
       {/* Hero */}
@@ -156,8 +188,17 @@ export default function ProviderSetupPage() {
       {/* Requirements */}
       <div>
         <h2 className="text-lg font-semibold text-text-primary mb-4">Requirements</h2>
+        {policy && policy.mode !== "disabled" && (
+          <div className="mb-4 rounded-xl border border-accent-amber/25 bg-accent-amber/10 px-4 py-3 text-sm text-text-secondary">
+            <span className="font-semibold text-text-primary">
+              New-machine policy v{policy.version} is {policy.mode}.
+            </span>{" "}
+            Hardware is verified by the coordinator when the provider connects;
+            linking an account alone does not guarantee admission.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-4">
-          {REQUIREMENTS.map(({ icon: Icon, title, description }) => (
+          {requirementCards.map(({ icon: Icon, title, description }) => (
             <div key={title} className="rounded-xl bg-bg-secondary shadow-sm p-5">
               <div className="w-10 h-10 rounded-lg bg-accent-brand/10 flex items-center justify-center mb-3">
                 <Icon size={20} className="text-accent-brand" />

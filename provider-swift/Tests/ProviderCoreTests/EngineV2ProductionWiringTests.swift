@@ -2186,3 +2186,192 @@ struct EngineV2KVBackendFallbackHeartbeatTests {
         #expect(EngineV2Bridge.heartbeatFallbackReason(nil) == nil)
     }
 }
+
+@Suite("Prefill deadline admission + FCFS prefill serialization")
+struct PrefillDeadlineAdmissionTests {
+
+    // The consumer budget mirrored from the coordinator's verified SLA base:
+    // 10_000 ms + 1 ms x prompt_tokens.
+    private let baseMs = EngineV2Bridge.defaultPrefillDeadlineBaseMs
+    // Measured best-case solo prefill rate for Qwen 3.6 35B at 8K (trust+stripe).
+    private let tps = 1531.0
+    private let prompt8K = 8192
+
+    @Test("an 8K row on an idle box is admitted")
+    func idleBoxAdmits() {
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 0, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("8K rows are admitted while the queue can still land them in time")
+    func admitsWhileTheQueueFits() {
+        for rowsAhead in 0 ... 2 {
+            #expect(
+                EngineV2Bridge.prefillDeadlineProjection(
+                    queuedAheadTokens: rowsAhead * prompt8K, promptTokens: prompt8K,
+                    prefillTps: tps, baseMs: baseMs) == nil,
+                "row behind \(rowsAhead) x 8K should still fit its budget")
+        }
+    }
+
+    /// The row this whole change exists for: four concurrent 8K prompts need
+    /// 4 x 8192 / 18.2 s = ~1,800 tok/s aggregate and the box measures 1,531.
+    /// It can never land, so it must be refused here and re-dispatched rather
+    /// than accepted and timed out.
+    @Test("the fourth concurrent 8K row is refused, not accepted and missed")
+    func refusesTheRowThatCannotLand() throws {
+        let projection = try #require(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: baseMs))
+        #expect(projection.projectedMs > projection.budgetMs)
+        #expect(projection.budgetMs == baseMs + Double(prompt8K))
+    }
+
+    /// Head-of-line protection: a short prompt has a SMALLER budget, so it is
+    /// refused behind a long queue even though its own prefill is trivial.
+    @Test("a short prompt stuck behind long ones is refused")
+    func refusesShortPromptBehindLongQueue() {
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: 512,
+                prefillTps: tps, baseMs: baseMs) != nil)
+        // ...and is admitted immediately on an idle box.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 0, promptTokens: 512,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("the gate fails open when it cannot form a verdict")
+    func failsOpen() {
+        // Unmeasured prefill rate (fresh process: the EWMA starts at 0).
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: 0, baseMs: baseMs) == nil)
+        // Kill switch: a non-positive base disables the gate.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: prompt8K,
+                prefillTps: tps, baseMs: 0) == nil)
+        // Degenerate prompt.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: 3 * prompt8K, promptTokens: 0,
+                prefillTps: tps, baseMs: baseMs) == nil)
+    }
+
+    @Test("prefill serialization is the serving default, with an env escape")
+    func fcfsIsTheDefault() {
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: [:]) == 1)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "3"]) == 3)
+        // Non-positive / unparseable restores the unlimited interleave.
+        for escape in ["0", "-1", "off"] {
+            #expect(
+                EngineV2Factory.maxConcurrentPartialPrefills(
+                    environment: [EngineV2Factory.maxPartialPrefillsKey: escape]) == nil,
+                "\(escape) should restore the pre-fix unlimited interleave")
+        }
+    }
+}
+
+/// The projection adds an explicit `queuedAheadTokens` term, so it is only
+/// correct when divided by a QUEUE-EXCLUDED rate. `observedPrefillTpsEwma` is
+/// load-inclusive by contract (window = admission→first token;
+/// `protocol/messages.go:277`), and feeding it here counted contention twice.
+@Suite("Prefill deadline projection uses a queue-excluded rate")
+struct PrefillDeadlineRateSemanticsTests {
+
+    private let baseMs = EngineV2Bridge.defaultPrefillDeadlineBaseMs
+    /// Rate with the queue wait excluded — one row's own prefill work.
+    private let isolatedTps = 1200.0
+    private let prompt = 2000
+
+    /// Ground truth under FCFS prefill: a row behind `rowsAhead` peers of the
+    /// same size reaches first token after all of them plus itself.
+    private func trueTtftMs(rowsAhead: Int) -> Double {
+        Double((rowsAhead + 1) * prompt) / isolatedTps * 1000.0
+    }
+
+    /// The load-inclusive EWMA a box settles on while running at depth K: its
+    /// samples' windows already contain the queue wait.
+    private func loadInclusiveTps(rowsAhead: Int) -> Double {
+        2.0 * isolatedTps / Double(rowsAhead + 1)
+    }
+
+    @Test("fed a queue-excluded rate, the projection reproduces true TTFT")
+    func projectionMatchesTruth() throws {
+        for rowsAhead in 1 ... 7 {
+            let projection = EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: rowsAhead * prompt, promptTokens: prompt,
+                prefillTps: isolatedTps, baseMs: baseMs)
+            let expected = trueTtftMs(rowsAhead: rowsAhead)
+            // `nil` means "fits", i.e. the projection was <= budget.
+            let projected = projection?.projectedMs ?? expected
+            #expect(
+                abs(projected - expected) < 0.5,
+                "depth \(rowsAhead): projected \(projected) ms vs true \(expected) ms")
+        }
+    }
+
+    /// Regression: this is the defect. At depth 3 the row reaches first token
+    /// in 6,667 ms against a 12,000 ms budget — 56% of budget, comfortably
+    /// servable — yet the load-inclusive rate projected 13,333 ms and refused
+    /// it. Refusing a servable row is the `could_have_served` over-shed the
+    /// gate exists to avoid.
+    @Test("a row at 56% of budget is admitted at queue depth 3")
+    func admitsTheServableRowThatUsedToBeRefused() {
+        let rowsAhead = 3
+        let budgetMs = baseMs + Double(prompt)
+        #expect(trueTtftMs(rowsAhead: rowsAhead) < budgetMs)
+
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: rowsAhead * prompt, promptTokens: prompt,
+                prefillTps: isolatedTps, baseMs: baseMs) == nil,
+            "a row that lands at 56% of budget must be admitted")
+
+        // The pre-fix denominator refused exactly this row.
+        #expect(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: rowsAhead * prompt, promptTokens: prompt,
+                prefillTps: loadInclusiveTps(rowsAhead: rowsAhead), baseMs: baseMs) != nil,
+            "pins the regression: the load-inclusive rate refuses a servable row")
+    }
+
+    /// The error is not a constant offset — it grows with queue depth, so a
+    /// tuned base constant could never have absorbed it.
+    @Test("a load-inclusive rate inflates the projection by (K+1)/2")
+    func doubleCountScalesWithDepth() throws {
+        for rowsAhead in 3 ... 7 {
+            let inflated = try #require(
+                EngineV2Bridge.prefillDeadlineProjection(
+                    queuedAheadTokens: rowsAhead * prompt, promptTokens: prompt,
+                    prefillTps: loadInclusiveTps(rowsAhead: rowsAhead), baseMs: baseMs))
+            let ratio = inflated.projectedMs / trueTtftMs(rowsAhead: rowsAhead)
+            let expected = Double(rowsAhead + 1) / 2.0
+            #expect(
+                abs(ratio - expected) < 0.01,
+                "depth \(rowsAhead): inflation \(ratio)x, expected \(expected)x")
+        }
+    }
+
+    /// The genuinely-missing row must still be refused after the fix — the
+    /// change must not turn the gate off.
+    @Test("a row that truly cannot land is still refused")
+    func stillRefusesTheRowThatCannotLand() throws {
+        let rowsAhead = 7
+        let budgetMs = baseMs + Double(prompt)
+        #expect(trueTtftMs(rowsAhead: rowsAhead) > budgetMs)
+        let projection = try #require(
+            EngineV2Bridge.prefillDeadlineProjection(
+                queuedAheadTokens: rowsAhead * prompt, promptTokens: prompt,
+                prefillTps: isolatedTps, baseMs: baseMs))
+        #expect(projection.projectedMs > projection.budgetMs)
+    }
+}

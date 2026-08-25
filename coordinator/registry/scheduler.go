@@ -1579,7 +1579,14 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	} else {
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
-	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	// Prefill resolves through resolvePrefillTPS for BOTH the base cost term and
+	// the long-prompt bias below, so provider ranking follows the live measured
+	// prefill EWMA when a slot reports one and only falls back to the static
+	// registration/x12 chain when it does not. Reading snap.prefillTPS directly
+	// here pinned the dominant prefill term to the static rate, which left a box
+	// whose measured prefill had degraded looking as cheap as its benchmark.
+	prefillTPS := resolvePrefillTPS(snap)
+	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	// Long-prompt fastest-tier preference: amplify the first-token-blocking time
 	// for very long prompts so the provider that reaches first token soonest is
 	// strongly preferred, reducing pre-first-token client_gone. The amplified
@@ -1594,7 +1601,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// the fastest warm provider. Folded into thisReqMs so the cost breakdown
 	// invariant (sum of terms == Total) holds. Returns 0 — and so leaves the cost
 	// byte-for-byte unchanged — for short prompts and when the knob is off.
-	prefillMs := float64(reqPrompt) / resolvePrefillTPS(snap) * 1000.0
+	prefillMs := float64(reqPrompt) / prefillTPS * 1000.0
 	ttftBlockMs := prefillMs
 	if !snap.modelLoaded {
 		// A cold provider must load before it can prefill; amplify its full

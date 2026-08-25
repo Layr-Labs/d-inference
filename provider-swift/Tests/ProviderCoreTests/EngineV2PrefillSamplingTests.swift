@@ -209,3 +209,190 @@ struct EngineV2PrefillSamplingTests {
         #expect(await bridge.backendSlotCapacity().observedPrefillTps == 0)
     }
 }
+
+// MARK: - Queue-excluded companion EWMA
+
+/// `observedPrefillTpsEwma` above is load-INCLUSIVE by contract (window starts
+/// at admission; `protocol/messages.go:277`). The prefill-deadline gate adds an
+/// explicit queued-tokens term, so dividing by that rate counts contention
+/// twice. `isolatedPrefillTpsEwma` is the queue-excluded companion the gate
+/// divides by: same samples, but only from rows that were admitted with no
+/// other prefill in flight.
+@Suite("EngineV2 isolated prefill EWMA (queue-excluded)")
+struct EngineV2IsolatedPrefillSamplingTests {
+
+    private func makeBridge(_ engine: PrefillScriptEngine) -> EngineV2Bridge {
+        EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+    }
+
+    private func submit(
+        _ bridge: EngineV2Bridge, _ id: String
+    ) async -> Task<Void, Never> {
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: 200),
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: id)
+        return Task { for await _ in stream {} }
+    }
+
+    private func finish(_ continuation: AsyncStream<CBv2Event>.Continuation) {
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(
+            reason: .stop, usage: CBv2Usage(promptTokens: 200, completionTokens: 1)))
+        continuation.finish()
+    }
+
+    @Test("a row admitted onto an idle engine feeds both EWMAs")
+    func uncontendedRowFeedsIsolatedEwma() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+        #expect(await bridge.isolatedPrefillTpsEwma == 0)
+
+        let consumer = await submit(bridge, "solo")
+        await bridge.backdateSubmissionForTesting(
+            requestId: "solo", byMilliseconds: 50)
+        finish(try #require(engine.continuations.first))
+        _ = await consumer.value
+
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(await bridge.isolatedPrefillTpsEwma > 0)
+    }
+
+    /// The discriminating case. `second` is admitted while `first` is still
+    /// prefilling, so its submit→first-token window is mostly queue wait. That
+    /// sample is fine for the load-inclusive signal and must NOT calibrate the
+    /// rate the deadline projection divides by — feeding it there is exactly
+    /// the double-count this companion exists to remove.
+    @Test("a row admitted behind an in-flight prefill feeds only the load-inclusive EWMA")
+    func contendedRowIsExcluded() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+
+        let firstConsumer = await submit(bridge, "first")
+        // `first` has not reached its first token, so `second` is contended.
+        let secondConsumer = await submit(bridge, "second")
+        #expect(engine.continuations.count == 2)
+
+        await bridge.backdateSubmissionForTesting(
+            requestId: "second", byMilliseconds: 50)
+        finish(engine.continuations[1])
+        _ = await secondConsumer.value
+
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(
+            await bridge.isolatedPrefillTpsEwma == 0,
+            "a queued row must not calibrate the queue-excluded rate")
+
+        // ...and the predicate discriminates rather than being off entirely:
+        // `first` WAS admitted onto an idle engine, so it still qualifies.
+        await bridge.backdateSubmissionForTesting(
+            requestId: "first", byMilliseconds: 50)
+        finish(engine.continuations[0])
+        _ = await firstConsumer.value
+        #expect(await bridge.isolatedPrefillTpsEwma > 0)
+    }
+
+    /// Fail-open: a box that has never seen an idle prefill has no
+    /// queue-excluded rate, so the gate must admit rather than guess.
+    @Test("the gate fails open while the isolated EWMA is unmeasured")
+    func gateFailsOpenWhileUnmeasured() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine)
+        let firstConsumer = await submit(bridge, "first")
+        let secondConsumer = await submit(bridge, "second")
+        await bridge.backdateSubmissionForTesting(
+            requestId: "second", byMilliseconds: 50)
+        finish(engine.continuations[1])
+        _ = await secondConsumer.value
+
+        // Load-inclusive rate is measured, queue-excluded is not.
+        #expect(await bridge.observedPrefillTpsEwma > 0)
+        #expect(await bridge.prefillDeadlineRefusal(promptTokens: 8192) == nil)
+
+        finish(engine.continuations[0])
+        _ = await firstConsumer.value
+    }
+}
+
+
+/// End-to-end proof of the PR's central claim, through the real bridge: a box
+/// that has measured its own uncontended prefill rate admits the rows that can
+/// land inside the TTFT budget and refuses the one that cannot, instead of
+/// accepting all four and timing them all out.
+///
+/// Admission is observed via `engine.continuations`: an admitted row reaches
+/// `engine.submit` and creates one, a refused row returns before it. Consuming
+/// an admitted row's stream would block — it has no terminal event yet.
+@Suite("EngineV2 prefill deadline: end-to-end burst admission")
+struct EngineV2PrefillBurstAdmissionTests {
+
+    // Measured Qwen 3.6 35B solo 8K prefill (trust + stripe),
+    // docs/reports/2026-08-19-solo-prefill-stripe-experiment.md.
+    private let tps = 1531.0
+    private let prompt = 8192
+
+    @Test("three 8K rows are admitted and the fourth is refused")
+    func burstAdmitsThreeRefusesFourth() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+
+        func submit(_ id: String) async -> AsyncStream<GenerationEvent> {
+            await bridge.submitTokenized(
+                promptTokens: Array(repeating: 7, count: prompt),
+                request: ChatCompletionRequest(
+                    model: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                    messages: [ChatMessage(role: "user", content: "hi")]),
+                requestId: id)
+        }
+
+        // 1. Arm the queue-excluded EWMA with ONE uncontended row whose window
+        //    puts it at the measured rate: 8192 tokens / 5350 ms ~= 1531 tok/s.
+        let warm = await submit("warm")
+        let warmConsumer = Task { for await _ in warm {} }
+        await bridge.backdateSubmissionForTesting(
+            requestId: "warm", byMilliseconds: 5_350)
+        let c0 = try #require(engine.continuations.first)
+        c0.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        c0.yield(.finished(
+            reason: .stop, usage: CBv2Usage(promptTokens: prompt, completionTokens: 1)))
+        c0.finish()
+        _ = await warmConsumer.value
+
+        let measured = await bridge.isolatedPrefillTpsEwma
+        #expect(measured > 1_400 && measured < 1_700, "armed at \(measured) tok/s")
+
+        // 2. Four concurrent 8K rows arrive, none reaching first token. Under
+        //    FCFS each waits for every row ahead of it.
+        var refused: [Int] = []
+        var refusalMessages: [String] = []
+        for row in 0 ..< 4 {
+            let before = engine.continuations.count
+            let stream = await submit("burst-\(row)")
+            if engine.continuations.count == before {
+                refused.append(row)
+                // A refused stream terminates immediately, so this cannot block.
+                for await event in stream {
+                    if case .error(let message) = event { refusalMessages.append(message) }
+                }
+            }
+        }
+
+        // budget = 10,000 + 8,192 = 18,192 ms; at 1531 tok/s the 4th row
+        // projects 32,768 / 1531 = 21,403 ms and cannot land.
+        #expect(refused == [3], "expected only the fourth row refused, got \(refused)")
+        let message = try #require(refusalMessages.first)
+        #expect(message.contains("token_budget_exhausted"),
+                "refusal must keep the retryable contract: \(message)")
+        #expect(message.contains("queue full"))
+    }
+}

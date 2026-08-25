@@ -176,6 +176,9 @@ func (c *Controller) handleCommandState(
 	if err != nil || !command.Terminal() {
 		return staleHostResultError(err)
 	}
+	if command.State == store.SandboxCommandTimedOut {
+		c.cancelExpiredCommand(sandbox, command)
+	}
 	pendingOperations, listErr := c.store.ListPendingSandboxOperationsByHost(
 		ctx,
 		session.HostID(),

@@ -31,6 +31,7 @@ func (c *Controller) reconcileHost(
 	for _, lease := range heartbeat.Leases {
 		observed[lease.Scope.SandboxID] = lease
 	}
+	now := c.now().UTC()
 	for index := range pendingOperations {
 		pending := &pendingOperations[index]
 		confirmed, err := c.applyHeartbeatOperationObservation(
@@ -42,10 +43,23 @@ func (c *Controller) reconcileHost(
 			return err
 		}
 		if !confirmed &&
+			newConnection &&
+			pending.Operation.Kind == store.SandboxOperationKindRenew &&
+			pending.Operation.RequestedFencingToken == 0 {
+			if err := c.failUnconfirmedLegacyRenewal(
+				ctx,
+				pending,
+				now,
+			); err != nil && !IsConflict(err) {
+				return err
+			}
+			continue
+		}
+		if !confirmed &&
 			(newConnection ||
 				dispatchDue(
 					pending.Operation.LastDispatchedAt,
-					c.now().UTC(),
+					now,
 				)) {
 			_ = c.dispatchOperation(&pending.Sandbox, &pending.Operation)
 		}
@@ -60,12 +74,19 @@ func (c *Controller) reconcileHost(
 	}
 	for index := range pendingCommands {
 		pending := &pendingCommands[index]
+		expired, err := c.expireSandboxCommand(ctx, pending, now)
+		if err != nil {
+			return err
+		}
+		if expired {
+			continue
+		}
 		if pending.Sandbox.State != store.SandboxStateReady ||
 			pending.Sandbox.TerminationRequested ||
 			(!newConnection &&
 				!dispatchDue(
 					pending.Command.LastDispatchedAt,
-					c.now().UTC(),
+					now,
 				)) {
 			continue
 		}
@@ -80,9 +101,50 @@ func (c *Controller) reconcileHost(
 	return nil
 }
 
+func (c *Controller) failUnconfirmedLegacyRenewal(
+	ctx context.Context,
+	pending *store.PendingSandboxOperation,
+	now time.Time,
+) error {
+	if pending == nil ||
+		pending.Operation.Kind != store.SandboxOperationKindRenew ||
+		pending.Operation.RequestedFencingToken != 0 {
+		return store.ErrSandboxConflict
+	}
+	updated, applied, err := c.store.ApplySandboxOperationUpdate(
+		ctx,
+		store.SandboxOperationUpdate{
+			OperationID:  pending.Operation.ID,
+			SandboxID:    pending.Sandbox.ID,
+			Generation:   pending.Operation.Generation,
+			FencingToken: pending.Sandbox.FencingToken,
+			State:        store.SandboxOperationFailed,
+			ErrorCode:    "legacy_renewal_unconfirmed",
+			UpdatedAt:    now,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	return c.continueSandboxOperation(ctx, updated, applied)
+}
+
 func dispatchDue(lastAttempt *time.Time, now time.Time) bool {
 	return lastAttempt == nil ||
 		!now.Before(lastAttempt.Add(dispatchRetryInterval))
+}
+
+func renewalObservationFenceMatches(
+	operation *store.SandboxOperation,
+	observed uint64,
+) bool {
+	if operation == nil || operation.Kind != store.SandboxOperationKindRenew {
+		return false
+	}
+	if operation.RequestedFencingToken == 0 {
+		return observed > operation.FencingToken
+	}
+	return observed == operation.RequestedFencingToken
 }
 
 func (c *Controller) applyHeartbeatOperationObservation(
@@ -132,8 +194,10 @@ func (c *Controller) applyHeartbeatOperationObservation(
 			return true, err
 		}
 	case store.SandboxOperationKindRenew:
-		if observation.Scope.FencingToken !=
-			operation.RequestedFencingToken {
+		if !renewalObservationFenceMatches(
+			operation,
+			observation.Scope.FencingToken,
+		) {
 			return false, nil
 		}
 		if !observedExpiry.Equal(operation.RequestedLeaseExpiresAt) {

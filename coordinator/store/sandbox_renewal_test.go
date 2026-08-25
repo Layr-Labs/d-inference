@@ -127,3 +127,45 @@ func TestSandboxStoreFailedRenewalPreservesAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyPendingRenewalAcceptsObservedAdvancingAuthority(t *testing.T) {
+	now := time.Date(2026, 8, 25, 3, 30, 0, 0, time.UTC)
+	sandbox := &SandboxRecord{
+		ID:             "70000000-0000-0000-0000-000000000107",
+		Generation:     1,
+		FencingToken:   10,
+		State:          SandboxStateReady,
+		LeaseExpiresAt: now.Add(30 * time.Minute),
+	}
+	operation := &SandboxOperation{
+		ID:                      "80000000-0000-0000-0000-000000000108",
+		SandboxID:               sandbox.ID,
+		Kind:                    SandboxOperationKindRenew,
+		State:                   SandboxOperationPending,
+		Generation:              sandbox.Generation,
+		FencingToken:            sandbox.FencingToken,
+		PreviousSandboxState:    sandbox.State,
+		RequestedLeaseExpiresAt: now.Add(time.Hour),
+	}
+	renewedExpiry := operation.RequestedLeaseExpiresAt
+	if err := applySandboxOperationTransition(
+		sandbox,
+		operation,
+		SandboxOperationUpdate{
+			OperationID:    operation.ID,
+			SandboxID:      sandbox.ID,
+			Generation:     sandbox.Generation,
+			FencingToken:   12,
+			State:          SandboxOperationReady,
+			LeaseExpiresAt: &renewedExpiry,
+			UpdatedAt:      now.Add(time.Second),
+		},
+	); err != nil {
+		t.Fatalf("apply legacy renewal observation: %v", err)
+	}
+	if sandbox.FencingToken != 12 ||
+		!sandbox.LeaseExpiresAt.Equal(renewedExpiry) ||
+		operation.State != SandboxOperationReady {
+		t.Fatalf("legacy renewal result sandbox=%+v operation=%+v", sandbox, operation)
+	}
+}

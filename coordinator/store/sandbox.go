@@ -41,6 +41,8 @@ const (
 	SandboxCommandCancelled = "cancelled"
 	SandboxCommandLost      = "lost"
 
+	SandboxCommandDeadlineExceeded = "command_deadline_exceeded"
+
 	SandboxOperationKindPrepare = "prepare"
 	SandboxOperationKindRenew   = "renew"
 	SandboxOperationKindStop    = "stop"
@@ -205,6 +207,14 @@ func (c SandboxCommand) SameRequest(other *SandboxCommand) bool {
 		reflect.DeepEqual(c.Environment, other.Environment)
 }
 
+func (c SandboxCommand) Deadline() time.Time {
+	return c.CreatedAt.Add(time.Duration(c.TimeoutSeconds) * time.Second)
+}
+
+func (c SandboxCommand) DeadlineReached(at time.Time) bool {
+	return !at.Before(c.Deadline())
+}
+
 type SandboxCommandUpdate struct {
 	CommandID       string
 	SandboxID       string
@@ -338,9 +348,15 @@ func applySandboxOperationTransition(
 				return ErrSandboxConflict
 			}
 		} else {
-			if operation.RequestedFencingToken <= sandbox.FencingToken ||
-				update.FencingToken != operation.RequestedFencingToken {
-				return ErrSandboxConflict
+			if operation.RequestedFencingToken == 0 {
+				if update.FencingToken <= sandbox.FencingToken {
+					return ErrSandboxConflict
+				}
+			} else {
+				if operation.RequestedFencingToken <= sandbox.FencingToken ||
+					update.FencingToken != operation.RequestedFencingToken {
+					return ErrSandboxConflict
+				}
 			}
 			if update.LeaseExpiresAt == nil ||
 				update.LeaseExpiresAt.Before(sandbox.LeaseExpiresAt) {
@@ -490,11 +506,20 @@ func applySandboxCommandTransition(
 		}
 		return ErrSandboxInvalidTransition
 	}
-	if !validSandboxCommandTransition(command.State, update.State) {
-		return ErrSandboxInvalidTransition
-	}
 	if update.UpdatedAt.IsZero() {
 		return fmt.Errorf("%w: missing update time", ErrSandboxInvalidTransition)
+	}
+	if command.DeadlineReached(update.UpdatedAt) {
+		empty := ""
+		update.State = SandboxCommandTimedOut
+		update.ExitCode = nil
+		update.StandardOutput = &empty
+		update.StandardError = &empty
+		update.OutputTruncated = false
+		update.ErrorCode = SandboxCommandDeadlineExceeded
+	}
+	if !validSandboxCommandTransition(command.State, update.State) {
+		return ErrSandboxInvalidTransition
 	}
 	command.State = update.State
 	command.ExitCode = cloneInt32(update.ExitCode)

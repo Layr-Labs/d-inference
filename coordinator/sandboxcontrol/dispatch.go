@@ -49,6 +49,9 @@ func (c *Controller) dispatchOperation(
 			},
 		)
 	case store.SandboxOperationKindRenew:
+		if operation.RequestedFencingToken == 0 {
+			return store.ErrSandboxInvalidTransition
+		}
 		return c.sendOperation(
 			session,
 			operation,
@@ -109,6 +112,13 @@ func (c *Controller) dispatchCommand(
 	if sandbox == nil || command == nil || command.Terminal() {
 		return store.ErrSandboxConflict
 	}
+	timeoutSeconds, ok := commandDispatchTimeoutSeconds(
+		command,
+		c.now().UTC(),
+	)
+	if !ok {
+		return store.ErrSandboxInvalidTransition
+	}
 	session, exists := c.hosts.Session(sandbox.HostID)
 	if !exists {
 		return c.recordCommandDispatch(command.ID, ErrHostUnavailable)
@@ -132,9 +142,30 @@ func (c *Controller) dispatchCommand(
 			Arguments:        append([]string(nil), command.Arguments...),
 			Environment:      cloneEnvironment(command.Environment),
 			WorkingDirectory: workingDirectory,
-			TimeoutSeconds:   command.TimeoutSeconds,
+			TimeoutSeconds:   timeoutSeconds,
 		},
 	)
+}
+
+func commandDispatchTimeoutSeconds(
+	command *store.SandboxCommand,
+	now time.Time,
+) (uint32, bool) {
+	if command == nil || command.TimeoutSeconds == 0 ||
+		command.DeadlineReached(now) {
+		return 0, false
+	}
+	seconds := uint64(command.Deadline().Sub(now) / time.Second)
+	if seconds == 0 {
+		if command.LastDispatchedAt != nil {
+			return 0, false
+		}
+		return 1, true
+	}
+	if seconds > uint64(command.TimeoutSeconds) {
+		seconds = uint64(command.TimeoutSeconds)
+	}
+	return uint32(seconds), true
 }
 
 func (c *Controller) sendOperation(

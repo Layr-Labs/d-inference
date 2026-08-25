@@ -46,37 +46,49 @@ func (c *Controller) sweepExpiredCommands(ctx context.Context) error {
 	}
 	for index := range commands {
 		pending := &commands[index]
-		_, err := c.store.ApplySandboxCommandUpdate(
-			sweepContext,
-			store.SandboxCommandUpdate{
-				CommandID:    pending.Command.ID,
-				SandboxID:    pending.Sandbox.ID,
-				Generation:   pending.Command.Generation,
-				FencingToken: pending.Command.FencingToken,
-				State:        store.SandboxCommandTimedOut,
-				ErrorCode:    "command_deadline_exceeded",
-				UpdatedAt:    now,
-			},
-		)
+		_, err := c.expireSandboxCommand(sweepContext, pending, now)
 		if err != nil {
-			if IsConflict(err) || errors.Is(err, store.ErrNotFound) {
-				continue
-			}
 			return err
-		}
-		c.cancelExpiredCommand(&pending.Sandbox, &pending.Command)
-		if pending.Sandbox.TerminationRequested {
-			if err := c.driveTermination(
-				sweepContext,
-				&pending.Sandbox,
-			); err != nil &&
-				!IsConflict(err) &&
-				!errors.Is(err, ErrHostUnavailable) {
-				return err
-			}
 		}
 	}
 	return nil
+}
+
+func (c *Controller) expireSandboxCommand(
+	ctx context.Context,
+	pending *store.PendingSandboxCommand,
+	now time.Time,
+) (bool, error) {
+	if pending == nil || !pending.Command.DeadlineReached(now) {
+		return false, nil
+	}
+	command, err := c.store.ApplySandboxCommandUpdate(
+		ctx,
+		store.SandboxCommandUpdate{
+			CommandID:    pending.Command.ID,
+			SandboxID:    pending.Sandbox.ID,
+			Generation:   pending.Command.Generation,
+			FencingToken: pending.Command.FencingToken,
+			State:        store.SandboxCommandTimedOut,
+			ErrorCode:    store.SandboxCommandDeadlineExceeded,
+			UpdatedAt:    now,
+		},
+	)
+	if err != nil {
+		if IsConflict(err) || errors.Is(err, store.ErrNotFound) {
+			return true, nil
+		}
+		return true, err
+	}
+	c.cancelExpiredCommand(&pending.Sandbox, command)
+	if pending.Sandbox.TerminationRequested {
+		if err := c.driveTermination(ctx, &pending.Sandbox); err != nil &&
+			!IsConflict(err) &&
+			!errors.Is(err, ErrHostUnavailable) {
+			return true, err
+		}
+	}
+	return true, nil
 }
 
 func (c *Controller) cancelExpiredCommand(

@@ -55,8 +55,8 @@ struct InstallMutationLockTests {
         #expect(errno == EWOULDBLOCK || errno == EAGAIN)
     }
 
-    @Test("recovery scan recognizes journals and pre-journal staging")
-    func recoveryArtifactScan() throws {
+    @Test("recovery scan recognizes every unresolved transaction prefix")
+    func recoveryArtifactScanRecognizesPendingState() throws {
         for name in [
             ".install-backup-123-456-789",
             ".install-staging-123-456-789",
@@ -72,6 +72,27 @@ struct InstallMutationLockTests {
             #expect(
                 try InstallMutationLock.pendingOneShotTransaction(in: root)?
                     .lastPathComponent == name
+            )
+        }
+    }
+
+    @Test("recovery scan ignores cleanup-only and nonexistent transaction prefixes")
+    func recoveryArtifactScanIgnoresNonPendingState() throws {
+        for name in [
+            ".install-garbage-123-456-789",
+            ".install-restore-123-456-789",
+            ".install-legacy-bin-123-456",
+            ".install-transaction-interrupted",
+        ] {
+            let root = try makeRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(name),
+                withIntermediateDirectories: false
+            )
+
+            #expect(
+                try InstallMutationLock.pendingOneShotTransaction(in: root) == nil
             )
         }
     }

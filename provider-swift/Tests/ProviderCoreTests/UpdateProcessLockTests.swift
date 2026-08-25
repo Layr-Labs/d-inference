@@ -61,13 +61,24 @@ struct UpdateProcessLockTests {
 
     @Test("self-updater refuses a pending shell transaction and releases locks")
     func updaterRejectsShellRecoveryJournal() throws {
+        for pendingName in [
+            ".install-backup-123-456-789",
+            ".install-staging-123-456-789",
+        ] {
+            try assertUpdaterRejectsPendingShellArtifact(named: pendingName)
+        }
+    }
+
+    private func assertUpdaterRejectsPendingShellArtifact(
+        named pendingName: String
+    ) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "pending-shell-install-\(UUID().uuidString)",
             isDirectory: true
         )
         defer { try? FileManager.default.removeItem(at: root) }
         let pending = root.appendingPathComponent(
-            ".install-transaction-interrupted",
+            pendingName,
             isDirectory: true
         )
         try FileManager.default.createDirectory(
@@ -86,7 +97,9 @@ struct UpdateProcessLockTests {
                 operation: "must-recover-shell-first",
                 timeout: 0
             )
-            Issue.record("self-updater ignored a pending shell transaction")
+            Issue.record(
+                "self-updater ignored pending shell artifact \(pendingName)"
+            )
         } catch UpdateError.replaceFailed(let reason) {
             #expect(reason.contains(pending.path))
         }

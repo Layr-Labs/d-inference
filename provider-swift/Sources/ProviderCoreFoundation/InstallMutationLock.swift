@@ -125,6 +125,11 @@ public final class InstallMutationLock: @unchecked Sendable {
         installRoot.appendingPathComponent(selfUpdateTransactionRelativePath)
     }
 
+    /// Returns durable shell-installer state that must be recovered before a
+    /// different installer mutates the live tree. Staging can predate a
+    /// journal; backup holds unpublished, current, and legacy transaction state.
+    /// Garbage and legacy/restore scratch are cleanup-only once no backup
+    /// remains, so they do not block another lock owner.
     public static func pendingOneShotTransaction(
         in installRoot: URL,
         fileManager: FileManager = .default

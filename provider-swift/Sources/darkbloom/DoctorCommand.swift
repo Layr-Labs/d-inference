@@ -1,6 +1,46 @@
 import Foundation
 import ArgumentParser
+import CryptoKit
 import ProviderCore
+
+private struct AgentDebugDoctorEntry: Encodable {
+    let hypothesisId: String
+    let location: String
+    let message: String
+    let data: [String: String]
+    let timestamp: Int64
+}
+
+private func agentDebugDoctorFingerprint(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8))
+        .prefix(8)
+        .map { String(format: "%02x", $0) }
+        .joined()
+}
+
+private func agentDebugDoctorLog(
+    hypothesisId: String,
+    location: String,
+    message: String,
+    data: [String: String]
+) {
+    let entry = AgentDebugDoctorEntry(
+        hypothesisId: hypothesisId,
+        location: location,
+        message: message,
+        data: data,
+        timestamp: Int64(Date().timeIntervalSince1970 * 1_000))
+    guard var encoded = try? JSONEncoder().encode(entry) else { return }
+    encoded.append(0x0A)
+    let path = "/opt/cursor/logs/debug.log"
+    if !FileManager.default.fileExists(atPath: path) {
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
+    }
+    guard let handle = FileHandle(forWritingAtPath: path) else { return }
+    handle.seekToEndOfFile()
+    handle.write(encoded)
+    handle.closeFile()
+}
 
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -373,8 +413,19 @@ func selectProviderAttestation(
     matchingSEPublicKey sePublicKey: String
 ) throws -> ProviderAttestation? {
     let decoded = try JSONDecoder().decode(ProviderAttestationList.self, from: data)
-    return decoded.providers
-        .filter { $0.sePublicKey == sePublicKey }
+    let matches = decoded.providers.filter { $0.sePublicKey == sePublicKey }
+    // #region agent log
+    agentDebugDoctorLog(
+        hypothesisId: "C",
+        location: "DoctorCommand.swift:selectProviderAttestation",
+        message: "doctor compared identity with public feed",
+        data: [
+            "feed_count": String(decoded.providers.count),
+            "match_count": String(matches.count),
+            "query_fingerprint": agentDebugDoctorFingerprint(sePublicKey),
+        ])
+    // #endregion
+    return matches
         .sorted(by: providerTrustSort)
         .first
 }
@@ -426,9 +477,34 @@ func buildCoordinatorDoctorChecks(
         return checks
     }
 
+    let debugDaemonState = DaemonStateFile.read()
+    // #region agent log
+    agentDebugDoctorLog(
+        hypothesisId: "B",
+        location: "DoctorCommand.swift:buildCoordinatorDoctorChecks:state",
+        message: "doctor inspected available daemon identity state",
+        data: [
+            "state_present": String(debugDaemonState != nil),
+            "state_pid_alive": String(
+                debugDaemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false),
+            "state_schema": debugDaemonState.map { String($0.schema) } ?? "",
+            "state_has_signer_identity": "false",
+        ])
+    // #endregion
+
     let localSEPublicKey: String
     do {
         localSEPublicKey = try PersistentEnclaveKey.loadOrCreate().publicKeyBase64
+        // #region agent log
+        agentDebugDoctorLog(
+            hypothesisId: "B,C",
+            location: "DoctorCommand.swift:buildCoordinatorDoctorChecks:key",
+            message: "doctor loaded identity used for public feed query",
+            data: [
+                "identity_source": "persistent_load_or_create",
+                "key_fingerprint": agentDebugDoctorFingerprint(localSEPublicKey),
+            ])
+        // #endregion
     } catch {
         checks.append(.init(
             name: "coordinator trust",

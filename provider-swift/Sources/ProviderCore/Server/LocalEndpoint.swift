@@ -25,7 +25,7 @@ public enum LocalEndpoint {
     /// ProviderCoreFoundation — the app decodes the same `local.json`.
     static func directory() -> URL { LocalEndpointDiscovery.directory() }
 
-    static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }
+    static func tokenPath() -> URL { LocalEndpointDiscovery.tokenPath() }
     static func infoPath() -> URL { LocalEndpointDiscovery.infoPath() }
 
     // MARK: - Token

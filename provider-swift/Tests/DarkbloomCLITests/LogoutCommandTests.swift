@@ -4,13 +4,22 @@ import Testing
 
 @Suite("Logout safely unlinks provider accounts")
 struct LogoutCommandTests {
+    @Test("persisted token issuer wins over the current coordinator config")
+    func persistedIssuerWins() {
+        #expect(resolveAccountUnlinkCoordinatorURL(
+            storedIssuer: "https://issuer.example",
+            configuredCoordinator: "wss://new-config.example/ws/provider"
+        ) == "https://issuer.example")
+    }
+
     @Test("unlink stops recovery and provider before revoking and deleting credentials")
     @MainActor
     func orderedUnlink() async throws {
         let files = try IsolatedLoginFiles.make(
             prefix: "logout-test",
             token: "tok-123",
-            account: "acct-456"
+            account: "acct-456",
+            issuer: "https://issuer.test"
         )
         defer { try? FileManager.default.removeItem(at: files.directory) }
         var events: [String] = []
@@ -33,6 +42,10 @@ struct LogoutCommandTests {
             deleteAccount: {
                 events.append("account")
                 try FileManager.default.removeItem(at: files.accountPath)
+            },
+            deleteIssuer: {
+                events.append("issuer")
+                try FileManager.default.removeItem(at: files.issuerPath)
             }
         )
 
@@ -42,10 +55,13 @@ struct LogoutCommandTests {
             dependencies: dependencies
         )
 
-        #expect(events == ["watchdog", "provider", "foreground", "revoke", "token", "account"])
+        #expect(events == [
+            "watchdog", "provider", "foreground", "revoke", "token", "account", "issuer",
+        ])
         #expect(!FileManager.default.fileExists(atPath: files.accountPath.path),
             "a stale account id would keep `earnings`/daemon-state identity pointing at the previous account")
         #expect(!FileManager.default.fileExists(atPath: files.tokenPath.path))
+        #expect(!FileManager.default.fileExists(atPath: files.issuerPath.path))
     }
 
     @Test("revocation failure preserves the only local credential copy")
@@ -55,7 +71,8 @@ struct LogoutCommandTests {
         let files = try IsolatedLoginFiles.make(
             prefix: "logout-test",
             token: "tok-123",
-            account: "acct-456"
+            account: "acct-456",
+            issuer: "https://issuer.test"
         )
         defer { try? FileManager.default.removeItem(at: files.directory) }
         var deleted = false
@@ -65,7 +82,8 @@ struct LogoutCommandTests {
             terminateRecordedProvider: { true },
             revokeToken: { _, _ in throw RevocationFailure() },
             deleteToken: { deleted = true },
-            deleteAccount: { deleted = true }
+            deleteAccount: { deleted = true },
+            deleteIssuer: { deleted = true }
         )
 
         await #expect(throws: RevocationFailure.self) {
@@ -79,6 +97,7 @@ struct LogoutCommandTests {
         #expect(!deleted)
         #expect(FileManager.default.fileExists(atPath: files.tokenPath.path))
         #expect(FileManager.default.fileExists(atPath: files.accountPath.path))
+        #expect(FileManager.default.fileExists(atPath: files.issuerPath.path))
     }
 
     @Test("failure to stop a foreground provider preserves credentials")
@@ -91,7 +110,8 @@ struct LogoutCommandTests {
             terminateRecordedProvider: { false },
             revokeToken: { _, _ in revoked = true },
             deleteToken: { revoked = true },
-            deleteAccount: { revoked = true }
+            deleteAccount: { revoked = true },
+            deleteIssuer: { revoked = true }
         )
 
         await #expect(throws: AccountUnlinkError.providerDidNotStop) {

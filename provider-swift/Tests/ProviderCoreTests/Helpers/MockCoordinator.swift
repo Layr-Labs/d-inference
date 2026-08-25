@@ -73,11 +73,15 @@ public struct MockDeviceCodeFixture: Sendable {
     public var expiresIn: Int
     public var interval: Int
     public var token: String
+    public var accountID: String?
     public var authorizeImmediately: Bool
     /// When set, `/v1/device/token` answers a terminal error with this message
     /// (coordinator refusal, e.g. the user declined the link) instead of
     /// authorizing or staying pending.
     public var denialMessage: String?
+    /// Exercise the client's HTTP-status handling instead of the legacy
+    /// status-in-a-200-body shape.
+    public var denialUsesUnauthorizedHTTPStatus: Bool
 
     public init(
         deviceCode: String = "mock-device-code",
@@ -86,8 +90,10 @@ public struct MockDeviceCodeFixture: Sendable {
         expiresIn: Int = 300,
         interval: Int = 1,
         token: String = "mock-auth-token",
+        accountID: String? = "mock-account-id",
         authorizeImmediately: Bool = true,
-        denialMessage: String? = nil
+        denialMessage: String? = nil,
+        denialUsesUnauthorizedHTTPStatus: Bool = false
     ) {
         self.deviceCode = deviceCode
         self.userCode = userCode
@@ -95,8 +101,10 @@ public struct MockDeviceCodeFixture: Sendable {
         self.expiresIn = expiresIn
         self.interval = interval
         self.token = token
+        self.accountID = accountID
         self.authorizeImmediately = authorizeImmediately
         self.denialMessage = denialMessage
+        self.denialUsesUnauthorizedHTTPStatus = denialUsesUnauthorizedHTTPStatus
     }
 }
 
@@ -603,12 +611,18 @@ public final class MockCoordinator: @unchecked Sendable {
                     status: "error",
                     error: .init(message: denialMessage)
                 )
-                return MockCoordinator.makeJSONResponse(body: body)
+                return MockCoordinator.makeJSONResponse(
+                    body: body,
+                    status: self.deviceCode.denialUsesUnauthorizedHTTPStatus
+                        ? .unauthorized
+                        : .ok
+                )
             }
             if self.deviceCode.authorizeImmediately {
                 let body = DeviceTokenAuthorized(
                     status: "authorized",
-                    token: self.deviceCode.token
+                    token: self.deviceCode.token,
+                    account_id: self.deviceCode.accountID
                 )
                 return MockCoordinator.makeJSONResponse(body: body)
             } else {
@@ -781,6 +795,7 @@ private struct DeviceCodePayload: Encodable {
 private struct DeviceTokenAuthorized: Encodable {
     let status: String
     let token: String
+    let account_id: String?
 }
 
 private struct DeviceTokenPending: Encodable {

@@ -8,6 +8,7 @@ struct AccountUnlinkDependencies {
     var revokeToken: (String, String) async throws -> Void
     var deleteToken: () throws -> Void
     var deleteAccount: () throws -> Void
+    var deleteIssuer: () throws -> Void
 
     @MainActor
     static let live = AccountUnlinkDependencies(
@@ -23,7 +24,8 @@ struct AccountUnlinkDependencies {
             )
         },
         deleteToken: AuthTokenStore.delete,
-        deleteAccount: ProviderAccountStore.delete
+        deleteAccount: ProviderAccountStore.delete,
+        deleteIssuer: ProviderIssuerStore.delete
     )
 }
 
@@ -49,6 +51,7 @@ func unlinkProviderAccount(
     }
     try dependencies.deleteToken()
     try dependencies.deleteAccount()
+    try dependencies.deleteIssuer()
     return token != nil
 }
 
@@ -64,8 +67,22 @@ enum AccountUnlinkError: LocalizedError, Equatable {
 }
 
 func accountUnlinkCoordinatorURL(configOptions: ConfigOptions) -> String {
-    if let snapshot = try? loadRuntimeSnapshot(configOptions: configOptions) {
-        return snapshot.config.coordinator.url
+    if let issuer = ProviderIssuerStore.load() {
+        return issuer
     }
-    return "wss://api.darkbloom.dev/ws/provider"
+    let configured = (try? loadRuntimeSnapshot(configOptions: configOptions))?
+        .config.coordinator.url
+    return resolveAccountUnlinkCoordinatorURL(
+        storedIssuer: nil,
+        configuredCoordinator: configured
+    )
+}
+
+func resolveAccountUnlinkCoordinatorURL(
+    storedIssuer: String?,
+    configuredCoordinator: String?
+) -> String {
+    storedIssuer
+        ?? configuredCoordinator
+        ?? "wss://api.darkbloom.dev/ws/provider"
 }

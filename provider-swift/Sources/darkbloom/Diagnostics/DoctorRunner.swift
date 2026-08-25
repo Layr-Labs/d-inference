@@ -13,7 +13,9 @@ enum DoctorRunner {
         var out: [Diagnostic] = []
         let now = Date().timeIntervalSince1970
         let state = DaemonStateFile.read()
-        let daemonUp = state.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonUp = state.map {
+            DaemonStateRuntimeTruth.belongsToLiveProcess($0)
+        } ?? false
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)

@@ -354,9 +354,40 @@ struct EnrollmentTests {
             configDirectory: false,
             legacyKeyFiles: false,
             authToken: false,
+            localEndpoint: false,
             secureEnclaveKey: false
         )
         // No-op should always succeed.
+    }
+
+    @Test("Unenrollment removes local API discovery and bearer token together")
+    func purgeRemovesLocalEndpointSecrets() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "local-endpoint-cleanup-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let info = directory.appendingPathComponent("local.json")
+        let token = directory.appendingPathComponent("local_token")
+        try Data(#"{"api_key":"local-secret"}"#.utf8).write(to: info)
+        try Data("local-secret".utf8).write(to: token)
+
+        try LocalDataCleanup.purge(
+            configDirectory: false,
+            legacyKeyFiles: false,
+            authToken: false,
+            localEndpoint: true,
+            localEndpointDirectory: directory,
+            secureEnclaveKey: false
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: info.path))
+        #expect(!FileManager.default.fileExists(atPath: token.path))
     }
 }
 

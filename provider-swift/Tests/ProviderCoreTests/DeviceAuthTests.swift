@@ -2,6 +2,21 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+@Test func coordinatorIssuerCanonicalizesWebSocketAndHTTPURLs() throws {
+    #expect(
+        try canonicalCoordinatorIssuer(
+            "wss://API.Darkbloom.dev/ws/provider?ignored=1#fragment"
+        ) == "https://api.darkbloom.dev"
+    )
+    #expect(
+        try canonicalCoordinatorIssuer("ws://127.0.0.1:8080/custom/path/")
+            == "http://127.0.0.1:8080"
+    )
+    #expect(throws: ProviderCredentialStoreError.invalidCoordinatorURL) {
+        _ = try canonicalCoordinatorIssuer("file:///tmp/coordinator")
+    }
+}
+
 @Test func authTokenLoadMigratesLegacyTokenToCanonicalPath() throws {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("darkbloom-device-auth-")

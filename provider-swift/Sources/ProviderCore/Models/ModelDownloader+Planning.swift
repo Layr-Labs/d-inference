@@ -134,25 +134,7 @@ extension ModelDownloader {
         _ manifest: ModelManifest,
         for model: CatalogModel
     ) throws {
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed(
-                "manifest model_id \(manifest.modelID) does not match catalog id \(model.id)"
-            )
-        }
-        guard manifest.files.count == manifest.fileCount, !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest files do not match file_count")
-        }
-        if let aggregate = model.aggregateSHA256,
-           aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed(
-                "catalog aggregate hash does not match manifest"
-            )
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed(
-                "catalog r2_prefix does not match manifest"
-            )
-        }
+        try validateManifestForDownload(manifest, model: model)
     }
 
     private static func catalogSizeBytes(_ model: CatalogModel) -> Int64 {

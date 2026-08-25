@@ -41,6 +41,7 @@ installer_recovery_assert_no_transaction_debris() {
         "$install_dir"/.install-backup-* \
         "$install_dir"/.install-staging-* \
         "$install_dir"/.install-garbage-* \
+        "$install_dir"/.install-ownership-* \
         "$install_dir"/.install-restore-* \
         "$install_dir"/.install-legacy-*
     do

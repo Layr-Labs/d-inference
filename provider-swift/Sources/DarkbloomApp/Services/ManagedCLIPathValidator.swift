@@ -1,6 +1,10 @@
-import Darwin
 import Foundation
 import ProviderCoreFoundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Validates the managed CLI without following a symbolic link in any path
 /// component.
@@ -124,10 +128,16 @@ struct ManagedCLIPathValidator {
             }
         }
 
+        #if canImport(Darwin)
+        let generation = UInt64(attributes.st_gen)
+        #else
+        let generation: UInt64 = 0
+        #endif
+
         return ResourceIdentity(
             device: UInt64(bitPattern: Int64(attributes.st_dev)),
             inode: UInt64(attributes.st_ino),
-            generation: UInt64(attributes.st_gen)
+            generation: generation
         )
     }
 }

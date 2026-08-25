@@ -195,6 +195,30 @@ struct EnrollmentTests {
                 response: httpResponse(endpoint, status: 200)
             ),
             InvalidProfileResponse(
+                name: "ambiguous media types",
+                data: Data("profile".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: [
+                        "Content-Type":
+                            "\(EnrollmentProfileResponse.supportedMediaType), text/html",
+                    ]
+                )
+            ),
+            InvalidProfileResponse(
+                name: "malformed media parameter",
+                data: Data("profile".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: [
+                        "Content-Type":
+                            "\(EnrollmentProfileResponse.supportedMediaType); charset",
+                    ]
+                )
+            ),
+            InvalidProfileResponse(
                 name: "empty body",
                 data: Data(),
                 response: httpResponse(
@@ -213,6 +237,20 @@ struct EnrollmentTests {
                     endpoint,
                     status: 200,
                     headers: validHeaders
+                )
+            ),
+            InvalidProfileResponse(
+                name: "oversized declared length",
+                data: Data("profile".utf8),
+                response: httpResponse(
+                    endpoint,
+                    status: 200,
+                    headers: [
+                        "Content-Type":
+                            EnrollmentProfileResponse.supportedMediaType,
+                        "Content-Length":
+                            "\(EnrollmentProfileResponse.maximumBytes + 1)",
+                    ]
                 )
             ),
         ]

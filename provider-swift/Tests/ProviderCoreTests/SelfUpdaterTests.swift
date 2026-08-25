@@ -995,7 +995,7 @@ struct SelfUpdaterTests {
         ) == "old darkbloom")
     }
 
-    @Test("a later staging pass removes OLD orphaned staging dirs but spares young (possibly live) ones")
+    @Test("final commit removes OLD orphaned staging dirs but spares young possible peers")
     func stagingCleansUpOrphanedDirs() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
@@ -1037,6 +1037,51 @@ struct SelfUpdaterTests {
         // ownership-less legacy orphan while preserving a young possible peer.
         #expect(!fm.fileExists(atPath: orphan.path))
         #expect(fm.fileExists(atPath: live.path))
+    }
+
+    @Test("final cleanup preserves an old staging tree whose owner is alive")
+    func stagingCleanupPreservesLiveOwner() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(
+            "self-updater-live-stage-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? fm.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+
+        guard case .success(let livePeer) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("first stageBundleForTesting failed")
+            return
+        }
+        try fm.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -2 * 60 * 60)],
+            ofItemAtPath: livePeer.stagingRoot.path
+        )
+        guard case .success(let winner) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            livePeer.discard()
+            Issue.record("second stageBundleForTesting failed")
+            return
+        }
+
+        guard case .success = updater.commitStagedBundleForTesting(winner)
+        else {
+            livePeer.discard()
+            winner.discard()
+            Issue.record("commitStagedBundleForTesting failed")
+            return
+        }
+        #expect(fm.fileExists(atPath: livePeer.stagingRoot.path))
+        livePeer.discard()
+        #expect(!fm.fileExists(atPath: livePeer.stagingRoot.path))
     }
 }
 

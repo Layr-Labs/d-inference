@@ -264,20 +264,10 @@ public struct SelfUpdater: Sendable {
         // (a later unrelated crash could then quarantine a good release).
         // SemVer-max also keeps manual reinstalls, which bypass recovery
         // state, from re-candidatizing.
-        var installedVersion = Self.effectiveInstalledVersion(
-            processVersion: currentVersion,
-            recorded: recoveryState.current?.version
+        let installedVersion = resolvedInstalledVersion(
+            recoveryState: recoveryState,
+            installRoot: installRoot
         )
-        if let onDisk = installedAppVersion(in: installRoot),
-           isNewer(latest: onDisk, current: installedVersion)
-        {
-            // App relocation and the shell installer share the mutation lock
-            // but do not write SelfUpdater's recovery generation. The signed
-            // app's canonical version is therefore another final-revalidation
-            // witness: a stale download must not downgrade a newer one-shot
-            // install merely because recovery/state.json predates it.
-            installedVersion = onDisk
-        }
         let pendingCandidate = recoveryState.candidate.flatMap {
             $0.release.version != currentVersion ? $0 : nil
         }
@@ -337,16 +327,49 @@ public struct SelfUpdater: Sendable {
         }
     }
 
+    /// Resolve every durable version witness that can change while phase one
+    /// is unlocked. App relocation and the shell installer share the mutation
+    /// lock but intentionally do not write SelfUpdater's recovery generation,
+    /// so a newer authenticated app version must participate in final
+    /// revalidation. A pending SelfUpdater candidate remains authoritative:
+    /// one-shot installers refuse to run while it exists.
+    internal func resolvedInstalledVersion(
+        recoveryState: UpdateRecoveryState,
+        installRoot: URL? = nil
+    ) -> String {
+        var installedVersion = Self.effectiveInstalledVersion(
+            processVersion: currentVersion,
+            recorded: recoveryState.current?.version
+        )
+        guard recoveryState.candidate == nil,
+              let onDisk = installedAppVersion(in: installRoot),
+              isNewer(latest: onDisk, current: installedVersion)
+        else {
+            return installedVersion
+        }
+        installedVersion = onDisk
+        return installedVersion
+    }
+
     /// Canonical version from the installed app endpoint. Invalid, incomplete,
-    /// or disagreeing plist versions are not trusted; recovery state/process
-    /// version remains the fallback for legacy flat installs and fixtures.
+    /// unsigned (in shipping mode), or disagreeing plist versions are not
+    /// trusted; recovery state/process version remains the fallback for legacy
+    /// flat installs and synthetic fixtures.
     private func installedAppVersion(in explicitRoot: URL?) -> String? {
         guard let root = explicitRoot ?? resolvedInstallRoot() else {
             return nil
         }
-        let info = root.appendingPathComponent(
-            "Darkbloom.app/Contents/Info.plist"
-        )
+        let app = root.appendingPathComponent("Darkbloom.app")
+        if verifyCodeSignatures {
+            guard (try? verifyCodeSignature(
+                file: app,
+                label: "installed Darkbloom.app",
+                deep: true
+            )) != nil else {
+                return nil
+            }
+        }
+        let info = app.appendingPathComponent("Contents/Info.plist")
         guard let data = try? Data(contentsOf: info),
               let object = try? PropertyListSerialization.propertyList(
                 from: data,
@@ -354,6 +377,8 @@ public struct SelfUpdater: Sendable {
                 format: nil
               ),
               let values = object as? [String: Any],
+              values["CFBundleIdentifier"] as? String
+                == DarkbloomCodeSignature.bundleIdentifier,
               let short = values["CFBundleShortVersionString"] as? String,
               let bundle = values["CFBundleVersion"] as? String,
               let shortVersion = SemanticVersion(short),
@@ -1224,9 +1249,17 @@ public struct SelfUpdater: Sendable {
                         // later process can prove ownership.
                         continue
                     }
-                    if owner.processIdentity?.isCurrent() != false {
-                        // `true`: exact owner is alive. `nil`: this platform
-                        // cannot prove death, so preserve rather than clobber.
+                    guard let identity = owner.processIdentity else {
+                        // This platform could not record a kernel identity, so
+                        // ownership cannot be disproved safely.
+                        continue
+                    }
+                    if identity.isCurrent()
+                        || daemonProcessAlive(pid: identity.pid)
+                    {
+                        // Exact owner alive, identity temporarily unreadable,
+                        // or PID reused: all are conservative preservation
+                        // cases. A reused PID is collected after it exits.
                         continue
                     }
                     try? fm.removeItem(at: entry)

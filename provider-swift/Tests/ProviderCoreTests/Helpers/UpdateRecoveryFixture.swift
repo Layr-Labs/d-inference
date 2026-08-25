@@ -154,12 +154,58 @@ struct UpdateRecoveryFixture {
         return true
     }
 
+    /// Complete a competing app-style installation through the real shared
+    /// one-shot mutation lock. The app exchange is atomic and deliberately
+    /// does not touch SelfUpdater recovery state, matching app relocation and
+    /// shell-installer ordering semantics.
+    func installCompetingApp(version: String) throws {
+        guard layout == .app else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let fm = FileManager.default
+        let stagingContainer = installRoot.appendingPathComponent(
+            ".fixture-one-shot-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? fm.removeItem(at: stagingContainer) }
+        try Self.writeApp(version: version, root: stagingContainer)
+        let stagedApp = stagingContainer.appendingPathComponent("Darkbloom.app")
+        let liveApp = installRoot.appendingPathComponent("Darkbloom.app")
+
+        try InstallMutationLock.withOneShotInstallLock(
+            in: installRoot,
+            timeout: 0
+        ) {
+            guard !UpdateAtomicFilesystem.itemExists(
+                InstallMutationLock.selfUpdateTransactionURL(in: installRoot)
+            ),
+                  try InstallMutationLock.pendingSelfUpdateCandidate(
+                    in: installRoot
+                  ) == nil
+            else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try UpdateAtomicFilesystem.exchange(stagedApp, liveApp)
+        }
+    }
+
     static func writeApp(version: String, root: URL) throws {
         let fm = FileManager.default
         let contents = root.appendingPathComponent("Darkbloom.app/Contents")
         let appBin = contents.appendingPathComponent("MacOS")
         try fm.createDirectory(at: appBin, withIntermediateDirectories: true)
-        try Data("<plist/>".utf8).write(to: contents.appendingPathComponent("Info.plist"))
+        let info: [String: Any] = [
+            "CFBundleIdentifier": DarkbloomCodeSignature.bundleIdentifier,
+            "CFBundleExecutable": "darkbloom",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": version,
+            "CFBundleVersion": version,
+        ]
+        try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        ).write(to: contents.appendingPathComponent("Info.plist"))
         try writePayloadFiles(version: version, to: appBin)
     }
 

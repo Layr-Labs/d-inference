@@ -16,11 +16,18 @@ extension MultiModelBatchSchedulerEngine {
 
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        modelType: String? = nil
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
-        if let reasoningEffort {
-            context["reasoning_effort"] = reasoningEffort
+        let fixContext = ChatTemplateFixContext(
+            modelId: request.model,
+            modelType: modelType)
+        if let effectiveEffort = GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(
+            reasoningEffort,
+            context: fixContext)
+        {
+            context["reasoning_effort"] = effectiveEffort
         }
         if let reasoningEnabled = request.reasoning?.enabled {
             context["enable_thinking"] = reasoningEnabled

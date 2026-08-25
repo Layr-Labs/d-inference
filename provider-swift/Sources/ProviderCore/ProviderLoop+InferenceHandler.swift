@@ -225,8 +225,9 @@ extension ProviderLoop {
         // `OpenAIChatCompletionRequest` shape, so decode it directly from
         // the request body and thread it into the chat template's render
         // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads it to set the reasoning budget; other models
-        // ignore the extra template variable.
+        // Harmony reads the effective value to set the reasoning budget
+        // (`high` currently serves as `medium`); other models ignore the
+        // extra template variable.
         let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user

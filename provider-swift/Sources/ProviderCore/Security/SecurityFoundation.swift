@@ -44,12 +44,20 @@ public struct SecurityCommandRunner: @unchecked Sendable {
         process.standardError = stderrPipe
 
         try process.run()
+
+        // Drain the pipes BEFORE waiting for exit. macOS pipe buffers hold only
+        // ~512 bytes; a child that fills stdout blocks in write() while the
+        // parent blocks in waitUntilExit() — a deadlock. readDataToEndOfFile()
+        // reads until the child closes the stream, so draining stdout first
+        // also unblocks the child and lets it finish and close stderr.
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         return SecurityCommandResult(
             terminationStatus: process.terminationStatus,
-            stdout: String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-            stderr: String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+            stderr: String(data: stderrData, encoding: .utf8) ?? ""
         )
     }
 }

@@ -228,13 +228,14 @@ public enum LaunchAgent: Sendable {
         process.standardError = errPipe
 
         try process.run()
+
+        // Drain stderr before waiting to avoid a pipe-buffer deadlock
+        // (macOS pipe buffers are ~512B).
+        let stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
             // Error 3 = "could not find service": the service vanished between
             // the isLoaded() check and here.
             if stderr.contains("3:") || stderr.contains("could not find service") {
@@ -460,13 +461,14 @@ public enum LaunchAgent: Sendable {
         bootstrap.standardError = errPipe
 
         try bootstrap.run()
+
+        // Drain stderr before waiting to avoid a pipe-buffer deadlock
+        // (macOS pipe buffers are ~512B).
+        let stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
         bootstrap.waitUntilExit()
 
         if bootstrap.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
             // Error 37 = "already loaded" -- not a real failure.
             if !stderr.contains("37:") && !stderr.contains("already loaded") {
                 throw LaunchAgentError.bootstrapFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -491,13 +493,13 @@ public enum LaunchAgent: Sendable {
         } catch {
             throw LaunchAgentError.kickstartFailed("could not run launchctl kickstart: \(error.localizedDescription)")
         }
+        // Drain stderr before waiting to avoid a pipe-buffer deadlock
+        // (macOS pipe buffers are ~512B).
+        let kickstartErrData = kickstartErr.fileHandleForReading.readDataToEndOfFile()
         kickstart.waitUntilExit()
 
         if kickstart.terminationStatus != 0 {
-            let stderr = String(
-                data: kickstartErr.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+            let stderr = String(data: kickstartErrData, encoding: .utf8) ?? ""
             throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
@@ -513,13 +515,14 @@ public enum LaunchAgent: Sendable {
         process.standardError = errPipe
 
         try process.run()
+
+        // Drain stderr before waiting to avoid a pipe-buffer deadlock
+        // (macOS pipe buffers are ~512B).
+        let stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
             // Error 3 = "could not find service" -- already unloaded, not an error.
             if !stderr.contains("3:") && !stderr.contains("could not find service") {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))

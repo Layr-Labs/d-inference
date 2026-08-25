@@ -198,11 +198,13 @@ enum DoctorRunner {
         p.arguments = ["-g", "assertions"]
         let out = Pipe()
         p.standardOutput = out
-        p.standardError = Pipe()
+        p.standardError = FileHandle.nullDevice
         guard (try? p.run()) != nil else { return nil }
+        // Drain stdout before waiting to avoid a pipe-buffer deadlock
+        // (pmset output can exceed the ~512B macOS pipe buffer).
+        let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         guard p.terminationStatus == 0 else { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
         // assertion (e.g. caffeinate, an active inference) is holding the system

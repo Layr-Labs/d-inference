@@ -1804,6 +1804,79 @@ preserve_unexpected_live_path() {
     echo "      $preserved"
 }
 
+transaction_component_removal_path() {
+    local backup=$1
+    local label=$2
+    case "$label" in
+        Darkbloom.app) printf '%s\n' "$backup/.rollback-app" ;;
+        bin) printf '%s\n' "$backup/.rollback-bin" ;;
+        *) return 1 ;;
+    esac
+}
+
+transaction_component_crash_label() {
+    case "$1" in
+        Darkbloom.app) printf 'app\n' ;;
+        bin) printf 'bin\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+remove_transaction_owned_component() {
+    local backup=$1
+    local destination=$2
+    local candidate_identity=$3
+    local label=$4
+    local removal
+    local crash_label
+    removal=$(transaction_component_removal_path "$backup" "$label") \
+        || return 1
+    crash_label=$(transaction_component_crash_label "$label") || return 1
+
+    if install_path_exists "$removal"; then
+        [ -d "$removal" ] \
+            && [ ! -L "$removal" ] \
+            && path_matches_identity "$removal" "$candidate_identity" \
+            && ! install_path_exists "$destination" \
+            || return 1
+    elif install_path_exists "$destination"; then
+        # The recorded root identity is the ownership boundary. Its contents
+        # can have a different fingerprint after an interrupted rm -rf, but a
+        # replacement root must never be removed as transaction-owned data.
+        [ -d "$destination" ] \
+            && [ ! -L "$destination" ] \
+            && path_matches_identity "$destination" "$candidate_identity" \
+            || return 1
+        durable_move "$destination" "$removal" || return 1
+        install_test_crash "recovery-$crash_label-removal-staged"
+    else
+        return 0
+    fi
+
+    # Deterministically model a second interruption after deletion has begun.
+    # A restart during rm -rf sees the quarantined root keep its inode while
+    # its fingerprint reflects only the remaining partial tree.
+    if [ "$INSTALL_TEST_MODE" = "1" ] \
+        && [ "${DARKBLOOM_INSTALL_TEST_CRASH_POINT:-}" = \
+            "recovery-$crash_label-removal-partial" ]
+    then
+        local victim
+        if [ "$label" = "Darkbloom.app" ]; then
+            victim="$removal/Contents/MacOS/darkbloom"
+        else
+            victim="$removal/darkbloom"
+        fi
+        rm -f "$victim" || return 1
+        sync_install_directories "${victim%/*}" || return 1
+        install_test_crash "recovery-$crash_label-removal-partial"
+    fi
+
+    rm -rf "$removal" || return 1
+    sync_install_directories "$backup" || return 1
+    ! install_path_exists "$destination" \
+        && ! install_path_exists "$removal"
+}
+
 restore_transaction_component() {
     local backup_path=$1
     local destination=$2
@@ -1816,13 +1889,9 @@ restore_transaction_component() {
     local transaction_id=$9
 
     if [ "$had_previous" -eq 0 ]; then
-        if path_matches_candidate_state \
-            "$destination" "$candidate_identity" "$candidate_fingerprint"
-        then
-            rm -rf "$destination" || return 1
-            sync_install_directories "${destination%/*}" || return 1
-        fi
-        return 0
+        remove_transaction_owned_component \
+            "${backup_path%/*}" "$destination" "$candidate_identity" "$label"
+        return $?
     fi
 
     if ! install_path_exists "$backup_path"; then
@@ -1852,8 +1921,19 @@ recover_prepared_app_transaction() {
     local install_dir=$2
     load_install_transaction "$backup" || return 1
     local destination="$install_dir/Darkbloom.app"
+    local previous_app="$backup/Darkbloom.app"
+    local preserved_foreign="$install_dir/Darkbloom.app.foreign-$TX_ID"
+    if [ "$TX_HAD_APP" -eq 1 ] \
+        && [ "$TX_PREVIOUS_WAS_FOREIGN" -eq 1 ] \
+        && ! install_path_exists "$previous_app" \
+        && install_path_exists "$preserved_foreign"
+    then
+        path_matches_identity \
+            "$preserved_foreign" "$TX_PREVIOUS_APP_IDENTITY" || return 1
+        previous_app=$preserved_foreign
+    fi
     restore_transaction_component \
-        "$backup/Darkbloom.app" "$destination" "$TX_HAD_APP" \
+        "$previous_app" "$destination" "$TX_HAD_APP" \
         "$TX_CANDIDATE_APP_IDENTITY" "$TX_CANDIDATE_APP_FINGERPRINT" \
         "$TX_PREVIOUS_APP_IDENTITY" \
         "$install_dir" "Darkbloom.app" "$TX_ID" \
@@ -1868,20 +1948,30 @@ recover_prepared_app_transaction() {
     install_test_crash "recovery-bin-restored"
     mark_install_transaction_phase "$backup" rolled_back || return 1
     install_test_crash "app-transaction-rolled-back"
-    cleanup_recorded_staging "$backup" "$install_dir" || return 1
+    app_transaction_rollback_is_complete "$backup" "$install_dir" \
+        && cleanup_recorded_staging "$backup" "$install_dir" \
+        || return 1
     retire_install_transaction "$backup" "$install_dir" "$TX_ID"
+}
+
+committed_app_transaction_is_intact() {
+    local install_dir=$1
+    managed_app_layout_complete "$install_dir" \
+        && path_matches_candidate_state \
+            "$install_dir/Darkbloom.app" \
+            "$TX_CANDIDATE_APP_IDENTITY" \
+            "$TX_CANDIDATE_APP_FINGERPRINT" \
+        && path_matches_candidate_state \
+            "$install_dir/bin" \
+            "$TX_CANDIDATE_BIN_IDENTITY" \
+            "$TX_CANDIDATE_BIN_FINGERPRINT"
 }
 
 finalize_committed_app_transaction() {
     local backup=$1
     local install_dir=$2
     load_install_transaction "$backup" || return 1
-    managed_app_layout_complete "$install_dir" \
-        && path_matches_identity \
-            "$install_dir/Darkbloom.app" "$TX_CANDIDATE_APP_IDENTITY" \
-        && path_matches_identity \
-            "$install_dir/bin" "$TX_CANDIDATE_BIN_IDENTITY" \
-        || return 1
+    committed_app_transaction_is_intact "$install_dir" || return 1
 
     if [ "$TX_PREVIOUS_WAS_FOREIGN" -eq 1 ]; then
         local preserved="$install_dir/Darkbloom.app.foreign-$TX_ID"
@@ -1898,6 +1988,17 @@ finalize_committed_app_transaction() {
     retire_install_transaction "$backup" "$install_dir" "$TX_ID"
 }
 
+recover_committed_app_transaction() {
+    local backup=$1
+    local install_dir=$2
+    load_install_transaction "$backup" || return 1
+    if committed_app_transaction_is_intact "$install_dir"; then
+        finalize_committed_app_transaction "$backup" "$install_dir"
+    else
+        recover_prepared_app_transaction "$backup" "$install_dir"
+    fi
+}
+
 recover_prepared_flat_transaction() {
     local backup=$1
     local install_dir=$2
@@ -1911,8 +2012,82 @@ recover_prepared_flat_transaction() {
     install_test_crash "recovery-bin-restored"
     mark_install_transaction_phase "$backup" rolled_back || return 1
     install_test_crash "flat-transaction-rolled-back"
-    cleanup_recorded_staging "$backup" "$install_dir" || return 1
+    flat_transaction_rollback_is_complete "$backup" "$install_dir" \
+        && cleanup_recorded_staging "$backup" "$install_dir" \
+        || return 1
     retire_install_transaction "$backup" "$install_dir" "$TX_ID"
+}
+
+committed_flat_transaction_is_intact() {
+    local install_dir=$1
+    flat_layout_complete "$install_dir/bin" \
+        && path_matches_candidate_state \
+            "$install_dir/bin" \
+            "$TX_CANDIDATE_BIN_IDENTITY" \
+            "$TX_CANDIDATE_BIN_FINGERPRINT"
+}
+
+finalize_committed_flat_transaction() {
+    local backup=$1
+    local install_dir=$2
+    load_install_transaction "$backup" || return 1
+    committed_flat_transaction_is_intact "$install_dir" || return 1
+    cleanup_recorded_staging "$backup" "$install_dir" \
+        && retire_install_transaction "$backup" "$install_dir" "$TX_ID"
+}
+
+recover_committed_flat_transaction() {
+    local backup=$1
+    local install_dir=$2
+    load_install_transaction "$backup" || return 1
+    if committed_flat_transaction_is_intact "$install_dir"; then
+        finalize_committed_flat_transaction "$backup" "$install_dir"
+    else
+        recover_prepared_flat_transaction "$backup" "$install_dir"
+    fi
+}
+
+transaction_component_rollback_is_complete() {
+    local backup_path=$1
+    local destination=$2
+    local had_previous=$3
+    local previous_identity=$4
+    local label=$5
+    if [ "$had_previous" -eq 1 ]; then
+        ! install_path_exists "$backup_path" \
+            && path_matches_identity "$destination" "$previous_identity"
+        return $?
+    fi
+
+    local removal
+    removal=$(transaction_component_removal_path \
+        "${backup_path%/*}" "$label") || return 1
+    ! install_path_exists "$destination" \
+        && ! install_path_exists "$removal"
+}
+
+app_transaction_rollback_is_complete() {
+    local backup=$1
+    local install_dir=$2
+    transaction_component_rollback_is_complete \
+        "$backup/Darkbloom.app" "$install_dir/Darkbloom.app" \
+        "$TX_HAD_APP" "$TX_PREVIOUS_APP_IDENTITY" "Darkbloom.app" \
+        && transaction_component_rollback_is_complete \
+            "$backup/bin" "$install_dir/bin" \
+            "$TX_HAD_BIN" "$TX_PREVIOUS_BIN_IDENTITY" "bin" \
+        || return 1
+    if [ "$TX_PREVIOUS_WAS_FOREIGN" -eq 1 ]; then
+        ! install_path_exists \
+            "$install_dir/Darkbloom.app.foreign-$TX_ID" || return 1
+    fi
+}
+
+flat_transaction_rollback_is_complete() {
+    local backup=$1
+    local install_dir=$2
+    transaction_component_rollback_is_complete \
+        "$backup/bin" "$install_dir/bin" \
+        "$TX_HAD_BIN" "$TX_PREVIOUS_BIN_IDENTITY" "bin"
 }
 
 restore_legacy_transaction_component() {
@@ -2127,21 +2302,25 @@ recover_interrupted_install_transactions() {
                     recover_prepared_app_transaction "$backup" "$install_dir"
                     ;;
                 app:committed)
-                    finalize_committed_app_transaction "$backup" "$install_dir"
+                    recover_committed_app_transaction "$backup" "$install_dir"
                     ;;
                 flat:prepared)
                     recover_prepared_flat_transaction "$backup" "$install_dir"
                     ;;
                 flat:committed)
-                    flat_layout_complete "$install_dir/bin" \
-                        && path_matches_identity \
-                            "$install_dir/bin" "$TX_CANDIDATE_BIN_IDENTITY" \
+                    recover_committed_flat_transaction "$backup" "$install_dir"
+                    ;;
+                app:rolled_back)
+                    app_transaction_rollback_is_complete \
+                        "$backup" "$install_dir" \
                         && cleanup_recorded_staging "$backup" "$install_dir" \
                         && retire_install_transaction \
                             "$backup" "$install_dir" "$TX_ID"
                     ;;
-                app:rolled_back|flat:rolled_back)
-                    cleanup_recorded_staging "$backup" "$install_dir" \
+                flat:rolled_back)
+                    flat_transaction_rollback_is_complete \
+                        "$backup" "$install_dir" \
+                        && cleanup_recorded_staging "$backup" "$install_dir" \
                         && retire_install_transaction \
                             "$backup" "$install_dir" "$TX_ID"
                     ;;
@@ -2345,8 +2524,11 @@ commit_staged_app() {
         return 1
     fi
     managed_app_layout_complete "$install_dir" \
-        && path_matches_identity "$destination" "$candidate_app_identity" \
-        && path_matches_identity "$bin_dir" "$candidate_bin_identity" \
+        && path_matches_candidate_state \
+            "$destination" \
+            "$candidate_app_identity" "$candidate_app_fingerprint" \
+        && path_matches_candidate_state \
+            "$bin_dir" "$candidate_bin_identity" "$candidate_bin_fingerprint" \
         || {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
@@ -2424,7 +2606,9 @@ commit_staged_flat_bundle() {
     fi
     install_test_crash "flat-layout-moved"
     if ! flat_layout_complete "$destination" \
-        || ! path_matches_identity "$destination" "$candidate_bin_identity"
+        || ! path_matches_candidate_state \
+            "$destination" \
+            "$candidate_bin_identity" "$candidate_bin_fingerprint"
     then
         recover_prepared_flat_transaction "$backup" "$install_dir" || true
         return 1
@@ -2434,9 +2618,7 @@ commit_staged_flat_bundle() {
         return 1
     }
     install_test_crash "flat-transaction-committed"
-    cleanup_recorded_staging "$backup" "$install_dir" \
-        && retire_install_transaction "$backup" "$install_dir" "$transaction_id" \
-        || {
+    finalize_committed_flat_transaction "$backup" "$install_dir" || {
         echo "  ⚠ Installed successfully, but could not remove transaction backup $backup." >&2
     }
 }

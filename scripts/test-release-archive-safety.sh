@@ -236,9 +236,9 @@ for script in "$CANONICAL" "$EMBEDDED"; do
     bash "$script" \
         --verify-release-payload-modes-test "$MODE_PAYLOAD" "Test payload"
     for mutation in \
-        "darkbloom:0775:0755" \
-        "darkbloom-enclave:0700:0755" \
-        "mlx.metallib:0755:0644"
+        "darkbloom:775:755" \
+        "darkbloom-enclave:700:755" \
+        "mlx.metallib:755:644"
     do
         file=${mutation%%:*}
         remainder=${mutation#*:}

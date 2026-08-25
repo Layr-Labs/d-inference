@@ -6,20 +6,7 @@ import Testing
 struct AppUserShortcutTransactionTests {
     @Test("owned replacement recovers every durable interruption")
     func ownedReplacementRecoversEveryInterruption() throws {
-        let points: [AppUserShortcutTransaction.FaultPoint] = [
-            .candidatePrepared,
-            .journalPersisted,
-            .previousShortcutMoved,
-            .previousShortcutMoveRecorded,
-            .candidateShortcutMoved,
-            .candidateShortcutMoveRecorded,
-            .backupRemovalAuthorized,
-            .backupRemoved,
-            .backupRemovalRecorded,
-            .journalRemoved,
-        ]
-
-        for point in points {
+        for point in ownedReplacementFaultPoints {
             let fixture = try ShortcutFixture()
             defer { fixture.remove() }
             try fixture.makeOwnedApp(
@@ -45,17 +32,7 @@ struct AppUserShortcutTransactionTests {
 
     @Test("fresh shortcut publication recovers every reachable interruption")
     func freshShortcutRecoversEveryInterruption() throws {
-        let points: [AppUserShortcutTransaction.FaultPoint] = [
-            .candidatePrepared,
-            .journalPersisted,
-            .previousShortcutMoveRecorded,
-            .candidateShortcutMoved,
-            .candidateShortcutMoveRecorded,
-            .backupRemovalRecorded,
-            .journalRemoved,
-        ]
-
-        for point in points {
+        for point in freshShortcutFaultPoints {
             let fixture = try ShortcutFixture()
             defer { fixture.remove() }
 
@@ -77,14 +54,7 @@ struct AppUserShortcutTransactionTests {
 
     @Test("stale backup restoration is deterministic and restart safe")
     func staleBackupRestorationIsDeterministic() throws {
-        let points: [AppUserShortcutTransaction.FaultPoint] = [
-            .journalPersisted,
-            .staleBackupRestored,
-            .staleBackupRestoreRecorded,
-            .journalRemoved,
-        ]
-
-        for point in points {
+        for point in staleRestoreFaultPoints {
             let fixture = try ShortcutFixture()
             defer { fixture.remove() }
             let first = fixture.backup(id: fixture.firstID)
@@ -117,15 +87,7 @@ struct AppUserShortcutTransactionTests {
 
     @Test("stale backup retirement recovers every cleanup interruption")
     func staleBackupRetirementRecoversEveryInterruption() throws {
-        let points: [AppUserShortcutTransaction.FaultPoint] = [
-            .journalPersisted,
-            .backupRemovalAuthorized,
-            .backupRemoved,
-            .backupRemovalRecorded,
-            .journalRemoved,
-        ]
-
-        for point in points {
+        for point in staleRetirementFaultPoints {
             let fixture = try ShortcutFixture()
             defer { fixture.remove() }
             try fixture.makeShortcut()
@@ -148,6 +110,22 @@ struct AppUserShortcutTransactionTests {
             try fixture.expectNoOwnedShortcutArtifacts()
             #expect(!fixture.journalExists)
         }
+    }
+
+    @Test("interruption matrix covers every transaction fault point")
+    func interruptionMatrixIsExhaustive() {
+        let covered = Set((
+            ownedReplacementFaultPoints
+                + freshShortcutFaultPoints
+                + staleRestoreFaultPoints
+                + staleRetirementFaultPoints
+        ).map(\.rawValue))
+        #expect(
+            covered
+                == Set(
+                    AppUserShortcutTransaction.FaultPoint.allCases.map(\.rawValue)
+                )
+        )
     }
 
     @Test("foreign destination is byte-for-byte preserved while owned backups retire")
@@ -330,6 +308,52 @@ struct AppUserShortcutTransactionTests {
         #expect(fixture.journalExists)
     }
 }
+
+private let ownedReplacementFaultPoints: [
+    AppUserShortcutTransaction.FaultPoint
+] = [
+    .candidatePrepared,
+    .journalPersisted,
+    .previousShortcutMoved,
+    .previousShortcutMoveRecorded,
+    .candidateShortcutMoved,
+    .candidateShortcutMoveRecorded,
+    .backupRemovalAuthorized,
+    .backupRemoved,
+    .backupRemovalRecorded,
+    .journalRemoved,
+]
+
+private let freshShortcutFaultPoints: [
+    AppUserShortcutTransaction.FaultPoint
+] = [
+    .candidatePrepared,
+    .journalPersisted,
+    .previousShortcutMoveRecorded,
+    .candidateShortcutMoved,
+    .candidateShortcutMoveRecorded,
+    .backupRemovalRecorded,
+    .journalRemoved,
+]
+
+private let staleRestoreFaultPoints: [
+    AppUserShortcutTransaction.FaultPoint
+] = [
+    .journalPersisted,
+    .staleBackupRestored,
+    .staleBackupRestoreRecorded,
+    .journalRemoved,
+]
+
+private let staleRetirementFaultPoints: [
+    AppUserShortcutTransaction.FaultPoint
+] = [
+    .journalPersisted,
+    .backupRemovalAuthorized,
+    .backupRemoved,
+    .backupRemovalRecorded,
+    .journalRemoved,
+]
 
 private struct InjectedShortcutFault: Error {}
 

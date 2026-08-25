@@ -1,5 +1,39 @@
 package store
 
+const sandboxActiveCommandConstraintMigration = `DO $migration$
+	BEGIN
+		WITH ranked AS (
+			SELECT id,
+				ROW_NUMBER() OVER (
+					PARTITION BY sandbox_id
+					ORDER BY created_at, id
+				) AS active_rank
+			FROM sandbox_commands
+			WHERE state NOT IN (
+				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+			)
+		)
+		UPDATE sandbox_commands AS command
+		SET state = 'lost',
+			exit_code = NULL,
+			stdout = '',
+			stderr = '',
+			output_truncated = FALSE,
+			error_code = 'upgrade_concurrent_command',
+			completed_at = COALESCE(command.completed_at, CURRENT_TIMESTAMP),
+			updated_at = GREATEST(command.updated_at, CURRENT_TIMESTAMP)
+		FROM ranked
+		WHERE command.id = ranked.id
+		  AND ranked.active_rank > 1;
+		EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS
+			idx_sandbox_commands_one_active
+			ON sandbox_commands(sandbox_id)
+			WHERE state NOT IN (
+				''succeeded'', ''failed'', ''timed_out'', ''cancelled'', ''lost''
+			)';
+	END
+	$migration$`
+
 func sandboxSchemaMigrations() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS sandboxes (
@@ -157,11 +191,7 @@ func sandboxSchemaMigrations() []string {
 			ADD COLUMN IF NOT EXISTS last_dispatch_error TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_sandbox_commands_sandbox_created
 			ON sandbox_commands(sandbox_id, created_at DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandbox_commands_one_active
-			ON sandbox_commands(sandbox_id)
-			WHERE state NOT IN (
-				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
-			)`,
+		sandboxActiveCommandConstraintMigration,
 		`CREATE TABLE IF NOT EXISTS sandbox_host_fencing_sequences (
 			host_id UUID PRIMARY KEY,
 			next_token BIGINT NOT NULL CHECK (next_token > 0)

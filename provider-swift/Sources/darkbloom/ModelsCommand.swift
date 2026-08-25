@@ -380,11 +380,12 @@ extension Models {
             do {
                 try await downloader.download(
                     model: entry,
-                    reserveBytes: reserveBytes
-                ) { progress in
-                    let mb = Double(progress.bytesDownloaded) / 1_048_576
-                    print("  ✓ \(progress.file)  \(String(format: "%.1f MB", mb))")
-                }
+                    reserveBytes: reserveBytes,
+                    onProgress: { progress in
+                        let mb = Double(progress.bytesDownloaded) / 1_048_576
+                        print("  ✓ \(progress.file)  \(String(format: "%.1f MB", mb))")
+                    }
+                )
             } catch let error as ModelCatalogError {
                 printError("\(error)")
                 throw ExitCode.failure

@@ -11,6 +11,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -115,6 +116,9 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	// Register a live provider connection with a matching serial.
 	live := srv.registry.Register("live-p", nil, &protocol.RegisterMessage{})
 	live.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SER-ON"})
+	live.Mu().Lock()
+	live.AccountID = "acct-1"
+	live.Mu().Unlock()
 
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/live-p", "", "acct-1")
 	r.SetPathValue("id", "live-p")
@@ -126,6 +130,45 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	}
 	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-ON"); rec == nil {
 		t.Fatal("online machine record was deleted despite 409")
+	}
+}
+
+func TestDeleteMyProvider_TransferredLiveProviderIsNotDisconnected(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+	seedProviderRecord(t, st, "stale-owner-session", "SER-XFER", "acct-old")
+	seedProviderRecord(t, st, "new-owner-session", "SER-XFER", "acct-new")
+
+	live := srv.registry.RegisterAuthenticated(
+		"new-owner-live",
+		nil,
+		&protocol.RegisterMessage{},
+		registry.ProviderAuthBinding{
+			AccountID: "acct-new",
+			TokenHash: sha256Hash("new-owner-token"),
+		},
+	)
+	live.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SER-XFER"})
+
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-XFER", "", "acct-old")
+	r.SetPathValue("serial", "SER-XFER")
+	w := httptest.NewRecorder()
+	srv.handleDeleteMyProvider(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := srv.registry.GetProvider(live.ID); got != live {
+		t.Fatal("transferred provider's new-owner connection was disconnected")
+	}
+	if records, err := st.ListProvidersByAccount(context.Background(), "acct-old"); err != nil {
+		t.Fatalf("list old owner: %v", err)
+	} else if len(records) != 0 {
+		t.Fatalf("old owner records = %d, want 0", len(records))
+	}
+	if records, err := st.ListProvidersByAccount(context.Background(), "acct-new"); err != nil {
+		t.Fatalf("list new owner: %v", err)
+	} else if len(records) == 0 {
+		t.Fatal("new owner's persisted record was deleted")
 	}
 }
 

@@ -865,8 +865,12 @@ type Provider struct {
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
-	// Account linkage (set when provider authenticates via device auth token)
-	AccountID string // internal account ID (from device auth flow)
+	// Account linkage is initialized before the provider becomes registry-visible
+	// when registration authenticates with a device token. AuthTokenHash is the
+	// non-secret SHA-256 token identity used for revoke matching and settlement
+	// authorization; the raw bearer token is never retained in memory here.
+	AccountID     string
+	AuthTokenHash string
 
 	// PrivateOnly excludes this machine from the public fleet entirely: it
 	// serves only its owner's self-route requests. Reported at registration.
@@ -3685,6 +3689,15 @@ func clampTelemetryCount(p *int64) { clampTelemetryInt64(p, maxTelemetryCount) }
 // providers that connect before a model is promoted become routable immediately
 // after the catalog is updated.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, ProviderAuthBinding{})
+}
+
+func (r *Registry) register(
+	id string,
+	conn *websocket.Conn,
+	msg *protocol.RegisterMessage,
+	auth ProviderAuthBinding,
+) *Provider {
 	r.mu.RLock()
 	existing := r.providers[id]
 	r.mu.RUnlock()
@@ -3775,6 +3788,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ChallengeVerifiedSIP:        false, // starts false; set true by attestation challenge handler after SIP check
 		PrivacyCapabilities:         msg.PrivacyCapabilities,
 		TemplateHashes:              CloneStringMap(msg.TemplateHashes),
+		AccountID:                   auth.AccountID,
+		AuthTokenHash:               auth.TokenHash,
 		Status:                      StatusOnline,
 		Conn:                        conn,
 		writer:                      newProviderWriter(conn),
@@ -3812,14 +3827,15 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	r.mu.Unlock()
 
 	// Open a session row for this connection (async; durable uptime history).
-	// serial/account are empty here (set after attestation/linking) and are
-	// backfilled by the throttled TouchProviderSession in persistProviderNow.
+	// Serial is unknown until attestation. Authenticated registrations already
+	// carry their account; TouchProviderSession backfills any remaining fields.
 	if r.store != nil {
 		sessionID := p.ID
+		accountID := p.AccountID
 		saferun.Go(r.logger, "registry.openSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := r.store.OpenProviderSession(ctx, sessionID, "", ""); err != nil {
+			if err := r.store.OpenProviderSession(ctx, sessionID, "", accountID); err != nil {
 				r.logger.Warn("failed to open provider session", "provider_id", sessionID, "error", err)
 			}
 		})
@@ -4988,6 +5004,11 @@ func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInfe
 	r.disconnectProvider(id, nil, 0, cause)
 }
 
+// disconnect applies an exact-session guard without a heartbeat-age condition.
+func (r *Registry) disconnect(id string, expected *Provider) bool {
+	return r.disconnectProvider(id, expected, 0, protocol.CoordinatorCauseProviderDisconnected)
+}
+
 // disconnectProvider applies an optional eviction guard atomically with removal.
 // expected is the exact session observed by the stale scan; nil is an ordinary
 // unconditional disconnect. Both its identity and latest heartbeat are checked
@@ -4997,13 +5018,17 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
+	if ok && expected != nil && p != expected {
+		r.mu.Unlock()
+		return false
+	}
 	if ok {
 		if expected != nil && p != expected {
 			r.mu.Unlock()
 			return false
 		}
 		p.mu.Lock()
-		if expected != nil && time.Since(p.LastHeartbeat) <= timeout {
+		if expected != nil && timeout > 0 && time.Since(p.LastHeartbeat) <= timeout {
 			p.mu.Unlock()
 			r.mu.Unlock()
 			return false

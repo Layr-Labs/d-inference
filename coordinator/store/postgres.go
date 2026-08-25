@@ -3932,21 +3932,26 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 	return &pt, nil
 }
 
-func (s *PostgresStore) RevokeProviderToken(token string) error {
+func (s *PostgresStore) RevokeProviderToken(token string) (*ProviderToken, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	h := hashKey(token)
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
-	)
+	var pt ProviderToken
+	err := s.pool.QueryRow(ctx,
+		`UPDATE provider_tokens
+		    SET active = FALSE
+		  WHERE token_hash = $1
+		RETURNING token_hash, account_id, label, active, created_at`,
+		h,
+	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if err != nil {
-		return fmt.Errorf("store: revoke provider token: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: provider token: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: revoke provider token: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("store: provider token: %w", ErrNotFound)
-	}
-	return nil
+	return &pt, nil
 }
 
 // --- Invite Codes ---
@@ -4298,6 +4303,17 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // all in one round trip. The old implementation used 6 sequential round trips
 // (BEGIN + upsert + SELECT balance + INSERT ledger + INSERT earning + COMMIT).
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
+	return s.creditProviderAccount("", earning)
+}
+
+func (s *PostgresStore) CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error {
+	if tokenHash == "" {
+		return ErrProviderTokenInactive
+	}
+	return s.creditProviderAccount(tokenHash, earning)
+}
+
+func (s *PostgresStore) creditProviderAccount(tokenHash string, earning *ProviderEarning) error {
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -4314,11 +4330,26 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
 	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
+	var authorized bool
 	err := s.pool.QueryRow(ctx, `
-		WITH earning AS (
+		WITH token_authorized AS (
+			SELECT account_id
+			  FROM provider_tokens
+			 WHERE token_hash = $11
+			   AND active = TRUE
+			   AND account_id = $1
+			   AND $11 <> ''
+			   FOR UPDATE
+		), authorized AS (
+			SELECT $1::text AS account_id WHERE $11::text = ''
+			UNION ALL
+			SELECT account_id FROM token_authorized
+		), earning AS (
 			INSERT INTO provider_earnings (
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
+			)
+			SELECT account_id, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW())
+			  FROM authorized
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
 			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
@@ -4355,7 +4386,8 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		)
-		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
+		SELECT EXISTS(SELECT 1 FROM authorized),
+		       COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
 		earning.AccountID,                    // $1
 		earning.AmountMicroUSD,               // $2
 		string(LedgerPayout),                 // $3
@@ -4366,9 +4398,13 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 		earning.Model,                        // $8
 		earning.PromptTokens,                 // $9
 		earning.CompletionTokens,             // $10
-	).Scan(&balanceAfter)
+		tokenHash,                            // $11
+	).Scan(&authorized, &balanceAfter)
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)
+	}
+	if !authorized {
+		return ErrProviderTokenInactive
 	}
 	return nil
 }

@@ -2659,17 +2659,18 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	return &copy, nil
 }
 
-func (s *MemoryStore) RevokeProviderToken(token string) error {
+func (s *MemoryStore) RevokeProviderToken(token string) (*ProviderToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return fmt.Errorf("provider token: %w", ErrNotFound)
+		return nil, fmt.Errorf("provider token: %w", ErrNotFound)
 	}
 	pt.Active = false
-	return nil
+	cp := *pt
+	return &cp, nil
 }
 
 // --- Invite Codes ---
@@ -2937,6 +2938,19 @@ func (s *MemoryStore) SettleProviderPayout(id int64) error {
 // CreditProviderAccount atomically credits a linked provider account and records
 // the corresponding per-node earning.
 func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
+	return s.creditProviderAccount("", earning)
+}
+
+// CreditProviderAccountIfTokenActive gates the credit on the provider token
+// binding under the same mutex as revocation and the balance mutation.
+func (s *MemoryStore) CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error {
+	if tokenHash == "" {
+		return ErrProviderTokenInactive
+	}
+	return s.creditProviderAccount(tokenHash, earning)
+}
+
+func (s *MemoryStore) creditProviderAccount(tokenHash string, earning *ProviderEarning) error {
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -2946,6 +2960,13 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if tokenHash != "" {
+		token, ok := s.providerTokens[tokenHash]
+		if !ok || !token.Active || token.AccountID != earning.AccountID {
+			return ErrProviderTokenInactive
+		}
+	}
 
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id must not double-credit

@@ -36,6 +36,7 @@ var (
 	ErrDeviceAuthorizationPending = errors.New("device authorization pending")
 	ErrDeviceCodeExpired          = errors.New("device code expired")
 	ErrDeviceGrantConsumed        = errors.New("device grant already consumed")
+	ErrProviderTokenInactive      = errors.New("provider token is inactive or belongs to another account")
 )
 
 // Store is the union of every storage-domain sub-interface (defined in

@@ -50,7 +50,7 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 	}
 
 	model := "billing-test-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Provider serves one inference request with known usage.
@@ -172,7 +172,7 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 
 	// Register a provider so the rejection can't be blamed on routing.
 	model := "exploit-test-model"
-	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Streaming request explicitly requesting 8192 max_tokens. Even with
@@ -224,7 +224,7 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	initialBalance := ledger.Balance(consumerID)
 
 	model := "refund-test-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Short generation — completion_tokens (10) is far below the reservation
@@ -265,7 +265,7 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 	initialBalance := ledger.Balance(consumerID)
 
 	model := "refund-error-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	providerDone := serveChunkThenProviderError(ctx, t, conn, pubKey, http.StatusBadGateway)
 
@@ -304,7 +304,7 @@ func TestIntegration_SuccessfulInferenceCreditsProviderAccount(t *testing.T) {
 	defer cancel()
 
 	model := "provider-account-paid-model"
-	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Get the account ID that was set by setupProviderForBilling.
@@ -350,7 +350,7 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	const customInputPrice int64 = 50_000
 	const customOutputPrice int64 = 10_000_000
 
-	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Get the account ID that was set by setupProviderForBilling to use as pricing key.

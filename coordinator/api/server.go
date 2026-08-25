@@ -218,6 +218,7 @@ type Server struct {
 	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
 	mdmScheduler                  *mdmVerificationScheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
+	providerAuthLifecycleMu       sync.Mutex              // serializes provider token registration with revoke+disconnect
 	mdmWebhookSecret              string                  // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 enrollmentProfileSigner // CMS signer for the /v1/enroll .mobileconfig
 	profileSigningRequired        bool                    // fail enrollment unless a valid CMS signature is produced

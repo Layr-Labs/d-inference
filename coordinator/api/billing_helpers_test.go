@@ -59,8 +59,9 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 
 // setupProviderForBilling connects a provider, sets trust, records challenge
 // success, and returns the WebSocket connection, provider ID, and public key.
-func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
+func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, srv *Server, model string) (*websocket.Conn, string, string) {
 	t.Helper()
+	reg := srv.registry
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
@@ -79,13 +80,33 @@ func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Ser
 	// Set AccountID for payout destination (required since wallet-based payouts removed).
 	for _, id := range providerIDs {
 		if p := reg.GetProvider(id); p != nil {
-			p.Mu().Lock()
-			p.AccountID = "test-account-" + id
-			p.Mu().Unlock()
+			bindProviderAccountForBilling(t, srv.store, p, "test-account-"+id)
 		}
 	}
 
 	return conn, providerIDs[len(providerIDs)-1], pubKey
+}
+
+func bindProviderAccountForBilling(
+	t *testing.T,
+	st store.Store,
+	provider *registry.Provider,
+	accountID string,
+) {
+	t.Helper()
+	rawToken := "test-provider-token:" + accountID + ":" + provider.ID
+	tokenHash := sha256Hash(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	provider.Mu().Lock()
+	provider.AccountID = accountID
+	provider.AuthTokenHash = tokenHash
+	provider.Mu().Unlock()
 }
 
 func setupProviderForBillingNoPayoutDestination(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {

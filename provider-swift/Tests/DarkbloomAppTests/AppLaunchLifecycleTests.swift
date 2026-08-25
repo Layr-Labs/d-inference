@@ -76,10 +76,9 @@ struct AppLaunchLifecycleTests {
         )
 
         var openedURL: URL?
-        #expect(recovery.openInstalledApp { url in
+        recovery.openInstalledApp { url in
             openedURL = url
-            return true
-        })
+        }
         #expect(openedURL == destination)
     }
 

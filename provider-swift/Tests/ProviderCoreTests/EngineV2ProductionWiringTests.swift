@@ -2189,27 +2189,94 @@ struct EngineV2KVBackendFallbackHeartbeatTests {
 
 @Suite("Prefill deadline and FCFS production configuration")
 struct PrefillDeadlineProductionConfigTests {
-    @Test("deadline enforcement is off by default and for invalid values")
-    func deadlineModeDefaultsOff() {
-        #expect(PrefillDeadlineMode.resolve(environment: [:]) == .off)
-        for invalid in ["", "ENFORCE", "true", "1", "garbage"] {
-            #expect(
-                PrefillDeadlineMode.resolve(environment: [
-                    PrefillDeadlineMode.environmentKey: invalid
-                ]) == .off)
+    @Test("deadline mode exhaustively resolves config authority and environment inheritance")
+    func deadlineModeUsesSourceAwarePrecedence() {
+        let configuredCases: [(name: String, value: PrefillDeadlineMode?)] = [
+            ("absent", nil),
+            ("enforce", .enforce),
+            ("off", .off),
+        ]
+        let environmentCases: [(name: String, value: String?)] = [
+            ("missing", nil),
+            ("off", "off"),
+            ("enforce", "enforce"),
+            ("malformed", "garbage"),
+            ("empty", ""),
+        ]
+        for configuredCase in configuredCases {
+            for environmentCase in environmentCases {
+                let environment = environmentCase.value.map {
+                    [PrefillDeadlineMode.environmentKey: $0]
+                } ?? [:]
+                let expected: PrefillDeadlineMode =
+                    configuredCase.value
+                    ?? (environmentCase.value == "off" ? .off : .enforce)
+                #expect(
+                    PrefillDeadlineMode.resolve(
+                        configured: configuredCase.value,
+                        environment: environment) == expected,
+                    "configured=\(configuredCase.name), env=\(environmentCase.name)")
+            }
         }
     }
 
-    @Test("deadline mode accepts only exact off and enforce values")
-    func deadlineModeParsesExplicitValues() {
-        #expect(
-            PrefillDeadlineMode.resolve(environment: [
-                PrefillDeadlineMode.environmentKey: "off"
-            ]) == .off)
-        #expect(
-            PrefillDeadlineMode.resolve(environment: [
-                PrefillDeadlineMode.environmentKey: "enforce"
-            ]) == .enforce)
+    @Test("production bridge carries mode and scheduler projection compatibility")
+    func productionBridgeResolvesDeadlineEnvironment() async throws {
+        let configuredCases: [PrefillDeadlineMode?] = [
+            nil, .enforce, .off,
+        ]
+        let environmentCases: [String?] = [
+            nil, "off", "enforce", "invalid", "",
+        ]
+
+        for configuredMode in configuredCases {
+            for environmentValue in environmentCases {
+                let environment = environmentValue.map {
+                    [PrefillDeadlineMode.environmentKey: $0]
+                } ?? [:]
+                let expectedMode =
+                    configuredMode
+                    ?? (environmentValue == "off"
+                        ? PrefillDeadlineMode.off : .enforce)
+                let bridge = try EngineV2Factory.makeBridge(
+                    modelId: "deadline-mode-wiring",
+                    tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                    eosTokenIds: [2],
+                    prefillDeadlineMode: configuredMode,
+                    runtimePolicyEnvironment: environment,
+                    makeEngine: {
+                        EngineV2Factory.ProductionBuild(
+                            engine: WiringScriptedEngine(script: .manual),
+                            fixedRequestBytes: 0,
+                            kvBackendKind: .contiguous,
+                            kvBackendFallbackReason: nil)
+                    })
+                #expect(await bridge.prefillDeadlineMode == expectedMode)
+                #expect(await bridge.prefillDeadlineProjectionEnabled)
+                await bridge.shutdown()
+            }
+        }
+
+        for cap in ["0", "2"] {
+            let bridge = try EngineV2Factory.makeBridge(
+                modelId: "deadline-cap-wiring",
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                eosTokenIds: [2],
+                prefillDeadlineMode: .enforce,
+                runtimePolicyEnvironment: [
+                    EngineV2Factory.maxPartialPrefillsKey: cap
+                ],
+                makeEngine: {
+                    EngineV2Factory.ProductionBuild(
+                        engine: WiringScriptedEngine(script: .manual),
+                        fixedRequestBytes: 0,
+                        kvBackendKind: .contiguous,
+                        kvBackendFallbackReason: nil)
+                })
+            #expect(await bridge.prefillDeadlineMode == .enforce)
+            #expect(!(await bridge.prefillDeadlineProjectionEnabled))
+            await bridge.shutdown()
+        }
     }
 
     @Test("partial-prefill cap defaults to one with zero as rollback")
@@ -2240,5 +2307,60 @@ struct PrefillDeadlineProductionConfigTests {
                     ]) == nil,
                 "\(unlimited) should preserve unlimited partial prefills")
         }
+    }
+
+    @Test("cap zero disables forecast compatibility without rewriting deadline mode")
+    func capZeroDisablesForecastCompatibility() {
+        let fcfsRollback = [
+            EngineV2Factory.maxPartialPrefillsKey: "0"
+        ]
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(environment: fcfsRollback) == nil)
+        #expect(PrefillDeadlineMode.resolve(environment: fcfsRollback) == .enforce)
+        #expect(
+            !EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: fcfsRollback))
+
+        let deadlineRollback = [
+            PrefillDeadlineMode.environmentKey: "off"
+        ]
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(environment: deadlineRollback) == 1)
+        #expect(PrefillDeadlineMode.resolve(environment: deadlineRollback) == .off)
+        #expect(
+            EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: deadlineRollback))
+    }
+
+    @Test("projection bypass diagnostic uses the configured mode")
+    func projectionBypassDiagnosticUsesConfiguredMode() {
+        let unsupportedWithStaleEnforce = [
+            PrefillDeadlineMode.environmentKey: "enforce",
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+        ]
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .off,
+                environment: unsupportedWithStaleEnforce))
+        #expect(
+            EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: unsupportedWithStaleEnforce))
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: [:]))
+        let unsupportedWithLegacyOff = [
+            PrefillDeadlineMode.environmentKey: "off",
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+        ]
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: nil,
+                environment: unsupportedWithLegacyOff))
+        #expect(
+            EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: unsupportedWithLegacyOff))
     }
 }

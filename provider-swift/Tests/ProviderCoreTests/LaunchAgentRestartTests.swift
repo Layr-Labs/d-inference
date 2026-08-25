@@ -64,7 +64,46 @@ struct LaunchAgentEnvironmentTests {
         ])
         #expect(out.isEmpty)
         #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: out) == 1)
-        #expect(PrefillDeadlineMode.resolve(environment: out) == .off)
+        #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
+    }
+
+    @Test func sourceAwareResolutionMatchesForegroundAndLaunchd() {
+        let configuredCases: [(name: String, value: PrefillDeadlineMode?)] = [
+            ("absent", nil),
+            ("enforce", .enforce),
+            ("off", .off),
+        ]
+        let environmentCases: [(name: String, value: String?)] = [
+            ("missing", nil),
+            ("off", "off"),
+            ("enforce", "enforce"),
+            ("malformed", "garbage"),
+            ("empty", ""),
+        ]
+        for configuredCase in configuredCases {
+            for environmentCase in environmentCases {
+                let foreground = environmentCase.value.map {
+                    [PrefillDeadlineMode.environmentKey: $0]
+                } ?? [:]
+                let launchd = LaunchAgent.passthroughEnvironment(from: foreground)
+                let expected: PrefillDeadlineMode =
+                    configuredCase.value
+                    ?? (environmentCase.value == "off" ? .off : .enforce)
+                #expect(
+                    PrefillDeadlineMode.resolve(
+                        configured: configuredCase.value,
+                        environment: foreground) == expected,
+                    "foreground configured=\(configuredCase.name), env=\(environmentCase.name)")
+                #expect(
+                    PrefillDeadlineMode.resolve(
+                        configured: configuredCase.value,
+                        environment: launchd) == expected,
+                    "launchd configured=\(configuredCase.name), env=\(environmentCase.name)")
+                if environmentCase.name == "empty" {
+                    #expect(launchd[PrefillDeadlineMode.environmentKey] == nil)
+                }
+            }
+        }
     }
 
     @Test func forwardsPrefillOperationalControlsUnchanged() {
@@ -81,7 +120,7 @@ struct LaunchAgentEnvironmentTests {
         #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
-    @Test func preservesMalformedNonEmptyControlsForRuntimeFailOpen() {
+    @Test func preservesMalformedNonEmptyControlsForRuntimeSecureDefault() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             EngineV2Factory.maxPartialPrefillsKey: "not-an-integer",
             PrefillDeadlineMode.environmentKey: "invalid",
@@ -91,7 +130,7 @@ struct LaunchAgentEnvironmentTests {
             PrefillDeadlineMode.environmentKey: "invalid",
         ])
         #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: out) == nil)
-        #expect(PrefillDeadlineMode.resolve(environment: out) == .off)
+        #expect(PrefillDeadlineMode.resolve(environment: out) == .enforce)
     }
 
     @Test func forwardsResourceDebugOptOutToDaemon() {

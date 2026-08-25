@@ -94,6 +94,19 @@ struct ConfigValidationTests {
         }
     }
 
+    @Test("parseValidating rejects an unknown prefill deadline mode")
+    func parseValidatingRejectsUnknownPrefillDeadlineMode() throws {
+        do {
+            _ = try ConfigManager.parseValidating("""
+                [backend]
+                prefill_deadline_mode = "disabled"
+                """)
+            Issue.record("unknown prefill deadline mode must not decode")
+        } catch ConfigError.parseFailed(let detail) {
+            #expect(!detail.isEmpty)
+        }
+    }
+
     // MARK: - file-loading boundary
 
     @Test("a malformed existing config file fails loading loudly")

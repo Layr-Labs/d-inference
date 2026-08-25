@@ -79,6 +79,7 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2KVBackend: String
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
+    public let prefillDeadlineMode: PrefillDeadlineMode?
     /// MTP beta configuration. Defaults off; the CLI/config owner passes these
     /// through when standalone MTP is intentionally enabled.
     public let mtp: Bool
@@ -94,6 +95,7 @@ public struct StandaloneServerConfig: Sendable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtp: Bool = false,
         mtpDrafterPath: String? = nil
     ) {
@@ -106,6 +108,7 @@ public struct StandaloneServerConfig: Sendable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.prefillDeadlineMode = prefillDeadlineMode
         self.mtp = mtp
         self.mtpDrafterPath = mtpDrafterPath
     }
@@ -852,6 +855,7 @@ public actor StandaloneServer {
                 kvBudget: kvBudget,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                prefillDeadlineMode: config.prefillDeadlineMode,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,

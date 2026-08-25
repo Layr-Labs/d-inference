@@ -1526,10 +1526,7 @@ private struct Fixture {
     let home: URL
 
     init() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "app-install-coordinator-\(UUID().uuidString)",
-            isDirectory: true
-        )
+        root = try canonicalTestDirectory(prefix: "app-install-coordinator")
         home = root.appendingPathComponent("Home", isDirectory: true)
         try FileManager.default.createDirectory(
             at: home,

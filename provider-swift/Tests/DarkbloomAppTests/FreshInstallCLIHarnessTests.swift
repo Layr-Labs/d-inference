@@ -96,7 +96,8 @@ struct FreshInstallCLIHarnessTests {
             ["doctor", "--json"],
             ["models", "catalog", "--json", "--include-download-plans"],
             ["models", "list", "--json"],
-            ["models", "download", FreshInstallHarness.modelID, "--json"],
+            FreshInstallHarness.downloadPlanInvocation,
+            FreshInstallHarness.downloadInvocation,
             ["start", "--model", FreshInstallHarness.modelID, "--local-endpoint"],
         ])
 

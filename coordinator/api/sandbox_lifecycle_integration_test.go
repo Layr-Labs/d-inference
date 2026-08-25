@@ -38,6 +38,29 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		return snapshot.Heartbeat != nil
 	})
 
+	unsupportedImage := doSandboxAPIRequestWithIdempotency(
+		t,
+		http.MethodPost,
+		httpServer.URL+"/v1/sandboxes",
+		`{
+			"base_image_id":"macos-ventura-v1",
+			"cpu_count":4,
+			"memory_gib":8,
+			"workspace_gib":25,
+			"gpu":false
+		}`,
+		uuid.NewString(),
+	)
+	if unsupportedImage.StatusCode != http.StatusTooManyRequests ||
+		unsupportedImage.Header.Get("Retry-After") != "5" {
+		t.Fatalf(
+			"unsupported image status = %d retry=%q body=%s",
+			unsupportedImage.StatusCode,
+			unsupportedImage.Header.Get("Retry-After"),
+			unsupportedImage.Body,
+		)
+	}
+
 	createIdempotencyKey := uuid.NewString()
 	createBody := `{
 		"base_image_id":"macos-tahoe-v1",
@@ -220,6 +243,30 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		retriedCommand.Command.State != store.SandboxCommandSucceeded {
 		t.Fatalf("command retry changed result: %+v", retriedCommand)
 	}
+	staleOutput := "contradictory"
+	writeSandboxHostFrame(
+		t,
+		connection,
+		protocol.SandboxEnvelope[protocol.SandboxCommandStatePayload]{
+			Type:            protocol.SandboxTypeCommandState,
+			ProtocolVersion: protocol.SandboxProtocolVersion,
+			HostID:          testSandboxHostID,
+			ConnectionEpoch: testSandboxHostEpoch,
+			Sequence:        5,
+			Payload: protocol.SandboxCommandStatePayload{
+				CommandID:       commandPayload.CommandID,
+				Scope:           commandPayload.Scope,
+				State:           protocol.SandboxCommandSucceeded,
+				ExitCode:        &exitCode,
+				StandardOutput:  &staleOutput,
+				OutputTruncated: false,
+			},
+		},
+	)
+	writeSandboxHostFrame(t, connection, sandboxHostHeartbeatFrame(6))
+	waitForSandboxHost(t, server, func(snapshot sandboxhost.HostSnapshot) bool {
+		return snapshot.LastInbound == 6
+	})
 
 	terminationIdempotencyKey := uuid.NewString()
 	deleteResponse := doSandboxAPIRequestWithIdempotency(
@@ -268,7 +315,7 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		t,
 		connection,
 		hostOperationStateFrame(
-			5,
+			7,
 			stopPayload.OperationID,
 			stopPayload.Scope,
 			store.SandboxOperationKindStop,
@@ -284,7 +331,7 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		t,
 		connection,
 		hostOperationStateFrame(
-			6,
+			8,
 			deletePayload.OperationID,
 			deletePayload.Scope,
 			store.SandboxOperationKindDelete,
@@ -427,6 +474,7 @@ func TestSandboxPrepareRedispatchesAfterHostReconnect(t *testing.T) {
 
 type sandboxHTTPResponse struct {
 	StatusCode int
+	Header     http.Header
 	Body       []byte
 }
 
@@ -470,6 +518,7 @@ func doSandboxAPIRequestWithIdempotency(
 	}
 	return sandboxHTTPResponse{
 		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
 		Body:       encoded,
 	}
 }

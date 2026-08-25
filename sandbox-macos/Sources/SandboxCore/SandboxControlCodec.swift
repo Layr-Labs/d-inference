@@ -46,6 +46,7 @@ public enum SandboxCoordinatorControlMessage: Equatable, Sendable {
 
 public enum SandboxControlCodec {
     public static let maximumFrameBytes = 2 * 1_024 * 1_024
+    public static let maximumOutputBytes = 1_024 * 1_024
 
     public static func decodeCoordinatorMessage(
         _ data: Data

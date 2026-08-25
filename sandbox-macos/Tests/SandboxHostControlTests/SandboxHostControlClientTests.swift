@@ -206,6 +206,58 @@ final class SandboxHostControlClientTests: XCTestCase {
             (payload["stderr"] as? String)?.utf8.count ?? 0,
             oversized.utf8.count
         )
+        XCTAssertLessThanOrEqual(
+            (payload["stdout"] as? String)?.utf8.count ?? 0,
+            SandboxControlCodec.maximumOutputBytes
+        )
+        XCTAssertLessThanOrEqual(
+            (payload["stderr"] as? String)?.utf8.count ?? 0,
+            SandboxControlCodec.maximumOutputBytes
+        )
+    }
+
+    func testOutboundWriterCapsEachOutputBelowFrameLimit() async throws {
+        let transport = CapturingControlTransport()
+        let writer = SandboxHostOutboundWriter(
+            transport: transport,
+            hostID: Self.hostID,
+            connectionEpoch: UUID()
+        )
+        let oversized = String(
+            repeating: "x",
+            count: SandboxControlCodec.maximumOutputBytes + 4_096
+        )
+        try await writer.send(
+            .command(
+                SandboxWireCommandStatus(
+                    commandID: UUID(),
+                    scope: SandboxWireScope(
+                        sandboxID: SandboxID(rawValue: UUID()),
+                        generation: SandboxGeneration(rawValue: 1)!,
+                        fencingToken: SandboxFencingToken(rawValue: 1)!
+                    ),
+                    state: .succeeded,
+                    exitCode: 0,
+                    standardOutput: oversized
+                )
+            )
+        )
+
+        let captured = await transport.lastText()
+        let encoded = Data(try XCTUnwrap(captured).utf8)
+        XCTAssertLessThanOrEqual(
+            encoded.count,
+            SandboxControlCodec.maximumFrameBytes
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+        XCTAssertEqual(payload["output_truncated"] as? Bool, true)
+        XCTAssertEqual(
+            (payload["stdout"] as? String)?.utf8.count,
+            SandboxControlCodec.maximumOutputBytes
+        )
     }
 
     func testCancellationClosesBlockedReceiveAndRejectsConcurrentRun() async throws {

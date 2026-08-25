@@ -472,6 +472,17 @@ func TestSandboxCodecAppliesBudgetToEncodedCommandOutput(t *testing.T) {
 	if _, err := DecodeSandboxHostMessage(encoded); err == nil {
 		t.Fatal("encoded command output beyond frame budget was accepted")
 	}
+
+	singleStreamOverBudget := strings.Repeat("x", maxSandboxOutputBytes+1)
+	commandState.Payload.StandardOutput = &singleStreamOverBudget
+	commandState.Payload.StandardError = nil
+	encoded = marshalSandboxFrame(t, commandState)
+	if len(encoded) >= maxSandboxFrameBytes {
+		t.Fatalf("single-stream fixture unexpectedly exceeds frame budget: %d", len(encoded))
+	}
+	if _, err := DecodeSandboxHostMessage(encoded); err == nil {
+		t.Fatal("single output stream beyond its byte budget was accepted")
+	}
 }
 
 func validSandboxCommandEnvelope() SandboxEnvelope[SandboxCommandPayload] {

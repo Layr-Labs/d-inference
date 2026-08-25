@@ -69,7 +69,12 @@ actor SandboxHostOutboundWriter {
             payload: payload,
             sequence: nextSequence
         )
-        if encoded.count > SandboxControlCodec.maximumFrameBytes {
+        if encoded.count > SandboxControlCodec.maximumFrameBytes
+            || (payload.standardOutput?.utf8.count ?? 0)
+                > SandboxControlCodec.maximumOutputBytes
+            || (payload.standardError?.utf8.count ?? 0)
+                > SandboxControlCodec.maximumOutputBytes
+        {
             let fitted = try fitCommandStatus(payload)
             encoded = fitted.encoded
         }
@@ -128,8 +133,16 @@ actor SandboxHostOutboundWriter {
     ) throws -> (status: SandboxWireCommandStatus, encoded: Data) {
         let standardOutput = Array((payload.standardOutput ?? "").utf8)
         let standardError = Array((payload.standardError ?? "").utf8)
+        let maximumOutput = min(
+            standardOutput.count,
+            SandboxControlCodec.maximumOutputBytes
+        )
+        let maximumError = min(
+            standardError.count,
+            SandboxControlCodec.maximumOutputBytes
+        )
         var lowerBound = 0
-        var upperBound = standardOutput.count + standardError.count
+        var upperBound = maximumOutput + maximumError
         var best: (status: SandboxWireCommandStatus, encoded: Data)?
 
         while lowerBound <= upperBound {
@@ -182,16 +195,24 @@ actor SandboxHostOutboundWriter {
         standardOutputBytes: Int,
         standardErrorBytes: Int
     ) -> (standardOutput: Int, standardError: Int) {
-        var output = min(standardOutputBytes, (budget + 1) / 2)
-        var error = min(standardErrorBytes, budget / 2)
+        let maximumOutput = min(
+            standardOutputBytes,
+            SandboxControlCodec.maximumOutputBytes
+        )
+        let maximumError = min(
+            standardErrorBytes,
+            SandboxControlCodec.maximumOutputBytes
+        )
+        var output = min(maximumOutput, (budget + 1) / 2)
+        var error = min(maximumError, budget / 2)
         var remaining = budget - output - error
         let additionalOutput = min(
             remaining,
-            standardOutputBytes - output
+            maximumOutput - output
         )
         output += additionalOutput
         remaining -= additionalOutput
-        error += min(remaining, standardErrorBytes - error)
+        error += min(remaining, maximumError - error)
         return (output, error)
     }
 

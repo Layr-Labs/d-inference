@@ -222,6 +222,10 @@ OVERSIZED_DOWNLOAD_SOURCE="$ROOT/oversized-download-source"
 printf 'bounded download\n' > "$SMALL_DOWNLOAD_SOURCE"
 /usr/bin/perl -e 'print "x" x 4096' > "$OVERSIZED_DOWNLOAD_SOURCE"
 for script in "$CANONICAL" "$EMBEDDED"; do
+    [ "$(bash "$script" --release-download-block-limit-test 1)" = "1" ]
+    [ "$(bash "$script" --release-download-block-limit-test 1024)" = "1" ]
+    [ "$(bash "$script" --release-download-block-limit-test 1025)" = "2" ]
+
     destination="$ROOT/download-$(basename "$script")"
     bash "$script" --download-release-archive-test \
         "file://$SMALL_DOWNLOAD_SOURCE" "$destination" 512

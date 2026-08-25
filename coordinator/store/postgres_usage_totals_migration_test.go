@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,6 +17,9 @@ func TestMigrateNoUngatedUsageTotalsAggregation(t *testing.T) {
 	}
 	if bytes.Contains(src, []byte("INSERT INTO usage_totals")) {
 		t.Fatal("usage_totals aggregation must not run in the unconditional startup statement list")
+	}
+	if bytes.Contains(src, []byte("CREATE TABLE IF NOT EXISTS usage_totals_backfill_state")) {
+		t.Fatal("usage_totals checkpoint DDL must run under the migration advisory lock")
 	}
 }
 
@@ -180,6 +184,63 @@ func TestUsageTotalsMigrationSerializesConcurrentCoordinators(t *testing.T) {
 	assertUsageTotalsMigrationValues(t, first, 2, 40, 60)
 }
 
+func TestUsageTotalsMigrationSerializesCheckpointTableCreation(t *testing.T) {
+	databaseURL := newWithdrawableTestDatabase(t)
+	const contenders = 8
+	stores := make([]*PostgresStore, contenders)
+	for i := range stores {
+		stores[i] = newWithdrawableMigrationStore(t, databaseURL)
+	}
+	prepareUsageTotalsMigrationSchema(t, stores[0])
+	if _, err := stores[0].pool.Exec(context.Background(), `
+		INSERT INTO usage_totals (
+			id,
+			total_requests,
+			total_prompt_tokens,
+			total_completion_tokens
+		) VALUES (1, 7, 80, 90)`); err != nil {
+		t.Fatalf("seed existing counter: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan usageTotalsMigrationResult, contenders)
+	errs := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for _, store := range stores {
+		wg.Add(1)
+		go func(s *PostgresStore) {
+			defer wg.Done()
+			<-start
+			result, err := s.applyUsageTotalsMigration(context.Background())
+			results <- result
+			errs <- err
+		}(store)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent checkpoint table creation: %v", err)
+		}
+	}
+	counts := map[usageTotalsMigrationResult]int{}
+	for result := range results {
+		counts[result]++
+	}
+	if counts[usageTotalsMigrationPreserved] != 1 ||
+		counts[usageTotalsMigrationSkipped] != contenders-1 {
+		t.Fatalf(
+			"concurrent results = %v, want one preserved and %d already-applied",
+			counts,
+			contenders-1,
+		)
+	}
+	assertUsageTotalsMigrationValues(t, stores[0], 7, 80, 90)
+}
+
 func prepareUsageTotalsMigrationSchema(t *testing.T, s *PostgresStore) {
 	t.Helper()
 	for _, statement := range []string{
@@ -197,10 +258,6 @@ func prepareUsageTotalsMigrationSchema(t *testing.T, s *PostgresStore) {
 			total_requests BIGINT NOT NULL DEFAULT 0,
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
-		)`,
-		`CREATE TABLE usage_totals_backfill_state (
-			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-			cutoff_id BIGINT NOT NULL
 		)`,
 	} {
 		if _, err := s.pool.Exec(context.Background(), statement); err != nil {

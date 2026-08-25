@@ -814,7 +814,7 @@ public struct SelfUpdater: Sendable {
                 processLock.release()
                 installMutationLock.release()
                 throw UpdateError.replaceFailed(
-                    "shell installer transaction requires recovery at "
+                    "one-shot installer transaction requires recovery at "
                         + pendingInstall.path
                 )
             }

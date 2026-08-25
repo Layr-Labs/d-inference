@@ -470,6 +470,32 @@ test_install_lock_descriptor_isolation \
 test_install_lock_descriptor_isolation \
     "$REPO_ROOT/coordinator/api/install.sh" embedded
 
+test_shell_refuses_app_relocation_journal() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/app-relocation-pending-$label"
+    local shell_stage="$install_dir/.install-staging-123-456-789"
+    mkdir -p "$shell_stage"
+    printf 'shell-stage-must-remain\n' > "$shell_stage/sentinel"
+    printf '{"schema":1}\n' \
+        > "$install_dir/.app-relocation-transaction.json"
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer ignored a pending app relocation journal" >&2
+        exit 1
+    fi
+    test "$(cat "$shell_stage/sentinel")" = "shell-stage-must-remain"
+    test "$(cat "$install_dir/.app-relocation-transaction.json")" \
+        = '{"schema":1}'
+}
+
+test_shell_refuses_app_relocation_journal \
+    "$REPO_ROOT/scripts/install.sh" source
+test_shell_refuses_app_relocation_journal \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
+
 write_existing_bundle() {
     local app=$1
     local bundle_id=$2

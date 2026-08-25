@@ -1,7 +1,6 @@
 package api
 
 import (
-	"archive/tar"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -26,8 +25,6 @@ import (
 
 const (
 	maxReleaseRegisterBodyBytes = 64 * 1024
-	maxReleaseArtifactBytes     = 2 << 30 // 2 GiB
-	maxReleaseProviderBinBytes  = 512 << 20
 	releaseArtifactTimeout      = 2 * time.Minute
 )
 
@@ -402,41 +399,37 @@ func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Relea
 	}
 	defer gz.Close()
 
-	tarReader := tar.NewReader(gz)
 	binaryHash := sha256.New()
 	foundBinary := false
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read bundle tar: %w", err)
-		}
-		cleanName, err := cleanReleaseTarPath(header.Name)
-		if err != nil {
-			return err
-		}
-		if cleanName != "bin/darkbloom" {
-			continue
-		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
-			return fmt.Errorf("bundled provider binary is not a regular file")
-		}
-		if foundBinary {
-			return fmt.Errorf("bundle contains multiple provider binaries")
-		}
-		if header.Size < 0 || header.Size > maxReleaseProviderBinBytes {
-			return fmt.Errorf("provider binary exceeds maximum size")
-		}
-		n, err := io.Copy(binaryHash, io.LimitReader(tarReader, maxReleaseProviderBinBytes+1))
-		if err != nil {
-			return fmt.Errorf("read provider binary: %w", err)
-		}
-		if n > maxReleaseProviderBinBytes {
-			return fmt.Errorf("provider binary exceeds maximum size")
-		}
-		foundBinary = true
+	err = validateReleaseArchive(
+		gz,
+		defaultReleaseArchivePolicy,
+		func(entry releaseArchiveEntry, contents io.Reader) error {
+			if entry.Path != "bin/darkbloom" {
+				return nil
+			}
+			if entry.Kind != releaseArchiveRegular {
+				return fmt.Errorf("bundled provider binary is not a regular file")
+			}
+			if foundBinary {
+				return fmt.Errorf("bundle contains multiple provider binaries")
+			}
+			if entry.Size > maxReleaseProviderBinBytes {
+				return fmt.Errorf("provider binary exceeds maximum size")
+			}
+			n, err := io.Copy(binaryHash, contents)
+			if err != nil {
+				return fmt.Errorf("read provider binary: %w", err)
+			}
+			if n != entry.Size {
+				return fmt.Errorf("provider binary is truncated")
+			}
+			foundBinary = true
+			return nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("validate bundle archive: %w", err)
 	}
 	if !foundBinary {
 		return fmt.Errorf("bundle is missing bin/darkbloom")
@@ -447,18 +440,6 @@ func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Relea
 		return fmt.Errorf("binary_hash does not match bundled provider binary")
 	}
 	return nil
-}
-
-func cleanReleaseTarPath(name string) (string, error) {
-	if name == "" || strings.HasPrefix(name, "/") {
-		return "", fmt.Errorf("bundle contains unsafe path")
-	}
-	for _, part := range strings.Split(name, "/") {
-		if part == ".." {
-			return "", fmt.Errorf("bundle contains unsafe path")
-		}
-	}
-	return strings.TrimPrefix(path.Clean(name), "./"), nil
 }
 
 // handleLatestRelease handles GET /v1/releases/latest.

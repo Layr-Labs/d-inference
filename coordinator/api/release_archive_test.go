@@ -1,0 +1,484 @@
+package api
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"strings"
+	"testing"
+)
+
+func TestReleaseArchiveAcceptsPortableBundleAndPAXPath(t *testing.T) {
+	longComponent := strings.Repeat("resource-", 15) + "payload"
+	longPath := "Darkbloom.app/Contents/Resources/" + longComponent
+	archive := buildReleaseArchiveForTest(t,
+		releaseArchiveFixture{name: "./", typeflag: tar.TypeDir},
+		releaseArchiveFixture{name: "./bin/", typeflag: tar.TypeDir},
+		releaseArchiveFixture{name: "./bin/darkbloom", body: []byte("binary")},
+		releaseArchiveFixture{name: longPath, body: []byte("resource")},
+	)
+
+	var visited []string
+	err := validateReleaseArchive(
+		bytes.NewReader(archive),
+		defaultReleaseArchivePolicy,
+		func(entry releaseArchiveEntry, contents io.Reader) error {
+			visited = append(visited, entry.Path)
+			_, err := io.Copy(io.Discard, contents)
+			return err
+		},
+	)
+	if err != nil {
+		t.Fatalf("validate portable archive: %v", err)
+	}
+	if !containsReleaseArchivePath(visited, "bin/darkbloom") {
+		t.Fatalf("visitor paths %v do not contain bin/darkbloom", visited)
+	}
+	if !containsReleaseArchivePath(visited, longPath) {
+		t.Fatalf("visitor paths do not contain PAX path %q: %v", longPath, visited)
+	}
+}
+
+func TestReleaseArchiveAcceptsGNUEncodedLongName(t *testing.T) {
+	longPath := "Darkbloom.app/Contents/Resources/" + strings.Repeat("long-name-", 20)
+	longPayload := append([]byte(longPath), 0)
+	archive := buildRawReleaseArchiveForTest(
+		rawReleaseTarEntry{name: "././@LongLink", typeflag: 'L', body: longPayload},
+		rawReleaseTarEntry{name: "placeholder", typeflag: '0', body: []byte("resource")},
+	)
+
+	var visited string
+	err := validateReleaseArchive(
+		bytes.NewReader(archive),
+		defaultReleaseArchivePolicy,
+		func(entry releaseArchiveEntry, _ io.Reader) error {
+			visited = entry.Path
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("validate GNU long-name archive: %v", err)
+	}
+	if visited != longPath {
+		t.Fatalf("visited path = %q, want %q", visited, longPath)
+	}
+}
+
+func TestReleaseArchiveRejectsUnsafeDuplicateAndConflictingPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		archive []byte
+		want    string
+	}{
+		{
+			name: "absolute",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "/tmp/escape", typeflag: '0'},
+			),
+			want: "absolute",
+		},
+		{
+			name: "parent traversal",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "bin/../escape", typeflag: '0'},
+			),
+			want: "parent traversal",
+		},
+		{
+			name: "backslash",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: `bin\darkbloom`, typeflag: '0'},
+			),
+			want: "backslash",
+		},
+		{
+			name: "duplicate normalized path",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "./bin/darkbloom", typeflag: '0'},
+				rawReleaseTarEntry{name: "bin/darkbloom", typeflag: '0'},
+			),
+			want: "duplicate",
+		},
+		{
+			name: "case conflicting path",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "bin/Darkbloom", typeflag: '0'},
+				rawReleaseTarEntry{name: "bin/darkbloom", typeflag: '0'},
+			),
+			want: "case-conflicting",
+		},
+		{
+			name: "descends through file",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "Darkbloom.app", typeflag: '0'},
+				rawReleaseTarEntry{name: "Darkbloom.app/Contents/file", typeflag: '0'},
+			),
+			want: "descends through file",
+		},
+		{
+			name: "file replaces implicit directory",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "Darkbloom.app/Contents/file", typeflag: '0'},
+				rawReleaseTarEntry{name: "Darkbloom.app", typeflag: '0'},
+			),
+			want: "conflicts with descendant",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateReleaseArchive(
+				bytes.NewReader(test.archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveRejectsUnsupportedNodeTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeflag byte
+	}{
+		{name: "hard link", typeflag: tar.TypeLink},
+		{name: "symbolic link", typeflag: tar.TypeSymlink},
+		{name: "character device", typeflag: tar.TypeChar},
+		{name: "block device", typeflag: tar.TypeBlock},
+		{name: "fifo", typeflag: tar.TypeFifo},
+		{name: "contiguous file", typeflag: tar.TypeCont},
+		{name: "GNU sparse file", typeflag: tar.TypeGNUSparse},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "dangerous", typeflag: test.typeflag},
+			)
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), "unsupported node type") {
+				t.Fatalf("validate error = %v, want unsupported node type", err)
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveRejectsExpandedSizeBeforeReadingPayload(t *testing.T) {
+	sizeField := []byte(fmt.Sprintf("%011o\x00", maxReleaseArchiveExpandedBytes+1))
+	archive := buildRawReleaseArchiveForTest(rawReleaseTarEntry{
+		name:           "large-sparse-payload",
+		typeflag:       '0',
+		rawSizeField:   sizeField,
+		omitBodyAndPad: true,
+	})
+	compressed := gzipReleaseArchiveForTest(t, archive)
+	if len(compressed) > 4096 {
+		t.Fatalf("large-header regression fixture unexpectedly compressed to %d bytes", len(compressed))
+	}
+
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatalf("open fixture gzip: %v", err)
+	}
+	defer gz.Close()
+	err = validateReleaseArchive(gz, defaultReleaseArchivePolicy, nil)
+	if err == nil || !strings.Contains(err.Error(), "expanded-size limit") {
+		t.Fatalf("validate error = %v, want expanded-size limit", err)
+	}
+}
+
+func TestReleaseArchiveRejectsNegativeAndOverflowingBase256Sizes(t *testing.T) {
+	negative := bytes.Repeat([]byte{0xff}, 12)
+	overflow := append([]byte{0x80}, bytes.Repeat([]byte{0xff}, 11)...)
+
+	tests := []struct {
+		name      string
+		sizeField []byte
+		want      string
+	}{
+		{name: "negative", sizeField: negative, want: "negative"},
+		{name: "overflow", sizeField: overflow, want: "overflows int64"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := buildRawReleaseArchiveForTest(rawReleaseTarEntry{
+				name:           "invalid-size",
+				typeflag:       '0',
+				rawSizeField:   test.sizeField,
+				omitBodyAndPad: true,
+			})
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveRejectsSparseAndOverflowingPAXMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{
+			name:  "sparse logical size",
+			key:   "GNU.sparse.realsize",
+			value: "4294967297",
+			want:  "unsupported sparse PAX metadata",
+		},
+		{
+			name:  "overflowing size",
+			key:   "size",
+			value: "999999999999999999999999999999999999",
+			want:  "overflows",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pax := releasePAXRecordForTest(test.key, test.value)
+			archive := buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "PaxHeaders/file", typeflag: 'x', body: pax},
+				rawReleaseTarEntry{name: "file", typeflag: '0'},
+			)
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReleaseArchiveEnforcesAggregateExpandedLimit(t *testing.T) {
+	archive := buildRawReleaseArchiveForTest(
+		rawReleaseTarEntry{name: "first", typeflag: '0', body: []byte("12345678")},
+		rawReleaseTarEntry{name: "second", typeflag: '0', body: []byte("abcdefgh")},
+	)
+	policy := defaultReleaseArchivePolicy
+	policy.maxExpandedBytes = 15
+
+	err := validateReleaseArchive(bytes.NewReader(archive), policy, nil)
+	if err == nil || !strings.Contains(err.Error(), "expanded-size limit") {
+		t.Fatalf("validate error = %v, want expanded-size limit", err)
+	}
+}
+
+func TestReleaseArchiveEnforcesPhysicalHeaderCount(t *testing.T) {
+	var raw bytes.Buffer
+	for index := 0; index <= maxReleaseArchiveEntries; index++ {
+		raw.Write(releaseTarHeaderForTest(
+			fmt.Sprintf("files/%05d", index),
+			'0',
+			nil,
+			0,
+		))
+	}
+	raw.Write(make([]byte, 2*releaseTarBlockSize))
+	compressed := gzipReleaseArchiveForTest(t, raw.Bytes())
+	if len(compressed) > 512*1024 {
+		t.Fatalf("entry-count regression fixture unexpectedly compressed to %d bytes", len(compressed))
+	}
+
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatalf("open fixture gzip: %v", err)
+	}
+	defer gz.Close()
+	err = validateReleaseArchive(gz, defaultReleaseArchivePolicy, nil)
+	if err == nil || !strings.Contains(err.Error(), "entry limit") {
+		t.Fatalf("validate error = %v, want entry limit", err)
+	}
+}
+
+func TestReleaseArchiveRejectsMalformedHeadersAndTrailingData(t *testing.T) {
+	badChecksum := buildRawReleaseArchiveForTest(
+		rawReleaseTarEntry{name: "file", typeflag: '0'},
+	)
+	badChecksum[0] ^= 1
+
+	trailing := buildRawReleaseArchiveForTest(
+		rawReleaseTarEntry{name: "file", typeflag: '0'},
+	)
+	trailing = append(trailing, bytes.Repeat([]byte{1}, releaseTarBlockSize)...)
+
+	tests := []struct {
+		name    string
+		archive []byte
+		want    string
+	}{
+		{name: "bad checksum", archive: badChecksum, want: "invalid checksum"},
+		{name: "non-zero trailer", archive: trailing, want: "non-zero data"},
+		{
+			name:    "missing end marker",
+			archive: releaseTarHeaderForTest("file", '0', nil, 0),
+			want:    "missing the tar end marker",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateReleaseArchive(
+				bytes.NewReader(test.archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+type releaseArchiveFixture struct {
+	name     string
+	typeflag byte
+	body     []byte
+}
+
+func buildReleaseArchiveForTest(
+	t *testing.T,
+	fixtures ...releaseArchiveFixture,
+) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	for _, fixture := range fixtures {
+		typeflag := fixture.typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		header := &tar.Header{
+			Name:     fixture.name,
+			Mode:     0o755,
+			Typeflag: typeflag,
+		}
+		if typeflag == tar.TypeReg || typeflag == tar.TypeRegA {
+			header.Size = int64(len(fixture.body))
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header %q: %v", fixture.name, err)
+		}
+		if len(fixture.body) > 0 {
+			if _, err := writer.Write(fixture.body); err != nil {
+				t.Fatalf("write tar body %q: %v", fixture.name, err)
+			}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	return output.Bytes()
+}
+
+type rawReleaseTarEntry struct {
+	name           string
+	typeflag       byte
+	body           []byte
+	rawSizeField   []byte
+	omitBodyAndPad bool
+}
+
+func buildRawReleaseArchiveForTest(entries ...rawReleaseTarEntry) []byte {
+	var output bytes.Buffer
+	for _, entry := range entries {
+		output.Write(releaseTarHeaderForTest(
+			entry.name,
+			entry.typeflag,
+			entry.rawSizeField,
+			int64(len(entry.body)),
+		))
+		if entry.omitBodyAndPad {
+			continue
+		}
+		output.Write(entry.body)
+		padding := (releaseTarBlockSize - len(entry.body)%releaseTarBlockSize) %
+			releaseTarBlockSize
+		output.Write(make([]byte, padding))
+	}
+	output.Write(make([]byte, 2*releaseTarBlockSize))
+	return output.Bytes()
+}
+
+func releaseTarHeaderForTest(
+	name string,
+	typeflag byte,
+	rawSizeField []byte,
+	size int64,
+) []byte {
+	header := make([]byte, releaseTarBlockSize)
+	copy(header[0:100], name)
+	copy(header[100:108], []byte("0000755\x00"))
+	copy(header[108:116], []byte("0000000\x00"))
+	copy(header[116:124], []byte("0000000\x00"))
+	if rawSizeField == nil {
+		rawSizeField = []byte(fmt.Sprintf("%011o\x00", size))
+	}
+	copy(header[124:136], rawSizeField)
+	copy(header[136:148], []byte("00000000000\x00"))
+	for index := 148; index < 156; index++ {
+		header[index] = ' '
+	}
+	header[156] = typeflag
+	copy(header[257:263], []byte("ustar\x00"))
+	copy(header[263:265], []byte("00"))
+
+	var checksum int64
+	for _, value := range header {
+		checksum += int64(value)
+	}
+	copy(header[148:156], []byte(fmt.Sprintf("%06o\x00 ", checksum)))
+	return header
+}
+
+func releasePAXRecordForTest(key, value string) []byte {
+	body := key + "=" + value + "\n"
+	length := len(body) + 2
+	for {
+		record := fmt.Sprintf("%d %s", length, body)
+		if len(record) == length {
+			return []byte(record)
+		}
+		length = len(record)
+	}
+}
+
+func gzipReleaseArchiveForTest(t *testing.T, archive []byte) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	writer := gzip.NewWriter(&output)
+	if _, err := writer.Write(archive); err != nil {
+		t.Fatalf("gzip fixture: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close fixture gzip: %v", err)
+	}
+	return output.Bytes()
+}
+
+func containsReleaseArchivePath(paths []string, target string) bool {
+	for _, candidate := range paths {
+		if candidate == target {
+			return true
+		}
+	}
+	return false
+}

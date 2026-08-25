@@ -2889,10 +2889,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// through a passing SE challenge that restores Status, after which a later loop
 	// iteration grants cleanly. (A hard untrust already stops the loop via
 	// ChallengeShouldStop.)
-	if s.hardwareAdmissionEnforcing() && !provider.GetCodeAttested() {
-		return mdmVerifyTransient
-	}
-	if !provider.GrantHardwareIfNotUntrusted() {
+	if !s.grantProviderHardwareTrust(provider) {
 		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
 		return mdmVerifyTransient
 	}
@@ -2995,10 +2992,7 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		// check-and-grant is a single lock (closes the TOCTOU); recovery from a
 		// transient untrust flows through a passing SE challenge. Mirrors
 		// verifyProviderViaMDM.
-		if s.hardwareAdmissionEnforcing() && !c.provider.GetCodeAttested() {
-			continue
-		}
-		if !c.provider.GrantHardwareIfNotUntrusted() {
+		if !s.grantProviderHardwareTrust(c.provider) {
 			continue
 		}
 		c.provider.SetMDMFailureReason("")

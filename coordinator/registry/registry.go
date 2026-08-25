@@ -1672,7 +1672,8 @@ type Registry struct {
 	store store.Store
 	// serialOwners fences duplicate live connections. Claims are updated under
 	// r.mu so simultaneous reconnects cannot evict each other in both directions.
-	serialOwners map[string]string
+	serialOwners         map[string]string
+	verifiedSerialOwners map[string]string
 
 	tpsRegistry *TPSRegistry
 
@@ -1892,6 +1893,7 @@ func New(logger *slog.Logger) *Registry {
 	return &Registry{
 		providers:                      make(map[string]*Provider),
 		serialOwners:                   make(map[string]string),
+		verifiedSerialOwners:           make(map[string]string),
 		queue:                          NewRequestQueueFromEnv(),
 		MinTrustLevel:                  TrustHardware,
 		tpsRegistry:                    NewTPSRegistry(),
@@ -3339,14 +3341,14 @@ func (r *Registry) ClaimProviderSerial(providerID, serial string) bool {
 		r.mu.Unlock()
 		return false
 	}
-	if owner := r.serialOwners[serial]; owner != "" && owner != providerID {
+	if owner := r.verifiedSerialOwners[serial]; owner != "" && owner != providerID {
 		if _, live := r.providers[owner]; live {
 			r.mu.Unlock()
 			r.Disconnect(providerID)
 			return false
 		}
 	}
-	r.serialOwners[serial] = providerID
+	r.verifiedSerialOwners[serial] = providerID
 	for id, p := range r.providers {
 		if id == providerID {
 			continue
@@ -4243,6 +4245,9 @@ func (r *Registry) Disconnect(id string) {
 			serial := p.AttestationResult.SerialNumber
 			if serial != "" && r.serialOwners[serial] == id {
 				delete(r.serialOwners, serial)
+			}
+			if serial != "" && r.verifiedSerialOwners[serial] == id {
+				delete(r.verifiedSerialOwners, serial)
 			}
 		}
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map

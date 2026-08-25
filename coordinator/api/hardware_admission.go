@@ -234,6 +234,19 @@ func (s *Server) commitProviderAdmissionState(
 	return true
 }
 
+func (s *Server) grantProviderHardwareTrust(provider *registry.Provider) bool {
+	if provider == nil {
+		return false
+	}
+	s.hardwareAdmissionApplyMu.Lock()
+	defer s.hardwareAdmissionApplyMu.Unlock()
+	if s.hardwareAdmissionPolicySnapshot().Mode == hardwareadmission.ModeEnforce &&
+		!provider.GetCodeAttested() {
+		return false
+	}
+	return provider.GrantHardwareIfNotUntrusted()
+}
+
 func (s *Server) admitProviderWithoutHardwareEvaluation(
 	provider *registry.Provider,
 ) (hardwareadmission.Policy, bool, error) {
@@ -506,8 +519,9 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		return false
 	}
 	if policy.Mode != hardwareadmission.ModeEnforce {
-		s.registry.SetProviderHardwareAdmitted(provider.ID, true)
-		s.registry.ActivateProviderPersistence(provider)
+		if !s.commitProviderAdmissionState(provider, policy, false) {
+			return false
+		}
 		s.clearPendingHardwareAdmission(provider.ID)
 		return true
 	}

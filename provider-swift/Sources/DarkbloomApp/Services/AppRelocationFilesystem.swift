@@ -32,6 +32,11 @@ enum AppRelocationFilesystem {
         case unsupported(mode: mode_t)
     }
 
+    private struct TreeEntry {
+        let url: URL
+        let relativePath: String
+    }
+
     static func itemExists(_ url: URL) -> Bool {
         var status = stat()
         return lstat(url.path, &status) == 0
@@ -121,48 +126,50 @@ enum AppRelocationFilesystem {
         var directories: [URL] = []
         for entry in entries {
             var status = stat()
-            guard lstat(entry.path, &status) == 0 else {
-                throw filesystemError("inspect \(entry.path)")
+            guard lstat(entry.url.path, &status) == 0 else {
+                throw filesystemError("inspect \(entry.url.path)")
             }
             switch status.st_mode & mode_t(S_IFMT) {
             case mode_t(S_IFREG):
                 let descriptor = open(
-                    entry.path,
+                    entry.url.path,
                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW
                 )
                 guard descriptor >= 0 else {
-                    throw filesystemError("open \(entry.path) for full sync")
+                    throw filesystemError("open \(entry.url.path) for full sync")
                 }
                 do {
                     var openedStatus = stat()
                     guard fstat(descriptor, &openedStatus) == 0 else {
                         throw filesystemError(
-                            "inspect \(entry.path) before full sync"
+                            "inspect \(entry.url.path) before full sync"
                         )
                     }
                     guard openedStatus.st_mode & mode_t(S_IFMT)
                             == mode_t(S_IFREG)
                     else {
                         throw filesystemError(
-                            "refuse non-regular full sync at \(entry.path)",
+                            "refuse non-regular full sync at \(entry.url.path)",
                             code: EFTYPE
                         )
                     }
-                    try fullSync(descriptor, path: entry.path)
+                    try fullSync(descriptor, path: entry.url.path)
                     guard close(descriptor) == 0 else {
-                        throw filesystemError("close \(entry.path) after full sync")
+                        throw filesystemError(
+                            "close \(entry.url.path) after full sync"
+                        )
                     }
                 } catch {
                     _ = close(descriptor)
                     throw error
                 }
             case mode_t(S_IFDIR):
-                directories.append(entry)
+                directories.append(entry.url)
             case mode_t(S_IFLNK):
                 continue
             default:
                 throw filesystemError(
-                    "refuse unsupported file type at \(entry.path)",
+                    "refuse unsupported file type at \(entry.url.path)",
                     code: EFTYPE
                 )
             }
@@ -404,15 +411,17 @@ enum AppRelocationFilesystem {
 
     private static func treeHash(root: URL) throws -> String {
         let entries = try treeEntries(root).sorted {
-            relativePath($0, under: root) < relativePath($1, under: root)
+            $0.relativePath < $1.relativePath
         }
         var hasher = SHA256()
         for entry in entries {
             var status = stat()
-            guard lstat(entry.path, &status) == 0 else {
-                throw filesystemError("inspect \(entry.path) while hashing")
+            guard lstat(entry.url.path, &status) == 0 else {
+                throw filesystemError(
+                    "inspect \(entry.url.path) while hashing"
+                )
             }
-            let relative = relativePath(entry, under: root)
+            let relative = entry.relativePath
             let permissions = String(status.st_mode & mode_t(0o7777))
             switch status.st_mode & mode_t(S_IFMT) {
             case mode_t(S_IFDIR):
@@ -421,11 +430,11 @@ enum AppRelocationFilesystem {
                 let target: String
                 do {
                     target = try FileManager.default.destinationOfSymbolicLink(
-                        atPath: entry.path
+                        atPath: entry.url.path
                     )
                 } catch {
                     throw AppRelocationTransaction.TransactionError.filesystem(
-                        operation: "read symbolic link \(entry.path)",
+                        operation: "read symbolic link \(entry.url.path)",
                         reason: error.localizedDescription
                     )
                 }
@@ -439,13 +448,13 @@ enum AppRelocationFilesystem {
                         "file",
                         relative,
                         permissions,
-                        try regularFileHash(entry),
+                        try regularFileHash(entry.url),
                     ],
                     into: &hasher
                 )
             default:
                 throw filesystemError(
-                    "refuse unsupported file type at \(entry.path)",
+                    "refuse unsupported file type at \(entry.url.path)",
                     code: EFTYPE
                 )
             }
@@ -490,12 +499,12 @@ enum AppRelocationFilesystem {
         }.joined()
     }
 
-    private static func treeEntries(_ root: URL) throws -> [URL] {
+    private static func treeEntries(_ root: URL) throws -> [TreeEntry] {
         var rootStatus = stat()
         guard lstat(root.path, &rootStatus) == 0 else {
             throw filesystemError("inspect tree root \(root.path)")
         }
-        var entries = [root]
+        var entries = [TreeEntry(url: root, relativePath: ".")]
         guard rootStatus.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
             return entries
         }
@@ -510,13 +519,29 @@ enum AppRelocationFilesystem {
                 return false
             }
         ) else {
-            throw filesystemError(
-                "enumerate \(root.path)",
-                code: EIO
-            )
+            throw filesystemError("enumerate \(root.path)", code: EIO)
         }
+
+        // Derive lexical paths from directory-entry names. Standardizing each
+        // URL can resolve a dangling symlink differently after its target
+        // appears, changing the hash even though the tree itself is untouched.
+        var pathComponents: [String] = []
         while let entry = enumerator.nextObject() as? URL {
-            entries.append(entry)
+            let parentCount = enumerator.level - 1
+            guard parentCount >= 0, parentCount <= pathComponents.count else {
+                throw filesystemError(
+                    "enumerate invalid tree depth under \(root.path)",
+                    code: EIO
+                )
+            }
+            pathComponents.removeLast(pathComponents.count - parentCount)
+            pathComponents.append(entry.lastPathComponent)
+            entries.append(
+                TreeEntry(
+                    url: entry,
+                    relativePath: pathComponents.joined(separator: "/")
+                )
+            }
         }
         if let enumerationError {
             throw AppRelocationTransaction.TransactionError.filesystem(
@@ -525,18 +550,6 @@ enum AppRelocationFilesystem {
             )
         }
         return entries
-    }
-
-    private static func relativePath(_ url: URL, under root: URL) -> String {
-        if url.standardizedFileURL == root.standardizedFileURL {
-            return "."
-        }
-        let rootPath = root.standardizedFileURL.path + "/"
-        let path = url.standardizedFileURL.path
-        guard path.hasPrefix(rootPath) else {
-            return path
-        }
-        return String(path.dropFirst(rootPath.count))
     }
 
     private static func hashFields(

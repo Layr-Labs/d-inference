@@ -181,6 +181,11 @@ struct EngineV2ExactPrefixCacheTests {
                 prefixCache: PrefixCacheV2()))
     }
 
+    @Test("provider serving assembly pins simultaneous prompt forking off")
+    func servingDisablesPromptForkExperiment() {
+        #expect(!EngineV2Factory.servingPromptForkConfig.enabled)
+    }
+
     @Test("slot factory installs exact Qwen cache and carves its grant")
     func slotConstruction() async throws {
         let model = try tinyExactQwenModel()
@@ -237,6 +242,8 @@ struct EngineV2ExactPrefixCacheTests {
         #expect(await bridge.resliceAdmissionBytesClaim() == slotGrant)
         let capacity = await bridge.capacitySnapshot()
         #expect(capacity.kvBytesCapacity == slotGrant - cacheBudget)
+        let servingEngine = try #require(await bridge.ownedEngine as? EngineV2)
+        #expect(!servingEngine.promptForkActivity().isEnabled)
         await bridge.shutdown()
     }
 

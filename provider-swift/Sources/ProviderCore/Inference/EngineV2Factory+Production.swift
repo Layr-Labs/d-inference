@@ -1017,6 +1017,11 @@ extension EngineV2Factory {
         return capabilities.supportsPrefixReuse
     }
 
+    /// Provider serving assembly deploys sequential prefix reuse only.
+    /// Pin the dependency's separate prompt-fork experiment off explicitly
+    /// instead of inheriting its process-environment default.
+    static let servingPromptForkConfig = CBv2PromptForkConfig(enabled: false)
+
     /// Final engine assembly over an already resolved backend. This method has
     /// no backend fallback path, so its cache capability cannot drift, and it
     /// builds no scheduler config of its own — it runs the engine on the very
@@ -1094,9 +1099,11 @@ extension EngineV2Factory {
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
             loopConfig: loopConfig,
-            // Production reusable prefixes use only the encrypted SSD tier.
-            // The coordinator-authored cache scope isolates accounts.
+            // Serving reusable prefixes use only the selected sequential
+            // cache tier (encrypted SSD or exact-state RAM). Simultaneous
+            // prompt forking remains an undeployed dependency experiment.
             prefixCache: prefixCache,
+            promptForkConfig: servingPromptForkConfig,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig
         )

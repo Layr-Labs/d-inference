@@ -186,8 +186,7 @@ struct SelfUpdaterConcurrencyTests {
         guard case .restartRequired(let from, let installed) = staleResult
         else {
             Issue.record(
-                "stale v2 preparation was not discarded after v3 commit: "
-                    + "\(staleResult)"
+                "stale v2 preparation was not discarded after v3 commit: \(staleResult)"
             )
             return
         }

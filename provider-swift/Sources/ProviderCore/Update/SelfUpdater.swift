@@ -385,7 +385,7 @@ public struct SelfUpdater: Sendable {
     /// Directory-name prefixes for staged bundles and commit backups inside
     /// the darkbloom root. Dot-prefixed so they stay out of the visible
     /// layout; cleaned up on the next staging pass if a crash orphans them.
-    private static let stagingDirPrefix = ".update-staging-"
+    static let stagingDirPrefix = ".update-staging-"
     private static let artifactVerificationTimeout: TimeInterval = 120
 
     private struct ArtifactVerificationPolicy {

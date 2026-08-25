@@ -168,6 +168,9 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             return
         }
         let transaction = try readTransaction()
+        // Validate every journal-owned mutation path before the live-target
+        // fast path can finalize state or retire the journal.
+        let stagingRoot = try validatedStagingRoot(for: transaction)
         var state = try loadState()
 
         if try liveMatches(transaction.target, layout: transaction.layout) {
@@ -175,13 +178,6 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
             return
-        }
-
-        let stagingRoot = URL(
-            fileURLWithPath: transaction.stagingRoot
-        ).standardizedFileURL
-        guard UpdateAtomicFilesystem.isDescendant(stagingRoot, of: installRoot) else {
-            throw StoreError.corruptTransaction("staging path escapes install root")
         }
 
         if try stagingContainsTarget(
@@ -554,6 +550,50 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         return transaction
     }
 
+    private func validatedStagingRoot(
+        for transaction: Transaction
+    ) throws -> URL {
+        let stagingRoot = URL(
+            fileURLWithPath: transaction.stagingRoot
+        ).standardizedFileURL
+        let expectedPrefix = transaction.kind == .install
+            ? SelfUpdater.stagingDirPrefix
+            : Self.rollbackStagingPrefix
+        guard stagingRoot.deletingLastPathComponent() == installRoot,
+              stagingRoot.lastPathComponent.hasPrefix(expectedPrefix),
+              stagingRoot.lastPathComponent.count > expectedPrefix.count
+        else {
+            throw StoreError.corruptTransaction(
+                "staging path is outside the allowed install-root namespace")
+        }
+
+        let resolvedRoot = installRoot.resolvingSymlinksInPath()
+            .standardizedFileURL
+        let resolvedStaging = stagingRoot.resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard resolvedStaging.deletingLastPathComponent() == resolvedRoot else {
+            throw StoreError.corruptTransaction(
+                "staging path resolves outside the install root")
+        }
+        if UpdateAtomicFilesystem.itemExists(stagingRoot) {
+            guard (try? fm.destinationOfSymbolicLink(
+                atPath: stagingRoot.path
+            )) == nil else {
+                throw StoreError.corruptTransaction(
+                    "staging path must not be a symbolic link")
+            }
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(
+                atPath: stagingRoot.path,
+                isDirectory: &isDirectory
+            ), isDirectory.boolValue else {
+                throw StoreError.corruptTransaction(
+                    "staging path is not a directory")
+            }
+        }
+        return stagingRoot
+    }
+
     private func persist(_ transaction: Transaction) throws {
         try UpdateAtomicFilesystem.writeJSON(transaction, to: transactionPath)
     }
@@ -566,14 +606,10 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     private func cleanupTransaction(_ transaction: Transaction) throws {
+        let staging = try validatedStagingRoot(for: transaction)
         try UpdateAtomicFilesystem.removeDurably(transactionPath)
         try faultInjector(.transactionRemoved)
-        let staging = URL(
-            fileURLWithPath: transaction.stagingRoot
-        ).standardizedFileURL
-        if UpdateAtomicFilesystem.isDescendant(staging, of: installRoot) {
-            try UpdateAtomicFilesystem.removeDurably(staging)
-        }
+        try UpdateAtomicFilesystem.removeDurably(staging)
         cleanupOrphanedRecoveryTemps()
     }
 

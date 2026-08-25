@@ -12,6 +12,7 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
     case commandFailed(command: String, status: Int32)
     case copiedBundleMismatch(field: String, expected: String, actual: String)
     case copiedExecutableUnavailable(path: String)
+    case copiedPayloadUnavailable(path: String, reason: String)
     case downgradeRejected(sourceVersion: String, installedVersion: String)
     case downgradeRecoveryStatePresent(path: String)
     case pendingInstallRecovery(path: String)
@@ -29,6 +30,8 @@ enum AppInstallCoordinatorError: Error, LocalizedError {
             "The copied app failed verification for \(field) (expected \(expected), found \(actual))."
         case .copiedExecutableUnavailable(let path):
             "The copied app executable is missing or cannot be run at \(path)."
+        case .copiedPayloadUnavailable(let path, let reason):
+            "The copied app payload at \(path) is unavailable: \(reason)."
         case .downgradeRejected(let sourceVersion, let installedVersion):
             "Darkbloom \(sourceVersion) cannot replace the newer installed version "
                 + "\(installedVersion)."
@@ -197,12 +200,7 @@ struct AppInstallCoordinator {
             let nonce = makeUUID().uuidString.lowercased()
             attemptUserShortcut(nonce: nonce)
             if let recovered {
-                try executor.run(
-                    Self.openURL,
-                    arguments: ["-n", destinationURL.path]
-                )
-                return .relocated(
-                    to: destinationURL,
+                return committedRelaunchOutcome(
                     preservedForeignApp: recovered.preservedForeignApp
                 )
             }
@@ -264,7 +262,7 @@ struct AppInstallCoordinator {
                         in: destinationRoot,
                         fileManager: fileManager
                     ) {
-                        try? fileManager.removeItem(at: stagingURL)
+                        try? transaction.cleanupUnjournaledArtifacts()
                     }
                 }
 
@@ -285,6 +283,11 @@ struct AppInstallCoordinator {
                     at: stagingURL,
                     expected: sourceMetadata
                 )
+                try AppRelocationPayloadVerifier.verify(
+                    appURL: stagingURL,
+                    mainExecutable: sourceMetadata.executable,
+                    fileManager: fileManager
+                )
 
                 let finalOwnedMetadata = ownedBundleMetadata(
                     at: destinationURL
@@ -302,9 +305,15 @@ struct AppInstallCoordinator {
                 } else {
                     previousKind = .foreign
                 }
+                let binCandidate = try AppRelocationBinLayout(
+                    installRoot: destinationRoot,
+                    fileManager: fileManager
+                ).prepareCandidate(transactionID: nonce)
                 let installed = try transaction.install(
-                    stagingURL: stagingURL,
-                    previousKind: previousKind
+                    appStagingURL: stagingURL,
+                    binStagingURL: binCandidate.url,
+                    previousAppKind: previousKind,
+                    expectedPreviousBin: binCandidate.previousState
                 )
                 return installed.preservedForeignApp
                     ?? racedRecovery?.preservedForeignApp
@@ -319,13 +328,7 @@ struct AppInstallCoordinator {
             )
         }
         attemptUserShortcut(nonce: nonce)
-
-        try executor.run(
-            Self.openURL,
-            arguments: ["-n", destinationURL.path]
-        )
-        return .relocated(
-            to: destinationURL,
+        return committedRelaunchOutcome(
             preservedForeignApp: preservedForeignApp
         )
     }
@@ -454,6 +457,32 @@ struct AppInstallCoordinator {
                 userShortcutURL.path,
                 error.localizedDescription
             )
+        }
+    }
+
+    private func committedRelaunchOutcome(
+        preservedForeignApp: URL?
+    ) -> AppInstallOutcome {
+        do {
+            try executor.run(
+                Self.openURL,
+                arguments: ["-n", destinationURL.path]
+            )
+            return .relocated(
+                to: destinationURL,
+                preservedForeignApp: preservedForeignApp
+            )
+        } catch {
+            // App and bin are already durably committed and their journal has
+            // been retired. Treating an `open` failure as installation failure
+            // would falsely put the current source process on the error screen.
+            NSLog(
+                "Darkbloom installed successfully at %@ but could not relaunch it: %@. "
+                    + "Continuing the currently running app.",
+                destinationURL.path,
+                error.localizedDescription
+            )
+            return .continueLaunch
         }
     }
 

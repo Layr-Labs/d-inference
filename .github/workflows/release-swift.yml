@@ -481,7 +481,9 @@ jobs:
             "$VERSION"
 
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
-            cp /tmp/embedded.provisionprofile "$APP/Contents/embedded.provisionprofile"
+            install -m 0644 \
+              /tmp/embedded.provisionprofile \
+              "$APP/Contents/embedded.provisionprofile"
             echo "Provisioning profile embedded in app bundle"
           fi
 
@@ -813,12 +815,12 @@ jobs:
           FINAL_FLAT_BIN="$SMOKE_ROOT/bin"
           FINAL_APP_METALLIB="$FINAL_APP_BIN/mlx.metallib"
           FINAL_FLAT_METALLIB="$FINAL_FLAT_BIN/mlx.metallib"
-          test -x "$FINAL_APP_BIN/$CLI_NAME"
-          test -x "$FINAL_APP_BIN/$ENCLAVE_NAME"
-          test ! -x "$FINAL_APP_METALLIB"
-          test -x "$FINAL_FLAT_BIN/$CLI_NAME"
-          test -x "$FINAL_FLAT_BIN/$ENCLAVE_NAME"
-          test ! -x "$FINAL_FLAT_METALLIB"
+          test "$(stat -f '%Lp' "$FINAL_APP_BIN/$CLI_NAME")" = 755
+          test "$(stat -f '%Lp' "$FINAL_APP_BIN/$ENCLAVE_NAME")" = 755
+          test "$(stat -f '%Lp' "$FINAL_APP_METALLIB")" = 644
+          test "$(stat -f '%Lp' "$FINAL_FLAT_BIN/$CLI_NAME")" = 755
+          test "$(stat -f '%Lp' "$FINAL_FLAT_BIN/$ENCLAVE_NAME")" = 755
+          test "$(stat -f '%Lp' "$FINAL_FLAT_METALLIB")" = 644
           test -s "$FINAL_APP_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
           cmp "$FINAL_FLAT_METALLIB" "$FINAL_APP_METALLIB"
@@ -1042,8 +1044,23 @@ jobs:
           curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
             -H "Authorization: Bearer ${RELEASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d @/tmp/release-payload.json
-          echo
+            -d @/tmp/release-payload.json \
+            -o /tmp/release-registration-response.json
+          python3 - <<'PY'
+          import json
+
+          with open("/tmp/release-registration-response.json", encoding="utf-8") as handle:
+              response = json.load(handle)
+          release = response.get("release")
+          if not isinstance(release, dict):
+              raise SystemExit("coordinator registration response omitted release")
+          for field in ("has_app", "has_fan_helper", "has_paged_kernel"):
+              if release.get(field) is not True:
+                  raise SystemExit(
+                      f"coordinator did not derive {field}=true from the signed artifact"
+                  )
+          print(json.dumps(response, separators=(",", ":")))
+          PY
           echo "Release v${VERSION} registered with coordinator"
 
       - name: Create GitHub Release

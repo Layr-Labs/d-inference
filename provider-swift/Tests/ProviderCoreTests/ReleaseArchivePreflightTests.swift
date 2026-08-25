@@ -182,10 +182,22 @@ struct ReleaseArchivePreflightTests {
                 "unsupported sparse PAX metadata"
             ),
             (
+                "sun-sparse",
+                "SUN.holesdata",
+                "0 4096",
+                "unsupported sparse PAX metadata"
+            ),
+            (
                 "overflow",
                 "size",
                 String(repeating: "9", count: 40),
                 "overflows"
+            ),
+            (
+                "mode",
+                "SCHILY.mode",
+                "0000755",
+                "unsupported PAX mode metadata"
             ),
         ]
 
@@ -217,7 +229,9 @@ struct ReleaseArchivePreflightTests {
         var policy = testPolicy()
         policy = ReleaseArchivePolicy(
             maxCompressedBytes: policy.maxCompressedBytes,
-            maxExpandedBytes: 15,
+            // Two headers and two padded payload regions consume 2048
+            // bytes before the end markers.
+            maxExpandedBytes: 4 * 512 - 1,
             maxEntries: policy.maxEntries,
             maxPathBytes: policy.maxPathBytes,
             maxComponentBytes: policy.maxComponentBytes,
@@ -288,7 +302,8 @@ struct ReleaseArchivePreflightTests {
         )
         let policy = ReleaseArchivePolicy(
             maxCompressedBytes: ReleaseArchivePolicy.maxCompressedBytes,
-            maxExpandedBytes: UInt64(blockSize),
+            // One empty-file header plus both required end markers.
+            maxExpandedBytes: UInt64(3 * blockSize),
             maxEntries: ReleaseArchivePolicy.maxEntries,
             maxPathBytes: ReleaseArchivePolicy.maxPathBytes,
             maxComponentBytes: ReleaseArchivePolicy.maxComponentBytes,

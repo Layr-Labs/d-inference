@@ -107,8 +107,39 @@ func newReleaseBundleTestFixture(
 				body:     append([]byte(nil), payloads[releasePayloadMetallib]...),
 			},
 		)
+		for _, spec := range releaseAppBaseFileSpecs {
+			fixture.entries = append(
+				fixture.entries,
+				releaseBundleTestEntry{
+					name:     spec.path,
+					mode:     spec.mode,
+					typeflag: tar.TypeReg,
+					body:     []byte("fixture:" + spec.path),
+				},
+			)
+		}
 	}
 	return fixture
+}
+
+func (fixture *releaseBundleTestFixture) addArtifactFiles(
+	specs []releaseArtifactFileSpec,
+) {
+	for _, spec := range specs {
+		body := []byte("fixture:" + spec.path)
+		if spec.exactContents != "" {
+			body = []byte(spec.exactContents)
+		}
+		fixture.entries = append(
+			fixture.entries,
+			releaseBundleTestEntry{
+				name:     spec.path,
+				mode:     spec.mode,
+				typeflag: tar.TypeReg,
+				body:     body,
+			},
+		)
+	}
 }
 
 func (fixture *releaseBundleTestFixture) entry(

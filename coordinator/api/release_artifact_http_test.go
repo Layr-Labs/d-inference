@@ -29,9 +29,21 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 			name: "legacy flat",
 			got:  releaseFlatPayloadSpecs,
 			want: []releasePayloadSpec{
-				{path: "bin/darkbloom", kind: releasePayloadBinary, executable: true},
-				{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-				{path: "bin/mlx.metallib", kind: releasePayloadMetallib},
+				{
+					path: "bin/darkbloom",
+					kind: releasePayloadBinary,
+					mode: releaseExecutableMode,
+				},
+				{
+					path: "bin/darkbloom-enclave",
+					kind: releasePayloadEnclave,
+					mode: releaseExecutableMode,
+				},
+				{
+					path: "bin/mlx.metallib",
+					kind: releasePayloadMetallib,
+					mode: releaseDataMode,
+				},
 			},
 		},
 		{
@@ -39,18 +51,19 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 			got:  releaseAppPayloadSpecs,
 			want: []releasePayloadSpec{
 				{
-					path:       "Darkbloom.app/Contents/MacOS/darkbloom",
-					kind:       releasePayloadBinary,
-					executable: true,
+					path: "Darkbloom.app/Contents/MacOS/darkbloom",
+					kind: releasePayloadBinary,
+					mode: releaseExecutableMode,
 				},
 				{
-					path:       "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
-					kind:       releasePayloadEnclave,
-					executable: true,
+					path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+					kind: releasePayloadEnclave,
+					mode: releaseExecutableMode,
 				},
 				{
 					path: "Darkbloom.app/Contents/MacOS/mlx.metallib",
 					kind: releasePayloadMetallib,
+					mode: releaseDataMode,
 				},
 			},
 		},
@@ -76,10 +89,15 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 
 func TestReleaseRegistrationAcceptsAppAndLegacyBundleLayouts(t *testing.T) {
 	tests := []struct {
-		name   string
-		layout releaseBundleTestLayout
+		name    string
+		layout  releaseBundleTestLayout
+		wantApp bool
 	}{
-		{name: "app with flat verifier copies", layout: releaseBundleTestApp},
+		{
+			name:    "app with flat verifier copies",
+			layout:  releaseBundleTestApp,
+			wantApp: true,
+		},
 		{name: "legacy flat bundle", layout: releaseBundleTestLegacy},
 	}
 	for _, test := range tests {
@@ -109,7 +127,73 @@ func TestReleaseRegistrationAcceptsAppAndLegacyBundleLayouts(t *testing.T) {
 				stored.BundleHash != artifact.bundleHash {
 				t.Fatalf("stored release hashes do not match verified artifact: %+v", stored)
 			}
+			if stored.HasApp == nil || *stored.HasApp != test.wantApp {
+				t.Fatalf("stored has_app = %v, want %t", stored.HasApp, test.wantApp)
+			}
+			if stored.HasFanHelper == nil || *stored.HasFanHelper {
+				t.Fatalf("stored has_fan_helper = %v, want false", stored.HasFanHelper)
+			}
+			if stored.HasPagedKernel == nil || *stored.HasPagedKernel {
+				t.Fatalf("stored has_paged_kernel = %v, want false", stored.HasPagedKernel)
+			}
 		})
+	}
+}
+
+func TestReleaseRegistrationDerivesRuntimeCapabilitiesFromArtifact(t *testing.T) {
+	binary := []byte(
+		"provider:" +
+			releaseFanCapabilityMarker + ":" +
+			releasePagedCapabilityMarker,
+	)
+	fixture := newReleaseBundleTestFixture(releaseBundleTestApp, binary)
+	fixture.addArtifactFiles(releaseFanCapabilityFileSpecs)
+	fixture.addArtifactFiles(releasePagedCapabilityFileSpecs)
+
+	result := registerReleaseArtifactForTest(t, fixture.build(t), nil)
+	if result.status != http.StatusOK {
+		t.Fatalf(
+			"register capability-complete release: status=%d body=%s",
+			result.status,
+			result.body,
+		)
+	}
+	if len(result.releases) != 1 {
+		t.Fatalf("stored releases = %d, want 1", len(result.releases))
+	}
+	stored := result.releases[0]
+	if stored.HasApp == nil || !*stored.HasApp ||
+		stored.HasFanHelper == nil || !*stored.HasFanHelper ||
+		stored.HasPagedKernel == nil || !*stored.HasPagedKernel {
+		t.Fatalf("stored artifact capabilities are incomplete: %+v", stored)
+	}
+	for _, field := range []string{
+		`"has_app":true`,
+		`"has_fan_helper":true`,
+		`"has_paged_kernel":true`,
+	} {
+		if !strings.Contains(result.body, field) {
+			t.Fatalf("registration response %s is missing %s", result.body, field)
+		}
+	}
+}
+
+func TestReleaseMarkerScannerFindsMarkersAcrossWriteBoundaries(t *testing.T) {
+	scanner := newReleaseMarkerScanner(
+		[]byte(releaseFanCapabilityMarker),
+		[]byte(releasePagedCapabilityMarker),
+	)
+	for _, chunk := range [][]byte{
+		[]byte("prefix-darkbloom-fan-"),
+		[]byte("helper-v1-middle-engine_v2_"),
+		[]byte("kv_backend-suffix"),
+	} {
+		if _, err := scanner.Write(chunk); err != nil {
+			t.Fatalf("scanner.Write: %v", err)
+		}
+	}
+	if !scanner.found(0) || !scanner.found(1) {
+		t.Fatalf("marker matches = %v, want both true", scanner.matches)
 	}
 }
 

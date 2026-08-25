@@ -748,6 +748,14 @@ public struct SelfUpdater: Sendable {
                 names: ["bin/mlx.metallib", "mlx.metallib"],
                 root: stagingRoot
             )
+            let flatArtifactModes = try UpdateArtifactModes(
+                binary: flatDarkbloom,
+                enclave: flatEnclave,
+                metallib: flatMetallib
+            )
+            if let mismatch = flatArtifactModes.releaseModeMismatch {
+                throw UpdateError.replaceFailed(mismatch)
+            }
 
             if let binaryHash = release.binaryHash {
                 try verifyHash(file: flatDarkbloom, expected: binaryHash, label: "darkbloom")
@@ -849,27 +857,24 @@ public struct SelfUpdater: Sendable {
                 }
             }
 
-            let artifactModes = try UpdateArtifactModes(
-                binary: hasAppBundle
-                    ? extractedApp.appendingPathComponent(
+            let artifactModes: UpdateArtifactModes
+            if hasAppBundle {
+                artifactModes = try UpdateArtifactModes(
+                    binary: extractedApp.appendingPathComponent(
                         "Contents/MacOS/darkbloom"
-                    )
-                    : flatDarkbloom,
-                enclave: hasAppBundle
-                    ? extractedApp.appendingPathComponent(
+                    ),
+                    enclave: extractedApp.appendingPathComponent(
                         "Contents/MacOS/darkbloom-enclave"
-                    )
-                    : flatEnclave,
-                metallib: hasAppBundle
-                    ? extractedApp.appendingPathComponent(
+                    ),
+                    metallib: extractedApp.appendingPathComponent(
                         "Contents/MacOS/mlx.metallib"
                     )
-                    : flatMetallib
-            )
-            if let payload = artifactModes.nonExecutablePayload {
-                throw UpdateError.replaceFailed(
-                    "release payload \(payload) is not executable"
                 )
+            } else {
+                artifactModes = flatArtifactModes
+            }
+            if let mismatch = artifactModes.releaseModeMismatch {
+                throw UpdateError.replaceFailed(mismatch)
             }
             let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(
                 root: hasAppBundle

@@ -283,6 +283,12 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			want:  "unsupported sparse PAX metadata",
 		},
 		{
+			name:  "sun sparse hole map",
+			key:   "SUN.holesdata",
+			value: "0 4096",
+			want:  "unsupported sparse PAX metadata",
+		},
+		{
 			name:  "overflowing size",
 			key:   "size",
 			value: "999999999999999999999999999999999999",
@@ -321,7 +327,9 @@ func TestReleaseArchiveEnforcesAggregateExpandedLimit(t *testing.T) {
 		rawReleaseTarEntry{name: "second", typeflag: '0', body: []byte("abcdefgh")},
 	)
 	policy := defaultReleaseArchivePolicy
-	policy.maxExpandedBytes = 15
+	// Two 512-byte headers plus two padded 512-byte payload regions consume
+	// 2048 bytes before the end markers.
+	policy.maxExpandedBytes = 4*releaseTarBlockSize - 1
 
 	err := validateReleaseArchive(bytes.NewReader(archive), policy, nil)
 	if err == nil || !strings.Contains(err.Error(), "expanded-size limit") {
@@ -335,7 +343,9 @@ func TestReleaseArchiveEnforcesExpandedLimitOnZeroTrailer(t *testing.T) {
 	)
 	archive = append(archive, bytes.Repeat([]byte{0}, 2*releaseTarBlockSize)...)
 	policy := defaultReleaseArchivePolicy
-	policy.maxExpandedBytes = releaseTarBlockSize
+	// One empty-file header and the two required end markers fit exactly;
+	// the additional zero trailer must still be charged.
+	policy.maxExpandedBytes = 3 * releaseTarBlockSize
 
 	err := validateReleaseArchive(bytes.NewReader(archive), policy, nil)
 	if err == nil || !strings.Contains(err.Error(), "expanded-size limit") {

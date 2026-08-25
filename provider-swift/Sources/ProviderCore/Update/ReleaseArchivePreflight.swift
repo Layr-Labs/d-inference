@@ -1,10 +1,10 @@
 import Foundation
 
 /// Bounds shared with the coordinator and shell installer. The current signed
-/// release is about 170 MiB compressed and comfortably below 1 GiB expanded;
-/// this envelope leaves substantial app-growth and flat-verifier headroom
-/// while bounding disk, payload/trailer expansion, inode, parser-memory, and
-/// path-complexity exposure.
+/// release is about 170 MiB compressed and comfortably below 1 GiB as a
+/// decompressed tar stream; this envelope leaves substantial app-growth and
+/// flat-verifier headroom while bounding disk, stream expansion, inode,
+/// parser-memory, and path-complexity exposure.
 struct ReleaseArchivePolicy: Sendable {
     static let maxCompressedBytes: UInt64 = 2 * 1024 * 1024 * 1024
     static let maxExpandedBytes: UInt64 = 4 * 1024 * 1024 * 1024
@@ -257,6 +257,8 @@ private final class ReleaseTarValidator {
                 throw ReleaseArchivePreflightError(
                     "release archive is missing the tar end marker")
             }
+            try addExpandedBytes(
+                UInt64(ReleaseArchivePreflight.blockSize))
             let header = [UInt8](blockData)
             if header.allSatisfy({ $0 == 0 }) {
                 try validateEndMarker()
@@ -341,7 +343,7 @@ private final class ReleaseTarValidator {
             }
 
             try pathTracker.add(effectivePath, kind: kind)
-            try addExpandedBytes(effectiveSize)
+            try addTarPayloadBytes(effectiveSize)
             try stream.skip(effectiveSize)
             try skipPadding(for: effectiveSize)
         }
@@ -358,6 +360,7 @@ private final class ReleaseTarValidator {
             throw ReleaseArchivePreflightError(
                 "release archive is missing the second tar end marker")
         }
+        try addExpandedBytes(UInt64(ReleaseArchivePreflight.blockSize))
         guard second.allSatisfy({ $0 == 0 }) else {
             throw ReleaseArchivePreflightError(
                 "release archive has an incomplete tar end marker")
@@ -494,7 +497,7 @@ private final class ReleaseTarValidator {
             throw ReleaseArchivePreflightError(
                 "release archive \(label) metadata exceeds the \(policy.maxMetadataBytes)-byte limit")
         }
-        try addExpandedBytes(size)
+        try addTarPayloadBytes(size)
         guard let payload = try stream.readExactly(Int(size)) else {
             throw ReleaseArchivePreflightError(
                 "release archive contains truncated \(label) metadata")
@@ -572,6 +575,9 @@ private final class ReleaseTarValidator {
             case "SCHILY.filetype":
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX file-type metadata")
+            case "SCHILY.mode":
+                throw ReleaseArchivePreflightError(
+                    "release archive contains unsupported PAX mode metadata")
             default:
                 break
             }
@@ -584,6 +590,7 @@ private final class ReleaseTarValidator {
         key == "GNU.sparse"
             || key.hasPrefix("GNU.sparse.")
             || key == "SCHILY.realsize"
+            || key == "SUN.holesdata"
             || key.hasPrefix("LIBARCHIVE.sparse")
     }
 
@@ -698,6 +705,17 @@ private final class ReleaseTarValidator {
                 "release archive exceeds the \(policy.maxExpandedBytes)-byte expanded-size limit")
         }
         expandedBytes = next
+    }
+
+    private func addTarPayloadBytes(_ size: UInt64) throws {
+        let blockSize = UInt64(ReleaseArchivePreflight.blockSize)
+        let padding = (blockSize - size % blockSize) % blockSize
+        let (physicalSize, overflow) = size.addingReportingOverflow(padding)
+        guard !overflow else {
+            throw ReleaseArchivePreflightError(
+                "release archive entry size overflows UInt64")
+        }
+        try addExpandedBytes(physicalSize)
     }
 
     private func skipPadding(for size: UInt64) throws {

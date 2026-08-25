@@ -62,6 +62,14 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			want: releaseAppPayloadSpecs[2].path,
 		},
 		{
+			name:   "missing required app launcher",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.remove(releaseAppBaseFileSpecs[0].path)
+			},
+			want: releaseAppBaseFileSpecs[0].path,
+		},
+		{
 			name:   "empty binary",
 			layout: releaseBundleTestLegacy,
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
@@ -102,6 +110,14 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 				metadata["metallib_hash"] = strings.Repeat("b", 64)
 			},
 			want: "metallib_hash does not match",
+		},
+		{
+			name:   "caller cannot assert artifact capability",
+			layout: releaseBundleTestLegacy,
+			metadata: func(metadata map[string]string) {
+				metadata["has_app"] = "true"
+			},
+			want: `unknown field "has_app"`,
 		},
 		{
 			name:   "app binary differs from flat copy",
@@ -175,7 +191,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[0].path).mode = 0o644
 			},
-			want: "bin/darkbloom\" is not executable",
+			want: "bin/darkbloom\" has mode 0644; expected 0755",
 		},
 		{
 			name:   "flat enclave is not executable",
@@ -183,7 +199,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[1].path).mode = 0o644
 			},
-			want: "bin/darkbloom-enclave\" is not executable",
+			want: "bin/darkbloom-enclave\" has mode 0644; expected 0755",
 		},
 		{
 			name:   "flat metallib is executable",
@@ -191,7 +207,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[2].path).mode = 0o755
 			},
-			want: "bin/mlx.metallib\" must not be executable",
+			want: "bin/mlx.metallib\" has mode 0755; expected 0644",
 		},
 		{
 			name:   "app binary is not executable",
@@ -199,7 +215,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[0].path).mode = 0o644
 			},
-			want: "Darkbloom.app/Contents/MacOS/darkbloom\" is not executable",
+			want: "Darkbloom.app/Contents/MacOS/darkbloom\" has mode 0644; expected 0755",
 		},
 		{
 			name:   "app enclave is not executable",
@@ -207,7 +223,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[1].path).mode = 0o644
 			},
-			want: "Darkbloom.app/Contents/MacOS/darkbloom-enclave\" is not executable",
+			want: "Darkbloom.app/Contents/MacOS/darkbloom-enclave\" has mode 0644; expected 0755",
 		},
 		{
 			name:   "app metallib is executable",
@@ -215,7 +231,31 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[2].path).mode = 0o755
 			},
-			want: "Darkbloom.app/Contents/MacOS/mlx.metallib\" must not be executable",
+			want: "Darkbloom.app/Contents/MacOS/mlx.metallib\" has mode 0755; expected 0644",
+		},
+		{
+			name:   "flat binary has group write permission",
+			layout: releaseBundleTestLegacy,
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entry(t, releaseFlatPayloadSpecs[0].path).mode = 0o775
+			},
+			want: "bin/darkbloom\" has mode 0775; expected 0755",
+		},
+		{
+			name:   "flat enclave has owner-only permissions",
+			layout: releaseBundleTestLegacy,
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entry(t, releaseFlatPayloadSpecs[1].path).mode = 0o700
+			},
+			want: "bin/darkbloom-enclave\" has mode 0700; expected 0755",
+		},
+		{
+			name:   "flat metallib has owner-only permissions",
+			layout: releaseBundleTestLegacy,
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entry(t, releaseFlatPayloadSpecs[2].path).mode = 0o600
+			},
+			want: "bin/mlx.metallib\" has mode 0600; expected 0644",
 		},
 		{
 			name:   "unsafe archive path",
@@ -244,6 +284,99 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 				t,
 				fixture.build(t),
 				test.metadata,
+			)
+			assertReleaseRegistrationRejected(t, result, test.want)
+		})
+	}
+}
+
+func TestReleaseRegistrationRejectsIncompleteArtifactCapabilities(t *testing.T) {
+	tests := []struct {
+		name   string
+		binary []byte
+		mutate func(*testing.T, *releaseBundleTestFixture)
+		want   string
+	}{
+		{
+			name:   "fan code without files",
+			binary: []byte(releaseFanCapabilityMarker),
+			want:   "fan-helper capability code and artifact files must be present together",
+		},
+		{
+			name: "fan files without code",
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.addArtifactFiles(releaseFanCapabilityFileSpecs)
+			},
+			want: "fan-helper capability code and artifact files must be present together",
+		},
+		{
+			name:   "fan helper missing",
+			binary: []byte(releaseFanCapabilityMarker),
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.addArtifactFiles(releaseFanCapabilityFileSpecs)
+				fixture.remove(releaseFanCapabilityFileSpecs[1].path)
+			},
+			want: "fan-helper capability code and artifact files must be present together",
+		},
+		{
+			name:   "fan marker contents invalid",
+			binary: []byte(releaseFanCapabilityMarker),
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.addArtifactFiles(releaseFanCapabilityFileSpecs)
+				fixture.entry(
+					t,
+					releaseFanCapabilityFileSpecs[0].path,
+				).body = []byte("0\n")
+			},
+			want: "fan-helper-v1\" has invalid contents",
+		},
+		{
+			name:   "paged code without files",
+			binary: []byte(releasePagedCapabilityMarker),
+			want:   "paged-kernel capability code and artifact files must be present together",
+		},
+		{
+			name: "paged files without code",
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.addArtifactFiles(releasePagedCapabilityFileSpecs)
+			},
+			want: "paged-kernel capability code and artifact files must be present together",
+		},
+		{
+			name:   "paged resource missing",
+			binary: []byte(releasePagedCapabilityMarker),
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.addArtifactFiles(releasePagedCapabilityFileSpecs)
+				fixture.remove(releasePagedCapabilityFileSpecs[1].path)
+			},
+			want: "paged-kernel capability code and artifact files must be present together",
+		},
+		{
+			name: "app launcher mode is not exact",
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entry(t, releaseAppBaseFileSpecs[0].path).mode = 0o775
+			},
+			want: "DarkbloomApp\" has mode 0775; expected 0755",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			binary := test.binary
+			if len(binary) == 0 {
+				binary = []byte("provider-without-runtime-capabilities")
+			}
+			fixture := newReleaseBundleTestFixture(
+				releaseBundleTestApp,
+				binary,
+			)
+			if test.mutate != nil {
+				test.mutate(t, fixture)
+			}
+			result := registerReleaseArtifactForTest(
+				t,
+				fixture.build(t),
+				nil,
 			)
 			assertReleaseRegistrationRejected(t, result, test.want)
 		})

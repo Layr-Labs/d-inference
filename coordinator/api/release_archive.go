@@ -8,12 +8,13 @@ import (
 )
 
 // Release archives are currently about 170 MiB compressed and comfortably
-// below 1 GiB expanded. These limits leave substantial room for signed app
-// growth and duplicated flat verifier binaries while bounding disk, inode,
-// parser-memory, and path-complexity exposure on every release consumer.
+// below 1 GiB as a decompressed tar stream. These limits leave substantial
+// room for signed app growth and duplicated flat verifier binaries while
+// bounding disk, inode, parser-memory, and path-complexity exposure on every
+// release consumer.
 const (
 	maxReleaseArtifactBytes         int64 = 2 << 30 // 2 GiB compressed
-	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB payload + zero trailer
+	maxReleaseArchiveExpandedBytes  int64 = 4 << 30 // 4 GiB decompressed tar stream
 	maxReleaseArchiveEntries              = 16 * 1024
 	maxReleaseArchivePathBytes            = 4 * 1024
 	maxReleaseArchiveComponentBytes       = 255
@@ -96,6 +97,13 @@ func validateReleaseArchive(
 		if err != nil {
 			return err
 		}
+		if err := addReleaseExpandedBytes(
+			&expandedBytes,
+			releaseTarBlockSize,
+			policy,
+		); err != nil {
+			return err
+		}
 		if releaseTarBlockIsZero(header) {
 			if err := validateReleaseTarEnd(
 				r,
@@ -142,7 +150,7 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive PAX metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(&expandedBytes, headerSize, policy); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
@@ -161,7 +169,7 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive global PAX metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(&expandedBytes, headerSize, policy); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
@@ -180,7 +188,7 @@ func validateReleaseArchive(
 			if headerSize > policy.maxMetadataBytes {
 				return fmt.Errorf("release archive GNU long-name metadata exceeds the %d-byte limit", policy.maxMetadataBytes)
 			}
-			if err := addReleaseExpandedBytes(&expandedBytes, headerSize, policy); err != nil {
+			if err := addReleaseTarPayloadBytes(&expandedBytes, headerSize, policy); err != nil {
 				return err
 			}
 			payload, err := readReleaseTarPayload(r, headerSize)
@@ -233,7 +241,7 @@ func validateReleaseArchive(
 		if err := tracker.add(effectivePath, kind); err != nil {
 			return err
 		}
-		if err := addReleaseExpandedBytes(&expandedBytes, effectiveSize, policy); err != nil {
+		if err := addReleaseTarPayloadBytes(&expandedBytes, effectiveSize, policy); err != nil {
 			return err
 		}
 
@@ -292,6 +300,13 @@ func validateReleaseTarEnd(
 	second, err := readReleaseTarBlock(r)
 	if err != nil {
 		return fmt.Errorf("release archive is missing the second tar end marker: %w", err)
+	}
+	if err := addReleaseExpandedBytes(
+		expandedBytes,
+		releaseTarBlockSize,
+		policy,
+	); err != nil {
+		return err
 	}
 	if !releaseTarBlockIsZero(second) {
 		return fmt.Errorf("release archive has an incomplete tar end marker")
@@ -515,6 +530,7 @@ func releasePAXKeyIsSparse(key string) bool {
 	return key == "GNU.sparse" ||
 		strings.HasPrefix(key, "GNU.sparse.") ||
 		key == "SCHILY.realsize" ||
+		key == "SUN.holesdata" ||
 		strings.HasPrefix(key, "LIBARCHIVE.sparse")
 }
 
@@ -675,6 +691,22 @@ func addReleaseExpandedBytes(
 	}
 	*total += size
 	return nil
+}
+
+func addReleaseTarPayloadBytes(
+	total *int64,
+	size int64,
+	policy releaseArchivePolicy,
+) error {
+	if size < 0 {
+		return fmt.Errorf("release archive entry size is negative")
+	}
+	padding := (releaseTarBlockSize - size%releaseTarBlockSize) %
+		releaseTarBlockSize
+	if size > int64(^uint64(0)>>1)-padding {
+		return fmt.Errorf("release archive entry size overflows int64")
+	}
+	return addReleaseExpandedBytes(total, size+padding, policy)
 }
 
 func readReleaseTarPayload(r io.Reader, size int64) ([]byte, error) {

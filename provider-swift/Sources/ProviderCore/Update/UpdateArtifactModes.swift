@@ -11,6 +11,9 @@ import Glibc
 /// commit, recovery, and rollback.
 struct UpdateArtifactModes: Equatable, Sendable {
     static let executableMask: UInt32 = 0o111
+    static let expectedBinary: UInt32 = 0o755
+    static let expectedEnclave: UInt32 = 0o755
+    static let expectedMetallib: UInt32 = 0o644
 
     let binary: UInt32
     let enclave: UInt32
@@ -30,6 +33,22 @@ struct UpdateArtifactModes: Equatable, Sendable {
             return "darkbloom-enclave"
         }
         return nil
+    }
+
+    var releaseModeMismatch: String? {
+        Self.mismatch(
+            label: "darkbloom",
+            actual: binary,
+            expected: Self.expectedBinary
+        ) ?? Self.mismatch(
+            label: "darkbloom-enclave",
+            actual: enclave,
+            expected: Self.expectedEnclave
+        ) ?? Self.mismatch(
+            label: "mlx.metallib",
+            actual: metallib,
+            expected: Self.expectedMetallib
+        )
     }
 
     func matches(_ record: InstalledReleaseRecord) -> Bool {
@@ -74,6 +93,23 @@ struct UpdateArtifactModes: Equatable, Sendable {
             )
         }
         return UInt32(status.st_mode & mode_t(0o7777))
+    }
+
+    private static func mismatch(
+        label: String,
+        actual: UInt32,
+        expected: UInt32
+    ) -> String? {
+        guard actual != expected else {
+            return nil
+        }
+        return String(
+            format:
+                "release payload %@ has mode %04o; expected %04o",
+            label,
+            actual,
+            expected
+        )
     }
 
     private static func posixError(_ operation: String) -> Error {

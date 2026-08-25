@@ -35,9 +35,9 @@ FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 
 # Shared with the coordinator and SelfUpdater. The signed bundle is currently
-# about 170 MiB compressed and comfortably below 1 GiB expanded. These bounds
-# leave substantial app-growth and flat-verifier headroom while limiting disk,
-# inode, parser-memory, and path-complexity exposure.
+# about 170 MiB compressed and comfortably below 1 GiB as a decompressed tar
+# stream. These bounds leave substantial app-growth and flat-verifier headroom
+# while limiting disk, inode, parser-memory, and path-complexity exposure.
 RELEASE_ARCHIVE_MAX_COMPRESSED_BYTES=2147483648
 RELEASE_ARCHIVE_MAX_EXPANDED_BYTES=4294967296
 RELEASE_ARCHIVE_MAX_ENTRIES=16384
@@ -250,6 +250,7 @@ sub sparse_pax_key {
     return $key eq "GNU.sparse"
         || index($key, "GNU.sparse.") == 0
         || $key eq "SCHILY.realsize"
+        || $key eq "SUN.holesdata"
         || index($key, "LIBARCHIVE.sparse") == 0;
 }
 
@@ -301,6 +302,8 @@ sub parse_pax {
             );
         } elsif ($key eq "SCHILY.filetype") {
             reject("unsupported PAX file-type metadata");
+        } elsif ($key eq "SCHILY.mode") {
+            reject("unsupported PAX mode metadata");
         }
         $offset = $record_end;
     }
@@ -317,11 +320,20 @@ sub add_expanded {
     $expanded += $size;
 }
 
+sub add_tar_payload {
+    my ($size) = @_;
+    reject("entry size is negative") if $size < 0;
+    my $padding = ($block_size - $size % $block_size) % $block_size;
+    reject("entry size overflows int64")
+        if $size > $max_int64 - $padding;
+    add_expanded($size + $padding);
+}
+
 sub read_metadata {
     my ($size, $label) = @_;
     reject("$label metadata exceeds the ${max_metadata}-byte limit")
         if $size > $max_metadata;
-    add_expanded($size);
+    add_tar_payload($size);
     my $payload = read_exact($size, 0);
     skip_padding($size);
     return $payload;
@@ -394,6 +406,7 @@ sub validate_end {
     reject("archive ends with dangling path or size metadata")
         if defined($pending_path) || defined($pending_size);
     my $second = read_exact($block_size, 0);
+    add_expanded($block_size);
     reject("archive has an incomplete tar end marker")
         unless all_zero($second);
 
@@ -417,6 +430,7 @@ sub validate_archive {
         my $header = read_exact($block_size, 1);
         reject("archive is missing the tar end marker")
             unless defined($header);
+        add_expanded($block_size);
         if (all_zero($header)) {
             validate_end();
             return;
@@ -484,7 +498,7 @@ sub validate_archive {
         }
 
         add_node($path, $kind);
-        add_expanded($size);
+        add_tar_payload($size);
         skip_bytes($size);
         skip_padding($size);
     }
@@ -585,6 +599,45 @@ verify_file_hash() {
         || fail_install "$label hash mismatch (expected $expected, got $actual)."
 }
 
+release_file_mode() {
+    local file=$1
+    local mode
+    mode=$(stat -f '%Lp' "$file" 2>/dev/null) \
+        || mode=$(stat -c '%a' "$file" 2>/dev/null) \
+        || return 1
+    printf '%s\n' "$mode"
+}
+
+verify_release_payload_mode() {
+    local file=$1
+    local expected=$2
+    local label=$3
+    [ -f "$file" ] && [ ! -L "$file" ] || {
+        fail_install "$label must be a regular non-symlink file."
+        return 1
+    }
+    local actual
+    actual=$(release_file_mode "$file") || {
+        fail_install "Could not inspect $label permissions."
+        return 1
+    }
+    [ "$actual" = "$expected" ] || {
+        fail_install "$label has mode 0$actual; expected 0$expected."
+        return 1
+    }
+}
+
+verify_release_payload_modes() {
+    local directory=$1
+    local prefix=$2
+    verify_release_payload_mode \
+        "$directory/darkbloom" 755 "$prefix darkbloom" \
+        && verify_release_payload_mode \
+            "$directory/darkbloom-enclave" 755 "$prefix darkbloom-enclave" \
+        && verify_release_payload_mode \
+            "$directory/mlx.metallib" 644 "$prefix mlx.metallib"
+}
+
 verify_code_requirement() {
     local target=$1
     local deep=$2
@@ -644,7 +697,7 @@ verify_fan_helper_capability() {
         fail_install "Bundled fan helper must be a regular executable, not a symlink."
         return 1
     }
-    [ "$(stat -f '%Lp' "$helper" 2>/dev/null || true)" = "755" ] || {
+    [ "$(release_file_mode "$helper" 2>/dev/null || true)" = "755" ] || {
         fail_install "Bundled fan helper must have mode 0755."
         return 1
     }
@@ -2876,8 +2929,6 @@ commit_staged_app() {
     fi
 
     prepare_app_candidate_bin "$bin_dir" "$candidate_bin" || return 1
-    local app_bin="$staged_app/Contents/MacOS"
-    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave" || return 1
     sync_install_tree "$staged_app" \
         && sync_install_tree "$candidate_bin" \
         || return 1
@@ -2996,8 +3047,7 @@ commit_staged_flat_bundle() {
         had_bin=1
         previous_bin_identity=$(path_identity "$destination") || return 1
     fi
-    chmod +x "$staged_bin/darkbloom" "$staged_bin/darkbloom-enclave" \
-        && ln -sfn "darkbloom-enclave" \
+    ln -sfn "darkbloom-enclave" \
             "$staged_bin/eigeninference-enclave" \
         && flat_layout_complete "$staged_bin" \
         && sync_install_tree "$staged_bin" \
@@ -3106,6 +3156,11 @@ install_bundle_atomically_locked() {
             fail_install "Release bundle is missing required flat verifier files."
             return 1
         }
+    verify_release_payload_modes "$flat_bin" "Flat release payload" || {
+        cleanup_install_staging_after_attempt \
+            "$stage" "$install_dir" "$transaction_id" || true
+        return 1
+    }
     verify_file_hash "$flat_bin/darkbloom" "$binary_hash" "Binary" || {
         cleanup_install_staging_after_attempt \
             "$stage" "$install_dir" "$transaction_id" || true
@@ -3118,6 +3173,12 @@ install_bundle_atomically_locked() {
     }
 
     if [ -d "$stage/Darkbloom.app" ]; then
+        verify_release_payload_modes \
+            "$stage/Darkbloom.app/Contents/MacOS" "App release payload" || {
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
+            return 1
+        }
         verify_staged_app_payload \
             "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
             cleanup_install_staging_after_attempt \
@@ -3255,6 +3316,15 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
         exit 64
     }
     verify_staged_app_signature "$2" "$3"
+    exit $?
+fi
+
+if [ "${1:-}" = "--verify-release-payload-modes-test" ]; then
+    [ "$#" -eq 3 ] || {
+        echo "usage: $0 --verify-release-payload-modes-test <directory> <label>" >&2
+        exit 64
+    }
+    verify_release_payload_modes "$2" "$3"
     exit $?
 fi
 

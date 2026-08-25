@@ -128,6 +128,14 @@ if ($mode eq "large") {
     my $pax = pax_record("GNU.sparse.realsize", "4294967297");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_sun_sparse") {
+    my $pax = pax_record("SUN.holesdata", "0 4096");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_mode") {
+    my $pax = pax_record("SCHILY.mode", "0000755");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
 } elsif ($mode eq "pax_overflow") {
     my $pax = pax_record("size", "999999999999999999999999999999999999");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
@@ -217,6 +225,39 @@ run_preflight "$VALID"
 run_preflight "$(make_fixture pax_path)"
 run_preflight "$(make_fixture gnu_long)"
 
+MODE_PAYLOAD="$ROOT/mode-payload"
+mkdir -p "$MODE_PAYLOAD"
+printf 'binary\n' > "$MODE_PAYLOAD/darkbloom"
+printf 'enclave\n' > "$MODE_PAYLOAD/darkbloom-enclave"
+printf 'metallib\n' > "$MODE_PAYLOAD/mlx.metallib"
+chmod 0755 "$MODE_PAYLOAD/darkbloom" "$MODE_PAYLOAD/darkbloom-enclave"
+chmod 0644 "$MODE_PAYLOAD/mlx.metallib"
+for script in "$CANONICAL" "$EMBEDDED"; do
+    bash "$script" \
+        --verify-release-payload-modes-test "$MODE_PAYLOAD" "Test payload"
+    for mutation in \
+        "darkbloom:0775:0755" \
+        "darkbloom-enclave:0700:0755" \
+        "mlx.metallib:0755:0644"
+    do
+        file=${mutation%%:*}
+        remainder=${mutation#*:}
+        bad_mode=${remainder%%:*}
+        expected_mode=${remainder##*:}
+        chmod "$bad_mode" "$MODE_PAYLOAD/$file"
+        error_file="$ROOT/mode-error-$(basename "$script")-$file"
+        if bash "$script" \
+            --verify-release-payload-modes-test \
+            "$MODE_PAYLOAD" "Test payload" 2>"$error_file"
+        then
+            echo "$script accepted mode $bad_mode for $file" >&2
+            exit 1
+        fi
+        grep -F "expected 0${expected_mode}" "$error_file" >/dev/null
+        chmod "$expected_mode" "$MODE_PAYLOAD/$file"
+    done
+done
+
 SMALL_DOWNLOAD_SOURCE="$ROOT/small-download-source"
 OVERSIZED_DOWNLOAD_SOURCE="$ROOT/oversized-download-source"
 printf 'bounded download\n' > "$SMALL_DOWNLOAD_SOURCE"
@@ -257,9 +298,11 @@ expect_rejection "$(make_fixture symlink)" "unsupported node type"
 expect_rejection "$(make_fixture fifo)" "unsupported node type"
 expect_rejection "$(make_fixture sparse)" "unsupported node type"
 expect_rejection "$(make_fixture pax_sparse)" "unsupported sparse PAX metadata"
+expect_rejection "$(make_fixture pax_sun_sparse)" "unsupported sparse PAX metadata"
+expect_rejection "$(make_fixture pax_mode)" "unsupported PAX mode metadata"
 expect_rejection "$(make_fixture pax_overflow)" "overflows"
-expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 15 16384
-expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 512 16384
+expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 2047 16384
+expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 1536 16384
 expect_rejection "$(make_fixture entries)" "entry limit" 4294967296 2
 expect_rejection "$(make_fixture bad_checksum)" "invalid checksum"
 expect_rejection "$(make_fixture trailing)" "non-zero data"

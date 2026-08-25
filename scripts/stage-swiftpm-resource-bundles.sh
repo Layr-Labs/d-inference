@@ -48,10 +48,17 @@ paged_resources=("$resource_root"/*.bundle/pagedattention.metal)
   echo "Staged pagedattention.metal is empty: ${paged_resources[0]}" >&2
   exit 1
 }
+app_metallib="$resource_root/DarkbloomProvider_DarkbloomApp.bundle/default.metallib"
+[[ -s "$app_metallib" ]] || {
+  echo "Staged Darkbloom app metallib is missing: $app_metallib" >&2
+  exit 1
+}
+chmod 0644 "${paged_resources[0]}" "$app_metallib"
 
 capability_dir="$resource_root/darkbloom-runtime-capabilities"
 mkdir -p "$capability_dir"
 printf '1\n' > "$capability_dir/paged-kernel-v1"
+chmod 0644 "$capability_dir/paged-kernel-v1"
 
 LC_ALL=C sort -u "$manifest" -o "$manifest"
 echo "Staged ${#bundles[@]} SwiftPM resource bundle(s) in Contents/Resources"

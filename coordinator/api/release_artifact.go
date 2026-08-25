@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -16,7 +17,11 @@ import (
 
 const (
 	maxReleasePayloadBytes int64 = 512 << 20
-	releaseExecutableBits        = 0o111
+	releaseExecutableMode  int64 = 0o755
+	releaseDataMode        int64 = 0o644
+
+	releaseFanCapabilityMarker   = "darkbloom-fan-helper-v1"
+	releasePagedCapabilityMarker = "engine_v2_kv_backend"
 )
 
 type releasePayloadKind uint8
@@ -28,40 +33,90 @@ const (
 )
 
 type releasePayloadSpec struct {
-	path       string
-	kind       releasePayloadKind
-	executable bool
+	path string
+	kind releasePayloadKind
+	mode int64
+}
+
+type releaseArtifactFileSpec struct {
+	path          string
+	mode          int64
+	exactContents string
 }
 
 var (
 	releaseFlatPayloadSpecs = []releasePayloadSpec{
-		{path: "bin/darkbloom", kind: releasePayloadBinary, executable: true},
-		{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-		{path: "bin/mlx.metallib", kind: releasePayloadMetallib},
+		{path: "bin/darkbloom", kind: releasePayloadBinary, mode: releaseExecutableMode},
+		{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
+		{path: "bin/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
 	}
 	releaseAppPayloadSpecs = []releasePayloadSpec{
-		{path: "Darkbloom.app/Contents/MacOS/darkbloom", kind: releasePayloadBinary, executable: true},
-		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib},
+		{path: "Darkbloom.app/Contents/MacOS/darkbloom", kind: releasePayloadBinary, mode: releaseExecutableMode},
+		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
+		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
+	}
+	releaseAppBaseFileSpecs = []releaseArtifactFileSpec{
+		{path: "Darkbloom.app/Contents/MacOS/DarkbloomApp", mode: releaseExecutableMode},
+		{path: "Darkbloom.app/Contents/Info.plist", mode: releaseDataMode},
+		{path: "Darkbloom.app/Contents/embedded.provisionprofile", mode: releaseDataMode},
+		{path: "Darkbloom.app/Contents/Resources/Chivo-Regular.ttf", mode: releaseDataMode},
+		{path: "Darkbloom.app/Contents/Resources/Chivo-Medium.ttf", mode: releaseDataMode},
+		{
+			path: "Darkbloom.app/Contents/Resources/" +
+				"DarkbloomProvider_DarkbloomApp.bundle/default.metallib",
+			mode: releaseDataMode,
+		},
+	}
+	releaseFanCapabilityFileSpecs = []releaseArtifactFileSpec{
+		{
+			path:          "Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1",
+			mode:          releaseDataMode,
+			exactContents: "1\n",
+		},
+		{
+			path: "Darkbloom.app/Contents/Helpers/darkbloom-fan-helper",
+			mode: releaseExecutableMode,
+		},
+	}
+	releasePagedCapabilityFileSpecs = []releaseArtifactFileSpec{
+		{
+			path:          "Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1",
+			mode:          releaseDataMode,
+			exactContents: "1\n",
+		},
+		{
+			path: "Darkbloom.app/Contents/Resources/" +
+				"mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
+			mode: releaseDataMode,
+		},
 	}
 	releasePayloadSpecsByPath = indexReleasePayloadSpecs(
 		releaseFlatPayloadSpecs,
 		releaseAppPayloadSpecs,
 	)
+	releaseArtifactFileSpecsByPath = indexReleaseArtifactFileSpecs(
+		releaseAppBaseFileSpecs,
+		releaseFanCapabilityFileSpecs,
+		releasePagedCapabilityFileSpecs,
+	)
 )
 
 type releasePayload struct {
-	hash string
+	hash               string
+	hasFanCapability   bool
+	hasPagedCapability bool
 }
 
 type releasePayloadCollector struct {
-	found  map[string]releasePayload
-	hasApp bool
+	found         map[string]releasePayload
+	foundFiles    map[string]struct{}
+	hasAppContent bool
 }
 
 func newReleasePayloadCollector() *releasePayloadCollector {
 	return &releasePayloadCollector{
-		found: make(map[string]releasePayload, len(releasePayloadSpecsByPath)),
+		found:      make(map[string]releasePayload, len(releasePayloadSpecsByPath)),
+		foundFiles: make(map[string]struct{}, len(releaseArtifactFileSpecsByPath)),
 	}
 }
 
@@ -79,19 +134,45 @@ func indexReleasePayloadSpecs(groups ...[]releasePayloadSpec) map[string]release
 	return indexed
 }
 
+func indexReleaseArtifactFileSpecs(
+	groups ...[]releaseArtifactFileSpec,
+) map[string]releaseArtifactFileSpec {
+	total := 0
+	for _, group := range groups {
+		total += len(group)
+	}
+	indexed := make(map[string]releaseArtifactFileSpec, total)
+	for _, group := range groups {
+		for _, spec := range group {
+			indexed[spec.path] = spec
+		}
+	}
+	return indexed
+}
+
 func (collector *releasePayloadCollector) visit(
 	entry releaseArchiveEntry,
 	contents io.Reader,
 ) error {
 	foldedPath := foldReleaseArchivePath(entry.Path)
-	collector.hasApp = collector.hasApp ||
+	collector.hasAppContent = collector.hasAppContent ||
 		foldedPath == "darkbloom.app" ||
 		strings.HasPrefix(foldedPath, "darkbloom.app/")
 
-	spec, required := releasePayloadSpecsByPath[entry.Path]
-	if !required {
-		return nil
+	if spec, required := releasePayloadSpecsByPath[entry.Path]; required {
+		return collector.collectPayload(entry, contents, spec)
 	}
+	if spec, tracked := releaseArtifactFileSpecsByPath[entry.Path]; tracked {
+		return collector.collectArtifactFile(entry, contents, spec)
+	}
+	return nil
+}
+
+func (collector *releasePayloadCollector) collectPayload(
+	entry releaseArchiveEntry,
+	contents io.Reader,
+	spec releasePayloadSpec,
+) error {
 	if entry.Kind != releaseArchiveRegular {
 		return fmt.Errorf("release payload %q is not a regular file", entry.Path)
 	}
@@ -108,16 +189,25 @@ func (collector *releasePayloadCollector) visit(
 			maxReleasePayloadBytes,
 		)
 	}
-	if spec.executable {
-		if entry.Mode&releaseExecutableBits == 0 {
-			return fmt.Errorf("release payload %q is not executable", entry.Path)
-		}
-	} else if entry.Mode&releaseExecutableBits != 0 {
-		return fmt.Errorf("release data payload %q must not be executable", entry.Path)
+	if entry.Mode != spec.mode {
+		return fmt.Errorf(
+			"release payload %q has mode %04o; expected %04o",
+			entry.Path,
+			entry.Mode,
+			spec.mode,
+		)
 	}
 
 	hasher := sha256.New()
-	n, err := io.Copy(hasher, contents)
+	scanner := newReleaseMarkerScanner(
+		[]byte(releaseFanCapabilityMarker),
+		[]byte(releasePagedCapabilityMarker),
+	)
+	writer := io.Writer(hasher)
+	if spec.kind == releasePayloadBinary {
+		writer = io.MultiWriter(hasher, scanner)
+	}
+	n, err := io.Copy(writer, contents)
 	if err != nil {
 		return fmt.Errorf("read release payload %q: %w", entry.Path, err)
 	}
@@ -125,8 +215,55 @@ func (collector *releasePayloadCollector) visit(
 		return fmt.Errorf("release payload %q is truncated", entry.Path)
 	}
 	collector.found[entry.Path] = releasePayload{
-		hash: hex.EncodeToString(hasher.Sum(nil)),
+		hash:               hex.EncodeToString(hasher.Sum(nil)),
+		hasFanCapability:   scanner.found(0),
+		hasPagedCapability: scanner.found(1),
 	}
+	return nil
+}
+
+func (collector *releasePayloadCollector) collectArtifactFile(
+	entry releaseArchiveEntry,
+	contents io.Reader,
+	spec releaseArtifactFileSpec,
+) error {
+	if entry.Kind != releaseArchiveRegular {
+		return fmt.Errorf("release artifact file %q is not a regular file", entry.Path)
+	}
+	if _, duplicate := collector.foundFiles[entry.Path]; duplicate {
+		return fmt.Errorf("bundle contains multiple copies of release artifact file %q", entry.Path)
+	}
+	if entry.Size == 0 {
+		return fmt.Errorf("release artifact file %q is empty", entry.Path)
+	}
+	if entry.Size > maxReleasePayloadBytes {
+		return fmt.Errorf(
+			"release artifact file %q exceeds the %d-byte limit",
+			entry.Path,
+			maxReleasePayloadBytes,
+		)
+	}
+	if entry.Mode != spec.mode {
+		return fmt.Errorf(
+			"release artifact file %q has mode %04o; expected %04o",
+			entry.Path,
+			entry.Mode,
+			spec.mode,
+		)
+	}
+	if spec.exactContents != "" {
+		if entry.Size != int64(len(spec.exactContents)) {
+			return fmt.Errorf("release artifact marker %q has invalid contents", entry.Path)
+		}
+		actual, err := io.ReadAll(contents)
+		if err != nil {
+			return fmt.Errorf("read release artifact marker %q: %w", entry.Path, err)
+		}
+		if string(actual) != spec.exactContents {
+			return fmt.Errorf("release artifact marker %q has invalid contents", entry.Path)
+		}
+	}
+	collector.foundFiles[entry.Path] = struct{}{}
 	return nil
 }
 
@@ -144,21 +281,45 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 		return fmt.Errorf("metallib_hash does not match bundled mlx.metallib")
 	}
 
-	if !collector.hasApp {
-		return nil
-	}
-	if err := collector.require(releaseAppPayloadSpecs); err != nil {
-		return err
-	}
-	for index, appSpec := range releaseAppPayloadSpecs {
-		flatSpec := releaseFlatPayloadSpecs[index]
-		if collector.found[appSpec.path].hash != collector.found[flatSpec.path].hash {
-			return fmt.Errorf(
-				"app and flat copies of %s do not match",
-				releasePayloadKindName(appSpec.kind),
-			)
+	if collector.hasAppContent {
+		if err := collector.require(releaseAppPayloadSpecs); err != nil {
+			return err
+		}
+		if err := collector.requireFiles(releaseAppBaseFileSpecs); err != nil {
+			return err
+		}
+		for index, appSpec := range releaseAppPayloadSpecs {
+			flatSpec := releaseFlatPayloadSpecs[index]
+			if collector.found[appSpec.path].hash != collector.found[flatSpec.path].hash {
+				return fmt.Errorf(
+					"app and flat copies of %s do not match",
+					releasePayloadKindName(appSpec.kind),
+				)
+			}
 		}
 	}
+
+	hasFanHelper, err := collector.validateCapability(
+		flatBinary.hasFanCapability,
+		releaseFanCapabilityFileSpecs,
+		"fan-helper",
+	)
+	if err != nil {
+		return err
+	}
+	hasPagedKernel, err := collector.validateCapability(
+		flatBinary.hasPagedCapability,
+		releasePagedCapabilityFileSpecs,
+		"paged-kernel",
+	)
+	if err != nil {
+		return err
+	}
+
+	hasApp := collector.hasAppContent
+	release.HasApp = &hasApp
+	release.HasFanHelper = &hasFanHelper
+	release.HasPagedKernel = &hasPagedKernel
 	return nil
 }
 
@@ -169,6 +330,81 @@ func (collector *releasePayloadCollector) require(specs []releasePayloadSpec) er
 		}
 	}
 	return nil
+}
+
+func (collector *releasePayloadCollector) requireFiles(
+	specs []releaseArtifactFileSpec,
+) error {
+	for _, spec := range specs {
+		if _, ok := collector.foundFiles[spec.path]; !ok {
+			return fmt.Errorf("bundle is missing required release artifact file %q", spec.path)
+		}
+	}
+	return nil
+}
+
+func (collector *releasePayloadCollector) validateCapability(
+	codePresent bool,
+	specs []releaseArtifactFileSpec,
+	name string,
+) (bool, error) {
+	present := 0
+	for _, spec := range specs {
+		if _, ok := collector.foundFiles[spec.path]; ok {
+			present++
+		}
+	}
+	if !codePresent && present == 0 {
+		return false, nil
+	}
+	if !codePresent || present != len(specs) {
+		return false, fmt.Errorf(
+			"%s capability code and artifact files must be present together",
+			name,
+		)
+	}
+	return true, nil
+}
+
+type releaseMarkerScanner struct {
+	markers [][]byte
+	matches []bool
+	tail    []byte
+	maxLen  int
+}
+
+func newReleaseMarkerScanner(markers ...[]byte) *releaseMarkerScanner {
+	scanner := &releaseMarkerScanner{
+		markers: markers,
+		matches: make([]bool, len(markers)),
+	}
+	for _, marker := range markers {
+		if len(marker) > scanner.maxLen {
+			scanner.maxLen = len(marker)
+		}
+	}
+	return scanner
+}
+
+func (scanner *releaseMarkerScanner) Write(chunk []byte) (int, error) {
+	window := make([]byte, len(scanner.tail)+len(chunk))
+	copy(window, scanner.tail)
+	copy(window[len(scanner.tail):], chunk)
+	for index, marker := range scanner.markers {
+		if !scanner.matches[index] && bytes.Contains(window, marker) {
+			scanner.matches[index] = true
+		}
+	}
+	keep := scanner.maxLen - 1
+	if keep > len(window) {
+		keep = len(window)
+	}
+	scanner.tail = append(scanner.tail[:0], window[len(window)-keep:]...)
+	return len(chunk), nil
+}
+
+func (scanner *releaseMarkerScanner) found(index int) bool {
+	return index >= 0 && index < len(scanner.matches) && scanner.matches[index]
 }
 
 func releasePayloadKindName(kind releasePayloadKind) string {

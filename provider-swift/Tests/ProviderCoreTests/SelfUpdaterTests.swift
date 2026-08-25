@@ -919,7 +919,7 @@ struct SelfUpdaterTests {
         ) == "old darkbloom")
     }
 
-    @Test("staging refuses a non-executable provider payload")
+    @Test("staging refuses a provider payload with the wrong exact mode")
     func stagingRefusesNonExecutablePayload() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -952,7 +952,72 @@ struct SelfUpdaterTests {
             Issue.record("non-executable provider payload was staged")
             return
         }
-        #expect("\(error)".contains("darkbloom is not executable"))
+        #expect(
+            "\(error)".contains(
+                "release payload darkbloom has mode 0644; expected 0755"
+            )
+        )
+    }
+
+    @Test("staging binds exact modes for flat and app payload copies")
+    func stagingBindsExactPayloadModes() throws {
+        let cases: [(String, String, Int)] = [
+            ("flat-darkbloom", "bin/darkbloom", 0o775),
+            ("flat-enclave", "bin/darkbloom-enclave", 0o700),
+            ("flat-metallib", "bin/mlx.metallib", 0o600),
+            (
+                "app-darkbloom",
+                "Darkbloom.app/Contents/MacOS/darkbloom",
+                0o775
+            ),
+            (
+                "app-enclave",
+                "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+                0o700
+            ),
+            (
+                "app-metallib",
+                "Darkbloom.app/Contents/MacOS/mlx.metallib",
+                0o755
+            ),
+        ]
+
+        for (name, relativePath, mode) in cases {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "self-updater-exact-mode-\(name)-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            defer { try? FileManager.default.removeItem(at: root) }
+            let (tarball, release, install) = try makeAppBundleFixture(
+                root: root
+            )
+            let source = root.appendingPathComponent(
+                "tarball-src/\(relativePath)"
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: mode],
+                ofItemAtPath: source.path
+            )
+            try runTarCreate(
+                sourceDir: root.appendingPathComponent("tarball-src"),
+                tarball: tarball
+            )
+
+            let result = SelfUpdater(
+                coordinatorBaseURL: "https://api.example.test"
+            ).stageBundleForTesting(
+                from: tarball,
+                release: release,
+                installDir: install
+            )
+            guard case .failure(let error) = result else {
+                Issue.record("\(relativePath) mode \(mode) was accepted")
+                continue
+            }
+            #expect("\(error)".contains("has mode"))
+            #expect("\(error)".contains("expected"))
+        }
     }
 
     @Test("commit refuses chmod-only mutation after verification")

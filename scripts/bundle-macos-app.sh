@@ -157,14 +157,16 @@ mkdir -p \
 # Main executable + co-bundled CLI payload. DarkbloomCLILocator probes
 # Contents/MacOS/darkbloom inside the app bundle FIRST, so the CLI must live
 # here (identical bytes to the flat bin/ verifier copies: CI cmp-enforces).
-cp "$BIN_DIR/$APP_PROCESS_NAME" "$APP/Contents/MacOS/$APP_PROCESS_NAME"
-cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
-cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
-cp "$MLX_METALLIB" "$APP/Contents/MacOS/mlx.metallib"
-chmod +x \
-    "$APP/Contents/MacOS/$APP_PROCESS_NAME" \
-    "$APP/Contents/MacOS/$CLI_NAME" \
+install -m 0755 \
+    "$BIN_DIR/$APP_PROCESS_NAME" \
+    "$APP/Contents/MacOS/$APP_PROCESS_NAME"
+install -m 0755 \
+    "$BIN_DIR/$CLI_NAME" \
+    "$APP/Contents/MacOS/$CLI_NAME"
+install -m 0755 \
+    "$BIN_DIR/$ENCLAVE_NAME" \
     "$APP/Contents/MacOS/$ENCLAVE_NAME"
+install -m 0644 "$MLX_METALLIB" "$APP/Contents/MacOS/mlx.metallib"
 
 # Dormant opt-in root helper (same contract as the legacy bundle: sealed
 # under Contents/Helpers with a capability marker).
@@ -173,13 +175,19 @@ install -m 0755 \
     "$APP/Contents/Helpers/$FAN_HELPER_NAME"
 printf '1\n' \
     > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+chmod 0644 \
+    "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 
 # App UI resources (fonts at Contents/Resources root, Info.plist stamped with
 # the release identity; SwiftPM .*bundle payloads are staged by
 # scripts/stage-swiftpm-resource-bundles.sh afterwards).
-cp "$FONT_DIR/Chivo-Regular.ttf" "$APP/Contents/Resources/Chivo-Regular.ttf"
-cp "$FONT_DIR/Chivo-Medium.ttf" "$APP/Contents/Resources/Chivo-Medium.ttf"
-cp "$APP_INFO_PLIST_SOURCE" "$APP/Contents/Info.plist"
+install -m 0644 \
+    "$FONT_DIR/Chivo-Regular.ttf" \
+    "$APP/Contents/Resources/Chivo-Regular.ttf"
+install -m 0644 \
+    "$FONT_DIR/Chivo-Medium.ttf" \
+    "$APP/Contents/Resources/Chivo-Medium.ttf"
+install -m 0644 "$APP_INFO_PLIST_SOURCE" "$APP/Contents/Info.plist"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $APP_BUNDLE_ID" \
     "$APP/Contents/Info.plist"

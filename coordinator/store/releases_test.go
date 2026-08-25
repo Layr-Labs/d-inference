@@ -7,6 +7,9 @@ import (
 
 func TestReleases(t *testing.T) {
 	s := NewMemory(Config{})
+	hasApp := true
+	hasFanHelper := true
+	hasPagedKernel := false
 
 	// Empty initially.
 	releases := s.ListReleases()
@@ -29,13 +32,16 @@ func TestReleases(t *testing.T) {
 		URL:        "https://r2.example.com/releases/v0.2.0/bundle.tar.gz",
 	}
 	r2 := &Release{
-		Version:      "0.2.1",
-		Platform:     "macos-arm64",
-		Backend:      "mlx-swift",
-		BinaryHash:   "ccc333",
-		BundleHash:   "ddd444",
-		MetallibHash: "eee555",
-		URL:          "https://r2.example.com/releases/v0.2.1/bundle.tar.gz",
+		Version:        "0.2.1",
+		Platform:       "macos-arm64",
+		Backend:        "mlx-swift",
+		BinaryHash:     "ccc333",
+		BundleHash:     "ddd444",
+		MetallibHash:   "eee555",
+		HasApp:         &hasApp,
+		HasFanHelper:   &hasFanHelper,
+		HasPagedKernel: &hasPagedKernel,
+		URL:            "https://r2.example.com/releases/v0.2.1/bundle.tar.gz",
 	}
 	if err := s.SetRelease(r1); err != nil {
 		t.Fatalf("SetRelease r1: %v", err)
@@ -72,6 +78,15 @@ func TestReleases(t *testing.T) {
 	if latest.MetallibHash != "eee555" {
 		t.Errorf("expected metallib_hash eee555, got %s", latest.MetallibHash)
 	}
+	if latest.HasApp == nil || !*latest.HasApp {
+		t.Errorf("expected has_app true, got %v", latest.HasApp)
+	}
+	if latest.HasFanHelper == nil || !*latest.HasFanHelper {
+		t.Errorf("expected has_fan_helper true, got %v", latest.HasFanHelper)
+	}
+	if latest.HasPagedKernel == nil || *latest.HasPagedKernel {
+		t.Errorf("expected has_paged_kernel false, got %v", latest.HasPagedKernel)
+	}
 
 	// Unknown platform returns nil.
 	if r := s.GetLatestRelease("linux-amd64"); r != nil {
@@ -100,6 +115,77 @@ func TestReleases(t *testing.T) {
 	// Validation: empty version.
 	if err := s.SetRelease(&Release{Platform: "macos-arm64"}); err == nil {
 		t.Error("expected error for empty version")
+	}
+}
+
+func TestReleaseArtifactCapabilitiesRoundTrip(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			hasApp := true
+			hasFanHelper := false
+			hasPagedKernel := true
+			release := &Release{
+				Version:        "1.2.3",
+				Platform:       "macos-arm64",
+				BinaryHash:     "binary",
+				BundleHash:     "bundle",
+				HasApp:         &hasApp,
+				HasFanHelper:   &hasFanHelper,
+				HasPagedKernel: &hasPagedKernel,
+				URL:            "https://example.test/release.tar.gz",
+			}
+			if err := backend.SetRelease(release); err != nil {
+				t.Fatalf("SetRelease: %v", err)
+			}
+
+			latest := backend.GetLatestRelease("macos-arm64")
+			if latest == nil {
+				t.Fatal("GetLatestRelease returned nil")
+			}
+			assertReleaseCapability(t, "has_app", latest.HasApp, true)
+			assertReleaseCapability(
+				t,
+				"has_fan_helper",
+				latest.HasFanHelper,
+				false,
+			)
+			assertReleaseCapability(
+				t,
+				"has_paged_kernel",
+				latest.HasPagedKernel,
+				true,
+			)
+
+			listed := backend.ListReleases()
+			if len(listed) != 1 {
+				t.Fatalf("ListReleases returned %d releases, want 1", len(listed))
+			}
+			assertReleaseCapability(t, "listed has_app", listed[0].HasApp, true)
+			assertReleaseCapability(
+				t,
+				"listed has_fan_helper",
+				listed[0].HasFanHelper,
+				false,
+			)
+			assertReleaseCapability(
+				t,
+				"listed has_paged_kernel",
+				listed[0].HasPagedKernel,
+				true,
+			)
+		})
+	}
+}
+
+func assertReleaseCapability(
+	t *testing.T,
+	label string,
+	actual *bool,
+	expected bool,
+) {
+	t.Helper()
+	if actual == nil || *actual != expected {
+		t.Fatalf("%s = %v, want %t", label, actual, expected)
 	}
 }
 

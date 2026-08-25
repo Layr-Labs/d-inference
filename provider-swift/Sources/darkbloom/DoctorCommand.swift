@@ -118,13 +118,20 @@ struct Doctor: AsyncParsableCommand {
                 runningVersion: ProviderCore.version))
         }
 
+        let supportCoordinator = coordinatorOverride
+            ?? snapshot.config.coordinator.url
+        let hasBoundCredential = (
+            try? ProviderCredentialStore.authenticationToken(
+                for: supportCoordinator
+            )
+        ) != nil
         let supportInfo: DoctorSupportInfo? = includeSupport
             ? DoctorSupportInfo(
-                coordinator: coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url),
+                coordinator: coordinatorHTTPBase(supportCoordinator),
                 serial: macHardwareSerialNumber() ?? "<unavailable>",
-                authTokenPresent: AuthTokenStore.load() != nil,
+                authTokenPresent: hasBoundCredential,
                 mdmEnrolled: describeMDMEnrollment(
-                    checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
+                    checkMDMEnrollment(coordinatorURL: supportCoordinator)
                 ),
                 pidFile: ProcessLifecycle.defaultPIDFile().path
             )
@@ -394,13 +401,31 @@ func buildCoordinatorDoctorChecks(
     snapshot: RuntimeSnapshot,
     coordinatorOverride: String?
 ) async -> [DoctorCheck] {
-    let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
+    let coordinatorURL = coordinatorOverride
+        ?? snapshot.config.coordinator.url
+    let base = coordinatorHTTPBase(coordinatorURL)
     var checks: [DoctorCheck] = []
 
+    let credentialResult = Result {
+        try ProviderCredentialStore.authenticationToken(for: coordinatorURL)
+    }
+    let accountLinkStatus: CheckStatus
+    let accountLinkDetail: String
+    switch credentialResult {
+    case .success(.some):
+        accountLinkStatus = .pass
+        accountLinkDetail = "auth token is bound to this coordinator"
+    case .success(.none):
+        accountLinkStatus = .warn
+        accountLinkDetail = "not logged in; run darkbloom login"
+    case .failure(let error):
+        accountLinkStatus = .fail
+        accountLinkDetail = error.localizedDescription
+    }
     checks.append(.init(
         name: "account link",
-        status: AuthTokenStore.load() == nil ? .warn : .pass,
-        detail: AuthTokenStore.load() == nil ? "not logged in; run darkbloom login" : "auth token present",
+        status: accountLinkStatus,
+        detail: accountLinkDetail,
         section: DiagnosticSection.trust.wireID
     ))
 

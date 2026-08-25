@@ -19,16 +19,14 @@ struct UnenrollCommandTests {
             stopProviderService: {},
             terminateRecordedProvider: { true },
             revokeToken: { _, _ in revokeCount += 1 },
-            deleteToken: {},
-            deleteAccount: {
+            deleteCredential: { credential in
+                #expect(credential == nil)
                 try FileManager.default.removeItem(at: files.accountPath)
-            },
-            deleteIssuer: {}
+            }
         )
 
         try await unlinkProviderAccount(
-            token: nil,
-            coordinatorURL: "wss://coordinator.test/ws/provider",
+            credential: nil,
             dependencies: dependencies
         )
 

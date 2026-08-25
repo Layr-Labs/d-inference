@@ -195,7 +195,9 @@ extension Start {
 
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
-        let authToken = AuthTokenStore.load()
+        let authToken = try ProviderCredentialStore.authenticationToken(
+            for: coordinatorURL
+        )
         if let identity = ProcessIdentity.current() {
             try? SelfUpdater(
                 coordinatorBaseURL: coordinatorURL

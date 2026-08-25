@@ -319,7 +319,9 @@ struct Earnings: AsyncParsableCommand {
                     transport: transport
                 )
             } else {
-                guard let token = AuthTokenStore.load(), !token.isEmpty else {
+                guard let token = try ProviderCredentialStore.authenticationToken(
+                    for: snapshot.config.coordinator.url
+                ) else {
                     printError("This Mac is not linked to a provider account. Run `darkbloom login` to link it.")
                     throw ExitCode.failure
                 }

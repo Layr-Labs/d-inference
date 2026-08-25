@@ -6,9 +6,7 @@ struct AccountUnlinkDependencies {
     var stopProviderService: () throws -> Void
     var terminateRecordedProvider: () -> Bool
     var revokeToken: (String, String) async throws -> Void
-    var deleteToken: () throws -> Void
-    var deleteAccount: () throws -> Void
-    var deleteIssuer: () throws -> Void
+    var deleteCredential: (ProviderCredential?) throws -> Void
 
     @MainActor
     static let live = AccountUnlinkDependencies(
@@ -23,17 +21,14 @@ struct AccountUnlinkDependencies {
                 token: token
             )
         },
-        deleteToken: AuthTokenStore.delete,
-        deleteAccount: ProviderAccountStore.delete,
-        deleteIssuer: ProviderIssuerStore.delete
+        deleteCredential: ProviderCredentialStore.delete
     )
 }
 
 @discardableResult
 @MainActor
 func unlinkProviderAccount(
-    token: String?,
-    coordinatorURL: String,
+    credential: ProviderCredential?,
     dependencies: AccountUnlinkDependencies = .live
 ) async throws -> Bool {
     // Stop recovery first so it cannot relaunch a provider between service
@@ -44,15 +39,16 @@ func unlinkProviderAccount(
         throw AccountUnlinkError.providerDidNotStop
     }
 
-    if let token, !token.isEmpty {
+    if let credential {
         // Revoke before deleting the only local copy. A transient coordinator
         // failure leaves credentials intact so the operator can retry safely.
-        try await dependencies.revokeToken(token, coordinatorURL)
+        try await dependencies.revokeToken(
+            credential.token,
+            credential.issuer
+        )
     }
-    try dependencies.deleteToken()
-    try dependencies.deleteAccount()
-    try dependencies.deleteIssuer()
-    return token != nil
+    try dependencies.deleteCredential(credential)
+    return credential != nil
 }
 
 enum AccountUnlinkError: LocalizedError, Equatable {
@@ -64,25 +60,4 @@ enum AccountUnlinkError: LocalizedError, Equatable {
             return "the running provider could not be stopped; account credentials were preserved"
         }
     }
-}
-
-func accountUnlinkCoordinatorURL(configOptions: ConfigOptions) -> String {
-    if let issuer = ProviderIssuerStore.load() {
-        return issuer
-    }
-    let configured = (try? loadRuntimeSnapshot(configOptions: configOptions))?
-        .config.coordinator.url
-    return resolveAccountUnlinkCoordinatorURL(
-        storedIssuer: nil,
-        configuredCoordinator: configured
-    )
-}
-
-func resolveAccountUnlinkCoordinatorURL(
-    storedIssuer: String?,
-    configuredCoordinator: String?
-) -> String {
-    storedIssuer
-        ?? configuredCoordinator
-        ?? "wss://api.darkbloom.dev/ws/provider"
 }

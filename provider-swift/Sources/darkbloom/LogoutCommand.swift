@@ -9,12 +9,11 @@ struct Logout: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
-        let token = AuthTokenStore.load()
-        let hadToken = token != nil
+        let credential = try ProviderCredentialStore.load()
+        let hadToken = credential != nil
         let hadAccount = ProviderAccountStore.load() != nil
         try await unlinkProviderAccount(
-            token: token,
-            coordinatorURL: accountUnlinkCoordinatorURL(configOptions: configOptions)
+            credential: credential
         )
 
         guard hadToken || hadAccount else {

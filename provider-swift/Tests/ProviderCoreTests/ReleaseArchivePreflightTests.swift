@@ -297,6 +297,69 @@ struct ReleaseArchivePreflightTests {
         }
     }
 
+    @Test("rejects legacy signature metadata outside metallib payloads")
+    func rejectsMisplacedCodeSignatureMetadata() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let metadata = paxRecord(
+            key: "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+            value: "c2lnbmF0dXJl"
+        )
+        let cases: [(String, [RawTarEntry], String)] = [
+            (
+                "unrelated-file",
+                [
+                    .init(
+                        name: "PaxHeaders/darkbloom",
+                        typeflag: 120,
+                        body: metadata
+                    ),
+                    .init(
+                        name: "bin/darkbloom",
+                        body: Data("binary".utf8),
+                        mode: 0o755
+                    ),
+                ],
+                "code-signature metadata is not attached to mlx.metallib"
+            ),
+            (
+                "global-metadata",
+                [
+                    .init(
+                        name: "GlobalHead.0",
+                        typeflag: 103,
+                        body: metadata
+                    ),
+                    .init(
+                        name: "bin/mlx.metallib",
+                        body: Data("metal".utf8),
+                        mode: 0o644
+                    ),
+                ],
+                "global PAX metadata"
+            ),
+            (
+                "dangling-metadata",
+                [
+                    .init(
+                        name: "PaxHeaders/mlx.metallib",
+                        typeflag: 120,
+                        body: metadata
+                    ),
+                ],
+                "dangling path or size metadata"
+            ),
+        ]
+
+        for (name, entries, expected) in cases {
+            let archive = try fixture.writeArchive(
+                named: "misplaced-codesign-\(name)",
+                entries: entries
+            )
+            expectPreflightFailure(archive, contains: expected)
+        }
+    }
+
     @Test("binds exact release payload modes from tar headers")
     func bindsExactReleasePayloadModes() throws {
         let fixture = try ArchivePreflightFixture()

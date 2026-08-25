@@ -330,6 +330,7 @@ sub parse_pax {
         } elsif ($stripped_code_signature_metadata{$key}) {
             # Compatibility with already-published macOS metallib signatures.
             # Extraction disables xattrs, so these values never reach disk.
+            $attributes{code_signature_metadata} = 1;
         } else {
             reject("unsupported PAX metadata key $key");
         }
@@ -397,6 +398,13 @@ sub validate_payload_mode {
     )) if $actual != $expected;
 }
 
+sub code_signature_metadata_path {
+    my ($path) = @_;
+    return $path eq "bin/mlx.metallib"
+        || $path eq "mlx.metallib"
+        || $path eq "Darkbloom.app/Contents/MacOS/mlx.metallib";
+}
+
 sub add_node {
     my ($path, $kind) = @_;
     my $key = fold_path($path);
@@ -440,6 +448,7 @@ sub validate_checksum {
 
 my $pending_path;
 my $pending_size;
+my $pending_code_signature_metadata = 0;
 sub merge_path {
     my ($path) = @_;
     reject("conflicting path metadata")
@@ -456,11 +465,16 @@ sub merge_attributes {
                 && $pending_size != $attributes->{size};
         $pending_size = $attributes->{size};
     }
+    $pending_code_signature_metadata = 1
+        if exists($attributes->{code_signature_metadata})
+            && $attributes->{code_signature_metadata};
 }
 
 sub validate_end {
     reject("archive ends with dangling path or size metadata")
-        if defined($pending_path) || defined($pending_size);
+        if defined($pending_path)
+            || defined($pending_size)
+            || $pending_code_signature_metadata;
     my $second = read_exact($block_size, 0);
     add_expanded($block_size);
     reject("archive has an incomplete tar end marker")
@@ -521,7 +535,8 @@ sub validate_archive {
             my $attributes = parse_pax($payload);
             reject("global PAX metadata must not override path or size")
                 if exists($attributes->{path})
-                    || exists($attributes->{size});
+                    || exists($attributes->{size})
+                    || exists($attributes->{code_signature_metadata});
             next;
         }
         if ($typeflag eq "L") {
@@ -542,8 +557,11 @@ sub validate_archive {
         my $size = defined($pending_size)
             ? $pending_size
             : $header_size;
+        my $has_code_signature_metadata =
+            $pending_code_signature_metadata;
         undef($pending_path);
         undef($pending_size);
+        $pending_code_signature_metadata = 0;
 
         my $kind;
         if ($typeflag eq "\0" || $typeflag eq "0") {
@@ -559,6 +577,11 @@ sub validate_archive {
             ));
         }
 
+        reject(
+            "code-signature metadata is not attached to mlx.metallib"
+        ) if $has_code_signature_metadata
+            && ($kind ne "regular"
+                || !code_signature_metadata_path($path));
         validate_payload_mode($path, $header_mode)
             if $kind eq "regular";
         add_node($path, $kind);

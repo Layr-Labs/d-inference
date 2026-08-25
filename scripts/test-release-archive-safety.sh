@@ -198,6 +198,40 @@ if ($mode eq "large") {
         0,
         "0000644\0",
     );
+} elsif ($mode eq "pax_misplaced_codesign") {
+    my $pax = pax_record(
+        "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+        "c2lnbmF0dXJl",
+    );
+    emit_entry("PaxHeaders/darkbloom", "x", $pax, undef, 0);
+    emit_entry(
+        "bin/darkbloom",
+        "0",
+        "binary",
+        undef,
+        0,
+        "0000755\0",
+    );
+} elsif ($mode eq "pax_global_codesign") {
+    my $pax = pax_record(
+        "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+        "c2lnbmF0dXJl",
+    );
+    emit_entry("GlobalHead.0", "g", $pax, undef, 0);
+    emit_entry(
+        "bin/mlx.metallib",
+        "0",
+        "metal",
+        undef,
+        0,
+        "0000644\0",
+    );
+} elsif ($mode eq "pax_dangling_codesign") {
+    my $pax = pax_record(
+        "LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+        "c2lnbmF0dXJl",
+    );
+    emit_entry("PaxHeaders/mlx.metallib", "x", $pax, undef, 0);
 } elsif ($mode eq "flat_payload_mode") {
     emit_entry("bin/darkbloom", "0", "binary", undef, 0, "0000775\0");
 } elsif ($mode eq "app_payload_mode") {
@@ -386,6 +420,11 @@ expect_rejection "$(make_fixture pax_link)" "unsupported PAX link metadata"
 expect_rejection "$(make_fixture pax_unknown)" "unsupported PAX metadata key"
 expect_rejection "$(make_fixture pax_negative_mtime)" "canonical timestamp"
 expect_rejection "$(make_fixture pax_overprecise_mtime)" "fractional precision"
+expect_rejection \
+    "$(make_fixture pax_misplaced_codesign)" \
+    "code-signature metadata is not attached to mlx.metallib"
+expect_rejection "$(make_fixture pax_global_codesign)" "global PAX metadata"
+expect_rejection "$(make_fixture pax_dangling_codesign)" "dangling path or size metadata"
 expect_rejection "$(make_fixture flat_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"

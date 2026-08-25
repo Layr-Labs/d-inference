@@ -422,6 +422,66 @@ func TestReleaseArchiveAcceptsStrippedLegacyCodeSignatureMetadata(t *testing.T) 
 	}
 }
 
+func TestReleaseArchiveRejectsMisplacedCodeSignatureMetadata(t *testing.T) {
+	metadata := releasePAXRecordForTest(
+		"LIBARCHIVE.xattr.com.apple.cs.CodeSignature",
+		"c2lnbmF0dXJl",
+	)
+	tests := []struct {
+		name    string
+		entries []rawReleaseTarEntry
+		want    string
+	}{
+		{
+			name: "unrelated file",
+			entries: []rawReleaseTarEntry{
+				{name: "PaxHeaders/darkbloom", typeflag: 'x', body: metadata},
+				{
+					name:         "bin/darkbloom",
+					typeflag:     '0',
+					body:         []byte("binary"),
+					rawModeField: []byte("0000755\x00"),
+				},
+			},
+			want: "code-signature metadata is not attached to mlx.metallib",
+		},
+		{
+			name: "global metadata",
+			entries: []rawReleaseTarEntry{
+				{name: "GlobalHead.0", typeflag: 'g', body: metadata},
+				{
+					name:         "bin/mlx.metallib",
+					typeflag:     '0',
+					body:         []byte("metal"),
+					rawModeField: []byte("0000644\x00"),
+				},
+			},
+			want: "global PAX metadata",
+		},
+		{
+			name: "dangling metadata",
+			entries: []rawReleaseTarEntry{
+				{name: "PaxHeaders/mlx.metallib", typeflag: 'x', body: metadata},
+			},
+			want: "dangling path or size metadata",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := buildRawReleaseArchiveForTest(test.entries...)
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestReleaseArchiveEnforcesAggregateExpandedLimit(t *testing.T) {
 	archive := buildRawReleaseArchiveForTest(
 		rawReleaseTarEntry{name: "first", typeflag: '0', body: []byte("12345678")},

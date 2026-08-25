@@ -180,6 +180,7 @@ private enum ReleaseArchiveNodeKind {
 private struct ReleaseArchivePendingMetadata {
     var path: String?
     var size: UInt64?
+    var hasCodeSignatureMetadata = false
 }
 
 private final class ReleaseArchivePathTracker {
@@ -299,7 +300,8 @@ private final class ReleaseTarValidator {
                     label: "global PAX")
                 let attributes = try parsePAX(payload)
                 guard attributes.path == nil,
-                      attributes.size == nil
+                      attributes.size == nil,
+                      !attributes.hasCodeSignatureMetadata
                 else {
                     throw ReleaseArchivePreflightError(
                         "release archive global PAX metadata must not override path or size")
@@ -328,6 +330,8 @@ private final class ReleaseTarValidator {
                 effectivePath = try cleanPath(headerPath)
             }
             let effectiveSize = pending.size ?? headerSize
+            let hasCodeSignatureMetadata =
+                pending.hasCodeSignatureMetadata
             pending = ReleaseArchivePendingMetadata()
 
             let kind: ReleaseArchiveNodeKind
@@ -349,6 +353,13 @@ private final class ReleaseTarValidator {
                         typeflag))
             }
 
+            if hasCodeSignatureMetadata,
+               kind != .regular
+                || !pathAllowsCodeSignatureMetadata(effectivePath)
+            {
+                throw ReleaseArchivePreflightError(
+                    "release archive code-signature metadata is not attached to mlx.metallib")
+            }
             if kind == .regular,
                let mismatch = UpdateArtifactModes.archiveModeMismatch(
                    path: effectivePath,
@@ -364,7 +375,10 @@ private final class ReleaseTarValidator {
     }
 
     private func validateEndMarker() throws {
-        guard pending.path == nil, pending.size == nil else {
+        guard pending.path == nil,
+              pending.size == nil,
+              !pending.hasCodeSignatureMetadata
+        else {
             throw ReleaseArchivePreflightError(
                 "release archive ends with dangling path or size metadata")
         }
@@ -597,6 +611,7 @@ private final class ReleaseTarValidator {
                     "release archive contains unsupported PAX mode metadata")
             default:
                 if isStrippedCodeSignatureMetadata(key) {
+                    attributes.hasCodeSignatureMetadata = true
                     break
                 }
                 throw ReleaseArchivePreflightError(
@@ -623,6 +638,17 @@ private final class ReleaseTarValidator {
              "SCHILY.xattr.com.apple.cs.CodeDirectory",
              "SCHILY.xattr.com.apple.cs.CodeRequirements",
              "SCHILY.xattr.com.apple.cs.CodeSignature":
+            true
+        default:
+            false
+        }
+    }
+
+    private func pathAllowsCodeSignatureMetadata(_ path: String) -> Bool {
+        switch path {
+        case "bin/mlx.metallib",
+             "mlx.metallib",
+             "Darkbloom.app/Contents/MacOS/mlx.metallib":
             true
         default:
             false
@@ -694,6 +720,9 @@ private final class ReleaseTarValidator {
             }
             pending.size = size
         }
+        pending.hasCodeSignatureMetadata =
+            pending.hasCodeSignatureMetadata
+            || attributes.hasCodeSignatureMetadata
     }
 
     private func mergePath(_ path: String) throws {

@@ -56,8 +56,9 @@ type releaseArchiveEntry struct {
 type releaseArchiveVisitor func(releaseArchiveEntry, io.Reader) error
 
 type releaseArchivePendingMetadata struct {
-	path *string
-	size *int64
+	path                  *string
+	size                  *int64
+	codeSignatureMetadata bool
 }
 
 type releaseArchivePathTracker struct {
@@ -180,7 +181,9 @@ func validateReleaseArchive(
 			if err != nil {
 				return err
 			}
-			if attrs.path != nil || attrs.size != nil {
+			if attrs.path != nil ||
+				attrs.size != nil ||
+				attrs.codeSignatureMetadata {
 				return fmt.Errorf("release archive global PAX metadata must not override path or size")
 			}
 			continue
@@ -219,6 +222,7 @@ func validateReleaseArchive(
 		if pending.size != nil {
 			effectiveSize = *pending.size
 		}
+		hasCodeSignatureMetadata := pending.codeSignatureMetadata
 		pending = releaseArchivePendingMetadata{}
 
 		var kind releaseArchiveNodeKind
@@ -235,6 +239,13 @@ func validateReleaseArchive(
 				"release archive entry %q uses unsupported node type 0x%02x",
 				effectivePath,
 				typeflag,
+			)
+		}
+		if hasCodeSignatureMetadata &&
+			(kind != releaseArchiveRegular ||
+				!releasePathAllowsCodeSignatureMetadata(effectivePath)) {
+			return fmt.Errorf(
+				"release archive code-signature metadata is not attached to mlx.metallib",
 			)
 		}
 
@@ -293,7 +304,9 @@ func validateReleaseTarEnd(
 	expandedBytes *int64,
 	policy releaseArchivePolicy,
 ) error {
-	if pending.path != nil || pending.size != nil {
+	if pending.path != nil ||
+		pending.size != nil ||
+		pending.codeSignatureMetadata {
 		return fmt.Errorf("release archive ends with dangling path or size metadata")
 	}
 
@@ -523,6 +536,7 @@ func parseReleasePAX(
 			return attrs, fmt.Errorf("release archive contains unsupported PAX mode metadata")
 		default:
 			if releasePAXKeyIsStrippedCodeSignatureMetadata(key) {
+				attrs.codeSignatureMetadata = true
 				break
 			}
 			return attrs, fmt.Errorf(
@@ -552,6 +566,17 @@ func releasePAXKeyIsStrippedCodeSignatureMetadata(key string) bool {
 		"SCHILY.xattr.com.apple.cs.CodeDirectory",
 		"SCHILY.xattr.com.apple.cs.CodeRequirements",
 		"SCHILY.xattr.com.apple.cs.CodeSignature":
+		return true
+	default:
+		return false
+	}
+}
+
+func releasePathAllowsCodeSignatureMetadata(path string) bool {
+	switch path {
+	case "bin/mlx.metallib",
+		"mlx.metallib",
+		"Darkbloom.app/Contents/MacOS/mlx.metallib":
 		return true
 	default:
 		return false
@@ -619,6 +644,8 @@ func mergeReleasePendingMetadata(
 		size := *attrs.size
 		pending.size = &size
 	}
+	pending.codeSignatureMetadata =
+		pending.codeSignatureMetadata || attrs.codeSignatureMetadata
 	return nil
 }
 

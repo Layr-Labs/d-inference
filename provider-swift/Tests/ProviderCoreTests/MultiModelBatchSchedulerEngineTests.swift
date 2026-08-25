@@ -221,6 +221,32 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
+@Test("GPT-OSS high reasoning effort is downgraded to medium")
+func templateContextDowngradesGPTOSSHighReasoningEffort() {
+    let request = OpenAIChatCompletionRequest(
+        model: "openai/gpt-oss-20b",
+        messages: [.init(role: .user, content: .text("hi"))])
+
+    let high = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "high")
+    let medium = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "medium")
+    let low = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "low")
+    let opaqueAlias = OpenAIChatCompletionRequest(
+        model: "opaque-alias",
+        messages: [.init(role: .user, content: .text("hi"))])
+    let identifiedByModelType = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: opaqueAlias,
+        reasoningEffort: "high",
+        modelType: "gpt_oss")
+
+    #expect(high?["reasoning_effort"] as? String == "medium")
+    #expect(medium?["reasoning_effort"] as? String == "medium")
+    #expect(low?["reasoning_effort"] as? String == "low")
+    #expect(identifiedByModelType?["reasoning_effort"] as? String == "medium")
+}
+
 // MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`

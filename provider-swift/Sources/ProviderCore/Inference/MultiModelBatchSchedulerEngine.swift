@@ -69,13 +69,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let defaultMaxTokens: Int
 
     /// OpenAI `reasoning_effort` for this request (`low`/`medium`/`high`
-    /// for gpt-oss; model-specific otherwise). Injected verbatim into the
-    /// chat template's render context under the `reasoning_effort` key so
-    /// templates that read it (gpt-oss / Harmony) emit the matching
-    /// `Reasoning: <effort>` system directive. `nil` leaves the template
-    /// at its built-in default. We do not validate the value here — the
-    /// allowed set is model-specific and lives in each model's Jinja
-    /// template, so passing through is the format-agnostic choice.
+    /// for gpt-oss; model-specific otherwise). The prompt pipeline injects
+    /// it into the chat template's render context. GPT-OSS currently maps
+    /// `high` to `medium` before Harmony rendering to keep generation inside
+    /// the upstream request deadline; all other model/value combinations
+    /// pass through unchanged. `nil` leaves the template at its built-in
+    /// default.
     private let reasoningEffort: String?
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.

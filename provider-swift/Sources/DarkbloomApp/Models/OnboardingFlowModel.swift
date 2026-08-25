@@ -42,6 +42,7 @@ final class OnboardingFlowModel {
     @ObservationIgnored let readinessFactsProvider: @Sendable () -> ReadinessMachineFacts
     @ObservationIgnored let accountLinkRunner: (any AccountLinkRunning)?
     @ObservationIgnored let enrollmentRunner: (any EnrollmentCLIRunning)?
+    @ObservationIgnored let enrollmentSettings: any EnrollmentSettingsOpening
     @ObservationIgnored let preparationService: (any OnboardingPreparationServicing)?
     @ObservationIgnored let verificationURLHandler: @MainActor (URL) -> Void
     @ObservationIgnored let providerEvidenceProvider: @Sendable () -> OnboardingProviderEvidence
@@ -68,6 +69,8 @@ final class OnboardingFlowModel {
         readinessFactsProvider: @escaping @Sendable () -> ReadinessMachineFacts = { .live },
         accountLinkRunner: (any AccountLinkRunning)? = ProcessAccountLinkCLI(),
         enrollmentRunner: (any EnrollmentCLIRunning)? = ProcessEnrollmentCLI(),
+        enrollmentSettings: any EnrollmentSettingsOpening =
+            EnrollmentSettingsService(),
         preparationService: (any OnboardingPreparationServicing)? = OnboardingPreparationService(),
         verificationURLHandler: (@MainActor (URL) -> Void)? = nil,
         daemonStateProvider: (@Sendable () -> DaemonState?)? = nil,
@@ -85,6 +88,7 @@ final class OnboardingFlowModel {
         self.readinessFactsProvider = readinessFactsProvider
         self.accountLinkRunner = accountLinkRunner
         self.enrollmentRunner = enrollmentRunner
+        self.enrollmentSettings = enrollmentSettings
         self.preparationService = preparationService
         self.verificationURLHandler = verificationURLHandler ?? { NSWorkspace.shared.open($0) }
         let daemonStateProvider = daemonStateProvider ?? { DaemonStateFile.read() }

@@ -181,15 +181,57 @@ struct OnboardingEnrollmentLiveTests {
         #expect(flow.enrollmentFailureDetail == nil)
     }
 
+    @Test("Management conflict reopens removal settings without re-enrolling")
+    func conflictRecoveryDoesNotEnroll() async {
+        let enrollment = ScriptedEnrollmentRunner(results: [
+            .success(.init(
+                schema: 1,
+                status: .profileOpened,
+                serialNumber: "SERIAL",
+                profilePath: "/tmp/unexpected-profile"
+            )),
+        ])
+        let settings = EnrollmentSettingsOpenRecorder()
+        let flow = makeFlow(
+            enrollment: enrollment,
+            diagnostics: ScriptedDiagnosticsRunner(reports: []),
+            settings: settings
+        )
+        flow.enrollmentPhase = .conflictingManagement
+
+        flow.reopenSystemSettings()
+        await Task.yield()
+
+        #expect(flow.enrollmentPhase == .conflictingManagement)
+        #expect(settings.calls == [
+            [SystemSettingsProfileRemovalPane.deepLink],
+        ])
+        #expect(enrollment.calls == 0)
+    }
+
+    @Test("Enrollment settings service uses the shared profile-removal pane")
+    func settingsServiceUsesRemovalPrimitive() {
+        let recorder = EnrollmentSettingsOpenRecorder()
+        let service = EnrollmentSettingsService(openCommand: recorder.run)
+
+        service.openProfilesPaneForRemoval()
+
+        #expect(recorder.calls == [
+            [SystemSettingsProfileRemovalPane.deepLink],
+        ])
+    }
+
     private func makeFlow(
         enrollment: ScriptedEnrollmentRunner,
-        diagnostics: ScriptedDiagnosticsRunner
+        diagnostics: ScriptedDiagnosticsRunner,
+        settings: any EnrollmentSettingsOpening = EnrollmentSettingsService()
     ) -> OnboardingFlowModel {
         OnboardingFlowModel(
             startingAt: .enrollment,
             diagnosticsRunner: diagnostics,
             accountLinkRunner: nil,
             enrollmentRunner: enrollment,
+            enrollmentSettings: settings,
             preparationService: nil,
             daemonStateProvider: { nil },
             enrollmentPollInterval: .seconds(60)
@@ -240,6 +282,26 @@ struct OnboardingEnrollmentLiveTests {
             processIsAlive: processIsAlive,
             sampledAt: Date(timeIntervalSince1970: sampledAt)
         )
+    }
+}
+
+private final class EnrollmentSettingsOpenRecorder:
+    EnrollmentSettingsOpening,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storage: [[String]] = []
+
+    var calls: [[String]] { lock.withLock { storage } }
+
+    func run(arguments: [String]) throws {
+        lock.withLock {
+            storage.append(arguments)
+        }
+    }
+
+    func openProfilesPaneForRemoval() {
+        SystemSettingsProfileRemovalPane.open(using: run)
     }
 }
 

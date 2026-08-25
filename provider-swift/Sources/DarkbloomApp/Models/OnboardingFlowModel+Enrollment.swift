@@ -83,6 +83,14 @@ extension OnboardingFlowModel {
     }
 
     func reopenSystemSettings() {
+        if enrollmentPhase == .conflictingManagement {
+            conflictingManagementPersists = true
+            if !freezesAutomaticProgress {
+                enrollmentSettings.openProfilesPaneForRemoval()
+            }
+            enrollmentPhase = .conflictingManagement
+            return
+        }
         if freezesAutomaticProgress {
             enrollmentPhase = .systemSettingsOpen
         } else {

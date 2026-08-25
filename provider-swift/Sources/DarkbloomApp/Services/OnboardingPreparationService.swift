@@ -66,9 +66,9 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
                   isInferenceModel(model)
             else { return nil }
 
-            let sizeBytes = max(
-                0,
-                model.totalSizeBytes ?? Int64((model.sizeGb * 1_000_000_000).rounded())
+            let sizeBytes = ModelCatalogSize.bytes(
+                totalSizeBytes: model.totalSizeBytes,
+                sizeGB: model.sizeGb
             )
             let installed = localIDs.contains(model.id)
             if !installed, !storageAllowsDownload(

@@ -137,12 +137,10 @@ extension ModelDownloader {
     }
 
     static func catalogSizeBytes(_ model: CatalogModel) -> Int64 {
-        if let exact = model.totalSizeBytes {
-            return max(0, exact)
-        }
-        let estimate = (model.sizeGb * 1_000_000_000).rounded()
-        guard estimate.isFinite, estimate > 0 else { return 0 }
-        return estimate >= Double(Int64.max) ? Int64.max : Int64(estimate)
+        ModelCatalogSize.bytes(
+            totalSizeBytes: model.totalSizeBytes,
+            sizeGB: model.sizeGb
+        )
     }
 
     /// Capacity reported for the volume that will hold `directory`. When the

@@ -638,7 +638,10 @@ final class ModelLibraryStore {
                 family: entry.family,
                 kind: Self.kind(for: entry.modelType),
                 summary: entry.description ?? "",
-                sizeBytes: entry.totalSizeBytes ?? Int64((entry.sizeGb * 1_000_000_000).rounded()),
+                sizeBytes: ModelCatalogSize.bytes(
+                    totalSizeBytes: entry.totalSizeBytes,
+                    sizeGB: entry.sizeGb
+                ),
                 minimumMemoryGB: entry.minRamGb,
                 quantization: entry.quantization,
                 maxContextLength: entry.maxContextLength,

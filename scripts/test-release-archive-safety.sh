@@ -160,6 +160,8 @@ if ($mode eq "large") {
     );
 } elsif ($mode eq "metallib_payload_mode") {
     emit_entry("mlx.metallib", "0", "metal", undef, 0, "0000755\0");
+} elsif ($mode eq "special_mode_bits") {
+    emit_entry("docs/readme", "0", "text", undef, 0, "0001000\0");
 } elsif ($mode eq "pax_overflow") {
     my $pax = pax_record("size", "999999999999999999999999999999999999");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
@@ -328,6 +330,7 @@ expect_rejection "$(make_fixture pax_mode)" "unsupported PAX mode metadata"
 expect_rejection "$(make_fixture flat_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"
+expect_rejection "$(make_fixture special_mode_bits)" "portable permission bits"
 expect_rejection "$(make_fixture pax_overflow)" "overflows"
 expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 2047 16384
 expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 1536 16384

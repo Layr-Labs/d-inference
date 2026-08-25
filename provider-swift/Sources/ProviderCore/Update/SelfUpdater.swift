@@ -720,10 +720,11 @@ public struct SelfUpdater: Sendable {
                     Self.stagingOwnerFileName
                 )
             )
-            try BoundedProcess.run(
-                URL(fileURLWithPath: "/usr/bin/tar"),
-                arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path],
-                timeout: Self.artifactVerificationTimeout)
+            try ReleaseArchiveExtractor.extract(
+                archive: downloadedFile,
+                destination: stagingRoot,
+                timeout: Self.artifactVerificationTimeout
+            )
             // The archive may legally contain an unknown dotfile at its root.
             // Re-publish our marker after extraction so archive bytes can
             // never become staging ownership authority.

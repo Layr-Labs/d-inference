@@ -140,7 +140,7 @@ func validateReleaseArchive(
 		if err != nil {
 			return err
 		}
-		if headerMode > 0o7777 {
+		if headerMode > 0o777 {
 			return fmt.Errorf("release archive entry mode exceeds portable permission bits")
 		}
 		typeflag := header[156]

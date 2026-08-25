@@ -277,6 +277,10 @@ private final class ReleaseTarValidator {
             let headerMode = try parseTarNumber(
                 Array(header[100..<108]),
                 label: "entry mode")
+            guard headerMode <= 0o777 else {
+                throw ReleaseArchivePreflightError(
+                    "release archive entry mode exceeds portable permission bits")
+            }
             let headerSize = try parseTarNumber(
                 Array(header[124..<136]),
                 label: "entry size")

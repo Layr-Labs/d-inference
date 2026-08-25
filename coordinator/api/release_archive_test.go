@@ -269,6 +269,22 @@ func TestReleaseArchiveRejectsNegativeAndOverflowingBase256Sizes(t *testing.T) {
 	}
 }
 
+func TestReleaseArchiveRejectsNonPortableModeBits(t *testing.T) {
+	archive := buildRawReleaseArchiveForTest(rawReleaseTarEntry{
+		name:         "docs/readme",
+		typeflag:     '0',
+		rawModeField: []byte("0001000\x00"),
+	})
+	err := validateReleaseArchive(
+		bytes.NewReader(archive),
+		defaultReleaseArchivePolicy,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "portable permission bits") {
+		t.Fatalf("validate error = %v, want portable permission bits", err)
+	}
+}
+
 func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -360,6 +376,7 @@ func TestReleaseArchiveEnforcesPhysicalHeaderCount(t *testing.T) {
 			fmt.Sprintf("files/%05d", index),
 			'0',
 			nil,
+			nil,
 			0,
 		))
 	}
@@ -400,7 +417,7 @@ func TestReleaseArchiveRejectsMalformedHeadersAndTrailingData(t *testing.T) {
 		{name: "non-zero trailer", archive: trailing, want: "non-zero data"},
 		{
 			name:    "missing end marker",
-			archive: releaseTarHeaderForTest("file", '0', nil, 0),
+			archive: releaseTarHeaderForTest("file", '0', nil, nil, 0),
 			want:    "missing the tar end marker",
 		},
 	}
@@ -464,6 +481,7 @@ type rawReleaseTarEntry struct {
 	name           string
 	typeflag       byte
 	body           []byte
+	rawModeField   []byte
 	rawSizeField   []byte
 	omitBodyAndPad bool
 }
@@ -474,6 +492,7 @@ func buildRawReleaseArchiveForTest(entries ...rawReleaseTarEntry) []byte {
 		output.Write(releaseTarHeaderForTest(
 			entry.name,
 			entry.typeflag,
+			entry.rawModeField,
 			entry.rawSizeField,
 			int64(len(entry.body)),
 		))
@@ -492,12 +511,16 @@ func buildRawReleaseArchiveForTest(entries ...rawReleaseTarEntry) []byte {
 func releaseTarHeaderForTest(
 	name string,
 	typeflag byte,
+	rawModeField []byte,
 	rawSizeField []byte,
 	size int64,
 ) []byte {
 	header := make([]byte, releaseTarBlockSize)
 	copy(header[0:100], name)
-	copy(header[100:108], []byte("0000755\x00"))
+	if rawModeField == nil {
+		rawModeField = []byte("0000755\x00")
+	}
+	copy(header[100:108], rawModeField)
 	copy(header[108:116], []byte("0000000\x00"))
 	copy(header[116:124], []byte("0000000\x00"))
 	if rawSizeField == nil {

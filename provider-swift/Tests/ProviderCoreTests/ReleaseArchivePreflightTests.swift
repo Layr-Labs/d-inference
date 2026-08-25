@@ -228,6 +228,12 @@ struct ReleaseArchivePreflightTests {
                 "expected 0755"
             ),
             ("root-metallib", "mlx.metallib", 0o755, "expected 0644"),
+            (
+                "untracked-special-bits",
+                "docs/readme",
+                0o1000,
+                "portable permission bits"
+            ),
         ]
 
         for (name, path, mode, expected) in cases {
@@ -242,6 +248,66 @@ struct ReleaseArchivePreflightTests {
                 ])
             expectPreflightFailure(archive, contains: expected)
         }
+    }
+
+    @Test("extractor preserves approved modes under a restrictive umask")
+    func extractorPreservesApprovedModes() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let archive = try fixture.writeArchive(
+            named: "restrictive-umask",
+            entries: [
+                .init(name: "bin", typeflag: 53),
+                .init(
+                    name: "bin/darkbloom",
+                    body: Data("binary".utf8),
+                    mode: 0o755
+                ),
+                .init(
+                    name: "bin/darkbloom-enclave",
+                    body: Data("enclave".utf8),
+                    mode: 0o755
+                ),
+                .init(
+                    name: "bin/mlx.metallib",
+                    body: Data("metal".utf8),
+                    mode: 0o644
+                ),
+            ]
+        )
+        try ReleaseArchivePreflight.validate(archive)
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "release-extraction-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: destination) }
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "umask 077; exec /usr/bin/tar \"$@\"",
+                "darkbloom-release-extraction-test",
+            ] + ReleaseArchiveExtractor.arguments(
+                archive: archive,
+                destination: destination
+            ),
+            timeout: 10
+        )
+
+        let modes = try UpdateArtifactModes(
+            binary: destination.appendingPathComponent("bin/darkbloom"),
+            enclave: destination.appendingPathComponent(
+                "bin/darkbloom-enclave"
+            ),
+            metallib: destination.appendingPathComponent("bin/mlx.metallib")
+        )
+        #expect(modes.releaseModeMismatch == nil)
     }
 
     @Test("enforces aggregate expanded bytes and physical header count")

@@ -397,9 +397,9 @@ make_artifact() {
     local app="$stage/Darkbloom.app"
     local binary="$ROOT/$capability"
     mkdir -p "$app/Contents/MacOS" "$stage/bin"
-    cp "$binary" "$app/Contents/MacOS/darkbloom"
-    cp "$binary" "$app/Contents/MacOS/darkbloom-enclave"
-    cp "$binary" "$app/Contents/MacOS/mlx.metallib"
+    install -m 0755 "$binary" "$app/Contents/MacOS/darkbloom"
+    install -m 0755 "$binary" "$app/Contents/MacOS/darkbloom-enclave"
+    install -m 0644 "$binary" "$app/Contents/MacOS/mlx.metallib"
     cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -443,9 +443,11 @@ PLIST
     codesign --force --sign - "$app"
     codesign --verify --deep --strict "$app"
 
-    cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
-    cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
-    cp "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
+    install -m 0755 "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
+    install -m 0755 \
+        "$app/Contents/MacOS/darkbloom-enclave" \
+        "$stage/bin/darkbloom-enclave"
+    install -m 0644 "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
     tar czf "$output" -C "$stage" .
     rm -rf "$stage"
 }
@@ -454,9 +456,9 @@ make_flat_artifact() {
     local output=$1
     local stage="$ROOT/flat-stage-$RANDOM"
     mkdir -p "$stage/bin"
-    cp "$ROOT/legacy" "$stage/bin/darkbloom"
-    cp "$ROOT/legacy" "$stage/bin/darkbloom-enclave"
-    cp "$ROOT/legacy" "$stage/bin/mlx.metallib"
+    install -m 0755 "$ROOT/legacy" "$stage/bin/darkbloom"
+    install -m 0755 "$ROOT/legacy" "$stage/bin/darkbloom-enclave"
+    install -m 0644 "$ROOT/legacy" "$stage/bin/mlx.metallib"
     codesign --force --sign - "$stage/bin/mlx.metallib"
     codesign --force --sign - "$stage/bin/darkbloom-enclave"
     codesign --force --sign - "$stage/bin/darkbloom"
@@ -492,6 +494,19 @@ run_install_with() {
     PATH="$CLT_SHIMS:$PATH" bash "$installer" --install-bundle-test \
         "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
         "$FAN_HELPER_REQUIREMENT"
+}
+
+run_install_with_restrictive_umask() {
+    local installer=$1
+    local archive=$2
+    local install_dir=$3
+    artifact_hashes "$archive"
+    (
+        umask 077
+        PATH="$CLT_SHIMS:$PATH" bash "$installer" --install-bundle-test \
+            "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    )
 }
 
 run_install_without_hashes() {
@@ -545,6 +560,18 @@ do
         echo "$installer accepted an app outside the required identity" >&2
         exit 1
     fi
+done
+
+for installer in \
+    "$REPO_ROOT/scripts/install.sh" \
+    "$REPO_ROOT/coordinator/api/install.sh"
+do
+    restrictive_install="$ROOT/restrictive-$(basename "$(dirname "$installer")")"
+    run_install_with_restrictive_umask \
+        "$installer" "$VALID" "$restrictive_install"
+    bash "$installer" --verify-release-payload-modes-test \
+        "$restrictive_install/Darkbloom.app/Contents/MacOS" \
+        "Restrictive-umask app payload"
 done
 
 # Both public installer copies accept exactly SemVer 2 and implement the

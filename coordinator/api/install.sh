@@ -475,6 +475,8 @@ sub validate_archive {
             substr($header, 100, 8),
             "entry mode",
         );
+        reject("entry mode exceeds portable permission bits")
+            if $header_mode > 0777;
         my $header_size = parse_tar_number(
             substr($header, 124, 12),
             "entry size",
@@ -3168,7 +3170,7 @@ install_bundle_atomically_locked() {
     create_installer_staging \
         "$stage" "$install_dir" "$transaction_id" || return 1
     install_test_crash "staging-created"
-    if ! tar xzf "$archive" -C "$stage"; then
+    if ! /usr/bin/tar -xzp -f "$archive" -C "$stage"; then
         cleanup_install_staging_after_attempt \
             "$stage" "$install_dir" "$transaction_id" || true
         return 1

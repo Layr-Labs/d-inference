@@ -66,11 +66,11 @@ struct UpdateProcessLockTests {
             ".install-backup-123-456-789",
             ".install-staging-123-456-789",
         ] {
-            try assertUpdaterRejectsPendingShellArtifact(named: pendingName)
+            try assertUpdaterRejectsPendingOneShotArtifact(named: pendingName)
         }
     }
 
-    private func assertUpdaterRejectsPendingShellArtifact(
+    private func assertUpdaterRejectsPendingOneShotArtifact(
         named pendingName: String
     ) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(

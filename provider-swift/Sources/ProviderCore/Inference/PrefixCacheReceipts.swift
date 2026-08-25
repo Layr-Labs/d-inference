@@ -170,18 +170,25 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
         self.receiptNonce = Self.nonEmpty(cacheReceiptNonce)
     }
 
-    /// Scope-only metadata authorizes the process-local exact RAM tier. The
-    /// durable SSD tier additionally requires a receipt nonce so stale or
-    /// malformed capability state cannot silently bypass ownership evidence.
-    func cacheEnabled(
+    /// Whether the engine may use its installed prefix cache. Scope-only
+    /// metadata authorizes the process-local exact RAM tier. The durable SSD
+    /// tier additionally requires a receipt nonce, but its presence must not
+    /// override an independently authorized exact cache when both handles are
+    /// visible during a mixed-tier transition.
+    func engineCacheEnabled(
         exactCacheAvailable: Bool,
         ssdCacheAvailable: Bool
     ) -> Bool {
         guard scope != nil else { return false }
-        if ssdCacheAvailable {
-            return receiptNonce != nil
-        }
         return exactCacheAvailable
+            || (ssdCacheAvailable && receiptNonce != nil)
+    }
+
+    /// SSD read-through staging is durable-cache evidence work and therefore
+    /// requires both authenticated scope and receipt ownership metadata.
+    /// This is intentionally independent from exact engine-cache permission.
+    func ssdStageEnabled(ssdCacheAvailable: Bool) -> Bool {
+        scope != nil && receiptNonce != nil && ssdCacheAvailable
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

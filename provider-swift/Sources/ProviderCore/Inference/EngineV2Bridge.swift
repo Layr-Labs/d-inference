@@ -431,8 +431,10 @@ public actor EngineV2Bridge {
     ///
     /// `cacheScope` is authenticated and coordinator-authored for remote
     /// requests; standalone callers remain unscoped. It maps onto
-    /// `CBv2Request.cacheSalt`: non-empty scopes cannot share encrypted SSD
-    /// blocks across tenants, and `cacheEnabled=false` fails cold.
+    /// `CBv2Request.cacheSalt`: non-empty scopes cannot share cache entries
+    /// across tenants. `cacheEnabled` controls the cache installed in the
+    /// engine, while `ssdCacheStageEnabled` independently controls the
+    /// bridge's durable SSD read-through stage.
     ///
     /// `usageSignal`, when non-nil, receives the engine's terminal usage
     /// detail (matched and actually-saved prefix tokens) so the frames loop can
@@ -459,6 +461,7 @@ public actor EngineV2Bridge {
         requestId: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        ssdCacheStageEnabled: Bool = true,
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
@@ -523,7 +526,9 @@ public actor EngineV2Bridge {
         // lookup/endAdoption calls balance this exact ticket.
         let prefixCacheReceiptID: CBv2RequestID?
         var readyReceiptRegistered = false
-        if cacheEnabled, multimodal == nil, let ssd = ssdPrefixCache {
+        if cacheEnabled, ssdCacheStageEnabled, multimodal == nil,
+            let ssd = ssdPrefixCache
+        {
             let receiptID = mintPrefixCacheReceiptID()
             prefixCacheReceiptID = receiptID
             if let callback = usageSignal?.onCacheReady {
@@ -554,7 +559,10 @@ public actor EngineV2Bridge {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
-        } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID {
+        } else if ssdCacheStageEnabled,
+            let ssd = ssdPrefixCache,
+            let prefixCacheReceiptID
+        {
             let stageResult = await ssd.stage(
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,

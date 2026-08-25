@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MLXLMCommon
 import MLXLMServer
@@ -176,12 +177,63 @@ struct RemoteExactPrefixCacheIntegrationTests {
             tokenizer: tokenizer))
     }
 
+    private func makeSSDCache() throws -> (cache: SSDPrefixCache, root: URL) {
+        let dedicatedRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "remote-exact-mixed-\(UUID().uuidString)", isDirectory: true)
+        let modelRoot = dedicatedRoot.appendingPathComponent(
+            "mixed-model", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(
+            dedicatedRoot: dedicatedRoot, modelRoot: modelRoot)
+        let layerKinds = [
+            CBv2LayerKind(
+                attention: .full, headDim: 4, kvHeads: 1, queryHeads: 1)
+        ]
+        return (
+            SSDPrefixCache(
+                config: .init(
+                    modelId: modelID,
+                    promptContractID: "mixed-prompt-contract",
+                    weightHash: "mixed-weight-hash",
+                    blockSize: 8,
+                    adoptionBoundTokens: 0,
+                    layoutEpoch: SSDBlockStore.layoutEpoch(
+                        blockSize: 8, layerKinds: layerKinds),
+                    root: modelRoot,
+                    dedicatedRoot: dedicatedRoot,
+                    ttlSeconds: 900,
+                    minEffectiveTokens: 8,
+                    maxStageBytes: 1 << 20,
+                    maxStageMillis: 10_000,
+                    nowSeconds: { 10_000 }),
+                kekKey: SymmetricKey(size: .bits256),
+                kvBudget: nil,
+                diskBudget: SSDDiskBudget(),
+                maxWriteBytesPerDay: 0,
+                diskBudgetBytes: { 1 << 20 }),
+            dedicatedRoot)
+    }
+
     private func runRemoteRequest(
-        authenticatedScope: String?
+        authenticatedScope: String?,
+        cacheReceiptNonce: String? = nil,
+        includeSSD: Bool = false
     ) async throws -> (request: CBv2Request, receiptCount: Int) {
         let loop = try makeLoop()
         let tokenizer = RemoteExactTokenizer()
         let engine = RemoteExactCaptureEngine()
+        let ssdFixture: (cache: SSDPrefixCache, root: URL)?
+        if includeSSD {
+            ssdFixture = try makeSSDCache()
+        } else {
+            ssdFixture = nil
+        }
+        defer {
+            ssdFixture?.cache.close()
+            if let root = ssdFixture?.root {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
         let exactCache = ExactPrefixCacheV2(config: .init(
             modelIdentity: "verified-model",
             policyIdentity: "exact-policy",
@@ -193,9 +245,10 @@ struct RemoteExactPrefixCacheIntegrationTests {
             eosTokenIds: [2],
             exactPrefixCache: exactCache,
             exactPrefixCacheConfigured: true,
-            exactPrefixCacheReason: "ready")
+            exactPrefixCacheReason: "ready",
+            ssdPrefixCache: ssdFixture?.cache)
         #expect(bridge.exactPrefixCache != nil)
-        #expect(bridge.ssdPrefixCache == nil)
+        #expect((bridge.ssdPrefixCache != nil) == includeSSD)
         await loop.installModelSlotForTesting(
             modelId: modelID,
             container: makeContainer(tokenizer: tokenizer),
@@ -220,6 +273,7 @@ struct RemoteExactPrefixCacheIntegrationTests {
         let wire = try ProviderProtocolCodec.encodeCoordinatorMessage(.inferenceRequest(.init(
             requestId: "remote-\(UUID().uuidString)",
             encryptedBody: encrypted,
+            cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: authenticatedScope)))
         guard case .inferenceRequest(let inbound) =
             try ProviderProtocolCodec.decodeCoordinatorMessage(from: wire)
@@ -272,5 +326,38 @@ struct RemoteExactPrefixCacheIntegrationTests {
         #expect(!blank.request.prefixCacheEnabled)
         #expect(blank.request.cacheSalt == nil)
         #expect(blank.receiptCount == 0)
+    }
+
+    @Test("mixed exact and SSD cache keeps scope-only authorization on the engine")
+    func mixedScopeOnlyAuthorizesExactWithoutStaging() async throws {
+        let result = try await runRemoteRequest(
+            authenticatedScope: "coordinator-authenticated-tenant",
+            includeSSD: true)
+
+        #expect(result.request.prefixCacheEnabled)
+        #expect(result.request.cacheSalt == "coordinator-authenticated-tenant")
+        #expect(result.request.prefixCacheReceiptID == nil)
+        #expect(result.receiptCount == 0)
+    }
+
+    @Test("mixed exact and SSD cache stages only with complete receipt metadata")
+    func mixedSSDStageRequiresReceiptMetadata() async throws {
+        let authorized = try await runRemoteRequest(
+            authenticatedScope: "coordinator-authenticated-tenant",
+            cacheReceiptNonce: "coordinator-receipt",
+            includeSSD: true)
+        #expect(authorized.request.prefixCacheEnabled)
+        #expect(authorized.request.cacheSalt == "coordinator-authenticated-tenant")
+        #expect(authorized.request.prefixCacheReceiptID != nil)
+        #expect(authorized.receiptCount == 1)
+
+        let missingScope = try await runRemoteRequest(
+            authenticatedScope: nil,
+            cacheReceiptNonce: "coordinator-receipt",
+            includeSSD: true)
+        #expect(!missingScope.request.prefixCacheEnabled)
+        #expect(missingScope.request.cacheSalt == nil)
+        #expect(missingScope.request.prefixCacheReceiptID == nil)
+        #expect(missingScope.receiptCount == 1)
     }
 }

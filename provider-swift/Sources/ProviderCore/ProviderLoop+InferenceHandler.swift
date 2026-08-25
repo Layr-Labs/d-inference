@@ -359,8 +359,10 @@ extension ProviderLoop {
         // the scheduler-free vision gate covers media decode and generation
         // memory reservations.
         let slotEngineV2 = slot.engineV2
-        let cacheEnabled = remoteCache.cacheEnabled(
+        let cacheEnabled = remoteCache.engineCacheEnabled(
             exactCacheAvailable: slotEngineV2.exactPrefixCache != nil,
+            ssdCacheAvailable: slotEngineV2.ssdPrefixCache != nil)
+        let ssdCacheStageEnabled = remoteCache.ssdStageEnabled(
             ssdCacheAvailable: slotEngineV2.ssdPrefixCache != nil)
         if prefixCacheProtocol == 2,
             let nonce = remoteCache.receiptNonce,
@@ -496,6 +498,7 @@ extension ProviderLoop {
                 reasoningEffort: reasoningEffort,
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
+                ssdCacheStageEnabled: ssdCacheStageEnabled,
                 engineV2Logprobs: logprobsChannel.map {
                     EngineV2LogprobsPlumbing(
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)

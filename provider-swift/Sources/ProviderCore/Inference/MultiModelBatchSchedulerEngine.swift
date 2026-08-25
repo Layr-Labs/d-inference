@@ -80,9 +80,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
-    /// False only for remote requests from a legacy/malformed coordinator
-    /// that did not provide an authenticated outer cache scope.
+    /// Controls the engine's installed prefix-cache lookup and donation.
+    /// False for remote requests that did not authorize either exact RAM reuse
+    /// or durable SSD reuse.
     private let cacheEnabled: Bool
+    /// Controls only the bridge's pre-submit SSD read-through stage. Exact RAM
+    /// reuse can remain enabled while this is false.
+    private let ssdCacheStageEnabled: Bool
     /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal matched/saved token detail here so the
     /// caller's frames loop can splice OpenAI-standard
@@ -120,6 +124,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reasoningEffort: String? = nil,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        ssdCacheStageEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
@@ -133,6 +138,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reasoningEffort = reasoningEffort
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
+        self.ssdCacheStageEnabled = ssdCacheStageEnabled
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
@@ -172,6 +178,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reasoningEffort = nil
         self.cacheScope = ""
         self.cacheEnabled = true
+        self.ssdCacheStageEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
         // there is no provider seam to decorate frames with logprobs on this
         // init (same visible behavior as the legacy engine: none emitted).
@@ -392,6 +399,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         requestId: visionRequestId,
                         cacheScope: cacheScope,
                         cacheEnabled: cacheEnabled,
+                        ssdCacheStageEnabled: ssdCacheStageEnabled,
                         logprobsChannel: engineV2Logprobs?.channel,
                         // Media requests are prefix-cache-excluded engine-
                         // side (hit tokens always 0), but the signal still
@@ -620,6 +628,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // funds the cache).
                 cacheScope: cacheScope,
                 cacheEnabled: cacheEnabled,
+                ssdCacheStageEnabled: ssdCacheStageEnabled,
                 logprobsChannel: engineV2Logprobs?.channel,
                 usageSignal: engineV2Usage,
                 tokenConstraint: tokenConstraint

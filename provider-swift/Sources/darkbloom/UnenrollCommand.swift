@@ -70,8 +70,7 @@ struct Unenroll: AsyncParsableCommand {
 
         if proceed {
             try await unlinkProviderAccount(
-                token: AuthTokenStore.load(),
-                coordinatorURL: accountUnlinkCoordinatorURL(configOptions: configOptions)
+                credential: try ProviderCredentialStore.load()
             )
             try LocalDataCleanup.purge(authToken: false)
             print("  ✓ Local data cleaned up.")

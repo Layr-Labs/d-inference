@@ -140,7 +140,9 @@ struct Report: AsyncParsableCommand {
         request.httpBody = logData
         request.timeoutInterval = 60
 
-        if let token = AuthTokenStore.load() {
+        if let token = try ProviderCredentialStore.authenticationToken(
+            for: httpBase
+        ) {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 

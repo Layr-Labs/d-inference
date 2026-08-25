@@ -11,12 +11,6 @@
     Core && Array.isArray(Core.PROVIDER_HARDWARE_OPTIONS)
       ? Core.PROVIDER_HARDWARE_OPTIONS
       : [];
-  const API_BASE = "https://api.darkbloom.dev";
-  const FALLBACK_MODELS = [
-    { id: "qwen3.6-35b-a3b-mxfp8", display_name: "Qwen3.6 35B A3B", min_ram_gb: 48, size_gb: 22 },
-    { id: "gemma-4-26b-a4b-mxfp8", display_name: "Gemma 4 26B A4B", min_ram_gb: 32, size_gb: 17 },
-    { id: "gpt-oss-20b-mxfp4", display_name: "GPT-OSS 20B", description: "3.6B active parameters", min_ram_gb: 24, size_gb: 12 },
-  ];
   const locale = navigator.language || "en-US";
   const MAC_TYPES = PROVIDER_HARDWARE_OPTIONS.reduce(function (types, option) {
     if (!types.includes(option.macType)) types.push(option.macType);
@@ -27,7 +21,7 @@
     chip: "",
     ram: null,
     dutyCyclePercent: Core ? Core.DEFAULT_DUTY_CYCLE_PERCENT : 5,
-    catalogModels: Core ? Core.buildCalculatorModels(FALLBACK_MODELS) : [],
+    catalogModels: Core ? Core.CALCULATOR_MODELS : [],
   };
 
   function fmtUSD(value, decimals) {
@@ -407,20 +401,5 @@
       return;
     }
     render();
-    if (window.fetch) {
-      window.fetch(API_BASE + "/v1/models/catalog", { headers: { Accept: "application/json" } })
-        .then(function (response) {
-          if (!response.ok) throw new Error("catalog " + response.status);
-          return response.json();
-        })
-        .then(function (payload) {
-          const models = Core.buildCalculatorModels(payload.models || []);
-          if (models.length) {
-            state.catalogModels = models;
-            render();
-          }
-        })
-        .catch(function () { /* keep the small local fallback */ });
-    }
   });
 })();

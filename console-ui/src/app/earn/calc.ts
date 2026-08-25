@@ -1,5 +1,3 @@
-import type { Model } from "@/lib/api";
-
 export interface HardwareProfile {
   bandwidthGBs: number;
 }
@@ -114,20 +112,6 @@ export const FLOOR_TIERS: FloorTier[] = [
   { minGB: 0, label: "Under 24GB", floorUSD: 0 },
 ];
 
-const QUANTIZATION_SUFFIXES = new Set([
-  "qat",
-  "q4",
-  "q8",
-  "int4",
-  "int8",
-  "4bit",
-  "8bit",
-  "mxfp4",
-  "mxfp8",
-  "fp4",
-  "fp8",
-]);
-
 export interface CalculatorModel {
   id: string;
   displayName: string;
@@ -138,75 +122,36 @@ export interface CalculatorModel {
   outputPriceMicroUSDPerMillion: number;
 }
 
-function modelSizeGB(model: Model): number {
-  if (model.size_gb && model.size_gb > 0) return model.size_gb;
-  if (model.size_bytes && model.size_bytes > 0) return model.size_bytes / 1_000_000_000;
-  return 0;
-}
-
-function modelTokens(model: Model): string[] {
-  return `${model.id} ${model.display_name ?? ""} ${model.description ?? ""}`
-    .toLowerCase()
-    .split(/[^a-z0-9.]+/)
-    .filter(Boolean);
-}
-
-function billionsToken(token: string): number {
-  if (!token.endsWith("b")) return 0;
-  const value = Number(token.slice(0, -1));
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function parameterCountBillions(tokens: string[]): number {
-  return tokens.map(billionsToken).find((value) => value > 0) ?? 0;
-}
-
-function activeParameterCount(tokens: string[], totalBillions: number): number {
-  const activeToken = tokens.find((token) => token.startsWith("a") && token.endsWith("b"));
-  const activeIndex = tokens.indexOf("active");
-  let activeBillions = 0;
-  if (activeToken) activeBillions = billionsToken(activeToken.slice(1));
-  else if (activeIndex > 0) activeBillions = billionsToken(tokens[activeIndex - 1]);
-  return (activeBillions || totalBillions) * 1_000_000_000;
-}
-
-function outputPrice(model: Model): number {
-  if (model.id.toLowerCase().includes("qwen3.6-35b-a3b")) {
-    return QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION;
-  }
-  const perTokenUSD = Number(model.pricing?.completion);
-  return Number.isFinite(perTokenUSD) && perTokenUSD > 0
-    ? Math.round(perTokenUSD * 1_000_000_000_000)
-    : 0;
-}
-
-export function buildCalculatorModels(models: Model[]): CalculatorModel[] {
-  const seen = new Set<string>();
-  const result: CalculatorModel[] = [];
-
-  for (const model of models) {
-    const sizeGB = modelSizeGB(model);
-    const tokens = modelTokens(model);
-    const totalBillions = parameterCountBillions(tokens);
-    const activeCount = activeParameterCount(tokens, totalBillions);
-    const quantization = tokens.at(-1);
-    const key = QUANTIZATION_SUFFIXES.has(quantization ?? "")
-      ? model.id.slice(0, -(quantization!.length + 1))
-      : model.id;
-    if (seen.has(key) || sizeGB <= 0 || totalBillions <= 0 || activeCount <= 0) continue;
-    seen.add(key);
-    result.push({
-      id: model.id,
-      displayName: model.display_name || model.name || model.id,
-      minRAMGB: model.min_ram_gb || Math.ceil(sizeGB * 1.35),
-      sizeGB,
-      activeParameterCount: activeCount,
-      bytesPerParameter: sizeGB / totalBillions,
-      outputPriceMicroUSDPerMillion: outputPrice(model),
-    });
-  }
-  return result;
-}
+/** The three models Darkbloom supports today, pinned for a stable estimate. */
+export const CALCULATOR_MODELS: CalculatorModel[] = [
+  {
+    id: "qwen3.6-35b-a3b-mxfp8",
+    displayName: "Qwen3.6 35B A3B",
+    minRAMGB: 48,
+    sizeGB: 22,
+    activeParameterCount: 3_000_000_000,
+    bytesPerParameter: 22 / 35,
+    outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
+  },
+  {
+    id: "gemma-4-26b-a4b-mxfp8",
+    displayName: "Gemma 4 26B A4B",
+    minRAMGB: 32,
+    sizeGB: 17,
+    activeParameterCount: 4_000_000_000,
+    bytesPerParameter: 17 / 26,
+    outputPriceMicroUSDPerMillion: 220_000,
+  },
+  {
+    id: "gpt-oss-20b-mxfp4",
+    displayName: "GPT-OSS 20B",
+    minRAMGB: 24,
+    sizeGB: 12,
+    activeParameterCount: 3_600_000_000,
+    bytesPerParameter: 12 / 20,
+    outputPriceMicroUSDPerMillion: 69_000,
+  },
+];
 
 export interface CapacityRevenueEstimate {
   model: CalculatorModel;

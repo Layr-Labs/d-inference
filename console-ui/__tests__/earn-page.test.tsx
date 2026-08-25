@@ -1,12 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRequire } from "node:module";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Model } from "@/lib/api/types";
+import { describe, expect, it, vi } from "vitest";
 import {
+  CALCULATOR_MODELS,
   DEFAULT_DUTY_CYCLE_PERCENT,
   DECODE_BANDWIDTH_EFFICIENCY,
   HARDWARE_OPTIONS,
-  buildCalculatorModels,
   calculateCapacityRevenue,
 } from "@/app/earn/calc";
 import {
@@ -19,39 +18,7 @@ const MAC_STUDIO = "Mac Studio";
 const M4_MAX = "M4 Max (16-core CPU)";
 const BEST_ESTIMATE = "Best current estimate";
 const MONTHLY_EARNING = "Estimated monthly earning";
-const MODEL_OBJECT = "model";
-const ZERO_PROMPT_PRICE = "0";
 const QWEN_DISPLAY_NAME = "Qwen3.6 35B A3B";
-const models: Model[] = [
-  {
-    id: "qwen3.6-35b-a3b-mxfp8",
-    object: MODEL_OBJECT,
-    display_name: QWEN_DISPLAY_NAME,
-    min_ram_gb: 48,
-    size_gb: 22,
-  },
-  {
-    id: "gemma-4-26b-a4b-mxfp8",
-    object: MODEL_OBJECT,
-    display_name: "Gemma 4 26B A4B",
-    min_ram_gb: 32,
-    size_gb: 17,
-    pricing: { prompt: ZERO_PROMPT_PRICE, completion: "0.00000022" },
-  },
-  {
-    id: "gpt-oss-20b-mxfp4",
-    object: MODEL_OBJECT,
-    display_name: "GPT-OSS 20B",
-    description: "3.6B active parameters",
-    min_ram_gb: 24,
-    size_gb: 12,
-    pricing: { prompt: ZERO_PROMPT_PRICE, completion: "0.000000069" },
-  },
-];
-
-const apiMocks = vi.hoisted(() => ({
-  fetchModels: vi.fn(),
-}));
 
 vi.mock("@/components/TopBar", () => ({
   TopBar: ({ title }: { title?: string }) => <div data-testid="topbar">{title}</div>,
@@ -60,23 +27,15 @@ vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ ready: true, authenticated: true, login: vi.fn() }),
 }));
 vi.mock("@/lib/google-analytics", () => ({ trackEvent: vi.fn() }));
-vi.mock("@/lib/api", () => ({
-  fetchModels: apiMocks.fetchModels,
-}));
 
 const requireFromTest = createRequire(import.meta.url);
 const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as {
   HARDWARE_OPTIONS: typeof HARDWARE_OPTIONS;
   MIN_PROVIDER_MEMORY_GB: number;
   PROVIDER_HARDWARE_OPTIONS: typeof PROVIDER_HARDWARE_OPTIONS;
-  buildCalculatorModels: typeof buildCalculatorModels;
+  CALCULATOR_MODELS: typeof CALCULATOR_MODELS;
   calculateCapacityRevenue: typeof calculateCapacityRevenue;
 };
-
-beforeEach(() => {
-  apiMocks.fetchModels.mockReset();
-  apiMocks.fetchModels.mockResolvedValue(structuredClone(models));
-});
 
 function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
   fireEvent.change(screen.getByLabelText("Mac model"), { target: { value: macType } });
@@ -87,25 +46,29 @@ function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
 }
 
 describe("earnings projection", () => {
-  it("builds model inputs from the existing catalog and hardcoded Qwen price", () => {
-    const catalog = buildCalculatorModels(models);
-    expect(catalog.map((model) => model.displayName)).toEqual([
+  it("pins the three supported models, active weights, and output prices", () => {
+    expect(CALCULATOR_MODELS.map((model) => model.displayName)).toEqual([
       QWEN_DISPLAY_NAME,
       "Gemma 4 26B A4B",
       "GPT-OSS 20B",
     ]);
-    expect(catalog[0]).toMatchObject({
-      activeParameterCount: 3_000_000_000,
-      bytesPerParameter: 22 / 35,
-      outputPriceMicroUSDPerMillion: 700_000,
-    });
+    expect(CALCULATOR_MODELS.map((model) => model.activeParameterCount)).toEqual([
+      3_000_000_000,
+      4_000_000_000,
+      3_600_000_000,
+    ]);
+    expect(CALCULATOR_MODELS.map((model) => model.outputPriceMicroUSDPerMillion)).toEqual([
+      700_000,
+      220_000,
+      69_000,
+    ]);
   });
 
   it("uses 65% of bandwidth, active weights, output pricing, and duty cycle", () => {
     const hardware = HARDWARE_OPTIONS.find(
       (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
     )!;
-    const model = buildCalculatorModels(models)[0];
+    const model = CALCULATOR_MODELS[0];
     const estimate = calculateCapacityRevenue(model, hardware, 48, 50)!;
     expect(estimate.activeWeightGBPerToken).toBeCloseTo((3 * 22) / 35, 12);
     expect(estimate.decodeTokensPerSecond).toBeCloseTo(
@@ -120,11 +83,16 @@ describe("earnings projection", () => {
     const hardware = HARDWARE_OPTIONS.find(
       (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
     )!;
-    const consoleModels = buildCalculatorModels(models);
-    const landingModels = landingCore.buildCalculatorModels(models);
-    expect(landingModels).toEqual(consoleModels);
-    expect(landingCore.calculateCapacityRevenue(landingModels[0], hardware, 48, 50)).toEqual(
-      calculateCapacityRevenue(consoleModels[0], hardware, 48, 50),
+    expect(landingCore.CALCULATOR_MODELS).toEqual(CALCULATOR_MODELS);
+    expect(
+      landingCore.calculateCapacityRevenue(
+        landingCore.CALCULATOR_MODELS[0],
+        hardware,
+        48,
+        50,
+      ),
+    ).toEqual(
+      calculateCapacityRevenue(CALCULATOR_MODELS[0], hardware, 48, 50),
     );
   });
 
@@ -194,14 +162,6 @@ describe("EarnPage", () => {
     fireEvent.change(screen.getByLabelText("Duty cycle"), { target: { value: "25" } });
     const after = screen.getByText(MONTHLY_EARNING).parentElement?.textContent;
     expect(after).not.toBe(before);
-  });
-
-  it("shows a terminal unavailable state when the catalog cannot load", async () => {
-    apiMocks.fetchModels.mockRejectedValueOnce(new Error("catalog unavailable"));
-    const EarnPage = (await import("@/app/earn/page")).default;
-    render(<EarnPage />);
-    selectMac();
-    expect((await screen.findAllByText("Estimate unavailable")).length).toBeGreaterThan(0);
   });
 
   it("invites interest instead of enrollment below 48 GB", async () => {

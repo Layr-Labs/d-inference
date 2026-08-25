@@ -10,9 +10,6 @@
   const MONTH_SECONDS = 30 * 24 * 60 * 60;
   const MIN_PROVIDER_MEMORY_GB = 48;
   const QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 700000;
-  const QUANTIZATION_SUFFIXES = new Set([
-    "qat", "q4", "q8", "int4", "int8", "4bit", "8bit", "mxfp4", "mxfp8", "fp4", "fp8",
-  ]);
   const MAC_CONFIGS = [
     { macType: "MacBook Pro", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68 },
     { macType: "MacBook Pro", chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200 },
@@ -66,80 +63,35 @@
     return chipDelta || MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
   });
 
-  function modelSizeGB(model) {
-    if (model.size_gb > 0) return model.size_gb;
-    if (model.size_bytes > 0) return model.size_bytes / 1000000000;
-    return 0;
-  }
-
-  function modelTokens(model) {
-    return [model.id, model.display_name, model.description]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase()
-      .split(/[^a-z0-9.]+/)
-      .filter(Boolean);
-  }
-
-  function billionsToken(token) {
-    if (!token.endsWith("b")) return 0;
-    const value = Number(token.slice(0, -1));
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  }
-
-  function parameterCountBillions(tokens) {
-    return tokens.map(billionsToken).find(function (value) { return value > 0; }) || 0;
-  }
-
-  function activeParameterCount(tokens, totalBillions) {
-    const activeToken = tokens.find(function (token) {
-      return token.startsWith("a") && token.endsWith("b");
-    });
-    const activeIndex = tokens.indexOf("active");
-    const activeBillions = activeToken
-      ? billionsToken(activeToken.slice(1))
-      : activeIndex > 0
-        ? billionsToken(tokens[activeIndex - 1])
-        : 0;
-    return (activeBillions || totalBillions) * 1000000000;
-  }
-
-  function outputPrice(model) {
-    if (model.id.toLowerCase().includes("qwen3.6-35b-a3b")) {
-      return QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION;
-    }
-    const perTokenUSD = Number(model.pricing && model.pricing.completion);
-    return Number.isFinite(perTokenUSD) && perTokenUSD > 0
-      ? Math.round(perTokenUSD * 1000000000000)
-      : 0;
-  }
-
-  function buildCalculatorModels(models) {
-    const seen = new Set();
-    const result = [];
-    models.forEach(function (model) {
-      const sizeGB = modelSizeGB(model);
-      const tokens = modelTokens(model);
-      const totalBillions = parameterCountBillions(tokens);
-      const activeCount = activeParameterCount(tokens, totalBillions);
-      const quantization = tokens[tokens.length - 1];
-      const key = QUANTIZATION_SUFFIXES.has(quantization)
-        ? model.id.slice(0, -(quantization.length + 1))
-        : model.id;
-      if (seen.has(key) || sizeGB <= 0 || totalBillions <= 0 || activeCount <= 0) return;
-      seen.add(key);
-      result.push({
-        id: model.id,
-        displayName: model.display_name || model.name || model.id,
-        minRAMGB: model.min_ram_gb || Math.ceil(sizeGB * 1.35),
-        sizeGB: sizeGB,
-        activeParameterCount: activeCount,
-        bytesPerParameter: sizeGB / totalBillions,
-        outputPriceMicroUSDPerMillion: outputPrice(model),
-      });
-    });
-    return result;
-  }
+  const CALCULATOR_MODELS = [
+    {
+      id: "qwen3.6-35b-a3b-mxfp8",
+      displayName: "Qwen3.6 35B A3B",
+      minRAMGB: 48,
+      sizeGB: 22,
+      activeParameterCount: 3000000000,
+      bytesPerParameter: 22 / 35,
+      outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
+    },
+    {
+      id: "gemma-4-26b-a4b-mxfp8",
+      displayName: "Gemma 4 26B A4B",
+      minRAMGB: 32,
+      sizeGB: 17,
+      activeParameterCount: 4000000000,
+      bytesPerParameter: 17 / 26,
+      outputPriceMicroUSDPerMillion: 220000,
+    },
+    {
+      id: "gpt-oss-20b-mxfp4",
+      displayName: "GPT-OSS 20B",
+      minRAMGB: 24,
+      sizeGB: 12,
+      activeParameterCount: 3600000000,
+      bytesPerParameter: 12 / 20,
+      outputPriceMicroUSDPerMillion: 69000,
+    },
+  ];
 
   function calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent) {
     const duty = dutyCyclePercent === undefined ? DEFAULT_DUTY_CYCLE_PERCENT : dutyCyclePercent;
@@ -177,11 +129,11 @@
   return {
     DEFAULT_DUTY_CYCLE_PERCENT: DEFAULT_DUTY_CYCLE_PERCENT,
     DECODE_BANDWIDTH_EFFICIENCY: DECODE_BANDWIDTH_EFFICIENCY,
+    CALCULATOR_MODELS: CALCULATOR_MODELS,
     HARDWARE_OPTIONS: HARDWARE_OPTIONS,
     MIN_PROVIDER_MEMORY_GB: MIN_PROVIDER_MEMORY_GB,
     PROVIDER_HARDWARE_OPTIONS: HARDWARE_OPTIONS,
     QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
-    buildCalculatorModels: buildCalculatorModels,
     calculateCapacityRevenue: calculateCapacityRevenue,
   };
 });

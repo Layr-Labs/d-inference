@@ -16,13 +16,10 @@ export function EarningsHero({
   ready: boolean;
   login: () => void;
 }) {
-  const { result, hasFittingModel, effectiveRAM, catalogState } = calc;
-  const loading = catalogState === "loading";
+  const { result, hasFittingModel, effectiveRAM } = calc;
 
   let unavailableDetail = "An earning estimate is unavailable for the models that fit this Mac.";
-  if (catalogState === "unavailable") {
-    unavailableDetail = "The current model catalog could not be loaded.";
-  } else if (!hasFittingModel) {
+  if (!hasFittingModel) {
     unavailableDetail = `No currently supported model fits in ${effectiveRAM} GB.`;
   }
 
@@ -37,17 +34,7 @@ export function EarningsHero({
       <p className="text-sm text-text-secondary">{unavailableDetail}</p>
     </>
   );
-  if (loading) {
-    statusContent = (
-      <>
-        <p className="mb-2 text-xs uppercase tracking-wider text-text-secondary">
-          Estimated monthly earning
-        </p>
-        <p className="py-2 font-mono text-4xl font-bold text-text-primary sm:text-5xl">…</p>
-        <p className="text-sm text-text-secondary">Loading models…</p>
-      </>
-    );
-  } else if (result) {
+  if (result) {
     statusContent = (
       <>
         <p className="text-xs uppercase tracking-wider text-text-secondary">
@@ -68,7 +55,7 @@ export function EarningsHero({
     <div className="mb-6 rounded-xl bg-bg-secondary p-6 text-center sm:p-8">
       <div role="status" aria-live="polite" aria-atomic="true">{statusContent}</div>
 
-      {catalogState === "ready" && !hasFittingModel && (
+      {!hasFittingModel && (
         <SmallModelsInterest
           calc={calc}
           authenticated={authenticated}

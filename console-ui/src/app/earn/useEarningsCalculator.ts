@@ -1,17 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { fetchModels } from "@/lib/api";
+import { useMemo, useState } from "react";
 import {
+  CALCULATOR_MODELS,
   DEFAULT_DUTY_CYCLE_PERCENT,
-  buildCalculatorModels,
   calculateCapacityRevenue,
   type CalculatorModel,
   type CapacityRevenueEstimate,
 } from "./calc";
 import { PROVIDER_HARDWARE_OPTIONS, isProviderReadyMemory } from "./providerReadiness";
-
-export type CatalogState = "loading" | "ready" | "unavailable";
 
 export interface ModelRow {
   model: CalculatorModel;
@@ -26,29 +23,6 @@ export function useEarningsCalculator() {
   const [selectedChip, setSelectedChip] = useState("");
   const [selectedRAM, setSelectedRAM] = useState<number | null>(null);
   const [dutyCyclePercent, setDutyCyclePercent] = useState(DEFAULT_DUTY_CYCLE_PERCENT);
-  const [catalogState, setCatalogState] = useState<CatalogState>("loading");
-  const [catalogModels, setCatalogModels] = useState<CalculatorModel[]>([]);
-
-  useEffect(() => {
-    let active = true;
-    fetchModels()
-      .then((models) => {
-        if (!active) return undefined;
-        const calculatorModels = buildCalculatorModels(models);
-        setCatalogModels(calculatorModels);
-        setCatalogState(calculatorModels.length > 0 ? "ready" : "unavailable");
-        return undefined;
-      })
-      .catch(() => {
-        if (!active) return undefined;
-        setCatalogModels([]);
-        setCatalogState("unavailable");
-        return undefined;
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const availableChips = useMemo(
     () =>
@@ -72,8 +46,8 @@ export function useEarningsCalculator() {
   const isProductionReady = isConfigured && isProviderReadyMemory(effectiveRAM);
 
   const modelRows = useMemo<ModelRow[]>(() => {
-    if (!isProductionReady || catalogState !== "ready") return [];
-    const rows = catalogModels.map((model) => {
+    if (!isProductionReady) return [];
+    const rows = CALCULATOR_MODELS.map((model) => {
       const fits = model.minRAMGB <= effectiveRAM;
       return {
         model,
@@ -90,7 +64,7 @@ export function useEarningsCalculator() {
       return earningDelta || a.model.minRAMGB - b.model.minRAMGB;
     });
     return rows;
-  }, [catalogModels, catalogState, dutyCyclePercent, effectiveRAM, hardware, isProductionReady]);
+  }, [dutyCyclePercent, effectiveRAM, hardware, isProductionReady]);
 
   const bestRow = modelRows.find((row) => row.fits && row.estimate !== null) ?? null;
 
@@ -117,7 +91,6 @@ export function useEarningsCalculator() {
     selectRAM: setSelectedRAM,
     dutyCyclePercent,
     selectDutyCyclePercent: setDutyCyclePercent,
-    catalogState,
     modelRows,
     bestModel: bestRow?.model ?? null,
     result: bestRow?.estimate ?? null,

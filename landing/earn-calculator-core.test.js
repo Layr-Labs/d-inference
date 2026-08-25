@@ -2,35 +2,26 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Core = require("./earn-calculator-core.js");
 
-const models = [
-  {
-    id: "qwen3.6-35b-a3b-mxfp8",
-    display_name: "Qwen3.6 35B A3B",
-    min_ram_gb: 48,
-    size_gb: 22,
-  },
-  {
-    id: "gemma-4-26b-a4b-mxfp8",
-    display_name: "Gemma 4 26B A4B",
-    min_ram_gb: 32,
-    size_gb: 17,
-    pricing: { completion: "0.00000022" },
-  },
-];
-
-test("catalog mapping uses active weights and the hardcoded Qwen price", () => {
-  const catalog = Core.buildCalculatorModels(models);
-  assert.deepEqual(catalog.map((model) => model.displayName), [
+test("catalog pins the three supported models, active weights, and prices", () => {
+  assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.displayName), [
     "Qwen3.6 35B A3B",
     "Gemma 4 26B A4B",
+    "GPT-OSS 20B",
   ]);
-  assert.equal(catalog[0].activeParameterCount, 3_000_000_000);
-  assert.equal(catalog[0].bytesPerParameter, 22 / 35);
-  assert.equal(catalog[0].outputPriceMicroUSDPerMillion, 700_000);
+  assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.activeParameterCount), [
+    3_000_000_000,
+    4_000_000_000,
+    3_600_000_000,
+  ]);
+  assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.outputPriceMicroUSDPerMillion), [
+    700_000,
+    220_000,
+    69_000,
+  ]);
 });
 
 test("projection uses 65% bandwidth, duty cycle, and no batching", () => {
-  const model = Core.buildCalculatorModels(models)[0];
+  const model = Core.CALCULATOR_MODELS[0];
   const hardware = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
   );
@@ -47,7 +38,7 @@ test("projection uses 65% bandwidth, duty cycle, and no batching", () => {
 });
 
 test("projection scales linearly with duty cycle", () => {
-  const model = Core.buildCalculatorModels(models)[0];
+  const model = Core.CALCULATOR_MODELS[0];
   const hardware = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
   );

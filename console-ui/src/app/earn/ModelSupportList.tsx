@@ -9,9 +9,7 @@ function formatSize(sizeGB: number): string {
 }
 
 export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
-  const { modelRows, bestModel, effectiveRAM, catalogState } = calc;
-  const unavailable = catalogState === "unavailable" || modelRows.length === 0;
-  const ready = catalogState === "ready" && modelRows.length > 0;
+  const { modelRows, bestModel, effectiveRAM } = calc;
 
   return (
     <div className="rounded-xl bg-bg-secondary p-6 mb-6">
@@ -23,17 +21,12 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
         Models are ranked by estimated monthly earning at the selected duty cycle.
       </p>
 
-      {catalogState === "loading" && (
-        <div className="text-center py-6 text-sm text-text-secondary">
-          Loading models…
-        </div>
-      )}
-      {catalogState !== "loading" && unavailable && (
+      {modelRows.length === 0 && (
         <div className="text-center py-6 text-sm text-text-secondary">
           Estimate unavailable
         </div>
       )}
-      {ready && (
+      {modelRows.length > 0 && (
         <ul className="rounded-lg border border-border-dim overflow-hidden">
           {modelRows.map(({ model, fits, estimate }, index) => {
             const isBest = Boolean(estimate && model.id === bestModel?.id);

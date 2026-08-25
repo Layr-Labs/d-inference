@@ -307,11 +307,14 @@ type Server struct {
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
 	minProviderVersion string
 
-	hardwareAdmissionMu        sync.RWMutex
-	hardwareAdmissionPolicy    hardwareadmission.Policy
-	hardwareAdmissionPendingMu sync.Mutex
-	hardwareAdmissionPending   map[string]pendingHardwareAdmission
-	hardwareAdmissionFinalizeRetry map[string]struct{}
+	hardwareAdmissionMu             sync.RWMutex
+	hardwareAdmissionApplyMu        sync.Mutex
+	hardwareAdmissionPolicy         hardwareadmission.Policy
+	hardwareAdmissionPendingMu      sync.Mutex
+	hardwareAdmissionPending        map[string]pendingHardwareAdmission
+	hardwareAdmissionFinalizeRetry  map[string]struct{}
+	hardwareAdmissionRetryMu        sync.Mutex
+	hardwareAdmissionReconcileRetry map[int64]struct{}
 
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
 	// It can only POST /v1/releases — no admin access.
@@ -722,27 +725,28 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
-		registry:                 reg,
-		store:                    st,
-		ledger:                   payments.NewLedger(st),
-		logger:                   logger,
-		mux:                      http.NewServeMux(),
-		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
-		telemetryLimiter:         newTelemetryLimiter(),
-		readCache:                newTTLCache(),
-		geoResolver:              newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:              make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:       newCodeAttestThrottle(),
-		trustReuseCache:          newTrustReuseCache(),
-		settlements:              newSettlementHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
-		firstContentDeadlineBase: firstContentDeadlineBase,
-		hardwareAdmissionPending: make(map[string]pendingHardwareAdmission),
-		hardwareAdmissionFinalizeRetry: make(map[string]struct{}),
+		registry:                        reg,
+		store:                           st,
+		ledger:                          payments.NewLedger(st),
+		logger:                          logger,
+		mux:                             http.NewServeMux(),
+		knownRuntimeManifest:            &RuntimeManifest{},
+		metrics:                         NewMetrics(),
+		telemetryLimiter:                newTelemetryLimiter(),
+		readCache:                       newTTLCache(),
+		geoResolver:                     newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:                     make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:              newCodeAttestThrottle(),
+		trustReuseCache:                 newTrustReuseCache(),
+		settlements:                     newSettlementHolder(),
+		zombieCanceller:                 newZombieStreamCanceller(),
+		serviceReservations:             newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:                  newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:                   mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase:        firstContentDeadlineBase,
+		hardwareAdmissionPending:        make(map[string]pendingHardwareAdmission),
+		hardwareAdmissionFinalizeRetry:  make(map[string]struct{}),
+		hardwareAdmissionReconcileRetry: make(map[int64]struct{}),
 	}
 	s.registerDefaultGauges()
 	s.routes()

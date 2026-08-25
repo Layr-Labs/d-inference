@@ -239,6 +239,32 @@ func TestHardwareAdmissionBootstrapFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestHardwareAdmissionPolicyPublicationIsMonotonic(t *testing.T) {
+	srv, _ := testServer(t)
+	newer := hardwareadmission.Policy{
+		Version: 2, Mode: hardwareadmission.ModeEnforce,
+		CatalogVersion: hardwareadmission.CatalogVersion,
+	}
+	srv.setHardwareAdmissionPolicy(newer)
+	applied, err := srv.applyHardwareAdmissionPolicy(hardwareadmission.Policy{
+		Version: 1, Mode: hardwareadmission.ModeShadow,
+		CatalogVersion: hardwareadmission.CatalogVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("older policy overwrote newer in-memory enforcement")
+	}
+	if got := srv.hardwareAdmissionPolicySnapshot(); got.Version != 2 ||
+		got.Mode != hardwareadmission.ModeEnforce {
+		t.Fatalf("active policy = %+v", got)
+	}
+	if !srv.registry.HardwareAdmissionEnforced() {
+		t.Fatal("stale shadow policy disabled registry enforcement")
+	}
+}
+
 func ptrAdmissionResult(result attestation.VerificationResult) *attestation.VerificationResult {
 	return &result
 }

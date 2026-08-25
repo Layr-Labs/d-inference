@@ -367,10 +367,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			if provider.HardwareAdmissionStatus() {
 				s.registry.ActivateProviderPersistence(provider)
 			}
-			if attestResult != nil && attestResult.SerialNumber != "" && !s.allowDuplicateProviderSerials {
-				s.registry.DisconnectDuplicatesBySerial(providerID, attestResult.SerialNumber)
-			}
-
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
 				s.metrics.IncCounter("provider_registrations_total",
@@ -3088,6 +3084,22 @@ func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, pro
 	// passed (verifyProviderAttestation returns early otherwise).
 	if result == nil || !result.Valid || result.SerialNumber == "" {
 		return
+	}
+	// New-machine enforcement must not let a self-signed serial claim spend MDM
+	// or Apple-attestation budget (or evict the genuine machine). Wait until the
+	// APNs round-trip proves this is the official provider binary on the current
+	// connection. Break-glass rollback releases the wait without weakening the
+	// ordinary non-enforced flow.
+	if s.hardwareAdmissionEnforcing() && !provider.GetCodeAttested() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for s.hardwareAdmissionEnforcing() && !provider.GetCodeAttested() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
 	}
 
 	// DAR-326 Phase 0: if this device has a fresh trust-reuse record (it recently

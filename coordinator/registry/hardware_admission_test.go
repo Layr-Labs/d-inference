@@ -41,3 +41,15 @@ func TestDisabledHardwareAdmissionPreservesRegistrationDefault(t *testing.T) {
 		t.Fatal("disabled hardware policy changed legacy registration behavior")
 	}
 }
+
+func TestPendingRegistrationStartsUnadmittedEvenBeforeEnforcement(t *testing.T) {
+	reg := New(testLogger())
+	provider := reg.RegisterPendingHardwareAdmission(
+		"pending-before-policy-flip", nil, testRegisterMessage())
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("pending registration inherited fail-open admission")
+	}
+	if provider.PersistenceEnabled() {
+		t.Fatal("pending registration enabled persistence before admission")
+	}
+}

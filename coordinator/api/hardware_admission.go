@@ -110,8 +110,8 @@ func (s *Server) scheduleHardwareAdmissionBootstrap(bootstrap hardwareadmission.
 			active, err := s.store.GetActiveHardwareAdmissionPolicy(ctx)
 			if err == nil && active != nil {
 				cancel()
-				s.setHardwareAdmissionPolicy(*active)
-				if reconcileErr := s.reconcileConnectedHardwareAdmissions(*active); reconcileErr != nil {
+				_, reconcileErr := s.applyHardwareAdmissionPolicy(*active)
+				if reconcileErr != nil {
 					s.scheduleHardwareAdmissionReconciliation(*active)
 				}
 				return
@@ -121,8 +121,8 @@ func (s *Server) scheduleHardwareAdmissionBootstrap(bootstrap hardwareadmission.
 				activated, err = s.store.ActivateHardwareAdmissionPolicy(ctx, bootstrap, 0)
 				if err == nil {
 					cancel()
-					s.setHardwareAdmissionPolicy(activated)
-					if reconcileErr := s.reconcileConnectedHardwareAdmissions(activated); reconcileErr != nil {
+					_, reconcileErr := s.applyHardwareAdmissionPolicy(activated)
+					if reconcileErr != nil {
 						s.scheduleHardwareAdmissionReconciliation(activated)
 					}
 					return
@@ -135,11 +135,15 @@ func (s *Server) scheduleHardwareAdmissionBootstrap(bootstrap hardwareadmission.
 	})
 }
 
-func (s *Server) setHardwareAdmissionPolicy(policy hardwareadmission.Policy) {
+func (s *Server) setHardwareAdmissionPolicy(policy hardwareadmission.Policy) bool {
 	if policy.CatalogVersion == "" {
 		policy.CatalogVersion = hardwareadmission.CatalogVersion
 	}
 	s.hardwareAdmissionMu.Lock()
+	if policy.Version < s.hardwareAdmissionPolicy.Version {
+		s.hardwareAdmissionMu.Unlock()
+		return false
+	}
 	changed := s.hardwareAdmissionPolicy.Version != policy.Version ||
 		s.hardwareAdmissionPolicy.Mode != policy.Mode
 	s.hardwareAdmissionPolicy = policy
@@ -148,6 +152,20 @@ func (s *Server) setHardwareAdmissionPolicy(policy hardwareadmission.Policy) {
 	if changed {
 		s.invalidateHardwareAdmissionCaches()
 	}
+	return true
+}
+
+func (s *Server) applyHardwareAdmissionPolicy(policy hardwareadmission.Policy) (bool, error) {
+	s.hardwareAdmissionApplyMu.Lock()
+	defer s.hardwareAdmissionApplyMu.Unlock()
+	current := s.hardwareAdmissionPolicySnapshot()
+	if policy.Version == current.Version && policy.Mode == current.Mode {
+		return true, nil
+	}
+	if !s.setHardwareAdmissionPolicy(policy) {
+		return false, nil
+	}
+	return true, s.reconcileConnectedHardwareAdmissions(policy)
 }
 
 func (s *Server) invalidateHardwareAdmissionCaches() {
@@ -165,7 +183,6 @@ func (s *Server) hardwareAdmissionPolicySnapshot() hardwareadmission.Policy {
 }
 
 func (s *Server) refreshHardwareAdmissionPolicy(ctx context.Context) (hardwareadmission.Policy, error) {
-	previous := s.hardwareAdmissionPolicySnapshot()
 	policy, err := s.store.GetActiveHardwareAdmissionPolicy(ctx)
 	if err != nil {
 		return hardwareadmission.Policy{}, err
@@ -173,11 +190,12 @@ func (s *Server) refreshHardwareAdmissionPolicy(ctx context.Context) (hardwaread
 	if policy == nil {
 		return s.hardwareAdmissionPolicySnapshot(), nil
 	}
-	s.setHardwareAdmissionPolicy(*policy)
-	if previous.Mode != policy.Mode || previous.Version != policy.Version {
-		if err := s.reconcileConnectedHardwareAdmissions(*policy); err != nil {
-			s.scheduleHardwareAdmissionReconciliation(*policy)
-		}
+	applied, reconcileErr := s.applyHardwareAdmissionPolicy(*policy)
+	if reconcileErr != nil {
+		s.scheduleHardwareAdmissionReconciliation(*policy)
+	}
+	if !applied {
+		return s.hardwareAdmissionPolicySnapshot(), nil
 	}
 	return *policy, nil
 }
@@ -530,6 +548,18 @@ func (s *Server) finalizeOrScheduleHardwareAdmission(provider *registry.Provider
 	}
 }
 
+func (s *Server) providerCodeIdentityReady(provider *registry.Provider) {
+	if provider == nil || !provider.GetCodeAttested() {
+		return
+	}
+	if result := provider.GetAttestationResult(); result != nil &&
+		result.Valid && result.SerialNumber != "" &&
+		!s.allowDuplicateProviderSerials {
+		s.registry.DisconnectDuplicatesBySerial(provider.ID, result.SerialNumber)
+	}
+	s.finalizeOrScheduleHardwareAdmission(provider)
+}
+
 func (s *Server) rejectHardwareAdmission(provider *registry.Provider, rejection hardwareAdmissionRejection) bool {
 	if provider == nil {
 		return false
@@ -722,10 +752,15 @@ func (s *Server) handleAdminHardwareAdmissionPolicyPut(w http.ResponseWriter, r 
 			errorResponse("internal_error", "failed to activate hardware admission policy"))
 		return
 	}
-	s.setHardwareAdmissionPolicy(activated)
-	if err := s.reconcileConnectedHardwareAdmissions(activated); err != nil {
+	applied, reconcileErr := s.applyHardwareAdmissionPolicy(activated)
+	if !applied {
+		writeJSON(w, http.StatusConflict,
+			errorResponse("policy_version_conflict", "a newer hardware admission policy is already active"))
+		return
+	}
+	if reconcileErr != nil {
 		s.logger.Warn("hardware admission reconciliation will retry",
-			"policy_version", activated.Version, "error", err)
+			"policy_version", activated.Version, "error", reconcileErr)
 		s.scheduleHardwareAdmissionReconciliation(activated)
 	}
 	s.logger.Info("hardware admission policy activated",
@@ -735,19 +770,40 @@ func (s *Server) handleAdminHardwareAdmissionPolicyPut(w http.ResponseWriter, r 
 }
 
 func (s *Server) scheduleHardwareAdmissionReconciliation(policy hardwareadmission.Policy) {
+	s.hardwareAdmissionRetryMu.Lock()
+	if s.hardwareAdmissionReconcileRetry == nil {
+		s.hardwareAdmissionReconcileRetry = make(map[int64]struct{})
+	}
+	if _, scheduled := s.hardwareAdmissionReconcileRetry[policy.Version]; scheduled {
+		s.hardwareAdmissionRetryMu.Unlock()
+		return
+	}
+	s.hardwareAdmissionReconcileRetry[policy.Version] = struct{}{}
+	s.hardwareAdmissionRetryMu.Unlock()
 	saferun.Go(s.logger, "hardwareAdmissionReconcile", func() {
-		for attempt := 1; attempt <= 5; attempt++ {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		defer func() {
+			s.hardwareAdmissionRetryMu.Lock()
+			delete(s.hardwareAdmissionReconcileRetry, policy.Version)
+			s.hardwareAdmissionRetryMu.Unlock()
+		}()
+		for attempt := 1; ; attempt++ {
+			delay := time.Duration(attempt) * 2 * time.Second
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			time.Sleep(delay)
+			s.hardwareAdmissionApplyMu.Lock()
 			current := s.hardwareAdmissionPolicySnapshot()
-			if current.Version != policy.Version || current.Mode != hardwareadmission.ModeEnforce {
+			if current.Version != policy.Version || current.Mode != policy.Mode {
+				s.hardwareAdmissionApplyMu.Unlock()
 				return
 			}
-			if err := s.reconcileConnectedHardwareAdmissions(policy); err == nil {
+			err := s.reconcileConnectedHardwareAdmissions(policy)
+			s.hardwareAdmissionApplyMu.Unlock()
+			if err == nil {
 				return
 			}
 		}
-		s.logger.Error("hardware admission reconciliation exhausted retries",
-			"policy_version", policy.Version)
 	})
 }
 

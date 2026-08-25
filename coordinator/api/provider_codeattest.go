@@ -107,7 +107,7 @@ func (s *Server) tryCrossVersionReuse(providerID string, provider *registry.Prov
 			"provider_id", providerID, "blocked_by", blockedBy)
 		return false
 	}
-	s.finalizeOrScheduleHardwareAdmission(provider)
+	s.providerCodeIdentityReady(provider)
 	s.registry.DrainQueuedRequestsForProvider(provider)
 	s.codeAttestMetric("reused_cross_version")
 	s.logger.Info("code-attest: reused a recent attestation across a version change (fenced: attestation+runtime+SIP+min-version verified; no push)",
@@ -140,7 +140,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	// token is unchanged (Codex #7), and the proof is fresh.
 	if s.codeAttestThrottle.reuseAttestation(seKey, version, apnsToken) {
 		provider.SetCodeAttested(true)
-		s.finalizeOrScheduleHardwareAdmission(provider)
+		s.providerCodeIdentityReady(provider)
 		s.registry.DrainQueuedRequestsForProvider(provider)
 		s.codeAttestMetric("reused")
 		s.logger.Info("code-attest: reused a recent attestation for this device (no push)",
@@ -419,7 +419,7 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	}
 
 	provider.SetCodeAttested(true)
-	s.finalizeOrScheduleHardwareAdmission(provider)
+	s.providerCodeIdentityReady(provider)
 	s.codeAttestThrottle.recordAttested(sePubKey, version, apnsToken)
 	// Persist the same record (incl. the bound APNs token) so the reuse cache
 	// survives a coordinator restart/blue-green deploy (W5 Fix 2) yet still forces a

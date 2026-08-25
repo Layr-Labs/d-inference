@@ -23,10 +23,9 @@ import (
 )
 
 func TestGenerateCombinedProfile(t *testing.T) {
-	serial := "ABCD1234EFGH"
 	baseURL := "https://api.darkbloom.dev"
 
-	profile := generateCombinedProfile(serial, baseURL)
+	profile := generateCombinedProfile(baseURL)
 
 	// Must contain all 3 domain-specific URLs with the correct base
 	expectedURLs := []string{
@@ -45,9 +44,12 @@ func TestGenerateCombinedProfile(t *testing.T) {
 		t.Error("profile still contains old hardcoded domain")
 	}
 
-	// Must contain serial number in the profile identifier
-	if !strings.Contains(profile, "io.darkbloom.enroll."+serial) {
-		t.Error("profile missing profile identifier with serial")
+	// Profile identity is stable without containing hardware identity.
+	if !strings.Contains(profile, "<string>io.darkbloom.enroll</string>") {
+		t.Error("profile missing generic enrollment identifier")
+	}
+	if strings.Contains(profile, "PRIVATE-SERIAL") || strings.Contains(profile, "serial_number") {
+		t.Error("profile contains device identity")
 	}
 
 	// Must contain the push topic
@@ -101,7 +103,7 @@ func TestGenerateCombinedProfileDifferentDomains(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			profile := generateCombinedProfile("TEST1234", tt.baseURL)
+			profile := generateCombinedProfile(tt.baseURL)
 
 			if !strings.Contains(profile, tt.baseURL+"/scep") {
 				t.Errorf("expected SCEP URL with base %s", tt.baseURL)
@@ -127,7 +129,8 @@ func enrollTestServer(t *testing.T) *Server {
 func TestHandleEnrollEndpoint(t *testing.T) {
 	srv := enrollTestServer(t)
 
-	body := `{"serial_number": "ABCD1234EFGH"}`
+	// A legacy serial field is accepted for rollout compatibility but ignored.
+	body := `{"serial_number": "PRIVATE-SERIAL"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "api.darkbloom.dev"
@@ -146,11 +149,14 @@ func TestHandleEnrollEndpoint(t *testing.T) {
 
 	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="Darkbloom-Enroll.mobileconfig"` {
 		t.Errorf("expected privacy-safe Darkbloom download filename, got %q", cd)
-	} else if strings.Contains(cd, "ABCD1234EFGH") {
+	} else if strings.Contains(cd, "PRIVATE-SERIAL") {
 		t.Errorf("download filename exposed device serial: %q", cd)
 	}
 
 	profile := w.Body.String()
+	if strings.Contains(profile, "PRIVATE-SERIAL") || strings.Contains(profile, "serial_number") {
+		t.Fatal("enrollment profile exposed legacy request identity")
+	}
 
 	// Verify URLs use the request host
 	if !strings.Contains(profile, "https://api.darkbloom.dev/scep") {
@@ -208,7 +214,7 @@ func TestHandleEnrollSigned(t *testing.T) {
 	srv := enrollTestServer(t)
 	srv.SetProfileSigner(newTestProfileSigner(t))
 
-	body := `{"serial_number": "ABCD1234EFGH"}`
+	body := `{}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "api.darkbloom.dev"
@@ -244,7 +250,7 @@ func TestHandleEnrollSigned(t *testing.T) {
 		"com.apple.security.scep",
 		"com.apple.mdm",
 		"https://api.darkbloom.dev/scep",
-		"io.darkbloom.enroll.ABCD1234EFGH",
+		"<string>io.darkbloom.enroll</string>",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("encapsulated profile missing %q", want)
@@ -262,7 +268,7 @@ func TestHandleEnrollSigned(t *testing.T) {
 func TestHandleEnrollUnsignedFallback(t *testing.T) {
 	srv := enrollTestServer(t) // no signer set
 
-	body := `{"serial_number": "ABCD1234EFGH"}`
+	body := `{}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
 	req.Host = "api.darkbloom.dev"
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -286,7 +292,7 @@ func TestHandleEnrollPinsCanonicalBaseURL(t *testing.T) {
 	srv.SetBaseURL("https://api.darkbloom.dev")
 	srv.SetProfileSigner(newTestProfileSigner(t))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(`{"serial_number":"ABCD1234EFGH"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(`{}`))
 	req.Host = "evil.example.com" // spoofed Host header
 	req.Header.Set("X-Forwarded-Proto", "https")
 	w := httptest.NewRecorder()
@@ -308,41 +314,25 @@ func TestHandleEnrollPinsCanonicalBaseURL(t *testing.T) {
 	}
 }
 
-func TestHandleEnrollInvalidSerial(t *testing.T) {
+func TestHandleEnrollRejectsInvalidJSON(t *testing.T) {
 	srv := enrollTestServer(t)
 
-	tests := []struct {
-		name string
-		body string
-	}{
-		{"empty", `{"serial_number": ""}`},
-		{"too_short", `{"serial_number": "ABC"}`},
-		{"lowercase", `{"serial_number": "abcd1234efgh"}`},
-		{"special_chars", `{"serial_number": "ABCD-1234!"}`},
-		{"missing_field", `{}`},
+	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(tt.body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			srv.Handler().ServeHTTP(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Errorf("expected 400 for %s, got %d", tt.name, w.Code)
-			}
-
-			var resp map[string]interface{}
-			json.Unmarshal(w.Body.Bytes(), &resp)
-			errObj, ok := resp["error"].(map[string]interface{})
-			if !ok {
-				t.Errorf("expected error object in response")
-				return
-			}
-			if errObj["type"] != "invalid_request_error" {
-				t.Errorf("expected invalid_request_error, got %v", errObj["type"])
-			}
-		})
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected error object in response")
+	}
+	if errObj["type"] != "invalid_request_error" {
+		t.Errorf("expected invalid_request_error, got %v", errObj["type"])
 	}
 }

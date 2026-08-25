@@ -10,11 +10,11 @@ The diagram shows the sequence from `install.sh` requesting a signed profile thr
 
 ## Enrollment endpoint
 
-`POST /v1/enroll` accepts the provider's serial number and returns a CMS-signed
-`.mobileconfig` to that provider. The serial is carried over TLS for the
-coordinator's MDM cross-reference and remains inside the bootstrap profile; it
-is not echoed in the download filename or exposed by people-facing APIs. No
-authentication is required for the request itself; security comes from Apple's
+`POST /v1/enroll` accepts an empty JSON object and returns a generic CMS-signed
+`.mobileconfig`. The request and profile contain no hardware identity. MicroMDM
+learns the serial and UDID later from the authenticated device check-in, and the
+coordinator keeps them private for SecurityInfo/MDA cross-checks. No authentication
+is required for the profile download itself; security comes from Apple's
 attestation during the MDA step and the MDM SecurityInfo posture check. Code:
 
 - HTTP handler: `coordinator/api/enroll.go:19-81`
@@ -26,7 +26,7 @@ The generated profile contains two payloads:
 
 | Payload | Purpose | Key fields |
 |---|---|---|
-| SCEP | Device identity certificate for MDM | RSA 2048, CN = serial number, O = Darkbloom |
+| SCEP | Device identity certificate for MDM | RSA 2048, CN = Darkbloom Identity, O = Darkbloom |
 | MDM | Enroll with MicroMDM | `AccessRights = 1041` (read-only), `CheckOutWhenRemoved = true` |
 
 (An ACME `device-attest-01` payload used to be a third payload; it was removed on 2026-07-03 along with the entire ACME trust leg — see below.)

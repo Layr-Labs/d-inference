@@ -2,10 +2,9 @@
 ///
 /// Flow:
 ///
-///   1. Read the hardware serial number via `ioreg`.
-///   2. POST `{"serial_number": ...}` to `${coordinator}/v1/enroll`.
-///   3. Coordinator returns a per-device `.mobileconfig` profile.
-///   4. Save it to a temp path, `open` it (registers with System Settings),
+///   1. POST an empty JSON object to `${coordinator}/v1/enroll`.
+///   2. Coordinator returns a generic `.mobileconfig` profile.
+///   3. Save it to a temp path, `open` it (registers with System Settings),
 ///      then `open x-apple.systempreferences:com.apple.Profiles-Settings.extension`
 ///      so the user can click Install.
 ///
@@ -18,47 +17,9 @@
 
 import Foundation
 
-// MARK: - Hardware serial
-
-/// Read the Mac's hardware serial number via `ioreg`. Returns nil if it
-/// can't be parsed (unlikely on real hardware; hits in test envs).
-public func macHardwareSerialNumber() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-    } catch {
-        return nil
-    }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    guard let text = String(data: data, encoding: .utf8) else { return nil }
-
-    for line in text.split(separator: "\n") {
-        guard line.contains("IOPlatformSerialNumber") else { continue }
-        let parts = line.split(separator: "\"", omittingEmptySubsequences: false)
-        // ioreg format:  "IOPlatformSerialNumber" = "C02XXXXX..."
-        // Splitting on " yields:  [..., "IOPlatformSerialNumber", " = ", "C02..."]
-        if parts.count >= 4 {
-            let candidate = String(parts[3])
-            if !candidate.isEmpty {
-                return candidate
-            }
-        }
-    }
-    return nil
-}
-
 // MARK: - Errors
 
 public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
-    case serialNumberUnavailable
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
     case profileWriteFailed(String)
@@ -66,8 +27,6 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
 
     public var description: String {
         switch self {
-        case .serialNumberUnavailable:
-            return "Could not read hardware serial number from ioreg."
         case .coordinatorRequestFailed(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .coordinatorReturnedHTTP(let status, let body):
@@ -129,10 +88,6 @@ public struct EnrollmentService: Sendable {
             break
         }
 
-        guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
-            throw EnrollmentError.serialNumberUnavailable
-        }
-
         let baseURL = coordinatorHTTPBase(coordinatorURL)
         guard let endpoint = URL(string: "\(baseURL)/v1/enroll") else {
             throw EnrollmentError.coordinatorRequestFailed("invalid URL: \(baseURL)/v1/enroll")
@@ -142,9 +97,7 @@ public struct EnrollmentService: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: ["serial_number": serial]
-        )
+        request.httpBody = Data("{}".utf8)
 
         let data: Data
         let response: URLResponse

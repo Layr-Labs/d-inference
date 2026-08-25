@@ -454,11 +454,6 @@ struct CoordinatorIntegrationTests {
                 coordinatorURL: baseURL.absoluteString,
                 openSystemSettings: false
             )
-        } catch EnrollmentError.serialNumberUnavailable {
-            // Minimal CI image without a hardware serial. The round-trip
-            // can't run on this host, but the mock is still validated by
-            // every other test that hits /v1/enroll-adjacent endpoints.
-            return
         } catch EnrollmentError.managedByOtherMDM {
             // Host machine is managed by a corporate MDM (e.g. Kandji on dev
             // workstations): macOS allows one MDM per device, so enroll now
@@ -479,18 +474,14 @@ struct CoordinatorIntegrationTests {
             var post = URLRequest(url: endpoint)
             post.httpMethod = "POST"
             post.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            post.httpBody = try JSONSerialization.data(
-                withJSONObject: ["serial_number": "ABC123"]
-            )
+            post.httpBody = Data("{}".utf8)
             let (data, _) = try await URLSession.shared.data(for: post)
             #expect(data == mockBytes)
         } else {
             // Fresh machine: profile written to disk should match the mock.
             let written = try Data(contentsOf: result.profilePath)
             #expect(written == mockBytes)
-            if let serial = macHardwareSerialNumber() {
-                #expect(!result.profilePath.lastPathComponent.contains(serial))
-            }
+            #expect(result.profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
             try? FileManager.default.removeItem(at: result.profilePath)
         }
     }

@@ -49,6 +49,8 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
     private var _submitted: [CBv2Request] = []
     private var _cancelled: [CBv2RequestID] = []
     private var _shutdownCalls = 0
+    private let residentCandidate: CBv2ResidentPrefixCandidate?
+    private var _residentCandidateRequests: [CBv2Request] = []
     /// ALL manual continuations, in submit order — retained so an earlier
     /// request's event stream is not torn down (continuation deinit ⇒
     /// stream finish) when a later manual submit arrives.
@@ -60,15 +62,20 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
         capacity: CBv2CapacitySnapshot = CBv2CapacitySnapshot(
             activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
             kvBytesCapacity: 0, activeTokens: 0
-        )
+        ),
+        residentCandidate: CBv2ResidentPrefixCandidate? = nil
     ) {
         self.script = script
         self.capacitySnapshot = capacity
+        self.residentCandidate = residentCandidate
     }
 
     var submitted: [CBv2Request] { lock.withLock { _submitted } }
     var cancelled: [CBv2RequestID] { lock.withLock { _cancelled } }
     var shutdownCalls: Int { lock.withLock { _shutdownCalls } }
+    var residentCandidateRequests: [CBv2Request] {
+        lock.withLock { _residentCandidateRequests }
+    }
     var manualContinuation: AsyncStream<CBv2Event>.Continuation? {
         lock.withLock { _manualContinuations.last }
     }
@@ -97,6 +104,15 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
 
     func cancel(_ id: CBv2RequestID) {
         lock.withLock { _cancelled.append(id) }
+    }
+
+    func residentPrefixCandidate(
+        for request: CBv2Request
+    ) -> CBv2ResidentPrefixCandidate? {
+        lock.withLock {
+            _residentCandidateRequests.append(request)
+            return residentCandidate
+        }
     }
 
     func capacity() -> CBv2CapacitySnapshot {
@@ -2178,6 +2194,104 @@ struct EngineV2LookupReceiptCoverageTests {
             usageSignal: signal(box)))
         #expect(box.snapshot.count == 1)
         #expect(box.snapshot.first?.outcome == .skippedPolicy)
+    }
+
+    @Test("resident preflight bypasses SSD staging; an L1 miss probes L2")
+    func residentPreflightOrdersMemoryBeforeSSD() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-l1-l2-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: root)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let layerKinds = [
+            CBv2LayerKind(attention: .full, headDim: 4, kvHeads: 1, queryHeads: 1)
+        ]
+        let cache = SSDPrefixCache(
+            config: .init(
+                modelId: "bridge-l1-l2-model",
+                promptContractID: "bridge-l1-l2-contract",
+                weightHash: "bridge-l1-l2-weight",
+                blockSize: 8,
+                adoptionBoundTokens: 0,
+                layoutEpoch: SSDBlockStore.layoutEpoch(
+                    blockSize: 8, layerKinds: layerKinds),
+                root: root,
+                dedicatedRoot: parent,
+                ttlSeconds: 900,
+                minEffectiveTokens: 8,
+                maxStageBytes: 1 << 20,
+                maxStageMillis: 10_000,
+                nowSeconds: { 10_000 }),
+            kekKey: SymmetricKey(size: .bits256),
+            kvBudget: nil,
+            diskBudget: SSDDiskBudget(),
+            maxWriteBytesPerDay: 0,
+            diskBudgetBytes: { 1 << 20 })
+        defer { cache.close() }
+        let prompt = Array(0 ... 64)
+
+        let residentEngine = ScriptedCBv2Engine(
+            script: .stream([
+                .finished(
+                    reason: .stop,
+                    usage: CBv2Usage(
+                        promptTokens: prompt.count,
+                        completionTokens: 0,
+                        prefixCacheOutcome: .adoptionFailed)),
+            ]),
+            residentCandidate: CBv2ResidentPrefixCandidate(
+                matchedTokens: 64,
+                prefillTokensSaved: 64))
+        let residentSignal = EngineV2RequestUsageSignal()
+        _ = await record(await makeBridge(
+            engine: residentEngine,
+            ssdPrefixCache: cache
+        ).submitTokenized(
+            promptTokens: prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-resident-stale",
+            cacheScope: "scope",
+            usageSignal: residentSignal))
+
+        #expect(residentEngine.residentCandidateRequests.count == 1)
+        #expect(residentEngine.submitted.first?.prefixCacheReceiptID != nil,
+            "the skipped read must not disable terminal SSD donation")
+        #expect(cache.bytesInUse == 0)
+        let staleResult = try #require(residentSignal.lookupResult)
+        #expect(staleResult.outcome == .skippedPolicy)
+        #expect(staleResult.tier == .memory,
+            "a stale advisory is an L1 race, not an invented SSD miss")
+        #expect(staleResult.stageMs == nil)
+        #expect(staleResult.promptAnchor == nil)
+
+        let l2Engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(
+                    promptTokens: prompt.count,
+                    completionTokens: 0,
+                    prefixCacheOutcome: .miss)),
+        ]))
+        let l2Signal = EngineV2RequestUsageSignal()
+        _ = await record(await makeBridge(
+            engine: l2Engine,
+            ssdPrefixCache: cache
+        ).submitTokenized(
+            promptTokens: prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-l2-miss",
+            cacheScope: "scope",
+            usageSignal: l2Signal))
+
+        #expect(l2Engine.residentCandidateRequests.count == 1)
+        #expect(cache.bytesInUse == 0)
+        let l2Result = try #require(l2Signal.lookupResult)
+        #expect(l2Result.outcome == .missAbsent)
+        #expect(l2Result.tier == .ssd)
+        #expect(l2Result.stageMs != nil,
+            "stage timing proves an L1 miss fell through to the SSD probe")
+        #expect(l2Result.promptAnchor?.tokenCount == 64,
+            "the SSD probe must retain content-free prompt evidence")
     }
 }
 

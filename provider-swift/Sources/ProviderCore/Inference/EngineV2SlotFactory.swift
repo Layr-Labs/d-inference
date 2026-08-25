@@ -151,8 +151,10 @@ enum EngineV2SlotFactory {
 
     /// Human-readable cache state for the slot-serving log line.
     static func prefixCacheStateDescription(
+        residentEnabled: Bool = false,
         ssdCache: SSDPrefixCache?
     ) -> String {
+        let resident = residentEnabled ? "memory=on (zero-copy paged L1)" : "memory=off"
         if let ssdCache {
             // Saturating sum: an operator-set
             // DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS near Int.max
@@ -161,11 +163,11 @@ enum EngineV2SlotFactory {
             let (floor, floorOverflow) = ssdCache.config.adoptionBoundTokens
                 .addingReportingOverflow(ssdCache.config.minEffectiveTokens)
             let floorDesc = floorOverflow ? "Int.max (saturated)" : "\(floor)"
-            return "on (tier=ssd: encrypted offload, HMAC-keyed names, "
+            return "on (\(resident), ssd=on: encrypted offload, HMAC-keyed names, "
                 + "15-min sliding TTL, NO memory carve, per-donation gate "
                 + "> \(floorDesc) tok — T-041)"
         }
-        return "off"
+        return residentEnabled ? "on (\(resident), ssd=off)" : "off"
     }
 
     /// Build the production `EngineV2Bridge` for a freshly-loaded model.
@@ -370,6 +372,15 @@ enum EngineV2SlotFactory {
             ?? modelDirectory.flatMap {
                 try? PromptContractIdentity.compute(modelDirectory: $0)
             }
+        // Resident L1 must be configured before the paged backend is built;
+        // unlike SSD L2 it owns no snapshot object that can be injected after
+        // resolution. The backend consumes this only when it actually resolves
+        // paged, and disables it for model capabilities that cannot restore
+        // attention-only state.
+        let residentPrefixCache = PrefixCachePolicy.residentConfig(
+            modelId: modelId,
+            promptContractID: promptContractID,
+            environment: environment)
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
@@ -381,6 +392,7 @@ enum EngineV2SlotFactory {
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,
                     environment: environment,
+                    residentPrefixCache: residentPrefixCache,
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -394,9 +406,13 @@ enum EngineV2SlotFactory {
             preparedBackend = nil
         }
 
-        // Encrypted SSD is the only production prefix-cache tier.
-        // The same object serves as the ENGINE's `CBv2PrefixCache` and the
-        // BRIDGE's staging/backstop/shutdown handle. NOT funding-gated:
+        // Encrypted SSD is the durable snapshot L2. The same object serves as
+        // the ENGINE's `CBv2PrefixCache` and the BRIDGE's
+        // staging/backstop/shutdown handle. Resident physical-page L1 was
+        // installed above while constructing the paged backend; it uses the
+        // same prompt-contract identity and request salt (at physical-page
+        // rather than durable-block granularity) but needs neither this
+        // object nor SSD staging. NOT funding-gated:
         // the tier gates each DONATION on the model's own adoption bound +
         // benefit floor instead (`SSDPrefixCache.donate`), so gemma-4's
         // long-context tail caches while gpt-oss's never-adoptable short
@@ -654,6 +670,8 @@ enum EngineV2SlotFactory {
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
+                    residentEnabled:
+                        preparedBackend?.residentPrefixCacheEnabled == true,
                     ssdCache: ssdPrefixCache))
 
         let reason = mtpStatus.reason?.rawValue ?? "none"

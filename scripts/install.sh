@@ -445,6 +445,13 @@ locked_install_dispatch() {
     local action=$2
     shift 2
 
+    if install_path_exists \
+        "$install_dir/.app-relocation-transaction.json"
+    then
+        fail_install \
+            "A DarkbloomApp relocation transaction needs recovery before the shell installer can run."
+        return 1
+    fi
     recover_interrupted_install_transactions "$install_dir" || return 1
     if install_path_exists "$install_dir/recovery/transaction.json"; then
         fail_install \

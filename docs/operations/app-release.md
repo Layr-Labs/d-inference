@@ -89,8 +89,14 @@ from Downloads, temporary extraction, `/Applications`, or the user-visible
 symlink is resolved and, when necessary, copied with `/usr/bin/ditto` to a
 same-volume staging path under `~/.darkbloom`, checked for matching bundle id,
 executable, and version, then validated with
-`codesign --verify --deep --strict` before an atomic destination swap. An
-unrelated canonical destination is retained as
+`codesign --verify --deep --strict`. While holding the shared install lock, the
+app fully synchronizes every staged regular file, hashes the complete candidate
+and predecessor trees, atomically publishes a synchronized
+`~/.darkbloom/.app-relocation-transaction.json`, and then uses a same-directory
+atomic rename or `RENAME_SWAP`. Recovery accepts only the recorded inode-plus-
+content-hash state at each endpoint: it deterministically completes a known
+transition and refuses every ambiguous combination without moving live content.
+An unrelated canonical destination is retained exactly once as
 `Darkbloom.app.foreign-<id>`. The convenience symlink is created or repaired
 only when doing so cannot replace an unrelated file or app. The app opens the
 verified canonical destination and terminates the source instance; failure
@@ -118,7 +124,9 @@ The next installer rolls back an interrupted pre-commit swap or finishes cleanup
 after a committed swap. Legacy flat bundles are rejected once `Darkbloom.app`
 exists because they carry no authenticated app version. Concurrent valid app
 installers therefore finish at the highest version instead of letting the last
-stale copy win.
+stale copy win. SelfUpdater and the shell installer both refuse to mutate while
+the app-relocation journal remains; only DarkbloomApp can recover that journal,
+under the same kernel lock.
 
 The sole downgrade override exists for the one-machine recovery procedure
 below. It remains signature-pinned and refuses to run while

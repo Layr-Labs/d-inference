@@ -17,6 +17,8 @@ public final class InstallMutationLock: @unchecked Sendable {
     public static let legacyUpdateLockRelativePath = "recovery/update.lock"
     public static let selfUpdateTransactionRelativePath =
         "recovery/transaction.json"
+    public static let appRelocationTransactionFileName =
+        ".app-relocation-transaction.json"
 
     public enum LockError: Error, LocalizedError, Sendable {
         case unavailable(path: String, reason: String)
@@ -125,14 +127,46 @@ public final class InstallMutationLock: @unchecked Sendable {
         installRoot.appendingPathComponent(selfUpdateTransactionRelativePath)
     }
 
+    public static func appRelocationTransactionURL(
+        in installRoot: URL
+    ) -> URL {
+        installRoot.appendingPathComponent(appRelocationTransactionFileName)
+    }
+
     /// Returns durable shell-installer state that must be recovered before a
-    /// different installer mutates the live tree. Staging can predate a
-    /// journal; backup holds unpublished, current, and legacy transaction state.
-    /// Garbage and legacy/restore scratch are cleanup-only once no backup
-    /// remains, so they do not block another lock owner.
+    /// different installer mutates the live tree, including a pending direct
+    /// app relocation. Shell staging can predate its journal; backup holds
+    /// unpublished, current, and legacy transaction state. Garbage and
+    /// legacy/restore scratch are cleanup-only once no backup remains, so they
+    /// do not block another lock owner.
     public static func pendingOneShotTransaction(
         in installRoot: URL,
         fileManager: FileManager = .default
+    ) throws -> URL? {
+        try pendingTransaction(
+            in: installRoot,
+            fileManager: fileManager,
+            includeAppRelocation: true
+        )
+    }
+
+    /// Returns only shell-installer recovery state. App relocation uses this
+    /// while recovering its own fixed journal under the shared lock.
+    public static func pendingShellInstallTransaction(
+        in installRoot: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL? {
+        try pendingTransaction(
+            in: installRoot,
+            fileManager: fileManager,
+            includeAppRelocation: false
+        )
+    }
+
+    private static func pendingTransaction(
+        in installRoot: URL,
+        fileManager: FileManager,
+        includeAppRelocation: Bool
     ) throws -> URL? {
         let entries: [URL]
         do {
@@ -149,7 +183,10 @@ public final class InstallMutationLock: @unchecked Sendable {
         }
         return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
             .first { entry in
-                entry.lastPathComponent.hasPrefix(".install-backup-")
+                (includeAppRelocation
+                    && entry.lastPathComponent
+                        == appRelocationTransactionFileName)
+                    || entry.lastPathComponent.hasPrefix(".install-backup-")
                     || entry.lastPathComponent.hasPrefix(".install-staging-")
             }
     }

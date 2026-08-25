@@ -1,8 +1,8 @@
 import Foundation
 
 /// Recovery authority driven by the persistent watchdog process's ticks.
-/// Update, predecessor rollback, failure attribution, and launch attempt
-/// persistence all execute while the same cross-process update lease is held.
+/// Recovery mutations and launch persistence use short cross-process leases;
+/// release network transfer and cryptographic staging run between leases.
 ///
 /// KNOWN LIMITATIONS (see threat model T-043): the watchdog runs the SAME
 /// replaceable `darkbloom` binary it protects, so rollback protection depends
@@ -180,11 +180,12 @@ public struct WatchdogRecoveryService: Sendable {
             return now + Double(elapsed.components.seconds)
                 + Double(elapsed.components.attoseconds) * 1e-18
         }
-        let session: SelfUpdater.UpdateSession
-        do {
+        func acquireRecoverySession(
+            operation: String
+        ) throws -> SelfUpdater.UpdateSession {
             do {
-                session = try updater.beginUpdateSession(
-                    operation: "watchdog-recovery",
+                return try updater.beginUpdateSession(
+                    operation: operation,
                     timeout: 1
                 )
             } catch UpdateError.lockBusy(let reason, let owner) {
@@ -197,11 +198,18 @@ public struct WatchdogRecoveryService: Sendable {
                         owner: owner
                     )
                 }
-                session = try updater.beginUpdateSession(
-                    operation: "watchdog-recovery-after-stale-owner",
+                return try updater.beginUpdateSession(
+                    operation: "\(operation)-after-stale-owner",
                     timeout: 3
                 )
             }
+        }
+
+        var session: SelfUpdater.UpdateSession
+        do {
+            session = try acquireRecoverySession(
+                operation: "watchdog-recovery"
+            )
         } catch UpdateError.lockBusy(let reason, _) {
             // A LIVE process holds the update lease (flock auto-releases on
             // owner death) — it owns the provider lifecycle; defer to it.
@@ -353,32 +361,16 @@ public struct WatchdogRecoveryService: Sendable {
             return .failed(reason)
         }
 
-        // Version-scope the chain: a chain recorded against a DIFFERENT
-        // installed version (a promotion or rollback landed since the last
-        // restart) resets — the new binary's first short-lived crash must
-        // not inherit the old binary's count and instantly guard the release
-        // that was shipped to fix it. Report the scoped chain (count +
-        // version) so the caller persists exactly what this flow acted on,
-        // but only if the restart is actually issued below.
-        let scopedCrashLoopCount = WatchdogPolicy.versionScopedCrashLoopCount(
-            crashLoopRestartCount,
-            recordedVersion: lastRestartVersion,
-            installedVersion: guardedVersion)
-        if scopedCrashLoopCount != crashLoopRestartCount {
-            deps.log(
-                "crash-loop chain reset \(crashLoopRestartCount) → \(scopedCrashLoopCount): "
-                    + "the installed version changed to v\(guardedVersion) "
-                    + "(chain was recorded against "
-                    + (lastRestartVersion.map { "v\($0)" } ?? "no version — legacy state")
-                    + ")")
-        }
-        deps.noteCrashLoopChain(scopedCrashLoopCount, guardedVersion)
+        // Computed after optional lock-free update preparation and final lease
+        // reacquisition, from the version that will actually be kickstarted.
+        var scopedCrashLoopCount = 0
 
         // Crash-loop KV-backend guard (v0.8.0). The caller counted this
         // restart as the Nth consecutive crash-loop-shaped one; at the
-        // threshold the guard record is persisted HERE — before the update
-        // check and the kickstart — so the daemon this very tick relaunches
-        // already resolves `.auto` to contiguous on its first model load.
+        // threshold the guard record is persisted after optional update
+        // preparation/final revalidation but before the kickstart, so it binds
+        // the version this tick actually relaunches and that daemon resolves
+        // `.auto` to contiguous on its first model load.
         // Tripping after the kickstart would race the relaunched daemon's
         // model preload and lose: that boot would just be crash N+1.
         //
@@ -410,29 +402,6 @@ public struct WatchdogRecoveryService: Sendable {
         // ship a false incident signal on the next healthy boot.
         var undoTrip: (@Sendable () -> Void)?
         var pendingTripEmission: (@Sendable () -> Void)?
-        if scopedCrashLoopCount >= WatchdogPolicy.crashLoopTripThreshold,
-            rolledBackTo == nil,
-            !candidateOwnsRecovery
-        {
-            let staged = deps.tripKVBackendGuard(scopedCrashLoopCount, now, guardedVersion)
-            // Emitted even when the record write failed (the event carries
-            // the could-not-persist warning — the fleet's only signal that a
-            // box is looping unguarded), but still only for an issued
-            // kickstart.
-            pendingTripEmission = staged.emit
-            if staged.persisted {
-                undoTrip = staged.undo
-                deps.log(
-                    "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
-                        + "restarts — `.auto` resolves contiguous on this box until the next "
-                        + "release or `darkbloom doctor --clear-backend-guard`")
-            } else {
-                deps.log(
-                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
-                        + "a slot with an explicit paged selection will keep resolving "
-                        + "paged and the crash loop may continue")
-            }
-        }
         // Every failure exit below runs through this. It only acts while the
         // kickstart has NOT been issued: the moment `kickstartIfLoaded()`
         // returns true the undo is disarmed (`undoTrip = nil` at the call
@@ -458,10 +427,34 @@ public struct WatchdogRecoveryService: Sendable {
             deps.log(
                 "tick budget exhausted before the update check; restarting the current install now and deferring the update to the next tick")
         } else if autoUpdateEnabled {
+            // Phase one may spend minutes in release I/O and artifact
+            // verification. Release both global mutation locks first; the
+            // updater reacquires them only for its final recovery/revalidation
+            // and commit.
+            session.release()
             let result = await updater.update(
-                session: session,
+                operation: "watchdog-update",
+                manualOverride: false,
                 beforeInstall: deps.providerStillLoaded
             )
+            if case .cancelled(let reason) = result {
+                deps.log("watchdog update cancelled: \(reason)")
+                return rollBackTripUnlessKickstarted(.noLongerLoaded)
+            }
+            do {
+                session = try acquireRecoverySession(
+                    operation: "watchdog-finalize"
+                )
+                try session.recover(now: freshNow())
+            } catch UpdateError.lockBusy(let reason, _) {
+                deps.log("update/recovery lock busy after preparation: \(reason)")
+                return rollBackTripUnlessKickstarted(.lockBusy(reason))
+            } catch {
+                let reason =
+                    "could not reacquire update recovery after preparation: \(error)"
+                deps.log(reason)
+                return rollBackTripUnlessKickstarted(.failed(reason))
+            }
             switch result {
             case .updated(_, let to):
                 updatedTo = to
@@ -474,12 +467,9 @@ public struct WatchdogRecoveryService: Sendable {
             case .quarantined(let version, let reason):
                 deps.log("v\(version) remains quarantined; not reinstalling it: \(reason)")
             case .busy(let reason):
-                // Impossible while this session owns the lock, but fail safe if
-                // a future updater implementation changes session semantics.
                 deps.log("update skipped because lock became busy: \(reason)")
-            case .cancelled(let reason):
-                deps.log("watchdog update cancelled: \(reason)")
-                return rollBackTripUnlessKickstarted(.noLongerLoaded)
+            case .cancelled:
+                preconditionFailure("cancelled update returned past early exit")
             case .downloadFailed(let reason):
                 deps.log("update check/download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):
@@ -501,6 +491,77 @@ public struct WatchdogRecoveryService: Sendable {
                     deps.log(recoveryReason)
                     return rollBackTripUnlessKickstarted(.failed(recoveryReason))
                 }
+            }
+        }
+
+        // Another installer was free to complete while release bytes were in
+        // flight. Re-read the state under the final lease before binding the
+        // crash-loop guard or launch bookkeeping to a version.
+        do {
+            let state = try session.readState()
+            candidateOwnsRecovery = state.candidate != nil
+                && state.candidate?.rollbackBlockedReason == nil
+            if let candidate = state.candidate {
+                guardedVersion = candidate.release.version
+                updatedTo = candidate.release.version
+            } else {
+                guardedVersion = SelfUpdater.effectiveInstalledVersion(
+                    processVersion: updater.currentVersion,
+                    recorded: state.current?.version
+                )
+                if updatedTo != nil {
+                    updatedTo = guardedVersion
+                }
+            }
+        } catch {
+            let reason =
+                "could not revalidate installed version before restart: \(error)"
+            deps.log(reason)
+            return rollBackTripUnlessKickstarted(.failed(reason))
+        }
+
+        // Version-scope the chain only after final revalidation. A release
+        // committed by this updater—or by a competitor while phase one was
+        // unlocked—must reset and bind the chain to the bytes launchd will
+        // actually execute.
+        scopedCrashLoopCount = WatchdogPolicy.versionScopedCrashLoopCount(
+            crashLoopRestartCount,
+            recordedVersion: lastRestartVersion,
+            installedVersion: guardedVersion
+        )
+        if scopedCrashLoopCount != crashLoopRestartCount {
+            deps.log(
+                "crash-loop chain reset \(crashLoopRestartCount) → \(scopedCrashLoopCount): "
+                    + "the installed version changed to v\(guardedVersion) "
+                    + "(chain was recorded against "
+                    + (lastRestartVersion.map { "v\($0)" } ?? "no version — legacy state")
+                    + ")")
+        }
+        deps.noteCrashLoopChain(scopedCrashLoopCount, guardedVersion)
+
+        if scopedCrashLoopCount >= WatchdogPolicy.crashLoopTripThreshold,
+           rolledBackTo == nil,
+           !candidateOwnsRecovery
+        {
+            let staged = deps.tripKVBackendGuard(
+                scopedCrashLoopCount,
+                now,
+                guardedVersion
+            )
+            // Emitted even when the record write failed (the event carries
+            // the could-not-persist warning), but only for an issued kickstart.
+            pendingTripEmission = staged.emit
+            if staged.persisted {
+                undoTrip = staged.undo
+                deps.log(
+                    "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
+                        + "restarts — `.auto` resolves contiguous on this box until the next "
+                        + "release or `darkbloom doctor --clear-backend-guard`")
+            } else {
+                deps.log(
+                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
+                        + "a slot with an explicit paged selection will keep resolving "
+                        + "paged and the crash loop may continue")
             }
         }
 

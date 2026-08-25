@@ -16,6 +16,12 @@ struct SelfUpdaterTests {
                 urlSession: SelfUpdater.watchdogURLSession()
             ).verifiesCodeSignatures
         )
+        #expect(
+            SelfUpdater(
+                coordinatorBaseURL: "https://api.example",
+                urlSession: SelfUpdater.startupURLSession()
+            ).verifiesCodeSignatures
+        )
     }
 
     @Test("effective installed version prefers the newer of process and durable record")
@@ -1018,8 +1024,17 @@ struct SelfUpdaterTests {
             Issue.record("stageBundleForTesting failed")
             return
         }
-        defer { staged.discard() }
 
+        // Lock-free staging never sweeps shared siblings: even an old path
+        // could belong to another live preparer until final ownership checks.
+        #expect(fm.fileExists(atPath: orphan.path))
+        guard case .success = updater.commitStagedBundleForTesting(staged)
+        else {
+            Issue.record("commitStagedBundleForTesting failed")
+            return
+        }
+        // Final commit owns both mutation locks, so it may remove the
+        // ownership-less legacy orphan while preserving a young possible peer.
         #expect(!fm.fileExists(atPath: orphan.path))
         #expect(fm.fileExists(atPath: live.path))
     }

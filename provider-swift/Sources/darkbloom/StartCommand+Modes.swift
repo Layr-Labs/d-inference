@@ -342,7 +342,10 @@ extension Start {
             return
         }
         print("Checking for provider update...")
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            urlSession: SelfUpdater.startupURLSession()
+        )
         switch await updater.update() {
         case .alreadyUpToDate:
             return

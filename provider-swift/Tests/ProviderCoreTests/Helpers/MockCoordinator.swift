@@ -140,6 +140,50 @@ public struct MockVersionFixture: Sendable {
     }
 }
 
+/// Deterministic real-HTTP seam for updater concurrency tests. The release
+/// route accepts the URLSession request, signals `waitUntilRequested`, and
+/// withholds its body until `release` is called.
+public actor MockReleaseArtifactGate {
+    private var requested = false
+    private var released = false
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func waitUntilRequested() async {
+        if requested { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append(continuation)
+        }
+    }
+
+    public func waitBeforeResponse() async {
+        if !requested {
+            requested = true
+            let waiters = requestWaiters
+            requestWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+        if released { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    public func release() {
+        guard !released else { return }
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
 // MARK: - MockCoordinator
 
 public final class MockCoordinator: @unchecked Sendable {
@@ -172,6 +216,7 @@ public final class MockCoordinator: @unchecked Sendable {
     public let catalog: [CatalogModel]
     public let release: MockReleaseFixture
     public let releaseArtifact: Data?
+    public let releaseArtifactGate: MockReleaseArtifactGate?
     public let version: MockVersionFixture
     public let mobileConfig: Data
     public let deviceCode: MockDeviceCodeFixture
@@ -201,6 +246,7 @@ public final class MockCoordinator: @unchecked Sendable {
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
+        releaseArtifactGate: MockReleaseArtifactGate? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
@@ -208,6 +254,7 @@ public final class MockCoordinator: @unchecked Sendable {
         self.catalog = catalog
         self.release = release
         self.releaseArtifact = releaseArtifact
+        self.releaseArtifactGate = releaseArtifactGate
         self.version = version
         self.mobileConfig = mobileConfig
         self.deviceCode = deviceCode
@@ -490,6 +537,9 @@ public final class MockCoordinator: @unchecked Sendable {
                     body: ["error": "release artifact missing"],
                     status: .notFound
                 )
+            }
+            if let gate = self?.releaseArtifactGate {
+                await gate.waitBeforeResponse()
             }
             return Response(
                 status: .ok,

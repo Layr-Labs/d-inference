@@ -289,6 +289,43 @@ final class SandboxHostControlClientTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
+    func testSubmittedCancelCannotOvertakeEarlierCommandAdmission() async throws {
+        let transport = RecordingControlTransport(
+            inboundMode: .commandThenCancel
+        )
+        let race = HandlerAdmissionRace()
+        let client = SandboxHostControlClient(
+            configuration: try configuration(),
+            heartbeatSource: FixedHeartbeatSource(),
+            messageHandler: race,
+            transportFactory: { transport }
+        )
+        let running = Task {
+            try await client.runSingleConnection()
+        }
+        await race.waitForCommandAdmissionEntry()
+        let receivesBeforeAdmission = await transport.receiveCount()
+        await race.releaseCommandAdmission()
+
+        do {
+            try await running.value
+            XCTFail("connection unexpectedly completed")
+        } catch SandboxHostControlTransportError.disconnected {
+        }
+
+        let events = await race.events()
+        XCTAssertEqual(
+            receivesBeforeAdmission,
+            1,
+            "the client received cancellation before command admission completed"
+        )
+        XCTAssertEqual(
+            events,
+            ["command_registered", "cancel_saw_registered"],
+            "ordered command admission must precede cancellation for the same command"
+        )
+    }
+
     private func configuration() throws -> SandboxHostControlConfiguration {
         try SandboxHostControlConfiguration(
             coordinatorURL: URL(
@@ -318,6 +355,96 @@ final class SandboxHostControlClientTests: XCTestCase {
         baseImageIDs: ["macos-tahoe-v1"],
         supportsGPU: true
     )
+}
+
+private actor HandlerAdmissionRace: SandboxHostControlMessageHandler {
+    private var commandAdmissionEntered = false
+    private var commandAdmissionReleased = false
+    private var commandRegistered = false
+    private var cancellationAdmitted = false
+    private var recordedEvents: [String] = []
+    private var commandAdmissionEntryWaiter:
+        CheckedContinuation<Void, Never>?
+    private var commandAdmissionRelease:
+        CheckedContinuation<Void, Never>?
+    private var commandRelease: CheckedContinuation<Void, Never>?
+
+    func admit(
+        _ message: SandboxCoordinatorControlMessage
+    ) async throws -> SandboxHostControlAdmission {
+        switch message {
+        case .command(let envelope):
+            commandAdmissionEntered = true
+            commandAdmissionEntryWaiter?.resume()
+            commandAdmissionEntryWaiter = nil
+            if !commandAdmissionReleased {
+                await withCheckedContinuation {
+                    commandAdmissionRelease = $0
+                }
+            }
+            commandRegistered = true
+            recordedEvents.append("command_registered")
+            return SandboxHostControlAdmission {
+                await self.completeCommand(envelope.payload)
+            }
+        case .cancelCommand(let envelope):
+            recordedEvents.append(
+                commandRegistered
+                    ? "cancel_saw_registered"
+                    : "cancel_reported_lost"
+            )
+            cancellationAdmitted = true
+            commandRelease?.resume()
+            commandRelease = nil
+            return SandboxHostControlAdmission(
+                response: .command(
+                    SandboxWireCommandStatus(
+                        commandID: envelope.payload.commandID,
+                        scope: envelope.payload.scope,
+                        state: .cancelled
+                    )
+                )
+            )
+        default:
+            return SandboxHostControlAdmission(response: .none)
+        }
+    }
+
+    func waitForCommandAdmissionEntry() async {
+        if commandAdmissionEntered {
+            return
+        }
+        await withCheckedContinuation {
+            commandAdmissionEntryWaiter = $0
+        }
+    }
+
+    func releaseCommandAdmission() {
+        commandAdmissionReleased = true
+        commandAdmissionRelease?.resume()
+        commandAdmissionRelease = nil
+    }
+
+    func events() -> [String] {
+        recordedEvents
+    }
+
+    private func completeCommand(
+        _ payload: SandboxWireCommand
+    ) async -> SandboxHostControlResponse {
+        if !cancellationAdmitted {
+            await withCheckedContinuation {
+                commandRelease = $0
+            }
+        }
+        return .command(
+            SandboxWireCommandStatus(
+                commandID: payload.commandID,
+                scope: payload.scope,
+                state: .cancelled
+            )
+        )
+    }
 }
 
 private actor SequencingControlTransport: SandboxHostControlTransport {
@@ -473,21 +600,23 @@ private struct FixedHeartbeatSource: SandboxHostHeartbeatSource {
 private actor RecordingMessageHandler: SandboxHostControlMessageHandler {
     private var count = 0
 
-    func handle(
+    func admit(
         _ message: SandboxCoordinatorControlMessage
-    ) async throws -> SandboxHostControlResponse {
+    ) async throws -> SandboxHostControlAdmission {
         count += 1
         guard case .command(let envelope) = message else {
-            return .none
+            return SandboxHostControlAdmission(response: .none)
         }
-        return .command(
-            SandboxWireCommandStatus(
-                commandID: envelope.payload.commandID,
-                scope: envelope.payload.scope,
-                state: .failed,
-                exitCode: 1,
-                standardError: "guest agent unavailable",
-                errorCode: "guest_agent_unavailable"
+        return SandboxHostControlAdmission(
+            response: .command(
+                SandboxWireCommandStatus(
+                    commandID: envelope.payload.commandID,
+                    scope: envelope.payload.scope,
+                    state: .failed,
+                    exitCode: 1,
+                    standardError: "guest agent unavailable",
+                    errorCode: "guest_agent_unavailable"
+                )
             )
         )
     }
@@ -498,9 +627,10 @@ private actor RecordingMessageHandler: SandboxHostControlMessageHandler {
 }
 
 private actor RecordingControlTransport: SandboxHostControlTransport {
-    enum InboundMode {
+    enum InboundMode: Equatable {
         case validCommand
         case wrongEpoch
+        case commandThenCancel
     }
 
     struct OutboundFrame {
@@ -515,6 +645,7 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
     private var receives = 0
     private var closes = 0
     private var responseSeen = false
+    private var commandResponses = 0
     private var responseWaiter: CheckedContinuation<String, Error>?
 
     init(inboundMode: InboundMode) {
@@ -533,16 +664,23 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
            object["type"] as? String
                 == SandboxControlMessageType.commandState.rawValue
         {
-            responseSeen = true
-            responseWaiter?.resume(
-                throwing: SandboxHostControlTransportError.disconnected
-            )
-            responseWaiter = nil
+            commandResponses += 1
+            let requiredResponses =
+                inboundMode == .commandThenCancel ? 2 : 1
+            if commandResponses == requiredResponses {
+                responseSeen = true
+                responseWaiter?.resume(
+                    throwing: SandboxHostControlTransportError.disconnected
+                )
+                responseWaiter = nil
+            }
         }
     }
 
     func receiveText() async throws -> String {
-        guard receives == 0 else {
+        let inboundFrameCount =
+            inboundMode == .commandThenCancel ? 2 : 1
+        guard receives < inboundFrameCount else {
             if responseSeen {
                 throw SandboxHostControlTransportError.disconnected
             }
@@ -550,6 +688,7 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
                 responseWaiter = $0
             }
         }
+        let inboundIndex = receives
         receives += 1
         let registration = try JSONDecoder().decode(
             SandboxControlEnvelope<SandboxWireHostRegister>.self,
@@ -557,12 +696,45 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
         )
         let epoch: UUID
         switch inboundMode {
-        case .validCommand:
+        case .validCommand, .commandThenCancel:
             epoch = registration.connectionEpoch
         case .wrongEpoch:
             epoch = UUID(
                 uuidString: "bbbbbbbb-0000-0000-0000-000000000099"
             )!
+        }
+        let commandID = UUID(
+            uuidString: "cccccccc-0000-0000-0000-000000000003"
+        )!
+        let scope = SandboxWireScope(
+            sandboxID: SandboxID(
+                rawValue: UUID(
+                    uuidString: "dddddddd-0000-0000-0000-000000000004"
+                )!
+            ),
+            generation: SandboxGeneration(rawValue: 1)!,
+            fencingToken: SandboxFencingToken(rawValue: 1)!
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if inboundIndex == 1 {
+            let cancellation = SandboxControlEnvelope(
+                type: SandboxControlMessageType.cancelCommand,
+                hostID: registration.hostID,
+                connectionEpoch: epoch,
+                sequence: 2,
+                payload: SandboxWireCommandControl(
+                    operationID: UUID(
+                        uuidString: "eeeeeeee-0000-0000-0000-000000000005"
+                    )!,
+                    commandID: commandID,
+                    scope: scope
+                )
+            )
+            return String(
+                decoding: try encoder.encode(cancellation),
+                as: UTF8.self
+            )
         }
         let command = SandboxControlEnvelope(
             type: SandboxControlMessageType.command,
@@ -570,25 +742,13 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
             connectionEpoch: epoch,
             sequence: 1,
             payload: SandboxWireCommand(
-                commandID: UUID(
-                    uuidString: "cccccccc-0000-0000-0000-000000000003"
-                )!,
+                commandID: commandID,
                 idempotencyKey: "00000000-0000-0000-0000-000000000006",
-                scope: SandboxWireScope(
-                    sandboxID: SandboxID(
-                        rawValue: UUID(
-                            uuidString: "dddddddd-0000-0000-0000-000000000004"
-                        )!
-                    ),
-                    generation: SandboxGeneration(rawValue: 1)!,
-                    fencingToken: SandboxFencingToken(rawValue: 1)!
-                ),
+                scope: scope,
                 arguments: ["/usr/bin/true"],
                 timeoutSeconds: 30
             )
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
         return String(decoding: try encoder.encode(command), as: UTF8.self)
     }
 
@@ -609,6 +769,10 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
 
     func closeCount() -> Int {
         closes
+    }
+
+    func receiveCount() -> Int {
+        receives
     }
 
     func decodedOutboundFrames() throws -> [OutboundFrame] {

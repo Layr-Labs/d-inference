@@ -695,18 +695,29 @@ func (s *MemoryStore) ListPendingSandboxCommandsByHost(
 	return result, nil
 }
 
-func (s *MemoryStore) ListPendingSandboxCommandCancellationsByHost(
+func (s *MemoryStore) ListPendingSandboxCommandCancellations(
 	_ context.Context,
-	hostID string,
+	hostIDs []string,
+	limit int,
 ) ([]PendingSandboxCommand, error) {
+	eligibleHosts := make(map[string]struct{}, len(hostIDs))
+	for _, hostID := range hostIDs {
+		eligibleHosts[hostID] = struct{}{}
+	}
+	if len(eligibleHosts) == 0 {
+		return []PendingSandboxCommand{}, nil
+	}
+	normalizedLimit := sandboxListLimit(limit)
 	s.mu.RLock()
 	result := make([]PendingSandboxCommand, 0)
 	for _, command := range s.sandboxCommands {
 		sandbox := s.sandboxes[command.SandboxID]
 		if sandbox == nil ||
-			sandbox.HostID != hostID ||
 			sandbox.Terminal() ||
 			!command.CancellationPending {
+			continue
+		}
+		if _, hostEligible := eligibleHosts[sandbox.HostID]; !hostEligible {
 			continue
 		}
 		result = append(result, PendingSandboxCommand{
@@ -720,6 +731,9 @@ func (s *MemoryStore) ListPendingSandboxCommandCancellationsByHost(
 			result[right].Command.CreatedAt,
 		)
 	})
+	if len(result) > normalizedLimit {
+		result = result[:normalizedLimit]
+	}
 	return result, nil
 }
 

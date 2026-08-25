@@ -134,6 +134,8 @@ const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
 	END IF;
 END $$`
 
+const postgresMigrationAdvisoryLockID int64 = 0x44424D4947524154
+
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
@@ -1041,10 +1043,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 	migrations = append(migrations, sandboxSchemaMigrations()...)
 
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
-		}
+	if err := s.executeSchemaMigrations(ctx, migrations); err != nil {
+		return err
 	}
 
 	if err := s.migrateWithdrawableBalance(ctx); err != nil {
@@ -1057,6 +1057,56 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (s *PostgresStore) executeSchemaMigrations(
+	ctx context.Context,
+	migrations []string,
+) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = conn.Exec(
+				unlockCtx,
+				`SELECT pg_advisory_unlock($1)`,
+				postgresMigrationAdvisoryLockID,
+			)
+		}
+		conn.Release()
+	}()
+
+	if _, err := conn.Exec(
+		ctx,
+		`SELECT pg_advisory_lock($1)`,
+		postgresMigrationAdvisoryLockID,
+	); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	for _, migration := range migrations {
+		if _, err := conn.Exec(ctx, migration); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+
+	var released bool
+	if err := conn.QueryRow(
+		ctx,
+		`SELECT pg_advisory_unlock($1)`,
+		postgresMigrationAdvisoryLockID,
+	).Scan(&released); err != nil {
+		return fmt.Errorf("release migration advisory lock: %w", err)
+	}
+	if !released {
+		return errors.New("release migration advisory lock: lock was not held")
+	}
+	unlocked = true
 	return nil
 }
 

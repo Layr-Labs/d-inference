@@ -126,3 +126,81 @@ func TestSweepExpiredCommandsPersistsTimeout(t *testing.T) {
 		t.Fatalf("timed-out command = %+v", stored)
 	}
 }
+
+func TestPendingCancellationSweepUsesOneBoundedQuery(t *testing.T) {
+	backend := &recordingCancellationSweepStore{
+		SandboxStore: store.NewMemory(store.Config{}),
+	}
+	hosts := sandboxhost.NewRegistry(nil)
+	first := &store.SandboxRecord{
+		HostID:         "30000000-0000-0000-0000-000000000013",
+		CPUCount:       4,
+		MemoryBytes:    8 << 30,
+		WorkspaceBytes: 25 << 30,
+		BaseImageID:    "macos-tahoe-v1",
+	}
+	second := *first
+	second.HostID = "30000000-0000-0000-0000-000000000014"
+	registerCancellationTestHost(
+		t,
+		hosts,
+		first,
+		"40000000-0000-0000-0000-000000000015",
+		&cancellationTestTransport{},
+	)
+	registerCancellationTestHost(
+		t,
+		hosts,
+		&second,
+		"40000000-0000-0000-0000-000000000016",
+		&cancellationTestTransport{},
+	)
+
+	controller := &Controller{
+		store: backend,
+		hosts: hosts,
+		now:   time.Now,
+	}
+	if err := controller.sweepPendingCommandCancellations(
+		context.Background(),
+	); err != nil {
+		t.Fatalf("sweep pending cancellations: %v", err)
+	}
+	if backend.calls != 1 {
+		t.Fatalf("pending cancellation queries = %d, want 1", backend.calls)
+	}
+	if backend.limit != cancellationSweepBatchLimit {
+		t.Fatalf(
+			"pending cancellation limit = %d, want %d",
+			backend.limit,
+			cancellationSweepBatchLimit,
+		)
+	}
+	gotHosts := make(map[string]bool, len(backend.hostIDs))
+	for _, hostID := range backend.hostIDs {
+		gotHosts[hostID] = true
+	}
+	if len(gotHosts) != 2 ||
+		!gotHosts[first.HostID] ||
+		!gotHosts[second.HostID] {
+		t.Fatalf("pending cancellation hosts = %v", backend.hostIDs)
+	}
+}
+
+type recordingCancellationSweepStore struct {
+	store.SandboxStore
+	calls   int
+	hostIDs []string
+	limit   int
+}
+
+func (s *recordingCancellationSweepStore) ListPendingSandboxCommandCancellations(
+	_ context.Context,
+	hostIDs []string,
+	limit int,
+) ([]store.PendingSandboxCommand, error) {
+	s.calls++
+	s.hostIDs = append([]string(nil), hostIDs...)
+	s.limit = limit
+	return []store.PendingSandboxCommand{}, nil
+}

@@ -101,27 +101,31 @@ func (c *Controller) sweepPendingCommandCancellations(
 	sweepContext, cancel := context.WithTimeout(ctx, dispatchTimeout)
 	defer cancel()
 	now := c.now().UTC()
-	for _, host := range c.hosts.Snapshots() {
-		pending, err := c.store.ListPendingSandboxCommandCancellationsByHost(
-			sweepContext,
-			host.HostID,
-		)
-		if err != nil {
-			return err
+	hosts := c.hosts.Snapshots()
+	hostIDs := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		hostIDs = append(hostIDs, host.HostID)
+	}
+	pending, err := c.store.ListPendingSandboxCommandCancellations(
+		sweepContext,
+		hostIDs,
+		cancellationSweepBatchLimit,
+	)
+	if err != nil {
+		return err
+	}
+	for index := range pending {
+		command := &pending[index].Command
+		if !dispatchDue(command.LastCancelDispatchedAt, now) {
+			continue
 		}
-		for index := range pending {
-			command := &pending[index].Command
-			if !dispatchDue(command.LastCancelDispatchedAt, now) {
-				continue
-			}
-			if err := c.dispatchCommandCancellation(
-				sweepContext,
-				&pending[index].Sandbox,
-				command,
-			); err != nil &&
-				!errors.Is(err, ErrHostUnavailable) {
-				return err
-			}
+		if err := c.dispatchCommandCancellation(
+			sweepContext,
+			&pending[index].Sandbox,
+			command,
+		); err != nil &&
+			!errors.Is(err, ErrHostUnavailable) {
+			return err
 		}
 	}
 	return nil

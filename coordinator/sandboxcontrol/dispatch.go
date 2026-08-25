@@ -302,9 +302,10 @@ func (c *Controller) dispatchSandboxCommandCancellations(
 	if sandbox == nil {
 		return store.ErrSandboxConflict
 	}
-	pending, err := c.store.ListPendingSandboxCommandCancellationsByHost(
+	pending, err := c.store.ListPendingSandboxCommandCancellations(
 		ctx,
-		sandbox.HostID,
+		[]string{sandbox.HostID},
+		store.MaxSandboxListLimit,
 	)
 	if err != nil {
 		return err

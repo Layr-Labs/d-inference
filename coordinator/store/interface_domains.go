@@ -895,10 +895,12 @@ type SandboxStore interface {
 		hostID string,
 	) ([]PendingSandboxCommand, error)
 
-	// ListPendingSandboxCommandCancellationsByHost returns terminal or active
-	// commands whose host execution has not acknowledged cancellation.
-	ListPendingSandboxCommandCancellationsByHost(
+	// ListPendingSandboxCommandCancellations returns at most limit terminal or
+	// active commands assigned to hostIDs whose host execution has not
+	// acknowledged cancellation.
+	ListPendingSandboxCommandCancellations(
 		ctx context.Context,
-		hostID string,
+		hostIDs []string,
+		limit int,
 	) ([]PendingSandboxCommand, error)
 }

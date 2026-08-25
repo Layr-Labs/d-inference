@@ -9,7 +9,7 @@ const sandboxActiveCommandConstraintMigration = `DO $migration$
 					ORDER BY created_at, id
 				) AS active_rank
 			FROM sandbox_commands
-			WHERE cancellation_pending OR state NOT IN (
+			WHERE state NOT IN (
 				'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
 			)
 		)
@@ -20,7 +20,7 @@ const sandboxActiveCommandConstraintMigration = `DO $migration$
 			stderr = '',
 			output_truncated = FALSE,
 			error_code = 'upgrade_concurrent_command',
-			cancellation_pending = FALSE,
+			cancellation_pending = TRUE,
 			completed_at = COALESCE(command.completed_at, CURRENT_TIMESTAMP),
 			updated_at = GREATEST(command.updated_at, CURRENT_TIMESTAMP)
 		FROM ranked
@@ -31,14 +31,14 @@ const sandboxActiveCommandConstraintMigration = `DO $migration$
 			FROM pg_indexes
 			WHERE schemaname = current_schema()
 			  AND indexname = 'idx_sandbox_commands_one_active'
-			  AND indexdef NOT LIKE '%cancellation_pending%'
+			  AND indexdef LIKE '%cancellation_pending%'
 		) THEN
 			DROP INDEX idx_sandbox_commands_one_active;
 		END IF;
 		EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS
 			idx_sandbox_commands_one_active
 			ON sandbox_commands(sandbox_id)
-			WHERE cancellation_pending OR state NOT IN (
+			WHERE state NOT IN (
 				''succeeded'', ''failed'', ''timed_out'', ''cancelled'', ''lost''
 			)';
 	END

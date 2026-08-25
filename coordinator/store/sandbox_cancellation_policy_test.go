@@ -83,6 +83,31 @@ func TestSandboxCancellationAcknowledgementBlocksNewWork(t *testing.T) {
 			if err != nil || !timedOut.CancellationPending {
 				t.Fatalf("persist timeout cancellation: command=%+v error=%v", timedOut, err)
 			}
+			pending, err := backend.ListPendingSandboxCommandCancellations(
+				ctx,
+				[]string{ready.HostID},
+				1,
+			)
+			if err != nil || len(pending) != 1 ||
+				pending[0].Command.ID != command.ID {
+				t.Fatalf(
+					"bounded pending cancellations = %+v error=%v",
+					pending,
+					err,
+				)
+			}
+			pending, err = backend.ListPendingSandboxCommandCancellations(
+				ctx,
+				[]string{"b0000000-0000-0000-0000-000000000441"},
+				1,
+			)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf(
+					"other-host pending cancellations = %+v error=%v",
+					pending,
+					err,
+				)
+			}
 
 			nextCommand := *command
 			nextCommand.ID = "70000000-0000-0000-0000-000000000437"
@@ -122,6 +147,28 @@ func TestSandboxCancellationAcknowledgementBlocksNewWork(t *testing.T) {
 				t.Fatalf("blocking cancellation commands = %+v error=%v", active, err)
 			}
 
+			unproven, err := backend.ApplySandboxCommandUpdate(
+				ctx,
+				SandboxCommandUpdate{
+					CommandID:    command.ID,
+					SandboxID:    command.SandboxID,
+					Generation:   command.Generation,
+					FencingToken: command.FencingToken,
+					State:        SandboxCommandLost,
+					ErrorCode:    "command_not_running",
+					UpdatedAt:    now.Add(5 * time.Second),
+				},
+			)
+			if err != nil ||
+				!unproven.CancellationPending ||
+				unproven.State != SandboxCommandTimedOut {
+				t.Fatalf(
+					"unproven cancellation result released authority: command=%+v error=%v",
+					unproven,
+					err,
+				)
+			}
+
 			acknowledged, err := backend.ApplySandboxCommandUpdate(
 				ctx,
 				SandboxCommandUpdate{
@@ -130,7 +177,7 @@ func TestSandboxCancellationAcknowledgementBlocksNewWork(t *testing.T) {
 					Generation:   command.Generation,
 					FencingToken: command.FencingToken,
 					State:        SandboxCommandCancelled,
-					UpdatedAt:    now.Add(5 * time.Second),
+					UpdatedAt:    now.Add(6 * time.Second),
 				},
 			)
 			if err != nil || acknowledged.CancellationPending {

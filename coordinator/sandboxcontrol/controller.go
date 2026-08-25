@@ -22,6 +22,7 @@ const (
 	dispatchTimeout                       = 5 * time.Second
 	dispatchRetryInterval                 = 15 * time.Second
 	leaseSweepInterval                    = 5 * time.Second
+	cancellationSweepBatchLimit           = 100
 	maximumCoordinatorFencingToken        = uint64(^uint64(0)>>1) - 1
 )
 

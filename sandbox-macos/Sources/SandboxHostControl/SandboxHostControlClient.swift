@@ -80,10 +80,38 @@ public protocol SandboxHostHeartbeatSource: Sendable {
     func heartbeat() async throws -> SandboxWireHostHeartbeat
 }
 
+public struct SandboxHostControlAdmission: Sendable {
+    private let completion:
+        @Sendable () async throws -> SandboxHostControlResponse
+
+    public init(
+        completion:
+            @escaping @Sendable () async throws -> SandboxHostControlResponse
+    ) {
+        self.completion = completion
+    }
+
+    public init(response: SandboxHostControlResponse) {
+        self.init { response }
+    }
+
+    public func complete() async throws -> SandboxHostControlResponse {
+        try await completion()
+    }
+}
+
 public protocol SandboxHostControlMessageHandler: Sendable {
+    func admit(
+        _ message: SandboxCoordinatorControlMessage
+    ) async throws -> SandboxHostControlAdmission
+}
+
+public extension SandboxHostControlMessageHandler {
     func handle(
         _ message: SandboxCoordinatorControlMessage
-    ) async throws -> SandboxHostControlResponse
+    ) async throws -> SandboxHostControlResponse {
+        try await admit(message).complete()
+    }
 }
 
 public enum SandboxHostControlResponse: Sendable {
@@ -259,9 +287,10 @@ public actor SandboxHostControlClient {
             let message = try SandboxControlCodec.decodeCoordinatorMessage(data)
             try await inboundAuthority.accept(message)
             let handler = messageHandler
+            let admission = try await handler.admit(message)
             await handlerWork.submit {
                 do {
-                    let response = try await handler.handle(message)
+                    let response = try await admission.complete()
                     try await writer.send(response)
                 } catch is CancellationError {
                 } catch {

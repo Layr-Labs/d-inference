@@ -1352,21 +1352,29 @@ func (s *PostgresStore) ListPendingSandboxCommandsByHost(
 	return result, nil
 }
 
-func (s *PostgresStore) ListPendingSandboxCommandCancellationsByHost(
+func (s *PostgresStore) ListPendingSandboxCommandCancellations(
 	ctx context.Context,
-	hostID string,
+	hostIDs []string,
+	limit int,
 ) ([]PendingSandboxCommand, error) {
+	if len(hostIDs) == 0 {
+		return []PendingSandboxCommand{}, nil
+	}
 	rows, err := s.pool.Query(
 		ctx,
 		`SELECT `+sandboxCommandSelectColumns+`
 		 FROM sandbox_commands
 		 WHERE sandbox_id IN (
-		   SELECT id FROM sandboxes WHERE host_id = $1 AND state <> $2
+		   SELECT id
+		   FROM sandboxes
+		   WHERE host_id = ANY($1::uuid[]) AND state <> $2
 		 )
 		   AND cancellation_pending
-		 ORDER BY created_at`,
-		hostID,
+		 ORDER BY created_at
+		 LIMIT $3`,
+		hostIDs,
 		SandboxStateDeleted,
+		sandboxListLimit(limit),
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

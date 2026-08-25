@@ -157,6 +157,123 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         }
         XCTAssertEqual(original.state, .cancelled)
     }
+
+    func testRestartedAdapterDoesNotReportUnknownCommandLost() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let scope = Fixture.scope(fencingToken: 7)
+        let name = Fixture.virtualMachineName(for: scope)
+        await fixture.runtime.seedRunningVirtualMachine(name: name)
+        let cancellation = SandboxWireCommandControl(
+            operationID: UUID(),
+            commandID: UUID(),
+            scope: scope
+        )
+
+        let response = try await fixture.adapter.handle(.cancelCommand(
+            fixture.envelope(payload: cancellation, type: .cancelCommand)
+        ))
+
+        guard case .command(let status) = response else {
+            return XCTFail("expected command cancellation response")
+        }
+        XCTAssertEqual(
+            status.state,
+            .cancelled,
+            "a fresh adapter must not acknowledge terminal lost until guest execution is stopped"
+        )
+        let stopped = await fixture.runtime.record(name: name)
+        XCTAssertEqual(stopped?.state, .stopped)
+        let stopScopes = await fixture.runtime.stopScopes()
+        XCTAssertEqual(stopScopes, [scope.operationScope])
+    }
+
+    func testRestartedAdapterDoesNotAcknowledgeFailedStopAsCancelled()
+        async throws
+    {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let scope = Fixture.scope(fencingToken: 7)
+        let name = Fixture.virtualMachineName(for: scope)
+        await fixture.runtime.seedRunningVirtualMachine(name: name)
+        await fixture.runtime.failStops(
+            with: .cleanupFailed(
+                operation: "stop \(name)",
+                primary: "cancel requested",
+                cleanup: "VM remained running"
+            )
+        )
+        let cancellation = SandboxWireCommandControl(
+            operationID: UUID(),
+            commandID: UUID(),
+            scope: scope
+        )
+
+        let response = try await fixture.adapter.handle(.cancelCommand(
+            fixture.envelope(payload: cancellation, type: .cancelCommand)
+        ))
+
+        guard case .command(let status) = response else {
+            return XCTFail("expected command cancellation response")
+        }
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertEqual(status.errorCode, "runtime_cleanup_failed")
+        let stillRunning = await fixture.runtime.record(name: name)
+        XCTAssertEqual(stillRunning?.state, .running)
+    }
+
+    func testActiveCancellationDoesNotSwallowRuntimeCleanupFailure()
+        async throws
+    {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        await fixture.runtime.blockCommands(
+            cancellationError: .cleanupFailed(
+                operation: "execute test",
+                primary: "cancelled",
+                cleanup: "VM stop failed"
+            )
+        )
+        let scope = Fixture.scope(fencingToken: 7)
+        let command = SandboxWireCommand(
+            commandID: UUID(),
+            idempotencyKey: UUID().uuidString.lowercased(),
+            scope: scope,
+            arguments: ["/usr/bin/printf", "hello"],
+            timeoutSeconds: 900
+        )
+        let running = Task {
+            try await fixture.adapter.handle(.command(
+                fixture.envelope(payload: command, type: .command)
+            ))
+        }
+        await fixture.runtime.waitUntilCommandStarted()
+        let cancellation = SandboxWireCommandControl(
+            operationID: UUID(),
+            commandID: command.commandID,
+            scope: scope
+        )
+
+        let cancellationResponse = try await fixture.adapter.handle(
+            .cancelCommand(
+                fixture.envelope(
+                    payload: cancellation,
+                    type: .cancelCommand
+                )
+            )
+        )
+
+        guard case .command(let cancelled) = cancellationResponse else {
+            return XCTFail("expected command cancellation response")
+        }
+        XCTAssertEqual(cancelled.state, .failed)
+        XCTAssertEqual(cancelled.errorCode, "runtime_cleanup_failed")
+        guard case .command(let original) = try await running.value else {
+            return XCTFail("expected original command response")
+        }
+        XCTAssertEqual(original.state, .failed)
+        XCTAssertEqual(original.errorCode, "runtime_cleanup_failed")
+    }
 }
 
 private final class Fixture: @unchecked Sendable {
@@ -276,8 +393,13 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     private var records: [String: SandboxVirtualMachineRecord] = [:]
     private var recordedEvents: [String] = []
     private var shouldBlockCommands = false
+    private var blockedCommand:
+        CheckedContinuation<SandboxGuestCommandResult, Error>?
+    private var commandCancellationError: SandboxRuntimeError?
     private var commandStarted = false
     private var commandStartedWaiter: CheckedContinuation<Void, Never>?
+    private var stopError: SandboxRuntimeError?
+    private var recordedStopScopes: [SandboxOperationScope] = []
 
     func inspect(
         scope _: SandboxOperationScope,
@@ -324,12 +446,22 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
         name _: String,
         request _: SandboxGuestCommandRequest
     ) async throws -> SandboxGuestCommandResult {
-        commandStarted = true
-        commandStartedWaiter?.resume()
-        commandStartedWaiter = nil
         if shouldBlockCommands {
-            try await Task.sleep(for: .seconds(3_600))
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    blockedCommand = $0
+                    markCommandStarted()
+                    if Task.isCancelled {
+                        cancelBlockedCommand()
+                    }
+                }
+            } onCancel: {
+                Task {
+                    await self.cancelBlockedCommand()
+                }
+            }
         }
+        markCommandStarted()
         return SandboxGuestCommandResult(
             exitCode: 0,
             standardOutput: Data("hello".utf8),
@@ -338,10 +470,14 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     }
 
     func stop(
-        scope _: SandboxOperationScope,
+        scope: SandboxOperationScope,
         name: String
     ) async throws {
         recordedEvents.append("stop:\(name)")
+        recordedStopScopes.append(scope)
+        if let stopError {
+            throw stopError
+        }
         guard let record = records[name] else {
             return
         }
@@ -367,8 +503,9 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
         recordedEvents
     }
 
-    func blockCommands() {
+    func blockCommands(cancellationError: SandboxRuntimeError? = nil) {
         shouldBlockCommands = true
+        commandCancellationError = cancellationError
     }
 
     func waitUntilCommandStarted() async {
@@ -377,6 +514,47 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
         }
         await withCheckedContinuation {
             commandStartedWaiter = $0
+        }
+    }
+
+    func seedRunningVirtualMachine(name: String) {
+        records[name] = SandboxVirtualMachineRecord(
+            name: name,
+            state: .running,
+            cpuCount: 4,
+            memoryBytes: 8 * SandboxResourcePolicy.gibibyte,
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte,
+            guestReady: true
+        )
+    }
+
+    func failStops(with error: SandboxRuntimeError) {
+        stopError = error
+    }
+
+    func record(name: String) -> SandboxVirtualMachineRecord? {
+        records[name]
+    }
+
+    func stopScopes() -> [SandboxOperationScope] {
+        recordedStopScopes
+    }
+
+    private func markCommandStarted() {
+        commandStarted = true
+        commandStartedWaiter?.resume()
+        commandStartedWaiter = nil
+    }
+
+    private func cancelBlockedCommand() {
+        guard let continuation = blockedCommand else {
+            return
+        }
+        blockedCommand = nil
+        if let commandCancellationError {
+            continuation.resume(throwing: commandCancellationError)
+        } else {
+            continuation.resume(throwing: CancellationError())
         }
     }
 }

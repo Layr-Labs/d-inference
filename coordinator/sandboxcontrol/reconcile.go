@@ -102,9 +102,10 @@ func (c *Controller) reconcileHost(
 		_ = c.dispatchCommand(&pending.Sandbox, &pending.Command)
 	}
 	pendingCancellations, err :=
-		c.store.ListPendingSandboxCommandCancellationsByHost(
+		c.store.ListPendingSandboxCommandCancellations(
 			ctx,
-			session.HostID(),
+			[]string{session.HostID()},
+			store.MaxSandboxListLimit,
 		)
 	if err != nil {
 		return err

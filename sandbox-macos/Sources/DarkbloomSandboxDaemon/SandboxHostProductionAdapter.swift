@@ -148,30 +148,34 @@ actor SandboxHostProductionAdapter:
         )
     }
 
-    func handle(
+    func admit(
         _ message: SandboxCoordinatorControlMessage
-    ) async throws -> SandboxHostControlResponse {
+    ) async throws -> SandboxHostControlAdmission {
         switch message {
         case .prepare(let envelope):
-            return await prepare(envelope.payload)
+            return admitPrepare(envelope.payload)
         case .leaseRenew(let envelope):
-            return renew(envelope.payload)
+            return SandboxHostControlAdmission(
+                response: renew(envelope.payload)
+            )
         case .command(let envelope):
-            return await execute(envelope.payload)
+            return admitExecute(envelope.payload)
         case .cancelCommand(let envelope):
-            return await cancel(envelope.payload)
+            return admitCancellation(envelope.payload)
         case .stop(let envelope):
-            return await stop(envelope.payload)
+            return admitStop(envelope.payload)
         case .delete(let envelope):
-            return await delete(envelope.payload)
+            return admitDelete(envelope.payload)
         case .drain(let envelope):
-            return drain(envelope.payload)
+            return SandboxHostControlAdmission(
+                response: drain(envelope.payload)
+            )
         }
     }
 
-    private func prepare(
+    private func admitPrepare(
         _ payload: SandboxWirePrepare
-    ) async -> SandboxHostControlResponse {
+    ) -> SandboxHostControlAdmission {
         let scope = payload.scope
         do {
             guard isolationReadiness.permitsJobs else {
@@ -202,13 +206,45 @@ actor SandboxHostProductionAdapter:
                 imageSource: .localTemplate(name: payload.baseImageID),
                 diskBytes: lease.bootDiskBytes
             )
+            return SandboxHostControlAdmission {
+                await self.completePrepare(
+                    payload,
+                    lease: lease,
+                    specification: specification
+                )
+            }
+        } catch {
+            operationStates[scope.sandboxID] = .failed
+            return SandboxHostControlAdmission(
+                response: .operation(
+                    Self.operationStatus(
+                        payload.operationID,
+                        scope: scope.operationScope,
+                        operation: "prepare",
+                        state: .failed,
+                        errorCode: Self.errorCode(error)
+                    )
+                )
+            )
+        }
+    }
+
+    private func completePrepare(
+        _ payload: SandboxWirePrepare,
+        lease: SandboxCapacityLease,
+        specification: SandboxVirtualMachineSpecification
+    ) async -> SandboxHostControlResponse {
+        do {
             try await runtime.create(
                 scope: lease.scope,
                 specification: specification
             )
-            operationStates[scope.sandboxID] = .booting
-            try await runtime.start(scope: lease.scope, name: name)
-            operationStates[scope.sandboxID] = .ready
+            operationStates[payload.scope.sandboxID] = .booting
+            try await runtime.start(
+                scope: lease.scope,
+                name: specification.name
+            )
+            operationStates[payload.scope.sandboxID] = .ready
             return .operation(
                 Self.operationStatus(
                     payload.operationID,
@@ -218,11 +254,11 @@ actor SandboxHostProductionAdapter:
                 )
             )
         } catch {
-            operationStates[scope.sandboxID] = .failed
+            operationStates[payload.scope.sandboxID] = .failed
             return .operation(
                 Self.operationStatus(
                     payload.operationID,
-                    scope: scope.operationScope,
+                    scope: payload.scope.operationScope,
                     operation: "prepare",
                     state: .failed,
                     errorCode: Self.errorCode(error)
@@ -261,41 +297,49 @@ actor SandboxHostProductionAdapter:
         }
     }
 
-    private func execute(
+    private func admitExecute(
         _ payload: SandboxWireCommand
-    ) async -> SandboxHostControlResponse {
+    ) -> SandboxHostControlAdmission {
         guard isolationReadiness.permitsJobs else {
-            return .command(
-                Self.failedCommand(
-                    payload,
-                    errorCode: AdapterError.isolationUnavailable.code
+            return SandboxHostControlAdmission(
+                response: .command(
+                    Self.failedCommand(
+                        payload,
+                        errorCode: AdapterError.isolationUnavailable.code
+                    )
                 )
             )
         }
         guard let idempotencyKey = UUID(uuidString: payload.idempotencyKey),
               let executable = payload.arguments.first
         else {
-            return .command(
-                Self.failedCommand(
-                    payload,
-                    errorCode: AdapterError.invalidRequest.code
+            return SandboxHostControlAdmission(
+                response: .command(
+                    Self.failedCommand(
+                        payload,
+                        errorCode: AdapterError.invalidRequest.code
+                    )
                 )
             )
         }
         if let active = activeCommands[payload.commandID] {
             guard active.scope == payload.scope else {
-                return .command(
-                    Self.failedCommand(
-                        payload,
-                        errorCode: AdapterError.staleAuthority.code
+                return SandboxHostControlAdmission(
+                    response: .command(
+                        Self.failedCommand(
+                            payload,
+                            errorCode: AdapterError.staleAuthority.code
+                        )
                     )
                 )
             }
-            return await commandResponse(
-                payload,
-                executionID: active.executionID,
-                task: active.task
-            )
+            return SandboxHostControlAdmission {
+                await self.commandResponse(
+                    payload,
+                    executionID: active.executionID,
+                    task: active.task
+                )
+            }
         }
 
         let request: SandboxGuestCommandRequest
@@ -309,10 +353,12 @@ actor SandboxHostProductionAdapter:
                 timeoutSeconds: payload.timeoutSeconds
             )
         } catch {
-            return .command(
-                Self.failedCommand(
-                    payload,
-                    errorCode: Self.errorCode(error)
+            return SandboxHostControlAdmission(
+                response: .command(
+                    Self.failedCommand(
+                        payload,
+                        errorCode: Self.errorCode(error)
+                    )
                 )
             )
         }
@@ -333,11 +379,13 @@ actor SandboxHostProductionAdapter:
             scope: payload.scope,
             task: task
         )
-        return await commandResponse(
-            payload,
-            executionID: executionID,
-            task: task
-        )
+        return SandboxHostControlAdmission {
+            await self.commandResponse(
+                payload,
+                executionID: executionID,
+                task: task
+            )
+        }
     }
 
     private func commandResponse(
@@ -403,34 +451,80 @@ actor SandboxHostProductionAdapter:
         }
     }
 
-    private func cancel(
+    private func admitCancellation(
         _ payload: SandboxWireCommandControl
-    ) async -> SandboxHostControlResponse {
+    ) -> SandboxHostControlAdmission {
         guard let active = activeCommands[payload.commandID] else {
-            return .command(
-                SandboxWireCommandStatus(
-                    commandID: payload.commandID,
-                    scope: payload.scope,
-                    state: .lost,
-                    errorCode: "command_not_running"
+            let runtime = runtime
+            let scope = payload.scope.operationScope
+            let name = Self.virtualMachineName(for: payload.scope)
+            let stopProof: Task<Void, Error> = Task {
+                try await runtime.stop(scope: scope, name: name)
+            }
+            return SandboxHostControlAdmission {
+                await self.cancellationResponse(
+                    payload,
+                    active: nil,
+                    stopProof: stopProof
                 )
-            )
+            }
         }
         guard active.scope == payload.scope else {
-            return .command(
-                SandboxWireCommandStatus(
-                    commandID: payload.commandID,
-                    scope: payload.scope,
-                    state: .failed,
-                    exitCode: -1,
-                    errorCode: AdapterError.staleAuthority.code
+            return SandboxHostControlAdmission(
+                response: .command(
+                    SandboxWireCommandStatus(
+                        commandID: payload.commandID,
+                        scope: payload.scope,
+                        state: .failed,
+                        exitCode: -1,
+                        errorCode: AdapterError.staleAuthority.code
+                    )
                 )
             )
         }
         active.task.cancel()
-        _ = try? await active.task.value
-        if activeCommands[payload.commandID]?.executionID == active.executionID {
-            activeCommands.removeValue(forKey: payload.commandID)
+        return SandboxHostControlAdmission {
+            await self.cancellationResponse(
+                payload,
+                active: active,
+                stopProof: nil
+            )
+        }
+    }
+
+    private func cancellationResponse(
+        _ payload: SandboxWireCommandControl,
+        active: ActiveCommand?,
+        stopProof: Task<Void, Error>?
+    ) async -> SandboxHostControlResponse {
+        if let active {
+            defer {
+                if activeCommands[payload.commandID]?.executionID
+                    == active.executionID
+                {
+                    activeCommands.removeValue(forKey: payload.commandID)
+                }
+            }
+            do {
+                _ = try await active.task.value
+            } catch is CancellationError {
+                // Lume returns cancellation only after guest cleanup and its
+                // fenced VM stop have completed.
+            } catch {
+                return Self.failedCancellation(payload, error: error)
+            }
+        } else {
+            do {
+                guard let stopProof else {
+                    return Self.failedCancellation(
+                        payload,
+                        error: AdapterError.cancellationProofUnavailable
+                    )
+                }
+                try await stopProof.value
+            } catch {
+                return Self.failedCancellation(payload, error: error)
+            }
         }
         return .command(
             SandboxWireCommandStatus(
@@ -441,11 +535,20 @@ actor SandboxHostProductionAdapter:
         )
     }
 
-    private func stop(
+    private func admitStop(
+        _ payload: SandboxWireOperation
+    ) -> SandboxHostControlAdmission {
+        let scope = payload.scope.operationScope
+        operationStates[scope.sandboxID] = .stopping
+        return SandboxHostControlAdmission {
+            await self.completeStop(payload)
+        }
+    }
+
+    private func completeStop(
         _ payload: SandboxWireOperation
     ) async -> SandboxHostControlResponse {
         let scope = payload.scope.operationScope
-        operationStates[scope.sandboxID] = .stopping
         do {
             try await runtime.stop(
                 scope: scope,
@@ -474,11 +577,20 @@ actor SandboxHostProductionAdapter:
         }
     }
 
-    private func delete(
+    private func admitDelete(
+        _ payload: SandboxWireOperation
+    ) -> SandboxHostControlAdmission {
+        let scope = payload.scope.operationScope
+        operationStates[scope.sandboxID] = .deleting
+        return SandboxHostControlAdmission {
+            await self.completeDelete(payload)
+        }
+    }
+
+    private func completeDelete(
         _ payload: SandboxWireOperation
     ) async -> SandboxHostControlResponse {
         let scope = payload.scope.operationScope
-        operationStates[scope.sandboxID] = .deleting
         do {
             try await runtime.deleteAndRelease(
                 scope: scope,
@@ -623,6 +735,21 @@ actor SandboxHostProductionAdapter:
         )
     }
 
+    private static func failedCancellation(
+        _ payload: SandboxWireCommandControl,
+        error: Error
+    ) -> SandboxHostControlResponse {
+        .command(
+            SandboxWireCommandStatus(
+                commandID: payload.commandID,
+                scope: payload.scope,
+                state: .failed,
+                exitCode: -1,
+                errorCode: errorCode(error)
+            )
+        )
+    }
+
     private static func errorCode(_ error: Error) -> String {
         if let error = error as? AdapterError {
             return error.code
@@ -652,6 +779,8 @@ actor SandboxHostProductionAdapter:
                 return "operation_timeout"
             case .operationInProgress:
                 return "operation_in_progress"
+            case .cleanupFailed:
+                return "runtime_cleanup_failed"
             default:
                 return "runtime_operation_failed"
             }
@@ -665,6 +794,7 @@ private enum AdapterError: Error {
     case staleAuthority
     case isolationUnavailable
     case gpuIsolationUnavailable
+    case cancellationProofUnavailable
 
     var code: String {
         switch self {
@@ -676,6 +806,8 @@ private enum AdapterError: Error {
             "isolation_unavailable"
         case .gpuIsolationUnavailable:
             "gpu_isolation_unavailable"
+        case .cancellationProofUnavailable:
+            "cancellation_proof_unavailable"
         }
     }
 }

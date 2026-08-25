@@ -548,7 +548,9 @@ func applySandboxCommandTransition(
 	if command.Terminal() {
 		if command.CancellationPending &&
 			isTerminalSandboxCommandState(update.State) {
-			command.CancellationPending = false
+			if update.State == SandboxCommandCancelled {
+				command.CancellationPending = false
+			}
 			command.UpdatedAt = update.UpdatedAt
 			return nil
 		}
@@ -583,7 +585,7 @@ func applySandboxCommandTransition(
 	command.OutputTruncated = update.OutputTruncated
 	command.ErrorCode = update.ErrorCode
 	command.UpdatedAt = update.UpdatedAt
-	if reportedTerminal {
+	if update.State == SandboxCommandCancelled {
 		command.CancellationPending = false
 	}
 	if requestCancellation {

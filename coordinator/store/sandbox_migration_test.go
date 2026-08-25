@@ -8,7 +8,8 @@ import (
 
 func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 	backend := testPostgresStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 	sandbox, prepare := sandboxFencingFixture(
 		"10000000-0000-0000-0000-000000000301",
@@ -72,7 +73,7 @@ func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 		t.Fatalf("repair and constrain concurrent active commands: %v", err)
 	}
 
-	var active, lost int
+	var active, quarantined int
 	if err := tx.QueryRow(
 		ctx,
 		`SELECT
@@ -80,15 +81,90 @@ func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 			COUNT(*) FILTER (
 				WHERE state = 'lost'
 				  AND error_code = 'upgrade_concurrent_command'
+				  AND cancellation_pending
 				  AND completed_at IS NOT NULL
 			)
 		 FROM sandbox_commands
 		 WHERE sandbox_id = $1`,
 		stored.ID,
-	).Scan(&active, &lost); err != nil {
+	).Scan(&active, &quarantined); err != nil {
 		t.Fatalf("inspect repaired commands: %v", err)
 	}
-	if active != 1 || lost != 1 {
-		t.Fatalf("repaired command counts active=%d lost=%d, want 1/1", active, lost)
+	if active != 1 || quarantined != 1 {
+		t.Fatalf(
+			"repaired command counts active=%d quarantined=%d, want 1/1",
+			active,
+			quarantined,
+		)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit repaired command fixture: %v", err)
+	}
+
+	if _, err := backend.pool.Exec(
+		ctx,
+		`DROP INDEX idx_sandbox_commands_one_active`,
+	); err != nil {
+		t.Fatalf("drop active-command index for concurrent migration: %v", err)
+	}
+	if _, err := backend.pool.Exec(
+		ctx,
+		`INSERT INTO sandbox_commands (
+			id, sandbox_id, account_id, idempotency_key, generation,
+			fencing_token, arguments, timeout_seconds, state,
+			created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, 1, $5, '["/usr/bin/true"]', 900,
+			'running', $6, $6
+		)`,
+		"70000000-0000-0000-0000-000000000307",
+		stored.ID,
+		stored.AccountID,
+		"70000000-0000-0000-0000-000000000307",
+		stored.FencingToken,
+		now.Add(3*time.Second),
+	); err != nil {
+		t.Fatalf("seed command for concurrent migration: %v", err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- backend.executeSchemaMigrations(
+				ctx,
+				[]string{sandboxActiveCommandConstraintMigration},
+			)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent active-command migration: %v", err)
+		}
+	}
+
+	if err := backend.pool.QueryRow(
+		ctx,
+		`SELECT
+			COUNT(*) FILTER (WHERE state IN ('pending', 'accepted', 'running')),
+			COUNT(*) FILTER (
+				WHERE state = 'lost'
+				  AND error_code = 'upgrade_concurrent_command'
+				  AND cancellation_pending
+			)
+		 FROM sandbox_commands
+		 WHERE sandbox_id = $1`,
+		stored.ID,
+	).Scan(&active, &quarantined); err != nil {
+		t.Fatalf("inspect concurrently repaired commands: %v", err)
+	}
+	if active != 1 || quarantined != 2 {
+		t.Fatalf(
+			"concurrent repair counts active=%d quarantined=%d, want 1/2",
+			active,
+			quarantined,
+		)
 	}
 }

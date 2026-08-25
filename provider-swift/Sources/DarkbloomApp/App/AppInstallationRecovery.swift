@@ -10,27 +10,17 @@ struct AppInstallationRecovery: Equatable, Sendable {
     }
 
     @MainActor
-    func openInstalledApp() {
+    func openInstalledApp(
+        using opener: any InstalledApplicationOpening =
+            WorkspaceInstalledApplicationOpener()
+    ) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.allowsRunningApplicationSubstitution = false
-        NSWorkspace.shared.openApplication(
+        opener.openApplication(
             at: destination,
             configuration: configuration
-        ) { _, error in
-            if let error {
-                NSLog(
-                    "Could not open the managed Darkbloom app at %@: %@",
-                    destination.path,
-                    error.localizedDescription
-                )
-            }
-        }
-    }
-
-    @MainActor
-    func openInstalledApp(using opener: (URL) -> Void) {
-        opener(destination)
+        )
     }
 }
 

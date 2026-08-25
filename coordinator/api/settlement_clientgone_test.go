@@ -85,7 +85,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: reserved,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -359,7 +359,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 			Model:            model,
 			ConsumerKey:      consumerID,
 			ReservedMicroUSD: cost,
-			ChunkCh:          make(chan string, 1),
+			ChunkCh:          make(chan registry.ProviderChunk, 1),
 			CompleteCh:       make(chan protocol.UsageInfo, 1),
 			ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 		}

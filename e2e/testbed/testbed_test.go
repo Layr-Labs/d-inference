@@ -1,6 +1,7 @@
 package testbed
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -112,6 +113,7 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, DefaultTestModelID(), sc.ModelSpecs[0].ModelID)
 	assert.Equal(t, 1, sc.ModelSpecs[0].NumProviders)
 	assert.Equal(t, 1, sc.NumUsers)
+	assert.Equal(t, ProductionFirstContentDeadlineBase, sc.FirstContentDeadlineBase)
 	assert.Equal(t, 1, sc.TotalProviders())
 	assert.Equal(t, DefaultTestModelID(), sc.PrimaryModelID())
 	assert.Equal(t, []string{DefaultTestModelID()}, sc.AllModelIDs())
@@ -126,6 +128,25 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, 7, multiSpec.TotalProviders())
 	assert.Equal(t, []string{"model-a", "model-b"}, multiSpec.AllModelIDs())
 	assert.Equal(t, "model-a", multiSpec.PrimaryModelID())
+}
+
+func TestRunningCoordinatorUsesProductionFirstContentDeadline(t *testing.T) {
+	suite := NewSuite(DefaultSuiteConfig())
+	suite.Ctx = context.Background()
+	suite.PgStore = NewMemoryStore()
+	if err := suite.startCoordinator(); err != nil {
+		t.Fatalf("start coordinator: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = suite.Coordinator.Stop()
+		suite.Coordinator.Server.Close()
+	})
+
+	const promptTokens = 1_234
+	want := ProductionFirstContentDeadlineBase + promptTokens*time.Millisecond
+	if got := suite.Coordinator.Server.FirstContentDeadline(promptTokens); got != want {
+		t.Fatalf("running E2E server deadline = %v, want %v", got, want)
+	}
 }
 
 // TestReportedPrivacyCapabilities pins the accessor contract the

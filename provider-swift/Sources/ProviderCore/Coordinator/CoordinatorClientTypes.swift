@@ -7,6 +7,82 @@ import Network
 import os
 #endif
 
+/// Provider-local monotonic deadline derived once from the coordinator's
+/// relative first-content budget. Carry this value unchanged through request
+/// admission, model loading, and engine submission; wall-clock time must never
+/// be re-read or the relative budget restarted at an intermediate layer.
+public struct FirstContentDeadline: Sendable, Equatable {
+    public let instant: ContinuousClock.Instant
+
+    public init(
+        relativeBudgetMilliseconds: Int64,
+        receivedAt: ContinuousClock.Instant = .now
+    ) {
+        self.instant = receivedAt.advanced(
+            by: .milliseconds(relativeBudgetMilliseconds))
+    }
+
+    /// Remaining monotonic budget at the current boundary.
+    ///
+    /// This is intentionally not clamped: the atomic engine API needs the real
+    /// signed duration when the request is still live.
+    @inline(__always)
+    public func remainingDuration(
+        now: ContinuousClock.Instant = .now
+    ) -> Duration {
+        instant - now
+    }
+
+    /// Reject an already-expired request at any pre-content boundary.
+    ///
+    /// Projection policy can fail open while its service rate is unmeasured;
+    /// the absolute request deadline cannot. Every layer carries this same
+    /// anchored instant rather than restarting a relative timer.
+    @inline(__always)
+    public func check(
+        now: ContinuousClock.Instant = .now
+    ) throws {
+        guard now < instant else {
+            throw PreContentDeadlineFailure.deadlineUnreachable
+        }
+    }
+
+    /// Race a cancellation-safe asynchronous boundary against this deadline.
+    ///
+    /// The operation must cooperatively unwind when cancelled. Stateful work
+    /// that cannot safely be cancelled must instead call `check()` immediately
+    /// after it returns. Callers must also check immediately after a successful
+    /// race so a same-instant operation win can release any produced resource.
+    public func race<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try check()
+        let deadline = instant
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                let clock = ContinuousClock()
+                try await clock.sleep(until: deadline)
+                throw PreContentDeadlineFailure.deadlineUnreachable
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw CancellationError()
+            }
+            return first
+        }
+    }
+}
+
+/// Typed pre-content refusal returned only by atomic engine admission.
+public enum PreContentDeadlineFailure: String, Error, LocalizedError, Sendable, Equatable {
+    case deadlineUnreachable = "deadline_unreachable"
+
+    public var errorDescription: String? { rawValue }
+}
+
 // MARK: - Event Types
 
 public enum CoordinatorEvent: Sendable {
@@ -24,7 +100,8 @@ public enum CoordinatorEvent: Sendable {
         cacheReceiptNonce: String?,
         cacheScope: String?,
         prefixCacheProtocol: Int?,
-        toolSchemaMetadataProtocol: Int?
+        toolSchemaMetadataProtocol: Int?,
+        firstContentDeadline: FirstContentDeadline?
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)

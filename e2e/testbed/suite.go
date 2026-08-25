@@ -147,6 +147,9 @@ func NewSuite(cfg SuiteConfig) *Suite {
 	if cfg.QueueTimeout <= 0 {
 		cfg.QueueTimeout = 120 * time.Second
 	}
+	if cfg.FirstContentDeadlineBase <= 0 {
+		cfg.FirstContentDeadlineBase = ProductionFirstContentDeadlineBase
+	}
 	if cfg.SeedBalance <= 0 {
 		cfg.SeedBalance = 100_000_000
 	}
@@ -273,7 +276,9 @@ func (s *Suite) startCoordinator() error {
 	}
 	reg.SetModelCatalog(catalog)
 
-	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{}, s.Logger)
+	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{
+		FirstContentDeadlineBase: s.Config.FirstContentDeadlineBase,
+	}, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)

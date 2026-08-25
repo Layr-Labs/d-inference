@@ -529,13 +529,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
+			_, receivedAt := provider.MarkPendingCompletionIngressNow(completeMsg.RequestID)
+			if receivedAt.IsZero() {
+				receivedAt = time.Now()
+			}
 			// Run completion handling (billing settlement) off the read loop.
 			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
 			saferun.Go(s.logger, "handleComplete", func() {
-				s.handleComplete(providerID, provider, completeMsg)
+				s.handleCompleteAt(providerID, provider, completeMsg, receivedAt)
 			})
 
 		case protocol.TypeInferenceError:
@@ -1578,7 +1582,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.logger.Warn("chunk from unregistered provider", "provider_id", providerID)
 		return
 	}
-	pr := provider.GetPending(msg.RequestID)
+	pr, receivedAt := provider.BeginPendingChunkIngress(msg.RequestID)
 	if pr == nil {
 		// Until it matches pending state, request_id is provider-controlled and
 		// therefore an arbitrary log-exfiltration channel.
@@ -1593,6 +1597,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		}
 		return
 	}
+	ingressClassified := false
+	defer func() {
+		if !ingressClassified {
+			pr.FinishProviderChunkIngress(receivedAt, false)
+		}
+	}()
 	chunkData, err := s.decryptTextResponseChunk(provider, pr, msg)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
@@ -1610,6 +1620,31 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	contentBearing := !isBoilerplateChunk(chunkData)
+	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
+	ingressClassified = true
+	deadlineExpiredWithoutContent := !pr.FirstContentDeadline.IsZero() &&
+		((firstContent && receivedAt.After(pr.FirstContentDeadline)) ||
+			(!contentBearing &&
+				!pr.HasFirstContentIngress() &&
+				time.Now().After(pr.FirstContentDeadline)))
+	if deadlineExpiredWithoutContent {
+		// The request-absolute SLA is defined at coordinator ingress. Reject
+		// either late first content or an on-time chunk that finished
+		// classification as boilerplate only after the deadline.
+		s.ddIncr("inference.first_content_after_deadline", []string{})
+		s.sendProviderCancel(provider, pr.RequestID)
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type:        protocol.TypeInferenceError,
+			RequestID:   pr.RequestID,
+			Error:       "first content was unavailable at the request deadline",
+			StatusCode:  http.StatusServiceUnavailable,
+			ErrorReason: errorReasonDeadlineUnreachable,
+			FailureCode: protocol.FailureCodeCapacity,
+		})
+		return
+	}
+	chunk := registry.ProviderChunk{Data: chunkData, ReceivedAt: receivedAt}
 	// Fast path: non-blocking send — this is the provider's single read
 	// goroutine, so it must not stall behind one slow consumer. A full channel
 	// means the consumer is ≥256 chunks behind; silently dropping the chunk
@@ -1619,9 +1654,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	// then fail the request: cancel the provider's generation and surface a
 	// terminal error to the consumer goroutine.
 	select {
-	case pr.ChunkCh <- chunkData:
+	case pr.ChunkCh <- chunk:
 	default:
-		if sendChunkWithGrace(pr, chunkData) {
+		if sendChunkWithGrace(pr, chunk) {
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",
@@ -1657,7 +1692,7 @@ const chunkOverflowGrace = 250 * time.Millisecond
 // another goroutine while we are blocked in the send, and a closed channel
 // here simply means the request is already torn down (delivered=false; the
 // caller's terminal path degrades to a no-op warn).
-func sendChunkWithGrace(pr *registry.PendingRequest, chunk string) (delivered bool) {
+func sendChunkWithGrace(pr *registry.PendingRequest, chunk registry.ProviderChunk) (delivered bool) {
 	defer func() {
 		if recover() != nil {
 			delivered = false
@@ -1744,9 +1779,45 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 const maxPlausibleDecodeTPS = 10000.0
 
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
+	s.handleCompleteAt(providerID, provider, msg, time.Now())
+}
+
+func (s *Server) handleCompleteAt(
+	providerID string,
+	provider *registry.Provider,
+	msg *protocol.InferenceCompleteMessage,
+	receivedAt time.Time,
+) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return
+	}
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
+	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		pending.MarkCompletionIngress(receivedAt)
+		if !pending.HasFirstContentIngress() &&
+			!pending.FirstContentDeadline.IsZero() &&
+			receivedAt.After(pending.FirstContentDeadline) {
+			// A clean terminal without content is a valid empty completion only
+			// while the first-content SLA is still live. Once the absolute deadline
+			// has passed it must not race the dispatch timer into an empty HTTP 200.
+			s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+				Type:        protocol.TypeInferenceError,
+				RequestID:   pending.RequestID,
+				Error:       "provider completed after the first-content deadline",
+				StatusCode:  http.StatusServiceUnavailable,
+				ErrorReason: errorReasonDeadlineUnreachable,
+				FailureCode: protocol.FailureCodeCapacity,
+			})
+			return
+		}
+		if !pending.HasFirstContentIngress() {
+			if accepted, waited := pending.AwaitSpeculativeEmptyCompletionDecision(); waited && !accepted {
+				return
+			}
+		}
 	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream):
@@ -2335,8 +2406,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// every mid-stream disconnect — penalizing them would erode the whole
 	// fleet's reputation for consumer behavior.
 	//
-	// A structured NON-provider-fault error_reason is exempt too
-	// (isNonProviderFaultErrorReason): jinja_* template-render failures (E4 —
+	// A structured health-neutral error_reason is exempt too
+	// (isProviderHealthNeutralErrorReason): jinja_* template-render failures (E4 —
 	// the model's chat template could not render the REQUEST's tool schemas
 	// or message history, a request-shape fault that fails identically on
 	// every provider; prod: jinja requests averaged 1.57 dispatch rows, each
@@ -2345,8 +2416,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// broke a forced tool_choice contract; the 422 stays on the bounded
 	// failover path precisely because a re-sample can comply, so each
 	// attempted provider must not eat a reputation strike for what the model
-	// generated). A plain 422 with no structured reason still counts —
-	// only the typed vocabulary exonerates.
+	// generated), plus deadline_unreachable (the coordinator-supplied remaining
+	// SLA could not be met). A plain 422 with no structured reason still counts
+	// — only the typed vocabulary exonerates.
 	// Typed terminal cause (new providers). Classify once and emit the typed
 	// terminal metrics; neutral (safety_deadline / backpressure_timeout /
 	// cancelled — platform policy or consumer behavior) and capacity
@@ -2361,8 +2433,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		causeClass == causeClassCapacity
 	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
 		msg.TerminalCause == terminalCauseCancelled
-	nonProviderFault := isNonProviderFaultErrorReason(msg.ErrorReason)
-	if !capacityRejection && !cancelTerminal && !nonProviderFault && !causeNeutralForHealth {
+	providerHealthNeutral := isProviderHealthNeutralErrorReason(msg.ErrorReason)
+	if !capacityRejection && !cancelTerminal && !providerHealthNeutral && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
 

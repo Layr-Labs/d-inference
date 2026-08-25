@@ -9,6 +9,23 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
+func TestGenericResponseMetadataPreservesCallerEndpoint(t *testing.T) {
+	endpoint, stops := genericResponseMetadata(messagesEndpoint, map[string]any{
+		"stop_sequences": []any{"<END>"},
+	})
+	if endpoint != messagesEndpoint {
+		t.Fatalf("endpoint = %q, want %q", endpoint, messagesEndpoint)
+	}
+	if len(stops) != 1 || stops[0] != "<END>" {
+		t.Fatalf("stop sequences = %v, want [<END>]", stops)
+	}
+
+	endpoint, stops = genericResponseMetadata(completionsEndpoint, map[string]any{})
+	if endpoint != completionsEndpoint || stops != nil {
+		t.Fatalf("completions metadata = (%q, %v)", endpoint, stops)
+	}
+}
+
 func TestBuildMessagesResponseConvertsToolCalls(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:        "request-id",
@@ -205,6 +222,39 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 			if !strings.Contains(body, want) {
 				t.Fatalf("stream missing %q:\n%s", want, body)
 			}
+		}
+	})
+
+	t.Run("messages committed error uses native envelope", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		pr := &registry.PendingRequest{
+			RequestID:        "request-id",
+			PublicModel:      "public-model",
+			ConsumerEndpoint: messagesEndpoint,
+		}
+		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter.start()
+		emitter.handleChunk(
+			`data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)
+		emitter.emitError("provider_error", "generation failed")
+
+		body := recorder.Body.String()
+		if !strings.Contains(body, "event: error") ||
+			!strings.Contains(body, `"type":"error"`) ||
+			!strings.Contains(body, `"error":{"message":"generation failed","type":"api_error"}`) {
+			t.Fatalf("messages stream did not emit native Anthropic error envelope: %s", body)
+		}
+		if strings.Contains(body, `"object":"error"`) ||
+			strings.Contains(body, "data: [DONE]") {
+			t.Fatalf("messages stream leaked OpenAI terminal framing: %s", body)
+		}
+
+		timeoutRecorder := httptest.NewRecorder()
+		timeoutEmitter := newGenericEndpointStreamEmitter(timeoutRecorder, timeoutRecorder, pr)
+		timeoutEmitter.emitError("timeout", "request timed out")
+		if body := timeoutRecorder.Body.String(); !strings.Contains(
+			body, `"error":{"message":"request timed out","type":"overloaded_error"}`) {
+			t.Fatalf("messages stream timeout did not use Anthropic error type: %s", body)
 		}
 	})
 }

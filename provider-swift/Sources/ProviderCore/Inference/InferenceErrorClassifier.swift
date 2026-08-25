@@ -18,10 +18,10 @@ import MLXLMServer
 //
 // The emitted vocabulary MUST stay in lockstep with the coordinator's Go
 // `error_reason` field (`coordinator/api/route_outcome.go`
-// validInferenceErrorReasons): "jinja_channel_tags", "jinja_null_bridge",
-// "jinja_template", "model_load", "tool_noncompliance". nil ⇒ unclassifiable
-// (coordinator falls back to deriving a reason from status/class). Do NOT
-// invent other provider-side values.
+// validInferenceErrorReasons). The closed enum in `InferenceFailure.swift`
+// is the source used by both typed classification and pre-content deadline
+// admission. nil ⇒ unclassifiable (the coordinator derives a reason from
+// status/class). Do not emit free-form provider-side values.
 
 /// Classify a TYPED engine error into the shared `error_reason` vocabulary,
 /// or nil. Type-driven only (no string scans), so it is safe at catch sites

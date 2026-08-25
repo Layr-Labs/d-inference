@@ -36,6 +36,7 @@ enum ProviderPromptContractPipeline {
             tools: ChatTemplateFixes.normalizeTools(tools, context: context),
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request,
-                reasoningEffort: reasoningEffort))
+                reasoningEffort: reasoningEffort,
+                modelType: modelType))
     }
 }

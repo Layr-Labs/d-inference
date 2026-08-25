@@ -2186,3 +2186,59 @@ struct EngineV2KVBackendFallbackHeartbeatTests {
         #expect(EngineV2Bridge.heartbeatFallbackReason(nil) == nil)
     }
 }
+
+@Suite("Prefill deadline and FCFS production configuration")
+struct PrefillDeadlineProductionConfigTests {
+    @Test("deadline enforcement is off by default and for invalid values")
+    func deadlineModeDefaultsOff() {
+        #expect(PrefillDeadlineMode.resolve(environment: [:]) == .off)
+        for invalid in ["", "ENFORCE", "true", "1", "garbage"] {
+            #expect(
+                PrefillDeadlineMode.resolve(environment: [
+                    PrefillDeadlineMode.environmentKey: invalid
+                ]) == .off)
+        }
+    }
+
+    @Test("deadline mode accepts only exact off and enforce values")
+    func deadlineModeParsesExplicitValues() {
+        #expect(
+            PrefillDeadlineMode.resolve(environment: [
+                PrefillDeadlineMode.environmentKey: "off"
+            ]) == .off)
+        #expect(
+            PrefillDeadlineMode.resolve(environment: [
+                PrefillDeadlineMode.environmentKey: "enforce"
+            ]) == .enforce)
+    }
+
+    @Test("partial-prefill cap defaults to one with zero as rollback")
+    func partialPrefillCapDefaultsToOne() {
+        #expect(EngineV2Factory.defaultMaxConcurrentPartialPrefills == 1)
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: [:]) == 1)
+        #expect(
+            EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 8,
+                environment: [:]
+            ).maxConcurrentPartialPrefills == 1)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "0"]) == nil)
+        #expect(
+            EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 8,
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "0"]
+            ).maxConcurrentPartialPrefills == nil)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "3"]) == 3)
+        for unlimited in ["-1", "off", ""] {
+            #expect(
+                EngineV2Factory.maxConcurrentPartialPrefills(
+                    environment: [
+                        EngineV2Factory.maxPartialPrefillsKey: unlimited
+                    ]) == nil,
+                "\(unlimited) should preserve unlimited partial prefills")
+        }
+    }
+}

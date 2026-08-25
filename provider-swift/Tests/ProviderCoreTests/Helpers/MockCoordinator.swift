@@ -344,6 +344,7 @@ public final class MockCoordinator: @unchecked Sendable {
         requestId: String,
         providerPublicKeyBase64: String,
         chatRequestJSON: Data,
+        firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil
     ) async throws {
@@ -361,6 +362,7 @@ public final class MockCoordinator: @unchecked Sendable {
             requestId: requestId,
             body: .null,
             encryptedBody: payload,
+            firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: cacheScope
         ))

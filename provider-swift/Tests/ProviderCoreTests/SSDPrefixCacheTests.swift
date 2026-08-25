@@ -1745,6 +1745,60 @@ private final class BudgetAvailableBox: @unchecked Sendable {
     }
 }
 
+private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _continuations: [AsyncStream<CBv2Event>.Continuation] = []
+    private var _deadlineSubmissions = 0
+
+    var continuations: [AsyncStream<CBv2Event>.Continuation] {
+        lock.withLock { _continuations }
+    }
+
+    var deadlineSubmissions: Int {
+        lock.withLock { _deadlineSubmissions }
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        lock.withLock { _continuations.append(continuation) }
+        return stream
+    }
+
+    func submit(
+        _ request: CBv2Request,
+        firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
+    ) async throws -> CBv2FirstTokenDeadlineResult {
+        lock.withLock { _deadlineSubmissions += 1 }
+        return .deadlineUnreachable(projectedWork: .unbounded)
+    }
+
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(
+            activeRequests: 0,
+            waitingRequests: 0,
+            kvBytesInUse: 0,
+            kvBytesCapacity: 0,
+            activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
+private struct SSDDeadlineTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "x" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [1, 2, 3] }
+}
+
 @Suite("SSD prefix cache: staging reservations", .serialized)
 struct SSDPrefixCacheReservationTests {
 
@@ -1881,6 +1935,72 @@ struct SSDPrefixCacheReservationTests {
         // Idempotent.
         cache.completeStaging(requestID: "req-b")
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("bridge deadline refusal abandons a real staged SSD hit")
+    func bridgeDeadlineRefusalReleasesRealStaging() async throws {
+        let dir = tempDir("res-bridge-deadline")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = makeBudget()
+        let cache = await makeStagedCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            kvBudget: budget)
+        defer { cache.close() }
+        let engine = SSDDeadlineRejectEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "test-model",
+            tokenizer: TokenizerHandle(SSDDeadlineTokenizer()),
+            eosTokenIds: [],
+            prefillDeadlineMode: .enforce,
+            kvBudget: budget,
+            ssdPrefixCache: cache)
+        let request = ChatCompletionRequest(
+            model: "test-model",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            max_tokens: 1)
+
+        // Calibrate the isolated service rate without touching the SSD tier.
+        let baseline = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 999, count: tokenCount),
+            request: request,
+            requestId: "ssd-rate-baseline",
+            cacheEnabled: false)
+        let baselineConsumer = Task { for await _ in baseline {} }
+        await bridge.backdateSubmissionForTesting(
+            requestId: "ssd-rate-baseline",
+            byMilliseconds: 1_000)
+        let baselineContinuation = try #require(engine.continuations.first)
+        baselineContinuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        baselineContinuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(
+                promptTokens: tokenCount,
+                completionTokens: 1,
+                prefixCacheOutcome: .disabled)))
+        baselineContinuation.finish()
+        _ = await baselineConsumer.value
+        #expect(await bridge._testIsolatedPrefillTps() > 0)
+
+        let stagesBefore = cache.stats().stages
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: Array(0 ..< tokenCount) + [1],
+                request: request,
+                requestId: "ssd-deadline-refusal",
+                firstContentDeadline: FirstContentDeadline(
+                    relativeBudgetMilliseconds: 60_000))
+        }
+
+        #expect(engine.deadlineSubmissions == 1)
+        #expect(cache.stats().stages == stagesBefore + 1)
+        #expect(await waitForZeroOutstanding(budget))
+        #expect(cache.bytesInUse == 0)
+        #expect(await bridge._testPendingSubmissionCount() == 0)
+        #expect(await bridge._testPendingEngineIDCount() == 0)
+        #expect(await bridge._testLivePumpCount() == 0)
     }
 
     @Test("cancel path: a cancelled staging task releases and stages nothing")

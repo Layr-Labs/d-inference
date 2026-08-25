@@ -261,7 +261,7 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 			pr := &registry.PendingRequest{
 				RequestID:  "req-jinja",
 				Model:      "test-model",
-				ChunkCh:    make(chan string, 1),
+				ChunkCh:    make(chan registry.ProviderChunk, 1),
 				CompleteCh: make(chan protocol.UsageInfo, 1),
 				ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 			}

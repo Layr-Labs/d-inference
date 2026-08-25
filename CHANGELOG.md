@@ -1,5 +1,101 @@
 # Changelog
 
+## Release candidate v0.8.11 (not shipped; 2026-08-24)
+
+> **Release status:** planning and integration only. No `v0.8.11` tag, signed
+> provider bundle, release registration, coordinator deployment, or fleet
+> rollout exists. The checked-in provider source and coordinator fallback
+> constants are `0.8.11`; the latest shipped provider version and tag remain
+> `v0.8.10`.
+
+### Candidate integration status
+
+- **v0.8.11 enables FCFS partial-prefill scheduling globally** — Production
+  resolves `maxConcurrentPartialPrefills` to `1` for every CBv2 model. Operators
+  can immediately restore the historical unlimited interleave with
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0`; other explicit non-positive or
+  malformed values also fail open to unlimited behavior.
+- **Deadline conservation and atomic admission plumbing ships
+  provider-default-off** — Remaining first-content budget propagation is
+  additive and fail-open for older peers. The queue-excluded prefill EWMA,
+  engine atomic forecast API, and provider wiring are integrated, but forecast
+  enforcement remains disabled unless exact mode `enforce` is selected.
+  Default-on FCFS is the separate global scheduling policy above.
+- **FCFS evidence remains a release blocker** — Cap 1 can improve mean burst
+  TTFT, but it can also remove Qwen packed-prefill cohorts and head-of-line-block
+  short prompts. The only real-model attempt was aborted after approximately
+  27 minutes at 13% battery and produced no artifact. No signed-candidate
+  cap-0/cap-1 report or representative non-Qwen evidence exists yet.
+
+### Coordinator candidate fixes
+
+- **Enforce one request-absolute first-content deadline** —
+  Queueing, provider acceptance, boilerplate/preamble frames, speculative
+  dispatch, and blocked provider writes must not reset the clock. Expiry must
+  cancel in-flight work and return the existing retryable `429` contract
+  without feeding provider-fault breakers unless the provider received a full
+  attributable wait window.
+- **Price routing from live prefill behavior** — The base request-cost
+  term now uses the same measured-preferred prefill resolver as TTFT estimation,
+  falling back to the static registration rate when no observation exists.
+
+### Provider candidate fixes
+
+- **Default partial-prefill concurrency to one with an immediate rollback** —
+  The production factory applies cap 1 globally. Exact environment override
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0` restores unlimited interleave without
+  a code change.
+- **Honor the coordinator's remaining first-content clock** —
+  A positive wire budget becomes one provider-local monotonic deadline. The
+  provider refuses expired pre-submit work and releases any partial
+  admission/cache resources instead of restarting the budget at model load or
+  engine submission when enforcement is enabled. Default-off and absent
+  metadata paths remain fail-open; coordinator cancellation remains the
+  authority after submission.
+- **Add an honest FCFS evaluation harness** — The opt-in five-workload matrix
+  compares caps 0 and 1, cryptographically records the selected checkpoint,
+  omits local model paths, records source/binary/build/hardware/OS/power/thermal
+  posture, and evaluates the documented 5% throughput and TTFT thresholds. Its
+  schema distinguishes simulation, unsigned local evidence, and evidence
+  captured by the signed packaged main executable. Signed Qwen evidence remains
+  model-family evidence only and never sets global release certification.
+- **Add a fail-closed signed-artifact FCFS command** — Run the exact packaged
+  candidate with:
+
+  ```bash
+  "$SIGNED_APP/Contents/MacOS/darkbloom" benchmark \
+    --scheduler-prefill-decision \
+    --model "$QWEN_MODEL_ID" \
+    --expected-model-aggregate-sha256 "$QWEN_MODEL_AGGREGATE_SHA256" \
+    --expected-registered-binary-sha256 "$REGISTERED_DARKBLOOM_SHA256" \
+    --expected-version 0.8.11 \
+    --source-sha "$SOURCE_SHA" \
+    --decision-iterations 10 \
+    --kv-backend auto \
+    --output "$QWEN_SIGNED_REPORT"
+  ```
+
+  It accepts no weights path and resolves the canonical registry ID internally.
+  It exits successfully only after packaged signature, identifier/team,
+  registered binary hash, version, model hash, posture, and policy checks pass.
+
+### Release requirements
+
+- Pass coordinator/provider focused tests, protocol symmetry, mixed-version
+  behavior, full builds, system E2E, signed artifact checks, and rollback gates
+  recorded in
+  `docs/reports/2026-08-24-qwen-openrouter-timeout-fix-and-release.md`.
+- Do not ship the default-on FCFS policy until an externally captured
+  signed-candidate artifact passes the cap-0/cap-1 criteria on representative
+  Qwen hardware, plus equivalent latency/throughput/head-of-line evidence for
+  every affected non-Qwen CBv2 family or a separately reviewed model-scoped
+  policy. The unsigned local harness cannot satisfy this requirement.
+
+---
+
+The entries below are shipped releases. The latest shipped provider release at
+the time this candidate was recorded is `v0.8.10`.
+
 ## v0.8.10 (2026-08-21)
 
 ### Provider (Swift)

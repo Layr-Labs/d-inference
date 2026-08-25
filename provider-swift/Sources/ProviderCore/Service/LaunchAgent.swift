@@ -286,13 +286,23 @@ public enum LaunchAgent: Sendable {
     /// export that did not reach launchd would silently no-op in the normal
     /// `darkbloom start` deployment, leaving the advertised recovery lever
     /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
+    /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
+    /// admission-mode control. Both must persist in the provider job because
+    /// launchd restarts (including watchdog recovery) reuse this plist.
+    static let inferencePassthroughEnvKeys = [
+        EngineV2Factory.maxPartialPrefillsKey,
+        PrefillDeadlineMode.environmentKey,
+    ]
+
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
-    ]
+    ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)

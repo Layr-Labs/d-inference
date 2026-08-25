@@ -77,6 +77,11 @@ const (
 	KVBackendContiguous = "contiguous"
 )
 
+// ProductionFirstContentDeadlineBase is the production fixed term exercised by
+// E2E. It mirrors EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000; the
+// coordinator adds 1ms per estimated prompt token.
+const ProductionFirstContentDeadlineBase = 9 * time.Second
+
 // ResolveKVBackend returns the KV backend the testbed should ask the provider
 // for: the explicit value when set, else DARKBLOOM_TESTBED_KV_BACKEND, else ""
 // (leave the provider at its own default). The env fallback lets CI re-run the
@@ -265,6 +270,7 @@ type SuiteConfig struct {
 	NumUsers                   int
 	QueueCapacity              int
 	QueueTimeout               time.Duration
+	FirstContentDeadlineBase   time.Duration
 	SeedBalance                int64
 	UseMemoryStore             bool
 	EnableEphemeralPrefixCache bool
@@ -285,11 +291,12 @@ type SuiteConfig struct {
 
 func DefaultSuiteConfig() SuiteConfig {
 	return SuiteConfig{
-		ModelSpecs:    []ModelSpec{{ModelID: DefaultTestModelID(), NumProviders: 1}},
-		NumUsers:      1,
-		QueueCapacity: 100,
-		QueueTimeout:  120 * time.Second,
-		SeedBalance:   100_000_000,
+		ModelSpecs:               []ModelSpec{{ModelID: DefaultTestModelID(), NumProviders: 1}},
+		NumUsers:                 1,
+		QueueCapacity:            100,
+		QueueTimeout:             120 * time.Second,
+		FirstContentDeadlineBase: ProductionFirstContentDeadlineBase,
+		SeedBalance:              100_000_000,
 	}
 }
 

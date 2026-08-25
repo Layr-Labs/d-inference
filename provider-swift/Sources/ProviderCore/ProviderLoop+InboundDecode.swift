@@ -68,10 +68,9 @@ extension ProviderLoop {
     ///
     /// This lives outside `OpenAIChatCompletionRequest` (the upstream type
     /// doesn't model it), so we decode it directly. Returns a trimmed,
-    /// non-empty string or `nil`. The value is passed through verbatim —
-    /// the valid set (`low`/`medium`/`high` for gpt-oss; other models
-    /// differ) is enforced by each model's chat template, not here, so we
-    /// stay format-agnostic rather than hardcoding a per-model allowlist.
+    /// non-empty string or `nil`. Extraction remains format-agnostic; the
+    /// prompt pipeline applies any model-specific serving policy before
+    /// rendering (currently GPT-OSS `high` → `medium`).
     internal static func extractReasoningEffort(from data: Data) -> String? {
         struct Probe: Decodable { let reasoning_effort: String? }
         guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
@@ -138,7 +137,9 @@ extension ProviderLoop {
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request, reasoningEffort: reasoningEffort)
+            for: request,
+            reasoningEffort: reasoningEffort,
+            modelType: modelType)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

@@ -340,6 +340,16 @@ func (fp *failoverProvider) sendContentChunk(ctx context.Context, req protocol.I
 	writeEncryptedTestChunk(fp.t, ctx, fp.conn, req, fp.pubKey, contentChunkSSE(model, text))
 }
 
+func (fp *failoverProvider) sendAccepted(ctx context.Context, req protocol.InferenceRequestMessage) {
+	data, _ := json.Marshal(protocol.InferenceAcceptedMessage{
+		Type:      protocol.TypeInferenceAccepted,
+		RequestID: req.RequestID,
+	})
+	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
+		fp.t.Logf("provider %s: write inference_accepted: %v", fp.name, err)
+	}
+}
+
 func (fp *failoverProvider) sendInferenceError(ctx context.Context, req protocol.InferenceRequestMessage, errMsg string, statusCode int) {
 	failureCode, errorReason := testFailureClassification(errMsg, statusCode)
 	msg := protocol.InferenceErrorMessage{

@@ -69,7 +69,7 @@ func completedPendingRequest(t *testing.T, srv *Server, p *registry.Provider, re
 		Model:            model,
 		ConsumerKey:      testConsumerID,
 		ReservedMicroUSD: cost,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 		Timing: &registry.RequestTiming{

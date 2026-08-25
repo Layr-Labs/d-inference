@@ -40,6 +40,7 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 }
 
 func TestTTFTDeadlineExact(t *testing.T) {
+	srv, _ := testServer(t)
 	tests := []struct {
 		inputTokens int
 		want        time.Duration
@@ -51,17 +52,32 @@ func TestTTFTDeadlineExact(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := ttftDeadline(tt.inputTokens); got != tt.want {
-			t.Fatalf("ttftDeadline(%d) = %v, want %v", tt.inputTokens, got, tt.want)
+		if got := srv.FirstContentDeadline(tt.inputTokens); got != tt.want {
+			t.Fatalf("FirstContentDeadline(%d) = %v, want %v", tt.inputTokens, got, tt.want)
 		}
+	}
+}
+
+func TestFirstContentDeadlineIsServerOwned(t *testing.T) {
+	ordinary, _ := testServer(t)
+	productionLike, _ := testServerWithConfig(t, ServerConfig{
+		FirstContentDeadlineBase: 9 * time.Second,
+	})
+
+	const promptTokens = 321
+	if got, want := productionLike.FirstContentDeadline(promptTokens), 9*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("production-like deadline = %v, want %v", got, want)
+	}
+	if got, want := ordinary.FirstContentDeadline(promptTokens), 5*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("ordinary deadline changed by another server: got %v, want %v", got, want)
 	}
 }
 
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
-	threshold := ttftDeadline(0)
+	threshold := srv.FirstContentDeadline(0)
 	if threshold != 5*time.Second {
-		t.Fatalf("ttftDeadline(0) = %v, want 5s", threshold)
+		t.Fatalf("FirstContentDeadline(0) = %v, want 5s", threshold)
 	}
 	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
 		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
@@ -258,7 +274,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 		desired,
 		100,
 		128,
-		ttftDeadline(100),
+		srv.FirstContentDeadline(100),
 		registry.RequestTraits{},
 		false,
 		nil,
@@ -273,7 +289,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT > ttftDeadline(100) {
+	if !hasTTFT || bestTTFT > srv.FirstContentDeadline(100) {
 		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
 	}
 }
@@ -295,7 +311,7 @@ func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
 	parsed := map[string]any{"model": desired}
 
 	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAlias(
-		parsed, aliasFallbackTTFT, publicModel, desired, 100, 128, ttftDeadline(100), registry.RequestTraits{}, false, nil)
+		parsed, aliasFallbackTTFT, publicModel, desired, 100, 128, srv.FirstContentDeadline(100), registry.RequestTraits{}, false, nil)
 
 	if switched || fallbackModel != desired || parsed["model"] != desired {
 		t.Fatalf("fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)

@@ -19,21 +19,19 @@ type genericEndpointStreamEmitter interface {
 	emitError(string, string)
 }
 
-func (s *Server) handleGenericEndpointStreamingResponse(
+func (s *Server) handleGenericEndpointStreamingResponseWithError(
 	w http.ResponseWriter,
 	r *http.Request,
 	pr *registry.PendingRequest,
 	firstChunks []string,
-	headerWritten bool,
+	initialError *protocol.InferenceErrorMessage,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
 		return
 	}
-	if !headerWritten {
-		writeSSEResponseHeader(w, pr.RequestID)
-	}
+	writeSSEResponseHeader(w, pr.RequestID)
 	emitter := newGenericEndpointStreamEmitter(w, flusher, pr)
 	emitter.start()
 	for _, chunk := range firstChunks {
@@ -41,12 +39,20 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
 		}
 	}
+	if initialError != nil {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, *initialError))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
+		return
+	}
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 	for {
 		select {
-		case chunk, ok := <-pr.ChunkCh:
+		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
 				var usage protocol.UsageInfo
 				select {
@@ -70,7 +76,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 				emitter.finish(usage)
 				return
 			}
-			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
+			emitter.handleChunk(sanitizeStreamCacheDetails(providerChunk.Data))
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -311,6 +317,12 @@ func (e *messagesStreamEmitter) closeOpenBlock() {
 }
 
 func (e *messagesStreamEmitter) emitError(kind, message string) {
+	switch kind {
+	case "timeout":
+		kind = "overloaded_error"
+	default:
+		kind = "api_error"
+	}
 	e.emit("error", map[string]any{
 		"error": map[string]any{"type": kind, "message": message},
 	})

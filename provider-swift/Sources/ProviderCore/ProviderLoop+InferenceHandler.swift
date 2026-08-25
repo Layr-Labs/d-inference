@@ -49,6 +49,63 @@ extension ProviderLoop {
         return true
     }
 
+    /// Preserve the retryable capacity/status compatibility contract while
+    /// carrying the typed deadline reason to coordinators that understand it.
+    private static func inferenceFailure(
+        for failure: PreContentDeadlineFailure
+    ) -> InferenceFailure {
+        sanitizedInferenceFailure(from: failure, phase: .streamStart)
+    }
+
+    /// Reject before `inference_accepted` while the request still owns only its
+    /// receipt finalizer. The finalizer settles lookup exactly once.
+    private func rejectIfFirstContentDeadlineExpired(
+        _ deadline: FirstContentDeadline?,
+        requestId: String,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) -> Bool {
+        guard let deadline else { return false }
+        do {
+            try deadline.check()
+            return false
+        } catch let failure as PreContentDeadlineFailure {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.inferenceFailure(for: failure)),
+                fallbackFailure: .capacity,
+                send: send)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Reject after acceptance and unwind every provider-owned reservation.
+    private func rejectAcceptedRequestIfFirstContentDeadlineExpired(
+        _ deadline: FirstContentDeadline?,
+        requestId: String,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) async -> Bool {
+        guard rejectIfFirstContentDeadlineExpired(
+            deadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        else {
+            return false
+        }
+        if requestToModel.removeValue(forKey: requestId) != nil {
+            powerAssertion.release()
+            syncWarmModelState()
+            await updateAggregateCapacity()
+        }
+        await cancellationRegistry.finish(requestId: requestId)
+        return true
+    }
+
     /// Local-endpoint admission: throws a 503-equivalent when new local work
     /// must be refused — during the update drain (hot-swap restart imminent)
     /// or once the provider is shutting down. The shutdown drain waits on
@@ -98,6 +155,7 @@ extension ProviderLoop {
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
+        firstContentDeadline: FirstContentDeadline? = nil,
         send: SendHandle
     ) async {
         logger.info("Processing inference request: \(requestId)")
@@ -125,6 +183,15 @@ extension ProviderLoop {
             if !receiptTransferredToTask {
                 lookupReceiptFinalizer.finalize(failure: .policy)
             }
+        }
+
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
         }
 
         if isShuttingDown {
@@ -178,6 +245,15 @@ extension ProviderLoop {
             return
         }
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
             ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
         {
@@ -189,6 +265,15 @@ extension ProviderLoop {
                     failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
                 fallbackFailure: .policy,
                 send: send)
+            return
+        }
+
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
             return
         }
 
@@ -221,12 +306,22 @@ extension ProviderLoop {
             return
         }
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // `reasoning_effort` is not part of the upstream
         // `OpenAIChatCompletionRequest` shape, so decode it directly from
         // the request body and thread it into the chat template's render
         // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads it to set the reasoning budget; other models
-        // ignore the extra template variable.
+        // Harmony reads the effective value to set the reasoning budget
+        // (`high` currently serves as `medium`); other models ignore the
+        // extra template variable.
         let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
@@ -241,6 +336,15 @@ extension ProviderLoop {
         // shape). Overlaid onto the EngineV2 translation.
         let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
         // must REJECT (status 503) any request we are *certain* we cannot serve
@@ -250,7 +354,16 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
-        if await fastAdmissionReject(modelId: modelId) {
+        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+        if fastAdmissionRejected {
             // modelId comes from decrypted request JSON. Never reflect it into
             // persistent diagnostics, even though normal callers use catalog IDs.
             logger.warning("[\(requestId)] Pre-accept reject: insufficient capacity to load requested model")
@@ -278,6 +391,15 @@ extension ProviderLoop {
             return
         }
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // 5. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
 
@@ -287,6 +409,19 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        guard requestToModel[requestId] == modelId else {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request cancelled during admission")
+            return
+        }
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
 
         // 6. Ensure model is loaded. The fast check above only rules out
         // certain failures; this stays authoritative for races (e.g. another
@@ -310,6 +445,17 @@ extension ProviderLoop {
                     failure: failure),
                 fallbackFailure: failure.code == .capacity ? .capacity : .policy,
                 send: send)
+            return
+        }
+
+        // Model loading mutates slot/Metal state and is not safely cancellable.
+        // Reject immediately after the authoritative load returns.
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
             return
         }
 
@@ -379,6 +525,15 @@ extension ProviderLoop {
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
 
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
         //   - `MultiModelBatchSchedulerEngine` adapts the selected slot's
@@ -399,6 +554,26 @@ extension ProviderLoop {
                     await me.finishInflightRequest(requestId: requestId)
                 }
             }
+
+            let rejectExpiredDeadline: @Sendable () -> Bool = {
+                guard let firstContentDeadline else { return false }
+                do {
+                    try firstContentDeadline.check()
+                    return false
+                } catch let failure as PreContentDeadlineFailure {
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: Self.inferenceFailure(for: failure)),
+                        fallbackFailure: .capacity,
+                        send: send)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            if rejectExpiredDeadline() { return }
 
             // Phase 3: precompute the DH shared secret once per request.
             // This drops per-chunk encryption from ~150 us (full Curve25519
@@ -423,6 +598,7 @@ extension ProviderLoop {
                     send: send)
                 return
             }
+            if rejectExpiredDeadline() { return }
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -498,7 +674,8 @@ extension ProviderLoop {
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
                 },
                 engineV2Sampling: samplingOverrides,
-                engineV2Usage: v2UsageSignal
+                engineV2Usage: v2UsageSignal,
+                firstContentDeadline: firstContentDeadline
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -533,9 +710,11 @@ extension ProviderLoop {
             let service = MLXOpenAIService(engine: providerEngine)
             let frames: AsyncThrowingStream<String, Error>
             do {
+                if rejectExpiredDeadline() { return }
                 frames = try await service.streamChatCompletionFrames(
                     request: streamingRequest
                 )
+                if rejectExpiredDeadline() { return }
             } catch {
                 // A cancel that lands while the stream is STARTING — the
                 // consumer cancelled during prompt templating or the v0.7.5
@@ -564,6 +743,16 @@ extension ProviderLoop {
                                 // attempt usage rides along (the coordinator refunds).
                                 terminalCause: .cancelled)),
                         fallbackFailure: .policy,
+                        send: send)
+                    return
+                }
+                if let failure = error as? PreContentDeadlineFailure {
+                    log.info("[\(requestId)] Refusing pre-content request: \(failure.rawValue)")
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: Self.inferenceFailure(for: failure)),
+                        fallbackFailure: .capacity,
                         send: send)
                     return
                 }
@@ -614,6 +803,7 @@ extension ProviderLoop {
             }
 
             await me.updateAggregateCapacity()
+            if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
             var promptTokens = 0
@@ -654,6 +844,13 @@ extension ProviderLoop {
             var pendingLogprobsDropped = 0
             do {
                 for try await frame in frames {
+                    // The iterator suspension is the final pre-content await.
+                    // Role/usage boilerplate is not content, so keep enforcing
+                    // the same absolute deadline until a real content,
+                    // reasoning, or tool delta has been observed.
+                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                        return
+                    }
                     if token.isCancelled {
                         log.info("[\(requestId)] Cancelled during generation")
                         cancelledMidStream = true

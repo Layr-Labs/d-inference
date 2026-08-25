@@ -67,6 +67,12 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
 public enum SchedulerPrefillBenchmark {
     public static let strategyLabel = "cbv2"
 
+    /// Qwen3.6 35B solo prefill measured in the release trust+stripe posture.
+    public static let qwenReleaseModeledPromptTPS =
+        SchedulerPrefillDecisionScenarios.qwenModeledPromptTokensPerSecond
+    public static let qwenReleaseDecisionWorkloads =
+        SchedulerPrefillDecisionScenarios.qwenReleaseWorkloads
+
     /// `kvBackend` is the operator-facing selection handed to the production
     /// factory, exactly as in `ThroughputSweep.run`. `.auto` resolves
     /// CONTIGUOUS, so a run that does not forward the wrapper's selection
@@ -241,7 +247,7 @@ public enum SchedulerPrefillBenchmark {
         )
     }
 
-    private static func stopAndReclaim(_ engine: any CBv2Engine) async {
+    static func stopAndReclaim(_ engine: any CBv2Engine) async {
         await engine.shutdown()
         Stream().synchronize()
         Memory.clearCache()

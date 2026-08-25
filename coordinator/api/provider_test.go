@@ -304,7 +304,7 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 			RequestID:  requestID,
 			ProviderID: p.ID,
 			Model:      "cap-model",
-			ChunkCh:    make(chan string, 1),
+			ChunkCh:    make(chan registry.ProviderChunk, 1),
 			CompleteCh: make(chan protocol.UsageInfo, 1),
 			ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		}
@@ -369,7 +369,7 @@ func TestHandleInferenceErrorPreservesModelLoadCategories(t *testing.T) {
 				RequestID:          "req-load-category",
 				Model:              model,
 				RequestedMaxTokens: 128,
-				ChunkCh:            make(chan string, 1),
+				ChunkCh:            make(chan registry.ProviderChunk, 1),
 				CompleteCh:         make(chan protocol.UsageInfo, 1),
 				ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 			}

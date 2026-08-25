@@ -1,4 +1,5 @@
 import Foundation
+import SandboxCore
 
 public enum SandboxHostControlTransportError: Error, Sendable {
     case disconnected
@@ -12,6 +13,7 @@ public protocol SandboxHostControlTransport: Sendable {
     func connect(request: URLRequest) async throws
     func send(text: String) async throws
     func receiveText() async throws -> String
+    func ping() async throws
     func close() async
 }
 
@@ -30,6 +32,7 @@ public actor URLSessionSandboxHostControlTransport:
             throw SandboxHostControlTransportError.disconnected
         }
         let task = session.webSocketTask(with: request)
+        task.maximumMessageSize = SandboxControlCodec.maximumFrameBytes
         self.task = task
         task.resume()
     }
@@ -55,8 +58,25 @@ public actor URLSessionSandboxHostControlTransport:
         }
     }
 
+    public func ping() async throws {
+        guard let task else {
+            throw SandboxHostControlTransportError.disconnected
+        }
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            task.sendPing { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     public func close() async {
-        task?.cancel(with: .normalClosure, reason: nil)
+        let closing = task
         task = nil
+        closing?.cancel(with: .normalClosure, reason: nil)
     }
 }

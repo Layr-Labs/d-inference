@@ -247,6 +247,9 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
         return String(decoding: try encoder.encode(command), as: UTF8.self)
     }
 
+    func ping() async throws {
+    }
+
     func close() async {
         closes += 1
     }

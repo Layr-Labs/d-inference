@@ -15,6 +15,7 @@ import (
 const (
 	sandboxHostRegistrationTimeout = 10 * time.Second
 	sandboxHostWriteTimeout        = 5 * time.Second
+	sandboxHostReadIdleTimeout     = 60 * time.Second
 	sandboxHostFrameLimit          = 2 * 1024 * 1024
 )
 
@@ -71,7 +72,11 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 		transport,
 	)
 	if err != nil {
-		_ = connection.Close(websocket.StatusInternalError, "registration failed")
+		status := websocket.StatusInternalError
+		if errors.Is(err, sandboxhost.ErrEpochReused) {
+			status = websocket.StatusPolicyViolation
+		}
+		_ = connection.Close(status, "registration failed")
 		return
 	}
 	defer func() {
@@ -87,7 +92,12 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 		r.RemoteAddr,
 	)
 	for {
-		messageType, encoded, err = connection.Read(r.Context())
+		readContext, cancelRead := context.WithTimeout(
+			r.Context(),
+			sandboxHostReadIdleTimeout,
+		)
+		messageType, encoded, err = connection.Read(readContext)
+		cancelRead()
 		if err != nil {
 			return
 		}
@@ -115,7 +125,9 @@ func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := session.Handle(r.Context(), message); err != nil {
 			status := websocket.StatusPolicyViolation
-			if !errors.Is(err, sandboxhost.ErrSequenceReplay) &&
+			if errors.Is(err, sandboxhost.ErrSessionClosed) {
+				status = websocket.StatusNormalClosure
+			} else if !errors.Is(err, sandboxhost.ErrSequenceReplay) &&
 				!errors.Is(err, sandboxhost.ErrSessionMismatch) {
 				status = websocket.StatusInternalError
 			}

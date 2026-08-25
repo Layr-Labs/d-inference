@@ -100,6 +100,67 @@ func TestRegisterReplacementIsIdentityBound(t *testing.T) {
 	if _, ok := registry.Session(testHostID); ok {
 		t.Fatal("current disconnect retained session")
 	}
+	if _, err := registry.Register(
+		testHeader(protocol.SandboxTypeHostRegister, 1),
+		testRegistration(),
+		&recordingTransport{},
+	); !errors.Is(err, ErrEpochReused) {
+		t.Fatalf("reused connection epoch error = %v", err)
+	}
+}
+
+func TestReplacementCancelsSupersededMessageAuthority(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	registry := NewRegistry(func(
+		ctx context.Context,
+		_ *Session,
+		_ protocol.SandboxDecodedMessage,
+	) error {
+		close(handlerStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	first, err := registry.Register(
+		testHeader(protocol.SandboxTypeHostRegister, 1),
+		testRegistration(),
+		&recordingTransport{},
+	)
+	if err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- first.Handle(
+			context.Background(),
+			protocol.SandboxDecodedMessage{
+				Header: testHeader(protocol.SandboxTypeHostHeartbeat, 2),
+				Payload: &protocol.SandboxHostHeartbeatPayload{
+					Mode:   "sandbox_dedicated",
+					Leases: []protocol.SandboxHostLeaseObservation{},
+				},
+			},
+		)
+	}()
+	<-handlerStarted
+
+	replacementHeader := testHeader(protocol.SandboxTypeHostRegister, 1)
+	replacementHeader.ConnectionEpoch =
+		"00000000-0000-0000-0000-000000000004"
+	if _, err := registry.Register(
+		replacementHeader,
+		testRegistration(),
+		&recordingTransport{},
+	); err != nil {
+		t.Fatalf("register replacement: %v", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrSessionClosed) {
+			t.Fatalf("superseded handler error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseded handler was not cancelled")
+	}
 }
 
 func TestSessionSerializesOutboundSequence(t *testing.T) {

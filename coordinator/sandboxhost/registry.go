@@ -16,6 +16,7 @@ var (
 	ErrSessionClosed   = errors.New("sandbox host session is closed")
 	ErrSessionMismatch = errors.New("sandbox host session identity mismatch")
 	ErrSequenceReplay  = errors.New("sandbox host sequence is not monotonic")
+	ErrEpochReused     = errors.New("sandbox host connection epoch was reused")
 )
 
 type Transport interface {
@@ -32,6 +33,7 @@ type MessageHandler func(
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	epochs   map[string][]string
 	handler  MessageHandler
 	now      func() time.Time
 }
@@ -39,6 +41,7 @@ type Registry struct {
 func NewRegistry(handler MessageHandler) *Registry {
 	return &Registry{
 		sessions: make(map[string]*Session),
+		epochs:   make(map[string][]string),
 		handler:  handler,
 		now:      time.Now,
 	}
@@ -48,16 +51,18 @@ type Session struct {
 	registry  *Registry
 	transport Transport
 
-	mu              sync.RWMutex
-	sendMu          sync.Mutex
-	hostID          string
-	connectionEpoch string
-	capabilities    protocol.SandboxHostCapabilities
-	lastInbound     uint64
-	nextOutbound    uint64
-	heartbeat       *protocol.SandboxHostHeartbeatPayload
-	lastHeartbeat   time.Time
-	closed          bool
+	mu               sync.RWMutex
+	sendMu           sync.Mutex
+	hostID           string
+	connectionEpoch  string
+	capabilities     protocol.SandboxHostCapabilities
+	lastInbound      uint64
+	nextOutbound     uint64
+	heartbeat        *protocol.SandboxHostHeartbeatPayload
+	lastHeartbeat    time.Time
+	closed           bool
+	authorityContext context.Context
+	cancelAuthority  context.CancelFunc
 }
 
 type HostSnapshot struct {
@@ -78,17 +83,34 @@ func (r *Registry) Register(
 	if payload == nil || transport == nil {
 		return nil, errors.New("sandbox host registration is incomplete")
 	}
+	hostID := strings.ToLower(header.HostID)
+	connectionEpoch := strings.ToLower(header.ConnectionEpoch)
+	authorityContext, cancelAuthority := context.WithCancel(context.Background())
 	session := &Session{
-		registry:        r,
-		transport:       transport,
-		hostID:          strings.ToLower(header.HostID),
-		connectionEpoch: strings.ToLower(header.ConnectionEpoch),
-		capabilities:    cloneCapabilities(payload.Capabilities),
-		lastInbound:     header.Sequence,
-		nextOutbound:    1,
+		registry:         r,
+		transport:        transport,
+		hostID:           hostID,
+		connectionEpoch:  connectionEpoch,
+		capabilities:     cloneCapabilities(payload.Capabilities),
+		lastInbound:      header.Sequence,
+		nextOutbound:     1,
+		authorityContext: authorityContext,
+		cancelAuthority:  cancelAuthority,
 	}
 
 	r.mu.Lock()
+	for _, previousEpoch := range r.epochs[hostID] {
+		if previousEpoch == connectionEpoch {
+			r.mu.Unlock()
+			cancelAuthority()
+			return nil, ErrEpochReused
+		}
+	}
+	history := append(r.epochs[hostID], connectionEpoch)
+	if len(history) > 64 {
+		history = append([]string(nil), history[len(history)-64:]...)
+	}
+	r.epochs[hostID] = history
 	previous := r.sessions[session.hostID]
 	r.sessions[session.hostID] = session
 	r.mu.Unlock()
@@ -105,6 +127,7 @@ func (r *Registry) Disconnect(session *Session) {
 	}
 	session.mu.Lock()
 	session.closed = true
+	session.cancelAuthority()
 	session.mu.Unlock()
 
 	r.mu.Lock()
@@ -163,7 +186,25 @@ func (s *Session) Handle(
 	s.mu.Unlock()
 
 	if s.registry.handler != nil {
-		return s.registry.handler(ctx, s, message)
+		handlerContext, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(s.authorityContext, cancel)
+		defer func() {
+			stop()
+			cancel()
+		}()
+		if err := s.registry.handler(handlerContext, s, message); err != nil {
+			select {
+			case <-s.authorityContext.Done():
+				return ErrSessionClosed
+			default:
+				return err
+			}
+		}
+		select {
+		case <-s.authorityContext.Done():
+			return ErrSessionClosed
+		default:
+		}
 	}
 	return nil
 }
@@ -233,6 +274,7 @@ func (s *Session) close(reason string) error {
 		return nil
 	}
 	s.closed = true
+	s.cancelAuthority()
 	s.mu.Unlock()
 	return s.transport.Close(reason)
 }

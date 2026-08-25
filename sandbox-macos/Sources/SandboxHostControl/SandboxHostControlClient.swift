@@ -11,6 +11,10 @@ public enum SandboxHostControlConfigurationError:
     case invalidHeartbeatInterval
 }
 
+public enum SandboxHostControlClientError: Error, Equatable, Sendable {
+    case alreadyRunning
+}
+
 public struct SandboxHostControlConfiguration: Sendable {
     public let coordinatorURL: URL
     public let hostID: UUID
@@ -23,11 +27,18 @@ public struct SandboxHostControlConfiguration: Sendable {
         hostID: UUID,
         token: String,
         capabilities: SandboxWireHostCapabilities,
-        heartbeatInterval: Duration = .seconds(20)
+        heartbeatInterval: Duration = .seconds(20),
+        allowInsecureLoopback: Bool = false
     ) throws {
         guard let scheme = coordinatorURL.scheme?.lowercased(),
-              scheme == "ws" || scheme == "wss",
-              coordinatorURL.host != nil,
+              let host = coordinatorURL.host?.lowercased(),
+              scheme == "wss"
+                || (
+                    scheme == "ws"
+                        && allowInsecureLoopback
+                        && ["localhost", "127.0.0.1", "::1"].contains(host)
+                ),
+              coordinatorURL.path == "/ws/sandbox-host",
               coordinatorURL.user == nil,
               coordinatorURL.password == nil,
               coordinatorURL.query == nil,
@@ -90,12 +101,7 @@ public actor SandboxHostControlClient {
     private let heartbeatSource: any SandboxHostHeartbeatSource
     private let messageHandler: any SandboxHostControlMessageHandler
     private let transportFactory: TransportFactory
-    private let encoder: JSONEncoder
-
-    private var transport: (any SandboxHostControlTransport)?
-    private var connectionEpoch = UUID()
-    private var nextSequence: UInt64 = 1
-    private var lastInboundSequence: UInt64 = 0
+    private var activeRunID: UUID?
 
     public init(
         configuration: SandboxHostControlConfiguration,
@@ -109,61 +115,139 @@ public actor SandboxHostControlClient {
         self.heartbeatSource = heartbeatSource
         self.messageHandler = messageHandler
         self.transportFactory = transportFactory
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     }
 
     public func run() async throws {
-        var retryDelay = Duration.seconds(1)
+        let runID = try beginRun()
+        defer { finishRun(runID) }
+        var retryDelaySeconds = 1
+        let clock = ContinuousClock()
         while !Task.isCancelled {
+            let connectedAt = clock.now
             do {
-                try await runSingleConnection()
-                retryDelay = .seconds(1)
+                try await runConnection()
+                retryDelaySeconds = 1
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                try await Task.sleep(for: retryDelay)
-                retryDelay = min(retryDelay * 2, .seconds(30))
+                if connectedAt.duration(to: clock.now) >= .seconds(60) {
+                    retryDelaySeconds = 1
+                }
+                let jitterMilliseconds = Int64.random(
+                    in: (retryDelaySeconds * 800)...(retryDelaySeconds * 1_200)
+                )
+                try await Task.sleep(
+                    for: .milliseconds(jitterMilliseconds)
+                )
+                retryDelaySeconds = min(retryDelaySeconds * 2, 30)
             }
         }
     }
 
     package func runSingleConnection() async throws {
-        let transport = transportFactory()
-        self.transport = transport
-        connectionEpoch = UUID()
-        nextSequence = 1
-        lastInboundSequence = 0
-        try await transport.connect(request: configuration.request)
-        do {
-            try await send(
-                type: .hostRegister,
-                payload: SandboxWireHostRegister(
-                    capabilities: configuration.capabilities
-                )
-            )
+        let runID = try beginRun()
+        defer { finishRun(runID) }
+        try await runConnection()
+    }
 
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await self.receiveLoop(transport: transport)
-                }
-                group.addTask {
-                    try await self.heartbeatLoop()
-                }
+    private func beginRun() throws -> UUID {
+        guard activeRunID == nil else {
+            throw SandboxHostControlClientError.alreadyRunning
+        }
+        let runID = UUID()
+        activeRunID = runID
+        return runID
+    }
+
+    private func finishRun(_ runID: UUID) {
+        if activeRunID == runID {
+            activeRunID = nil
+        }
+    }
+
+    private func runConnection() async throws {
+        let transport = transportFactory()
+        let connectionEpoch = UUID()
+        let writer = SandboxHostOutboundWriter(
+            transport: transport,
+            hostID: configuration.hostID,
+            connectionEpoch: connectionEpoch
+        )
+        let inboundAuthority = SandboxHostInboundAuthority(
+            hostID: configuration.hostID,
+            connectionEpoch: connectionEpoch
+        )
+        let handlerWork = SandboxHostHandlerWorkSet()
+
+        try await withTaskCancellationHandler {
+            do {
+                try await transport.connect(request: configuration.request)
+                try await writer.send(
+                    type: .hostRegister,
+                    payload: SandboxWireHostRegister(
+                        capabilities: configuration.capabilities
+                    )
+                )
+                try await runConnectedTasks(
+                    transport: transport,
+                    writer: writer,
+                    inboundAuthority: inboundAuthority,
+                    handlerWork: handlerWork
+                )
+                await handlerWork.cancelAll()
+                await writer.close()
+            } catch {
+                await handlerWork.cancelAll()
+                await writer.close()
+                throw error
+            }
+        } onCancel: {
+            Task {
+                await handlerWork.cancelAll()
+                await writer.close()
+            }
+        }
+    }
+
+    private func runConnectedTasks(
+        transport: any SandboxHostControlTransport,
+        writer: SandboxHostOutboundWriter,
+        inboundAuthority: SandboxHostInboundAuthority,
+        handlerWork: SandboxHostHandlerWorkSet
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await self.receiveLoop(
+                    transport: transport,
+                    writer: writer,
+                    inboundAuthority: inboundAuthority,
+                    handlerWork: handlerWork
+                )
+            }
+            group.addTask {
+                try await self.heartbeatLoop(
+                    transport: transport,
+                    writer: writer
+                )
+            }
+            do {
                 _ = try await group.next()
                 group.cancelAll()
+                await writer.close()
+                try await group.waitForAll()
+            } catch {
+                group.cancelAll()
+                await writer.close()
+                throw error
             }
-            self.transport = nil
-            await transport.close()
-        } catch {
-            self.transport = nil
-            await transport.close()
-            throw error
         }
     }
 
     private func receiveLoop(
-        transport: any SandboxHostControlTransport
+        transport: any SandboxHostControlTransport,
+        writer: SandboxHostOutboundWriter,
+        inboundAuthority: SandboxHostInboundAuthority,
+        handlerWork: SandboxHostHandlerWorkSet
     ) async throws {
         while !Task.isCancelled {
             let text = try await transport.receiveText()
@@ -171,113 +255,31 @@ public actor SandboxHostControlClient {
                 throw SandboxHostControlTransportError.invalidTextFrame
             }
             let message = try SandboxControlCodec.decodeCoordinatorMessage(data)
-            try acceptInbound(message)
-            let response = try await messageHandler.handle(message)
-            try await send(response)
+            try await inboundAuthority.accept(message)
+            let handler = messageHandler
+            await handlerWork.submit {
+                do {
+                    let response = try await handler.handle(message)
+                    try await writer.send(response)
+                } catch is CancellationError {
+                } catch {
+                    await writer.close()
+                }
+            }
         }
     }
 
-    private func heartbeatLoop() async throws {
+    private func heartbeatLoop(
+        transport: any SandboxHostControlTransport,
+        writer: SandboxHostOutboundWriter
+    ) async throws {
         while !Task.isCancelled {
-            try await send(
+            try await writer.send(
                 type: .hostHeartbeat,
                 payload: heartbeatSource.heartbeat()
             )
+            try await transport.ping()
             try await Task.sleep(for: configuration.heartbeatInterval)
         }
-    }
-
-    private func send(_ response: SandboxHostControlResponse) async throws {
-        switch response {
-        case .none:
-            return
-        case .operation(let payload):
-            try await send(type: .operationState, payload: payload)
-        case .command(let payload):
-            try await send(type: .commandState, payload: payload)
-        case .failure(let payload):
-            try await send(type: .hostFailure, payload: payload)
-        }
-    }
-
-    private func acceptInbound(
-        _ message: SandboxCoordinatorControlMessage
-    ) throws {
-        let identity: (hostID: UUID, connectionEpoch: UUID, sequence: UInt64)
-        switch message {
-        case .prepare(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .leaseRenew(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .command(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .cancelCommand(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .stop(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .delete(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        case .drain(let envelope):
-            identity = (
-                envelope.hostID,
-                envelope.connectionEpoch,
-                envelope.sequence
-            )
-        }
-        guard identity.hostID == configuration.hostID,
-              identity.connectionEpoch == connectionEpoch
-        else {
-            throw SandboxHostControlTransportError.sessionMismatch
-        }
-        guard identity.sequence > lastInboundSequence else {
-            throw SandboxHostControlTransportError.sequenceReplay
-        }
-        lastInboundSequence = identity.sequence
-    }
-
-    private func send<Payload>(
-        type: SandboxControlMessageType,
-        payload: Payload
-    ) async throws where Payload: Codable & Equatable & Sendable {
-        guard let transport else {
-            throw SandboxHostControlTransportError.disconnected
-        }
-        let envelope = SandboxControlEnvelope(
-            type: type,
-            hostID: configuration.hostID,
-            connectionEpoch: connectionEpoch,
-            sequence: nextSequence,
-            payload: payload
-        )
-        nextSequence += 1
-        let encoded = try encoder.encode(envelope)
-        guard let text = String(data: encoded, encoding: .utf8) else {
-            throw SandboxHostControlTransportError.invalidTextFrame
-        }
-        try await transport.send(text: text)
     }
 }

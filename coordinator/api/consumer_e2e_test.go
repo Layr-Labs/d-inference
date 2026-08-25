@@ -233,9 +233,14 @@ func TestNonStreamingE2E(t *testing.T) {
 			}
 			var raw map[string]interface{}
 			if err := json.Unmarshal(data, &raw); err == nil {
-				if raw["type"] == protocol.TypeAttestationChallenge {
+				msgType, _ := raw["type"].(string)
+				if msgType == protocol.TypeAttestationChallenge {
 					respData := makeValidChallengeResponse(data, pubKey)
 					conn.Write(ctx, websocket.MessageText, respData)
+					continue
+				}
+				if msgType == protocol.TypeRuntimeStatus ||
+					msgType == protocol.TypeTrustStatus {
 					continue
 				}
 			}
@@ -352,9 +357,16 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 				return
 			}
 			var raw map[string]any
-			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
-				conn1.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey1))
-				continue
+			if err := json.Unmarshal(data, &raw); err == nil {
+				msgType, _ := raw["type"].(string)
+				if msgType == protocol.TypeAttestationChallenge {
+					conn1.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey1))
+					continue
+				}
+				if msgType == protocol.TypeRuntimeStatus ||
+					msgType == protocol.TypeTrustStatus {
+					continue
+				}
 			}
 			var inferReq protocol.InferenceRequestMessage
 			if err := json.Unmarshal(data, &inferReq); err != nil {
@@ -430,9 +442,16 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 				return
 			}
 			var raw map[string]any
-			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
-				conn2.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey2))
-				continue
+			if err := json.Unmarshal(data, &raw); err == nil {
+				msgType, _ := raw["type"].(string)
+				if msgType == protocol.TypeAttestationChallenge {
+					conn2.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey2))
+					continue
+				}
+				if msgType == protocol.TypeRuntimeStatus ||
+					msgType == protocol.TypeTrustStatus {
+					continue
+				}
 			}
 			var inferReq protocol.InferenceRequestMessage
 			if err := json.Unmarshal(data, &inferReq); err != nil {

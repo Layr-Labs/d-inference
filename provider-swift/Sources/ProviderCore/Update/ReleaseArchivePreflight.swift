@@ -311,7 +311,12 @@ private final class ReleaseTarValidator {
                 break
             }
 
-            let effectivePath = pending.path ?? cleanPath(headerPath)
+            let effectivePath: String
+            if let metadataPath = pending.path {
+                effectivePath = metadataPath
+            } else {
+                effectivePath = try cleanPath(headerPath)
+            }
             let effectiveSize = pending.size ?? headerSize
             pending = ReleaseArchivePendingMetadata()
 

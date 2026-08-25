@@ -4,7 +4,9 @@
 /// 1. Provider POSTs to `/v1/device/code` to get a device_code, user_code, and verification_uri.
 /// 2. User opens the verification_uri in their browser and enters the user_code.
 /// 3. Provider polls `/v1/device/token` until the user approves (or the code expires).
-/// 4. On approval, the coordinator returns an auth token which is saved to `~/.darkbloom/auth_token`.
+/// 4. On approval, the coordinator returns an auth token + account id. They
+///    are persisted with the canonical issuing coordinator before login is
+///    published through `~/.darkbloom/auth_token`.
 
 import Foundation
 
@@ -346,12 +348,32 @@ private func runDeviceCodeLogin(
         tokenRequest.httpBody = body
 
         let tokenData: Data
+        let tokenResponse: URLResponse
         do {
-            (tokenData, _) = try await URLSession.shared.data(for: tokenRequest)
+            (tokenData, tokenResponse) = try await URLSession.shared.data(for: tokenRequest)
         } catch {
             // Network error -- retry on next tick.
             onPollTick?()
             continue
+        }
+
+        guard let tokenHTTPResponse = tokenResponse as? HTTPURLResponse else {
+            throw DeviceAuthError.invalidResponse("device poll returned a non-HTTP response")
+        }
+        guard (200 ..< 300).contains(tokenHTTPResponse.statusCode) else {
+            let detail = (try? JSONDecoder().decode(
+                DeviceTokenResponse.self,
+                from: tokenData
+            ))?.error?.message
+            let fallback = HTTPURLResponse.localizedString(
+                forStatusCode: tokenHTTPResponse.statusCode
+            )
+            let message = detail.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+            throw DeviceAuthError.authorizationFailed(
+                "coordinator rejected device authorization "
+                    + "(HTTP \(tokenHTTPResponse.statusCode)): "
+                    + message
+            )
         }
 
         let tokenResp: DeviceTokenResponse
@@ -372,13 +394,16 @@ private func runDeviceCodeLogin(
             guard let token = tokenResp.token, !token.isEmpty else {
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
-            try AuthTokenStore.save(token)
-            // Persist the linked account id next to the token (best-effort)
-            // for daemon-state identity. Authenticated earnings can recover
-            // it later, so a local write failure must not fail the link.
-            if let accountID = tokenResp.accountID, !accountID.isEmpty {
-                try? ProviderAccountStore.save(accountID)
+            guard let accountID = tokenResp.accountID, !accountID.isEmpty else {
+                throw DeviceAuthError.invalidResponse(
+                    "authorized but no account identity in response"
+                )
             }
+            try ProviderCredentialStore.save(
+                token: token,
+                accountID: accountID,
+                coordinatorURL: coordinatorURL
+            )
             return token
 
         default:

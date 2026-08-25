@@ -54,6 +54,8 @@ struct Unenroll: AsyncParsableCommand {
         print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
         print("  • Auth token:    ~/.darkbloom/auth_token")
         print("  • Linked account: ~/.darkbloom/provider_account")
+        print("  • Token issuer:  ~/.darkbloom/provider_issuer")
+        print("  • Local API:     ~/.darkbloom/{local_token,local.json}")
         print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
         print()
 

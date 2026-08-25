@@ -118,6 +118,7 @@ public enum LocalEndpointDiscovery {
     }
 
     public static func infoPath() -> URL { directory().appendingPathComponent("local.json") }
+    public static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }
 
     /// Read the discovery file, if present. This intentionally preserves
     /// decoding compatibility with legacy PID-only records; use

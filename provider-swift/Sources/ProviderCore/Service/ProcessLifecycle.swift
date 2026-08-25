@@ -177,6 +177,16 @@ public enum ProcessLifecycle {
         return owner
     }
 
+    private static func readLegacyPID(at url: URL) -> Int32? {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8),
+              let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 0
+        else {
+            return nil
+        }
+        return pid
+    }
+
     static func releaseSingleInstanceLock(
         at pidFile: URL,
         currentIdentity: ProcessIdentity?
@@ -221,18 +231,29 @@ public enum ProcessLifecycle {
     }
 
     /// Terminate a currently recorded provider only when its kernel identity
-    /// still matches. Missing, legacy, stale, and PID-reused records are no-ops.
+    /// still matches. Missing, stale, and PID-reused records are successful
+    /// no-ops. A live legacy PID-only record fails closed: signaling it would
+    /// risk killing a reused PID, while claiming success would let logout erase
+    /// credentials from a provider that may still be serving.
     @discardableResult
     public static func terminateRecordedInstance(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
         gracePeriod: TimeInterval = 2
     ) -> Bool {
-        guard let identity = singleInstanceOwner(at: pidFile),
-              identity.isCurrent()
-        else {
-            return true
+        if let identity = singleInstanceOwner(at: pidFile) {
+            guard identity.isCurrent() else {
+                return true
+            }
+            return terminate(identity, gracePeriod: gracePeriod)
         }
-        return terminate(identity, gracePeriod: gracePeriod)
+        if let legacyPID = readLegacyPID(at: pidFile),
+           daemonProcessAlive(pid: legacyPID)
+        {
+            return false
+        }
+        // Missing, corrupt, or dead legacy records cannot identify a live
+        // provider and therefore do not block cleanup.
+        return true
     }
 
     /// Acquire the production media-serving lock, then perform the one launch

@@ -279,6 +279,8 @@ public enum LocalDataCleanup: Sendable {
         configDirectory: Bool = true,
         legacyKeyFiles: Bool = true,
         authToken: Bool = true,
+        localEndpoint: Bool = true,
+        localEndpointDirectory: URL? = nil,
         secureEnclaveKey: Bool = true
     ) throws {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -316,6 +318,16 @@ public enum LocalDataCleanup: Sendable {
             } catch {
                 failures.append("provider account: \(error.localizedDescription)")
             }
+            do {
+                try ProviderIssuerStore.delete()
+            } catch {
+                failures.append("provider issuer: \(error.localizedDescription)")
+            }
+        }
+        if localEndpoint {
+            let directory = localEndpointDirectory ?? LocalEndpointDiscovery.directory()
+            removeFile(directory.appendingPathComponent("local.json"))
+            removeFile(directory.appendingPathComponent("local_token"))
         }
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a

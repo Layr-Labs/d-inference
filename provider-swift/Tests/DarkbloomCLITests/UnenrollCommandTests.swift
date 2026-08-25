@@ -22,7 +22,8 @@ struct UnenrollCommandTests {
             deleteToken: {},
             deleteAccount: {
                 try FileManager.default.removeItem(at: files.accountPath)
-            }
+            },
+            deleteIssuer: {}
         )
 
         try await unlinkProviderAccount(

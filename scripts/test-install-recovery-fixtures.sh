@@ -58,29 +58,43 @@ installer_recovery_expect_install_crash() {
     local install_dir=$3
     local checkpoint=$4
     artifact_hashes "$archive"
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$checkpoint" \
+    local status=0
+    DARKBLOOM_INSTALL_TEST_CRASH_POINT="$checkpoint" \
         PATH="$CLT_SHIMS:$PATH" \
         bash "$installer" --install-bundle-test \
             "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-            "$FAN_HELPER_REQUIREMENT"
-    then
+            "$FAN_HELPER_REQUIREMENT" \
+        || status=$?
+    if [ "$status" -eq 0 ]; then
         installer_recovery_fail \
             "$installer survived injected install crash $checkpoint"
         return 1
     fi
+    [ "$status" -eq 137 ] || {
+        installer_recovery_fail \
+            "$installer failed before injected install crash $checkpoint (status $status)"
+        return 1
+    }
 }
 
 installer_recovery_expect_recovery_crash() {
     local installer=$1
     local install_dir=$2
     local checkpoint=$3
-    if DARKBLOOM_INSTALL_TEST_CRASH_POINT="$checkpoint" \
-        bash "$installer" --recover-install-transactions-test "$install_dir"
-    then
+    local status=0
+    DARKBLOOM_INSTALL_TEST_CRASH_POINT="$checkpoint" \
+        bash "$installer" --recover-install-transactions-test "$install_dir" \
+        || status=$?
+    if [ "$status" -eq 0 ]; then
         installer_recovery_fail \
             "$installer survived injected recovery crash $checkpoint"
         return 1
     fi
+    [ "$status" -eq 137 ] || {
+        installer_recovery_fail \
+            "$installer failed before injected recovery crash $checkpoint (status $status)"
+        return 1
+    }
 }
 
 installer_recovery_seed_previous_app() {

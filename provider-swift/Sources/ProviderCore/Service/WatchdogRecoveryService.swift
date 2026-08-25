@@ -88,6 +88,9 @@ public struct WatchdogRecoveryService: Sendable {
     }
 
     public enum DownOutcome: Sendable, Equatable {
+        /// `updatedTo` is populated when this recovery retries an already
+        /// installed candidate or when the launch target changes during the
+        /// recovery. A stale watchdog process version alone is not an update.
         case restartIssued(updatedTo: String?, rolledBackTo: String?)
         case noLongerLoaded
         case retryBackoff(until: Double, reason: String)
@@ -351,15 +354,17 @@ public struct WatchdogRecoveryService: Sendable {
             if let candidate = state.candidate {
                 guardedVersion = candidate.release.version
             } else {
-                guardedVersion = SelfUpdater.effectiveInstalledVersion(
-                    processVersion: updater.currentVersion,
-                    recorded: state.current?.version)
+                guardedVersion = updater.resolvedInstalledVersion(
+                    recoveryState: state,
+                    installRoot: session.store.installRoot
+                )
             }
         } catch {
             let reason = "could not attribute candidate failure: \(error)"
             deps.log(reason)
             return .failed(reason)
         }
+        let launchVersionBeforePreparation = guardedVersion
 
         // Computed after optional lock-free update preparation and final lease
         // reacquisition, from the version that will actually be kickstarted.
@@ -503,15 +508,20 @@ public struct WatchdogRecoveryService: Sendable {
                 && state.candidate?.rollbackBlockedReason == nil
             if let candidate = state.candidate {
                 guardedVersion = candidate.release.version
-                updatedTo = candidate.release.version
             } else {
                 guardedVersion = updater.resolvedInstalledVersion(
                     recoveryState: state,
                     installRoot: session.store.installRoot
                 )
-                updatedTo = guardedVersion == updater.currentVersion
-                    ? nil
-                    : guardedVersion
+            }
+            // Preserve explicit updater outcomes (including a pending
+            // candidate restart), and surface a winner that changed while
+            // phase one was unlocked. Do not infer an update merely because
+            // this long-lived watchdog's process version is stale.
+            if updatedTo != nil
+                || guardedVersion != launchVersionBeforePreparation
+            {
+                updatedTo = guardedVersion
             }
         } catch {
             let reason =

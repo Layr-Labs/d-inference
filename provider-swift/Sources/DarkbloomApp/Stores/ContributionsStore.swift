@@ -117,6 +117,23 @@ final class ContributionsStore {
         self.scope = scope
     }
 
+    /// Invalidates all account-derived state at the moment the app account
+    /// changes. Incrementing the revision also rejects an older account's
+    /// response if it arrives after logout or a replacement sign-in.
+    func accountSessionDidChange(isSignedIn: Bool) {
+        guard live != nil else { return }
+        refreshRevision &+= 1
+        snapshot = nil
+        pulsePreview = nil
+        scope = .thisMac
+        previewPayoutState = .idle
+        previewPayoutHistory = []
+        payoutError = nil
+        availability = isSignedIn
+            ? .loading
+            : .unavailable(message: "Sign in to view account contributions.")
+    }
+
     func validatePayout(_ amount: MicroUSD) -> PayoutValidationError? {
         guard case .available = availability, let snapshot else {
             return .unavailable

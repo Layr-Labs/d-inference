@@ -17,6 +17,8 @@ enum AccountSessionError: Error, Equatable, LocalizedError {
     case presentationUnavailable
     /// The auth browser itself failed (network, TLS, Privy outage).
     case browserFailed(String)
+    /// The keychain did not persist or clear the session.
+    case persistenceFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +32,8 @@ enum AccountSessionError: Error, Equatable, LocalizedError {
             "Darkbloom could not open the sign-in window."
         case .browserFailed(let reason):
             "The sign-in page failed to load. \(reason)"
+        case .persistenceFailed(let reason):
+            "Darkbloom could not update the saved account session. \(reason)"
         }
     }
 }
@@ -79,13 +83,13 @@ struct AccountLinkCallback: Equatable, Sendable {
 /// Where the app keeps the user's interactive (Privy) session.
 ///
 /// Implemented by `KeychainSessionStore` in production and by in-memory
-/// fakes in tests. Error handling is deliberately failable-not-throwing:
-/// a keychain miss reads as signed-out, and a failed save loses the session
-/// (the next launch signs out once) rather than blocking sign-in.
+/// fakes in tests. A keychain miss reads as signed-out. Mutations report
+/// failure so callers never publish a signed-in/out state the keychain did not
+/// actually commit.
 protocol AccountSessionStoring: Sendable {
     func loadToken() -> String?
     @discardableResult func saveToken(_ token: String) -> Bool
-    func clearToken()
+    func clearToken() throws
 }
 
 /// The user's interactive account session for account-scoped views
@@ -107,7 +111,7 @@ protocol AccountSessionManaging: AnyObject, Sendable {
 
     /// Drops the persisted token (user sign-out AND coordinator-rejected
     /// 401 alike — from the app's side both are "no usable session").
-    func signOut()
+    func signOut() throws
 }
 
 /// Drives the Privy sign-in handoff through an ephemeral
@@ -162,8 +166,8 @@ final class AccountSessionManager: NSObject, AccountSessionManaging {
         sessionStore.loadToken()
     }
 
-    nonisolated func signOut() {
-        sessionStore.clearToken()
+    nonisolated func signOut() throws {
+        try sessionStore.clearToken()
     }
 
     func signIn() async throws -> String {
@@ -204,7 +208,12 @@ final class AccountSessionManager: NSObject, AccountSessionManaging {
                 }
                 // Token is a Privy JWT. The coordinator is the authority on
                 // expiry; the app persists it and reacts to 401s.
-                self?.sessionStore.saveToken(callback.token)
+                guard self?.sessionStore.saveToken(callback.token) == true else {
+                    continuation.resume(throwing: AccountSessionError.persistenceFailed(
+                        "The Keychain rejected the new session."
+                    ))
+                    return
+                }
                 continuation.resume(returning: callback.token)
             }
             webSession.prefersEphemeralWebBrowserSession = true

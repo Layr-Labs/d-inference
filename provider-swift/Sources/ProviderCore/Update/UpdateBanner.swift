@@ -6,6 +6,7 @@
 /// silently so the CLI start-up cost is bounded.
 
 import Foundation
+import ProviderCoreFoundation
 
 public enum UpdateBanner: Sendable {
 
@@ -67,27 +68,15 @@ public enum UpdateBanner: Sendable {
         let changelog: String?
     }
 
-    /// Return true if `lhs` is strictly newer than `rhs` under the rules:
-    ///   - both are split on '.', non-numeric pre-release tags compared
-    ///     lexicographically.
-    ///   - "0.5.0" > "0.4.10" (numeric comparison, not lexicographic).
-    /// Internal so we can unit-test without a network.
+    /// Return true only when both values are canonical SemVer 2 and `lhs`
+    /// has strictly higher precedence. Build metadata does not affect ordering.
     static func isNewerSemver(_ lhs: String, than rhs: String) -> Bool {
-        let l = parts(lhs)
-        let r = parts(rhs)
-        let count = max(l.count, r.count)
-        for i in 0..<count {
-            let a = i < l.count ? l[i] : 0
-            let b = i < r.count ? r[i] : 0
-            if a != b { return a > b }
+        guard let lhs = SemanticVersion(lhs),
+              let rhs = SemanticVersion(rhs)
+        else {
+            return false
         }
-        return false
-    }
-
-    private static func parts(_ version: String) -> [Int] {
-        // Strip pre-release / build metadata (e.g. "0.5.0-rc1" -> "0.5.0").
-        let stripped = version.split(separator: "-", maxSplits: 1).first.map(String.init) ?? version
-        return stripped.split(separator: ".").map { Int($0) ?? 0 }
+        return lhs > rhs
     }
 
     private static func printBanner(

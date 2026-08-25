@@ -195,11 +195,7 @@ func (c *Controller) Terminate(
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	sandbox, err := c.store.GetSandbox(ctx, accountID, sandboxID)
-	if err != nil {
-		return nil, err
-	}
-	sandbox, err = c.store.MarkSandboxTerminationRequested(
+	sandbox, err := c.store.MarkSandboxTerminationRequested(
 		ctx,
 		accountID,
 		sandboxID,

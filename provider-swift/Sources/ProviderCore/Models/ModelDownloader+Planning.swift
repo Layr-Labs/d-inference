@@ -31,7 +31,7 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
         let required = remaining > Int64.max - reserve
             ? Int64.max
             : remaining + reserve
-        let available = availableBytes.flatMap { $0 > 0 ? $0 : nil }
+        let available = availableBytes.map { max(0, $0) }
 
         self.remainingBytes = remaining
         self.reserveBytes = reserve
@@ -180,8 +180,12 @@ extension ModelDownloader {
             .volumeAvailableCapacityForImportantUsageKey,
             .volumeAvailableCapacityKey,
         ])
-        let available = values.volumeAvailableCapacityForImportantUsage
-            ?? Int64(values.volumeAvailableCapacity ?? 0)
-        return available > 0 ? available : nil
+        if let available = values.volumeAvailableCapacityForImportantUsage {
+            return max(0, available)
+        }
+        if let available = values.volumeAvailableCapacity {
+            return Int64(max(0, available))
+        }
+        return nil
     }
 }

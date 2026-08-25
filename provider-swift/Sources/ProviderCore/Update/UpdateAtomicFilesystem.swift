@@ -12,6 +12,24 @@ enum UpdateAtomicFilesystem {
         case failure(Int32)
     }
 
+    enum ItemKind: Equatable, Sendable {
+        case directory
+        case regularFile
+        case symbolicLink
+        case other
+    }
+
+    /// Kernel identity captured with `lstat(2)`. Recovery uses this to bind a
+    /// validated path to the exact node later renamed or removed. The update
+    /// lock excludes cooperating installers; the identity check also rejects a
+    /// path replaced by an uncooperative local process between validation and
+    /// mutation.
+    struct ItemIdentity: Equatable, Sendable {
+        let device: UInt64
+        let inode: UInt64
+        let kind: ItemKind
+    }
+
     static func writeJSON<T: Encodable>(_ value: T, to destination: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -91,18 +109,78 @@ enum UpdateAtomicFilesystem {
         }
     }
 
-    static func replaceSymlink(at destination: URL, target: String) throws {
-        let fm = FileManager.default
+    static func replace(
+        _ source: URL,
+        at destination: URL,
+        expectedSource: ItemIdentity,
+        expectedDestination: ItemIdentity?
+    ) throws {
+        try requireIdentity(
+            expectedSource,
+            at: source,
+            operation: "replace source changed before rename"
+        )
+        try requireIdentity(
+            expectedDestination,
+            at: destination,
+            operation: "replace destination changed before rename"
+        )
+        try replace(source, at: destination)
+    }
+
+    static func replaceSymlink(
+        at destination: URL,
+        target: String,
+        expectedDirectory: ItemIdentity? = nil
+    ) throws {
         let directory = destination.deletingLastPathComponent()
-        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        let temporary = directory.appendingPathComponent(
-            ".\(destination.lastPathComponent).link-\(UUID().uuidString)")
-        try fm.createSymbolicLink(atPath: temporary.path, withDestinationPath: target)
-        defer { try? fm.removeItem(at: temporary) }
-        guard rename(temporary.path, destination.path) == 0 else {
+        let descriptor = open(
+            directory.path,
+            O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw filesystemError(
+                "open symlink destination directory \(directory.path)")
+        }
+        defer { _ = close(descriptor) }
+        if let expectedDirectory {
+            var status = stat()
+            guard fstat(descriptor, &status) == 0 else {
+                throw filesystemError(
+                    "inspect symlink destination directory \(directory.path)")
+            }
+            guard itemIdentity(from: status) == expectedDirectory else {
+                throw filesystemError(
+                    "symlink destination directory changed before repair",
+                    code: ESTALE
+                )
+            }
+        }
+
+        let temporary = ".\(destination.lastPathComponent).link-\(UUID().uuidString)"
+        var shouldUnlink = false
+        guard symlinkat(target, descriptor, temporary) == 0 else {
+            throw filesystemError("create temporary symlink in \(directory.path)")
+        }
+        shouldUnlink = true
+        defer {
+            if shouldUnlink {
+                _ = unlinkat(descriptor, temporary, 0)
+            }
+        }
+        guard renameat(
+            descriptor,
+            temporary,
+            descriptor,
+            destination.lastPathComponent
+        ) == 0 else {
             throw filesystemError("replace symlink \(destination.path)")
         }
-        try syncDirectory(directory)
+        shouldUnlink = false
+        try syncDirectoryDescriptor(
+            descriptor,
+            operation: "fsync symlink destination directory \(directory.path)"
+        )
     }
 
     static func removeDurably(_ url: URL) throws {
@@ -110,6 +188,18 @@ enum UpdateAtomicFilesystem {
         let parent = url.deletingLastPathComponent()
         try FileManager.default.removeItem(at: url)
         try syncDirectory(parent)
+    }
+
+    static func removeDurably(
+        _ url: URL,
+        expectedIdentity: ItemIdentity
+    ) throws {
+        try requireIdentity(
+            expectedIdentity,
+            at: url,
+            operation: "remove target changed before deletion"
+        )
+        try removeDurably(url)
     }
 
     /// Remove a file/tree so the ORIGINAL path vanishes atomically. The path is
@@ -131,12 +221,37 @@ enum UpdateAtomicFilesystem {
         try? FileManager.default.removeItem(at: aside)
     }
 
+    static func atomicRemove(
+        _ url: URL,
+        asidePrefix: String,
+        expectedIdentity: ItemIdentity
+    ) throws {
+        try requireIdentity(
+            expectedIdentity,
+            at: url,
+            operation: "atomic removal target changed before rename"
+        )
+        try atomicRemove(url, asidePrefix: asidePrefix)
+    }
+
     static func createDirectoryDurably(_ directory: URL) throws {
         let fm = FileManager.default
-        if fm.fileExists(atPath: directory.path) {
+        if let identity = try itemIdentity(at: directory) {
+            guard identity.kind == .directory else {
+                throw filesystemError(
+                    "refuse non-directory path \(directory.path)",
+                    code: EINVAL
+                )
+            }
             return
         }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard try itemIdentity(at: directory)?.kind == .directory else {
+            throw filesystemError(
+                "created directory path changed \(directory.path)",
+                code: ESTALE
+            )
+        }
         try syncDirectory(directory)
         let parent = directory.deletingLastPathComponent()
         if parent.path != directory.path {
@@ -145,8 +260,25 @@ enum UpdateAtomicFilesystem {
     }
 
     static func sha256(file: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
+        let descriptor = open(file.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw filesystemError("open \(file.path) for hashing")
+        }
+        defer { _ = close(descriptor) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            throw filesystemError("inspect \(file.path) for hashing")
+        }
+        guard status.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+            throw filesystemError(
+                "refuse non-regular hash input \(file.path)",
+                code: EINVAL
+            )
+        }
+        let handle = FileHandle(
+            fileDescriptor: descriptor,
+            closeOnDealloc: false
+        )
         var hasher = SHA256()
         while true {
             let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
@@ -237,6 +369,47 @@ enum UpdateAtomicFilesystem {
             || (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
+    static func itemIdentity(at url: URL) throws -> ItemIdentity? {
+        var status = stat()
+        guard lstat(url.path, &status) == 0 else {
+            let code = errno
+            if code == ENOENT || code == ENOTDIR {
+                return nil
+            }
+            throw filesystemError("inspect \(url.path)", code: code)
+        }
+        return itemIdentity(from: status)
+    }
+
+    static func requireIdentity(
+        _ expected: ItemIdentity?,
+        at url: URL,
+        operation: String
+    ) throws {
+        guard try itemIdentity(at: url) == expected else {
+            throw filesystemError(operation, code: ESTALE)
+        }
+    }
+
+    private static func itemIdentity(from status: stat) -> ItemIdentity {
+        let kind: ItemKind
+        switch status.st_mode & mode_t(S_IFMT) {
+        case mode_t(S_IFDIR):
+            kind = .directory
+        case mode_t(S_IFREG):
+            kind = .regularFile
+        case mode_t(S_IFLNK):
+            kind = .symbolicLink
+        default:
+            kind = .other
+        }
+        return ItemIdentity(
+            device: UInt64(status.st_dev),
+            inode: UInt64(status.st_ino),
+            kind: kind
+        )
+    }
+
     static func isDescendant(_ candidate: URL, of root: URL) -> Bool {
         let rootPath = root.standardizedFileURL.path
         let candidatePath = candidate.standardizedFileURL.path
@@ -259,17 +432,24 @@ enum UpdateAtomicFilesystem {
         guard descriptor >= 0 else {
             throw filesystemError("open directory \(directory.path)")
         }
-        let result = retrying {
-            captureSystemCall {
-                fsync(descriptor)
-            }
-        }
+        let result = retrying { captureSystemCall { fsync(descriptor) } }
         _ = close(descriptor)
         if case .failure(let code) = result {
             throw filesystemError(
                 "fsync directory \(directory.path)",
                 code: code
             )
+        }
+    }
+
+    private static func syncDirectoryDescriptor(
+        _ descriptor: Int32,
+        operation: String
+    ) throws {
+        if case .failure(let code) =
+            retrying({ captureSystemCall { fsync(descriptor) } })
+        {
+            throw filesystemError(operation, code: code)
         }
     }
 

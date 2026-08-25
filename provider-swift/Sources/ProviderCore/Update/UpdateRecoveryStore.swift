@@ -84,6 +84,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     let lockPath: URL
     let verifyCodeSignatures: Bool
     let faultInjector: @Sendable (FaultPoint) throws -> Void
+    let recoveryReplayHook: @Sendable () throws -> Void
     let fm = FileManager.default
 
     private var statePath: URL {
@@ -102,7 +103,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     init(
         installRoot: URL,
         verifyCodeSignatures: Bool,
-        faultInjector: @escaping @Sendable (FaultPoint) throws -> Void = { _ in }
+        faultInjector: @escaping @Sendable (FaultPoint) throws -> Void = { _ in },
+        recoveryReplayHook: @escaping @Sendable () throws -> Void = {}
     ) {
         self.installRoot = installRoot.standardizedFileURL
         self.recoveryRoot = installRoot
@@ -111,6 +113,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         self.lockPath = recoveryRoot.appendingPathComponent("update.lock")
         self.verifyCodeSignatures = verifyCodeSignatures
         self.faultInjector = faultInjector
+        self.recoveryReplayHook = recoveryReplayHook
     }
 
     func loadState() throws -> UpdateRecoveryState {
@@ -174,28 +177,56 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         var state = try loadState()
 
         if try liveMatches(transaction.target, layout: transaction.layout) {
+            try stagingRoot.assertUnchanged()
             try ensureCanonicalLinks(layout: transaction.layout)
+            guard try liveMatches(
+                transaction.target,
+                layout: transaction.layout
+            ) else {
+                throw StoreError.interruptedRecoveryFailed(
+                    "target changed while repairing canonical links")
+            }
             try finalizeRecovered(transaction, state: &state, now: now)
-            try cleanupTransaction(transaction)
+            try cleanupTransaction(transaction, stagingRoot: stagingRoot)
             return
         }
 
-        if try stagingContainsTarget(
-            stagingRoot,
+        if let stagedTarget = try matchingLayoutSnapshot(
+            stagingRoot.url,
             target: transaction.target,
-            layout: transaction.layout
+            layout: transaction.layout,
+            context: "journal staging",
+            verifySignature: false
         ) {
-            try installFromStaging(stagingRoot, layout: transaction.layout)
+            guard stagedTarget.root.identity == stagingRoot.identity else {
+                throw StoreError.corruptTransaction(
+                    "journal staging root was replaced before payload verification")
+            }
+            try stagingRoot.assertUnchanged()
+            try recoveryReplayHook()
+            try installFromStaging(
+                stagingRoot.url,
+                layout: transaction.layout,
+                validatedSource: stagedTarget
+            )
             guard try liveMatches(transaction.target, layout: transaction.layout) else {
                 throw StoreError.interruptedRecoveryFailed(
                     "target hashes do not match after replay")
             }
             try ensureCanonicalLinks(layout: transaction.layout)
+            guard try liveMatches(
+                transaction.target,
+                layout: transaction.layout
+            ) else {
+                throw StoreError.interruptedRecoveryFailed(
+                    "target changed while repairing canonical links")
+            }
             try finalizeRecovered(transaction, state: &state, now: now)
-            try cleanupTransaction(transaction)
+            try cleanupTransaction(transaction, stagingRoot: stagingRoot)
             return
         }
 
+        try stagingRoot.assertUnchanged()
         guard let predecessor = state.predecessor else {
             throw StoreError.interruptedRecoveryFailed(
                 "neither target staging nor a predecessor is available; live install left untouched")
@@ -216,7 +247,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         } else {
             try finalizeRecovered(transaction, state: &state, now: now)
         }
-        try cleanupTransaction(transaction)
+        try cleanupTransaction(transaction, stagingRoot: stagingRoot)
     }
 
     func commit(
@@ -257,10 +288,26 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try persist(transaction)
         try faultInjector(.transactionPersisted)
 
-        try installStagedBundle(staged)
+        guard let stagedTarget = try matchingLayoutSnapshot(
+            staged.stagingRoot,
+            target: candidate,
+            layout: layout,
+            context: "prepared install staging",
+            verifySignature: false
+        ) else {
+            throw StoreError.corruptTransaction(
+                "prepared install staging no longer matches its journal target")
+        }
+        try installStagedBundle(staged, validatedSource: stagedTarget)
         guard try liveMatches(candidate, layout: layout) else {
             throw StoreError.filesystem(
                 "installed candidate does not match its verified payload"
+            )
+        }
+        try ensureCanonicalLinks(layout: layout)
+        guard try liveMatches(candidate, layout: layout) else {
+            throw StoreError.filesystem(
+                "installed candidate changed while repairing canonical links"
             )
         }
         try faultInjector(.liveLayoutExchanged)
@@ -297,7 +344,10 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             isDirectory: true
         )
         try copyPredecessor(predecessor, to: stagingRoot)
-        try verifyStagedPredecessor(predecessor, at: stagingRoot)
+        let stagedPredecessor = try verifyStagedPredecessor(
+            predecessor,
+            at: stagingRoot
+        )
 
         var transaction = Transaction(
             schema: Transaction.currentSchema,
@@ -312,14 +362,26 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try persist(transaction)
         try faultInjector(.transactionPersisted)
 
-        try installFromStaging(stagingRoot, layout: predecessor.layout)
-        try ensureCanonicalLinks(layout: predecessor.layout)
+        try installFromStaging(
+            stagingRoot,
+            layout: predecessor.layout,
+            validatedSource: stagedPredecessor
+        )
         guard try liveMatches(
             predecessor.release,
             layout: predecessor.layout
         ) else {
             throw StoreError.predecessorVerificationFailed(
                 "restored predecessor does not match its verified payload"
+            )
+        }
+        try ensureCanonicalLinks(layout: predecessor.layout)
+        guard try liveMatches(
+            predecessor.release,
+            layout: predecessor.layout
+        ) else {
+            throw StoreError.predecessorVerificationFailed(
+                "restored predecessor changed while repairing canonical links"
             )
         }
         try faultInjector(.liveLayoutExchanged)
@@ -552,46 +614,14 @@ final class UpdateRecoveryStore: @unchecked Sendable {
 
     private func validatedStagingRoot(
         for transaction: Transaction
-    ) throws -> URL {
-        let stagingRoot = URL(
-            fileURLWithPath: transaction.stagingRoot
-        ).standardizedFileURL
+    ) throws -> RecoveryNodeSnapshot {
         let expectedPrefix = transaction.kind == .install
             ? SelfUpdater.stagingDirPrefix
             : Self.rollbackStagingPrefix
-        guard stagingRoot.deletingLastPathComponent() == installRoot,
-              stagingRoot.lastPathComponent.hasPrefix(expectedPrefix),
-              stagingRoot.lastPathComponent.count > expectedPrefix.count
-        else {
-            throw StoreError.corruptTransaction(
-                "staging path is outside the allowed install-root namespace")
-        }
-
-        let resolvedRoot = installRoot.resolvingSymlinksInPath()
-            .standardizedFileURL
-        let resolvedStaging = stagingRoot.resolvingSymlinksInPath()
-            .standardizedFileURL
-        guard resolvedStaging.deletingLastPathComponent() == resolvedRoot else {
-            throw StoreError.corruptTransaction(
-                "staging path resolves outside the install root")
-        }
-        if UpdateAtomicFilesystem.itemExists(stagingRoot) {
-            guard (try? fm.destinationOfSymbolicLink(
-                atPath: stagingRoot.path
-            )) == nil else {
-                throw StoreError.corruptTransaction(
-                    "staging path must not be a symbolic link")
-            }
-            var isDirectory: ObjCBool = false
-            guard fm.fileExists(
-                atPath: stagingRoot.path,
-                isDirectory: &isDirectory
-            ), isDirectory.boolValue else {
-                throw StoreError.corruptTransaction(
-                    "staging path is not a directory")
-            }
-        }
-        return stagingRoot
+        return try validatedJournalStagingRoot(
+            path: transaction.stagingRoot,
+            expectedPrefix: expectedPrefix
+        )
     }
 
     private func persist(_ transaction: Transaction) throws {
@@ -599,17 +629,44 @@ final class UpdateRecoveryStore: @unchecked Sendable {
     }
 
     private func finish(remove staging: URL) throws {
+        let stagingRoot = try recoveryNodeSnapshot(
+            at: staging,
+            label: "completed transaction staging root"
+        )
+        if let identity = stagingRoot.identity {
+            guard identity.kind == .directory else {
+                throw StoreError.corruptTransaction(
+                    "completed transaction staging root changed node type")
+            }
+            try stagingRoot.assertUnchanged()
+            try UpdateAtomicFilesystem.removeDurably(
+                staging,
+                expectedIdentity: identity
+            )
+        }
         try UpdateAtomicFilesystem.removeDurably(transactionPath)
         try faultInjector(.transactionRemoved)
-        try UpdateAtomicFilesystem.removeDurably(staging)
         cleanupOrphanedRecoveryTemps()
     }
 
-    private func cleanupTransaction(_ transaction: Transaction) throws {
-        let staging = try validatedStagingRoot(for: transaction)
+    private func cleanupTransaction(
+        _ transaction: Transaction,
+        stagingRoot: RecoveryNodeSnapshot
+    ) throws {
+        let current = try validatedStagingRoot(for: transaction)
+        guard current.identity == stagingRoot.identity else {
+            throw StoreError.corruptTransaction(
+                "journal staging root was replaced during recovery")
+        }
+        try current.assertUnchanged()
+        if let identity = current.identity {
+            try UpdateAtomicFilesystem.removeDurably(
+                current.url,
+                expectedIdentity: identity
+            )
+        }
         try UpdateAtomicFilesystem.removeDurably(transactionPath)
         try faultInjector(.transactionRemoved)
-        try UpdateAtomicFilesystem.removeDurably(staging)
         cleanupOrphanedRecoveryTemps()
     }
 
@@ -630,6 +687,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             for entry in installEntries
             where entry.lastPathComponent.hasPrefix(Self.rollbackStagingPrefix)
                 || entry.lastPathComponent.hasPrefix(Self.recoveryRestorePrefix)
+                || entry.lastPathComponent.hasPrefix(Self.staleAppAsidePrefix)
             {
                 try? fm.removeItem(at: entry)
             }

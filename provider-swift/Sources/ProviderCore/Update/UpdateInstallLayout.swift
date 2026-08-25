@@ -171,30 +171,57 @@ extension UpdateRecoveryStore {
         )
     }
 
-    func installStagedBundle(_ staged: SelfUpdater.StagedBundle) throws {
-        if let app = staged.extractedApp {
-            try installApp(from: app)
-            try ensureCanonicalLinks(layout: .app)
-        } else {
-            try installFlatDirectory(
-                from: staged.stagingRoot.appendingPathComponent("bin")
-            )
-            try ensureCanonicalLinks(layout: .flat)
-        }
+    func installStagedBundle(
+        _ staged: SelfUpdater.StagedBundle,
+        validatedSource: RecoveryLayoutSnapshot
+    ) throws {
+        let layout: VerifiedPredecessor.Layout =
+            staged.extractedApp == nil ? .flat : .app
+        try installFromStaging(
+            staged.stagingRoot,
+            layout: layout,
+            validatedSource: validatedSource
+        )
     }
 
     func installFromStaging(
         _ stagingRoot: URL,
-        layout: VerifiedPredecessor.Layout
+        layout: VerifiedPredecessor.Layout,
+        validatedSource: RecoveryLayoutSnapshot
     ) throws {
+        let paths = artifactPaths(root: stagingRoot, layout: layout)
+        guard validatedSource.component.url == paths.bundle.standardizedFileURL else {
+            throw StoreError.corruptTransaction(
+                "validated staging component does not match the promoted path")
+        }
+        try validatedSource.assertUnchanged()
+        let mutation = try recoveryMutationGuard(layout: layout)
+        try mutation.assertUnchanged()
+
         switch layout {
         case .app:
-            try installApp(from: stagingRoot.appendingPathComponent("Darkbloom.app"))
+            try installApp(
+                from: paths.bundle,
+                sourceIdentity: validatedSource.component.identity,
+                destinationIdentity: mutation.destination.identity
+            )
         case .flat:
             try installFlatDirectory(
-                from: stagingRoot.appendingPathComponent("bin")
+                from: paths.bundle,
+                sourceIdentity: validatedSource.component.identity,
+                destinationIdentity: mutation.destination.identity
             )
         }
+
+        guard let promoted = try validatedRecoveryLayout(
+            root: installRoot,
+            layout: layout,
+            context: "promoted live \(layout.rawValue)"
+        ), promoted.component.identity == validatedSource.component.identity else {
+            throw StoreError.corruptTransaction(
+                "promoted component is not the validated staging node")
+        }
+        try promoted.assertUnchanged()
     }
 
     /// Point the canonical `bin/` entries at the just-installed layout.
@@ -207,20 +234,68 @@ extension UpdateRecoveryStore {
     /// predecessor). For a `.flat` layout we therefore first retire any stale
     /// `Darkbloom.app` and leave `bin/`'s real flat binaries in place.
     func ensureCanonicalLinks(layout: VerifiedPredecessor.Layout) throws {
+        guard let live = try validatedRecoveryLayout(
+            root: installRoot,
+            layout: layout,
+            context: "canonical-link live \(layout.rawValue)"
+        ), live.payloadsAreRegularFiles else {
+            throw StoreError.filesystem(
+                "\(layout.rawValue) layout is incomplete before canonical-link repair")
+        }
+        let mutation = try recoveryMutationGuard(layout: layout)
+        guard mutation.destination.identity == live.component.identity else {
+            throw StoreError.corruptTransaction(
+                "live component changed before canonical-link repair")
+        }
+        try live.assertUnchanged()
+        try mutation.assertUnchanged()
+
         switch layout {
         case .flat:
-            try removeStaleAppBundle()
-            let legacy = installRoot.appendingPathComponent("bin/eigeninference-enclave")
-            try UpdateAtomicFilesystem.replaceSymlink(at: legacy, target: "darkbloom-enclave")
-        case .app:
-            guard fm.fileExists(
-                atPath: installRoot.appendingPathComponent("Darkbloom.app").path
-            ) else {
-                throw StoreError.filesystem(
-                    "app layout requested for canonical links but Darkbloom.app is missing")
+            if let staleApp = mutation.staleApp,
+               let identity = staleApp.identity
+            {
+                try UpdateAtomicFilesystem.atomicRemove(
+                    staleApp.url,
+                    asidePrefix: Self.staleAppAsidePrefix,
+                    expectedIdentity: identity
+                )
             }
+            try live.assertUnchanged()
+            let legacy = installRoot.appendingPathComponent("bin/eigeninference-enclave")
+            try UpdateAtomicFilesystem.requireIdentity(
+                live.component.identity,
+                at: live.component.url,
+                operation: "flat bin changed before canonical-link repair"
+            )
+            try UpdateAtomicFilesystem.replaceSymlink(
+                at: legacy,
+                target: "darkbloom-enclave",
+                expectedDirectory: live.component.identity
+            )
+        case .app:
             let bin = installRoot.appendingPathComponent("bin")
-            try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+            var binSnapshot = mutation.canonicalBin
+            if binSnapshot?.identity == nil {
+                try mutation.installRoot.assertUnchanged()
+                do {
+                    try fm.createDirectory(
+                        at: bin,
+                        withIntermediateDirectories: false
+                    )
+                } catch {
+                    throw StoreError.corruptTransaction(
+                        "canonical bin path appeared while creating it")
+                }
+                binSnapshot = try optionalCanonicalBinSnapshot(bin)
+            }
+            guard let binSnapshot,
+                  let binIdentity = binSnapshot.identity,
+                  binIdentity.kind == .directory
+            else {
+                throw StoreError.corruptTransaction(
+                    "canonical bin directory is unavailable")
+            }
             let appBin = "../Darkbloom.app/Contents/MacOS"
             for (name, target) in [
                 ("mlx.metallib", "\(appBin)/mlx.metallib"),
@@ -228,34 +303,19 @@ extension UpdateRecoveryStore {
                 ("eigeninference-enclave", "darkbloom-enclave"),
                 ("darkbloom", "\(appBin)/darkbloom"),
             ] {
+                try live.assertUnchanged()
+                try UpdateAtomicFilesystem.requireIdentity(
+                    binIdentity,
+                    at: bin,
+                    operation: "canonical bin changed before symlink repair"
+                )
                 try UpdateAtomicFilesystem.replaceSymlink(
                     at: bin.appendingPathComponent(name),
-                    target: target
+                    target: target,
+                    expectedDirectory: binIdentity
                 )
             }
         }
-    }
-
-    /// Retire a `Darkbloom.app` left over from a prior `.app` candidate before
-    /// a flat install/rollback links or snapshots the tree. Orphaned aside
-    /// copies from an interrupted prior removal are swept first (the whole
-    /// operation runs under the update lock, so the sweep is race-free).
-    private func removeStaleAppBundle() throws {
-        if let entries = try? fm.contentsOfDirectory(
-            at: installRoot,
-            includingPropertiesForKeys: nil
-        ) {
-            for entry in entries
-            where entry.lastPathComponent.hasPrefix(Self.staleAppAsidePrefix) {
-                try? fm.removeItem(at: entry)
-            }
-        }
-        let app = installRoot.appendingPathComponent("Darkbloom.app")
-        guard UpdateAtomicFilesystem.itemExists(app) else { return }
-        try UpdateAtomicFilesystem.atomicRemove(
-            app,
-            asidePrefix: Self.staleAppAsidePrefix
-        )
     }
 
     static let staleAppAsidePrefix = ".stale-app-"
@@ -264,37 +324,14 @@ extension UpdateRecoveryStore {
         _ record: InstalledReleaseRecord,
         layout: VerifiedPredecessor.Layout
     ) throws -> Bool {
-        let paths = artifactPaths(root: installRoot, layout: layout)
-        guard fm.fileExists(atPath: paths.binary.path),
-              fm.fileExists(atPath: paths.enclave.path),
-              fm.fileExists(atPath: paths.metallib.path)
-        else {
-            return false
-        }
-        let modes = try UpdateArtifactModes(
-            binary: paths.binary,
-            enclave: paths.enclave,
-            metallib: paths.metallib
-        )
-        guard modes.nonExecutablePayload == nil,
-              modes.matches(record)
-        else {
-            return false
-        }
-        guard try UpdateAtomicFilesystem.sha256(file: paths.binary) == record.binaryHash,
-              try UpdateAtomicFilesystem.sha256(file: paths.enclave) == record.enclaveHash,
-              try UpdateAtomicFilesystem.sha256(file: paths.metallib) == record.metallibHash,
-              try UpdateAtomicFilesystem.treeHash(root: paths.bundle)
-                == record.installedBundleHash
-        else {
-            return false
-        }
-        try verifySignature(
+        try matchingLayoutSnapshot(
+            installRoot,
+            target: record,
             layout: layout,
-            bundle: paths.bundle,
-            binary: paths.binary
-        )
-        return true
+            context: "live \(layout.rawValue)",
+            verifySignature: true,
+            allowCanonicalAppLinksForFlatLive: true
+        ) != nil
     }
 
     func stagingContainsTarget(
@@ -302,12 +339,35 @@ extension UpdateRecoveryStore {
         target: InstalledReleaseRecord,
         layout: VerifiedPredecessor.Layout
     ) throws -> Bool {
-        let paths = artifactPaths(root: stagingRoot, layout: layout)
-        guard fm.fileExists(atPath: paths.binary.path),
-              fm.fileExists(atPath: paths.enclave.path),
-              fm.fileExists(atPath: paths.metallib.path)
-        else {
-            return false
+        try matchingLayoutSnapshot(
+            stagingRoot,
+            target: target,
+            layout: layout,
+            context: "journal staging",
+            verifySignature: false
+        ) != nil
+    }
+
+    func matchingLayoutSnapshot(
+        _ root: URL,
+        target: InstalledReleaseRecord,
+        layout: VerifiedPredecessor.Layout,
+        context: String,
+        verifySignature shouldVerifySignature: Bool,
+        allowCanonicalAppLinksForFlatLive: Bool = false
+    ) throws -> RecoveryLayoutSnapshot? {
+        guard let paths = try validatedRecoveryLayout(
+            root: root,
+            layout: layout,
+            context: context,
+            allowCanonicalAppLinksForFlatLive:
+                allowCanonicalAppLinksForFlatLive
+        ) else {
+            return nil
+        }
+        try paths.assertUnchanged()
+        guard paths.payloadsAreRegularFiles else {
+            return nil
         }
         let modes = try UpdateArtifactModes(
             binary: paths.binary,
@@ -317,13 +377,29 @@ extension UpdateRecoveryStore {
         guard modes.nonExecutablePayload == nil,
               modes.matches(target)
         else {
-            return false
+            return nil
         }
-        return try UpdateAtomicFilesystem.sha256(file: paths.binary) == target.binaryHash
-            && UpdateAtomicFilesystem.sha256(file: paths.enclave) == target.enclaveHash
-            && UpdateAtomicFilesystem.sha256(file: paths.metallib) == target.metallibHash
-            && UpdateAtomicFilesystem.treeHash(root: paths.bundle)
+        guard try UpdateAtomicFilesystem.sha256(file: paths.binary)
+                == target.binaryHash,
+              try UpdateAtomicFilesystem.sha256(file: paths.enclave)
+                == target.enclaveHash,
+              try UpdateAtomicFilesystem.sha256(file: paths.metallib)
+                == target.metallibHash,
+              try UpdateAtomicFilesystem.treeHash(root: paths.component.url)
                 == target.installedBundleHash
+        else {
+            return nil
+        }
+        try paths.assertUnchanged()
+        if shouldVerifySignature {
+            try verifySignature(
+                layout: layout,
+                bundle: paths.component.url,
+                binary: paths.binary
+            )
+            try paths.assertUnchanged()
+        }
+        return paths
     }
 
     func copyPredecessor(
@@ -346,43 +422,22 @@ extension UpdateRecoveryStore {
         try UpdateAtomicFilesystem.fsyncTree(stagingRoot)
     }
 
+    @discardableResult
     func verifyStagedPredecessor(
         _ predecessor: VerifiedPredecessor,
         at stagingRoot: URL
-    ) throws {
-        let bundle: URL
-        let binary: URL
-        let enclave: URL
-        let metallib: URL
-        switch predecessor.layout {
-        case .app:
-            bundle = stagingRoot.appendingPathComponent("Darkbloom.app")
-            binary = bundle.appendingPathComponent("Contents/MacOS/darkbloom")
-            enclave = bundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
-        case .flat:
-            bundle = stagingRoot.appendingPathComponent("bin")
-            binary = bundle.appendingPathComponent("darkbloom")
-            enclave = bundle.appendingPathComponent("darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("mlx.metallib")
-        }
-        let modes = try UpdateArtifactModes(
-            binary: binary,
-            enclave: enclave,
-            metallib: metallib
-        )
-        guard try UpdateAtomicFilesystem.treeHash(root: bundle)
-                == predecessor.release.installedBundleHash,
-              try UpdateAtomicFilesystem.sha256(file: binary) == predecessor.release.binaryHash,
-              try UpdateAtomicFilesystem.sha256(file: enclave) == predecessor.release.enclaveHash,
-              try UpdateAtomicFilesystem.sha256(file: metallib) == predecessor.release.metallibHash,
-              modes.nonExecutablePayload == nil,
-              modes.matches(predecessor.release)
-        else {
+    ) throws -> RecoveryLayoutSnapshot {
+        guard let snapshot = try matchingLayoutSnapshot(
+            stagingRoot,
+            target: predecessor.release,
+            layout: predecessor.layout,
+            context: "rollback staging",
+            verifySignature: true
+        ) else {
             throw StoreError.predecessorVerificationFailed(
                 "rollback staging copy changed during copy")
         }
-        try verifySignature(layout: predecessor.layout, bundle: bundle, binary: binary)
+        return snapshot
     }
 
     func restorePredecessorCopy(
@@ -391,10 +446,45 @@ extension UpdateRecoveryStore {
     ) throws {
         let staging = installRoot.appendingPathComponent(stagingName, isDirectory: true)
         try copyPredecessor(predecessor, to: staging)
-        try verifyStagedPredecessor(predecessor, at: staging)
-        try installFromStaging(staging, layout: predecessor.layout)
+        let stagingRoot = try recoveryNodeSnapshot(
+            at: staging,
+            label: "predecessor restore staging root"
+        )
+        guard stagingRoot.identity?.kind == .directory else {
+            throw StoreError.corruptTransaction(
+                "predecessor restore staging root is not a directory")
+        }
+        let stagedPredecessor = try verifyStagedPredecessor(
+            predecessor,
+            at: staging
+        )
+        try installFromStaging(
+            staging,
+            layout: predecessor.layout,
+            validatedSource: stagedPredecessor
+        )
+        guard try liveMatches(
+            predecessor.release,
+            layout: predecessor.layout
+        ) else {
+            throw StoreError.predecessorVerificationFailed(
+                "restored predecessor changed during promotion")
+        }
         try ensureCanonicalLinks(layout: predecessor.layout)
-        try UpdateAtomicFilesystem.removeDurably(staging)
+        guard try liveMatches(
+            predecessor.release,
+            layout: predecessor.layout
+        ) else {
+            throw StoreError.predecessorVerificationFailed(
+                "restored predecessor changed during canonical-link repair")
+        }
+        try stagingRoot.assertUnchanged()
+        if let identity = stagingRoot.identity {
+            try UpdateAtomicFilesystem.removeDurably(
+                staging,
+                expectedIdentity: identity
+            )
+        }
     }
 
     /// INTENTIONALLY FAIL-CLOSED for legacy flat/ad-hoc installs: an install
@@ -447,24 +537,54 @@ extension UpdateRecoveryStore {
         return resolved
     }
 
-    private func installApp(from sourceApp: URL) throws {
-        guard fm.fileExists(atPath: sourceApp.path) else {
-            throw StoreError.filesystem("staged app bundle is missing")
+    private func installApp(
+        from sourceApp: URL,
+        sourceIdentity: UpdateAtomicFilesystem.ItemIdentity?,
+        destinationIdentity: UpdateAtomicFilesystem.ItemIdentity?
+    ) throws {
+        guard let sourceIdentity, sourceIdentity.kind == .directory else {
+            throw StoreError.corruptTransaction(
+                "validated staged app bundle identity is missing")
         }
         let liveApp = installRoot.appendingPathComponent("Darkbloom.app")
-        try UpdateAtomicFilesystem.replace(sourceApp, at: liveApp)
+        try UpdateAtomicFilesystem.replace(
+            sourceApp,
+            at: liveApp,
+            expectedSource: sourceIdentity,
+            expectedDestination: destinationIdentity
+        )
     }
 
-    private func installFlatDirectory(from stagedBin: URL) throws {
-        let liveBin = installRoot.appendingPathComponent("bin")
-        for name in ["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
-            guard fm.fileExists(
-                atPath: stagedBin.appendingPathComponent(name).path
-            ) else {
-                throw StoreError.filesystem("staged \(name) is missing")
-            }
+    private func installFlatDirectory(
+        from stagedBin: URL,
+        sourceIdentity: UpdateAtomicFilesystem.ItemIdentity?,
+        destinationIdentity: UpdateAtomicFilesystem.ItemIdentity?
+    ) throws {
+        guard let sourceIdentity, sourceIdentity.kind == .directory else {
+            throw StoreError.corruptTransaction(
+                "validated staged flat directory identity is missing")
         }
-        try UpdateAtomicFilesystem.replace(stagedBin, at: liveBin)
+        let liveBin = installRoot.appendingPathComponent("bin")
+        try UpdateAtomicFilesystem.replace(
+            stagedBin,
+            at: liveBin,
+            expectedSource: sourceIdentity,
+            expectedDestination: destinationIdentity
+        )
+    }
+
+    private func optionalCanonicalBinSnapshot(
+        _ bin: URL
+    ) throws -> RecoveryNodeSnapshot {
+        let snapshot = try recoveryNodeSnapshot(
+            at: bin,
+            label: "canonical bin directory"
+        )
+        if let identity = snapshot.identity, identity.kind != .directory {
+            throw StoreError.corruptTransaction(
+                "canonical bin path is not a directory")
+        }
+        return snapshot
     }
 
     private func liveLayout() throws -> VerifiedPredecessor.Layout {

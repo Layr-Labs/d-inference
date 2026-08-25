@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	releaseSemver "github.com/eigeninference/d-inference/coordinator/semver"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 )
@@ -1472,38 +1473,21 @@ type RuntimeManifest struct {
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
 // verification. Pass nil to disable runtime verification (all providers pass).
-// semverGreater returns true if version a is greater than version b.
-// Compares numeric components (e.g. "0.2.31" > "0.2.9" = true).
+// semverGreater returns true only when both values are canonical SemVer 2 and
+// a has higher precedence than b.
 func semverGreater(a, b string) bool {
-	if a == "" {
-		return false
-	}
-	if b == "" {
-		return true
-	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
-	}
-	return false // equal
+	comparison, err := releaseSemver.Compare(a, b)
+	return err == nil && comparison > 0
 }
 
-// semverLess returns true if version a is less than version b.
+// semverLess treats an invalid provider version as below a valid required
+// floor. Release metadata is rejected before reaching this comparison.
 func semverLess(a, b string) bool {
-	return semverGreater(b, a)
+	comparison, err := releaseSemver.Compare(a, b)
+	if err == nil {
+		return comparison < 0
+	}
+	return !releaseSemver.IsValid(a) && releaseSemver.IsValid(b)
 }
 
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {

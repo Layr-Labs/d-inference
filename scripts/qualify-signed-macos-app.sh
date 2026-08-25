@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
 usage() {
     echo "usage: $0 [--expected-version X.Y.Z] <Darkbloom.app|Darkbloom-macOS-arm64.zip>" >&2
     exit 64
@@ -86,9 +88,9 @@ BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIS
     || fail "unexpected bundle identifier: $BUNDLE_ID"
 [ "$BUNDLE_EXECUTABLE" = "DarkbloomApp" ] \
     || fail "unexpected main executable: $BUNDLE_EXECUTABLE"
-SEMVER='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
-[[ "$SHORT_VERSION" =~ $SEMVER ]] \
-    || fail "CFBundleShortVersionString is not semantic: $SHORT_VERSION"
+if ! bash "$ROOT/scripts/install.sh" --semver-test "$SHORT_VERSION"; then
+    fail "CFBundleShortVersionString is not canonical SemVer 2: $SHORT_VERSION"
+fi
 [ "$SHORT_VERSION" = "$BUNDLE_VERSION" ] \
     || fail "short version ($SHORT_VERSION) and bundle version ($BUNDLE_VERSION) differ"
 if [ -n "$EXPECTED_VERSION" ]; then

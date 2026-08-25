@@ -289,6 +289,7 @@ INVALID_SEMVERS=(
     "1.0.0+"
     "1.0.0+build+second"
     "1.0.0-alpha_beta"
+    "1.0.0-é"
 )
 SEMVER_PRECEDENCE=(
     "1.0.0-alpha"
@@ -328,6 +329,19 @@ do
         echo "$installer treated build metadata as precedence" >&2
         exit 1
     fi
+    for locale_name in C en_US.UTF-8 tr_TR.UTF-8; do
+        LC_ALL="$locale_name" locale >/dev/null 2>&1 || continue
+        LC_ALL="$locale_name" \
+            bash "$installer" --semver-test "1.0.0-alpha.1"
+        if LC_ALL="$locale_name" \
+            bash "$installer" --semver-test "1.0.0-é"
+        then
+            echo "$installer accepted non-ASCII SemVer under $locale_name" >&2
+            exit 1
+        fi
+        LC_ALL="$locale_name" bash "$installer" \
+            --semver-older-test "1.0.0-beta.2" "1.0.0-beta.11"
+    done
 done
 
 test_user_app_shortcut() {
@@ -425,6 +439,37 @@ test_install_lock_signal_exit() {
 
 test_install_lock_signal_exit "$REPO_ROOT/scripts/install.sh" source
 test_install_lock_signal_exit "$REPO_ROOT/coordinator/api/install.sh" embedded
+
+test_install_lock_descriptor_isolation() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/lock-descriptor-$label"
+    local child_pid_file="$install_dir/child.pid"
+    mkdir -p "$install_dir"
+
+    bash "$installer" \
+        --spawn-under-install-lock-test "$install_dir" "$child_pid_file"
+    local child_pid
+    child_pid=$(cat "$child_pid_file")
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+        echo "$installer did not leave the descriptor probe alive" >&2
+        exit 1
+    fi
+
+    if ! DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        kill -TERM "$child_pid" 2>/dev/null || true
+        echo "$installer leaked its kernel lock into a descendant" >&2
+        exit 1
+    fi
+    kill -TERM "$child_pid" 2>/dev/null || true
+}
+
+test_install_lock_descriptor_isolation \
+    "$REPO_ROOT/scripts/install.sh" source
+test_install_lock_descriptor_isolation \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
 
 write_existing_bundle() {
     local app=$1
@@ -739,6 +784,137 @@ assert_fresh_recovery_preserves_replacement \
     "$REPO_ROOT/scripts/install.sh" source
 assert_fresh_recovery_preserves_replacement \
     "$REPO_ROOT/coordinator/api/install.sh" embedded
+
+assert_recovery_preserves_in_place_candidate_mutation() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/in-place-candidate-$label"
+    local destination="$install_dir/Darkbloom.app"
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the in-place candidate setup crash" >&2
+        exit 1
+    fi
+
+    printf 'created after crash\n' > "$destination/created-after-crash"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$destination/created-after-crash")" = "created after crash"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "io.darkbloom.provider"
+}
+
+assert_recovery_preserves_mutated_candidate_and_restores_previous() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/mutated-candidate-with-previous-$label"
+    local destination="$install_dir/Darkbloom.app"
+    write_existing_bundle "$destination" com.example.foreign
+
+    artifact_hashes "$VALID"
+    if DARKBLOOM_INSTALL_TEST_CRASH_POINT=staged-app-moved \
+        PATH="$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT"
+    then
+        echo "$installer survived the mutated candidate setup crash" >&2
+        exit 1
+    fi
+
+    printf 'created after crash\n' > "$destination/created-after-crash"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$destination/Contents/Info.plist")" = "com.example.foreign"
+
+    shopt -s nullglob
+    local preserved=("$install_dir"/Darkbloom.app.interrupted-*)
+    test "${#preserved[@]}" -eq 1
+    test "$(cat "${preserved[0]}/created-after-crash")" = \
+        "created after crash"
+}
+
+for mutation_label in source embedded; do
+    if [ "$mutation_label" = source ]; then
+        mutation_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        mutation_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    assert_recovery_preserves_in_place_candidate_mutation \
+        "$mutation_installer" "$mutation_label"
+    assert_recovery_preserves_mutated_candidate_and_restores_previous \
+        "$mutation_installer" "$mutation_label"
+done
+
+assert_malformed_recovery_artifact_is_rejected() {
+    local installer=$1
+    local label=$2
+    local artifact_kind=$3
+    local install_dir="$ROOT/malformed-recovery-$label-$artifact_kind"
+    local outside="$ROOT/malformed-recovery-outside-$label-$artifact_kind"
+    mkdir -p "$install_dir" "$outside"
+    printf 'live\n' > "$install_dir/live-sentinel"
+    printf 'outside\n' > "$outside/outside-sentinel"
+
+    case "$artifact_kind" in
+        backup-file)
+            printf 'not a directory\n' > \
+                "$install_dir/.install-backup-123-456-789"
+            ;;
+        backup-symlink)
+            ln -s "$outside" "$install_dir/.install-backup-123-456-789"
+            ;;
+        unknown-backup)
+            mkdir "$install_dir/.install-backup-attacker"
+            printf 'untrusted\n' > \
+                "$install_dir/.install-backup-attacker/payload"
+            ;;
+        malformed-manifest)
+            mkdir "$install_dir/.install-backup-123-456-789"
+            printf 'version=2\nkind=app\n' > \
+                "$install_dir/.install-backup-123-456-789/.transaction"
+            ;;
+        staging-symlink)
+            ln -s "$outside" "$install_dir/.install-staging-123-456-789"
+            ;;
+        *)
+            echo "unknown malformed recovery fixture: $artifact_kind" >&2
+            exit 1
+            ;;
+    esac
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer accepted malformed recovery artifact $artifact_kind" >&2
+        exit 1
+    fi
+    test "$(cat "$install_dir/live-sentinel")" = "live"
+    test "$(cat "$outside/outside-sentinel")" = "outside"
+}
+
+for malformed_label in source embedded; do
+    if [ "$malformed_label" = source ]; then
+        malformed_installer="$REPO_ROOT/scripts/install.sh"
+    else
+        malformed_installer="$REPO_ROOT/coordinator/api/install.sh"
+    fi
+    for artifact_kind in \
+        backup-file \
+        backup-symlink \
+        unknown-backup \
+        malformed-manifest \
+        staging-symlink
+    do
+        assert_malformed_recovery_artifact_is_rejected \
+            "$malformed_installer" "$malformed_label" "$artifact_kind"
+    done
+done
 
 assert_interrupted_flat_transaction_recovers() {
     local installer=$1

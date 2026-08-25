@@ -3813,6 +3813,9 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 // --- Releases ---
 
 func (s *PostgresStore) SetRelease(release *Release) error {
+	if err := validateReleaseIdentity(release); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3882,9 +3885,14 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
 		}
-		if latest == nil ||
-			releaseVersionGreater(r.Version, latest.Version) ||
-			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+		if latest == nil {
+			copy := r
+			latest = &copy
+			continue
+		}
+		comparison := compareReleaseVersions(r.Version, latest.Version)
+		if comparison > 0 ||
+			(comparison == 0 && r.CreatedAt.After(latest.CreatedAt)) {
 			copy := r
 			latest = &copy
 		}

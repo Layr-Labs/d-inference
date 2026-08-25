@@ -58,7 +58,6 @@ struct InstallMutationLockTests {
     @Test("recovery scan recognizes journals and pre-journal staging")
     func recoveryArtifactScan() throws {
         for name in [
-            ".install-transaction-legacy",
             ".install-backup-123-456-789",
             ".install-staging-123-456-789",
         ] {

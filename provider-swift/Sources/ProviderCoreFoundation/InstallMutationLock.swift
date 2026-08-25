@@ -144,8 +144,7 @@ public final class InstallMutationLock: @unchecked Sendable {
         }
         return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
             .first { entry in
-                entry.lastPathComponent.hasPrefix(".install-transaction-")
-                    || entry.lastPathComponent.hasPrefix(".install-backup-")
+                entry.lastPathComponent.hasPrefix(".install-backup-")
                     || entry.lastPathComponent.hasPrefix(".install-staging-")
             }
     }

@@ -1104,8 +1104,8 @@ public struct SelfUpdater: Sendable {
 
     /// Compare semver-style version strings. Returns true if `latest` is newer than `current`.
     ///
-    /// Handles versions like "0.4.0-swift", "0.4.1", etc. The suffix after '-' is
-    /// stripped for comparison (pre-release suffixes are ignored for ordering).
+    /// Both values must be canonical SemVer 2. Prerelease identifiers use the
+    /// specification's exact precedence and build metadata is ignored.
     internal static func isNewer(latest: String, current: String) -> Bool {
         guard let latest = SemanticVersion(latest),
               let current = SemanticVersion(current)

@@ -252,6 +252,7 @@ install_path_exists() {
 semver_identifiers_valid() {
     local value=$1
     local allow_numeric_leading_zero=$2
+    local LC_ALL=C
     local pattern='^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$'
     [[ "$value" =~ $pattern ]] || return 1
 
@@ -271,6 +272,7 @@ semver_identifiers_valid() {
 
 semver_is_valid() {
     local raw=$1
+    local LC_ALL=C
     [ -n "$raw" ] || return 1
 
     local without_build=$raw
@@ -451,7 +453,8 @@ locked_install_dispatch() {
     fi
 
     case "$action" in
-        install_bundle_atomically_locked|install_lock_noop|install_lock_probe_body)
+        install_bundle_atomically_locked|install_lock_noop|\
+        install_lock_probe_body|install_lock_descendant_probe_body)
             "$action" "$@"
             ;;
         *)
@@ -497,8 +500,9 @@ with_app_install_lock() {
     FAN_HELPER_REQUIREMENT="$FAN_HELPER_REQUIREMENT" \
     DARKBLOOM_DESIGNATED_REQUIREMENT="$DARKBLOOM_DESIGNATED_REQUIREMENT" \
     DARKBLOOM_FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT" \
-    /usr/bin/perl -MFcntl=:DEFAULT,:flock,:mode,F_SETFD \
-        -MErrno=EAGAIN,EINTR,EWOULDBLOCK -MTime::HiRes=time,sleep -e '
+    /usr/bin/perl -MFcntl=:DEFAULT,:flock,:mode,F_SETFD,FD_CLOEXEC \
+        -MErrno=EACCES,EAGAIN,EINTR,ESRCH,EWOULDBLOCK \
+        -MPOSIX -MTime::HiRes=time,sleep -e '
         use strict;
         use warnings;
 
@@ -516,8 +520,6 @@ with_app_install_lock() {
                 or die "Installation lock is not a regular file: $path\n";
             chmod(0600, $handle)
                 or die "Could not secure installation lock $path: $!\n";
-            fcntl($handle, F_SETFD, 0)
-                or die "Could not preserve installation lock $path: $!\n";
 
             while (!flock($handle, LOCK_EX | LOCK_NB)) {
                 next if $! == EINTR;
@@ -539,8 +541,51 @@ with_app_install_lock() {
         seek($legacy_handle, 0, 0)
             or die "Could not rewind legacy update lock: $!\n";
 
-        exec("/bin/bash", $helper, @command)
-            or die "Could not launch locked installer body: $!\n";
+        my $child;
+        for my $signal (qw(HUP INT TERM)) {
+            my $name = $signal;
+            $SIG{$name} = sub {
+                return unless defined($child) && $child > 0;
+                # Before setpgid wins its race, signal the child directly.
+                # Afterwards, signal the whole group so tar/codesign cannot
+                # survive the installer while holding or mutating state.
+                kill($name, $child);
+                kill($name, -$child);
+            };
+        }
+
+        $child = fork();
+        defined($child) or die "Could not fork locked installer body: $!\n";
+        if ($child == 0) {
+            $SIG{$_} = "DEFAULT" for qw(HUP INT TERM);
+            POSIX::setpgid(0, 0) == 0
+                or die "Could not isolate locked installer process group: $!\n";
+            fcntl($primary_handle, F_SETFD, FD_CLOEXEC)
+                or die "Could not isolate primary installation lock: $!\n";
+            fcntl($legacy_handle, F_SETFD, FD_CLOEXEC)
+                or die "Could not isolate legacy installation lock: $!\n";
+            exec("/bin/bash", $helper, @command)
+                or die "Could not launch locked installer body: $!\n";
+        }
+
+        # The child also calls setpgid. A parent-side call closes the small
+        # race before exec; EACCES/ESRCH mean the child already progressed.
+        if (POSIX::setpgid($child, $child) != 0
+            && $! != EACCES && $! != ESRCH) {
+            kill("KILL", $child);
+            waitpid($child, 0);
+            die "Could not isolate locked installer process group: $!\n";
+        }
+
+        my $waited;
+        do {
+            $waited = waitpid($child, 0);
+        } while ($waited < 0 && $! == EINTR);
+        $waited == $child
+            or die "Could not wait for locked installer body: $!\n";
+        my $status = $?;
+        exit(128 + ($status & 127)) if $status & 127;
+        exit($status >> 8);
     ' "$primary_lock" "$legacy_lock" "$helper" "$install_dir" "$@" &
     INSTALL_LOCK_CHILD_PID=$!
     trap 'terminate_install_lock_child HUP 129' HUP
@@ -580,6 +625,75 @@ path_matches_identity() {
         && [ "$(path_identity "$path" 2>/dev/null || true)" = "$expected" ]
 }
 
+path_fingerprint() {
+    local root=$1
+    /usr/bin/perl -MFile::Find -MFcntl=:DEFAULT,:mode \
+        -MDigest::SHA -e '
+        use strict;
+        use warnings;
+        my $root = shift;
+        my @paths;
+        find(
+            {
+                no_chdir => 1,
+                wanted => sub { push @paths, $File::Find::name },
+            },
+            $root
+        );
+
+        my $digest = Digest::SHA->new(256);
+        for my $path (sort @paths) {
+            my @status = lstat($path);
+            @status or die "Could not inspect $path: $!\n";
+            my $relative = $path eq $root
+                ? "."
+                : substr($path, length($root) + 1);
+            my ($kind, $payload);
+            if (S_ISDIR($status[2])) {
+                ($kind, $payload) = ("directory", "");
+            } elsif (S_ISLNK($status[2])) {
+                my $target = readlink($path);
+                defined($target)
+                    or die "Could not read symbolic link $path: $!\n";
+                ($kind, $payload) = ("symlink", $target);
+            } elsif (S_ISREG($status[2])) {
+                $kind = "file";
+                sysopen(my $file, $path, O_RDONLY | O_NOFOLLOW)
+                    or die "Could not open $path for hashing: $!\n";
+                binmode($file);
+                my $file_digest = Digest::SHA->new(256);
+                my $buffer;
+                while (1) {
+                    my $read = sysread($file, $buffer, 1024 * 1024);
+                    defined($read)
+                        or die "Could not read $path for hashing: $!\n";
+                    last if $read == 0;
+                    $file_digest->add(substr($buffer, 0, $read));
+                }
+                close($file)
+                    or die "Could not close $path after hashing: $!\n";
+                $payload = $file_digest->hexdigest;
+            } else {
+                die "Unsupported file type in install tree: $path\n";
+            }
+            for my $field ($kind, $relative, $payload) {
+                $digest->add(pack("N", length($field)), $field);
+            }
+            $digest->add(pack("N", $status[2] & 07777));
+        }
+        print $digest->hexdigest, "\n";
+    ' "$root"
+}
+
+path_matches_candidate_state() {
+    local path=$1
+    local expected_identity=$2
+    local expected_fingerprint=$3
+    path_matches_identity "$path" "$expected_identity" \
+        && [ "$(path_fingerprint "$path" 2>/dev/null || true)" = \
+            "$expected_fingerprint" ]
+}
+
 sync_install_directories() {
     /usr/bin/perl -MFcntl=:DEFAULT,:mode -MIO::Handle -e '
         use strict;
@@ -616,6 +730,13 @@ sync_install_tree() {
                             or die "Could not open $path for sync: $!\n";
                         $file->sync
                             or die "Could not sync $path: $!\n";
+                        if ($^O eq "darwin") {
+                            # F_FULLFSYNC (51) pushes through volatile drive
+                            # caches; fsync alone does not provide that macOS
+                            # power-loss guarantee.
+                            fcntl($file, 51, 0)
+                                or die "Could not fully sync $path: $!\n";
+                        }
                     } elsif (S_ISDIR($status[2])) {
                         push @directories, $path;
                     }
@@ -642,9 +763,11 @@ write_install_transaction() {
     local staging_name=$7
     local candidate_app_identity=$8
     local candidate_bin_identity=$9
-    local previous_app_identity=${10}
-    local previous_bin_identity=${11}
-    local transaction_id=${12}
+    local candidate_app_fingerprint=${10}
+    local candidate_bin_fingerprint=${11}
+    local previous_app_identity=${12}
+    local previous_bin_identity=${13}
+    local transaction_id=${14}
     local manifest="$backup/.transaction"
     local temporary="$backup/.transaction.tmp-$$-$RANDOM"
 
@@ -657,14 +780,20 @@ write_install_transaction() {
         && [ "$staging_name" = ".install-staging-$transaction_id" ] \
         && [[ "$candidate_app_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && [[ "$candidate_bin_identity" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$candidate_app_fingerprint" =~ ^(none|[0-9a-f]{64})$ ]] \
+        && [[ "$candidate_bin_fingerprint" =~ ^[0-9a-f]{64}$ ]] \
         && [[ "$previous_app_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && [[ "$previous_bin_identity" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && { [ "$had_app" -eq 1 ] || [ "$previous_app_identity" = "none" ]; } \
         && { [ "$had_app" -eq 0 ] || [ "$previous_app_identity" != "none" ]; } \
         && { [ "$had_bin" -eq 1 ] || [ "$previous_bin_identity" = "none" ]; } \
         && { [ "$had_bin" -eq 0 ] || [ "$previous_bin_identity" != "none" ]; } \
-        && { [ "$kind" = "app" ] || { [ "$had_app" -eq 0 ] \
-            && [ "$candidate_app_identity" = "none" ]; }; } \
+        && { [ "$kind" = "app" ] \
+            && [ "$candidate_app_identity" != "none" ] \
+            && [ "$candidate_app_fingerprint" != "none" ] \
+            || { [ "$had_app" -eq 0 ] \
+                && [ "$candidate_app_identity" = "none" ] \
+                && [ "$candidate_app_fingerprint" = "none" ]; }; } \
         || return 1
 
     (
@@ -680,6 +809,8 @@ write_install_transaction() {
             printf 'staging_name=%s\n' "$staging_name"
             printf 'candidate_app_identity=%s\n' "$candidate_app_identity"
             printf 'candidate_bin_identity=%s\n' "$candidate_bin_identity"
+            printf 'candidate_app_fingerprint=%s\n' "$candidate_app_fingerprint"
+            printf 'candidate_bin_fingerprint=%s\n' "$candidate_bin_fingerprint"
             printf 'previous_app_identity=%s\n' "$previous_app_identity"
             printf 'previous_bin_identity=%s\n' "$previous_bin_identity"
         } > "$temporary"
@@ -696,6 +827,10 @@ write_install_transaction() {
             or die "Transaction manifest is not a regular file: $temporary\n";
         $file->sync
             or die "Could not sync transaction manifest $temporary: $!\n";
+        if ($^O eq "darwin") {
+            fcntl($file, 51, 0)
+                or die "Could not fully sync transaction manifest $temporary: $!\n";
+        }
         close($file)
             or die "Could not close transaction manifest $temporary: $!\n";
         rename($temporary, $manifest)
@@ -714,7 +849,7 @@ load_install_transaction() {
     local backup=$1
     [ -f "$backup/.transaction" ] \
         && [ ! -L "$backup/.transaction" ] \
-        && [ "$(wc -l < "$backup/.transaction" | tr -d '[:space:]')" = "12" ] \
+        && [ "$(wc -l < "$backup/.transaction" | tr -d '[:space:]')" = "14" ] \
         || return 1
 
     TX_VERSION=$(transaction_value "$backup" version)
@@ -729,6 +864,10 @@ load_install_transaction() {
         "$backup" candidate_app_identity)
     TX_CANDIDATE_BIN_IDENTITY=$(transaction_value \
         "$backup" candidate_bin_identity)
+    TX_CANDIDATE_APP_FINGERPRINT=$(transaction_value \
+        "$backup" candidate_app_fingerprint)
+    TX_CANDIDATE_BIN_FINGERPRINT=$(transaction_value \
+        "$backup" candidate_bin_fingerprint)
     TX_PREVIOUS_APP_IDENTITY=$(transaction_value \
         "$backup" previous_app_identity)
     TX_PREVIOUS_BIN_IDENTITY=$(transaction_value \
@@ -745,6 +884,8 @@ load_install_transaction() {
         && [ "$TX_STAGING_NAME" = ".install-staging-$TX_ID" ] \
         && [[ "$TX_CANDIDATE_APP_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && [[ "$TX_CANDIDATE_BIN_IDENTITY" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$TX_CANDIDATE_APP_FINGERPRINT" =~ ^(none|[0-9a-f]{64})$ ]] \
+        && [[ "$TX_CANDIDATE_BIN_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]] \
         && [[ "$TX_PREVIOUS_APP_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && [[ "$TX_PREVIOUS_BIN_IDENTITY" =~ ^(none|[0-9]+:[0-9]+)$ ]] \
         && { [ "$TX_HAD_APP" -eq 1 ] \
@@ -754,7 +895,13 @@ load_install_transaction() {
         && { [ "$TX_HAD_BIN" -eq 1 ] \
             || [ "$TX_PREVIOUS_BIN_IDENTITY" = "none" ]; } \
         && { [ "$TX_HAD_BIN" -eq 0 ] \
-            || [ "$TX_PREVIOUS_BIN_IDENTITY" != "none" ]; }
+            || [ "$TX_PREVIOUS_BIN_IDENTITY" != "none" ]; } \
+        && { [ "$TX_KIND" = "app" ] \
+            && [ "$TX_CANDIDATE_APP_IDENTITY" != "none" ] \
+            && [ "$TX_CANDIDATE_APP_FINGERPRINT" != "none" ] \
+            || { [ "$TX_HAD_APP" -eq 0 ] \
+                && [ "$TX_CANDIDATE_APP_IDENTITY" = "none" ] \
+                && [ "$TX_CANDIDATE_APP_FINGERPRINT" = "none" ]; }; }
 }
 
 mark_install_transaction_phase() {
@@ -765,6 +912,7 @@ mark_install_transaction_phase() {
         "$backup" "$TX_KIND" "$phase" "$TX_HAD_APP" "$TX_HAD_BIN" \
         "$TX_PREVIOUS_WAS_FOREIGN" "$TX_STAGING_NAME" \
         "$TX_CANDIDATE_APP_IDENTITY" "$TX_CANDIDATE_BIN_IDENTITY" \
+        "$TX_CANDIDATE_APP_FINGERPRINT" "$TX_CANDIDATE_BIN_FINGERPRINT" \
         "$TX_PREVIOUS_APP_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
         "$TX_ID"
 }
@@ -884,13 +1032,16 @@ restore_transaction_component() {
     local destination=$2
     local had_previous=$3
     local candidate_identity=$4
-    local previous_identity=$5
-    local install_dir=$6
-    local label=$7
-    local transaction_id=$8
+    local candidate_fingerprint=$5
+    local previous_identity=$6
+    local install_dir=$7
+    local label=$8
+    local transaction_id=$9
 
     if [ "$had_previous" -eq 0 ]; then
-        if path_matches_identity "$destination" "$candidate_identity"; then
+        if path_matches_candidate_state \
+            "$destination" "$candidate_identity" "$candidate_fingerprint"
+        then
             rm -rf "$destination" || return 1
             sync_install_directories "${destination%/*}" || return 1
         fi
@@ -905,7 +1056,9 @@ restore_transaction_component() {
     if install_path_exists "$destination"; then
         if path_matches_identity "$destination" "$previous_identity"; then
             return 0
-        elif path_matches_identity "$destination" "$candidate_identity"; then
+        elif path_matches_candidate_state \
+            "$destination" "$candidate_identity" "$candidate_fingerprint"
+        then
             rm -rf "$destination" || return 1
             sync_install_directories "${destination%/*}" || return 1
         else
@@ -924,13 +1077,15 @@ recover_prepared_app_transaction() {
     local destination="$install_dir/Darkbloom.app"
     restore_transaction_component \
         "$backup/Darkbloom.app" "$destination" "$TX_HAD_APP" \
-        "$TX_CANDIDATE_APP_IDENTITY" "$TX_PREVIOUS_APP_IDENTITY" \
+        "$TX_CANDIDATE_APP_IDENTITY" "$TX_CANDIDATE_APP_FINGERPRINT" \
+        "$TX_PREVIOUS_APP_IDENTITY" \
         "$install_dir" "Darkbloom.app" "$TX_ID" \
         || return 1
     install_test_crash "recovery-app-restored"
     restore_transaction_component \
         "$backup/bin" "$install_dir/bin" "$TX_HAD_BIN" \
-        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
+        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_CANDIDATE_BIN_FINGERPRINT" \
+        "$TX_PREVIOUS_BIN_IDENTITY" \
         "$install_dir" "bin" "$TX_ID" \
         || return 1
     install_test_crash "recovery-bin-restored"
@@ -972,7 +1127,8 @@ recover_prepared_flat_transaction() {
     load_install_transaction "$backup" || return 1
     restore_transaction_component \
         "$backup/bin" "$install_dir/bin" "$TX_HAD_BIN" \
-        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_PREVIOUS_BIN_IDENTITY" \
+        "$TX_CANDIDATE_BIN_IDENTITY" "$TX_CANDIDATE_BIN_FINGERPRINT" \
+        "$TX_PREVIOUS_BIN_IDENTITY" \
         "$install_dir" "bin" "$TX_ID" \
         || return 1
     install_test_crash "recovery-bin-restored"
@@ -982,37 +1138,147 @@ recover_prepared_flat_transaction() {
     retire_install_transaction "$backup" "$install_dir" "$TX_ID"
 }
 
+restore_legacy_transaction_component() {
+    local backup_path=$1
+    local destination=$2
+    local install_dir=$3
+    local label=$4
+    local transaction_id=$5
+    install_path_exists "$backup_path" || return 0
+
+    local backup_fingerprint
+    backup_fingerprint=$(path_fingerprint "$backup_path") || return 1
+    if install_path_exists "$destination"; then
+        if [ "$(path_fingerprint "$destination" 2>/dev/null || true)" = \
+            "$backup_fingerprint" ]
+        then
+            return 0
+        fi
+        preserve_unexpected_live_path \
+            "$destination" "$install_dir" "$label" "$transaction_id" \
+            || return 1
+    fi
+
+    local restore="$install_dir/.install-legacy-$label-$transaction_id"
+    rm -rf "$restore" || return 1
+    cp -pPR "$backup_path" "$restore" \
+        && sync_install_tree "$restore" \
+        && durable_move "$restore" "$destination"
+}
+
+restore_legacy_managed_links() {
+    local backup=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local destination="$install_dir/bin"
+    local restore="$install_dir/.install-legacy-bin-$transaction_id"
+    rm -rf "$restore" || return 1
+    mkdir -p "$restore" || return 1
+    if [ -d "$destination" ] && [ ! -L "$destination" ]; then
+        cp -pPR "$destination/." "$restore/" || return 1
+    fi
+    remove_managed_links "$restore" || return 1
+    local entry
+    for entry in "$backup/bin"/*; do
+        install_path_exists "$entry" || continue
+        cp -pPR "$entry" "$restore/${entry##*/}" || return 1
+    done
+    sync_install_tree "$restore" || return 1
+
+    local expected_fingerprint
+    expected_fingerprint=$(path_fingerprint "$restore") || return 1
+    if install_path_exists "$destination"; then
+        if [ "$(path_fingerprint "$destination" 2>/dev/null || true)" = \
+            "$expected_fingerprint" ]
+        then
+            rm -rf "$restore"
+            return 0
+        fi
+        preserve_unexpected_live_path \
+            "$destination" "$install_dir" "bin" "$transaction_id" \
+            || return 1
+    fi
+    durable_move "$restore" "$destination"
+}
+
+legacy_install_transaction_is_valid() {
+    local backup=$1
+    local allow_v1_metadata=${2:-0}
+    local name=${backup##*/}
+    [[ "$name" =~ ^\.install-backup-[0-9]+-[0-9]+$ ]] || return 1
+    [ -d "$backup" ] && [ ! -L "$backup" ] || return 1
+
+    local entry
+    for entry in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
+        install_path_exists "$entry" || continue
+        case "${entry##*/}" in
+            Darkbloom.app)
+                [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+                ;;
+            bin)
+                [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+                ;;
+            .links-snapshotted)
+                [ -f "$entry" ] && [ ! -L "$entry" ] || return 1
+                ;;
+            .transaction-version|.transaction-kind|.transaction-phase|\
+            .had-previous|.previous-was-foreign|.staging-name)
+                [ "$allow_v1_metadata" -eq 1 ] \
+                    && [ -f "$entry" ] \
+                    && [ ! -L "$entry" ] \
+                    || return 1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+}
+
 recover_legacy_install_transaction() {
     local backup=$1
     local install_dir=$2
+    local allow_v1_metadata=${3:-0}
     local destination="$install_dir/Darkbloom.app"
+    local transaction_id=${backup##*/.install-backup-}
+    legacy_install_transaction_is_valid \
+        "$backup" "$allow_v1_metadata" || return 1
 
     if install_path_exists "$backup/Darkbloom.app"; then
-        local restore="$install_dir/.install-legacy-app-$$-$RANDOM"
-        rm -rf "$restore" || return 1
-        cp -pPR "$backup/Darkbloom.app" "$restore" || return 1
-        rm -rf "$destination" || return 1
-        mv "$restore" "$destination" || return 1
+        restore_legacy_transaction_component \
+            "$backup/Darkbloom.app" "$destination" "$install_dir" \
+            "Darkbloom.app" "$transaction_id" || return 1
     fi
     if [ -d "$backup/bin" ]; then
         if [ -f "$backup/.links-snapshotted" ]; then
-            mkdir -p "$install_dir/bin" \
-                && remove_managed_links "$install_dir/bin" \
-                || return 1
-            local entry
-            for entry in "$backup/bin"/*; do
-                install_path_exists "$entry" || continue
-                cp -pPR "$entry" "$install_dir/bin/${entry##*/}" || return 1
-            done
+            restore_legacy_managed_links \
+                "$backup" "$install_dir" "$transaction_id" || return 1
         else
-            local bin_restore="$install_dir/.install-legacy-bin-$$-$RANDOM"
-            rm -rf "$bin_restore" || return 1
-            cp -pPR "$backup/bin" "$bin_restore" || return 1
-            rm -rf "$install_dir/bin" || return 1
-            mv "$bin_restore" "$install_dir/bin" || return 1
+            restore_legacy_transaction_component \
+                "$backup/bin" "$install_dir/bin" "$install_dir" \
+                "bin" "$transaction_id" || return 1
         fi
     fi
-    rm -rf "$backup"
+    rm -rf "$backup" && sync_install_directories "$install_dir"
+}
+
+recover_unpublished_install_transaction() {
+    local backup=$1
+    local install_dir=$2
+    local name=${backup##*/}
+    [[ "$name" =~ ^\.install-backup-[0-9]+-[0-9]+-[0-9]+$ ]] \
+        || return 1
+    [ -d "$backup" ] && [ ! -L "$backup" ] || return 1
+
+    local entry
+    for entry in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
+        install_path_exists "$entry" || continue
+        [[ "${entry##*/}" =~ ^\.transaction\.tmp-[0-9]+-[0-9]+$ ]] \
+            && [ -f "$entry" ] \
+            && [ ! -L "$entry" ] \
+            || return 1
+    done
+    rm -rf "$backup" && sync_install_directories "$install_dir"
 }
 
 recover_v1_install_transaction() {
@@ -1054,14 +1320,26 @@ recover_v1_install_transaction() {
         rm -rf "$backup"
         return
     fi
-    recover_legacy_install_transaction "$backup" "$install_dir"
+    recover_legacy_install_transaction "$backup" "$install_dir" 1
+}
+
+installer_debris_name_is_valid() {
+    local name=$1
+    [[ "$name" =~ ^\.install-staging-[0-9]+-[0-9]+(-[0-9]+)?$ ]] \
+        || [[ "$name" =~ ^\.install-garbage-[0-9]+-[0-9]+-[0-9]+$ ]] \
+        || [[ "$name" =~ ^\.install-restore-[0-9]+-[0-9]+(-[0-9]+)?$ ]] \
+        || [[ "$name" =~ ^\.install-legacy-[A-Za-z0-9.]+-[0-9]+-[0-9]+$ ]]
 }
 
 recover_interrupted_install_transactions() {
     local install_dir=$1
     local backup
     for backup in "$install_dir"/.install-backup-*; do
-        [ -d "$backup" ] || continue
+        install_path_exists "$backup" || continue
+        if [ -L "$backup" ] || [ ! -d "$backup" ]; then
+            fail_install "Installer recovery artifact is not a directory: $backup."
+            return 1
+        fi
         if [ -f "$backup/.transaction" ]; then
             load_install_transaction "$backup" || {
                 fail_install "Installer transaction metadata is invalid at $backup."
@@ -1106,10 +1384,21 @@ recover_interrupted_install_transactions() {
             }
             continue
         fi
-        recover_legacy_install_transaction "$backup" "$install_dir" || {
-            fail_install "Could not recover legacy installer transaction $backup."
-            return 1
-        }
+        case "${backup##*/}" in
+            .install-backup-[0-9]*-[0-9]*-[0-9]*)
+                recover_unpublished_install_transaction \
+                    "$backup" "$install_dir" || {
+                    fail_install "Unjournaled installer artifact is invalid at $backup."
+                    return 1
+                }
+                ;;
+            *)
+                recover_legacy_install_transaction "$backup" "$install_dir" || {
+                    fail_install "Could not safely recover legacy installer transaction $backup."
+                    return 1
+                }
+                ;;
+        esac
     done
 
     local debris
@@ -1121,6 +1410,14 @@ recover_interrupted_install_transactions() {
         "$install_dir"/.install-legacy-*
     do
         install_path_exists "$debris" || continue
+        [ ! -L "$debris" ] && [ -d "$debris" ] || {
+            fail_install "Installer debris is not a directory: $debris."
+            return 1
+        }
+        installer_debris_name_is_valid "${debris##*/}" || {
+            fail_install "Unrecognized installer debris at $debris."
+            return 1
+        }
         rm -rf "$debris" || return 1
         removed=1
     done
@@ -1208,10 +1505,20 @@ commit_staged_app() {
     sync_install_tree "$staged_app" \
         && sync_install_tree "$candidate_bin" \
         || return 1
+    if [ "$had_app" -eq 1 ]; then
+        sync_install_tree "$destination" || return 1
+    fi
+    if [ "$had_bin" -eq 1 ]; then
+        sync_install_tree "$bin_dir" || return 1
+    fi
     local candidate_app_identity
     local candidate_bin_identity
+    local candidate_app_fingerprint
+    local candidate_bin_fingerprint
     candidate_app_identity=$(path_identity "$staged_app") || return 1
     candidate_bin_identity=$(path_identity "$candidate_bin") || return 1
+    candidate_app_fingerprint=$(path_fingerprint "$staged_app") || return 1
+    candidate_bin_fingerprint=$(path_fingerprint "$candidate_bin") || return 1
 
     mkdir "$backup" || return 1
     sync_install_directories "$install_dir" || {
@@ -1222,6 +1529,7 @@ commit_staged_app() {
         "$backup" app prepared "$had_app" "$had_bin" \
         "$previous_was_foreign" "$staging_name" \
         "$candidate_app_identity" "$candidate_bin_identity" \
+        "$candidate_app_fingerprint" "$candidate_bin_fingerprint" \
         "$previous_app_identity" "$previous_bin_identity" \
         "$transaction_id" || {
         rm -rf "$backup"
@@ -1303,8 +1611,13 @@ commit_staged_flat_bundle() {
         && flat_layout_complete "$staged_bin" \
         && sync_install_tree "$staged_bin" \
         || return 1
+    if [ "$had_bin" -eq 1 ]; then
+        sync_install_tree "$destination" || return 1
+    fi
     local candidate_bin_identity
+    local candidate_bin_fingerprint
     candidate_bin_identity=$(path_identity "$staged_bin") || return 1
+    candidate_bin_fingerprint=$(path_fingerprint "$staged_bin") || return 1
 
     mkdir "$backup" || return 1
     sync_install_directories "$install_dir" || {
@@ -1313,7 +1626,8 @@ commit_staged_flat_bundle() {
     }
     write_install_transaction \
         "$backup" flat prepared 0 "$had_bin" 0 "$staging_name" \
-        none "$candidate_bin_identity" none "$previous_bin_identity" \
+        none "$candidate_bin_identity" none "$candidate_bin_fingerprint" \
+        none "$previous_bin_identity" \
         "$transaction_id" || {
         rm -rf "$backup"
         sync_install_directories "$install_dir" || true
@@ -1448,6 +1762,12 @@ install_lock_probe_body() {
     printf 'after\n' > "$after"
 }
 
+install_lock_descendant_probe_body() {
+    local child_pid_file=$1
+    sleep 30 &
+    printf '%s\n' "$!" > "$child_pid_file"
+}
+
 if [ "${1:-}" = "--semver-test" ]; then
     [ "$#" -eq 2 ] || exit 64
     semver_is_valid "$2"
@@ -1471,6 +1791,14 @@ if [ "${1:-}" = "--hold-install-lock-test" ]; then
     [ "$#" -eq 5 ] || exit 64
     INSTALL_TEST_MODE=1
     with_app_install_lock "$2" install_lock_probe_body "$3" "$4" "$5"
+    exit $?
+fi
+
+if [ "${1:-}" = "--spawn-under-install-lock-test" ]; then
+    [ "$#" -eq 3 ] || exit 64
+    INSTALL_TEST_MODE=1
+    with_app_install_lock \
+        "$2" install_lock_descendant_probe_body "$3"
     exit $?
 fi
 
@@ -1566,7 +1894,23 @@ echo ""
 echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-TARBALL="/tmp/darkbloom-bundle.tar.gz"
+TARBALL=$(mktemp "${TMPDIR:-/tmp}/darkbloom-bundle.XXXXXX") || {
+    echo "  ✗ Could not create a private temporary download."
+    exit 1
+}
+cleanup_download() {
+    [ -z "${TARBALL:-}" ] || rm -f "$TARBALL"
+}
+terminate_download() {
+    local status=$1
+    cleanup_download
+    trap - EXIT HUP INT TERM
+    exit "$status"
+}
+trap cleanup_download EXIT
+trap 'terminate_download 129' HUP
+trap 'terminate_download 130' INT
+trap 'terminate_download 143' TERM
 curl -f#L "$BUNDLE_URL" -o "$TARBALL"
 
 ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
@@ -1575,18 +1919,18 @@ if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo "  ✗ Bundle hash mismatch — refusing to install possibly-tampered binary."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f "$TARBALL"
     exit 1
 fi
 echo "  Bundle hash verified ✓"
 
 echo "  Staging and verifying the complete app before touching the live install ..."
 if ! install_bundle_atomically "$TARBALL" "$INSTALL_DIR" "$BINARY_HASH" "$METALLIB_HASH"; then
-    rm -f "$TARBALL"
     echo "  Existing installation was left unchanged."
     exit 1
 fi
-rm -f "$TARBALL"
+cleanup_download
+TARBALL=""
+trap - EXIT HUP INT TERM
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
 ensure_user_app_shortcut \

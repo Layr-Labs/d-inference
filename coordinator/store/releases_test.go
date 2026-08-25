@@ -129,3 +129,85 @@ func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
 	}
 }
+
+func TestSetReleaseRejectsNoncanonicalSemVer(t *testing.T) {
+	t.Parallel()
+	invalid := []string{
+		"",
+		"v1.0.0",
+		"1.0",
+		"01.0.0",
+		"1.0.0-alpha.01",
+		"1.0.0+",
+	}
+	for _, version := range invalid {
+		version := version
+		t.Run(version, func(t *testing.T) {
+			t.Parallel()
+			s := NewMemory(Config{})
+			if err := s.SetRelease(&Release{
+				Version:  version,
+				Platform: "macos-arm64",
+			}); err == nil {
+				t.Fatalf("SetRelease accepted invalid version %q", version)
+			}
+		})
+	}
+}
+
+func TestGetLatestReleaseUsesSemVerPrereleasePrecedence(t *testing.T) {
+	t.Parallel()
+	s := NewMemory(Config{})
+	versions := []string{
+		"1.0.0",
+		"1.0.0-rc.1",
+		"1.0.0-beta.11",
+		"1.0.0+older-build",
+		"184467440737095516160.0.0",
+	}
+	for index, version := range versions {
+		if err := s.SetRelease(&Release{
+			Version:   version,
+			Platform:  "macos-arm64",
+			CreatedAt: time.Unix(int64(index), 0),
+		}); err != nil {
+			t.Fatalf("SetRelease(%q): %v", version, err)
+		}
+	}
+
+	latest := s.GetLatestRelease("macos-arm64")
+	if latest == nil {
+		t.Fatal("expected latest release")
+	}
+	if latest.Version != "184467440737095516160.0.0" {
+		t.Fatalf("latest version = %q", latest.Version)
+	}
+}
+
+func TestGetLatestReleaseBreaksEqualPrecedenceByTimestamp(t *testing.T) {
+	t.Parallel()
+	s := NewMemory(Config{})
+	older := time.Unix(1, 0)
+	newer := time.Unix(2, 0)
+	for _, release := range []*Release{
+		{
+			Version:   "1.0.0+build.1",
+			Platform:  "macos-arm64",
+			CreatedAt: older,
+		},
+		{
+			Version:   "1.0.0+build.2",
+			Platform:  "macos-arm64",
+			CreatedAt: newer,
+		},
+	} {
+		if err := s.SetRelease(release); err != nil {
+			t.Fatalf("SetRelease(%q): %v", release.Version, err)
+		}
+	}
+
+	latest := s.GetLatestRelease("macos-arm64")
+	if latest == nil || latest.Version != "1.0.0+build.2" {
+		t.Fatalf("latest = %#v", latest)
+	}
+}

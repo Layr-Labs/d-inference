@@ -26,6 +26,10 @@ struct DarkbloomApp: App {
         )
     }
 
+    private var installPresentation: AppInstallScenePresentation {
+        AppInstallScenePresentation(installState: appDelegate.installState)
+    }
+
     init() {
         BrandFontLoader.registerFonts()
 
@@ -124,8 +128,8 @@ struct DarkbloomApp: App {
     var body: some Scene {
         Window("Darkbloom", id: "main") {
             Group {
-                switch appDelegate.installState {
-                case .ready:
+                switch installPresentation.mainContent {
+                case .product:
                     ContentView(
                         showsLaunchExperience: !isCapturingPreview || isCapturingLaunchPreview,
                         launchMode: appFlowStore.phase == .product && !isCapturingLaunchPreview
@@ -147,11 +151,11 @@ struct DarkbloomApp: App {
                         \.isCapturingDarkbloomPreview,
                         isCapturingPreview && !isCapturingLaunchPreview
                     )
-                case .failed(let failure):
+                case .failure(let failure):
                     AppInstallationFailureView(failure: failure)
                 case .handingOff:
                     AppInstallationProgressView(message: "Opening the installed app...")
-                case .relaunchRequired(let recovery):
+                case .recovery(let recovery):
                     AppInstallationRecoveryView(recovery: recovery)
                 }
             }
@@ -161,13 +165,13 @@ struct DarkbloomApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
-            if appDelegate.installState.isReady {
+            if installPresentation.showsProviderCommands {
                 ProviderCommands()
             }
         }
 
         Settings {
-            if appDelegate.installState.isReady {
+            if installPresentation.showsProductSettings {
                 SettingsRootView(
                     providerStore: providerStore,
                     accountUnlinkStore: accountUnlinkStore,
@@ -180,7 +184,7 @@ struct DarkbloomApp: App {
         }
 
         MenuBarExtra("Darkbloom", systemImage: "sparkles") {
-            if appDelegate.installState.isReady {
+            if installPresentation.showsProviderMenuControls {
                 ProviderMenuBarView(
                     content: ProviderMenuBarContent.resolve(
                         hasCompletedSetup: appFlowStore.hasCompletedNetworkOnboarding,

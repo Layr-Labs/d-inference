@@ -177,6 +177,53 @@ func TestReleaseArtifactCapabilitiesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLegacyReleaseArtifactCapabilitiesRemainUnknown(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			platform := uniqueID("legacy-capabilities")
+			release := &Release{
+				Version:    "1.2.3",
+				Platform:   platform,
+				BinaryHash: "binary",
+				BundleHash: "bundle",
+				URL:        "https://example.test/release.tar.gz",
+			}
+			if err := backend.SetRelease(release); err != nil {
+				t.Fatalf("SetRelease: %v", err)
+			}
+
+			latest := backend.GetLatestRelease(platform)
+			if latest == nil {
+				t.Fatal("GetLatestRelease returned nil")
+			}
+			assertUnknownReleaseCapabilities(t, "latest", latest)
+
+			var listed *Release
+			releases := backend.ListReleases()
+			for index := range releases {
+				candidate := releases[index]
+				if candidate.Platform == platform && candidate.Version == release.Version {
+					listed = &candidate
+					break
+				}
+			}
+			if listed == nil {
+				t.Fatal("ListReleases omitted legacy release")
+			}
+			assertUnknownReleaseCapabilities(t, "listed", listed)
+		})
+	}
+}
+
+func assertUnknownReleaseCapabilities(t *testing.T, label string, release *Release) {
+	t.Helper()
+	if release.HasApp != nil ||
+		release.HasFanHelper != nil ||
+		release.HasPagedKernel != nil {
+		t.Fatalf("%s release capabilities = %+v, want nil", label, release)
+	}
+}
+
 func assertReleaseCapability(
 	t *testing.T,
 	label string,

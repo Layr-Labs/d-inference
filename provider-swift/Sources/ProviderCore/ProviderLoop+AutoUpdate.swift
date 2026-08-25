@@ -31,10 +31,10 @@ extension ProviderLoop {
     private static let updateDrainTimeout: Duration = .seconds(120)
 
     /// Start the background auto-update monitor. Checks the coordinator for a
-    /// newer release every 30 minutes (after an initial 5-minute delay). On a
-    /// new release it downloads + verifies + installs the binary *while still
-    /// serving*, then stops accepting new requests, drains in-flight work to
-    /// zero, and finally hot-swaps (restart). See `AutoUpdateController`.
+    /// newer release every 30 minutes (after an initial 5-minute delay). It
+    /// downloads, verifies, and stages while serving; then it closes admission,
+    /// drains, revalidates and commits under the short mutation lease, and
+    /// finally hot-swaps (restart). See `AutoUpdateController`.
     ///
     /// The monitor is disabled when:
     ///   - `config.provider.autoUpdate` is false
@@ -42,7 +42,7 @@ extension ProviderLoop {
     ///
     /// Unlike the old behaviour, a busy provider is NOT skipped: the check and
     /// download run concurrently with serving, and requests are only refused
-    /// once the new binary is safely installed.
+    /// once the new binary is safely staged.
     ///
     /// Failures are logged at warning level and never crash the provider.
     internal func startAutoUpdateMonitor() {
@@ -84,13 +84,22 @@ extension ProviderLoop {
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
 
         let deps = AutoUpdateController.Dependencies(
-            claimStart: { await me.claimUpdateStart(updater: updater) },
+            claimStart: { await me.claimUpdateStart() },
             resumeServing: { await me.resumeServingAfterUpdate() },
             check: {
-                guard let session = await me.activeUpdateSession() else {
-                    return .checkFailed(reason: "cross-process update lease was lost")
+                do {
+                    let state = try updater.recoveredStateSnapshot(
+                        operation: "background-auto-update-preflight"
+                    )
+                    return await updater.checkForUpdate(
+                        manualOverride: false,
+                        recoveryState: state
+                    )
+                } catch {
+                    return .checkFailed(
+                        reason: "update preflight failed: \(error)"
+                    )
                 }
-                return await updater.checkForUpdate(session: session)
             },
             downloadVerifyStage: { release in
                 await me.stageUpdateBundle(release: release, updater: updater)
@@ -158,25 +167,10 @@ extension ProviderLoop {
     /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
     /// enter the `.installing` phase — still serving while the new bundle
     /// downloads and stages.
-    private func claimUpdateStart(updater: SelfUpdater) -> Bool {
+    private func claimUpdateStart() -> Bool {
         guard updatePhase == .idle, !isShuttingDown else { return false }
-        do {
-            let session = try updater.beginUpdateSession(
-                operation: "background-auto-update",
-                timeout: 0
-            )
-            try session.recover()
-            updateSession = session
-        } catch {
-            logger.info("Auto-update: cross-process lease unavailable: \(error)")
-            return false
-        }
         updatePhase = .installing
         return true
-    }
-
-    private func activeUpdateSession() -> SelfUpdater.UpdateSession? {
-        updateSession
     }
 
     /// Return to normal serving after an update cycle that did not restart
@@ -187,9 +181,9 @@ extension ProviderLoop {
     private func resumeServingAfterUpdate() async {
         updatePhase = .idle
 
-        if let staged = stagedUpdateBundle {
-            stagedUpdateBundle = nil
-            staged.discard()
+        if let prepared = preparedUpdate {
+            preparedUpdate = nil
+            prepared.discard()
         }
         updateSession?.release()
         updateSession = nil
@@ -217,25 +211,15 @@ extension ProviderLoop {
         release: ReleaseInfo,
         updater: SelfUpdater
     ) async -> AutoUpdateController.StepOutcome {
-        switch await updater.downloadAndVerify(release: release) {
-        case .failure(let error):
-            return .failed("\(error)")
-        case .success(let tempFile):
-            defer { try? FileManager.default.removeItem(at: tempFile) }
-            guard let session = updateSession else {
-                return .failed("cross-process update lease was lost before staging")
-            }
-            switch updater.stageBundle(
-                from: tempFile,
-                release: release,
-                session: session
-            ) {
-            case .success(let staged):
-                stagedUpdateBundle = staged
-                return .completed
-            case .failure(let error):
-                return .failed("\(error)")
-            }
+        switch await updater.prepareDownloadedUpdate(
+            release: release,
+            manualOverride: false
+        ) {
+        case .prepared(let prepared):
+            preparedUpdate = prepared
+            return .completed
+        case .terminal(let result):
+            return .failed("\(result)")
         }
     }
 
@@ -243,27 +227,77 @@ extension ProviderLoop {
     /// drain: admission is closed and in-flight work has finished (or been
     /// force-cancelled), so no request can observe the swap window.
     private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
-        guard let staged = stagedUpdateBundle else {
+        guard let prepared = preparedUpdate else {
             return .failed("no staged update bundle to install")
         }
-        guard let session = updateSession else {
-            return .failed("cross-process update lease was lost before commit")
+        preparedUpdate = nil
+
+        let session: SelfUpdater.UpdateSession
+        do {
+            session = try updater.beginUpdateSession(
+                operation: "background-auto-update-commit",
+                timeout: 0
+            )
+        } catch {
+            prepared.discard()
+            return .failed("final update lease unavailable: \(error)")
         }
-        stagedUpdateBundle = nil
-        let result = updater.commitStagedBundle(staged, session: session)
-        switch result {
-        case .success:
+
+        switch updater.finalizePreparedUpdate(
+            prepared,
+            session: session
+        ) {
+        case .updated:
+            // Keep the final lease only through candidate launch intent. No
+            // network, staging, jitter, or drain wait occurs while it is held.
+            updateSession = session
             return .completed
-        case .failure(let error):
-            return .failed("\(error)")
+        case .restartRequired(_, let installed):
+            session.release()
+            return .failed(
+                "staged release lost final revalidation to installed v\(installed); retrying next cycle"
+            )
+        case .alreadyUpToDate(let version):
+            session.release()
+            return .failed(
+                "staged release became stale behind installed v\(version); retrying next cycle"
+            )
+        case .quarantined(let version, let reason):
+            session.release()
+            return .failed("v\(version) became quarantined: \(reason)")
+        case .busy(let reason),
+             .cancelled(let reason),
+             .downloadFailed(let reason),
+             .replaceFailed(let reason):
+            session.release()
+            return .failed(reason)
+        case .hashMismatch(let expected, let got):
+            session.release()
+            return .failed(
+                "staged hash mismatch (expected \(expected), got \(got))"
+            )
         }
     }
 
     private func prepareInstalledCandidateRestart(
         updater: SelfUpdater
     ) -> AutoUpdateController.StepOutcome {
-        guard let session = updateSession else {
-            return .failed("cross-process update lease was lost before candidate restart")
+        let session: SelfUpdater.UpdateSession
+        if let held = updateSession {
+            session = held
+        } else {
+            do {
+                session = try updater.beginUpdateSession(
+                    operation: "background-auto-update-restart",
+                    timeout: 0
+                )
+                try session.recover()
+                updateSession = session
+            } catch {
+                return .failed(
+                    "final restart lease unavailable: \(error)"
+                )
+            }
         }
         do {
             try updater.prepareCandidateLaunch(

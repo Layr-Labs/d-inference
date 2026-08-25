@@ -151,6 +151,8 @@ struct DarkbloomApp: App {
                     AppInstallationFailureView(failure: failure)
                 case .handingOff:
                     AppInstallationProgressView(message: "Opening the installed app...")
+                case .relaunchRequired(let recovery):
+                    AppInstallationRecoveryView(recovery: recovery)
                 }
             }
             .frame(minWidth: 900, minHeight: 620)
@@ -238,6 +240,13 @@ final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate {
                 return .ready
             case .relocated:
                 return .handingOff
+            case .relaunchRequired(let destination, let preservedForeignApp):
+                return .relaunchRequired(
+                    AppInstallationRecovery(
+                        destination: destination,
+                        preservedForeignApp: preservedForeignApp
+                    )
+                )
             }
         } catch {
             return .failed(AppInstallationFailure(
@@ -260,6 +269,7 @@ final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate {
 enum AppInstallLaunchState {
     case ready
     case handingOff
+    case relaunchRequired(AppInstallationRecovery)
     case failed(AppInstallationFailure)
 
     var isReady: Bool {
@@ -269,7 +279,7 @@ enum AppInstallLaunchState {
 
     var isInteractive: Bool {
         switch self {
-        case .ready, .failed:
+        case .ready, .relaunchRequired, .failed:
             true
         case .handingOff:
             false

@@ -1,7 +1,7 @@
-// A calm closing note on why this fleet is trustworthy — the attestation chain
-// in one sentence, plus how many machines are hardware-attested. Reassures both
-// the operator and a trust-minded visitor without adding noise. Counts come
-// from the provider list so it always agrees with the cards above.
+// A calm closing note on why this fleet is trustworthy — the private
+// attestation flow in one sentence, plus how many machines are
+// hardware-attested. Counts come from the provider list so it always agrees
+// with the cards above.
 
 import { ShieldCheck } from "lucide-react";
 
@@ -21,7 +21,7 @@ export function TrustFooter({
         </span>{" "}
         Each machine proves its identity through a Secure Enclave key, OS security posture, MDM
         enrollment, and Apple Device Attestation — the coordinator only routes paid traffic to
-        hardware-verified devices, and consumers can verify the chain end-to-end.{" "}
+        hardware-verified devices and publishes only privacy-redacted trust status.{" "}
         <a
           href="https://www.apple.com/certificateauthority/private/"
           target="_blank"

@@ -195,7 +195,7 @@ A model is considered **resident** when the slot state is `running` or `idle`; o
 
 * **Self-route** (`pr.SelfRouteOnly`) — restricted to providers owned by the caller; never falls back to the public fleet (`scheduler.go:325-329`). Trust floor and private-only admission are relaxed for the owner's own machine (`scheduler.go:341`, `scheduler.go:598-648`).
 * **Prefer-owner** (`pr.PreferOwner`) — first tries owned candidates, then falls back to the public fleet (`scheduler.go:391-401`). Settlement is free only when the selected provider is owned by the caller (`coordinator/api/provider.go:1706-1733`).
-* **Allowed serials** (`pr.AllowedProviderSerials`) — restricts candidates to providers whose attested serial number is in the allowlist (`scheduler.go:307-334`, `providerMatchesAllowedSerial` at `scheduler.go:464-481`).
+* **Coordinator-internal provider constraints** (`pr.AllowedProviderSerials`) — restrict candidates by attested hardware identity for isolated control-plane workflows. Consumer request bodies cannot set this field.
 * **Version-diverse retry** (`Traits.AvoidVersion`) — soft hint that prefers a different binary version after a failure, but never fails closed (`scheduler.go:409-419`).
 
 ## Metrics and observability

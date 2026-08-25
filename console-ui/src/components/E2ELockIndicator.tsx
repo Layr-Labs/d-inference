@@ -3,8 +3,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Lock } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
-import { maskSerial } from "@/lib/format";
-import { useVerificationMode } from "@/components/providers/verification-mode";
 
 interface E2ELockIndicatorProps {
   trust?: TrustMetadata;
@@ -12,7 +10,6 @@ interface E2ELockIndicatorProps {
 }
 
 export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorProps) {
-  const { mode } = useVerificationMode();
   const [showPopover, setShowPopover] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -53,20 +50,12 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
               Messages are secured with end-to-end encryption.
               Only the verified provider hardware can decrypt your prompts.
             </p>
-            {trust && (trust.providerChip || trust.providerSerial) && (
+            {trust?.providerChip && (
               <div className="rounded-lg bg-bg-secondary px-3 py-2">
-                {trust.providerChip && (
-                  <p className="text-xs text-text-secondary">
-                    <span className="font-mono text-text-tertiary">Chip:</span>{" "}
-                    {trust.providerChip}
-                  </p>
-                )}
-                {trust.providerSerial && (
-                  <p className="text-xs text-text-secondary">
-                    <span className="font-mono text-text-tertiary">Serial:</span>{" "}
-                    {mode === "normal" ? maskSerial(trust.providerSerial) : trust.providerSerial}
-                  </p>
-                )}
+                <p className="text-xs text-text-secondary">
+                  <span className="font-mono text-text-tertiary">Chip:</span>{" "}
+                  {trust.providerChip}
+                </p>
               </div>
             )}
             {onOpenExplainer && (

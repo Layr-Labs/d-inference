@@ -1321,7 +1321,7 @@
       <div class="rv">
         <div class="sec-label">04 - Privacy Architecture</div>
         <h2>Operator-blind by design</h2>
-        <p class="sec-desc">Darkbloom removes the practical software paths an operator could use to observe inference data. Four layers work together, each independently verifiable.</p>
+        <p class="sec-desc">Darkbloom removes the practical software paths an operator could use to observe inference data. Four layers work together, with hardware identity verified privately by the coordinator.</p>
       </div>
       <div class="card-grid rv">
         <div class="card">
@@ -1342,7 +1342,7 @@
         <div class="card">
           <div class="card-label">Output</div>
           <h3>Traceable to hardware</h3>
-          <p>Responses are signed by the specific machine that produced them. The attestation chain is public, so users can verify the hardware behind the result.</p>
+          <p>Responses carry the verified trust state of the machine that produced them. The coordinator validates Apple's chain and publishes a privacy-redacted verdict without exposing device identifiers.</p>
         </div>
       </div>
 

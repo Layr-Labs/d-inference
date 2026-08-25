@@ -53,7 +53,6 @@ struct Enroll: AsyncParsableCommand {
             return
         }
 
-        print("  → Device serial:  \(result.serialNumber)")
         print("  → Profile saved:  \(result.profilePath.path)")
         print()
 

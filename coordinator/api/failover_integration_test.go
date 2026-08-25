@@ -53,7 +53,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -118,11 +117,6 @@ type failoverProviderConfig struct {
 	DecodeTPS float64
 	Models    []failoverModelSpec
 	Script    inferenceScript
-	// Serial, when non-empty, is stamped onto the provider's AttestationResult
-	// after registration so a request carrying a provider_serials allowlist can
-	// constrain routing to (or away from) this provider — mirroring the
-	// allowlist-aware capability fast-fails and QuickCapacityCheck.
-	Serial string
 }
 
 // startFailoverProvider dials the provider WebSocket, registers (raw-JSON
@@ -210,18 +204,6 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 	}
 	reg.SetTrustLevel(registryID, registry.TrustHardware)
 	reg.RecordChallengeSuccess(registryID)
-
-	// Stamp an attested serial so provider_serials allowlist routing can target
-	// or exclude this provider (providerMatchesAllowedSerial reads
-	// AttestationResult.SerialNumber / MDAResult.DeviceSerial).
-	if cfg.Serial != "" {
-		if p := reg.GetProvider(registryID); p != nil {
-			p.SetAttestationResult(&attestation.VerificationResult{
-				Valid:        true,
-				SerialNumber: cfg.Serial,
-			})
-		}
-	}
 
 	fp := &failoverProvider{
 		t:          t,

@@ -8,7 +8,6 @@ import { query } from "@/lib/db";
 export interface SessionRow {
   id: string;
   session_id: string;
-  serial_number: string;
   email: string | null;
   connected_at: string;
   last_seen: string;
@@ -27,7 +26,6 @@ export interface UptimeOverview {
 const RECENT_SESSION_SQL = `
   SELECT ps.id,
          ps.session_id,
-         ps.serial_number,
          u.email,
          ps.connected_at,
          ps.last_seen,
@@ -58,12 +56,17 @@ export async function getUptimeOverview(limit = 200): Promise<UptimeOverview> {
   };
 }
 
-// Sessions for one machine (by serial), newest first — for the machine drill-down.
-// ORDER BY connected_at DESC is fully served by the (serial_number, connected_at DESC)
-// index once the serial filter is applied.
-export async function getMachineSessions(serial: string, limit = 50): Promise<SessionRow[]> {
+// Resolve the opaque provider id to coordinator-private hardware identity
+// inside SQL, then return session rows without exposing that identity.
+export async function getMachineSessions(providerId: string, limit = 50): Promise<SessionRow[]> {
   return query<SessionRow>(
-    `${RECENT_SESSION_SQL} WHERE ps.serial_number = $1 ORDER BY ps.connected_at DESC LIMIT $2`,
-    [serial, limit],
+    `${RECENT_SESSION_SQL}
+      WHERE ps.serial_number = (
+        SELECT serial_number FROM providers WHERE id = $1 LIMIT 1
+      )
+        AND ps.serial_number <> ''
+      ORDER BY ps.connected_at DESC
+      LIMIT $2`,
+    [providerId, limit],
   );
 }

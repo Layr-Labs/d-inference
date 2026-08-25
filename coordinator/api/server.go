@@ -1797,15 +1797,15 @@ func (s *Server) routes() {
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
-	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
+	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 
 	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
 	// No auth needed — trust comes from MDM SecurityInfo verification after
 	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 
-	// Attestation verification — public, no auth needed.
-	// Users can independently verify Apple's MDA certificate chain.
+	// Attestation status — public, no auth needed. Raw device identity and MDA
+	// certificates remain coordinator-private because the leaf embeds serial/UDID.
 	s.mux.HandleFunc("GET /v1/providers/attestation", s.handleProviderAttestation)
 
 	// Capacity snapshot — no auth needed. Upstream routers poll this.
@@ -1946,7 +1946,6 @@ func (s *Server) routes() {
 
 	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
-	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
 
 	// Metrics snapshot (admin only)

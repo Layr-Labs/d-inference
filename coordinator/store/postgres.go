@@ -737,16 +737,22 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
 
 		// Provider log reports — providers upload 24h unified logs for debugging.
+		// serial_number is retained only as a rollback-compatible legacy column.
+		// The write guard and one-time scrub keep it empty.
 		`CREATE TABLE IF NOT EXISTS provider_log_reports (
 			id BIGSERIAL PRIMARY KEY,
-			serial_number TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
 			provider_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL DEFAULT '',
 			log_data BYTEA NOT NULL,
 			log_size_bytes BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+		`ALTER TABLE provider_log_reports ALTER COLUMN serial_number SET DEFAULT ''`,
+		providerLogReportSerialGuardFunction,
+		providerLogReportSerialGuardTrigger,
+		providerLogReportSerialScrubMigration,
+		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 
 		// Provider sessions — durable connect→disconnect history for uptime/downtime.
 		// One row per websocket connection; disconnected_at IS NULL while open.
@@ -5029,56 +5035,24 @@ func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey stri
 
 const maxLogReportSize = 10 << 20 // 10 MB
 
-func (s *PostgresStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64, error) {
 	if len(logData) > maxLogReportSize {
 		logData = logData[:maxLogReportSize]
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_log_reports (serial_number, provider_id, account_id, log_data, log_size_bytes)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		serialNumber, providerID, accountID, logData, int64(len(logData)),
-	)
+	var reportID int64
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_log_reports (account_id, log_data, log_size_bytes)
+		 VALUES ($1, $2, $3)
+		 RETURNING id`,
+		accountID, logData, int64(len(logData)),
+	).Scan(&reportID)
 	if err != nil {
-		return fmt.Errorf("store: insert log report: %w", err)
+		return 0, fmt.Errorf("store: insert log report: %w", err)
 	}
-	return nil
-}
-
-func (s *PostgresStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 10
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_size_bytes, created_at
-		 FROM provider_log_reports
-		 WHERE serial_number = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		serialNumber, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list log reports: %w", err)
-	}
-	defer rows.Close()
-
-	var reports []LogReport
-	for rows.Next() {
-		var r LogReport
-		if err := rows.Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogSizeBytes, &r.CreatedAt); err != nil {
-			continue
-		}
-		reports = append(reports, r)
-	}
-	if reports == nil {
-		return []LogReport{}, nil
-	}
-	return reports, nil
+	return reportID, nil
 }
 
 func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
@@ -5087,9 +5061,9 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 
 	var r LogReport
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_data, log_size_bytes, created_at
+		`SELECT id, account_id, log_data, log_size_bytes, created_at
 		 FROM provider_log_reports WHERE id = $1`, id,
-	).Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
+	).Scan(&r.ID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
 	}

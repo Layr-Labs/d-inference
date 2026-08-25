@@ -49,7 +49,7 @@ struct Doctor: AsyncParsableCommand {
         print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
         let daemonState = DaemonStateFile.read()
-        let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
 
         // §16.5: did this box serve the KV backend it was configured for,
@@ -96,7 +96,6 @@ struct Doctor: AsyncParsableCommand {
             print("")
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinator ?? snapshot.config.coordinator.url))")
-            print("  serial: \(macHardwareSerialNumber() ?? "<unavailable>")")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
             print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinator ?? snapshot.config.coordinator.url)))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
@@ -337,38 +336,6 @@ func buildDoctorChecks(
     return checks
 }
 
-private struct ProviderAttestationList: Decodable {
-    let providers: [ProviderAttestation]
-}
-
-private struct ProviderAttestation: Decodable {
-    let providerID: String
-    let chipName: String
-    let hardwareModel: String
-    let serialNumber: String
-    let trustLevel: String
-    let status: String
-    let mdmVerified: Bool
-    let mdaVerified: Bool
-    let secureEnclave: Bool
-    let sipEnabled: Bool
-    let secureBootEnabled: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case providerID = "provider_id"
-        case chipName = "chip_name"
-        case hardwareModel = "hardware_model"
-        case serialNumber = "serial_number"
-        case trustLevel = "trust_level"
-        case status
-        case mdmVerified = "mdm_verified"
-        case mdaVerified = "mda_verified"
-        case secureEnclave = "secure_enclave"
-        case sipEnabled = "sip_enabled"
-        case secureBootEnabled = "secure_boot_enabled"
-    }
-}
-
 func buildCoordinatorDoctorChecks(
     snapshot: RuntimeSnapshot,
     coordinatorOverride: String?
@@ -416,24 +383,30 @@ func buildCoordinatorDoctorChecks(
         return checks
     }
 
-    guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
+    let localSEPublicKey: String
+    switch resolveDoctorAttestationIdentity(daemonState: DaemonStateFile.read()) {
+    case .available(let publicKey):
+        localSEPublicKey = publicKey
+    case .unavailable(let reason):
         checks.append(.init(
             name: "coordinator trust",
             status: .warn,
-            detail: "local serial number unavailable"
+            detail: reason.detail
         ))
         return checks
     }
 
     do {
         let data = try await doctorFetch(urlString: "\(base)/v1/providers/attestation", timeout: 8)
-        let decoded = try JSONDecoder().decode(ProviderAttestationList.self, from: data)
-        let matches = decoded.providers.filter { $0.serialNumber == serial }
-        guard let provider = matches.sorted(by: providerTrustSort).first else {
+        guard let provider = try selectProviderAttestation(
+            from: data,
+            matchingSEPublicKey: localSEPublicKey
+        ) else {
             checks.append(.init(
                 name: "coordinator trust",
                 status: .warn,
-                detail: "no live provider record for this serial yet"
+                detail: "no live provider record for the running daemon's "
+                    + "attestation identity yet"
             ))
             return checks
         }
@@ -463,18 +436,6 @@ func buildCoordinatorDoctorChecks(
     }
 
     return checks
-}
-
-private func providerTrustSort(_ lhs: ProviderAttestation, _ rhs: ProviderAttestation) -> Bool {
-    func score(_ provider: ProviderAttestation) -> Int {
-        var total = 0
-        if provider.status == "online" { total += 100 }
-        if provider.trustLevel == "hardware" { total += 50 }
-        if provider.mdaVerified { total += 10 }
-        if provider.mdmVerified { total += 5 }
-        return total
-    }
-    return score(lhs) > score(rhs)
 }
 
 private func doctorFetch(urlString: String, timeout: TimeInterval) async throws -> Data {

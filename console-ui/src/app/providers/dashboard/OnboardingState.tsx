@@ -34,7 +34,7 @@ export function OnboardingState() {
             <h2 className="text-xl font-bold text-text-primary">No provider machines linked yet</h2>
             <p className="text-sm text-text-secondary mt-2 max-w-xl">
               Link an Apple Silicon Mac to start seeing live health, routing eligibility, per-machine
-              earnings, and the attestation chain right here.
+              earnings, and privacy-redacted attestation status right here.
             </p>
 
             <div className="grid gap-3 mt-5 sm:grid-cols-3">

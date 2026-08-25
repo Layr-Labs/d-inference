@@ -21,8 +21,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
     async function fetchProviders() {
       try {
-        // Slim same-origin summary instead of downloading the full attestation
-        // blob (cert chains) just for a count + timestamp (perf F9b).
+        // Slim same-origin summary for the count + timestamp banner.
         const res = await fetch(`/api/attestation?summary=1`);
         if (!res.ok) return;
         const data = (await res.json()) as { count?: number; last_verified?: string | null };

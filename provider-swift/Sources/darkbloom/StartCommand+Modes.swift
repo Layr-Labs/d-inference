@@ -223,8 +223,7 @@ extension Start {
             coordinatorURL: coordinatorURL,
             source: .provider,
             authToken: authToken,
-            version: ProviderCore.version,
-            machineId: macHardwareSerialNumber() ?? ""
+            version: ProviderCore.version
         ))
 
         var startupFields = bootSecurityTelemetryFields(bootSecuritySnapshot)

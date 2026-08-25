@@ -18,6 +18,18 @@ A manifest is produced by `darkbloom-publish hash` and uploaded to R2 as `manife
 | `files` | array | [`ManifestFile`](#manifestfile) entries |
 | `created_at` | string | ISO 8601 timestamp |
 
+Schema-v1 manifests have one transport/structure contract on every ingestion
+path (coordinator registration, provider catalog fetch, and direct CDN fetch):
+
+- encoded `manifest.json` is at most 1 MiB (the boundary is inclusive);
+- `file_count` and `files.count` must match and be in `1...16384`;
+- `total_size_bytes` and every `size_bytes` are nonnegative;
+- the checked sum of file sizes must not overflow signed 64-bit and must equal
+  `total_size_bytes`.
+
+Readers stream at most the byte limit plus one sentinel byte, so a missing or
+incorrect `Content-Length` cannot cause an unbounded allocation.
+
 ### `ManifestFile`
 
 | Field | Type | Description |
@@ -80,7 +92,9 @@ On registration the coordinator:
 
 1. Fetches `https://models.darkbloom.ai/<r2_prefix>/manifest.json` (or `MODEL_REGISTRY_CDN_BASE_URL` override).
 2. Validates schema version, id/version/r2_prefix match, hash format, file count, and aggregate hash.
-3. HEAD-verifies every file in the manifest.
+3. HEAD-verifies every declared file size. If a successful HEAD omits
+   `Content-Length`, files up to 64 MiB are GET-streamed and counted with a
+   fixed bound; larger unknown-length objects are rejected explicitly.
 4. Saves the registry entry + version + file list transactionally.
 5. Sets platform pricing.
 6. Optionally promotes the version.

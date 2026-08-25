@@ -65,7 +65,11 @@ extension ModelDownloader {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await urlSession.data(for: request)
+            (data, response) = try await BoundedHTTPBody.read(
+                using: urlSession,
+                request: request,
+                maximumBytes: ModelManifestContract.maximumEncodedBytes,
+                responseName: "manifest.json")
         } catch {
             throw ModelCatalogError.downloadFailed("manifest.json: \(error.localizedDescription)")
         }
@@ -74,7 +78,9 @@ extension ModelDownloader {
         }
 
         do {
-            return try ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data)
+            return try ModelCatalogClient.decodeManifestResponse(
+                data,
+                responseName: "manifest.json")
         } catch {
             throw ModelCatalogError.downloadFailed("manifest.json decode failed: \(error.localizedDescription)")
         }
@@ -166,21 +172,7 @@ extension ModelDownloader {
         onProgress: (@Sendable (ProgressEvent) -> Void)?,
         onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
-        }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
+        try Self.validateManifestForDownload(manifest, model: model)
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()

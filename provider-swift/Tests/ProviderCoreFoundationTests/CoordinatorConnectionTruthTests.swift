@@ -9,12 +9,13 @@ struct CoordinatorConnectionTruthTests {
         var truth = CoordinatorConnectionTruth()
 
         truth.recordConnected(at: 100)
-        #expect(truth.recordTrustStatus(
+        let acceptedInitialStatus = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "MDM verification passed",
             at: 101
-        ))
+        )
+        #expect(acceptedInitialStatus)
         #expect(truth.trust?.status == "verified")
         #expect(truth.connectivity.status == .connected)
 
@@ -29,12 +30,13 @@ struct CoordinatorConnectionTruthTests {
         #expect(truth.connectivity.status == .connected)
         #expect(truth.trust?.status == "offline")
 
-        #expect(truth.recordTrustStatus(
+        let acceptedFreshStatus = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "fresh verification",
             at: 104
-        ))
+        )
+        #expect(acceptedFreshStatus)
         #expect(truth.trust?.status == "verified")
         #expect(truth.trust?.receivedAt == 104)
     }
@@ -43,21 +45,23 @@ struct CoordinatorConnectionTruthTests {
     func disconnectedTrustStatusIsIgnored() {
         var truth = CoordinatorConnectionTruth()
 
-        #expect(!truth.recordTrustStatus(
+        let acceptedBeforeConnection = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "late status",
             at: 100
-        ))
+        )
+        #expect(!acceptedBeforeConnection)
         #expect(truth.trust == nil)
 
         truth.recordDisconnected(reason: "offline", at: 101)
-        #expect(!truth.recordTrustStatus(
+        let acceptedAfterDisconnect = truth.recordTrustStatus(
             trustLevel: "hardware",
             status: "verified",
             reason: "late status",
             at: 102
-        ))
+        )
+        #expect(!acceptedAfterDisconnect)
         #expect(truth.trust?.status == "offline")
     }
 

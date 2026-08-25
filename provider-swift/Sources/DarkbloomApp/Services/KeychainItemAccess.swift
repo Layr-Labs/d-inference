@@ -1,4 +1,5 @@
 import CoreFoundation
+import Foundation
 import Security
 
 /// Narrow Security.framework seam used by the app session store.

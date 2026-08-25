@@ -55,11 +55,34 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var trustLevel: String
         public var status: String
         public var reason: String
+        public var reasonCode: String?
+        public var policyVersion: Int64?
+        public var catalogVersion: String?
+        public var retryable: Bool?
+        public var hardware: CoordinatorMessage.TrustStatus.Hardware?
+        public var failedChecks: [CoordinatorMessage.TrustStatus.RequirementMiss]?
         public var receivedAt: Double
-        public init(trustLevel: String, status: String, reason: String, receivedAt: Double) {
+        public init(
+            trustLevel: String,
+            status: String,
+            reason: String,
+            reasonCode: String? = nil,
+            policyVersion: Int64? = nil,
+            catalogVersion: String? = nil,
+            retryable: Bool? = nil,
+            hardware: CoordinatorMessage.TrustStatus.Hardware? = nil,
+            failedChecks: [CoordinatorMessage.TrustStatus.RequirementMiss]? = nil,
+            receivedAt: Double
+        ) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
+            self.reasonCode = reasonCode
+            self.policyVersion = policyVersion
+            self.catalogVersion = catalogVersion
+            self.retryable = retryable
+            self.hardware = hardware
+            self.failedChecks = failedChecks
             self.receivedAt = receivedAt
         }
     }

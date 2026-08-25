@@ -290,8 +290,8 @@ extension ProviderLoop {
                         await reconcileDesiredModels(entries, send: send)
                     }
 
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                case .trustStatus(let trustStatus):
+                    handleTrustStatus(trustStatus)
                 }
             }
         } onCancel: {

@@ -121,7 +121,7 @@ public enum CoordinatorEvent: Sendable {
     /// every change. Replaces the old push-driven migration ramp.
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
-    case trustStatus(trustLevel: String, status: String, reason: String)
+    case trustStatus(CoordinatorMessage.TrustStatus)
 }
 
 

@@ -29,7 +29,9 @@ public struct AttestationBlob: Codable, Sendable {
     public let binaryHash: String?
     public let chipName: String
     public let encryptionPublicKey: String?
+    public let gpuCores: UInt32?
     public let hardwareModel: String
+    public let memoryGb: UInt64?
     public let osVersion: String
     public let publicKey: String
     public let rdmaDisabled: Bool
@@ -45,7 +47,9 @@ public struct AttestationBlob: Codable, Sendable {
         case binaryHash
         case chipName
         case encryptionPublicKey
+        case gpuCores
         case hardwareModel
+        case memoryGb
         case osVersion
         case publicKey
         case rdmaDisabled
@@ -173,12 +177,15 @@ public final class AttestationBuilder: @unchecked Sendable {
         encryptionPublicKey: String? = nil,
         binaryHash: String? = nil
     ) throws -> SignedAttestation {
+        let hardware = try? HardwareDetector.detect()
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
-            chipName: detectChipName(),
+            chipName: hardware?.chipName ?? detectChipName(),
             encryptionPublicKey: encryptionPublicKey,
-            hardwareModel: detectHardwareModel(),
+            gpuCores: hardware?.gpuCores,
+            hardwareModel: hardware?.machineModel ?? detectHardwareModel(),
+            memoryGb: hardware?.memoryGb,
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),

@@ -799,6 +799,33 @@ import Testing
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encodedStatus) == status)
 }
 
+@Test func structuredHardwareAdmissionTrustStatusRoundTripsAndLegacyDecodes() throws {
+    let wire = #"{"type":"trust_status","trust_level":"none","status":"onboarding_rejected","reason":"32 GiB required","reason_code":"hardware_below_minimum","policy_version":7,"catalog_version":"apple-silicon-v1","retryable":false,"hardware":{"machine_model":"MacBookAir10,1","chip_name":"Apple M1","chip_family":"M1","chip_tier":"Base","memory_gb":16,"gpu_cores":8,"memory_bandwidth_gbs":68,"fp16_millitflops":5243,"catalog_known":true},"failed_checks":[{"code":"memory_below_minimum","metric":"memory_gb","observed":16,"required":32,"unit":"GiB"}]}"#
+    let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: wire)
+    guard case .trustStatus(let status) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(status.status == "onboarding_rejected")
+    #expect(status.reasonCode == "hardware_below_minimum")
+    #expect(status.policyVersion == 7)
+    #expect(status.retryable == false)
+    #expect(status.hardware?.memoryGb == 16)
+    #expect(status.failedChecks.first?.required == 32)
+
+    let encoded = try ProviderProtocolCodec.encodeCoordinatorMessage(decoded)
+    let object = try jsonObject(encoded)
+    #expect(object["reason_code"] as? String == "hardware_below_minimum")
+    #expect((object["policy_version"] as? NSNumber)?.int64Value == 7)
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encoded) == decoded)
+
+    let legacy = #"{"type":"trust_status","trust_level":"hardware","status":"online","reason":"ok"}"#
+    guard case .trustStatus(let legacyStatus) =
+        try ProviderProtocolCodec.decodeCoordinatorMessage(from: legacy)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(legacyStatus.reasonCode == nil)
+    #expect(legacyStatus.failedChecks.isEmpty)
+}
+
 @Test func emptyOptionalCollectionsAreOmitted() throws {
     let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
         status: .idle,

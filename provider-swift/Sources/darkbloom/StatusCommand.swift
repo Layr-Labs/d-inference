@@ -108,10 +108,17 @@ struct Status: AsyncParsableCommand {
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
 
         if let trust = state.trust {
-            let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
+            let advice = TrustReasonCatalog.advice(
+                level: trust.trustLevel,
+                status: trust.status,
+                reason: trust.reason,
+                reasonCode: trust.reasonCode)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
             if let fix = advice.fix { print("  → fix: \(fix)") }
+            if let version = trust.policyVersion {
+                print("  → hardware policy: v\(version)\(trust.catalogVersion.map { " (\($0))" } ?? "")")
+            }
         } else {
             print("Trust: awaiting coordinator status")
         }

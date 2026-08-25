@@ -16,7 +16,34 @@ import Foundation
 public enum TrustReasonCatalog {
     /// Maps a trust update to operator advice. `level`/`status` give context
     /// (e.g. self_signed/online means "online but not earning").
-    public static func advice(level: String, status: String, reason: String) -> DiagnosticAdvice {
+    public static func advice(
+        level: String,
+        status: String,
+        reason: String,
+        reasonCode: String? = nil
+    ) -> DiagnosticAdvice {
+        switch reasonCode {
+        case "hardware_below_minimum":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "this Mac does not meet the network requirements for new providers."
+                    : reason,
+                fix: "use `darkbloom status` to review the reported hardware and current minimums. Existing admitted Macs remain grandfathered.")
+        case "hardware_identity_required":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator requires an attested machine identity before onboarding."
+                    : reason,
+                fix: "run `darkbloom doctor`, complete enrollment, then `darkbloom restart`.")
+        case "admission_state_unavailable":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator could not verify hardware admission state."
+                    : reason,
+                fix: "the daemon retries automatically; no hardware or enrollment change is required.")
+        default:
+            break
+        }
         // Prefix-matched reasons (they carry a variable error suffix).
         if reason.hasPrefix("signature verification failed") {
             return DiagnosticAdvice(
@@ -94,7 +121,7 @@ public enum TrustReasonCatalog {
     /// hardware/online = pass; self_signed = warn (online but not earning);
     /// untrusted/offline = fail.
     public static func level(trustLevel: String, status: String) -> DiagnosticLevel {
-        if status == "untrusted" || status == "offline" {
+        if status == "untrusted" || status == "offline" || status == "onboarding_rejected" {
             return .fail
         }
         switch trustLevel {

@@ -106,13 +106,21 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func handleTrustStatus(trustLevel: String, status: String, reason: String) {
-        logger.info("Trust status update: level=\(trustLevel) status=\(status)")
+    internal func handleTrustStatus(_ update: CoordinatorMessage.TrustStatus) {
+        logger.info("Trust status update: level=\(update.trustLevel) status=\(update.status)")
 
         // Cache + persist so `darkbloom status`/`doctor` can show the operator
         // the coordinator's reason (otherwise it is only in the logs).
         lastTrustStatus = DaemonState.Trust(
-            trustLevel: trustLevel, status: status, reason: reason,
+            trustLevel: update.trustLevel,
+            status: update.status,
+            reason: update.reason,
+            reasonCode: update.reasonCode,
+            policyVersion: update.policyVersion,
+            catalogVersion: update.catalogVersion,
+            retryable: update.retryable,
+            hardware: update.hardware,
+            failedChecks: update.failedChecks,
             receivedAt: Date().timeIntervalSince1970)
         writeDaemonState()
     }

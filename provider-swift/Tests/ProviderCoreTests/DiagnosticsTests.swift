@@ -43,6 +43,18 @@ import Testing
     #expect(advice.message.contains(novel), "unknown reason must be surfaced verbatim, not hidden")
 }
 
+@Test func trustReasonCatalogExplainsHardwareAdmissionRejection() {
+    let advice = TrustReasonCatalog.advice(
+        level: "none",
+        status: "onboarding_rejected",
+        reason: "memory_gb is 16 GiB (minimum 32 GiB)",
+        reasonCode: "hardware_below_minimum")
+    #expect(advice.message.contains("16 GiB"))
+    #expect(advice.fix?.contains("grandfathered") == true)
+    #expect(TrustReasonCatalog.level(
+        trustLevel: "none", status: "onboarding_rejected") == .fail)
+}
+
 @Test func trustReasonCatalogLevels() {
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "online") == .pass)
     #expect(TrustReasonCatalog.level(trustLevel: "self_signed", status: "online") == .warn)

@@ -40,6 +40,53 @@ import Testing
     #expect(decoded.backend.maxModelSlots == 5)
 }
 
+@Test func prefillDeadlineModePreservesAbsentInheritance() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(config.backend.prefillDeadlineMode == nil)
+    #expect(
+        PrefillDeadlineMode.resolve(
+            configured: config.backend.prefillDeadlineMode,
+            environment: [:]) == .enforce)
+
+    let serialized = ConfigManager.serialize(config)
+    #expect(!serialized.contains("prefill_deadline_mode"))
+    #expect(ConfigManager.parse(serialized).backend.prefillDeadlineMode == nil)
+}
+
+@Test func prefillDeadlineModeParsesAndSerializes() throws {
+    let disabled = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "off"
+    """)
+    #expect(disabled.backend.prefillDeadlineMode == .off)
+    let enforced = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "enforce"
+    """)
+    #expect(enforced.backend.prefillDeadlineMode == .enforce)
+
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .off),
+        coordinator: CoordinatorSettings())
+    let serialized = ConfigManager.serialize(original)
+    #expect(serialized.contains("prefill_deadline_mode = 'off'"))
+    #expect(
+        ConfigManager.parse(serialized).backend.prefillDeadlineMode == .off)
+
+    let enforcing = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .enforce),
+        coordinator: CoordinatorSettings())
+    let enforcingTOML = ConfigManager.serialize(enforcing)
+    #expect(enforcingTOML.contains("prefill_deadline_mode = 'enforce'"))
+    #expect(
+        ConfigManager.parse(enforcingTOML).backend.prefillDeadlineMode == .enforce)
+}
+
 // v0.8.0 removed KV quantization from the product. Effectively every
 // provider.toml in the field carries `kv_quant` because the serializer used
 // to round-trip it, so an UPGRADING provider must load such a config without

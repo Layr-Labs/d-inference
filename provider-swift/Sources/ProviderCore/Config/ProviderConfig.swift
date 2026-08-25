@@ -168,6 +168,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// resolution/load is fail-open: any failure means plain decode, never a
     /// slot failure. `DARKBLOOM_CBV2_MTP` remains the engine-side kill switch.
     public var mtp: Bool
+    /// Explicit provider-side atomic first-token deadline policy. Nil means the
+    /// key was absent, so runtime resolution inherits the legacy environment
+    /// control and otherwise securely enforces. Optional encoding preserves
+    /// that source distinction instead of materializing an explicit default.
+    public var prefillDeadlineMode: PrefillDeadlineMode?
     /// Optional local drafter directory override (`mtp_drafter_path` under
     /// `[backend]`) — the canary path: `config.json` + `*.safetensors`, no R2
     /// involved. Takes precedence over the `spec_dec` download when set. nil
@@ -213,6 +218,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupSelftest: Bool = true,
         startupSelftestFailClosed: Bool = false,
         mtp: Bool = false,
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -230,6 +236,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
         self.mtp = mtp
+        self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
     }
 
@@ -249,6 +256,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
         case mtp
+        case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
     }
 
@@ -290,6 +298,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
         self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? false
+        self.prefillDeadlineMode =
+            try container.decodeIfPresent(
+                PrefillDeadlineMode.self,
+                forKey: .prefillDeadlineMode)
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).

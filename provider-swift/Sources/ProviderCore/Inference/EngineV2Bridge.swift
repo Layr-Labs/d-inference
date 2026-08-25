@@ -175,9 +175,15 @@ public actor EngineV2Bridge {
     let stopTokenIds: Set<Int>
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
-    /// Release-candidate gate for atomic first-token deadline admission.
+    /// Operational control for atomic first-token deadline admission.
     /// Parsed once per bridge so runtime behavior cannot change mid-request.
     let prefillDeadlineMode: PrefillDeadlineMode
+    /// Whether the configured scheduler posture can produce the bounded,
+    /// authoritative first-token projection required by atomic admission.
+    /// Production enables this only for serialized partial prefill (cap 1).
+    /// Explicit cap 0/unlimited therefore keeps serving through ordinary
+    /// submission while the hard absolute-expiry checks remain authoritative.
+    let prefillDeadlineProjectionEnabled: Bool
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
     /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
@@ -372,6 +378,7 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
+        prefillDeadlineProjectionEnabled: Bool = true,
         kvBytesPerToken: Int = 0,
         fixedRequestBytes: Int = 0,
         auxiliaryBytesPerToken: Int = 0,
@@ -400,6 +407,7 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.prefillDeadlineMode = prefillDeadlineMode
+        self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.kvBytesPerToken = kvBytesPerToken
         self.fixedRequestBytes = max(0, fixedRequestBytes)
         self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
@@ -1035,6 +1043,7 @@ public actor EngineV2Bridge {
         isMultimodal: Bool
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
+            prefillDeadlineProjectionEnabled,
             !isMultimodal,
             let deadline,
             isolatedPrefillEwmaInitialized

@@ -554,6 +554,8 @@ extension ProviderLoop {
                 extraEOSTokens: hooks.extraEOSTokens,
                 defaultMaxTokens: sizing.defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrent,
+                prefillDeadlineMode:
+                    loopConfig.config.backend.prefillDeadlineMode,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken,
                 kvBudget: kvBudget,
                 emitTelemetry: hooks.emitTelemetry,
@@ -592,6 +594,8 @@ extension ProviderLoop {
                 kvBudget: kvBudget,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                prefillDeadlineMode:
+                    loopConfig.config.backend.prefillDeadlineMode,
                 // SSD-tier metadata binding: the verified hash for the bytes
                 // this slot loaded (nil/blank disables reusable SSD caching).
                 weightHash: cacheEligibleWeightHash,

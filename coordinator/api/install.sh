@@ -788,13 +788,17 @@ write_install_transaction() {
         && { [ "$had_app" -eq 0 ] || [ "$previous_app_identity" != "none" ]; } \
         && { [ "$had_bin" -eq 1 ] || [ "$previous_bin_identity" = "none" ]; } \
         && { [ "$had_bin" -eq 0 ] || [ "$previous_bin_identity" != "none" ]; } \
-        && { [ "$kind" = "app" ] \
-            && [ "$candidate_app_identity" != "none" ] \
-            && [ "$candidate_app_fingerprint" != "none" ] \
-            || { [ "$had_app" -eq 0 ] \
-                && [ "$candidate_app_identity" = "none" ] \
-                && [ "$candidate_app_fingerprint" = "none" ]; }; } \
         || return 1
+    if [ "$kind" = "app" ]; then
+        [ "$candidate_app_identity" != "none" ] \
+            && [ "$candidate_app_fingerprint" != "none" ] \
+            || return 1
+    else
+        [ "$had_app" -eq 0 ] \
+            && [ "$candidate_app_identity" = "none" ] \
+            && [ "$candidate_app_fingerprint" = "none" ] \
+            || return 1
+    fi
 
     (
         umask 077
@@ -896,12 +900,17 @@ load_install_transaction() {
             || [ "$TX_PREVIOUS_BIN_IDENTITY" = "none" ]; } \
         && { [ "$TX_HAD_BIN" -eq 0 ] \
             || [ "$TX_PREVIOUS_BIN_IDENTITY" != "none" ]; } \
-        && { [ "$TX_KIND" = "app" ] \
-            && [ "$TX_CANDIDATE_APP_IDENTITY" != "none" ] \
+        || return 1
+    if [ "$TX_KIND" = "app" ]; then
+        [ "$TX_CANDIDATE_APP_IDENTITY" != "none" ] \
             && [ "$TX_CANDIDATE_APP_FINGERPRINT" != "none" ] \
-            || { [ "$TX_HAD_APP" -eq 0 ] \
-                && [ "$TX_CANDIDATE_APP_IDENTITY" = "none" ] \
-                && [ "$TX_CANDIDATE_APP_FINGERPRINT" = "none" ]; }; }
+            || return 1
+    else
+        [ "$TX_HAD_APP" -eq 0 ] \
+            && [ "$TX_CANDIDATE_APP_IDENTITY" = "none" ] \
+            && [ "$TX_CANDIDATE_APP_FINGERPRINT" = "none" ] \
+            || return 1
+    fi
 }
 
 mark_install_transaction_phase() {
@@ -921,7 +930,7 @@ cleanup_recorded_staging() {
     local backup=$1
     local install_dir=$2
     load_install_transaction "$backup" || return 1
-    rm -rf "$install_dir/$TX_STAGING_NAME"
+    rm -rf "${install_dir:?}/$TX_STAGING_NAME"
     sync_install_directories "$install_dir"
 }
 
@@ -1410,10 +1419,10 @@ recover_interrupted_install_transactions() {
         "$install_dir"/.install-legacy-*
     do
         install_path_exists "$debris" || continue
-        [ ! -L "$debris" ] && [ -d "$debris" ] || {
+        if [ -L "$debris" ] || [ ! -d "$debris" ]; then
             fail_install "Installer debris is not a directory: $debris."
             return 1
-        }
+        fi
         installer_debris_name_is_valid "${debris##*/}" || {
             fail_install "Unrecognized installer debris at $debris."
             return 1
@@ -1675,7 +1684,8 @@ install_bundle_atomically_locked() {
     local install_dir=$2
     local binary_hash=${3:-}
     local metallib_hash=${4:-}
-    local transaction_id="$$-$RANDOM-$(date +%s)"
+    local transaction_id
+    transaction_id="$$-$RANDOM-$(date +%s)"
     local stage="$install_dir/.install-staging-$transaction_id"
     rm -rf "$stage"
     mkdir -p "$stage"

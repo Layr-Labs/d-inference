@@ -288,6 +288,17 @@ struct SelfUpdaterTests {
         try Data("new darkbloom".utf8).write(to: darkbloom)
         try Data("new enclave".utf8).write(to: enclave)
         try Data("new metallib".utf8).write(to: metallib)
+        for executable in [
+            oldBin.appendingPathComponent("darkbloom"),
+            oldBin.appendingPathComponent("darkbloom-enclave"),
+            darkbloom,
+            enclave,
+        ] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
 
         let tarball = root.appendingPathComponent("bundle.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)
@@ -367,6 +378,19 @@ struct SelfUpdaterTests {
         try Data("flat darkbloom".utf8).write(to: binFlat.appendingPathComponent("darkbloom"))
         try Data("flat enclave".utf8).write(to: binFlat.appendingPathComponent("darkbloom-enclave"))
         try Data("flat metallib".utf8).write(to: binFlat.appendingPathComponent("mlx.metallib"))
+        for executable in [
+            oldAppBin.appendingPathComponent("darkbloom"),
+            oldAppBin.appendingPathComponent("darkbloom-enclave"),
+            appMacOS.appendingPathComponent("darkbloom"),
+            appMacOS.appendingPathComponent("darkbloom-enclave"),
+            binFlat.appendingPathComponent("darkbloom"),
+            binFlat.appendingPathComponent("darkbloom-enclave"),
+        ] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
 
         let tarball = root.appendingPathComponent("bundle.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)

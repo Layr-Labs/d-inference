@@ -153,7 +153,7 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
 
 private final class Fixture: @unchecked Sendable {
     let root: URL
-    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    let now: Date
     let capacity: SandboxHostCapacityArbiter
     let runtime = RecordingSandboxRuntime()
     let adapter: SandboxHostProductionAdapter
@@ -165,6 +165,8 @@ private final class Fixture: @unchecked Sendable {
             workspaceQuota: true
         )
     ) throws {
+        let fixedNow = Date(timeIntervalSince1970: 2_000_000_000)
+        now = fixedNow
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "darkbloom-host-adapter-\(UUID().uuidString)",
             isDirectory: true
@@ -192,7 +194,7 @@ private final class Fixture: @unchecked Sendable {
                 storageHeadroomBytes:
                     20 * SandboxResourcePolicy.gibibyte
             ),
-            currentDate: { [now] in now },
+            currentDate: { fixedNow },
             availableStorageBytes: { UInt64.max }
         )
         _ = try capacity.initialize()

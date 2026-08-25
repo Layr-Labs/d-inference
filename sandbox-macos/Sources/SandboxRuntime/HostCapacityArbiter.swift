@@ -520,6 +520,15 @@ public struct SandboxHostCapacityArbiter: Sendable {
             }
             return existing
         }
+        if let authoritativeScope {
+            let requested = authoritativeScope.fencingToken.rawValue
+            guard requested >= state.nextFencingToken else {
+                throw SandboxCapacityError.staleFencingToken
+            }
+            guard requested < UInt64.max else {
+                throw SandboxCapacityError.fencingTokenExhausted
+            }
+        }
         let generationIndex = state.generationHighWatermarks
             .firstIndex { $0.sandboxID == sandboxID }
         if let generationIndex {
@@ -593,12 +602,6 @@ public struct SandboxHostCapacityArbiter: Sendable {
         let fencingToken: SandboxFencingToken
         if let authoritativeScope {
             let requested = authoritativeScope.fencingToken.rawValue
-            guard requested >= state.nextFencingToken else {
-                throw SandboxCapacityError.staleFencingToken
-            }
-            guard requested < UInt64.max else {
-                throw SandboxCapacityError.fencingTokenExhausted
-            }
             fencingToken = authoritativeScope.fencingToken
             state.nextFencingToken = requested + 1
         } else {

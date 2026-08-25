@@ -103,19 +103,19 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 
 	// Verify the provider got their payout credited to their account.
 	// setupProviderForBilling links the provider to an account via test-account-<id>.
-	if got := st.GetBalance(providerAccountID); got != expectedProviderPayout {
+	if got := testBalance(t, st, providerAccountID); got != expectedProviderPayout {
 		t.Errorf("provider account balance = %d, want %d (payout of totalCost %d)",
 			got, expectedProviderPayout, totalCost)
 	}
 
 	// Verify referrer got their share.
-	referrerBalance := st.GetBalance(referrerAccountID)
+	referrerBalance := testBalance(t, st, referrerAccountID)
 	if referrerBalance != referralShare {
 		t.Errorf("referrer balance = %d, want %d (share of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
 	}
 
 	// Verify platform got the remaining platform fee (after referral deduction).
-	platformBalance := st.GetBalance("platform")
+	platformBalance := testBalance(t, st, "platform")
 	if platformBalance != expectedPlatformAfterReferral {
 		t.Errorf("platform balance = %d, want %d (platform fee %d minus referral %d)",
 			platformBalance, expectedPlatformAfterReferral, expectedPlatformFee, referralShare)
@@ -252,13 +252,13 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	// Step 7: Verify earnings went to the linked account.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
 
-	accountBalance := st.GetBalance(accountID)
+	accountBalance := testBalance(t, st, accountID)
 	if accountBalance != expectedPayout {
 		t.Errorf("account balance = %d, want %d (provider payout)", accountBalance, expectedPayout)
 	}
 
 	// Verify the wallet address was NOT credited (account takes priority).
-	walletBalance := st.GetBalance("0xDeviceTestWallet")
+	walletBalance := testBalance(t, st, "0xDeviceTestWallet")
 	if walletBalance != 0 {
 		t.Errorf("wallet balance = %d, want 0 (account-linked provider should not credit wallet)", walletBalance)
 	}
@@ -380,7 +380,7 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	expectedPayout2 := payments.ProviderPayout(payments.CalculateCost(model2, usage2.PromptTokens, usage2.CompletionTokens))
 	expectedTotalBalance := expectedPayout1 + expectedPayout2
 
-	actualBalance := st.GetBalance(accountID)
+	actualBalance := testBalance(t, st, accountID)
 	if actualBalance != expectedTotalBalance {
 		t.Errorf("account balance = %d, want %d (payout1=%d + payout2=%d)",
 			actualBalance, expectedTotalBalance, expectedPayout1, expectedPayout2)
@@ -408,10 +408,10 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	}
 
 	// Verify wallet addresses were NOT credited (account takes priority).
-	if st.GetBalance("0xMultiNode1") != 0 {
+	if testBalance(t, st, "0xMultiNode1") != 0 {
 		t.Error("wallet 1 should not be credited when account is linked")
 	}
-	if st.GetBalance("0xMultiNode2") != 0 {
+	if testBalance(t, st, "0xMultiNode2") != 0 {
 		t.Error("wallet 2 should not be credited when account is linked")
 	}
 }

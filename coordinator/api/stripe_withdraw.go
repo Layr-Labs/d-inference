@@ -315,6 +315,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	// border transfers, so a hardcoded USD payout fails for any non-USD
 	// account. The sweep handles both; the payout.paid webhook marks the row.
 	if method == "standard" {
+		balance, ok := s.withdrawalBalanceForResponse(w, user.AccountID, withdrawalID)
+		if !ok {
+			return
+		}
 		s.logger.Info("stripe payout: transferred (auto-payout will deliver)",
 			"withdrawal_id", withdrawalID,
 			"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
@@ -331,7 +335,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"method":            method,
 			"eta":               etaForMethod(method, acct.Country),
 			"message":           sweepDeliveryMessage(acct.Country),
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+			"balance_micro_usd": balance,
 		})
 		return
 	}
@@ -367,6 +371,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("stripe payout: instant payout outcome UNCONFIRMED — fee NOT refunded, verify against Stripe dashboard",
 			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID,
 			"idempotency_key", "wd-po-"+withdrawalID)
+		balance, ok := s.withdrawalBalanceForResponse(w, user.AccountID, withdrawalID)
+		if !ok {
+			return
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":            "transferred",
 			"withdrawal_id":     withdrawalID,
@@ -376,7 +384,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"net_usd":           formatUSD(netMicroUSD),
 			"method":            method,
 			"message":           "we couldn't confirm your instant payout with Stripe — if it went through, funds reach your card in ~30 minutes; otherwise the daily payout delivers them and support will refund the instant fee, contact support if nothing arrives within 24 hours",
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+			"balance_micro_usd": balance,
 		})
 		return
 	}
@@ -406,6 +414,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		if !feeRefunded {
 			msg = "instant payout unavailable — funds will arrive via the standard daily payout; the instant-fee refund is pending, contact support if it doesn't appear shortly"
 		}
+		balance, ok := s.withdrawalBalanceForResponse(w, user.AccountID, withdrawalID)
+		if !ok {
+			return
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":            "transferred",
 			"withdrawal_id":     withdrawalID,
@@ -415,7 +427,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"net_usd":           formatUSD(netMicroUSD),
 			"method":            method,
 			"message":           msg,
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+			"balance_micro_usd": balance,
 		})
 		return
 	}
@@ -438,6 +450,10 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"fee_micro_usd", feeMicroUSD,
 		"net_micro_usd", netMicroUSD,
 	)
+	balance, ok := s.withdrawalBalanceForResponse(w, user.AccountID, withdrawalID)
+	if !ok {
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":            "submitted",
@@ -450,8 +466,29 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		"method":            method,
 		"eta":               etaForMethod(method, acct.Country),
 		"arrival_unix":      payout.ArrivalDate,
-		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+		"balance_micro_usd": balance,
 	})
+}
+
+func (s *Server) withdrawalBalanceForResponse(
+	w http.ResponseWriter,
+	accountID, withdrawalID string,
+) (int64, bool) {
+	balance, err := s.store.GetBalance(accountID)
+	if err != nil {
+		s.logger.Error(
+			"stripe payout: withdrawal completed but balance read failed",
+			"withdrawal_id", withdrawalID,
+			"account_id", accountID,
+			"error", err,
+		)
+		writeJSON(w, http.StatusInternalServerError, errorResponse(
+			"internal_error",
+			"withdrawal processed but updated balance could not be read",
+		))
+		return 0, false
+	}
+	return balance, true
 }
 
 // retryAmbiguousStripe retries fn while it fails with a non-definitive error

@@ -1232,24 +1232,24 @@ func (s *MemoryStore) KeyCount() int {
 }
 
 // GetBalance returns the current balance in micro-USD for an account.
-func (s *MemoryStore) GetBalance(accountID string) int64 {
+func (s *MemoryStore) GetBalance(accountID string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.balances[accountID]
+	return s.balances[accountID], nil
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
-func (s *MemoryStore) GetWithdrawableBalance(accountID string) int64 {
+func (s *MemoryStore) GetWithdrawableBalance(accountID string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.withdrawable[accountID]
+	return s.withdrawable[accountID], nil
 }
 
 // GetBalanceWithWithdrawable returns both balances under a single lock.
-func (s *MemoryStore) GetBalanceWithWithdrawable(accountID string) (int64, int64) {
+func (s *MemoryStore) GetBalanceWithWithdrawable(accountID string) (int64, int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.balances[accountID], s.withdrawable[accountID]
+	return s.balances[accountID], s.withdrawable[accountID], nil
 }
 
 // Credit adds micro-USD to an account and records a ledger entry.
@@ -1389,7 +1389,7 @@ func (s *MemoryStore) MigrateAccountBalance(from, to string) (bool, error) {
 }
 
 // LedgerHistory returns ledger entries for an account, newest first.
-func (s *MemoryStore) LedgerHistory(accountID string) []LedgerEntry {
+func (s *MemoryStore) LedgerHistory(accountID string) ([]LedgerEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1400,9 +1400,9 @@ func (s *MemoryStore) LedgerHistory(accountID string) []LedgerEntry {
 		}
 	}
 	if entries == nil {
-		return []LedgerEntry{}
+		return []LedgerEntry{}, nil
 	}
-	return entries
+	return entries, nil
 }
 
 func (s *MemoryStore) creditLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) {
@@ -3400,67 +3400,101 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 func (s *MemoryStore) ListProviderSessionIdentities(
 	_ context.Context,
 	accountID string,
-	providerKeys []string,
+	refs []ProviderEarningIdentityRef,
 ) ([]ProviderSessionIdentity, error) {
-	if accountID == "" || len(providerKeys) == 0 {
-		return []ProviderSessionIdentity{}, nil
-	}
-
-	wanted := make(map[string]struct{}, len(providerKeys))
-	for _, key := range providerKeys {
-		if key != "" {
-			wanted[key] = struct{}{}
-		}
-	}
-	if len(wanted) == 0 {
+	if accountID == "" || len(refs) == 0 {
 		return []ProviderSessionIdentity{}, nil
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	byKey := make(map[string]ProviderSessionIdentity, len(wanted))
-	for i := range s.providerSessions {
-		session := &s.providerSessions[i]
-		if session.AccountID != accountID || session.SerialNumber == "" {
+	byIdentity := make(map[string]ProviderSessionIdentity, len(refs))
+	for _, ref := range refs {
+		identity, ok := s.providerIdentityForRefLocked(accountID, ref)
+		if !ok {
 			continue
 		}
-		if _, ok := wanted[session.ProviderKey]; !ok {
-			continue
+		key := identity.ProviderKey
+		if key == "" {
+			key = "id:" + identity.SessionID
 		}
-		byKey[session.ProviderKey] = ProviderSessionIdentity{
-			SessionID:    session.SessionID,
-			ProviderKey:  session.ProviderKey,
-			SerialNumber: session.SerialNumber,
-		}
-	}
-	for _, record := range s.providerRecords {
-		if record.AccountID != accountID || record.SerialNumber == "" {
-			continue
-		}
-		if _, ok := wanted[record.PublicKey]; !ok {
-			continue
-		}
-		if _, exists := byKey[record.PublicKey]; exists {
-			continue
-		}
-		byKey[record.PublicKey] = ProviderSessionIdentity{
-			SessionID:    record.ID,
-			ProviderKey:  record.PublicKey,
-			SerialNumber: record.SerialNumber,
-		}
+		byIdentity[key] = identity
 	}
 
-	keys := make([]string, 0, len(byKey))
-	for key := range byKey {
+	keys := make([]string, 0, len(byIdentity))
+	for key := range byIdentity {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	identities := make([]ProviderSessionIdentity, 0, len(keys))
 	for _, key := range keys {
-		identities = append(identities, byKey[key])
+		identities = append(identities, byIdentity[key])
 	}
 	return identities, nil
+}
+
+func (s *MemoryStore) providerIdentityForRefLocked(
+	accountID string,
+	ref ProviderEarningIdentityRef,
+) (ProviderSessionIdentity, bool) {
+	var best *ProviderSession
+	for i := range s.providerSessions {
+		session := &s.providerSessions[i]
+		if session.AccountID != accountID || session.SerialNumber == "" {
+			continue
+		}
+		idMatch := ref.ProviderID != "" && session.SessionID == ref.ProviderID
+		keyMatch := ref.ProviderKey != "" && session.ProviderKey == ref.ProviderKey
+		if !idMatch && !keyMatch {
+			continue
+		}
+		if best == nil ||
+			(idMatch && best.SessionID != ref.ProviderID) ||
+			(idMatch == (best.SessionID == ref.ProviderID) && session.LastSeen.After(best.LastSeen)) {
+			best = session
+		}
+	}
+
+	if best != nil {
+		identity := ProviderSessionIdentity{
+			SessionID:    best.SessionID,
+			ProviderKey:  best.ProviderKey,
+			SerialNumber: best.SerialNumber,
+		}
+		if identity.ProviderKey == "" {
+			if record, ok := s.providerRecords[best.SessionID]; ok &&
+				record.AccountID == accountID &&
+				record.PublicKey != "" &&
+				(record.SerialNumber == "" || record.SerialNumber == best.SerialNumber) {
+				identity.ProviderKey = record.PublicKey
+			}
+		}
+		return identity, true
+	}
+
+	var bestRecord *ProviderRecord
+	for _, record := range s.providerRecords {
+		if record.AccountID != accountID || record.SerialNumber == "" {
+			continue
+		}
+		if (ref.ProviderID != "" && record.ID == ref.ProviderID) ||
+			(ref.ProviderKey != "" && record.PublicKey == ref.ProviderKey) {
+			if bestRecord == nil ||
+				(record.ID == ref.ProviderID && bestRecord.ID != ref.ProviderID) ||
+				record.LastSeen.After(bestRecord.LastSeen) {
+				bestRecord = record
+			}
+		}
+	}
+	if bestRecord == nil {
+		return ProviderSessionIdentity{}, false
+	}
+	return ProviderSessionIdentity{
+		SessionID:    bestRecord.ID,
+		ProviderKey:  bestRecord.PublicKey,
+		SerialNumber: bestRecord.SerialNumber,
+	}, true
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Upsert

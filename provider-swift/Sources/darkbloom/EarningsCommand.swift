@@ -125,6 +125,31 @@ func backfillProviderAccountID(
     }
 }
 
+/// Renders integer micro-USD without converting through Double. Int64.magnitude
+/// also keeps Int64.min representable, so every wire-valid amount is exact.
+func exactUSD(microUSD: Int64) -> String {
+    let magnitude = microUSD.magnitude
+    let whole = magnitude / 1_000_000
+    let fractionalRaw = String(magnitude % 1_000_000)
+    let fractional = String(repeating: "0", count: 6 - fractionalRaw.count) + fractionalRaw
+    return "\(microUSD < 0 ? "-" : "")\(whole).\(fractional)"
+}
+
+func earningsTextLines(_ report: ProviderAccountEarningsReport) -> [String] {
+    var lines = [
+        "Provider earnings (account: \(report.accountID))",
+        "  Available balance:    $\(exactUSD(microUSD: report.availableBalanceMicroUSD)) (\(report.availableBalanceMicroUSD) µ$)",
+        "  Withdrawable balance: $\(exactUSD(microUSD: report.withdrawableBalanceMicroUSD)) (\(report.withdrawableBalanceMicroUSD) µ$)",
+        "  Total earned:         $\(exactUSD(microUSD: report.totalMicroUSD)) across \(report.count) jobs",
+    ]
+    if report.earnings.isEmpty {
+        lines.append("  No earning records yet.")
+    } else {
+        lines.append("  Recent earnings: \(report.earnings.count) (see --json for details)")
+    }
+    return lines
+}
+
 private func earningsResponse(
     request: URLRequest,
     transport: @escaping EarningsTransport
@@ -347,14 +372,8 @@ struct Earnings: AsyncParsableCommand {
             return
         }
 
-        print("Provider earnings (account: \(report.accountID))")
-        print("  Available balance:    $\(report.availableBalanceUSD) (\(report.availableBalanceMicroUSD) µ$)")
-        print("  Withdrawable balance: $\(report.withdrawableBalanceUSD) (\(report.withdrawableBalanceMicroUSD) µ$)")
-        print("  Total earned:         $\(report.totalUSD) across \(report.count) jobs")
-        if report.earnings.isEmpty {
-            print("  No earning records yet.")
-        } else {
-            print("  Recent earnings: \(report.earnings.count) (see --json for details)")
+        for line in earningsTextLines(report) {
+            print(line)
         }
     }
 }

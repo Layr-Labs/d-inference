@@ -84,7 +84,11 @@ func (s *engineStore) ListFloorDrawsForEpoch(ctx context.Context, epochID string
 }
 
 func (s *engineStore) balance(accountID string) (int64, int64) {
-	return s.inner.GetBalanceWithWithdrawable(accountID)
+	balance, withdrawable, err := s.inner.GetBalanceWithWithdrawable(accountID)
+	if err != nil {
+		panic(err)
+	}
+	return balance, withdrawable
 }
 
 // --- registry helpers ---

@@ -136,53 +136,68 @@ END $$`
 
 const earningsSummaryExcludeBaseRewardJobsMigration = `DO $$ BEGIN
 	-- Serialize concurrent coordinator startups before checking the one-shot
-	-- marker. Block earning writers while the two summary projections are
-	-- rebuilt so no credit can land between an aggregate snapshot and its
-	-- absolute upsert.
+	-- marker. The expensive provider_earnings scan intentionally takes only an
+	-- ACCESS SHARE lock, which remains compatible with live earning inserts.
+	--
+	-- Capture the difference between source rows and summaries in one MVCC
+	-- snapshot, then ADD that difference instead of replacing totals. A normal
+	-- concurrent credit changes source and summary by the same amount, so the
+	-- captured difference remains valid regardless of whether it commits before
+	-- or after the correction. This avoids the old long-held SHARE lock that
+	-- made the serving coordinator time out and drop provider credits.
 	LOCK TABLE schema_migrations IN SHARE ROW EXCLUSIVE MODE;
 	IF NOT EXISTS (
 		SELECT 1 FROM schema_migrations
 		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'
 	) THEN
-		LOCK TABLE provider_earnings IN SHARE MODE;
-		LOCK TABLE earnings_summary IN SHARE ROW EXCLUSIVE MODE;
+		CREATE TEMP TABLE earnings_summary_repair_delta ON COMMIT DROP AS
+		WITH desired AS (
+			SELECT account_id AS key, 'account'::TEXT AS key_type,
+			       COUNT(*) FILTER (WHERE model <> 'base_reward') AS total_count,
+			       COALESCE(SUM(amount_micro_usd), 0) AS total_micro_usd,
+			       COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
+			       COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens
+			  FROM provider_earnings
+			 WHERE account_id <> ''
+			 GROUP BY account_id
+			UNION ALL
+			SELECT provider_key, 'provider'::TEXT,
+			       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+			       COALESCE(SUM(amount_micro_usd), 0),
+			       COALESCE(SUM(prompt_tokens), 0),
+			       COALESCE(SUM(completion_tokens), 0)
+			  FROM provider_earnings
+			 WHERE provider_key <> ''
+			 GROUP BY provider_key
+		), current_summary AS (
+			SELECT key, key_type, total_count, total_micro_usd,
+			       total_prompt_tokens, total_completion_tokens
+			  FROM earnings_summary
+			 WHERE key_type IN ('account', 'provider')
+		)
+		SELECT COALESCE(desired.key, current_summary.key) AS key,
+		       COALESCE(desired.key_type, current_summary.key_type) AS key_type,
+		       COALESCE(desired.total_count, 0) - COALESCE(current_summary.total_count, 0) AS count_delta,
+		       COALESCE(desired.total_micro_usd, 0) - COALESCE(current_summary.total_micro_usd, 0) AS money_delta,
+		       COALESCE(desired.total_prompt_tokens, 0) - COALESCE(current_summary.total_prompt_tokens, 0) AS prompt_delta,
+		       COALESCE(desired.total_completion_tokens, 0) - COALESCE(current_summary.total_completion_tokens, 0) AS completion_delta
+		  FROM desired
+		  FULL OUTER JOIN current_summary
+		    ON current_summary.key = desired.key
+		   AND current_summary.key_type = desired.key_type;
 
 		INSERT INTO earnings_summary (
 			key, key_type, total_count, total_micro_usd,
 			total_prompt_tokens, total_completion_tokens, updated_at
 		)
-		SELECT account_id, 'account',
-		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
-		       COALESCE(SUM(amount_micro_usd), 0),
-		       COALESCE(SUM(prompt_tokens), 0),
-		       COALESCE(SUM(completion_tokens), 0), NOW()
-		  FROM provider_earnings
-		 WHERE account_id <> ''
-		 GROUP BY account_id
+		SELECT key, key_type, count_delta, money_delta,
+		       prompt_delta, completion_delta, NOW()
+		  FROM earnings_summary_repair_delta
 		ON CONFLICT (key, key_type) DO UPDATE SET
-			total_count = EXCLUDED.total_count,
-			total_micro_usd = EXCLUDED.total_micro_usd,
-			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-			total_completion_tokens = EXCLUDED.total_completion_tokens,
-			updated_at = NOW();
-
-		INSERT INTO earnings_summary (
-			key, key_type, total_count, total_micro_usd,
-			total_prompt_tokens, total_completion_tokens, updated_at
-		)
-		SELECT provider_key, 'provider',
-		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
-		       COALESCE(SUM(amount_micro_usd), 0),
-		       COALESCE(SUM(prompt_tokens), 0),
-		       COALESCE(SUM(completion_tokens), 0), NOW()
-		  FROM provider_earnings
-		 WHERE provider_key <> ''
-		 GROUP BY provider_key
-		ON CONFLICT (key, key_type) DO UPDATE SET
-			total_count = EXCLUDED.total_count,
-			total_micro_usd = EXCLUDED.total_micro_usd,
-			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
-			total_completion_tokens = EXCLUDED.total_completion_tokens,
+			total_count = earnings_summary.total_count + EXCLUDED.total_count,
+			total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			updated_at = NOW();
 
 		INSERT INTO schema_migrations (id)
@@ -723,7 +738,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 
 		// Repair summaries created before base rewards were excluded from job
 		// counts. Money still includes base rewards; only inference work counts as
-		// a job. The migration locks earning writers around its absolute rebuild.
+		// a job. The migration applies an MVCC-snapshot delta without blocking
+		// live earning writers.
 		earningsSummaryExcludeBaseRewardJobsMigration,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
@@ -1082,6 +1098,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Base-rewards: unify sessions↔earnings identity (design §8).
 		`DO $$ BEGIN ALTER TABLE provider_sessions ADD COLUMN IF NOT EXISTS provider_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_key ON provider_sessions(provider_key, connected_at) WHERE provider_key <> ''`,
+		providerIdentityBackfillMigration,
 
 		// Base-rewards: idempotent epoch settlement, one row per (provider_key, epoch_id).
 		`CREATE TABLE IF NOT EXISTS provider_floor_draws (
@@ -2615,7 +2632,7 @@ func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
 }
 
 // GetBalance returns the current balance in micro-USD for an account.
-func (s *PostgresStore) GetBalance(accountID string) int64 {
+func (s *PostgresStore) GetBalance(accountID string) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2623,10 +2640,13 @@ func (s *PostgresStore) GetBalance(accountID string) int64 {
 	err := s.pool.QueryRow(ctx,
 		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
 	).Scan(&balance)
-	if err != nil {
-		return 0
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
 	}
-	return balance
+	if err != nil {
+		return 0, fmt.Errorf("store: read balance for %q: %w", accountID, err)
+	}
+	return balance, nil
 }
 
 func nullableCreatedAt(ts time.Time) any {
@@ -2722,7 +2742,7 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
-func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
+func (s *PostgresStore) GetWithdrawableBalance(accountID string) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2730,14 +2750,17 @@ func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
 	err := s.pool.QueryRow(ctx,
 		`SELECT withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
 	).Scan(&balance)
-	if err != nil {
-		return 0
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
 	}
-	return balance
+	if err != nil {
+		return 0, fmt.Errorf("store: read withdrawable balance for %q: %w", accountID, err)
+	}
+	return balance, nil
 }
 
 // GetBalanceWithWithdrawable returns both balances in a single query.
-func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int64) {
+func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2745,10 +2768,13 @@ func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int
 	err := s.pool.QueryRow(ctx,
 		`SELECT balance_micro_usd, withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
 	).Scan(&balance, &withdrawable)
-	if err != nil {
-		return 0, 0
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, nil
 	}
-	return balance, withdrawable
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: read balances for %q: %w", accountID, err)
+	}
+	return balance, withdrawable, nil
 }
 
 // CreditWithdrawable adds micro-USD to both the total balance and the
@@ -2957,7 +2983,7 @@ func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64
 }
 
 // LedgerHistory returns ledger entries for an account, newest first.
-func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
+func (s *PostgresStore) LedgerHistory(accountID string) ([]LedgerEntry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -2970,7 +2996,7 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 		accountID,
 	)
 	if err != nil {
-		return []LedgerEntry{}
+		return nil, fmt.Errorf("store: query ledger history: %w", err)
 	}
 	defer rows.Close()
 
@@ -2979,15 +3005,18 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 		var e LedgerEntry
 		var entryType string
 		if err := rows.Scan(&e.ID, &e.AccountID, &entryType, &e.AmountMicroUSD, &e.BalanceAfter, &e.Reference, &e.CreatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan ledger history: %w", err)
 		}
 		e.Type = LedgerEntryType(entryType)
 		entries = append(entries, e)
 	}
-	if entries == nil {
-		return []LedgerEntry{}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate ledger history: %w", err)
 	}
-	return entries
+	if entries == nil {
+		return []LedgerEntry{}, nil
+	}
+	return entries, nil
 }
 
 // KeyCount returns the number of active API keys.
@@ -4311,9 +4340,12 @@ func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]Pr
 		var e ProviderEarning
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
 			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider earning: %w", err)
 		}
 		results = append(results, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider earnings: %w", err)
 	}
 	if results == nil {
 		return []ProviderEarning{}, nil
@@ -4344,9 +4376,12 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 		var e ProviderEarning
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
 			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan account earning: %w", err)
 		}
 		results = append(results, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate account earnings: %w", err)
 	}
 	if results == nil {
 		return []ProviderEarning{}, nil
@@ -4440,9 +4475,12 @@ func (s *PostgresStore) ListProviderPayouts() ([]ProviderPayout, error) {
 	for rows.Next() {
 		var payout ProviderPayout
 		if err := rows.Scan(&payout.ID, &payout.ProviderAddress, &payout.AmountMicroUSD, &payout.Model, &payout.JobID, &payout.Settled, &payout.Timestamp); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider payout: %w", err)
 		}
 		results = append(results, payout)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider payouts: %w", err)
 	}
 	if results == nil {
 		return []ProviderPayout{}, nil
@@ -4469,88 +4507,6 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 		return fmt.Errorf("provider payout %d not found or already settled", id)
 	}
 
-	return nil
-}
-
-// CreditProviderAccount atomically credits a linked provider account and records
-// the corresponding per-node earning.
-//
-// Single-statement CTE: upsert balance, insert ledger entry, insert earning --
-// all in one round trip. The old implementation used 6 sequential round trips
-// (BEGIN + upsert + SELECT balance + INSERT ledger + INSERT earning + COMMIT).
-func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
-	if earning == nil {
-		return errors.New("provider earning is required")
-	}
-	if earning.AccountID == "" {
-		return errors.New("provider earning account_id is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// The earning CTE is the idempotency gate: ON CONFLICT (job_id) DO NOTHING
-	// means a retried settlement (same job_id) inserts nothing and RETURNS no
-	// row, so every downstream CTE (which selects FROM earning) is a pure no-op
-	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
-	// the query returning exactly one row even on a duplicate.
-	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
-		WITH earning AS (
-			INSERT INTO provider_earnings (
-				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
-			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
-		), credit AS (
-			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
-			ON CONFLICT (account_id) DO UPDATE SET
-			  balance_micro_usd = balances.balance_micro_usd + EXCLUDED.balance_micro_usd,
-			  withdrawable_micro_usd = balances.withdrawable_micro_usd + EXCLUDED.withdrawable_micro_usd,
-			  updated_at = NOW()
-			RETURNING balance_micro_usd
-		), ledger AS (
-			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-			SELECT e.account_id, $3, e.amount_micro_usd, c.balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
-			FROM earning e CROSS JOIN credit c
-		), summary_account AS (
-			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
-			       amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
-			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
-			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
-			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
-			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
-			  updated_at = NOW()
-		), summary_provider AS (
-			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
-			       amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
-			WHERE provider_key <> ''
-			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
-			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
-			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
-			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
-			  updated_at = NOW()
-		)
-		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
-		earning.AccountID,                    // $1
-		earning.AmountMicroUSD,               // $2
-		string(LedgerPayout),                 // $3
-		earning.JobID,                        // $4
-		nullableCreatedAt(earning.CreatedAt), // $5
-		earning.ProviderID,                   // $6
-		earning.ProviderKey,                  // $7
-		earning.Model,                        // $8
-		earning.PromptTokens,                 // $9
-		earning.CompletionTokens,             // $10
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: credit provider account: %w", err)
-	}
 	return nil
 }
 
@@ -5291,59 +5247,6 @@ func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, ser
 		return fmt.Errorf("store: touch provider session: %w", err)
 	}
 	return nil
-}
-
-func (s *PostgresStore) ListProviderSessionIdentities(
-	ctx context.Context,
-	accountID string,
-	providerKeys []string,
-) ([]ProviderSessionIdentity, error) {
-	if accountID == "" || len(providerKeys) == 0 {
-		return []ProviderSessionIdentity{}, nil
-	}
-
-	rows, err := s.pool.Query(ctx, `
-		WITH candidates AS (
-			SELECT session_id, provider_key, serial_number, last_seen, 0 AS source_rank
-			  FROM provider_sessions
-			 WHERE account_id = $1
-			   AND provider_key = ANY($2)
-			   AND provider_key <> ''
-			   AND serial_number <> ''
-			UNION ALL
-			SELECT id, public_key, serial_number, last_seen, 1 AS source_rank
-			  FROM providers
-			 WHERE account_id = $1
-			   AND public_key = ANY($2)
-			   AND public_key <> ''
-			   AND serial_number <> ''
-		)
-		SELECT DISTINCT ON (provider_key) session_id, provider_key, serial_number
-		  FROM candidates
-		 ORDER BY provider_key, source_rank, last_seen DESC`,
-		accountID, providerKeys,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list provider session identities: %w", err)
-	}
-	defer rows.Close()
-
-	identities := make([]ProviderSessionIdentity, 0, len(providerKeys))
-	for rows.Next() {
-		var identity ProviderSessionIdentity
-		if err := rows.Scan(
-			&identity.SessionID,
-			&identity.ProviderKey,
-			&identity.SerialNumber,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan provider session identity: %w", err)
-		}
-		identities = append(identities, identity)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate provider session identities: %w", err)
-	}
-	return identities, nil
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Implemented as

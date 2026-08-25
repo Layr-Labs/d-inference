@@ -219,7 +219,13 @@ func TestProviderSessionIdentitiesPreserveHistoricalKeys(t *testing.T) {
 			identities, err := st.ListProviderSessionIdentities(
 				ctx,
 				accountID,
-				[]string{secondKey, firstKey, otherKey, legacyKey, ""},
+				[]ProviderEarningIdentityRef{
+					{ProviderKey: secondKey},
+					{ProviderKey: firstKey},
+					{ProviderKey: otherKey},
+					{ProviderKey: legacyKey},
+					{},
+				},
 			)
 			if err != nil {
 				t.Fatalf("list identities: %v", err)
@@ -250,6 +256,60 @@ func TestProviderSessionIdentitiesPreserveHistoricalKeys(t *testing.T) {
 			}
 			if _, ok := byKey[otherKey]; ok {
 				t.Fatal("identity from another account leaked into results")
+			}
+		})
+	}
+}
+
+func TestProviderSessionIdentitiesPreferDurableIDRelationship(t *testing.T) {
+	ctx := context.Background()
+	for backend, st := range storeBackends(t) {
+		t.Run(backend, func(t *testing.T) {
+			accountID := uniqueID("identity-conflict-account")
+			sessionID := uniqueID("identity-conflict-session")
+			unrelatedID := uniqueID("identity-conflict-provider")
+			unrelatedKey := uniqueID("identity-conflict-key")
+
+			if err := st.OpenProviderSession(
+				ctx,
+				sessionID,
+				"SERIAL-ID-MATCH",
+				accountID,
+			); err != nil {
+				t.Fatalf("open legacy session: %v", err)
+			}
+			if err := st.UpsertProvider(ctx, ProviderRecord{
+				ID:           unrelatedID,
+				Hardware:     []byte(`{}`),
+				Models:       []byte(`[]`),
+				Backend:      "legacy",
+				AccountID:    accountID,
+				PublicKey:    unrelatedKey,
+				SerialNumber: "SERIAL-KEY-MATCH",
+				RegisteredAt: time.Now(),
+				LastSeen:     time.Now(),
+			}); err != nil {
+				t.Fatalf("upsert unrelated provider: %v", err)
+			}
+
+			identities, err := st.ListProviderSessionIdentities(
+				ctx,
+				accountID,
+				[]ProviderEarningIdentityRef{{
+					ProviderID:  sessionID,
+					ProviderKey: unrelatedKey,
+				}},
+			)
+			if err != nil {
+				t.Fatalf("resolve conflicting identity ref: %v", err)
+			}
+			if len(identities) != 1 {
+				t.Fatalf("identities = %+v, want one ID-backed relationship", identities)
+			}
+			if got := identities[0]; got.SessionID != sessionID ||
+				got.SerialNumber != "SERIAL-ID-MATCH" ||
+				got.ProviderKey != "" {
+				t.Fatalf("identity = %+v, want legacy ID relationship without borrowed key", got)
 			}
 		})
 	}

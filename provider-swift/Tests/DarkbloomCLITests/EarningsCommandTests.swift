@@ -144,6 +144,35 @@ struct EarningsCommandTests {
         #expect(roundTrip == report)
     }
 
+    @Test("CLI USD text is derived exactly from integer micro-USD")
+    func exactIntegerUSDFormatting() {
+        #expect(exactUSD(microUSD: 0) == "0.000000")
+        #expect(exactUSD(microUSD: 1) == "0.000001")
+        #expect(exactUSD(microUSD: -1) == "-0.000001")
+        #expect(exactUSD(microUSD: 9_007_199_254_740_993) == "9007199254.740993")
+        #expect(exactUSD(microUSD: Int64.max) == "9223372036854.775807")
+        #expect(exactUSD(microUSD: Int64.min) == "-9223372036854.775808")
+
+        let report = ProviderAccountEarningsReport(
+            accountID: "acct-exact",
+            earnings: [],
+            totalMicroUSD: 9_007_199_254_740_993,
+            totalUSD: "server-rounded-total",
+            count: 4,
+            recentCount: 0,
+            historyLimit: 1_000,
+            availableBalanceMicroUSD: Int64.max,
+            availableBalanceUSD: "server-rounded-available",
+            withdrawableBalanceMicroUSD: 1,
+            withdrawableBalanceUSD: "server-rounded-withdrawable"
+        )
+        let output = earningsTextLines(report).joined(separator: "\n")
+        #expect(output.contains("$9223372036854.775807"))
+        #expect(output.contains("$0.000001"))
+        #expect(output.contains("$9007199254.740993 across 4 jobs"))
+        #expect(!output.contains("server-rounded"))
+    }
+
     @Test("authenticated account id backfills missing and stale local identity")
     func accountIDBackfill() {
         var saved: [String] = []

@@ -149,7 +149,7 @@ func TestServiceReservationRefundReleasesHoldWithoutCredit(t *testing.T) {
 	if !srv.refundReservedBalance(pr, "test") {
 		t.Fatal("refundReservedBalance returned false")
 	}
-	if got := st.GetBalance("svc-refund"); got != 1_000_000 {
+	if got := testBalance(t, st, "svc-refund"); got != 1_000_000 {
 		t.Fatalf("balance = %d, want unchanged 1000000", got)
 	}
 	if srv.refundReservedBalance(pr, "test-again") {
@@ -191,7 +191,7 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	if got := st.DebitCount(); got != 1 {
 		t.Fatalf("Debit calls = %d, want 1 completion settlement debit", got)
 	}
-	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
+	if got := testBalance(t, st, "svc-complete"); got != 1_000_000-expected {
 		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)
 	}
 }

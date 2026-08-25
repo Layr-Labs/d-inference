@@ -188,7 +188,9 @@ type TelemetryStore interface {
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).
 type LedgerStore interface {
 	// GetBalance returns the current balance in micro-USD for an account.
-	GetBalance(accountID string) int64
+	// A missing account is the valid zero balance; operational read failures are
+	// returned and must not be presented as zero.
+	GetBalance(accountID string) (int64, error)
 
 	// Credit adds micro-USD to an account and records the ledger entry.
 	Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
@@ -197,12 +199,12 @@ type LedgerStore interface {
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
-	GetWithdrawableBalance(accountID string) int64
+	GetWithdrawableBalance(accountID string) (int64, error)
 
 	// GetBalanceWithWithdrawable returns both the total balance and the
 	// withdrawable balance in a single query, avoiding two round trips to
 	// the same row in the balances table.
-	GetBalanceWithWithdrawable(accountID string) (balance int64, withdrawable int64)
+	GetBalanceWithWithdrawable(accountID string) (balance int64, withdrawable int64, err error)
 
 	// CreditWithdrawable adds micro-USD to both the total balance and the
 	// withdrawable balance, and records a ledger entry. Use for provider
@@ -224,7 +226,7 @@ type LedgerStore interface {
 	DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
 	// LedgerHistory returns ledger entries for an account, newest first.
-	LedgerHistory(accountID string) []LedgerEntry
+	LedgerHistory(accountID string) ([]LedgerEntry, error)
 
 	// MigrateAccountBalance atomically moves the entire balance (and its
 	// withdrawable subset) from one account ID to another, merging into the
@@ -518,6 +520,10 @@ type ProviderEarningsStore interface {
 	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
 
+	// GetAccountEarningsPage returns a stable, bounded page. The cursor is
+	// exclusive; nil starts at the newest row.
+	GetAccountEarningsPage(accountID string, limit int, before *ProviderEarningsCursor) (ProviderEarningsPage, error)
+
 	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
 	// across ALL accounts that have ever owned the key. It wraps ErrNotFound when
 	// the provider has no earnings; operational read errors are returned intact.
@@ -527,6 +533,10 @@ type ProviderEarningsStore interface {
 	// all linked nodes. It wraps ErrNotFound when the account has no earnings;
 	// operational read errors are returned intact.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
+
+	// GetAccountEarningsWindows returns complete 24-hour and 7-day aggregates.
+	// Money includes base rewards; job counts exclude them.
+	GetAccountEarningsWindows(accountID string, cutoff24h, cutoff7d time.Time) (ProviderEarningsWindows, error)
 
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
@@ -637,10 +647,12 @@ type ProviderStore interface {
 	// backfills serial/account/provider_key if they were unknown at open time.
 	TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error
 
-	// ListProviderSessionIdentities resolves the requested ephemeral provider
-	// keys to their physical machines for one account. Historical session rows
-	// are authoritative; provider records cover pre-session legacy data.
-	ListProviderSessionIdentities(ctx context.Context, accountID string, providerKeys []string) ([]ProviderSessionIdentity, error)
+	// ListProviderSessionIdentities resolves historical earning identities to
+	// physical machines for one account. Both provider ID and provider key are
+	// accepted because either newer column may be empty on legacy rows.
+	// Account-scoped session rows are authoritative; provider records cover
+	// pre-session legacy data.
+	ListProviderSessionIdentities(ctx context.Context, accountID string, refs []ProviderEarningIdentityRef) ([]ProviderSessionIdentity, error)
 
 	// CloseProviderSession marks the open session for sessionID as ended.
 	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error

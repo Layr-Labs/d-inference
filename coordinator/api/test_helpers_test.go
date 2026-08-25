@@ -50,6 +50,42 @@ func withPrivyUser(r *http.Request, user *store.User) *http.Request {
 	return r.WithContext(ctx)
 }
 
+func testBalance(t testing.TB, st store.LedgerStore, accountID string) int64 {
+	t.Helper()
+	balance, err := st.GetBalance(accountID)
+	if err != nil {
+		t.Fatalf("get balance for %q: %v", accountID, err)
+	}
+	return balance
+}
+
+func testWithdrawableBalance(t testing.TB, st store.LedgerStore, accountID string) int64 {
+	t.Helper()
+	balance, err := st.GetWithdrawableBalance(accountID)
+	if err != nil {
+		t.Fatalf("get withdrawable balance for %q: %v", accountID, err)
+	}
+	return balance
+}
+
+func testBalances(t testing.TB, st store.LedgerStore, accountID string) (int64, int64) {
+	t.Helper()
+	balance, withdrawable, err := st.GetBalanceWithWithdrawable(accountID)
+	if err != nil {
+		t.Fatalf("get balances for %q: %v", accountID, err)
+	}
+	return balance, withdrawable
+}
+
+func testLedgerHistory(t testing.TB, st store.LedgerStore, accountID string) []store.LedgerEntry {
+	t.Helper()
+	history, err := st.LedgerHistory(accountID)
+	if err != nil {
+		t.Fatalf("get ledger history for %q: %v", accountID, err)
+	}
+	return history
+}
+
 func testServer(t *testing.T) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

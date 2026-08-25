@@ -833,6 +833,29 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
+// ProviderEarningsCursor is the stable tuple used to page newest-first earning
+// history. CreatedAt is ordered first and ID breaks timestamp ties.
+type ProviderEarningsCursor struct {
+	CreatedAt time.Time
+	ID        int64
+}
+
+// ProviderEarningsPage is one bounded page of account earnings. Next is nil at
+// the end of history.
+type ProviderEarningsPage struct {
+	Earnings []ProviderEarning
+	Next     *ProviderEarningsCursor
+}
+
+// ProviderEarningsWindows contains complete account aggregates for the two
+// dashboard windows. Money includes base rewards; Jobs counts inference work.
+type ProviderEarningsWindows struct {
+	Last24hMicroUSD int64
+	Last24hJobs     int64
+	Last7dMicroUSD  int64
+	Last7dJobs      int64
+}
+
 // ProviderPayout records a provider payout event. This is separate from
 // account-linked provider earnings because some providers are paid directly
 // without being linked to a Privy account.
@@ -918,6 +941,14 @@ type ProviderSessionIdentity struct {
 	SessionID    string
 	ProviderKey  string
 	SerialNumber string
+}
+
+// ProviderEarningIdentityRef is the durable identity carried by one historical
+// earning. ProviderID predates ProviderKey, so legacy rows may contain only the
+// former; newer and base-reward rows may contain only the latter.
+type ProviderEarningIdentityRef struct {
+	ProviderID  string
+	ProviderKey string
 }
 
 // ProviderLocation captures approximate geographic location for a provider or

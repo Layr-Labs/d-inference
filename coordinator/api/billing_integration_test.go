@@ -329,7 +329,7 @@ func TestIntegration_SuccessfulInferenceCreditsProviderAccount(t *testing.T) {
 
 	// Verify provider account was credited with 95% of the inference cost.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
-	if got := st.GetBalance(accountID); got != expectedPayout {
+	if got := testBalance(t, st, accountID); got != expectedPayout {
 		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
 	}
 }
@@ -379,7 +379,7 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 
 	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
 	expectedPayout := payments.ProviderPayout(expectedCost)
-	if got := st.GetBalance(accountID); got != expectedPayout {
+	if got := testBalance(t, st, accountID); got != expectedPayout {
 		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
 	}
 	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {

@@ -247,7 +247,7 @@ func TestPostgresStartupRunsWithdrawableMigrationOnce(t *testing.T) {
 		t.Fatalf("restart NewPostgres: %v", err)
 	}
 	defer restart.Close()
-	if got := restart.GetWithdrawableBalance("live-zero"); got != 0 {
+	if got := mustWithdrawableBalance(t, restart, "live-zero"); got != 0 {
 		t.Fatalf("restart recreated withdrawn funds: got %d, want 0", got)
 	}
 	if count, _ := migrationMarker(t, restart); count != 1 {

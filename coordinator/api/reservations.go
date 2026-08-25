@@ -28,7 +28,10 @@ func (m *serviceReservationManager) Reserve(accountID string, amount int64) erro
 	if m == nil || !m.enabled || amount <= 0 {
 		return nil
 	}
-	balance := m.store.GetBalance(accountID)
+	balance, err := m.store.GetBalance(accountID)
+	if err != nil {
+		return err
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

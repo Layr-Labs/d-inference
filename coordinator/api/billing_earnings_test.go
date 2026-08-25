@@ -371,3 +371,287 @@ func TestAccountEarningsProviderTokenReturnsCompleteLinkedHistory(t *testing.T) 
 		}
 	}
 }
+
+func TestAccountEarningsResolvesLegacySessionWithoutProviderKey(t *testing.T) {
+	srv, st := testWithdrawServer(t)
+	const (
+		accountID      = "acct-legacy-session"
+		legacySession  = "session-before-provider-key"
+		otherSession   = "session-owned-by-other-account"
+		serialNumber   = "SERIAL-LEGACY-SESSION"
+		otherAccountID = "acct-other-owner"
+	)
+	if err := st.OpenProviderSession(
+		context.Background(),
+		legacySession,
+		serialNumber,
+		accountID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OpenProviderSession(
+		context.Background(),
+		otherSession,
+		"SERIAL-OTHER-OWNER",
+		otherAccountID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, earning := range []store.ProviderEarning{
+		{
+			AccountID:      accountID,
+			ProviderID:     legacySession,
+			JobID:          "legacy-owned",
+			Model:          "qwen3.5-9b",
+			AmountMicroUSD: 100,
+			CreatedAt:      time.Now(),
+		},
+		{
+			// A corrupt/cross-account provider ID must not cause the other
+			// account's machine identity to leak into this account's response.
+			AccountID:      accountID,
+			ProviderID:     otherSession,
+			JobID:          "legacy-wrong-owner",
+			Model:          "qwen3.5-9b",
+			AmountMicroUSD: 100,
+			CreatedAt:      time.Now(),
+		},
+	} {
+		if err := st.RecordProviderEarning(&earning); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings?limit=10", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, accountID))
+	rec := httptest.NewRecorder()
+	srv.handleAccountEarnings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response apitypes.AccountEarningsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Providers) != 1 {
+		t.Fatalf("providers = %+v, want one account-owned legacy identity", response.Providers)
+	}
+	identity := response.Providers[0]
+	if identity.ProviderID != legacySession ||
+		identity.ProviderKey != "" ||
+		identity.MachineID != providerMachineID(serialNumber) {
+		t.Fatalf("legacy identity = %+v", identity)
+	}
+}
+
+func TestAccountEarningsCursorPagesPastLegacyLimit(t *testing.T) {
+	srv, st := testWithdrawServer(t)
+	const (
+		accountID = "acct-paged-earnings"
+		rawToken  = "eigeninference-pt-paged-earnings"
+		totalRows = 1_005
+		pageSize  = 1_000
+	)
+	tokenHash := sha256.Sum256([]byte(rawToken))
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: fmt.Sprintf("%x", tokenHash[:]),
+		AccountID: accountID,
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	start := time.Now().Add(-time.Hour)
+	for i := 0; i < totalRows; i++ {
+		if err := st.RecordProviderEarning(&store.ProviderEarning{
+			AccountID:      accountID,
+			ProviderID:     "provider-paged",
+			ProviderKey:    "key-paged",
+			JobID:          fmt.Sprintf("job-paged-%04d", i),
+			Model:          "qwen3.5-9b",
+			AmountMicroUSD: 1,
+			CreatedAt:      start.Add(time.Duration(i) * time.Nanosecond),
+		}); err != nil {
+			t.Fatalf("record earning %d: %v", i, err)
+		}
+	}
+
+	fetch := func(rawURL string) apitypes.AccountEarningsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+		req.Header.Set("Authorization", "Bearer "+rawToken)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", rawURL, rec.Code, rec.Body.String())
+		}
+		var response apitypes.AccountEarningsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode %s: %v", rawURL, err)
+		}
+		return response
+	}
+
+	first := fetch("/v1/provider/account-earnings?limit=1000")
+	if len(first.Earnings) != pageSize || !first.HasMore || first.NextCursor == "" {
+		t.Fatalf("first page = rows:%d has_more:%v cursor:%q", len(first.Earnings), first.HasMore, first.NextCursor)
+	}
+	if first.Earnings[0].JobID != "job-paged-1004" ||
+		first.Earnings[len(first.Earnings)-1].JobID != "job-paged-0005" {
+		t.Fatalf("first page boundaries = %q..%q", first.Earnings[0].JobID, first.Earnings[len(first.Earnings)-1].JobID)
+	}
+
+	second := fetch("/v1/provider/account-earnings?limit=1000&cursor=" + first.NextCursor)
+	if len(second.Earnings) != totalRows-pageSize || second.HasMore || second.NextCursor != "" {
+		t.Fatalf("second page = rows:%d has_more:%v cursor:%q", len(second.Earnings), second.HasMore, second.NextCursor)
+	}
+	if second.Earnings[0].JobID != "job-paged-0004" ||
+		second.Earnings[len(second.Earnings)-1].JobID != "job-paged-0000" {
+		t.Fatalf("second page boundaries = %q..%q", second.Earnings[0].JobID, second.Earnings[len(second.Earnings)-1].JobID)
+	}
+	if first.Count != totalRows || second.Count != totalRows {
+		t.Fatalf("lifetime count = %d/%d, want %d", first.Count, second.Count, totalRows)
+	}
+}
+
+func TestMySummaryUsesCompleteWindowsAndExcludesBaseRewardsFromJobs(t *testing.T) {
+	srv, st := testWithdrawServer(t)
+	const (
+		accountID     = "acct-complete-windows"
+		inferenceRows = 5_001
+		rewardRows    = 3
+	)
+	createdAt := time.Now().Add(-time.Hour)
+	for i := 0; i < inferenceRows; i++ {
+		if err := st.RecordProviderEarning(&store.ProviderEarning{
+			AccountID:      accountID,
+			ProviderID:     "provider-window",
+			ProviderKey:    "key-window",
+			Model:          "qwen3.5-9b",
+			AmountMicroUSD: 1,
+			CreatedAt:      createdAt,
+		}); err != nil {
+			t.Fatalf("record inference earning %d: %v", i, err)
+		}
+	}
+	for i := 0; i < rewardRows; i++ {
+		if err := st.RecordProviderEarning(&store.ProviderEarning{
+			AccountID:      accountID,
+			ProviderKey:    "key-window",
+			Model:          "base_reward",
+			AmountMicroUSD: 10,
+			CreatedAt:      createdAt,
+		}); err != nil {
+			t.Fatalf("record base reward %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/me/summary", nil)
+	req = withPrivyUser(req, &store.User{AccountID: accountID})
+	rec := httptest.NewRecorder()
+	srv.handleMySummary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response mySummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	wantMoney := int64(inferenceRows + rewardRows*10)
+	if response.Last24hJobs != inferenceRows || response.Last7dJobs != inferenceRows ||
+		response.LifetimeJobs != inferenceRows {
+		t.Fatalf(
+			"job counts = 24h:%d 7d:%d lifetime:%d, want %d",
+			response.Last24hJobs,
+			response.Last7dJobs,
+			response.LifetimeJobs,
+			inferenceRows,
+		)
+	}
+	if response.Last24hMicroUSD != wantMoney ||
+		response.Last7dMicroUSD != wantMoney ||
+		response.LifetimeMicroUSD != wantMoney {
+		t.Fatalf(
+			"money = 24h:%d 7d:%d lifetime:%d, want %d",
+			response.Last24hMicroUSD,
+			response.Last7dMicroUSD,
+			response.LifetimeMicroUSD,
+			wantMoney,
+		)
+	}
+}
+
+type accountEarningsPageErrorStore struct {
+	store.Store
+	err error
+}
+
+func (s *accountEarningsPageErrorStore) GetAccountEarningsPage(
+	string,
+	int,
+	*store.ProviderEarningsCursor,
+) (store.ProviderEarningsPage, error) {
+	return store.ProviderEarningsPage{}, s.err
+}
+
+type balancePairErrorStore struct {
+	store.Store
+	err error
+}
+
+func (s *balancePairErrorStore) GetBalanceWithWithdrawable(string) (int64, int64, error) {
+	return 0, 0, s.err
+}
+
+type ledgerHistoryErrorStore struct {
+	store.Store
+	err error
+}
+
+func (s *ledgerHistoryErrorStore) LedgerHistory(string) ([]store.LedgerEntry, error) {
+	return nil, s.err
+}
+
+func TestEarningsHTTPReadersFailClosed(t *testing.T) {
+	operationalErr := errors.New("accounting database unavailable")
+
+	t.Run("account earnings query", func(t *testing.T) {
+		srv, st := testWithdrawServer(t)
+		srv.store = &accountEarningsPageErrorStore{Store: st, err: operationalErr}
+		req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-read-error"))
+		rec := httptest.NewRecorder()
+		srv.handleAccountEarnings(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("account balance", func(t *testing.T) {
+		srv, st := testWithdrawServer(t)
+		srv.store = &balancePairErrorStore{Store: st, err: operationalErr}
+		req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-balance-error"))
+		rec := httptest.NewRecorder()
+		srv.handleAccountEarnings(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), `"available_balance_micro_usd":0`) {
+			t.Fatalf("operational error was presented as a zero balance: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("legacy ledger history", func(t *testing.T) {
+		srv, st := testWithdrawServer(t)
+		srv.store = &ledgerHistoryErrorStore{Store: st, err: operationalErr}
+		req := httptest.NewRequest(http.MethodGet, "/v1/provider/earnings?wallet=legacy-wallet", nil)
+		rec := httptest.NewRecorder()
+		srv.handleProviderEarnings(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), `"ledger":[]`) {
+			t.Fatalf("operational error was presented as empty history: %s", rec.Body.String())
+		}
+	})
+}

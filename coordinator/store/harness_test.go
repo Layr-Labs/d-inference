@@ -88,3 +88,39 @@ func uniqueID(prefix string) string {
 	idSeq++
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), idSeq)
 }
+
+func mustBalance(t testing.TB, s LedgerStore, accountID string) int64 {
+	t.Helper()
+	balance, err := s.GetBalance(accountID)
+	if err != nil {
+		t.Fatalf("get balance for %q: %v", accountID, err)
+	}
+	return balance
+}
+
+func mustWithdrawableBalance(t testing.TB, s LedgerStore, accountID string) int64 {
+	t.Helper()
+	balance, err := s.GetWithdrawableBalance(accountID)
+	if err != nil {
+		t.Fatalf("get withdrawable balance for %q: %v", accountID, err)
+	}
+	return balance
+}
+
+func mustBalances(t testing.TB, s LedgerStore, accountID string) (int64, int64) {
+	t.Helper()
+	balance, withdrawable, err := s.GetBalanceWithWithdrawable(accountID)
+	if err != nil {
+		t.Fatalf("get balances for %q: %v", accountID, err)
+	}
+	return balance, withdrawable
+}
+
+func mustLedgerHistory(t testing.TB, s LedgerStore, accountID string) []LedgerEntry {
+	t.Helper()
+	history, err := s.LedgerHistory(accountID)
+	if err != nil {
+		t.Fatalf("get ledger history for %q: %v", accountID, err)
+	}
+	return history
+}

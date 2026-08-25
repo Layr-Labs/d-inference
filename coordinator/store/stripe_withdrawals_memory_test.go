@@ -68,7 +68,7 @@ func TestMemoryCreditWithdrawableOnce(t *testing.T) {
 	if err != nil || applied {
 		t.Fatalf("duplicate credit: applied=%v err=%v, want skipped", applied, err)
 	}
-	if bal := s.GetBalance("acct-once"); bal != 500_000 {
+	if bal := mustBalance(t, s, "acct-once"); bal != 500_000 {
 		t.Errorf("balance = %d, want 500_000 (credited exactly once)", bal)
 	}
 
@@ -81,7 +81,7 @@ func TestMemoryCreditWithdrawableOnce(t *testing.T) {
 	if applied, _ = s.CreditWithdrawableOnce("acct-once", 100, LedgerDeposit, "stripe_withdraw:wd-1"); !applied {
 		t.Error("different entry type should credit")
 	}
-	if bal := s.GetBalance("acct-once"); bal != 5_000_100 {
+	if bal := mustBalance(t, s, "acct-once"); bal != 5_000_100 {
 		t.Errorf("balance = %d, want 5_000_100", bal)
 	}
 }
@@ -102,10 +102,10 @@ func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-atomic-1"); err != nil {
 		t.Fatalf("atomic debit+insert: %v", err)
 	}
-	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+	if bal := mustBalance(t, s, "acct-wdb"); bal != 6_000_000 {
 		t.Errorf("balance = %d, want 6_000_000", bal)
 	}
-	if _, wdr := s.GetBalanceWithWithdrawable("acct-wdb"); wdr != 6_000_000 {
+	if _, wdr := mustBalances(t, s, "acct-wdb"); wdr != 6_000_000 {
 		t.Errorf("withdrawable = %d, want 6_000_000", wdr)
 	}
 	row, err := s.GetStripeWithdrawal("wd-atomic-1")
@@ -123,7 +123,7 @@ func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if !errors.Is(err, ErrInsufficientBalance) {
 		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
 	}
-	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+	if bal := mustBalance(t, s, "acct-wdb"); bal != 6_000_000 {
 		t.Errorf("failed attempt moved the balance: %d", bal)
 	}
 	if _, err := s.GetStripeWithdrawal("wd-atomic-2"); err == nil {
@@ -139,7 +139,7 @@ func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if err := s.CreateStripeWithdrawalWithDebit(dup, LedgerStripePayout, "stripe_withdraw:dup"); err == nil {
 		t.Fatal("duplicate ID must fail")
 	}
-	if bal := s.GetBalance("acct-wdb"); bal != 6_000_000 {
+	if bal := mustBalance(t, s, "acct-wdb"); bal != 6_000_000 {
 		t.Errorf("duplicate attempt moved the balance: %d", bal)
 	}
 }

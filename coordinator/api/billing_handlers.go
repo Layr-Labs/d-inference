@@ -225,9 +225,15 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 // handleWalletBalance handles GET /v1/billing/wallet/balance.
 func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
+	balance, err := s.store.GetBalance(accountID)
+	if err != nil {
+		s.logger.Error("read wallet balance failed", "account_id", accountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch balance"))
+		return
+	}
 
 	resp := map[string]any{
-		"credit_balance_micro_usd": s.billing.Ledger().Balance(accountID),
+		"credit_balance_micro_usd": balance,
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -726,6 +732,12 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		"amount_micro_usd", amountMicroUSD,
 		"note", req.Note,
 	)
+	balance, err := s.store.GetBalance(user.AccountID)
+	if err != nil {
+		s.logger.Error("read admin-credit balance failed", "account_id", user.AccountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "credit applied but balance could not be read"))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":            true,
@@ -733,7 +745,7 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		"email":         user.Email,
 		"credited_usd":  amountFloat,
 		"withdrawable":  false,
-		"balance_after": float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
+		"balance_after": float64(balance) / 1_000_000,
 	})
 }
 
@@ -785,6 +797,12 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		"amount_micro_usd", amountMicroUSD,
 		"note", req.Note,
 	)
+	balance, withdrawable, err := s.store.GetBalanceWithWithdrawable(user.AccountID)
+	if err != nil {
+		s.logger.Error("read admin-reward balances failed", "account_id", user.AccountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "reward applied but balances could not be read"))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 true,
@@ -792,8 +810,8 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		"email":              user.Email,
 		"rewarded_usd":       amountFloat,
 		"withdrawable":       true,
-		"balance_after":      float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
-		"withdrawable_after": float64(s.store.GetWithdrawableBalance(user.AccountID)) / 1_000_000,
+		"balance_after":      float64(balance) / 1_000_000,
+		"withdrawable_after": float64(withdrawable) / 1_000_000,
 	})
 }
 
@@ -805,22 +823,18 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
 
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			limit = parsed
-		}
+	limit, cursor, err := earningsPageRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
 	}
-	if limit > 1000 {
-		limit = 1000
-	}
-
-	earnings, err := s.store.GetAccountEarnings(accountID, limit)
+	page, err := s.store.GetAccountEarningsPage(accountID, limit, cursor)
 	if err != nil {
 		s.logger.Error("get account earnings failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
 	}
+	earnings := page.Earnings
 
 	summary, err := s.accountEarningsSummary(accountID)
 	if err != nil {
@@ -829,23 +843,26 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providerKeys := make([]string, 0, len(earnings))
-	seenProviderKeys := make(map[string]struct{}, len(earnings))
+	identityRefs := make([]store.ProviderEarningIdentityRef, 0, len(earnings))
+	seenIdentityRefs := make(map[store.ProviderEarningIdentityRef]struct{}, len(earnings))
 	for i := range earnings {
-		key := earnings[i].ProviderKey
-		if key == "" {
+		ref := store.ProviderEarningIdentityRef{
+			ProviderID:  earnings[i].ProviderID,
+			ProviderKey: earnings[i].ProviderKey,
+		}
+		if ref.ProviderID == "" && ref.ProviderKey == "" {
 			continue
 		}
-		if _, seen := seenProviderKeys[key]; seen {
+		if _, seen := seenIdentityRefs[ref]; seen {
 			continue
 		}
-		seenProviderKeys[key] = struct{}{}
-		providerKeys = append(providerKeys, key)
+		seenIdentityRefs[ref] = struct{}{}
+		identityRefs = append(identityRefs, ref)
 	}
 	identities, err := s.store.ListProviderSessionIdentities(
 		r.Context(),
 		accountID,
-		providerKeys,
+		identityRefs,
 	)
 	if err != nil {
 		s.logger.Error("get provider identities for earnings failed", "error", err)
@@ -861,7 +878,12 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
+	availableBalance, withdrawableBalance, err := s.store.GetBalanceWithWithdrawable(accountID)
+	if err != nil {
+		s.logger.Error("get account balances for earnings failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch balances"))
+		return
+	}
 
 	body, err := json.Marshal(apitypes.AccountEarningsResponse{
 		AccountID:                   accountID,
@@ -872,6 +894,8 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		Count:                       summary.Count,
 		RecentCount:                 len(earnings),
 		HistoryLimit:                limit,
+		HasMore:                     page.Next != nil,
+		NextCursor:                  encodeEarningsCursor(page.Next),
 		AvailableBalanceMicroUSD:    availableBalance,
 		AvailableBalanceUSD:         fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
 		WithdrawableBalanceMicroUSD: withdrawableBalance,

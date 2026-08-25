@@ -573,11 +573,11 @@ func TestStripeWithdrawTransferFailureRefunds(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance after refund = %d, want 10_000_000 (full original)", bal)
 	}
 	// Ledger should now have: deposit (+10), charge (-5), refund (+5).
-	entries := st.LedgerHistory(user.AccountID)
+	entries := testLedgerHistory(t, st, user.AccountID)
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 ledger entries, got %d", len(entries))
 	}
@@ -743,7 +743,7 @@ func TestStripeWithdrawTransferOkInstantPayoutFailRefundsFeeOnly(t *testing.T) {
 	}
 	// Seed $10 − gross $5 + fee refund $0.50 = $5.50. The $4.50 principal is
 	// in the connected account, en route via the daily sweep.
-	if bal := st.GetBalance(user.AccountID); bal != 5_500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_500_000 {
 		t.Errorf("balance = %d, want 5_500_000 (fee refunded, principal in connected acct)", bal)
 	}
 	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
@@ -911,7 +911,7 @@ func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
 
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance = %d, want 5_000_000 (no refund — funds retry via sweep)", bal)
 	}
 	wd, _ := st.GetStripeWithdrawal(withdrawalID)
@@ -954,7 +954,7 @@ func TestConnectWebhookPayoutFailedNeverRefundsOnRedelivery(t *testing.T) {
 			t.Fatalf("delivery %d: got %d", i, w.Code)
 		}
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance after 3x payout.failed = %d, want 5_000_000 (no refunds)", bal)
 	}
 	wd, _ := st.GetStripeWithdrawal(withdrawalID)
@@ -1111,7 +1111,7 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 			t.Fatalf("delivery %d: got %d", i, w.Code)
 		}
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance shouldn't change on payout.paid; got %d, want 5_000_000", bal)
 	}
 	wd, _ := st.GetStripeWithdrawal(withdrawalID)
@@ -1194,10 +1194,10 @@ func TestStripeWithdrawRejectsExceedingWithdrawableViaDebit(t *testing.T) {
 	}
 
 	// Balances should be untouched.
-	if bal := st.GetBalance(user.AccountID); bal != 100_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 100_000_000 {
 		t.Errorf("balance = %d, want 100_000_000 (unchanged)", bal)
 	}
-	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 20_000_000 {
+	if wd := testWithdrawableBalance(t, st, user.AccountID); wd != 20_000_000 {
 		t.Errorf("withdrawable = %d, want 20_000_000 (unchanged)", wd)
 	}
 }
@@ -1225,8 +1225,8 @@ func TestStripeWithdrawNoInflationOnFailedPayout(t *testing.T) {
 	st.Credit(user.AccountID, 50_000_000, store.LedgerStripeDeposit, "deposit")
 	st.CreditWithdrawable(user.AccountID, 50_000_000, store.LedgerPayout, "earnings")
 
-	beforeBalance := st.GetBalance(user.AccountID)
-	beforeWithdrawable := st.GetWithdrawableBalance(user.AccountID)
+	beforeBalance := testBalance(t, st, user.AccountID)
+	beforeWithdrawable := testWithdrawableBalance(t, st, user.AccountID)
 	if beforeBalance != 100_000_000 {
 		t.Fatalf("initial balance = %d, want 100_000_000", beforeBalance)
 	}
@@ -1242,8 +1242,8 @@ func TestStripeWithdrawNoInflationOnFailedPayout(t *testing.T) {
 	srv.handleStripeWithdraw(w, req)
 
 	// Transfer fails → refund should restore original balances exactly.
-	afterBalance := st.GetBalance(user.AccountID)
-	afterWithdrawable := st.GetWithdrawableBalance(user.AccountID)
+	afterBalance := testBalance(t, st, user.AccountID)
+	afterWithdrawable := testWithdrawableBalance(t, st, user.AccountID)
 
 	if afterBalance != beforeBalance {
 		t.Errorf("balance after failed withdrawal = %d, want %d (unchanged)", afterBalance, beforeBalance)
@@ -1461,7 +1461,7 @@ func TestStripeWithdrawAccountGonePreCheckUnlinksWithoutDebit(t *testing.T) {
 		t.Errorf("error type = %v", errObj["type"])
 	}
 	// No debit happened.
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance = %d, want 10_000_000 (untouched)", bal)
 	}
 	// Dead account unlinked so the user can re-onboard.
@@ -1509,7 +1509,7 @@ func TestStripeWithdrawServiceAgreementMismatchPreCheck(t *testing.T) {
 	if errObj["type"] != "stripe_account_recreate_required" {
 		t.Errorf("error type = %v", errObj["type"])
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance = %d, want 10_000_000 (untouched)", bal)
 	}
 	refreshed, _ := st.GetUserByAccountID(user.AccountID)
@@ -1884,7 +1884,7 @@ func TestStripeWithdrawAgreementMismatchWithOmittedField(t *testing.T) {
 	if errObj["type"] != "stripe_account_recreate_required" {
 		t.Errorf("error type = %v", errObj["type"])
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance = %d, want untouched", bal)
 	}
 }

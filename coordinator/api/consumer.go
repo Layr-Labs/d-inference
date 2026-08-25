@@ -3699,8 +3699,12 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 // Returns the consumer's current balance in both micro-USD and USD.
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	consumerKey := consumerKeyFromContext(r.Context())
-	balance := s.ledger.Balance(consumerKey)
-	withdrawable := s.store.GetWithdrawableBalance(consumerKey)
+	balance, withdrawable, err := s.store.GetBalanceWithWithdrawable(consumerKey)
+	if err != nil {
+		s.logger.Error("read payment balances failed", "account_id", consumerKey, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch balance"))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, types.BalanceResponse{
 		BalanceMicroUSD:      balance,
@@ -3761,10 +3765,27 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Look up balance by provider address
-	balance := s.ledger.Balance(wallet)
-	history := s.ledger.LedgerHistory(wallet)
-	payouts := s.ledger.AllPayouts()
+	// Look up persisted accounting data by provider address. Any failed read
+	// fails the whole response so an operational outage cannot look like a
+	// zero balance or an empty/partial history.
+	balance, err := s.store.GetBalance(wallet)
+	if err != nil {
+		s.logger.Error("read provider wallet balance failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch provider earnings"))
+		return
+	}
+	history, err := s.store.LedgerHistory(wallet)
+	if err != nil {
+		s.logger.Error("read provider wallet ledger failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch provider earnings"))
+		return
+	}
+	payouts, err := s.store.ListProviderPayouts()
+	if err != nil {
+		s.logger.Error("read provider wallet payouts failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch provider earnings"))
+		return
+	}
 
 	// Filter payouts to this wallet
 	var walletPayouts []payments.Payout
@@ -3782,8 +3803,7 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 	// before provider_payouts was introduced), reconstruct from persisted
 	// ledger entries with payout type and the wallet as account ID.
 	if len(walletPayouts) == 0 {
-		ledgerEntries := s.store.LedgerHistory(wallet)
-		for _, le := range ledgerEntries {
+		for _, le := range history {
 			if le.Type == store.LedgerPayout && le.Reference != "" {
 				walletPayouts = append(walletPayouts, payments.Payout{
 					ProviderAddress: wallet,

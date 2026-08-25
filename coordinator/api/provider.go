@@ -2220,7 +2220,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				go func() {
 					defer settlementWg.Done()
 					start := time.Now()
-					if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+					err := s.store.CreditProviderAccount(&store.ProviderEarning{
 						AccountID:        accountID,
 						ProviderID:       providerID,
 						ProviderKey:      publicKey,
@@ -2230,16 +2230,19 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 						PromptTokens:     msg.Usage.PromptTokens,
 						CompletionTokens: msg.Usage.CompletionTokens,
 						CreatedAt:        time.Now(),
-					}); err != nil {
+					})
+					if err != nil {
 						s.logger.Error("failed to credit linked provider account",
 							"provider_id", providerID,
 							"account_id", accountID,
 							"request_id", msg.RequestID,
 							"error", err,
 						)
+						s.ddIncr("billing.credit_failed", []string{"op:provider_account_credit"})
+					} else {
+						s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 					}
 					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 				}()
 			}
 		}

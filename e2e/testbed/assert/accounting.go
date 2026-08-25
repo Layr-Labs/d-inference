@@ -49,7 +49,16 @@ func (a *AccountingAsserter) assertBalanceIntegrity(report *AssertionReport) {
 
 	driftCount := 0
 	for acc := range accounts {
-		balance := a.store.GetBalance(acc)
+		balance, err := a.store.GetBalance(acc)
+		if err != nil {
+			report.Results = append(report.Results, AssertionResult{
+				Name:    name,
+				Passed:  false,
+				Message: fmt.Sprintf("balance read failed for %s: %v", acc, err),
+			})
+			report.Passed = false
+			return
+		}
 		if balance < 0 {
 			driftCount++
 		}
@@ -71,7 +80,16 @@ func (a *AccountingAsserter) assertNoNegativeBalances(report *AssertionReport) {
 	usage := a.store.UsageRecords()
 	for _, u := range usage {
 		consumerKey := u.ConsumerKey
-		balance := a.store.GetBalance(consumerKey)
+		balance, err := a.store.GetBalance(consumerKey)
+		if err != nil {
+			report.Results = append(report.Results, AssertionResult{
+				Name:    name,
+				Passed:  false,
+				Message: fmt.Sprintf("balance read failed for %s: %v", consumerKey, err),
+			})
+			report.Passed = false
+			return
+		}
 		if balance < 0 {
 			report.Results = append(report.Results, AssertionResult{
 				Name:    name,

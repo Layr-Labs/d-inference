@@ -200,7 +200,12 @@ func (s *Server) handleRedeemInviteCode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	balance := s.store.GetBalance(accountID)
+	balance, err := s.store.GetBalance(accountID)
+	if err != nil {
+		s.logger.Error("failed to read invite balance", "account", accountID, "code", code, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to read balance"))
+		return
+	}
 	s.logger.Info("invite code redeemed", "code", code, "account", accountID, "amount_micro_usd", ic.AmountMicroUSD)
 
 	writeJSON(w, http.StatusOK, map[string]any{

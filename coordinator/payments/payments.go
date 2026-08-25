@@ -58,13 +58,21 @@ func (l *Ledger) Charge(consumerID string, amountMicroUSD int64, jobID string) e
 }
 
 // Balance returns the current balance for a consumer in micro-USD.
+// Deprecated for request handling: callers that can report an operational
+// failure should use Store.GetBalance directly. This compatibility wrapper is
+// retained for internal accounting probes whose existing contract has no error
+// channel.
 func (l *Ledger) Balance(consumerID string) int64 {
-	return l.store.GetBalance(consumerID)
+	balance, _ := l.store.GetBalance(consumerID)
+	return balance
 }
 
 // LedgerHistory returns the full ledger history for an account.
+// Deprecated for request handling: use Store.LedgerHistory so database errors
+// are not collapsed into an empty history.
 func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
-	return l.store.LedgerHistory(consumerID)
+	history, _ := l.store.LedgerHistory(consumerID)
+	return history
 }
 
 // RecordUsage appends a usage entry for a consumer's history.

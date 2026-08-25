@@ -172,7 +172,7 @@ func TestChatCompletionsRemoteMediaTopsUpReservationAfterInlining(t *testing.T) 
 	if n := atomic.LoadInt32(&hits); n != 1 {
 		t.Fatalf("origin hit %d time(s), want exactly 1 (the fetch is gated behind the pre-fetch reservation)", n)
 	}
-	if got := st.GetBalance(testConsumerID); got != preFetch {
+	if got := testBalance(t, st, testConsumerID); got != preFetch {
 		t.Errorf("balance = %d, want %d — the reservation must be fully refunded when the top-up fails", got, preFetch)
 	}
 }

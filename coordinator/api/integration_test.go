@@ -526,7 +526,7 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Verify the account received credits.
-	accountBalance := st.GetBalance(accountID)
+	accountBalance := testBalance(t, st, accountID)
 	if accountBalance <= 0 {
 		t.Errorf("account balance = %d, want > 0 (provider payout should be credited)", accountBalance)
 	}

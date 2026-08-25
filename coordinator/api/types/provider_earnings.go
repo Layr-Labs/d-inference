@@ -22,6 +22,8 @@ type AccountEarningsResponse struct {
 	Count                       int64                     `json:"count"`
 	RecentCount                 int                       `json:"recent_count"`
 	HistoryLimit                int                       `json:"history_limit"`
+	HasMore                     bool                      `json:"has_more"`
+	NextCursor                  string                    `json:"next_cursor,omitempty"`
 	AvailableBalanceMicroUSD    int64                     `json:"available_balance_micro_usd"`
 	AvailableBalanceUSD         string                    `json:"available_balance_usd"`
 	WithdrawableBalanceMicroUSD int64                     `json:"withdrawable_balance_micro_usd"`

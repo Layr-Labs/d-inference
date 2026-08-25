@@ -166,26 +166,16 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := s.store.GetAccountEarnings(accountID, 5000)
+	now := time.Now()
+	windows, err := s.store.GetAccountEarningsWindows(
+		accountID,
+		now.Add(-24*time.Hour),
+		now.Add(-7*24*time.Hour),
+	)
 	if err != nil {
-		s.logger.Error("get account earnings failed", "error", err)
+		s.logger.Error("get account earnings windows failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
-	}
-	now := time.Now()
-	cutoff24h := now.Add(-24 * time.Hour)
-	cutoff7d := now.Add(-7 * 24 * time.Hour)
-	var last24Money, last7dMoney int64
-	var last24Jobs, last7dJobs int64
-	for _, e := range recent {
-		if e.CreatedAt.After(cutoff7d) {
-			last7dMoney += e.AmountMicroUSD
-			last7dJobs++
-			if e.CreatedAt.After(cutoff24h) {
-				last24Money += e.AmountMicroUSD
-				last24Jobs++
-			}
-		}
 	}
 
 	fleet, err := s.mergeFleet(r.Context(), accountID)
@@ -200,17 +190,24 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		tallyCounts(&counts, &fleet[i], s.minProviderVersion)
 	}
 
+	availableBalance, withdrawableBalance, err := s.store.GetBalanceWithWithdrawable(accountID)
+	if err != nil {
+		s.logger.Error("get account balances failed", "account_id", accountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch balances"))
+		return
+	}
+
 	resp := mySummaryResponse{
 		AccountID:                   accountID,
-		AvailableBalanceMicroUSD:    s.store.GetBalance(accountID),
-		WithdrawableBalanceMicroUSD: s.store.GetWithdrawableBalance(accountID),
+		AvailableBalanceMicroUSD:    availableBalance,
+		WithdrawableBalanceMicroUSD: withdrawableBalance,
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
-		Last24hMicroUSD:             last24Money,
-		Last24hJobs:                 last24Jobs,
-		Last7dMicroUSD:              last7dMoney,
-		Last7dJobs:                  last7dJobs,
+		Last24hMicroUSD:             windows.Last24hMicroUSD,
+		Last24hJobs:                 windows.Last24hJobs,
+		Last7dMicroUSD:              windows.Last7dMicroUSD,
+		Last7dJobs:                  windows.Last7dJobs,
 		Counts:                      counts,
 		LatestProviderVersion:       s.latestReleasedVersion(),
 		MinProviderVersion:          s.minProviderVersion,

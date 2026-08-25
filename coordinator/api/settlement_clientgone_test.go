@@ -110,7 +110,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 
 	// (1) Provider payout credited (provider credit runs under settlementWg, which
 	// handleComplete waits on, so it is observable synchronously here).
-	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+	if got := testWithdrawableBalance(t, st, accountID); got != expectedPayout {
 		t.Errorf("provider payout = %d, want %d (provider must be paid for a completed-after-disconnect request)", got, expectedPayout)
 	}
 
@@ -273,7 +273,7 @@ func TestHandleCompleteAfterGraceExpiryIsNoOp(t *testing.T) {
 	if got := ledger.Balance(consumerID); got != initialBalance {
 		t.Errorf("consumer balance after late terminal = %d, want %d (no re-charge / double refund)", got, initialBalance)
 	}
-	if got := st.GetWithdrawableBalance(accountID); got != 0 {
+	if got := testWithdrawableBalance(t, st, accountID); got != 0 {
 		t.Errorf("provider payout = %d, want 0 (no payout once the grace already refunded)", got)
 	}
 	p := srv.registry.GetProvider(provider.ID)

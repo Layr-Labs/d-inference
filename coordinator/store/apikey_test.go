@@ -323,7 +323,7 @@ func TestMigrateAccountBalance(t *testing.T) {
 	if err := s.CreditWithdrawable(from, 2_000_000, LedgerAdminReward, "seed-wdr"); err != nil {
 		t.Fatalf("CreditWithdrawable: %v", err)
 	}
-	totalBal, totalWdr := s.GetBalanceWithWithdrawable(from)
+	totalBal, totalWdr := mustBalances(t, s, from)
 
 	moved, err := s.MigrateAccountBalance(from, to)
 	if err != nil {
@@ -333,10 +333,10 @@ func TestMigrateAccountBalance(t *testing.T) {
 		t.Fatal("expected moved=true")
 	}
 	// Source drained, destination credited with the full balance + withdrawable.
-	if b := s.GetBalance(from); b != 0 {
+	if b := mustBalance(t, s, from); b != 0 {
 		t.Errorf("source balance = %d, want 0", b)
 	}
-	if b, w := s.GetBalanceWithWithdrawable(to); b != totalBal || w != totalWdr {
+	if b, w := mustBalances(t, s, to); b != totalBal || w != totalWdr {
 		t.Errorf("dest balance=%d/wdr=%d, want %d/%d", b, w, totalBal, totalWdr)
 	}
 	// Idempotent: a second migration is a no-op (source already empty).

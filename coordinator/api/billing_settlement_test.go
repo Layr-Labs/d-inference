@@ -101,7 +101,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 		Usage:     usage,
 	})
 
-	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+	if got := testWithdrawableBalance(t, st, accountID); got != expectedPayout {
 		t.Fatalf("provider account payout = %d, want %d", got, expectedPayout)
 	}
 	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
@@ -235,7 +235,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 	// pays the full actual cost (reservation + overage), not the clamped
 	// reservation amount.
 	expectedPayout := payments.ProviderPayout(actualCost)
-	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+	if got := testWithdrawableBalance(t, st, accountID); got != expectedPayout {
 		t.Errorf("provider payout = %d, want %d (full actual cost payout)", got, expectedPayout)
 	}
 	if got := ledger.Balance(consumerID); got != initialBalance-actualCost {
@@ -296,7 +296,7 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 	// Overage charge should have failed, so the provider gets paid based on
 	// the clamped reservation amount, not the full actual cost.
 	expectedPayout := payments.ProviderPayout(reservedAmount)
-	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+	if got := testWithdrawableBalance(t, st, accountID); got != expectedPayout {
 		t.Errorf("provider payout = %d, want %d (clamped to reservation)", got, expectedPayout)
 	}
 	// Consumer balance should be zero: entire deposit was reserved, overage

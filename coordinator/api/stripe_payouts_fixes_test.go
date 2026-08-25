@@ -93,7 +93,7 @@ func TestConnectWebhookPayoutBounceAfterPaidReopens(t *testing.T) {
 		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
 		Method: "instant", Status: "paid", TransferID: "tr_pb", PayoutID: "po_pb",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	payload := payoutEventPayload("po_pb", user.StripeAccountID, "failed", false, time.Now().Unix())
 	if w := deliverConnectWebhook(t, srv, payload); w.Code != http.StatusOK {
@@ -110,7 +110,7 @@ func TestConnectWebhookPayoutBounceAfterPaidReopens(t *testing.T) {
 	if wd.PayoutID != "" {
 		t.Errorf("dead payout ID should be detached, got %q", wd.PayoutID)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+500_000 {
 		t.Errorf("balance = %d, want %d (fee refunded exactly once)", bal, balBefore+500_000)
 	}
 
@@ -119,7 +119,7 @@ func TestConnectWebhookPayoutBounceAfterPaidReopens(t *testing.T) {
 	if w := deliverConnectWebhook(t, srv, payload); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+500_000 {
 		t.Errorf("redelivery double-credited: balance = %d", bal)
 	}
 	wd, _ = st.GetStripeWithdrawal("wd-paid-bounce")
@@ -144,7 +144,7 @@ func TestConnectWebhookStalePayoutFailureLeavesPaidRow(t *testing.T) {
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "paid", TransferID: "tr_sf",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	w := deliverConnectWebhook(t, srv,
 		payoutEventPayload("po_stale_detached", user.StripeAccountID, "failed", false, time.Now().Unix()))
@@ -155,7 +155,7 @@ func TestConnectWebhookStalePayoutFailureLeavesPaidRow(t *testing.T) {
 	if wd.Status != "paid" {
 		t.Errorf("status = %q, want paid (stale failures never touch completed rows)", wd.Status)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("balance moved: %d -> %d", balBefore, bal)
 	}
 }
@@ -175,7 +175,7 @@ func TestConnectWebhookPayoutBounceOnPaidRefundedRowUntouched(t *testing.T) {
 		Method: "instant", Status: "paid", TransferID: "tr_pr", PayoutID: "po_pr",
 		Refunded: true,
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv,
 		payoutEventPayload("po_pr", user.StripeAccountID, "failed", false, time.Now().Unix())); w.Code != http.StatusOK {
@@ -185,7 +185,7 @@ func TestConnectWebhookPayoutBounceOnPaidRefundedRowUntouched(t *testing.T) {
 	if wd.Status != "paid" || !wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want paid/true (untouched)", wd.Status, wd.Refunded)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("balance moved on paid+refunded row: %d -> %d", balBefore, bal)
 	}
 }
@@ -205,7 +205,7 @@ func TestConnectWebhookInstantPayoutFailedRefundsFeeAndDetaches(t *testing.T) {
 		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
 		Method: "instant", Status: "transferred", TransferID: "tr_af", PayoutID: "po_af",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	payload := payoutEventPayload("po_af", user.StripeAccountID, "failed", false, time.Now().Unix())
 	if w := deliverConnectWebhook(t, srv, payload); w.Code != http.StatusOK {
@@ -225,7 +225,7 @@ func TestConnectWebhookInstantPayoutFailedRefundsFeeAndDetaches(t *testing.T) {
 	if !strings.Contains(wd.FailureReason, "po_af") {
 		t.Errorf("failure reason should record the failed payout id, got %q", wd.FailureReason)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+500_000 {
 		t.Errorf("balance = %d, want %d (fee refunded once)", bal, balBefore+500_000)
 	}
 
@@ -234,7 +234,7 @@ func TestConnectWebhookInstantPayoutFailedRefundsFeeAndDetaches(t *testing.T) {
 	if w := deliverConnectWebhook(t, srv, payload); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+500_000 {
 		t.Errorf("redelivery double-credited: balance = %d", bal)
 	}
 }
@@ -375,7 +375,7 @@ func TestConnectWebhookPartialTransferReversalNoAutoRefund(t *testing.T) {
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", TransferID: "tr_partial",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	// Partial reversal: no ledger movement, row stays non-terminal.
 	if w := deliverConnectWebhook(t, srv, partialTransferReversedPayload("tr_partial", 200)); w.Code != http.StatusOK {
@@ -385,7 +385,7 @@ func TestConnectWebhookPartialTransferReversalNoAutoRefund(t *testing.T) {
 	if wd.Status != "transferred" || wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want transferred/false (manual review only)", wd.Status, wd.Refunded)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("partial reversal moved the ledger: %d -> %d", balBefore, bal)
 	}
 
@@ -397,7 +397,7 @@ func TestConnectWebhookPartialTransferReversalNoAutoRefund(t *testing.T) {
 	if wd.Status != "failed" || !wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want failed/true", wd.Status, wd.Refunded)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+5_000_000 {
 		t.Errorf("balance = %d, want %d (refunded exactly once, on full reversal)", bal, balBefore+5_000_000)
 	}
 }
@@ -423,7 +423,7 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 		"stripe_withdraw_fee:wd-rev-fee"); err != nil {
 		t.Fatal(err)
 	}
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -434,7 +434,7 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 		t.Errorf("row = status %q refunded=%v, want failed/true", wd.Status, wd.Refunded)
 	}
 	// Refund is gross − fee = 4_500_000, NOT the full 5_000_000.
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+4_500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+4_500_000 {
 		t.Errorf("balance = %d, want %d (gross minus already-refunded fee)", bal, balBefore+4_500_000)
 	}
 }
@@ -460,13 +460,13 @@ func TestConnectWebhookTransferReversedDedupesFeeByLedgerRef(t *testing.T) {
 		"stripe_withdraw_fee:wd-rev-flagless"); err != nil {
 		t.Fatal(err)
 	}
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_fl")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
 	// Only the net part credits; the fee ref already exists.
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+4_500_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+4_500_000 {
 		t.Errorf("balance = %d, want %d (fee deduped by ledger ref despite lost flag)", bal, balBefore+4_500_000)
 	}
 }
@@ -484,12 +484,12 @@ func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing
 		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
 		Method: "instant", Status: "transferred", TransferID: "tr_rev_g",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_g")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+5_000_000 {
 		t.Errorf("balance = %d, want %d (full gross)", bal, balBefore+5_000_000)
 	}
 
@@ -497,7 +497,7 @@ func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_g")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore+5_000_000 {
 		t.Errorf("redelivery double-credited: balance = %d", bal)
 	}
 }
@@ -516,7 +516,7 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "paid", TransferID: "tr_rev_p",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -525,7 +525,7 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	if wd.Status != "paid" || wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want paid/false (manual review)", wd.Status, wd.Refunded)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("balance moved on a paid row: %d -> %d", balBefore, bal)
 	}
 }
@@ -587,13 +587,13 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", TransferID: "tr_conv",
 	})
-	balBefore := flaky.GetBalance(user.AccountID)
+	balBefore := testBalance(t, flaky, user.AccountID)
 
 	flaky.failUpdates = true
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+	if bal := testBalance(t, flaky, user.AccountID); bal != balBefore+5_000_000 {
 		t.Fatalf("credit should have landed once: balance = %d", bal)
 	}
 
@@ -601,7 +601,7 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
+	if bal := testBalance(t, flaky, user.AccountID); bal != balBefore+5_000_000 {
 		t.Errorf("redelivery double-credited: balance = %d", bal)
 	}
 	wd, _ := flaky.GetStripeWithdrawal("wd-rev-conv")
@@ -687,7 +687,7 @@ func TestStripeWithdrawAbortsWhenScheduleHealFails(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance = %d, want 10_000_000 (no debit before abort)", bal)
 	}
 	if wds, _ := st.ListStripeWithdrawals(user.AccountID, 0); len(wds) != 0 {
@@ -777,7 +777,7 @@ func TestStripeWithdrawAmbiguousTransferParksRowWithoutRefund(t *testing.T) {
 		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
 	}
 	// Debited, NOT refunded — the transfer may have been accepted.
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance = %d, want 5_000_000 (debit stands, no refund on ambiguity)", bal)
 	}
 	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
@@ -817,7 +817,7 @@ func TestStripeWithdrawAmbiguousTransferRetryRecovers(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance = %d, want 5_000_000 (exactly one debit)", bal)
 	}
 	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
@@ -852,7 +852,7 @@ func TestStripeWithdrawAmbiguousInstantPayoutKeepsFee(t *testing.T) {
 		t.Fatalf("got %d, want 202: %s", w.Code, w.Body.String())
 	}
 	// Gross debited, fee NOT refunded (payout may have delivered).
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance = %d, want 5_000_000 (fee kept until outcome is known)", bal)
 	}
 	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
@@ -884,7 +884,7 @@ func TestConnectWebhookPayoutPaidOnRefundedRowStaysFailed(t *testing.T) {
 		Method: "instant", Status: "failed", TransferID: "tr_por", PayoutID: "po_por",
 		Refunded: true, FailureReason: "transfer_reversed",
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv,
 		payoutEventPayload("po_por", user.StripeAccountID, "paid", false, time.Now().Unix())); w.Code != http.StatusOK {
@@ -894,7 +894,7 @@ func TestConnectWebhookPayoutPaidOnRefundedRowStaysFailed(t *testing.T) {
 	if wd.Status != "failed" || !wd.Refunded {
 		t.Errorf("row = status %q refunded=%v, want failed/true (manual review, never paid)", wd.Status, wd.Refunded)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("balance moved: %d -> %d", balBefore, bal)
 	}
 }
@@ -936,7 +936,7 @@ func TestStripeWithdraw500TransferParksRowWithoutRefund(t *testing.T) {
 	if n := atomic.LoadInt32(&transferCalls); n != 3 {
 		t.Errorf("transfer attempts = %d, want 3 (idempotent replays before parking)", n)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance = %d, want 5_000_000 (500 is indeterminate — no refund)", bal)
 	}
 	wds, _ := st.ListStripeWithdrawals(user.AccountID, 0)
@@ -976,7 +976,7 @@ func TestConnectWebhookSweepBounceReopensClaimedRows(t *testing.T) {
 		Method: "standard", Status: "paid", TransferID: "tr_sb0", SweepPayoutID: "po_sweep_old",
 		CreatedAt: sweepTime.Add(-48 * time.Hour),
 	})
-	balBefore := st.GetBalance(user.AccountID)
+	balBefore := testBalance(t, st, user.AccountID)
 
 	// The sweep pays: both transferred rows are claimed and stamped.
 	if w := deliverConnectWebhook(t, srv,
@@ -1008,7 +1008,7 @@ func TestConnectWebhookSweepBounceReopensClaimedRows(t *testing.T) {
 	if old.Status != "paid" || old.SweepPayoutID != "po_sweep_old" {
 		t.Errorf("older sweep's row = status %q sweep %q, want paid/po_sweep_old (untouched)", old.Status, old.SweepPayoutID)
 	}
-	if bal := st.GetBalance(user.AccountID); bal != balBefore {
+	if bal := testBalance(t, st, user.AccountID); bal != balBefore {
 		t.Errorf("sweep bounce moved the ledger: %d -> %d", balBefore, bal)
 	}
 

@@ -16,10 +16,10 @@ func TestWithdrawableBalance_CreditIsNotWithdrawable(t *testing.T) {
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.Credit("acct-1", 10_000_000, store.LedgerStripeDeposit, "stripe:123")
 
-	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
+	if bal := testBalance(t, st, "acct-1"); bal != 10_000_000 {
 		t.Errorf("balance = %d, want 10_000_000", bal)
 	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 0 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 0 {
 		t.Errorf("withdrawable = %d, want 0 (Stripe deposit is not withdrawable)", w)
 	}
 }
@@ -28,10 +28,10 @@ func TestWithdrawableBalance_CreditWithdrawableIncrementsBoth(t *testing.T) {
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	_ = st.CreditWithdrawable("acct-1", 10_000_000, store.LedgerPayout, "job-1")
 
-	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
+	if bal := testBalance(t, st, "acct-1"); bal != 10_000_000 {
 		t.Errorf("balance = %d, want 10_000_000", bal)
 	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 10_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 10_000_000 {
 		t.Errorf("withdrawable = %d, want 10_000_000", w)
 	}
 }
@@ -41,26 +41,26 @@ func TestWithdrawableBalance_DebitConsumesCreditsFirst(t *testing.T) {
 	_ = st.Credit("acct-1", 20_000_000, store.LedgerStripeDeposit, "stripe:1")
 	_ = st.CreditWithdrawable("acct-1", 30_000_000, store.LedgerPayout, "job-1")
 
-	if bal := st.GetBalance("acct-1"); bal != 50_000_000 {
+	if bal := testBalance(t, st, "acct-1"); bal != 50_000_000 {
 		t.Fatalf("balance = %d, want 50_000_000", bal)
 	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 30_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 30_000_000 {
 		t.Fatalf("withdrawable = %d, want 30_000_000", w)
 	}
 
 	_ = st.Debit("acct-1", 15_000_000, store.LedgerCharge, "req-1")
-	if bal := st.GetBalance("acct-1"); bal != 35_000_000 {
+	if bal := testBalance(t, st, "acct-1"); bal != 35_000_000 {
 		t.Errorf("after $15 charge: balance = %d, want 35_000_000", bal)
 	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 30_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 30_000_000 {
 		t.Errorf("after $15 charge: withdrawable = %d, want 30_000_000 (credits consumed first)", w)
 	}
 
 	_ = st.Debit("acct-1", 10_000_000, store.LedgerCharge, "req-2")
-	if bal := st.GetBalance("acct-1"); bal != 25_000_000 {
+	if bal := testBalance(t, st, "acct-1"); bal != 25_000_000 {
 		t.Errorf("after $10 charge: balance = %d, want 25_000_000", bal)
 	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 25_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 25_000_000 {
 		t.Errorf("after $10 charge: withdrawable = %d, want 25_000_000", w)
 	}
 }
@@ -70,12 +70,12 @@ func TestWithdrawableBalance_DebitAllEarnings(t *testing.T) {
 	_ = st.CreditWithdrawable("acct-1", 50_000_000, store.LedgerPayout, "job-1")
 
 	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-1")
-	if w := st.GetWithdrawableBalance("acct-1"); w != 25_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 25_000_000 {
 		t.Errorf("withdrawable = %d, want 25_000_000", w)
 	}
 
 	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-2")
-	if w := st.GetWithdrawableBalance("acct-1"); w != 0 {
+	if w := testWithdrawableBalance(t, st, "acct-1"); w != 0 {
 		t.Errorf("withdrawable = %d, want 0", w)
 	}
 }
@@ -94,7 +94,7 @@ func TestWithdrawableBalance_ProviderEarningIsWithdrawable(t *testing.T) {
 		AmountMicroUSD: 5_000_000,
 	})
 
-	if w := st.GetWithdrawableBalance("acct-provider"); w != 5_000_000 {
+	if w := testWithdrawableBalance(t, st, "acct-provider"); w != 5_000_000 {
 		t.Errorf("provider earning should be withdrawable: got %d, want 5_000_000", w)
 	}
 }
@@ -160,7 +160,7 @@ func TestStripeWithdrawAllowsWithdrawableBalance(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 7_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 7_000_000 {
 		t.Errorf("balance = %d, want 7_000_000", bal)
 	}
 }
@@ -203,14 +203,14 @@ func TestAdminCreditNonWithdrawable(t *testing.T) {
 	if resp["withdrawable"] != false {
 		t.Errorf("admin credit should be non-withdrawable")
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 25_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 25_000_000 {
 		t.Errorf("balance = %d, want 25_000_000", bal)
 	}
-	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 0 {
+	if wd := testWithdrawableBalance(t, st, user.AccountID); wd != 0 {
 		t.Errorf("withdrawable = %d, want 0 (admin credit is non-withdrawable)", wd)
 	}
 
-	entries := st.LedgerHistory(user.AccountID)
+	entries := testLedgerHistory(t, st, user.AccountID)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 ledger entry, got %d", len(entries))
 	}
@@ -271,14 +271,14 @@ func TestAdminRewardWithdrawable(t *testing.T) {
 	if resp["withdrawable"] != true {
 		t.Errorf("admin reward should be withdrawable")
 	}
-	if bal := st.GetBalance(user.AccountID); bal != 50_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 50_000_000 {
 		t.Errorf("balance = %d, want 50_000_000", bal)
 	}
-	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 50_000_000 {
+	if wd := testWithdrawableBalance(t, st, user.AccountID); wd != 50_000_000 {
 		t.Errorf("withdrawable = %d, want 50_000_000", wd)
 	}
 
-	entries := st.LedgerHistory(user.AccountID)
+	entries := testLedgerHistory(t, st, user.AccountID)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 ledger entry, got %d", len(entries))
 	}
@@ -330,10 +330,10 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 		t.Fatalf("withdraw: got %d: %s", w.Code, w.Body.String())
 	}
 
-	if bal := st.GetBalance(user.AccountID); bal != 5_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 5_000_000 {
 		t.Errorf("balance after = %d, want 5_000_000", bal)
 	}
-	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 5_000_000 {
+	if wd := testWithdrawableBalance(t, st, user.AccountID); wd != 5_000_000 {
 		t.Errorf("withdrawable after = %d, want 5_000_000", wd)
 	}
 }
@@ -349,7 +349,7 @@ func TestWithdrawableBalance_ProviderWalletIsWithdrawable(t *testing.T) {
 		JobID:           "job-1",
 	})
 
-	if w := st.GetWithdrawableBalance("wallet-addr-1"); w != 8_000_000 {
+	if w := testWithdrawableBalance(t, st, "wallet-addr-1"); w != 8_000_000 {
 		t.Errorf("wallet provider earning should be withdrawable: got %d, want 8_000_000", w)
 	}
 }
@@ -363,10 +363,10 @@ func TestWithdrawableBalance_ReferralRewardIsWithdrawable(t *testing.T) {
 	// Directly test that CreditWithdrawable with LedgerReferralReward works
 	_ = st.CreditWithdrawable("referrer-acct", 1_000_000, store.LedgerReferralReward, "job-1")
 
-	if w := st.GetWithdrawableBalance("referrer-acct"); w != 1_000_000 {
+	if w := testWithdrawableBalance(t, st, "referrer-acct"); w != 1_000_000 {
 		t.Errorf("referral reward should be withdrawable: got %d, want 1_000_000", w)
 	}
-	if bal := st.GetBalance("referrer-acct"); bal != 1_000_000 {
+	if bal := testBalance(t, st, "referrer-acct"); bal != 1_000_000 {
 		t.Errorf("balance = %d, want 1_000_000", bal)
 	}
 }
@@ -394,10 +394,10 @@ func TestStripeWithdrawFailureRestoresWithdrawable(t *testing.T) {
 		t.Fatalf("got %d, want 502", w.Code)
 	}
 	// Balance and withdrawable should both be fully restored
-	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+	if bal := testBalance(t, st, user.AccountID); bal != 10_000_000 {
 		t.Errorf("balance after refund = %d, want 10_000_000", bal)
 	}
-	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 10_000_000 {
+	if wd := testWithdrawableBalance(t, st, user.AccountID); wd != 10_000_000 {
 		t.Errorf("withdrawable after refund = %d, want 10_000_000 (should be restored)", wd)
 	}
 }

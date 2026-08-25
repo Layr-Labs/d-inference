@@ -523,7 +523,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	// Let handleComplete finish processing.
 	time.Sleep(500 * time.Millisecond)
 
-	finalBalance := st.GetBalance(consumerID)
+	finalBalance := testBalance(t, st, consumerID)
 	charged := initialBalance - finalBalance
 
 	t.Logf("billing: initial=$%.2f, final=$%.2f, charged=$%.2f",
@@ -538,7 +538,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	}
 
 	// Verify ledger entries: should have 1 deposit + numRequests charges.
-	ledger := st.LedgerHistory(consumerID)
+	ledger := testLedgerHistory(t, st, consumerID)
 	chargeCount := 0
 	for _, entry := range ledger {
 		if entry.Type == store.LedgerCharge {

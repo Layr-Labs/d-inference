@@ -252,11 +252,11 @@ func TestCreditProviderAccountAtomic(t *testing.T) {
 				t.Fatalf("CreditProviderAccount: %v", err)
 			}
 
-			if bal := s.GetBalance("acct-linked"); bal != 123_000 {
+			if bal := mustBalance(t, s, "acct-linked"); bal != 123_000 {
 				t.Fatalf("balance = %d, want 123000", bal)
 			}
 
-			history := s.LedgerHistory("acct-linked")
+			history := mustLedgerHistory(t, s, "acct-linked")
 			if len(history) != 1 {
 				t.Fatalf("ledger history = %d, want 1", len(history))
 			}
@@ -291,11 +291,11 @@ func TestCreditProviderWalletAtomic(t *testing.T) {
 				t.Fatalf("CreditProviderWallet: %v", err)
 			}
 
-			if bal := s.GetBalance("0xatomicwallet"); bal != 456_000 {
+			if bal := mustBalance(t, s, "0xatomicwallet"); bal != 456_000 {
 				t.Fatalf("wallet balance = %d, want 456000", bal)
 			}
 
-			history := s.LedgerHistory("0xatomicwallet")
+			history := mustLedgerHistory(t, s, "0xatomicwallet")
 			if len(history) != 1 {
 				t.Fatalf("ledger history = %d, want 1", len(history))
 			}

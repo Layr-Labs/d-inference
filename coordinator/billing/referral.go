@@ -159,7 +159,10 @@ func (r *ReferralService) Stats(accountID string) (*ReferralStatsResponse, error
 		return nil, fmt.Errorf("referral: get stats: %w", err)
 	}
 
-	balance := r.store.GetBalance(accountID)
+	balance, err := r.store.GetBalance(accountID)
+	if err != nil {
+		return nil, fmt.Errorf("referral: get balance: %w", err)
+	}
 
 	return &ReferralStatsResponse{
 		Code:                 referrer.Code,

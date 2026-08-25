@@ -147,7 +147,10 @@ func TestReferralRewardDistribution(t *testing.T) {
 		t.Fatalf("expected adjusted platform fee %d, got %d", expectedPlatformFee, adjustedFee)
 	}
 
-	referrerBalance := st.GetBalance("referrer-wallet")
+	referrerBalance, err := st.GetBalance("referrer-wallet")
+	if err != nil {
+		t.Fatalf("get referrer balance: %v", err)
+	}
 	if referrerBalance != expectedReferralReward {
 		t.Fatalf("expected referrer balance %d, got %d", expectedReferralReward, referrerBalance)
 	}
@@ -199,7 +202,10 @@ func TestCreditDeposit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credit: %v", err)
 	}
-	balance := st.GetBalance("consumer-1")
+	balance, err := st.GetBalance("consumer-1")
+	if err != nil {
+		t.Fatalf("get balance: %v", err)
+	}
 	if balance != 1_000_000 {
 		t.Fatalf("expected balance 1000000, got %d", balance)
 	}

@@ -279,7 +279,7 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 	if err != nil || applied {
 		t.Fatalf("duplicate CreditWithdrawableOnce: applied=%v err=%v, want skipped", applied, err)
 	}
-	if bal := s.GetBalance("acct-pg-wd"); bal != 500_000 {
+	if bal := mustBalance(t, s, "acct-pg-wd"); bal != 500_000 {
 		t.Errorf("balance = %d, want 500_000 (credited exactly once)", bal)
 	}
 
@@ -656,9 +656,12 @@ func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) 
 		_, err := s.pool.Exec(context.Background(), earningsSummaryExcludeBaseRewardJobsMigration)
 		migrationDone <- err
 	}()
-	waitForPostgresLock(t, s, "provider_earnings", "ShareLock")
+	// The repaired migration performs its long aggregate under AccessShare,
+	// which does not block normal RowExclusive earning inserts.
+	waitForPostgresLock(t, s, "provider_earnings", "AccessShareLock")
 
 	creditDone := make(chan error, 1)
+	creditStarted := time.Now()
 	go func() {
 		creditDone <- s.CreditProviderAccount(&ProviderEarning{
 			AccountID:        accountID,
@@ -671,12 +674,17 @@ func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) 
 			CompletionTokens: 3,
 		})
 	}()
+	waitForPostgresLock(t, s, "provider_earnings", "RowExclusiveLock")
 	select {
 	case err := <-creditDone:
 		t.Fatalf("credit escaped the migration lock: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
+	// Hold the relation beyond CreditProviderAccount's per-attempt deadline.
+	// The first statement must time out, then the idempotent retry must remain
+	// queued behind the repair instead of dropping the provider's payout.
+	time.Sleep(providerCreditAttemptTimeout + 250*time.Millisecond)
 	if err := blocker.Commit(ctx); err != nil {
 		t.Fatalf("release blocker: %v", err)
 	}
@@ -685,6 +693,21 @@ func TestPostgresEarningsSummaryRepairSerializesConcurrentCredits(t *testing.T) 
 	}
 	if err := <-creditDone; err != nil {
 		t.Fatalf("concurrent credit: %v", err)
+	}
+	if elapsed := time.Since(creditStarted); elapsed < providerCreditAttemptTimeout {
+		t.Fatalf("credit completed in %v, want a real timeout/retry path", elapsed)
+	}
+
+	var balance, withdrawable int64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT balance_micro_usd, withdrawable_micro_usd
+		  FROM balances
+		 WHERE account_id = $1`, accountID,
+	).Scan(&balance, &withdrawable); err != nil {
+		t.Fatalf("read credited balance: %v", err)
+	}
+	if balance != 400 || withdrawable != 400 {
+		t.Fatalf("balance = %d/%d, want provider credit 400/400", balance, withdrawable)
 	}
 
 	for _, summary := range []struct {
@@ -840,7 +863,7 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-pg-atomic-1"); err != nil {
 		t.Fatalf("atomic debit+insert: %v", err)
 	}
-	bal, wdr := s.GetBalanceWithWithdrawable("acct-pg-wdb")
+	bal, wdr := mustBalances(t, s, "acct-pg-wdb")
 	if bal != 6_000_000 || wdr != 6_000_000 {
 		t.Errorf("balance/withdrawable = %d/%d, want 6_000_000/6_000_000", bal, wdr)
 	}
@@ -860,7 +883,7 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if !errors.Is(err, ErrInsufficientBalance) {
 		t.Fatalf("err = %v, want ErrInsufficientBalance", err)
 	}
-	if bal, _ := s.GetBalanceWithWithdrawable("acct-pg-wdb"); bal != 6_000_000 {
+	if bal, _ := mustBalances(t, s, "acct-pg-wdb"); bal != 6_000_000 {
 		t.Errorf("failed attempt moved the balance: %d", bal)
 	}
 	if _, err := s.GetStripeWithdrawal("wd-pg-atomic-2"); err == nil {
@@ -876,7 +899,7 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 	if err := s.CreateStripeWithdrawalWithDebit(dup, LedgerStripePayout, "stripe_withdraw:pg-dup"); err == nil {
 		t.Fatal("duplicate ID must fail")
 	}
-	if bal, _ := s.GetBalanceWithWithdrawable("acct-pg-wdb"); bal != 6_000_000 {
+	if bal, _ := mustBalances(t, s, "acct-pg-wdb"); bal != 6_000_000 {
 		t.Errorf("duplicate attempt leaked a debit: balance = %d", bal)
 	}
 }

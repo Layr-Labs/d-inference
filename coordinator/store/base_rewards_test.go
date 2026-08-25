@@ -32,13 +32,13 @@ func TestCreditProviderAccount_DuplicateJobNoop(t *testing.T) {
 				t.Fatalf("second credit: %v", err)
 			}
 
-			if bal := s.GetBalance(acct); bal != 123_000 {
+			if bal := mustBalance(t, s, acct); bal != 123_000 {
 				t.Fatalf("balance = %d, want 123000 (single credit)", bal)
 			}
-			if w := s.GetWithdrawableBalance(acct); w != 123_000 {
+			if w := mustWithdrawableBalance(t, s, acct); w != 123_000 {
 				t.Fatalf("withdrawable = %d, want 123000 (single credit)", w)
 			}
-			if h := s.LedgerHistory(acct); len(h) != 1 {
+			if h := mustLedgerHistory(t, s, acct); len(h) != 1 {
 				t.Fatalf("ledger history = %d, want 1", len(h))
 			}
 			sum, err := s.GetAccountEarningsSummary(acct)
@@ -89,13 +89,13 @@ func TestSettleProviderFloorDraw_Idempotent(t *testing.T) {
 				t.Fatalf("second settle credited=true, want false (idempotent)")
 			}
 
-			if bal := s.GetBalance(acct); bal != 18_000_000 {
+			if bal := mustBalance(t, s, acct); bal != 18_000_000 {
 				t.Fatalf("balance = %d, want 18000000 (single draw)", bal)
 			}
-			if w := s.GetWithdrawableBalance(acct); w != 18_000_000 {
+			if w := mustWithdrawableBalance(t, s, acct); w != 18_000_000 {
 				t.Fatalf("withdrawable = %d, want 18000000", w)
 			}
-			h := s.LedgerHistory(acct)
+			h := mustLedgerHistory(t, s, acct)
 			floorEntries := 0
 			for _, e := range h {
 				if e.Type == LedgerFloorDraw {
@@ -159,10 +159,10 @@ func TestSettleProviderFloorDraw_ZeroAmount(t *testing.T) {
 				t.Fatalf("zero-amount settle credited=false, want true (audit row inserted)")
 			}
 
-			if bal := s.GetBalance(acct); bal != 0 {
+			if bal := mustBalance(t, s, acct); bal != 0 {
 				t.Fatalf("balance = %d, want 0 (zero draw credits nothing)", bal)
 			}
-			if h := s.LedgerHistory(acct); len(h) != 0 {
+			if h := mustLedgerHistory(t, s, acct); len(h) != 0 {
 				t.Fatalf("ledger history = %d, want 0", len(h))
 			}
 
@@ -241,7 +241,7 @@ func TestCreditProviderAccount_BaseRewardIsNotCompletedJob(t *testing.T) {
 					t.Errorf("%s tokens = %d/%d, want 10/20", scope, summary.PromptTokens, summary.CompletionTokens)
 				}
 			}
-			if balance := s.GetBalance(acct); balance != 150 {
+			if balance := mustBalance(t, s, acct); balance != 150 {
 				t.Errorf("balance = %d, want 150", balance)
 			}
 		})

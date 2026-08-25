@@ -167,6 +167,82 @@ func TestHeartbeatPrepareFailureStartsCleanup(t *testing.T) {
 	}
 }
 
+func TestHeartbeatReadyCannotCompletePendingPrepare(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 25, 20, 0, 0, 0, time.UTC)
+	backend := store.NewMemory(store.Config{})
+	sandbox := &store.SandboxRecord{
+		ID:                    "50000000-0000-0000-0000-000000000501",
+		AccountID:             "prepare-proof-account",
+		IdempotencyKey:        "60000000-0000-0000-0000-000000000502",
+		HostID:                "70000000-0000-0000-0000-000000000503",
+		Generation:            1,
+		FencingToken:          12,
+		BaseImageID:           "macos-tahoe-v1",
+		CPUCount:              4,
+		MemoryBytes:           8 << 30,
+		WorkspaceBytes:        25 << 30,
+		CommandTimeoutSeconds: 900,
+		State:                 store.SandboxStatePreparing,
+		LeaseExpiresAt:        now.Add(time.Hour),
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	prepare := &store.SandboxOperation{
+		ID:                      "80000000-0000-0000-0000-000000000504",
+		SandboxID:               sandbox.ID,
+		AccountID:               sandbox.AccountID,
+		IdempotencyKey:          sandbox.IdempotencyKey,
+		Kind:                    store.SandboxOperationKindPrepare,
+		State:                   store.SandboxOperationPending,
+		Generation:              sandbox.Generation,
+		FencingToken:            sandbox.FencingToken,
+		RequestedLeaseExpiresAt: sandbox.LeaseExpiresAt,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	storedSandbox, storedPrepare, _, err := backend.CreateSandbox(
+		ctx,
+		sandbox,
+		prepare,
+		store.SandboxAllocationLimits{
+			MaximumActive:     2,
+			MaximumPerAccount: 2,
+			MaximumPerHost:    2,
+		},
+	)
+	if err != nil {
+		t.Fatalf("create preparing sandbox: %v", err)
+	}
+	controller := testSandboxController(backend, &now)
+
+	confirmed, err := controller.applyHeartbeatOperationObservation(
+		ctx,
+		&store.PendingSandboxOperation{
+			Sandbox:   *storedSandbox,
+			Operation: *storedPrepare,
+		},
+		heartbeatObservation(storedSandbox, protocol.SandboxOperationReady),
+	)
+	if err != nil {
+		t.Fatalf("observe running VM heartbeat: %v", err)
+	}
+	if confirmed {
+		t.Fatal("heartbeat ready terminally confirmed a pending prepare")
+	}
+	persisted, err := backend.GetSandboxOperation(
+		ctx,
+		sandbox.AccountID,
+		prepare.ID,
+	)
+	if err != nil {
+		t.Fatalf("get pending prepare: %v", err)
+	}
+	if persisted.State != store.SandboxOperationPending {
+		t.Fatalf("heartbeat ready advanced prepare to %q", persisted.State)
+	}
+}
+
 func assertHeartbeatExpiryDriftRejected(
 	t *testing.T,
 	controller *Controller,

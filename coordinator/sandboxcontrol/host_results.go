@@ -11,6 +11,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+const runtimeCleanupFailedErrorCode = "runtime_cleanup_failed"
+
 func (c *Controller) HandleHostMessage(
 	ctx context.Context,
 	session *sandboxhost.Session,
@@ -161,17 +163,18 @@ func (c *Controller) handleCommandState(
 	command, err := c.store.ApplySandboxCommandUpdate(
 		ctx,
 		store.SandboxCommandUpdate{
-			CommandID:       payload.CommandID,
-			SandboxID:       sandbox.ID,
-			Generation:      payload.Scope.Generation,
-			FencingToken:    payload.Scope.FencingToken,
-			State:           payload.State,
-			ExitCode:        payload.ExitCode,
-			StandardOutput:  payload.StandardOutput,
-			StandardError:   payload.StandardError,
-			OutputTruncated: payload.OutputTruncated,
-			ErrorCode:       errorCode,
-			UpdatedAt:       now,
+			CommandID:           payload.CommandID,
+			SandboxID:           sandbox.ID,
+			Generation:          payload.Scope.Generation,
+			FencingToken:        payload.Scope.FencingToken,
+			State:               payload.State,
+			ExitCode:            payload.ExitCode,
+			StandardOutput:      payload.StandardOutput,
+			StandardError:       payload.StandardError,
+			OutputTruncated:     payload.OutputTruncated,
+			ErrorCode:           errorCode,
+			RequestCancellation: errorCode == runtimeCleanupFailedErrorCode,
+			UpdatedAt:           now,
 		},
 	)
 	if err != nil {
@@ -230,13 +233,14 @@ func (c *Controller) handleHostFailure(
 		command, err := c.store.ApplySandboxCommandUpdate(
 			ctx,
 			store.SandboxCommandUpdate{
-				CommandID:    *payload.CommandID,
-				SandboxID:    sandbox.ID,
-				Generation:   payload.Scope.Generation,
-				FencingToken: payload.Scope.FencingToken,
-				State:        store.SandboxCommandLost,
-				ErrorCode:    payload.ErrorCode,
-				UpdatedAt:    now,
+				CommandID:           *payload.CommandID,
+				SandboxID:           sandbox.ID,
+				Generation:          payload.Scope.Generation,
+				FencingToken:        payload.Scope.FencingToken,
+				State:               store.SandboxCommandLost,
+				ErrorCode:           payload.ErrorCode,
+				RequestCancellation: payload.ErrorCode == runtimeCleanupFailedErrorCode,
+				UpdatedAt:           now,
 			},
 		)
 		if err != nil {

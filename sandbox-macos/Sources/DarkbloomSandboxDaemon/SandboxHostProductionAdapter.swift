@@ -591,10 +591,14 @@ actor SandboxHostProductionAdapter:
         _ payload: SandboxWireOperation
     ) async -> SandboxHostControlResponse {
         let scope = payload.scope.operationScope
+        let name = Self.virtualMachineName(for: payload.scope)
         do {
+            if try await runtime.inspect(scope: scope, name: name)?.state == .running {
+                try await runtime.stop(scope: scope, name: name)
+            }
             try await runtime.deleteAndRelease(
                 scope: scope,
-                name: Self.virtualMachineName(for: payload.scope)
+                name: name
             )
             operationStates.removeValue(forKey: scope.sandboxID)
             return .operation(

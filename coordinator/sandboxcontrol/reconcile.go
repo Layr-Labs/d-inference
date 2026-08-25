@@ -231,7 +231,6 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		switch observation.State {
 		case protocol.SandboxOperationPreparing,
 			protocol.SandboxOperationBooting,
-			protocol.SandboxOperationReady,
 			protocol.SandboxOperationFailed:
 			return c.applyHeartbeatOperationUpdate(
 				ctx,

@@ -121,6 +121,74 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         )
     }
 
+    func testFailedPrepareCleanupStopsRunningVMBeforeDelete() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        await fixture.runtime.failStartsAfterRunning(
+            with: .cleanupFailed(
+                operation: "start test",
+                primary: "guest readiness failed",
+                cleanup: "VM remained running"
+            )
+        )
+        let prepare = try fixture.preparePayload(fencingToken: 30)
+        let prepareResponse = try await fixture.adapter.handle(.prepare(
+            fixture.envelope(payload: prepare, type: .prepare)
+        ))
+        guard case .operation(let failedPrepare) = prepareResponse else {
+            return XCTFail("expected failed prepare operation response")
+        }
+        XCTAssertEqual(failedPrepare.state, .failed)
+        XCTAssertEqual(failedPrepare.errorCode, "runtime_cleanup_failed")
+        let name = Fixture.virtualMachineName(for: prepare.scope)
+        let running = await fixture.runtime.record(name: name)
+        XCTAssertEqual(running?.state, .running)
+
+        let deletion = SandboxWireOperation(
+            operationID: UUID(),
+            scope: prepare.scope
+        )
+        let deleteResponse = try await fixture.adapter.handle(.delete(
+            fixture.envelope(payload: deletion, type: .delete)
+        ))
+
+        guard case .operation(let deleted) = deleteResponse else {
+            return XCTFail("expected delete operation response")
+        }
+        XCTAssertEqual(deleted.state, .deleted)
+        let deletedRecord = await fixture.runtime.record(name: name)
+        XCTAssertNil(deletedRecord)
+        let events = await fixture.runtime.events()
+        XCTAssertEqual(
+            events,
+            ["create:\(name)", "start:\(name)", "stop:\(name)", "delete:\(name)"]
+        )
+    }
+
+    func testDeleteMissingVirtualMachineRemainsPossible() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let scope = Fixture.scope(fencingToken: 31)
+        let deletion = SandboxWireOperation(
+            operationID: UUID(),
+            scope: scope
+        )
+
+        let response = try await fixture.adapter.handle(.delete(
+            fixture.envelope(payload: deletion, type: .delete)
+        ))
+
+        guard case .operation(let deleted) = response else {
+            return XCTFail("expected delete operation response")
+        }
+        XCTAssertEqual(deleted.state, .deleted)
+        let events = await fixture.runtime.events()
+        XCTAssertEqual(
+            events,
+            ["delete:\(Fixture.virtualMachineName(for: scope))"]
+        )
+    }
+
     func testCommandCancellationInterruptsRuntimeWork() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -399,6 +467,7 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     private var commandStarted = false
     private var commandStartedWaiter: CheckedContinuation<Void, Never>?
     private var stopError: SandboxRuntimeError?
+    private var startErrorAfterRunning: SandboxRuntimeError?
     private var recordedStopScopes: [SandboxOperationScope] = []
 
     func inspect(
@@ -439,6 +508,9 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
             diskBytes: record.diskBytes,
             guestReady: true
         )
+        if let startErrorAfterRunning {
+            throw startErrorAfterRunning
+        }
     }
 
     func execute(
@@ -496,6 +568,11 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
         name: String
     ) async throws {
         recordedEvents.append("delete:\(name)")
+        if records[name]?.state == .running {
+            throw SandboxRuntimeError.unsupported(
+                "refusing to delete running test VM"
+            )
+        }
         records.removeValue(forKey: name)
     }
 
@@ -530,6 +607,10 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
 
     func failStops(with error: SandboxRuntimeError) {
         stopError = error
+    }
+
+    func failStartsAfterRunning(with error: SandboxRuntimeError) {
+        startErrorAfterRunning = error
     }
 
     func record(name: String) -> SandboxVirtualMachineRecord? {

@@ -204,6 +204,120 @@ func TestSandboxCancellationAcknowledgementBlocksNewWork(t *testing.T) {
 	}
 }
 
+func TestRuntimeCleanupCancellationIsAtomicAcrossStores(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 8, 25, 21, 0, 0, 0, time.UTC)
+			sandbox, prepare := sandboxFencingFixture(
+				"10000000-0000-0000-0000-000000000531",
+				"20000000-0000-0000-0000-000000000532",
+				"30000000-0000-0000-0000-000000000533",
+				uniqueID("runtime-cleanup-account"),
+				"40000000-0000-0000-0000-000000000534",
+				1,
+				now,
+			)
+			stored, storedPrepare, _, err := backend.CreateSandbox(
+				ctx,
+				sandbox,
+				prepare,
+				SandboxAllocationLimits{
+					MaximumActive:     2,
+					MaximumPerAccount: 2,
+					MaximumPerHost:    2,
+				},
+			)
+			if err != nil {
+				t.Fatalf("create sandbox: %v", err)
+			}
+			ready, _, err := backend.ApplySandboxOperationUpdate(
+				ctx,
+				SandboxOperationUpdate{
+					OperationID:  storedPrepare.ID,
+					SandboxID:    stored.ID,
+					Generation:   stored.Generation,
+					FencingToken: stored.FencingToken,
+					State:        SandboxOperationReady,
+					UpdatedAt:    now.Add(time.Second),
+				},
+			)
+			if err != nil {
+				t.Fatalf("complete prepare: %v", err)
+			}
+			command := &SandboxCommand{
+				ID:             "50000000-0000-0000-0000-000000000535",
+				SandboxID:      ready.ID,
+				AccountID:      ready.AccountID,
+				IdempotencyKey: "60000000-0000-0000-0000-000000000536",
+				Generation:     ready.Generation,
+				FencingToken:   ready.FencingToken,
+				Arguments:      []string{"/usr/bin/sleep", "900"},
+				TimeoutSeconds: 900,
+				State:          SandboxCommandPending,
+				CreatedAt:      now.Add(2 * time.Second),
+				UpdatedAt:      now.Add(2 * time.Second),
+			}
+			if _, created, err := backend.CreateSandboxCommand(
+				ctx,
+				command,
+			); err != nil || !created {
+				t.Fatalf("create command: created=%v error=%v", created, err)
+			}
+			failed, err := backend.ApplySandboxCommandUpdate(
+				ctx,
+				SandboxCommandUpdate{
+					CommandID:           command.ID,
+					SandboxID:           command.SandboxID,
+					Generation:          command.Generation,
+					FencingToken:        command.FencingToken,
+					State:               SandboxCommandFailed,
+					ErrorCode:           "runtime_cleanup_failed",
+					RequestCancellation: true,
+					UpdatedAt:           now.Add(3 * time.Second),
+				},
+			)
+			if err != nil ||
+				failed.State != SandboxCommandFailed ||
+				!failed.CancellationPending {
+				t.Fatalf("persist cleanup failure: command=%+v error=%v", failed, err)
+			}
+
+			next := *command
+			next.ID = "70000000-0000-0000-0000-000000000537"
+			next.IdempotencyKey = "80000000-0000-0000-0000-000000000538"
+			next.CreatedAt = now.Add(4 * time.Second)
+			next.UpdatedAt = next.CreatedAt
+			if _, _, err := backend.CreateSandboxCommand(
+				ctx,
+				&next,
+			); !errors.Is(err, ErrSandboxConflict) {
+				t.Fatalf("new command admitted before cancellation proof: %v", err)
+			}
+			acknowledged, err := backend.ApplySandboxCommandUpdate(
+				ctx,
+				SandboxCommandUpdate{
+					CommandID:    command.ID,
+					SandboxID:    command.SandboxID,
+					Generation:   command.Generation,
+					FencingToken: command.FencingToken,
+					State:        SandboxCommandCancelled,
+					UpdatedAt:    now.Add(5 * time.Second),
+				},
+			)
+			if err != nil || acknowledged.CancellationPending {
+				t.Fatalf("record cancellation proof: command=%+v error=%v", acknowledged, err)
+			}
+			if _, created, err := backend.CreateSandboxCommand(
+				ctx,
+				&next,
+			); err != nil || !created {
+				t.Fatalf("new command after proof: created=%v error=%v", created, err)
+			}
+		})
+	}
+}
+
 func TestMemoryPendingCancellationListRotatesDispatchedRows(t *testing.T) {
 	backend := NewMemory(Config{})
 	now := time.Date(2026, 8, 25, 18, 0, 0, 0, time.UTC)

@@ -8,6 +8,11 @@ enum ReleaseArchiveExtractor {
         destination: URL
     ) -> [String] {
         [
+            "--no-acls",
+            "--no-fflags",
+            "--no-mac-metadata",
+            "--no-xattrs",
+            "--no-same-owner",
             "-xzp",
             "-f",
             archive.path,

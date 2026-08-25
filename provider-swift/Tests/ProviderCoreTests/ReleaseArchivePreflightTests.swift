@@ -199,6 +199,36 @@ struct ReleaseArchivePreflightTests {
                 "0000755",
                 "unsupported PAX mode metadata"
             ),
+            (
+                "extended-attribute",
+                "LIBARCHIVE.xattr.user.review",
+                "cmVzdG9yZWQ=",
+                "unsupported PAX metadata key"
+            ),
+            (
+                "access-control-list",
+                "SCHILY.acl.access",
+                "user::rwx",
+                "unsupported PAX metadata key"
+            ),
+            (
+                "file-flags",
+                "SCHILY.fflags",
+                "uchg",
+                "unsupported PAX metadata key"
+            ),
+            (
+                "link-target",
+                "linkpath",
+                "target",
+                "unsupported PAX link metadata"
+            ),
+            (
+                "unknown-semantic",
+                "vendor.future",
+                "value",
+                "unsupported PAX metadata key"
+            ),
         ]
 
         for (name, key, value, expected) in cases {
@@ -287,16 +317,26 @@ struct ReleaseArchivePreflightTests {
             withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: destination) }
+        let extractionArguments = ReleaseArchiveExtractor.arguments(
+            archive: archive,
+            destination: destination
+        )
+        #expect(
+            extractionArguments.starts(with: [
+                "--no-acls",
+                "--no-fflags",
+                "--no-mac-metadata",
+                "--no-xattrs",
+                "--no-same-owner",
+            ])
+        )
         try BoundedProcess.run(
             URL(fileURLWithPath: "/bin/sh"),
             arguments: [
                 "-c",
                 "umask 077; exec /usr/bin/tar \"$@\"",
                 "darkbloom-release-extraction-test",
-            ] + ReleaseArchiveExtractor.arguments(
-                archive: archive,
-                destination: destination
-            ),
+            ] + extractionArguments,
             timeout: 10
         )
 

@@ -293,7 +293,7 @@ sub parse_pax {
         if ($key eq "path") {
             $attributes{path} = clean_path($value);
         } elsif ($key eq "linkpath") {
-            clean_path($value);
+            reject("unsupported PAX link metadata");
         } elsif ($key eq "size") {
             $attributes{size} = parse_decimal(
                 $value,
@@ -304,6 +304,8 @@ sub parse_pax {
             reject("unsupported PAX file-type metadata");
         } elsif ($key eq "SCHILY.mode") {
             reject("unsupported PAX mode metadata");
+        } else {
+            reject("unsupported PAX metadata key $key");
         }
         $offset = $record_end;
     }
@@ -3170,7 +3172,14 @@ install_bundle_atomically_locked() {
     create_installer_staging \
         "$stage" "$install_dir" "$transaction_id" || return 1
     install_test_crash "staging-created"
-    if ! /usr/bin/tar -xzp -f "$archive" -C "$stage"; then
+    if ! /usr/bin/tar \
+        --no-acls \
+        --no-fflags \
+        --no-mac-metadata \
+        --no-xattrs \
+        --no-same-owner \
+        -xzp -f "$archive" -C "$stage"
+    then
         cleanup_install_staging_after_attempt \
             "$stage" "$install_dir" "$transaction_id" || true
         return 1

@@ -506,9 +506,7 @@ func parseReleasePAX(
 			}
 			attrs.path = &cleanPath
 		case "linkpath":
-			if _, err := cleanReleaseArchivePath(string(value), policy); err != nil {
-				return attrs, fmt.Errorf("release archive PAX link path: %w", err)
-			}
+			return attrs, fmt.Errorf("release archive contains unsupported PAX link metadata")
 		case "size":
 			size, err := parseReleaseDecimal(value, int64(^uint64(0)>>1), "PAX size")
 			if err != nil {
@@ -519,6 +517,11 @@ func parseReleasePAX(
 			return attrs, fmt.Errorf("release archive contains unsupported PAX file-type metadata")
 		case "SCHILY.mode":
 			return attrs, fmt.Errorf("release archive contains unsupported PAX mode metadata")
+		default:
+			return attrs, fmt.Errorf(
+				"release archive contains unsupported PAX metadata key %q",
+				key,
+			)
 		}
 
 		offset = recordEnd

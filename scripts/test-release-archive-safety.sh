@@ -147,6 +147,29 @@ if ($mode eq "large") {
     my $pax = pax_record("SCHILY.mode", "0000755");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_xattr") {
+    my $pax = pax_record(
+        "LIBARCHIVE.xattr.user.review",
+        "cmVzdG9yZWQ=",
+    );
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_acl") {
+    my $pax = pax_record("SCHILY.acl.access", "user::rwx");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_fflags") {
+    my $pax = pax_record("SCHILY.fflags", "uchg");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_link") {
+    my $pax = pax_record("linkpath", "target");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_unknown") {
+    my $pax = pax_record("vendor.future", "value");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
 } elsif ($mode eq "flat_payload_mode") {
     emit_entry("bin/darkbloom", "0", "binary", undef, 0, "0000775\0");
 } elsif ($mode eq "app_payload_mode") {
@@ -327,6 +350,11 @@ expect_rejection "$(make_fixture sparse)" "unsupported node type"
 expect_rejection "$(make_fixture pax_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_sun_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_mode)" "unsupported PAX mode metadata"
+expect_rejection "$(make_fixture pax_xattr)" "unsupported PAX metadata key"
+expect_rejection "$(make_fixture pax_acl)" "unsupported PAX metadata key"
+expect_rejection "$(make_fixture pax_fflags)" "unsupported PAX metadata key"
+expect_rejection "$(make_fixture pax_link)" "unsupported PAX link metadata"
+expect_rejection "$(make_fixture pax_unknown)" "unsupported PAX metadata key"
 expect_rejection "$(make_fixture flat_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"

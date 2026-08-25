@@ -580,7 +580,8 @@ private final class ReleaseTarValidator {
             case "path":
                 attributes.path = try cleanPath(value)
             case "linkpath":
-                _ = try cleanPath(value)
+                throw ReleaseArchivePreflightError(
+                    "release archive contains unsupported PAX link metadata")
             case "size":
                 attributes.size = try parseDecimal(
                     value,
@@ -593,7 +594,8 @@ private final class ReleaseTarValidator {
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX mode metadata")
             default:
-                break
+                throw ReleaseArchivePreflightError(
+                    "release archive contains unsupported PAX metadata key \(key)")
             }
             offset = recordEnd
         }

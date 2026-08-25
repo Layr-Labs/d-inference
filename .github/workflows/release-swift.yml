@@ -759,7 +759,13 @@ jobs:
           LEGACY_BUNDLE="/tmp/$LEGACY_BUNDLE_NAME"
           rm -f "$APP_ARCHIVE" "$LEGACY_BUNDLE"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$APP_ARCHIVE"
-          tar czf "$LEGACY_BUNDLE" -C "${{ steps.bundle.outputs.stage }}" .
+          COPYFILE_DISABLE=1 /usr/bin/tar \
+            --no-acls \
+            --no-fflags \
+            --no-mac-metadata \
+            --no-xattrs \
+            -czf "$LEGACY_BUNDLE" \
+            -C "${{ steps.bundle.outputs.stage }}" .
           # Apply the same bounded raw-header walk used by clean-machine shell
           # installs before this exact archive can be extracted or uploaded.
           scripts/install.sh --preflight-release-archive "$LEGACY_BUNDLE"

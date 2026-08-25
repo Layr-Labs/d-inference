@@ -316,6 +316,36 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			value: "0000755",
 			want:  "unsupported PAX mode metadata",
 		},
+		{
+			name:  "extended attribute",
+			key:   "LIBARCHIVE.xattr.user.review",
+			value: "cmVzdG9yZWQ=",
+			want:  "unsupported PAX metadata key",
+		},
+		{
+			name:  "access control list",
+			key:   "SCHILY.acl.access",
+			value: "user::rwx",
+			want:  "unsupported PAX metadata key",
+		},
+		{
+			name:  "file flags",
+			key:   "SCHILY.fflags",
+			value: "uchg",
+			want:  "unsupported PAX metadata key",
+		},
+		{
+			name:  "link target",
+			key:   "linkpath",
+			value: "target",
+			want:  "unsupported PAX link metadata",
+		},
+		{
+			name:  "unknown semantic",
+			key:   "vendor.future",
+			value: "value",
+			want:  "unsupported PAX metadata key",
+		},
 	}
 
 	for _, test := range tests {

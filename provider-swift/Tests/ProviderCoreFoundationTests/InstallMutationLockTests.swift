@@ -58,6 +58,7 @@ struct InstallMutationLockTests {
     @Test("recovery scan recognizes every unresolved transaction prefix")
     func recoveryArtifactScanRecognizesPendingState() throws {
         for name in [
+            InstallMutationLock.appRelocationTransactionFileName,
             ".install-backup-123-456-789",
             ".install-staging-123-456-789",
         ] {
@@ -74,6 +75,25 @@ struct InstallMutationLockTests {
                     .lastPathComponent == name
             )
         }
+    }
+
+    @Test("shell-only recovery scan excludes the app relocation journal")
+    func shellRecoveryScanExcludesAppRelocation() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("{}".utf8).write(
+            to: InstallMutationLock.appRelocationTransactionURL(in: root)
+        )
+
+        #expect(
+            try InstallMutationLock.pendingShellInstallTransaction(in: root)
+                == nil
+        )
+        #expect(
+            try InstallMutationLock.pendingOneShotTransaction(in: root)?
+                .lastPathComponent
+                == InstallMutationLock.appRelocationTransactionFileName
+        )
     }
 
     @Test("recovery scan ignores cleanup-only and nonexistent transaction prefixes")

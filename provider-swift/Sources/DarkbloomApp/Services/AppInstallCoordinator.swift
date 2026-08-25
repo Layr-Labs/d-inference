@@ -106,13 +106,17 @@ struct AppInstallCoordinator {
     private let fileManager: FileManager
     private let executor: any AppInstallCommandExecuting
     private let makeUUID: () -> UUID
+    private let relocationFaultInjector:
+        (AppRelocationTransaction.FaultPoint) throws -> Void
 
     init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
         executor: any AppInstallCommandExecuting = SystemAppInstallCommandExecutor(),
-        makeUUID: @escaping () -> UUID = UUID.init
+        makeUUID: @escaping () -> UUID = UUID.init,
+        relocationFaultInjector:
+            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in }
     ) {
         let source = Self.mainBundleSource()
         self.init(
@@ -122,7 +126,8 @@ struct AppInstallCoordinator {
             environment: environment,
             fileManager: fileManager,
             executor: executor,
-            makeUUID: makeUUID
+            makeUUID: makeUUID,
+            relocationFaultInjector: relocationFaultInjector
         )
     }
 
@@ -133,7 +138,9 @@ struct AppInstallCoordinator {
         environment: [String: String],
         fileManager: FileManager,
         executor: any AppInstallCommandExecuting,
-        makeUUID: @escaping () -> UUID = UUID.init
+        makeUUID: @escaping () -> UUID = UUID.init,
+        relocationFaultInjector:
+            @escaping (AppRelocationTransaction.FaultPoint) throws -> Void = { _ in }
     ) {
         self.homeDirectory = homeDirectory
         self.sourceBundleURL = sourceBundleURL
@@ -142,6 +149,7 @@ struct AppInstallCoordinator {
         self.fileManager = fileManager
         self.executor = executor
         self.makeUUID = makeUUID
+        self.relocationFaultInjector = relocationFaultInjector
     }
 
     var destinationURL: URL {
@@ -168,8 +176,36 @@ struct AppInstallCoordinator {
         }
         #endif
 
+        let destinationRoot = destinationURL.deletingLastPathComponent()
         if sameResolvedPath(sourceBundleURL, destinationURL) {
-            attemptUserShortcut(nonce: makeUUID().uuidString.lowercased())
+            let recovered: AppRelocationTransaction.RecoveryResult?
+            if AppRelocationTransaction.hasPendingTransaction(
+                in: destinationRoot,
+                fileManager: fileManager
+            ) {
+                // The running image can be the recorded predecessor if a
+                // previous process died before the exchange. Authenticate it
+                // before allowing it to drive recovery.
+                try verifyProductionSignature(at: sourceBundleURL) // pragma: allowlist secret
+                recovered = try recoverPendingRelocation(
+                    in: destinationRoot
+                )
+            } else {
+                recovered = nil
+            }
+
+            let nonce = makeUUID().uuidString.lowercased()
+            attemptUserShortcut(nonce: nonce)
+            if let recovered {
+                try executor.run(
+                    Self.openURL,
+                    arguments: ["-n", destinationURL.path]
+                )
+                return .relocated(
+                    to: destinationURL,
+                    preservedForeignApp: recovered.preservedForeignApp
+                )
+            }
             return .continueLaunch
         }
 
@@ -183,6 +219,7 @@ struct AppInstallCoordinator {
         // never replace a newer self-updated install while recovery/state.json
         // still records that newer version.
         try verifyProductionSignature(at: sourceBundleURL) // pragma: allowlist secret
+        let priorRecovery = try recoverPendingRelocation(in: destinationRoot)
         let ownedDestinationMetadata = ownedBundleMetadata(at: destinationURL)
         try validateVersionTransition(
             source: sourceMetadata,
@@ -190,36 +227,95 @@ struct AppInstallCoordinator {
             ownedDestination: ownedDestinationMetadata
         )
 
-        let destinationRoot = destinationURL.deletingLastPathComponent()
         try prepareWritableDirectory(destinationRoot)
 
         let nonce = makeUUID().uuidString.lowercased()
-        let stagingURL = destinationRoot.appendingPathComponent(
-            ".Darkbloom.app.relocation-\(nonce)",
-            isDirectory: true
-        )
-        defer { try? fileManager.removeItem(at: stagingURL) }
+        let preservedForeignApp: URL?
+        do {
+            preservedForeignApp = try InstallMutationLock.withOneShotInstallLock(
+                in: destinationRoot,
+                fileManager: fileManager
+            ) {
+                try rejectPendingForeignTransactions()
+                let transaction = makeRelocationTransaction(
+                    in: destinationRoot
+                )
+                let racedRecovery = try transaction.recover()
+                try transaction.cleanupUnjournaledArtifacts()
 
-        // Re-authenticate the staged endpoint so neither side of the copy
-        // relies on bundle metadata or a structural-only signature check.
-        try executor.run(
-            Self.dittoURL,
-            arguments: ["--rsrc", "--extattr", sourceBundleURL.path, stagingURL.path]
-        )
-        try verifyProductionSignature(at: stagingURL)
-        try verifyCopiedBundle(
-            at: stagingURL,
-            expected: sourceMetadata
-        )
+                // Re-read ownership and ordering while every Darkbloom
+                // mutator is excluded. Copying is also lock-covered so
+                // unjournaled staging debris can never belong to a live peer.
+                let currentOwnedMetadata = ownedBundleMetadata(
+                    at: destinationURL
+                )
+                try validateVersionTransition(
+                    source: sourceMetadata,
+                    sourceURL: sourceBundleURL,
+                    ownedDestination: currentOwnedMetadata
+                )
 
-        let preservedForeignApp = try InstallMutationLock.withOneShotInstallLock(
-            in: destinationRoot,
-            fileManager: fileManager
-        ) {
-            try installVerifiedBundle(
-                stagingURL,
-                at: destinationURL,
-                nonce: nonce
+                let stagingURL = destinationRoot.appendingPathComponent(
+                    ".Darkbloom.app.relocation-\(nonce)",
+                    isDirectory: true
+                )
+                defer {
+                    if !AppRelocationTransaction.hasPendingTransaction(
+                        in: destinationRoot,
+                        fileManager: fileManager
+                    ) {
+                        try? fileManager.removeItem(at: stagingURL)
+                    }
+                }
+
+                // Re-authenticate the staged endpoint so neither side of the
+                // copy relies on bundle metadata or a structural-only
+                // signature check.
+                try executor.run(
+                    Self.dittoURL,
+                    arguments: [
+                        "--rsrc",
+                        "--extattr",
+                        sourceBundleURL.path,
+                        stagingURL.path,
+                    ]
+                )
+                try verifyProductionSignature(at: stagingURL) // pragma: allowlist secret
+                try verifyCopiedBundle(
+                    at: stagingURL,
+                    expected: sourceMetadata
+                )
+
+                let finalOwnedMetadata = ownedBundleMetadata(
+                    at: destinationURL
+                )
+                try validateVersionTransition(
+                    source: try readMetadata(at: stagingURL),
+                    sourceURL: stagingURL,
+                    ownedDestination: finalOwnedMetadata
+                )
+                let previousKind: AppRelocationTransaction.PreviousKind
+                if !itemExists(at: destinationURL) {
+                    previousKind = .absent
+                } else if finalOwnedMetadata != nil {
+                    previousKind = .owned
+                } else {
+                    previousKind = .foreign
+                }
+                let installed = try transaction.install(
+                    stagingURL: stagingURL,
+                    previousKind: previousKind
+                )
+                return installed.preservedForeignApp
+                    ?? racedRecovery?.preservedForeignApp
+                    ?? priorRecovery?.preservedForeignApp
+            }
+        } catch let error as AppInstallCoordinatorError {
+            throw error
+        } catch {
+            throw AppInstallCoordinatorError.installFailed(
+                path: destinationURL.path,
+                reason: error.localizedDescription
             )
         }
         attemptUserShortcut(nonce: nonce)
@@ -282,60 +378,44 @@ struct AppInstallCoordinator {
         }
     }
 
-    private func installVerifiedBundle(
-        _ stagingURL: URL,
-        at destinationURL: URL,
-        nonce: String
-    ) throws -> URL? {
-        try rejectPendingForeignTransactions()
-        guard itemExists(at: destinationURL) else {
-            do {
-                try fileManager.moveItem(at: stagingURL, to: destinationURL)
-                return nil
-            } catch {
-                throw AppInstallCoordinatorError.installFailed(
-                    path: destinationURL.path,
-                    reason: error.localizedDescription
-                )
-            }
-        }
-
-        // Re-read ownership and ordering immediately before the live swap. The
-        // copy can take time, and another updater may have changed the
-        // destination since the pre-staging check.
-        let stagedMetadata = try readMetadata(at: stagingURL)
-        let ownedDestinationMetadata = ownedBundleMetadata(at: destinationURL)
-        try validateVersionTransition(
-            source: stagedMetadata,
-            sourceURL: stagingURL,
-            ownedDestination: ownedDestinationMetadata
+    private func makeRelocationTransaction(
+        in installRoot: URL
+    ) -> AppRelocationTransaction {
+        AppRelocationTransaction(
+            installRoot: installRoot,
+            fileManager: fileManager,
+            faultInjector: relocationFaultInjector
         )
-        let destinationIsOwned = ownedDestinationMetadata != nil
-        let backupName = destinationIsOwned
-            ? ".Darkbloom.app.previous-\(nonce)"
-            : "Darkbloom.app.foreign-\(nonce)"
-        let backupURL = destinationURL.deletingLastPathComponent()
-            .appendingPathComponent(backupName, isDirectory: true)
+    }
 
+    private func recoverPendingRelocation(
+        in installRoot: URL
+    ) throws -> AppRelocationTransaction.RecoveryResult? {
+        guard AppRelocationTransaction.hasPendingTransaction(
+            in: installRoot,
+            fileManager: fileManager
+        ) else {
+            return nil
+        }
         do {
-            _ = try fileManager.replaceItemAt(
-                destinationURL,
-                withItemAt: stagingURL,
-                backupItemName: backupName,
-                options: [.usingNewMetadataOnly, .withoutDeletingBackupItem]
-            )
+            return try InstallMutationLock.withOneShotInstallLock(
+                in: installRoot,
+                fileManager: fileManager
+            ) {
+                try rejectPendingForeignTransactions()
+                let transaction = makeRelocationTransaction(in: installRoot)
+                let result = try transaction.recover()
+                try transaction.cleanupUnjournaledArtifacts()
+                return result
+            }
+        } catch let error as AppInstallCoordinatorError {
+            throw error
         } catch {
             throw AppInstallCoordinatorError.installFailed(
                 path: destinationURL.path,
                 reason: error.localizedDescription
             )
         }
-
-        if destinationIsOwned {
-            try? fileManager.removeItem(at: backupURL)
-            return nil
-        }
-        return backupURL
     }
 
     private func rejectPendingForeignTransactions() throws {
@@ -348,7 +428,7 @@ struct AppInstallCoordinator {
                 path: selfUpdate.path
             )
         }
-        if let shellInstall = try InstallMutationLock.pendingOneShotTransaction(
+        if let shellInstall = try InstallMutationLock.pendingShellInstallTransaction(
             in: installRoot,
             fileManager: fileManager
         ) {

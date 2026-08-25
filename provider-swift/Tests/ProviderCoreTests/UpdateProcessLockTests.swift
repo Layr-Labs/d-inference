@@ -95,9 +95,10 @@ struct UpdateProcessLockTests {
         }
     }
 
-    @Test("self-updater refuses a pending shell transaction and releases locks")
+    @Test("self-updater refuses a pending one-shot transaction and releases locks")
     func updaterRejectsShellRecoveryJournal() throws {
         for pendingName in [
+            InstallMutationLock.appRelocationTransactionFileName,
             ".install-backup-123-456-789",
             ".install-staging-123-456-789",
         ] {

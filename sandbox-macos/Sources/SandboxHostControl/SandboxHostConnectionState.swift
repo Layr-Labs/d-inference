@@ -34,7 +34,7 @@ actor SandboxHostOutboundWriter {
         case .operation(let payload):
             try await send(type: .operationState, payload: payload)
         case .command(let payload):
-            try await send(type: .commandState, payload: payload)
+            try await sendCommand(payload)
         case .failure(let payload):
             try await send(type: .hostFailure, payload: payload)
         }
@@ -47,14 +47,54 @@ actor SandboxHostOutboundWriter {
         guard !closed else {
             throw SandboxHostControlTransportError.disconnected
         }
+        let encoded = try encode(
+            type: type,
+            payload: payload,
+            sequence: nextSequence
+        )
+        guard encoded.count <= SandboxControlCodec.maximumFrameBytes else {
+            throw SandboxHostControlTransportError.frameTooLarge
+        }
+        try await enqueue(encoded)
+    }
+
+    private func sendCommand(
+        _ payload: SandboxWireCommandStatus
+    ) async throws {
+        guard !closed else {
+            throw SandboxHostControlTransportError.disconnected
+        }
+        var encoded = try encode(
+            type: SandboxControlMessageType.commandState,
+            payload: payload,
+            sequence: nextSequence
+        )
+        if encoded.count > SandboxControlCodec.maximumFrameBytes {
+            let fitted = try fitCommandStatus(payload)
+            encoded = fitted.encoded
+        }
+        try await enqueue(encoded)
+    }
+
+    private func encode<Payload>(
+        type: SandboxControlMessageType,
+        payload: Payload,
+        sequence: UInt64
+    ) throws -> Data where Payload: Codable & Equatable & Sendable {
         let envelope = SandboxControlEnvelope(
             type: type,
             hostID: hostID,
             connectionEpoch: connectionEpoch,
-            sequence: nextSequence,
+            sequence: sequence,
             payload: payload
         )
-        let encoded = try encoder.encode(envelope)
+        return try encoder.encode(envelope)
+    }
+
+    private func enqueue(_ encoded: Data) async throws {
+        guard encoded.count <= SandboxControlCodec.maximumFrameBytes else {
+            throw SandboxHostControlTransportError.frameTooLarge
+        }
         guard let text = String(data: encoded, encoding: .utf8) else {
             throw SandboxHostControlTransportError.invalidTextFrame
         }
@@ -81,6 +121,101 @@ actor SandboxHostOutboundWriter {
             }
             throw error
         }
+    }
+
+    private func fitCommandStatus(
+        _ payload: SandboxWireCommandStatus
+    ) throws -> (status: SandboxWireCommandStatus, encoded: Data) {
+        let standardOutput = Array((payload.standardOutput ?? "").utf8)
+        let standardError = Array((payload.standardError ?? "").utf8)
+        var lowerBound = 0
+        var upperBound = standardOutput.count + standardError.count
+        var best: (status: SandboxWireCommandStatus, encoded: Data)?
+
+        while lowerBound <= upperBound {
+            let budget = lowerBound + (upperBound - lowerBound) / 2
+            let limits = Self.streamLimits(
+                budget: budget,
+                standardOutputBytes: standardOutput.count,
+                standardErrorBytes: standardError.count
+            )
+            let candidate = SandboxWireCommandStatus(
+                commandID: payload.commandID,
+                scope: payload.scope,
+                state: payload.state,
+                exitCode: payload.exitCode,
+                standardOutput: Self.prefix(
+                    payload.standardOutput,
+                    utf8Bytes: standardOutput,
+                    limit: limits.standardOutput
+                ),
+                standardError: Self.prefix(
+                    payload.standardError,
+                    utf8Bytes: standardError,
+                    limit: limits.standardError
+                ),
+                outputTruncated: payload.outputTruncated
+                    || limits.standardOutput < standardOutput.count
+                    || limits.standardError < standardError.count,
+                errorCode: payload.errorCode
+            )
+            let encoded = try encode(
+                type: SandboxControlMessageType.commandState,
+                payload: candidate,
+                sequence: nextSequence
+            )
+            if encoded.count <= SandboxControlCodec.maximumFrameBytes {
+                best = (status: candidate, encoded: encoded)
+                lowerBound = budget + 1
+            } else {
+                upperBound = budget - 1
+            }
+        }
+        guard let best else {
+            throw SandboxHostControlTransportError.frameTooLarge
+        }
+        return best
+    }
+
+    private static func streamLimits(
+        budget: Int,
+        standardOutputBytes: Int,
+        standardErrorBytes: Int
+    ) -> (standardOutput: Int, standardError: Int) {
+        var output = min(standardOutputBytes, (budget + 1) / 2)
+        var error = min(standardErrorBytes, budget / 2)
+        var remaining = budget - output - error
+        let additionalOutput = min(
+            remaining,
+            standardOutputBytes - output
+        )
+        output += additionalOutput
+        remaining -= additionalOutput
+        error += min(remaining, standardErrorBytes - error)
+        return (output, error)
+    }
+
+    private static func prefix(
+        _ original: String?,
+        utf8Bytes: [UInt8],
+        limit: Int
+    ) -> String? {
+        guard let original else {
+            return nil
+        }
+        guard utf8Bytes.count > limit else {
+            return original
+        }
+        var validLimit = min(limit, utf8Bytes.count)
+        while validLimit > 0,
+              String(bytes: utf8Bytes.prefix(validLimit), encoding: .utf8) == nil
+        {
+            validLimit -= 1
+        }
+        return String(
+            decoding: utf8Bytes.prefix(validLimit),
+            as: UTF8.self
+        )
     }
 
     func close() async {

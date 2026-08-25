@@ -5,6 +5,7 @@ public enum SandboxHostControlTransportError: Error, Sendable {
     case disconnected
     case nonTextFrame
     case invalidTextFrame
+    case frameTooLarge
     case sessionMismatch
     case sequenceReplay
 }

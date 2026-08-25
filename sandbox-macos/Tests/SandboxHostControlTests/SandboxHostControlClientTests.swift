@@ -161,6 +161,53 @@ final class SandboxHostControlClientTests: XCTestCase {
         XCTAssertEqual(completedSequences, [1, 2])
     }
 
+    func testOutboundWriterFitsEscapedCommandOutputToFrameLimit() async throws {
+        let transport = CapturingControlTransport()
+        let writer = SandboxHostOutboundWriter(
+            transport: transport,
+            hostID: Self.hostID,
+            connectionEpoch: UUID()
+        )
+        let oversized = String(repeating: "\u{0000}", count: 400_000)
+        try await writer.send(
+            .command(
+                SandboxWireCommandStatus(
+                    commandID: UUID(),
+                    scope: SandboxWireScope(
+                        sandboxID: SandboxID(rawValue: UUID()),
+                        generation: SandboxGeneration(rawValue: 1)!,
+                        fencingToken: SandboxFencingToken(rawValue: 1)!
+                    ),
+                    state: .succeeded,
+                    exitCode: 0,
+                    standardOutput: oversized,
+                    standardError: oversized
+                )
+            )
+        )
+
+        let captured = await transport.lastText()
+        let text = try XCTUnwrap(captured)
+        let encoded = Data(text.utf8)
+        XCTAssertLessThanOrEqual(
+            encoded.count,
+            SandboxControlCodec.maximumFrameBytes
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+        XCTAssertEqual(payload["output_truncated"] as? Bool, true)
+        XCTAssertLessThan(
+            (payload["stdout"] as? String)?.utf8.count ?? 0,
+            oversized.utf8.count
+        )
+        XCTAssertLessThan(
+            (payload["stderr"] as? String)?.utf8.count ?? 0,
+            oversized.utf8.count
+        )
+    }
+
     func testCancellationClosesBlockedReceiveAndRejectsConcurrentRun() async throws {
         let transport = BlockingReceiveControlTransport()
         let client = SandboxHostControlClient(
@@ -282,6 +329,31 @@ private actor SequencingControlTransport: SandboxHostControlTransport {
         return try XCTUnwrap(
             (object["sequence"] as? NSNumber)?.uint64Value
         )
+    }
+}
+
+private actor CapturingControlTransport: SandboxHostControlTransport {
+    private var text: String?
+
+    func connect(request _: URLRequest) async throws {
+    }
+
+    func send(text: String) async throws {
+        self.text = text
+    }
+
+    func receiveText() async throws -> String {
+        throw SandboxHostControlTransportError.disconnected
+    }
+
+    func ping() async throws {
+    }
+
+    func close() async {
+    }
+
+    func lastText() -> String? {
+        text
     }
 }
 

@@ -401,6 +401,48 @@ func TestSandboxCodecRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestSandboxCodecAppliesBudgetToEncodedCommandOutput(t *testing.T) {
+	exitCode := int32(0)
+	commandState := SandboxEnvelope[SandboxCommandStatePayload]{
+		Type:            SandboxTypeCommandState,
+		ProtocolVersion: SandboxProtocolVersion,
+		HostID:          testSandboxHostID,
+		ConnectionEpoch: testSandboxEpoch,
+		Sequence:        11,
+		Payload: SandboxCommandStatePayload{
+			CommandID: testSandboxCommand,
+			Scope: SandboxScope{
+				SandboxID:    testSandboxID,
+				Generation:   3,
+				FencingToken: 7,
+			},
+			State:    SandboxCommandSucceeded,
+			ExitCode: &exitCode,
+		},
+	}
+	withinBudget := strings.Repeat("\x00", 100_000)
+	commandState.Payload.StandardOutput = &withinBudget
+	commandState.Payload.StandardError = &withinBudget
+	encoded := marshalSandboxFrame(t, commandState)
+	if len(encoded) > maxSandboxFrameBytes {
+		t.Fatalf("boundary fixture exceeds frame budget: %d", len(encoded))
+	}
+	if _, err := DecodeSandboxHostMessage(encoded); err != nil {
+		t.Fatalf("encoded command output within frame budget rejected: %v", err)
+	}
+
+	overBudget := strings.Repeat("\x00", 400_000)
+	commandState.Payload.StandardOutput = &overBudget
+	commandState.Payload.StandardError = &overBudget
+	encoded = marshalSandboxFrame(t, commandState)
+	if len(encoded) <= maxSandboxFrameBytes {
+		t.Fatalf("pathological output fixture did not exceed frame budget: %d", len(encoded))
+	}
+	if _, err := DecodeSandboxHostMessage(encoded); err == nil {
+		t.Fatal("encoded command output beyond frame budget was accepted")
+	}
+}
+
 func validSandboxCommandEnvelope() SandboxEnvelope[SandboxCommandPayload] {
 	workingDirectory := "/workspace"
 	return SandboxEnvelope[SandboxCommandPayload]{

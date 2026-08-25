@@ -274,6 +274,9 @@ private final class ReleaseTarValidator {
 
             let headerPath = try tarHeaderPath(header)
             _ = try cleanPath(headerPath)
+            let headerMode = try parseTarNumber(
+                Array(header[100..<108]),
+                label: "entry mode")
             let headerSize = try parseTarNumber(
                 Array(header[124..<136]),
                 label: "entry size")
@@ -342,6 +345,13 @@ private final class ReleaseTarValidator {
                         typeflag))
             }
 
+            if kind == .regular,
+               let mismatch = UpdateArtifactModes.archiveModeMismatch(
+                   path: effectivePath,
+                   actual: headerMode)
+            {
+                throw ReleaseArchivePreflightError(mismatch)
+            }
             try pathTracker.add(effectivePath, kind: kind)
             try addTarPayloadBytes(effectiveSize)
             try stream.skip(effectiveSize)

@@ -42,10 +42,15 @@ sub write_field {
 }
 
 sub tar_header {
-    my ($name, $typeflag, $body_size, $raw_size) = @_;
+    my ($name, $typeflag, $body_size, $raw_size, $raw_mode) = @_;
     my $header = "\0" x $block_size;
     write_field(\$header, 0, 100, $name);
-    write_field(\$header, 100, 8, "0000755\0");
+    write_field(
+        \$header,
+        100,
+        8,
+        defined($raw_mode) ? $raw_mode : "0000755\0",
+    );
     write_field(\$header, 108, 8, "0000000\0");
     write_field(\$header, 116, 8, "0000000\0");
     my $size_field = defined($raw_size)
@@ -64,9 +69,15 @@ sub tar_header {
 }
 
 sub emit_entry {
-    my ($name, $typeflag, $body, $raw_size, $omit_body) = @_;
+    my ($name, $typeflag, $body, $raw_size, $omit_body, $raw_mode) = @_;
     $body //= "";
-    print tar_header($name, $typeflag, length($body), $raw_size);
+    print tar_header(
+        $name,
+        $typeflag,
+        length($body),
+        $raw_size,
+        $raw_mode,
+    );
     return if $omit_body;
     print $body;
     my $padding = ($block_size - length($body) % $block_size) % $block_size;
@@ -136,6 +147,19 @@ if ($mode eq "large") {
     my $pax = pax_record("SCHILY.mode", "0000755");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "flat_payload_mode") {
+    emit_entry("bin/darkbloom", "0", "binary", undef, 0, "0000775\0");
+} elsif ($mode eq "app_payload_mode") {
+    emit_entry(
+        "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+        "0",
+        "enclave",
+        undef,
+        0,
+        "0000700\0",
+    );
+} elsif ($mode eq "metallib_payload_mode") {
+    emit_entry("mlx.metallib", "0", "metal", undef, 0, "0000755\0");
 } elsif ($mode eq "pax_overflow") {
     my $pax = pax_record("size", "999999999999999999999999999999999999");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
@@ -217,6 +241,7 @@ mkdir -p \
     "$VALID_STAGE/bin" \
     "$VALID_STAGE/Darkbloom.app/Contents/Resources"
 printf 'binary\n' > "$VALID_STAGE/bin/darkbloom"
+chmod 0755 "$VALID_STAGE/bin/darkbloom"
 printf 'resource\n' \
     > "$VALID_STAGE/Darkbloom.app/Contents/Resources/$LONG_NAME"
 VALID="$ROOT/valid.tar.gz"
@@ -300,6 +325,9 @@ expect_rejection "$(make_fixture sparse)" "unsupported node type"
 expect_rejection "$(make_fixture pax_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_sun_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_mode)" "unsupported PAX mode metadata"
+expect_rejection "$(make_fixture flat_payload_mode)" "expected 0755"
+expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
+expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"
 expect_rejection "$(make_fixture pax_overflow)" "overflows"
 expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 2047 16384
 expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 1536 16384

@@ -215,6 +215,35 @@ struct ReleaseArchivePreflightTests {
         }
     }
 
+    @Test("binds exact release payload modes from tar headers")
+    func bindsExactReleasePayloadModes() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let cases: [(String, String, UInt32, String)] = [
+            ("flat-binary", "bin/darkbloom", 0o775, "expected 0755"),
+            (
+                "app-enclave",
+                "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+                0o700,
+                "expected 0755"
+            ),
+            ("root-metallib", "mlx.metallib", 0o755, "expected 0644"),
+        ]
+
+        for (name, path, mode, expected) in cases {
+            let archive = try fixture.writeArchive(
+                named: name,
+                entries: [
+                    .init(
+                        name: path,
+                        body: Data("payload".utf8),
+                        mode: mode
+                    ),
+                ])
+            expectPreflightFailure(archive, contains: expected)
+        }
+    }
+
     @Test("enforces aggregate expanded bytes and physical header count")
     func enforcesAggregateLimits() throws {
         let fixture = try ArchivePreflightFixture()
@@ -381,6 +410,7 @@ private struct RawTarEntry {
     let name: String
     let typeflag: UInt8
     let body: Data
+    let mode: UInt32
     let rawSizeField: Data?
     let omitBodyAndPadding: Bool
 
@@ -388,12 +418,14 @@ private struct RawTarEntry {
         name: String,
         typeflag: UInt8 = 48,
         body: Data = Data(),
+        mode: UInt32 = 0o755,
         rawSizeField: Data? = nil,
         omitBodyAndPadding: Bool = false
     ) {
         self.name = name
         self.typeflag = typeflag
         self.body = body
+        self.mode = mode
         self.rawSizeField = rawSizeField
         self.omitBodyAndPadding = omitBodyAndPadding
     }
@@ -488,7 +520,12 @@ private func rawTarArchive(_ entries: [RawTarEntry]) -> Data {
 private func tarHeader(_ entry: RawTarEntry) -> Data {
     var header = [UInt8](repeating: 0, count: 512)
     write(Array(entry.name.utf8), into: &header, at: 0, count: 100)
-    write(Array("0000755\0".utf8), into: &header, at: 100, count: 8)
+    write(
+        Array(String(format: "%07o\0", entry.mode).utf8),
+        into: &header,
+        at: 100,
+        count: 8
+    )
     write(Array("0000000\0".utf8), into: &header, at: 108, count: 8)
     write(Array("0000000\0".utf8), into: &header, at: 116, count: 8)
     let sizeField = entry.rawSizeField

@@ -341,6 +341,34 @@ sub read_metadata {
 
 my %nodes;
 my %has_descendants;
+my %expected_payload_modes = (
+    "bin/darkbloom" => [0755, "darkbloom"],
+    "darkbloom" => [0755, "darkbloom"],
+    "Darkbloom.app/Contents/MacOS/darkbloom" => [0755, "darkbloom"],
+    "bin/darkbloom-enclave" => [0755, "darkbloom-enclave"],
+    "darkbloom-enclave" => [0755, "darkbloom-enclave"],
+    "bin/eigeninference-enclave" => [0755, "darkbloom-enclave"],
+    "eigeninference-enclave" => [0755, "darkbloom-enclave"],
+    "Darkbloom.app/Contents/MacOS/darkbloom-enclave" =>
+        [0755, "darkbloom-enclave"],
+    "bin/mlx.metallib" => [0644, "mlx.metallib"],
+    "mlx.metallib" => [0644, "mlx.metallib"],
+    "Darkbloom.app/Contents/MacOS/mlx.metallib" =>
+        [0644, "mlx.metallib"],
+);
+sub validate_payload_mode {
+    my ($path, $actual) = @_;
+    my $spec = $expected_payload_modes{$path};
+    return unless defined($spec);
+    my ($expected, $label) = @$spec;
+    reject(sprintf(
+        "release payload %s has mode %04o; expected %04o",
+        $label,
+        $actual,
+        $expected,
+    )) if $actual != $expected;
+}
+
 sub add_node {
     my ($path, $kind) = @_;
     my $key = fold_path($path);
@@ -443,6 +471,10 @@ sub validate_archive {
 
         my $raw_path = header_path($header);
         clean_path($raw_path);
+        my $header_mode = parse_tar_number(
+            substr($header, 100, 8),
+            "entry mode",
+        );
         my $header_size = parse_tar_number(
             substr($header, 124, 12),
             "entry size",
@@ -497,6 +529,8 @@ sub validate_archive {
             ));
         }
 
+        validate_payload_mode($path, $header_mode)
+            if $kind eq "regular";
         add_node($path, $kind);
         add_tar_payload($size);
         skip_bytes($size);

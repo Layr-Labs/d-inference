@@ -51,6 +51,45 @@ struct UpdateArtifactModes: Equatable, Sendable {
         )
     }
 
+    static func archiveModeMismatch(
+        path: String,
+        actual: UInt64
+    ) -> String? {
+        let expected: UInt32
+        let label: String
+        switch path {
+        case "bin/darkbloom",
+             "darkbloom",
+             "Darkbloom.app/Contents/MacOS/darkbloom":
+            expected = expectedBinary
+            label = "darkbloom"
+        case "bin/darkbloom-enclave",
+             "darkbloom-enclave",
+             "bin/eigeninference-enclave",
+             "eigeninference-enclave",
+             "Darkbloom.app/Contents/MacOS/darkbloom-enclave":
+            expected = expectedEnclave
+            label = "darkbloom-enclave"
+        case "bin/mlx.metallib",
+             "mlx.metallib",
+             "Darkbloom.app/Contents/MacOS/mlx.metallib":
+            expected = expectedMetallib
+            label = "mlx.metallib"
+        default:
+            return nil
+        }
+        guard actual != UInt64(expected) else {
+            return nil
+        }
+        return String(
+            format:
+                "release payload %@ has mode %04llo; expected %04o",
+            label,
+            actual,
+            expected
+        )
+    }
+
     func matches(_ record: InstalledReleaseRecord) -> Bool {
         switch (
             record.binaryMode,

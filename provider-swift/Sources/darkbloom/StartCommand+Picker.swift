@@ -273,16 +273,19 @@ extension Start {
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
                 do {
-                    try await downloader.download(model: entry.catalogModel) { progress in
-                        let pct: String
-                        if let total = progress.bytesTotal, total > 0 {
-                            pct = String(format: " %.0f%%", Double(progress.bytesDownloaded) / Double(total) * 100)
-                        } else {
-                            pct = ""
+                    try await downloader.download(
+                        model: entry.catalogModel,
+                        onProgress: { progress in
+                            let pct: String
+                            if let total = progress.bytesTotal, total > 0 {
+                                pct = String(format: " %.0f%%", Double(progress.bytesDownloaded) / Double(total) * 100)
+                            } else {
+                                pct = ""
+                            }
+                            let mb = Double(progress.bytesDownloaded) / 1_048_576
+                            print("    \(progress.file)  \(String(format: "%.1f MB", mb))\(pct)")
                         }
-                        let mb = Double(progress.bytesDownloaded) / 1_048_576
-                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))\(pct)")
-                    }
+                    )
                     print("  \u{2713} Downloaded \(entry.displayName)")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")
@@ -347,10 +350,13 @@ extension Start {
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
                 do {
-                    try await downloader.download(model: entry.catalogModel) { progress in
-                        let mb = Double(progress.bytesDownloaded) / 1_048_576
-                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))")
-                    }
+                    try await downloader.download(
+                        model: entry.catalogModel,
+                        onProgress: { progress in
+                            let mb = Double(progress.bytesDownloaded) / 1_048_576
+                            print("    \(progress.file)  \(String(format: "%.1f MB", mb))")
+                        }
+                    )
                     print("  \(entry.displayName) downloaded.")
                 } catch {
                     printError("Failed to download \(entry.displayName): \(error)")

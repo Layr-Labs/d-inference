@@ -7,6 +7,288 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INSTALLER="$REPO_ROOT/scripts/install.sh"
 "$REPO_ROOT/scripts/sync-install-embed.sh" check
 
+wait_for_file() {
+    local path=$1
+    local label=$2
+    local attempts=${3:-200}
+    local attempt
+    for ((attempt = 0; attempt < attempts; attempt++)); do
+        [ -f "$path" ] && return 0
+        sleep 0.05
+    done
+    echo "timed out waiting for $label: $path" >&2
+    return 1
+}
+
+process_is_active() {
+    local pid=$1
+    kill -0 "$pid" 2>/dev/null || return 1
+    local state
+    state=$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')
+    case "$state" in
+        ""|*Z*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+wait_for_process_exit() {
+    local pid=$1
+    local label=$2
+    local attempts=${3:-200}
+    local attempt
+    for ((attempt = 0; attempt < attempts; attempt++)); do
+        process_is_active "$pid" || return 0
+        sleep 0.05
+    done
+    echo "$label remained active after bounded termination (pid $pid)" >&2
+    return 1
+}
+
+signal_exact_pids() {
+    local signal=$1
+    shift
+    local pid
+    for pid in "$@"; do
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+        kill "-$signal" "$pid" 2>/dev/null || true
+    done
+}
+
+assert_no_lock_helpers() {
+    local temporary_dir=$1
+    local helper
+    for helper in "$temporary_dir"/darkbloom-install-lock.*; do
+        [ -e "$helper" ] || [ -L "$helper" ] || continue
+        echo "installer left generated lock helper behind: $helper" >&2
+        return 1
+    done
+}
+
+assert_portable_setpgid_checks() {
+    local installer=$1
+    local offending
+    offending=$(grep -nE \
+        'POSIX::setpgid\([^;]*(==|!=)[[:space:]]*0' \
+        "$installer" || true)
+    if [ -n "$offending" ]; then
+        echo "$installer numerically checks the non-portable setpgid return:" >&2
+        echo "$offending" >&2
+        return 1
+    fi
+}
+
+test_install_lock_signal_exit() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/signal-lock-$label"
+    local temporary_dir="$install_dir/tmp"
+    local entered="$install_dir/entered"
+    local release="$install_dir/release"
+    local after="$install_dir/after"
+    mkdir -p "$install_dir" "$temporary_dir"
+
+    TMPDIR="$temporary_dir" bash "$installer" \
+        --hold-install-lock-test "$install_dir" "$entered" "$release" "$after" &
+    local holder_pid=$!
+    if ! wait_for_file "$entered" "installation lock probe"; then
+        signal_exact_pids KILL "$holder_pid"
+        wait "$holder_pid" 2>/dev/null || true
+        return 1
+    fi
+
+    if TMPDIR="$temporary_dir" DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        signal_exact_pids KILL "$holder_pid"
+        wait "$holder_pid" 2>/dev/null || true
+        echo "$installer body ran without holding its kernel lock" >&2
+        return 1
+    fi
+    test ! -e "$after"
+
+    kill -TERM "$holder_pid"
+    local status=0
+    wait "$holder_pid" || status=$?
+    test "$status" -eq 143
+    test ! -e "$after"
+
+    TMPDIR="$temporary_dir" \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    test -f "$install_dir/.app-install.lock"
+    test ! -L "$install_dir/.app-install.lock"
+    test -f "$install_dir/recovery/update.lock"
+    test ! -L "$install_dir/recovery/update.lock"
+    assert_no_lock_helpers "$temporary_dir"
+}
+
+test_install_lock_startup_term() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/startup-term-$label"
+    local temporary_dir="$install_dir/tmp"
+    local startup_ready="$install_dir/startup-ready"
+    local startup_release="$install_dir/startup-release"
+    local entered="$install_dir/entered"
+    local release="$install_dir/release"
+    local after="$install_dir/after"
+    mkdir -p "$install_dir" "$temporary_dir"
+
+    TMPDIR="$temporary_dir" \
+    DARKBLOOM_INSTALL_TEST_STARTUP_READY="$startup_ready" \
+    DARKBLOOM_INSTALL_TEST_STARTUP_RELEASE="$startup_release" \
+        bash "$installer" --hold-install-lock-test \
+            "$install_dir" "$entered" "$release" "$after" &
+    local wrapper_pid=$!
+    if ! wait_for_file "$startup_ready" "lock-owner startup publication" \
+        || ! wait_for_file "$entered" "startup mutation probe"
+    then
+        signal_exact_pids TERM "$wrapper_pid"
+        wait "$wrapper_pid" 2>/dev/null || true
+        return 1
+    fi
+
+    local owner_pid
+    IFS= read -r owner_pid < "$startup_ready"
+    kill -TERM "$wrapper_pid"
+    local status=0
+    wait "$wrapper_pid" || status=$?
+    test "$status" -eq 143
+    wait_for_process_exit "$owner_pid" "startup lock owner"
+    test ! -e "$after"
+
+    TMPDIR="$temporary_dir" DARKBLOOM_INSTALL_LOCK_TIMEOUT=2 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    assert_no_lock_helpers "$temporary_dir"
+}
+
+test_install_lock_parent_death() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/parent-death-$label"
+    local temporary_dir="$install_dir/tmp"
+    local owner_pid_file="$install_dir/owner.pid"
+    local body_pid_file="$install_dir/body.pid"
+    local descendant_pid_file="$install_dir/descendant.pid"
+    local entered="$install_dir/entered"
+    local mutation="$install_dir/mutation"
+    mkdir -p "$install_dir" "$temporary_dir"
+
+    TMPDIR="$temporary_dir" \
+    DARKBLOOM_INSTALL_TEST_OWNER_PID_FILE="$owner_pid_file" \
+        bash "$installer" --hold-stubborn-install-lock-test \
+            "$install_dir" "$entered" "$body_pid_file" \
+            "$descendant_pid_file" "$mutation" &
+    local wrapper_pid=$!
+    if ! wait_for_file "$owner_pid_file" "lock owner PID" \
+        || ! wait_for_file "$body_pid_file" "locked body PID" \
+        || ! wait_for_file "$descendant_pid_file" "mutation descendant PID" \
+        || ! wait_for_file "$entered" "stubborn mutation probe" \
+        || ! wait_for_file "$mutation" "mutation output"
+    then
+        signal_exact_pids TERM "$wrapper_pid"
+        wait "$wrapper_pid" 2>/dev/null || true
+        return 1
+    fi
+
+    local owner_pid
+    local body_pid
+    local descendant_pid
+    IFS= read -r owner_pid < "$owner_pid_file"
+    IFS= read -r body_pid < "$body_pid_file"
+    IFS= read -r descendant_pid < "$descendant_pid_file"
+    local body_group
+    local descendant_group
+    body_group=$(ps -p "$body_pid" -o pgid= | tr -d '[:space:]')
+    descendant_group=$(ps -p "$descendant_pid" -o pgid= | tr -d '[:space:]')
+    test "$body_group" = "$body_pid"
+    test "$descendant_group" = "$body_pid"
+
+    kill -KILL "$wrapper_pid"
+    local status=0
+    wait "$wrapper_pid" 2>/dev/null || status=$?
+    test "$status" -eq 137
+
+    if ! wait_for_process_exit "$owner_pid" "orphaned lock owner" \
+        || ! wait_for_process_exit "$body_pid" "orphaned locked body" \
+        || ! wait_for_process_exit \
+            "$descendant_pid" "orphaned mutation descendant"
+    then
+        signal_exact_pids KILL "$owner_pid" "$body_pid" "$descendant_pid"
+        return 1
+    fi
+
+    local mutation_size
+    local settled_size
+    mutation_size=$(wc -c < "$mutation" | tr -d '[:space:]')
+    sleep 0.2
+    settled_size=$(wc -c < "$mutation" | tr -d '[:space:]')
+    test "$settled_size" = "$mutation_size"
+
+    TMPDIR="$temporary_dir" DARKBLOOM_INSTALL_LOCK_TIMEOUT=3 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    assert_no_lock_helpers "$temporary_dir"
+}
+
+test_install_lock_descriptor_isolation() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/lock-descriptor-$label"
+    local temporary_dir="$install_dir/tmp"
+    local child_pid_file="$install_dir/child.pid"
+    mkdir -p "$install_dir" "$temporary_dir"
+
+    TMPDIR="$temporary_dir" bash "$installer" \
+        --spawn-under-install-lock-test "$install_dir" "$child_pid_file"
+    local child_pid
+    IFS= read -r child_pid < "$child_pid_file"
+    if ! process_is_active "$child_pid"; then
+        echo "$installer did not leave the descriptor probe alive" >&2
+        return 1
+    fi
+
+    if ! TMPDIR="$temporary_dir" DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
+        bash "$installer" --recover-install-transactions-test "$install_dir"
+    then
+        signal_exact_pids TERM "$child_pid"
+        echo "$installer leaked its kernel lock into a descendant" >&2
+        return 1
+    fi
+    signal_exact_pids TERM "$child_pid"
+    wait_for_process_exit "$child_pid" "descriptor probe"
+    assert_no_lock_helpers "$temporary_dir"
+}
+
+run_install_lock_lifecycle_tests() {
+    local installer
+    local label
+    for label in source embedded; do
+        if [ "$label" = source ]; then
+            installer="$REPO_ROOT/scripts/install.sh"
+        else
+            installer="$REPO_ROOT/coordinator/api/install.sh"
+        fi
+        assert_portable_setpgid_checks "$installer"
+        test_install_lock_signal_exit "$installer" "$label"
+        test_install_lock_startup_term "$installer" "$label"
+        test_install_lock_parent_death "$installer" "$label"
+        test_install_lock_descriptor_isolation "$installer" "$label"
+    done
+}
+
+case "${1:-}" in
+    "") ;;
+    --lock-only) ;;
+    *)
+        echo "usage: $0 [--lock-only]" >&2
+        exit 64
+        ;;
+esac
+run_install_lock_lifecycle_tests
+if [ "${1:-}" = "--lock-only" ]; then
+    echo "installer lock lifecycle tests passed"
+    exit 0
+fi
+
 cat > "$ROOT/paged.c" <<'C'
 #include <libgen.h>
 #include <limits.h>
@@ -385,90 +667,6 @@ test_user_app_shortcut() {
 
 test_user_app_shortcut "$REPO_ROOT/scripts/install.sh" source
 test_user_app_shortcut "$REPO_ROOT/coordinator/api/install.sh" embedded
-
-test_install_lock_signal_exit() {
-    local installer=$1
-    local label=$2
-    local install_dir="$ROOT/signal-lock-$label"
-    local entered="$install_dir/entered"
-    local release="$install_dir/release"
-    local after="$install_dir/after"
-    mkdir -p "$install_dir"
-
-    bash "$installer" \
-        --hold-install-lock-test "$install_dir" "$entered" "$release" "$after" &
-    local holder_pid=$!
-    local ready=0
-    for _ in {1..100}; do
-        if [ -f "$entered" ]; then
-            ready=1
-            break
-        fi
-        sleep 0.05
-    done
-    if [ "$ready" -ne 1 ]; then
-        kill -KILL "$holder_pid" 2>/dev/null || true
-        wait "$holder_pid" 2>/dev/null || true
-        echo "$installer never entered the installation lock probe" >&2
-        exit 1
-    fi
-
-    if DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
-        bash "$installer" --recover-install-transactions-test "$install_dir"
-    then
-        kill -KILL "$holder_pid" 2>/dev/null || true
-        wait "$holder_pid" 2>/dev/null || true
-        echo "$installer body ran without holding its kernel lock" >&2
-        exit 1
-    fi
-    test ! -e "$after"
-
-    kill -TERM "$holder_pid"
-    local status=0
-    wait "$holder_pid" || status=$?
-    test "$status" -eq 143
-    test ! -e "$after"
-
-    bash "$installer" --recover-install-transactions-test "$install_dir"
-    test -f "$install_dir/.app-install.lock"
-    test ! -L "$install_dir/.app-install.lock"
-    test -f "$install_dir/recovery/update.lock"
-    test ! -L "$install_dir/recovery/update.lock"
-}
-
-test_install_lock_signal_exit "$REPO_ROOT/scripts/install.sh" source
-test_install_lock_signal_exit "$REPO_ROOT/coordinator/api/install.sh" embedded
-
-test_install_lock_descriptor_isolation() {
-    local installer=$1
-    local label=$2
-    local install_dir="$ROOT/lock-descriptor-$label"
-    local child_pid_file="$install_dir/child.pid"
-    mkdir -p "$install_dir"
-
-    bash "$installer" \
-        --spawn-under-install-lock-test "$install_dir" "$child_pid_file"
-    local child_pid
-    child_pid=$(cat "$child_pid_file")
-    if ! kill -0 "$child_pid" 2>/dev/null; then
-        echo "$installer did not leave the descriptor probe alive" >&2
-        exit 1
-    fi
-
-    if ! DARKBLOOM_INSTALL_LOCK_TIMEOUT=1 \
-        bash "$installer" --recover-install-transactions-test "$install_dir"
-    then
-        kill -TERM "$child_pid" 2>/dev/null || true
-        echo "$installer leaked its kernel lock into a descendant" >&2
-        exit 1
-    fi
-    kill -TERM "$child_pid" 2>/dev/null || true
-}
-
-test_install_lock_descriptor_isolation \
-    "$REPO_ROOT/scripts/install.sh" source
-test_install_lock_descriptor_isolation \
-    "$REPO_ROOT/coordinator/api/install.sh" embedded
 
 test_shell_refuses_app_relocation_journal() {
     local installer=$1

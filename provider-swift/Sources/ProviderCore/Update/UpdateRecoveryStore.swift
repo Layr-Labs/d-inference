@@ -262,6 +262,11 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try faultInjector(.transactionPersisted)
 
         try installStagedBundle(staged)
+        guard try liveMatches(candidate, layout: layout) else {
+            throw StoreError.filesystem(
+                "installed candidate does not match its verified payload"
+            )
+        }
         try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)
@@ -313,6 +318,14 @@ final class UpdateRecoveryStore: @unchecked Sendable {
 
         try installFromStaging(stagingRoot, layout: predecessor.layout)
         try ensureCanonicalLinks(layout: predecessor.layout)
+        guard try liveMatches(
+            predecessor.release,
+            layout: predecessor.layout
+        ) else {
+            throw StoreError.predecessorVerificationFailed(
+                "restored predecessor does not match its verified payload"
+            )
+        }
         try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)
@@ -340,6 +353,21 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 "recorded files are missing")
         }
         do {
+            let modes = try UpdateArtifactModes(
+                binary: binary,
+                enclave: enclave,
+                metallib: metallib
+            )
+            if let payload = modes.nonExecutablePayload {
+                throw StoreError.predecessorVerificationFailed(
+                    "recorded payload \(payload) is not executable"
+                )
+            }
+            guard modes.matches(predecessor.release) else {
+                throw StoreError.predecessorVerificationFailed(
+                    "recorded payload permission mismatch"
+                )
+            }
             let bundleHash = try UpdateAtomicFilesystem.treeHash(root: bundle)
             guard bundleHash == predecessor.release.installedBundleHash else {
                 throw StoreError.predecessorVerificationFailed(

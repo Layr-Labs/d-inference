@@ -7,8 +7,39 @@ public struct InstalledReleaseRecord: Codable, Sendable, Equatable {
     public var binaryHash: String
     public var enclaveHash: String
     public var metallibHash: String
+    /// Exact POSIX permission bits. Optional only for decoding recovery state
+    /// written before permission binding was introduced.
+    public var binaryMode: UInt32?
+    public var enclaveMode: UInt32?
+    public var metallibMode: UInt32?
     public var installGeneration: UInt64
     public var installedAt: Double
+
+    public init(
+        version: String,
+        releaseBundleHash: String?,
+        installedBundleHash: String,
+        binaryHash: String,
+        enclaveHash: String,
+        metallibHash: String,
+        binaryMode: UInt32? = nil,
+        enclaveMode: UInt32? = nil,
+        metallibMode: UInt32? = nil,
+        installGeneration: UInt64,
+        installedAt: Double
+    ) {
+        self.version = version
+        self.releaseBundleHash = releaseBundleHash
+        self.installedBundleHash = installedBundleHash
+        self.binaryHash = binaryHash
+        self.enclaveHash = enclaveHash
+        self.metallibHash = metallibHash
+        self.binaryMode = binaryMode
+        self.enclaveMode = enclaveMode
+        self.metallibMode = metallibMode
+        self.installGeneration = installGeneration
+        self.installedAt = installedAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -17,6 +48,9 @@ public struct InstalledReleaseRecord: Codable, Sendable, Equatable {
         case binaryHash = "binary_hash"
         case enclaveHash = "enclave_hash"
         case metallibHash = "metallib_hash"
+        case binaryMode = "binary_mode"
+        case enclaveMode = "enclave_mode"
+        case metallibMode = "metallib_mode"
         case installGeneration = "install_generation"
         case installedAt = "installed_at"
     }

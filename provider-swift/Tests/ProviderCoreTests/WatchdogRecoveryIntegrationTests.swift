@@ -43,6 +43,12 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.predecessor?.release.binaryHash.isEmpty == false)
         #expect(state.predecessor?.release.installedBundleHash.isEmpty == false)
         #expect(state.predecessor?.release.metallibHash.isEmpty == false)
+        #expect(state.candidate?.release.binaryMode == 0o755)
+        #expect(state.candidate?.release.enclaveMode == 0o755)
+        #expect(state.candidate?.release.metallibMode != nil)
+        #expect(state.predecessor?.release.binaryMode == 0o755)
+        #expect(state.predecessor?.release.enclaveMode == 0o755)
+        #expect(state.predecessor?.release.metallibMode != nil)
     }
 
     @Test("third failed start restores predecessor and quarantines candidate")
@@ -728,6 +734,31 @@ struct WatchdogRecoveryIntegrationTests {
                 "recovery/predecessor/bin/darkbloom-enclave"
             )
         )
+        #expect(throws: (any Error).self) {
+            try store.verifyPredecessor(predecessor)
+        }
+    }
+
+    @Test("predecessor verification rejects chmod-only tampering")
+    func predecessorPermissionVerification() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let store = recoveryStore(context.fixture)
+        let state = try store.loadState()
+        guard let predecessor = state.predecessor else {
+            Issue.record("missing app predecessor")
+            return
+        }
+        let predecessorBinary = context.fixture.installRoot
+            .appendingPathComponent(
+                "recovery/predecessor/Darkbloom.app/Contents/MacOS/darkbloom"
+            )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o775],
+            ofItemAtPath: predecessorBinary.path
+        )
+
         #expect(throws: (any Error).self) {
             try store.verifyPredecessor(predecessor)
         }

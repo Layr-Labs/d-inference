@@ -820,6 +820,63 @@ struct ModelPrefetchDownloaderTests {
         )
         #expect(exact.availableBytes == required)
         #expect(exact.hasSufficientCapacity)
+
+        let negative = ModelDownloadStoragePlan(
+            remainingBytes: 1,
+            reserveBytes: 0,
+            availableBytes: -1
+        )
+        #expect(negative.availableBytes == 0)
+        #expect(!negative.hasSufficientCapacity)
+
+        let unrepresentable = ModelDownloadStoragePlan(
+            remainingBytes: Int64.max,
+            reserveBytes: 1,
+            availableBytes: Int64.max
+        )
+        #expect(unrepresentable.requiredAvailableBytes == Int64.max)
+        #expect(!unrepresentable.hasSufficientCapacity)
+        #expect(!ModelDownloadStoragePlan(
+            remainingBytes: Int64.max,
+            reserveBytes: 1,
+            availableBytes: nil
+        ).hasSufficientCapacity)
+
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: 0,
+                ordinary: 1_000
+            ) == 0
+        )
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: nil,
+                ordinary: 1_000
+            ) == 1_000
+        )
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: nil,
+                ordinary: nil
+            ) == nil
+        )
+    }
+
+    @Test("remaining-byte accounting saturates instead of overflowing")
+    func remainingByteAccountingIsOverflowSafe() {
+        #expect(
+            ModelDownloader.remainingBytesToFetch(
+                sizes: [Int64.max, Int64.max],
+                alreadyValid: [false, false]
+            ) == Int64.max
+        )
+        #expect(
+            ModelDownloader.remainingBytesToFetch(
+                sizes: [Int64.min, 10],
+                alreadyValid: [false, false],
+                partBytes: [Int64.max, 3]
+            ) == 7
+        )
     }
 
     @Test("download and app planning share valid-file and part-byte classification")

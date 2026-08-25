@@ -185,8 +185,12 @@ extension ModelDownloader {
         var total: Int64 = 0
         for i in sizes.indices {
             if i < alreadyValid.count, alreadyValid[i] { continue }
-            let have = i < partBytes.count ? max(0, partBytes[i]) : 0
-            total += max(0, sizes[i] - have)
+            let size = max(0, sizes[i])
+            let saved = i < partBytes.count ? max(0, partBytes[i]) : 0
+            let remaining = size - min(size, saved)
+            let (next, overflow) = total.addingReportingOverflow(remaining)
+            if overflow { return Int64.max }
+            total = next
         }
         return total
     }

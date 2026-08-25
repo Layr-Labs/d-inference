@@ -28,9 +28,8 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
     init(remainingBytes: Int64, reserveBytes: Int64, availableBytes: Int64?) {
         let remaining = max(0, remainingBytes)
         let reserve = max(0, reserveBytes)
-        let required = remaining > Int64.max - reserve
-            ? Int64.max
-            : remaining + reserve
+        let (requiredSum, requiredOverflow) = remaining.addingReportingOverflow(reserve)
+        let required = requiredOverflow ? Int64.max : requiredSum
         let available = availableBytes.map { max(0, $0) }
 
         self.remainingBytes = remaining
@@ -39,7 +38,8 @@ public struct ModelDownloadStoragePlan: Codable, Equatable, Sendable {
         self.availableBytes = available
         // Preserve the downloader's existing fail-open behavior when the
         // filesystem does not report usable capacity.
-        hasSufficientCapacity = available.map { $0 >= required } ?? true
+        hasSufficientCapacity = !requiredOverflow
+            && (available.map { $0 >= required } ?? true)
     }
 }
 
@@ -180,11 +180,21 @@ extension ModelDownloader {
             .volumeAvailableCapacityForImportantUsageKey,
             .volumeAvailableCapacityKey,
         ])
-        if let available = values.volumeAvailableCapacityForImportantUsage {
-            return max(0, available)
+        return normalizedAvailableCapacity(
+            importantUsage: values.volumeAvailableCapacityForImportantUsage,
+            ordinary: values.volumeAvailableCapacity
+        )
+    }
+
+    static func normalizedAvailableCapacity(
+        importantUsage: Int64?,
+        ordinary: Int?
+    ) -> Int64? {
+        if let importantUsage {
+            return max(0, importantUsage)
         }
-        if let available = values.volumeAvailableCapacity {
-            return Int64(max(0, available))
+        if let ordinary {
+            return Int64(max(0, ordinary))
         }
         return nil
     }

@@ -135,6 +135,7 @@ actor SandboxHostProductionAdapter:
         }
         return SandboxWireHostHeartbeat(
             mode: snapshot.mode == .sandboxDedicated
+                && isolationReadiness.permitsJobs
                 ? SandboxHostMode.sandboxDedicated.rawValue
                 : SandboxHostMode.draining.rawValue,
             availableCPU: availableCPU,

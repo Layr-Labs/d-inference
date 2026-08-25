@@ -18,7 +18,7 @@ final class SandboxControlProtocolTests: XCTestCase {
               "sequence": 9,
               "payload": {
                 "command_id": "00000000-0000-0000-0000-000000000005",
-                "idempotency_key": "command-attempt-1",
+                "idempotency_key": "00000000-0000-0000-0000-000000000006",
                 "scope": {
                   "sandbox_id": "00000000-0000-0000-0000-000000000003",
                   "generation": 3,
@@ -234,9 +234,16 @@ final class SandboxControlProtocolTests: XCTestCase {
         )
     }
 
-    func testStrictCodecRejectsLineTerminatedIdentifiers() throws {
+    func testStrictCodecRejectsInvalidIdentifiers() throws {
         let command = try commandEnvelope()
         for payload in [
+            SandboxWireCommand(
+                commandID: command.payload.commandID,
+                idempotencyKey: "command-attempt-1",
+                scope: command.payload.scope,
+                arguments: command.payload.arguments,
+                timeoutSeconds: command.payload.timeoutSeconds
+            ),
             SandboxWireCommand(
                 commandID: command.payload.commandID,
                 idempotencyKey: "key\n",
@@ -383,7 +390,7 @@ final class SandboxControlProtocolTests: XCTestCase {
                 commandID: try identifier(
                     "00000000-0000-0000-0000-000000000005"
                 ),
-                idempotencyKey: "command-attempt-1",
+                idempotencyKey: "00000000-0000-0000-0000-000000000006",
                 scope: SandboxWireScope(
                     sandboxID: try XCTUnwrap(
                         SandboxID("00000000-0000-0000-0000-000000000003")

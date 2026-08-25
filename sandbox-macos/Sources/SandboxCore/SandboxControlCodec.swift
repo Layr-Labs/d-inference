@@ -233,7 +233,7 @@ public enum SandboxControlCodec {
     }
 
     private static func validate(_ payload: SandboxWireCommand) -> Bool {
-        guard validIdentifier(payload.idempotencyKey),
+        guard UUID(uuidString: payload.idempotencyKey) != nil,
               (1...256).contains(payload.arguments.count),
               (1...900).contains(payload.timeoutSeconds),
               (payload.environment?.count ?? 0) <= 128,

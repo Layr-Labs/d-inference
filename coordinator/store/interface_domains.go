@@ -704,7 +704,21 @@ type SandboxStore interface {
 		ctx context.Context,
 		sandbox *SandboxRecord,
 		operation *SandboxOperation,
-	) error
+		limits SandboxAllocationLimits,
+	) (
+		storedSandbox *SandboxRecord,
+		storedOperation *SandboxOperation,
+		created bool,
+		err error,
+	)
+
+	// GetSandboxByIdempotency returns an existing create allocation and its
+	// prepare operation before host scheduling is attempted.
+	GetSandboxByIdempotency(
+		ctx context.Context,
+		accountID string,
+		idempotencyKey string,
+	) (*SandboxRecord, *SandboxOperation, error)
 
 	// GetSandbox returns one account-owned sandbox.
 	GetSandbox(
@@ -736,13 +750,26 @@ type SandboxStore interface {
 		hostID string,
 	) ([]SandboxRecord, error)
 
+	// ListExpiringSandboxes returns capacity-consuming sandboxes whose lease
+	// expires at or before the supplied deadline.
+	ListExpiringSandboxes(
+		ctx context.Context,
+		expiresBefore time.Time,
+		limit int,
+	) ([]SandboxRecord, error)
+
 	// BeginSandboxOperation atomically checks account ownership, the current
 	// scope/state, records the operation, and moves the sandbox to targetState.
 	BeginSandboxOperation(
 		ctx context.Context,
 		operation *SandboxOperation,
 		targetState string,
-	) (*SandboxRecord, error)
+	) (
+		sandbox *SandboxRecord,
+		storedOperation *SandboxOperation,
+		created bool,
+		err error,
+	)
 
 	// GetSandboxOperation returns one account-owned lifecycle operation.
 	GetSandboxOperation(
@@ -751,6 +778,25 @@ type SandboxStore interface {
 		operationID string,
 	) (*SandboxOperation, error)
 
+	// GetSandboxOperationByIdempotency resolves a lifecycle mutation retry
+	// before evaluating the sandbox's now-changed state.
+	GetSandboxOperationByIdempotency(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		idempotencyKey string,
+	) (*SandboxOperation, error)
+
+	// MarkSandboxTerminationRequested durably blocks new commands before an
+	// expiry or terminate flow cancels active work and starts teardown.
+	MarkSandboxTerminationRequested(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		idempotencyKey string,
+		at time.Time,
+	) (*SandboxRecord, error)
+
 	// ApplySandboxOperationUpdate applies a host lifecycle result and its
 	// resulting fence. Unknown, terminal, stale, or invalid transitions fail
 	// closed without changing either row.
@@ -758,6 +804,22 @@ type SandboxStore interface {
 		ctx context.Context,
 		update SandboxOperationUpdate,
 	) (*SandboxRecord, *SandboxOperation, error)
+
+	// RecordSandboxOperationDispatch records an outbox delivery attempt. An
+	// empty dispatchError means the frame reached the WebSocket writer.
+	RecordSandboxOperationDispatch(
+		ctx context.Context,
+		operationID string,
+		dispatchedAt time.Time,
+		dispatchError string,
+	) error
+
+	// ListPendingSandboxOperationsByHost returns non-terminal lifecycle outbox
+	// rows for reconnect/startup reconciliation.
+	ListPendingSandboxOperationsByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]PendingSandboxOperation, error)
 
 	// CreateSandboxCommand atomically validates the sandbox scope/readiness and
 	// inserts a pending command. A repeated idempotency key returns the original
@@ -775,9 +837,30 @@ type SandboxStore interface {
 		commandID string,
 	) (*SandboxCommand, error)
 
+	// ListActiveSandboxCommands returns non-terminal commands oldest first.
+	ListActiveSandboxCommands(
+		ctx context.Context,
+		sandboxID string,
+	) ([]SandboxCommand, error)
+
 	// ApplySandboxCommandUpdate applies a fenced host command result.
 	ApplySandboxCommandUpdate(
 		ctx context.Context,
 		update SandboxCommandUpdate,
 	) (*SandboxCommand, error)
+
+	// RecordSandboxCommandDispatch records a command outbox delivery attempt.
+	RecordSandboxCommandDispatch(
+		ctx context.Context,
+		commandID string,
+		dispatchedAt time.Time,
+		dispatchError string,
+	) error
+
+	// ListPendingSandboxCommandsByHost returns non-terminal command outbox rows
+	// for reconnect/startup reconciliation.
+	ListPendingSandboxCommandsByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]PendingSandboxCommand, error)
 }

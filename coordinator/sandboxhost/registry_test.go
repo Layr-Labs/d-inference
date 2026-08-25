@@ -67,6 +67,63 @@ func TestSessionEnforcesIdentityAndMonotonicSequence(t *testing.T) {
 	}
 }
 
+func TestSessionRejectsHeartbeatBeyondRegisteredCapacity(t *testing.T) {
+	tests := map[string]func(*protocol.SandboxHostHeartbeatPayload){
+		"available CPU": func(heartbeat *protocol.SandboxHostHeartbeatPayload) {
+			heartbeat.AvailableCPU = 13
+		},
+		"available memory": func(heartbeat *protocol.SandboxHostHeartbeatPayload) {
+			heartbeat.AvailableMemory = 49 * 1024 * 1024 * 1024
+		},
+		"aggregate CPU": func(heartbeat *protocol.SandboxHostHeartbeatPayload) {
+			heartbeat.AvailableCPU = 10
+			heartbeat.Leases = []protocol.SandboxHostLeaseObservation{
+				testLeaseObservation(),
+			}
+		},
+		"unsupported workspace": func(heartbeat *protocol.SandboxHostHeartbeatPayload) {
+			lease := testLeaseObservation()
+			lease.Resources.WorkspaceBytes = 50 * 1024 * 1024 * 1024
+			heartbeat.Leases = []protocol.SandboxHostLeaseObservation{lease}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			registry := NewRegistry(nil)
+			session, err := registry.Register(
+				testHeader(protocol.SandboxTypeHostRegister, 1),
+				testRegistration(),
+				&recordingTransport{},
+			)
+			if err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			heartbeat := &protocol.SandboxHostHeartbeatPayload{
+				Mode:             "sandbox_dedicated",
+				AvailableCPU:     8,
+				AvailableMemory:  24 * 1024 * 1024 * 1024,
+				NextFencingToken: 2,
+				Leases:           []protocol.SandboxHostLeaseObservation{},
+			}
+			mutate(heartbeat)
+			err = session.Handle(
+				context.Background(),
+				protocol.SandboxDecodedMessage{
+					Header:  testHeader(protocol.SandboxTypeHostHeartbeat, 2),
+					Payload: heartbeat,
+				},
+			)
+			if !errors.Is(err, ErrInvalidHeartbeat) {
+				t.Fatalf("heartbeat error = %v", err)
+			}
+			snapshot := session.Snapshot()
+			if snapshot.LastInbound != 1 || snapshot.Heartbeat != nil {
+				t.Fatalf("invalid heartbeat changed session: %+v", snapshot)
+			}
+		})
+	}
+}
+
 func TestRegisterReplacementIsIdentityBound(t *testing.T) {
 	registry := NewRegistry(nil)
 	firstTransport := &recordingTransport{}
@@ -247,6 +304,24 @@ func testRegistration() *protocol.SandboxHostRegisterPayload {
 			WorkspaceSizesBytes: []uint64{25 * 1024 * 1024 * 1024},
 			SupportsGPU:         true,
 		},
+	}
+}
+
+func testLeaseObservation() protocol.SandboxHostLeaseObservation {
+	return protocol.SandboxHostLeaseObservation{
+		Scope: protocol.SandboxScope{
+			SandboxID:    testSandboxID,
+			Generation:   1,
+			FencingToken: 1,
+		},
+		State: protocol.SandboxOperationReady,
+		Resources: protocol.SandboxResources{
+			CPUCount:              4,
+			MemoryBytes:           8 * 1024 * 1024 * 1024,
+			WorkspaceBytes:        25 * 1024 * 1024 * 1024,
+			CommandTimeoutSeconds: 900,
+		},
+		LeaseExpiresAt: "2026-08-24T23:00:00Z",
 	}
 }
 

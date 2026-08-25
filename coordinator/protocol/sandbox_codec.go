@@ -582,9 +582,13 @@ func ValidSandboxIdentifier(value string) bool {
 	return sandboxIdentifierPattern.MatchString(value)
 }
 
+func ValidSandboxUUID(value string) bool {
+	return validCanonicalSandboxUUID(value)
+}
+
 func validateSandboxCommand(command *SandboxCommandPayload) error {
 	if !validCanonicalSandboxUUID(command.CommandID) ||
-		!sandboxIdentifierPattern.MatchString(command.IdempotencyKey) ||
+		!validCanonicalSandboxUUID(command.IdempotencyKey) ||
 		validateSandboxScope(command.Scope) != nil ||
 		len(command.Arguments) == 0 ||
 		len(command.Arguments) > maxSandboxCommandArguments ||

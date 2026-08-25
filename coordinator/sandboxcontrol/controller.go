@@ -14,9 +14,14 @@ import (
 )
 
 const (
-	CommandTimeoutSeconds  uint32 = 900
-	LeaseDuration                 = 10 * time.Minute
-	HostHeartbeatFreshness        = 60 * time.Second
+	CommandTimeoutSeconds      uint32 = 900
+	LeaseDuration                     = 30 * time.Minute
+	HostHeartbeatFreshness            = 60 * time.Second
+	MaximumActiveSandboxes            = 4
+	MaximumSandboxesPerAccount        = 2
+	dispatchTimeout                   = 5 * time.Second
+	dispatchRetryInterval             = 15 * time.Second
+	leaseSweepInterval                = 5 * time.Second
 )
 
 var (
@@ -28,6 +33,7 @@ var (
 )
 
 type CreateRequest struct {
+	IdempotencyKey string
 	BaseImageID    string
 	CPUCount       uint16
 	MemoryBytes    uint64
@@ -48,22 +54,36 @@ type Controller struct {
 	hosts *sandboxhost.Registry
 	now   func() time.Time
 
-	scheduleMu    sync.Mutex
-	hostNextFence map[string]uint64
+	scheduleMu      sync.Mutex
+	hostNextFence   map[string]uint64
+	reconciledEpoch map[string]string
+
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func New(
 	sandboxStore store.SandboxStore,
 	hosts *sandboxhost.Registry,
 ) *Controller {
+	runContext, cancel := context.WithCancel(context.Background())
 	controller := &Controller{
-		store:         sandboxStore,
-		hosts:         hosts,
-		now:           time.Now,
-		hostNextFence: make(map[string]uint64),
+		store:           sandboxStore,
+		hosts:           hosts,
+		now:             time.Now,
+		hostNextFence:   make(map[string]uint64),
+		reconciledEpoch: make(map[string]string),
+		cancel:          cancel,
+		done:            make(chan struct{}),
 	}
 	hosts.SetHandler(controller.HandleHostMessage)
+	go controller.runLeaseSweeper(runContext)
 	return controller
+}
+
+func (c *Controller) Close() {
+	c.cancel()
+	<-c.done
 }
 
 func (c *Controller) Create(
@@ -80,10 +100,35 @@ func (c *Controller) Create(
 		GPU:                   request.GPU,
 	}
 	if accountID == "" ||
+		!protocol.ValidSandboxUUID(request.IdempotencyKey) ||
 		!protocol.ValidSandboxIdentifier(request.BaseImageID) ||
 		protocol.ValidateSandboxResources(resources) != nil ||
 		request.GPU {
 		return nil, nil, ErrInvalidRequest
+	}
+	existing, existingOperation, err := c.store.GetSandboxByIdempotency(
+		ctx,
+		accountID,
+		request.IdempotencyKey,
+	)
+	if err == nil {
+		candidate := &store.SandboxRecord{
+			AccountID:             accountID,
+			IdempotencyKey:        request.IdempotencyKey,
+			BaseImageID:           request.BaseImageID,
+			CPUCount:              request.CPUCount,
+			MemoryBytes:           request.MemoryBytes,
+			WorkspaceBytes:        request.WorkspaceBytes,
+			CommandTimeoutSeconds: CommandTimeoutSeconds,
+			GPU:                   request.GPU,
+		}
+		if !existing.SameAllocationRequest(candidate) {
+			return nil, nil, ErrIdempotencyConflict
+		}
+		return existing, existingOperation, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, nil, err
 	}
 	now := c.now().UTC()
 	leaseExpiresAt := now.Add(LeaseDuration)
@@ -100,6 +145,7 @@ func (c *Controller) Create(
 		ID:                    sandboxID,
 		AccountID:             accountID,
 		CreatedByKeyID:        keyID,
+		IdempotencyKey:        request.IdempotencyKey,
 		HostID:                session.HostID(),
 		Generation:            1,
 		FencingToken:          fencingToken,
@@ -118,6 +164,7 @@ func (c *Controller) Create(
 		ID:                      operationID,
 		SandboxID:               sandboxID,
 		AccountID:               accountID,
+		IdempotencyKey:          request.IdempotencyKey,
 		Kind:                    store.SandboxOperationKindPrepare,
 		State:                   store.SandboxOperationPending,
 		Generation:              sandbox.Generation,
@@ -126,25 +173,40 @@ func (c *Controller) Create(
 		CreatedAt:               now,
 		UpdatedAt:               now,
 	}
-	if err := c.store.CreateSandbox(ctx, sandbox, operation); err != nil {
+	storedSandbox, storedOperation, created, err := c.store.CreateSandbox(
+		ctx,
+		sandbox,
+		operation,
+		store.SandboxAllocationLimits{
+			MaximumActive:     MaximumActiveSandboxes,
+			MaximumPerAccount: MaximumSandboxesPerAccount,
+			MaximumPerHost:    int(session.Snapshot().Capabilities.MaximumSandboxes),
+		},
+	)
+	if err != nil {
 		c.scheduleMu.Unlock()
 		return nil, nil, err
+	}
+	if !storedSandbox.SameAllocationRequest(sandbox) {
+		c.scheduleMu.Unlock()
+		return nil, nil, ErrIdempotencyConflict
+	}
+	if !created {
+		c.scheduleMu.Unlock()
+		return storedSandbox, storedOperation, nil
 	}
 	c.hostNextFence[sandbox.HostID] = fencingToken + 1
 	c.scheduleMu.Unlock()
 
 	payload := protocol.SandboxPreparePayload{
-		OperationID:    operation.ID,
-		Scope:          sandboxScope(sandbox),
+		OperationID:    storedOperation.ID,
+		Scope:          sandboxScope(storedSandbox),
 		Resources:      resources,
-		BaseImageID:    sandbox.BaseImageID,
-		LeaseExpiresAt: sandbox.LeaseExpiresAt.Format(time.RFC3339Nano),
+		BaseImageID:    storedSandbox.BaseImageID,
+		LeaseExpiresAt: storedSandbox.LeaseExpiresAt.Format(time.RFC3339Nano),
 	}
-	if err := session.Send(ctx, protocol.SandboxTypePrepare, payload); err != nil {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, nil, ErrHostUnavailable
-	}
-	return sandbox, operation, nil
+	_ = c.sendOperation(session, storedOperation, protocol.SandboxTypePrepare, payload)
+	return storedSandbox, storedOperation, nil
 }
 
 func (c *Controller) Get(
@@ -288,25 +350,4 @@ func sandboxScope(sandbox *store.SandboxRecord) protocol.SandboxScope {
 		Generation:   sandbox.Generation,
 		FencingToken: sandbox.FencingToken,
 	}
-}
-
-func (c *Controller) failOperationDispatch(
-	ctx context.Context,
-	sandbox *store.SandboxRecord,
-	operation *store.SandboxOperation,
-	errorCode string,
-) {
-	now := c.now().UTC()
-	_, _, _ = c.store.ApplySandboxOperationUpdate(
-		ctx,
-		store.SandboxOperationUpdate{
-			OperationID:  operation.ID,
-			SandboxID:    sandbox.ID,
-			Generation:   sandbox.Generation,
-			FencingToken: sandbox.FencingToken,
-			State:        store.SandboxOperationFailed,
-			ErrorCode:    errorCode,
-			UpdatedAt:    now,
-		},
-	)
 }

@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	ErrSessionClosed   = errors.New("sandbox host session is closed")
-	ErrSessionMismatch = errors.New("sandbox host session identity mismatch")
-	ErrSequenceReplay  = errors.New("sandbox host sequence is not monotonic")
-	ErrEpochReused     = errors.New("sandbox host connection epoch was reused")
+	ErrSessionClosed    = errors.New("sandbox host session is closed")
+	ErrSessionMismatch  = errors.New("sandbox host session identity mismatch")
+	ErrSequenceReplay   = errors.New("sandbox host sequence is not monotonic")
+	ErrEpochReused      = errors.New("sandbox host connection epoch was reused")
+	ErrInvalidHeartbeat = errors.New("sandbox host heartbeat exceeds registered capacity")
 )
 
 type Transport interface {
@@ -185,12 +186,16 @@ func (s *Session) Handle(
 		s.mu.Unlock()
 		return ErrSequenceReplay
 	}
-	s.lastInbound = message.Header.Sequence
 	if heartbeat, ok := message.Payload.(*protocol.SandboxHostHeartbeatPayload); ok {
+		if !heartbeatMatchesCapabilities(heartbeat, s.capabilities) {
+			s.mu.Unlock()
+			return ErrInvalidHeartbeat
+		}
 		cloned := cloneHeartbeat(heartbeat)
 		s.heartbeat = &cloned
 		s.lastHeartbeat = s.registry.now().UTC()
 	}
+	s.lastInbound = message.Header.Sequence
 	s.mu.Unlock()
 
 	s.registry.mu.RLock()
@@ -310,4 +315,49 @@ func cloneHeartbeat(
 		heartbeat.Leases...,
 	)
 	return cloned
+}
+
+func heartbeatMatchesCapabilities(
+	heartbeat *protocol.SandboxHostHeartbeatPayload,
+	capabilities protocol.SandboxHostCapabilities,
+) bool {
+	if heartbeat == nil ||
+		heartbeat.AvailableCPU > capabilities.CPUCount ||
+		heartbeat.AvailableMemory > capabilities.MemoryBytes ||
+		len(heartbeat.Leases) > int(capabilities.MaximumSandboxes) {
+		return false
+	}
+	workspaceSizes := make(map[uint64]struct{}, len(capabilities.WorkspaceSizesBytes))
+	for _, size := range capabilities.WorkspaceSizesBytes {
+		workspaceSizes[size] = struct{}{}
+	}
+	seenSandboxes := make(map[string]struct{}, len(heartbeat.Leases))
+	seenFences := make(map[uint64]struct{}, len(heartbeat.Leases))
+	reservedCPU := uint64(0)
+	reservedMemory := uint64(0)
+	for _, lease := range heartbeat.Leases {
+		if _, duplicate := seenSandboxes[lease.Scope.SandboxID]; duplicate {
+			return false
+		}
+		if _, duplicate := seenFences[lease.Scope.FencingToken]; duplicate {
+			return false
+		}
+		if _, supported := workspaceSizes[lease.Resources.WorkspaceBytes]; !supported ||
+			(lease.Resources.GPU && !capabilities.SupportsGPU) ||
+			lease.Scope.FencingToken >= heartbeat.NextFencingToken {
+			return false
+		}
+		seenSandboxes[lease.Scope.SandboxID] = struct{}{}
+		seenFences[lease.Scope.FencingToken] = struct{}{}
+		reservedCPU += uint64(lease.Resources.CPUCount)
+		memory, overflow := reservedMemory+lease.Resources.MemoryBytes,
+			reservedMemory > ^uint64(0)-lease.Resources.MemoryBytes
+		if overflow {
+			return false
+		}
+		reservedMemory = memory
+	}
+	return reservedCPU+uint64(heartbeat.AvailableCPU) <=
+		uint64(capabilities.CPUCount) &&
+		reservedMemory <= capabilities.MemoryBytes-heartbeat.AvailableMemory
 }

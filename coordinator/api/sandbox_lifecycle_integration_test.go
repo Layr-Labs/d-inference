@@ -38,17 +38,20 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		return snapshot.Heartbeat != nil
 	})
 
-	createResponse := doSandboxAPIRequest(
+	createIdempotencyKey := uuid.NewString()
+	createBody := `{
+		"base_image_id":"macos-tahoe-v1",
+		"cpu_count":4,
+		"memory_gib":8,
+		"workspace_gib":25,
+		"gpu":false
+	}`
+	createResponse := doSandboxAPIRequestWithIdempotency(
 		t,
 		http.MethodPost,
 		httpServer.URL+"/v1/sandboxes",
-		`{
-			"base_image_id":"macos-tahoe-v1",
-			"cpu_count":4,
-			"memory_gib":8,
-			"workspace_gib":25,
-			"gpu":false
-		}`,
+		createBody,
+		createIdempotencyKey,
 	)
 	if createResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf(
@@ -61,6 +64,48 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 	decodeSandboxAPIResponse(t, createResponse.Body, &created)
 	if created.Sandbox == nil || created.Operation == nil {
 		t.Fatalf("incomplete create response: %+v", created)
+	}
+	createRetry := doSandboxAPIRequestWithIdempotency(
+		t,
+		http.MethodPost,
+		httpServer.URL+"/v1/sandboxes",
+		createBody,
+		createIdempotencyKey,
+	)
+	if createRetry.StatusCode != http.StatusAccepted {
+		t.Fatalf(
+			"create retry status = %d body=%s",
+			createRetry.StatusCode,
+			createRetry.Body,
+		)
+	}
+	var retriedCreate sandboxOperationResponse
+	decodeSandboxAPIResponse(t, createRetry.Body, &retriedCreate)
+	if retriedCreate.Sandbox == nil ||
+		retriedCreate.Operation == nil ||
+		retriedCreate.Sandbox.ID != created.Sandbox.ID ||
+		retriedCreate.Operation.ID != created.Operation.ID {
+		t.Fatalf("create retry changed allocation: %+v", retriedCreate)
+	}
+	createConflict := doSandboxAPIRequestWithIdempotency(
+		t,
+		http.MethodPost,
+		httpServer.URL+"/v1/sandboxes",
+		`{
+			"base_image_id":"macos-tahoe-v1",
+			"cpu_count":2,
+			"memory_gib":8,
+			"workspace_gib":25,
+			"gpu":false
+		}`,
+		createIdempotencyKey,
+	)
+	if createConflict.StatusCode != http.StatusConflict {
+		t.Fatalf(
+			"create idempotency conflict status = %d body=%s",
+			createConflict.StatusCode,
+			createConflict.Body,
+		)
 	}
 	prepare := readSandboxCoordinatorMessage(t, connection)
 	preparePayload, ok := prepare.Payload.(*protocol.SandboxPreparePayload)
@@ -88,6 +133,10 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 	)
 
 	idempotencyKey := uuid.NewString()
+	commandBody := fmt.Sprintf(
+		`{"idempotency_key":%q,"arguments":["/usr/bin/printf","hello"],"timeout_seconds":900}`,
+		idempotencyKey,
+	)
 	commandResponse := doSandboxAPIRequest(
 		t,
 		http.MethodPost,
@@ -96,10 +145,7 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 			httpServer.URL,
 			created.Sandbox.ID,
 		),
-		fmt.Sprintf(
-			`{"idempotency_key":%q,"arguments":["/usr/bin/printf","hello"],"timeout_seconds":900}`,
-			idempotencyKey,
-		),
+		commandBody,
 	)
 	if commandResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf(
@@ -150,12 +196,38 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 		*completed.ExitCode != 0 {
 		t.Fatalf("unexpected command result: %+v", completed)
 	}
+	commandRetry := doSandboxAPIRequest(
+		t,
+		http.MethodPost,
+		fmt.Sprintf(
+			"%s/v1/sandboxes/%s/commands",
+			httpServer.URL,
+			created.Sandbox.ID,
+		),
+		commandBody,
+	)
+	if commandRetry.StatusCode != http.StatusAccepted {
+		t.Fatalf(
+			"command retry status = %d body=%s",
+			commandRetry.StatusCode,
+			commandRetry.Body,
+		)
+	}
+	var retriedCommand sandboxCommandResponse
+	decodeSandboxAPIResponse(t, commandRetry.Body, &retriedCommand)
+	if retriedCommand.Command == nil ||
+		retriedCommand.Command.ID != completed.ID ||
+		retriedCommand.Command.State != store.SandboxCommandSucceeded {
+		t.Fatalf("command retry changed result: %+v", retriedCommand)
+	}
 
-	deleteResponse := doSandboxAPIRequest(
+	terminationIdempotencyKey := uuid.NewString()
+	deleteResponse := doSandboxAPIRequestWithIdempotency(
 		t,
 		http.MethodDelete,
 		fmt.Sprintf("%s/v1/sandboxes/%s", httpServer.URL, created.Sandbox.ID),
 		"",
+		terminationIdempotencyKey,
 	)
 	if deleteResponse.StatusCode != http.StatusAccepted {
 		t.Fatalf(
@@ -163,6 +235,29 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 			deleteResponse.StatusCode,
 			deleteResponse.Body,
 		)
+	}
+	var acceptedTermination sandboxOperationResponse
+	decodeSandboxAPIResponse(t, deleteResponse.Body, &acceptedTermination)
+	terminationRetry := doSandboxAPIRequestWithIdempotency(
+		t,
+		http.MethodDelete,
+		fmt.Sprintf("%s/v1/sandboxes/%s", httpServer.URL, created.Sandbox.ID),
+		"",
+		terminationIdempotencyKey,
+	)
+	if terminationRetry.StatusCode != http.StatusAccepted {
+		t.Fatalf(
+			"terminate retry status = %d body=%s",
+			terminationRetry.StatusCode,
+			terminationRetry.Body,
+		)
+	}
+	var retriedTermination sandboxOperationResponse
+	decodeSandboxAPIResponse(t, terminationRetry.Body, &retriedTermination)
+	if acceptedTermination.Operation == nil ||
+		retriedTermination.Operation == nil ||
+		retriedTermination.Operation.ID != acceptedTermination.Operation.ID {
+		t.Fatalf("terminate retry changed operation: %+v", retriedTermination)
 	}
 	stop := readSandboxCoordinatorMessage(t, connection)
 	stopPayload, ok := stop.Payload.(*protocol.SandboxOperationPayload)
@@ -207,6 +302,129 @@ func TestSandboxAPILifecycleOverAuthenticatedHostWebSocket(t *testing.T) {
 	}
 }
 
+func TestSandboxAPIRejectsProviderDeviceToken(t *testing.T) {
+	server := newSandboxHostTestServer(t)
+	const (
+		rawToken  = "provider-device-token-for-sandbox-auth-test"
+		accountID = "sandbox-provider-account"
+	)
+	if err := server.store.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256Hash(rawToken),
+		AccountID: accountID,
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	request, err := http.NewRequest(
+		http.MethodGet,
+		httpServer.URL+"/v1/sandboxes",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+rawToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("request sandboxes: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf(
+			"provider token status = %d body=%s",
+			response.StatusCode,
+			body,
+		)
+	}
+}
+
+func TestSandboxPrepareRedispatchesAfterHostReconnect(t *testing.T) {
+	server := newSandboxHostTestServer(t)
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	first := dialSandboxHost(
+		t,
+		httpServer.URL,
+		testSandboxHostID,
+		testSandboxHostToken,
+	)
+	writeSandboxHostFrame(t, first, sandboxHostRegistrationFrame(1))
+	writeSandboxHostFrame(t, first, sandboxHostHeartbeatFrame(2))
+	waitForSandboxHost(t, server, func(snapshot sandboxhost.HostSnapshot) bool {
+		return snapshot.Heartbeat != nil
+	})
+
+	response := doSandboxAPIRequestWithIdempotency(
+		t,
+		http.MethodPost,
+		httpServer.URL+"/v1/sandboxes",
+		`{
+			"base_image_id":"macos-tahoe-v1",
+			"cpu_count":4,
+			"memory_gib":8,
+			"workspace_gib":25,
+			"gpu":false
+		}`,
+		uuid.NewString(),
+	)
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status = %d body=%s", response.StatusCode, response.Body)
+	}
+	var created sandboxOperationResponse
+	decodeSandboxAPIResponse(t, response.Body, &created)
+	initial := readSandboxCoordinatorMessage(t, first)
+	initialPrepare, ok := initial.Payload.(*protocol.SandboxPreparePayload)
+	if !ok {
+		t.Fatalf("initial payload = %#v", initial.Payload)
+	}
+	_ = first.Close(websocket.StatusNormalClosure, "reconnect")
+
+	const replacementEpoch = "00000000-0000-0000-0000-000000000099"
+	replacement := dialSandboxHost(
+		t,
+		httpServer.URL,
+		testSandboxHostID,
+		testSandboxHostToken,
+	)
+	t.Cleanup(func() {
+		_ = replacement.Close(websocket.StatusNormalClosure, "test complete")
+	})
+	registration := sandboxHostRegistrationFrame(1)
+	registration.ConnectionEpoch = replacementEpoch
+	heartbeat := sandboxHostHeartbeatFrame(2)
+	heartbeat.ConnectionEpoch = replacementEpoch
+	writeSandboxHostFrame(t, replacement, registration)
+	writeSandboxHostFrame(t, replacement, heartbeat)
+	redispatched := readSandboxCoordinatorMessage(t, replacement)
+	redispatchedPrepare, ok := redispatched.Payload.(*protocol.SandboxPreparePayload)
+	if !ok ||
+		redispatchedPrepare.OperationID != initialPrepare.OperationID ||
+		redispatchedPrepare.Scope != initialPrepare.Scope {
+		t.Fatalf("redispatched payload = %#v", redispatched.Payload)
+	}
+
+	ready := hostOperationStateFrame(
+		3,
+		redispatchedPrepare.OperationID,
+		redispatchedPrepare.Scope,
+		store.SandboxOperationKindPrepare,
+		protocol.SandboxOperationReady,
+	)
+	ready.ConnectionEpoch = replacementEpoch
+	writeSandboxHostFrame(t, replacement, ready)
+	waitForSandboxAPIState(
+		t,
+		httpServer.URL,
+		created.Sandbox.ID,
+		store.SandboxStateReady,
+	)
+}
+
 type sandboxHTTPResponse struct {
 	StatusCode int
 	Body       []byte
@@ -219,11 +437,25 @@ func doSandboxAPIRequest(
 	body string,
 ) sandboxHTTPResponse {
 	t.Helper()
+	return doSandboxAPIRequestWithIdempotency(t, method, url, body, "")
+}
+
+func doSandboxAPIRequestWithIdempotency(
+	t *testing.T,
+	method string,
+	url string,
+	body string,
+	idempotencyKey string,
+) sandboxHTTPResponse {
+	t.Helper()
 	request, err := http.NewRequest(method, url, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
 	request.Header.Set("Authorization", "Bearer test-key")
+	if idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}

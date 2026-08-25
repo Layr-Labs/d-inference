@@ -148,6 +148,7 @@ type MemoryStore struct {
 	sandboxOperations           map[string]*SandboxOperation
 	sandboxCommands             map[string]*SandboxCommand
 	sandboxCommandByIdempotency map[string]string
+	sandboxByIdempotency        map[string]string
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -206,6 +207,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		sandboxOperations:             make(map[string]*SandboxOperation),
 		sandboxCommands:               make(map[string]*SandboxCommand),
 		sandboxCommandByIdempotency:   make(map[string]string),
+		sandboxByIdempotency:          make(map[string]string),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{

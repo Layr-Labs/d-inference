@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -47,27 +49,30 @@ const (
 var (
 	ErrSandboxConflict          = errors.New("sandbox state conflict")
 	ErrSandboxInvalidTransition = errors.New("invalid sandbox state transition")
+	ErrSandboxCapacity          = errors.New("sandbox capacity exhausted")
 )
 
 type SandboxRecord struct {
-	ID                    string    `json:"id"`
-	AccountID             string    `json:"account_id"`
-	CreatedByKeyID        string    `json:"created_by_key_id,omitempty"`
-	HostID                string    `json:"host_id"`
-	Generation            uint64    `json:"generation"`
-	FencingToken          uint64    `json:"fencing_token"`
-	BaseImageID           string    `json:"base_image_id"`
-	CPUCount              uint16    `json:"cpu_count"`
-	MemoryBytes           uint64    `json:"memory_bytes"`
-	WorkspaceBytes        uint64    `json:"workspace_bytes"`
-	CommandTimeoutSeconds uint32    `json:"command_timeout_seconds"`
-	GPU                   bool      `json:"gpu"`
-	State                 string    `json:"state"`
-	TerminationRequested  bool      `json:"termination_requested"`
-	LeaseExpiresAt        time.Time `json:"lease_expires_at"`
-	ErrorCode             string    `json:"error_code,omitempty"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                        string    `json:"id"`
+	AccountID                 string    `json:"account_id"`
+	CreatedByKeyID            string    `json:"created_by_key_id,omitempty"`
+	IdempotencyKey            string    `json:"idempotency_key"`
+	HostID                    string    `json:"host_id"`
+	Generation                uint64    `json:"generation"`
+	FencingToken              uint64    `json:"fencing_token"`
+	BaseImageID               string    `json:"base_image_id"`
+	CPUCount                  uint16    `json:"cpu_count"`
+	MemoryBytes               uint64    `json:"memory_bytes"`
+	WorkspaceBytes            uint64    `json:"workspace_bytes"`
+	CommandTimeoutSeconds     uint32    `json:"command_timeout_seconds"`
+	GPU                       bool      `json:"gpu"`
+	State                     string    `json:"state"`
+	TerminationRequested      bool      `json:"termination_requested"`
+	TerminationIdempotencyKey string    `json:"termination_idempotency_key,omitempty"`
+	LeaseExpiresAt            time.Time `json:"lease_expires_at"`
+	ErrorCode                 string    `json:"error_code,omitempty"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 func (s SandboxRecord) Terminal() bool {
@@ -75,7 +80,21 @@ func (s SandboxRecord) Terminal() bool {
 }
 
 func (s SandboxRecord) ConsumesCapacity() bool {
-	return s.State != SandboxStateDeleted && s.State != SandboxStateFailed
+	return !s.Terminal()
+}
+
+func (s SandboxRecord) SameAllocationRequest(other *SandboxRecord) bool {
+	if other == nil {
+		return false
+	}
+	return s.AccountID == other.AccountID &&
+		s.IdempotencyKey == other.IdempotencyKey &&
+		s.BaseImageID == other.BaseImageID &&
+		s.CPUCount == other.CPUCount &&
+		s.MemoryBytes == other.MemoryBytes &&
+		s.WorkspaceBytes == other.WorkspaceBytes &&
+		s.CommandTimeoutSeconds == other.CommandTimeoutSeconds &&
+		s.GPU == other.GPU
 }
 
 func (o SandboxOperation) Terminal() bool {
@@ -91,19 +110,34 @@ func (o SandboxOperation) Terminal() bool {
 }
 
 type SandboxOperation struct {
-	ID                      string    `json:"id"`
-	SandboxID               string    `json:"sandbox_id"`
-	AccountID               string    `json:"account_id"`
-	Kind                    string    `json:"kind"`
-	State                   string    `json:"state"`
-	Generation              uint64    `json:"generation"`
-	FencingToken            uint64    `json:"fencing_token"`
-	PreviousSandboxState    string    `json:"previous_sandbox_state"`
-	DeleteAfterStop         bool      `json:"delete_after_stop"`
-	RequestedLeaseExpiresAt time.Time `json:"requested_lease_expires_at,omitempty"`
-	ErrorCode               string    `json:"error_code,omitempty"`
-	CreatedAt               time.Time `json:"created_at"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	ID                      string     `json:"id"`
+	SandboxID               string     `json:"sandbox_id"`
+	AccountID               string     `json:"account_id"`
+	IdempotencyKey          string     `json:"idempotency_key"`
+	Kind                    string     `json:"kind"`
+	State                   string     `json:"state"`
+	Generation              uint64     `json:"generation"`
+	FencingToken            uint64     `json:"fencing_token"`
+	PreviousSandboxState    string     `json:"previous_sandbox_state"`
+	DeleteAfterStop         bool       `json:"delete_after_stop"`
+	RequestedLeaseExpiresAt time.Time  `json:"requested_lease_expires_at,omitempty"`
+	ErrorCode               string     `json:"error_code,omitempty"`
+	DispatchAttempts        uint32     `json:"dispatch_attempts"`
+	LastDispatchedAt        *time.Time `json:"last_dispatched_at,omitempty"`
+	LastDispatchError       string     `json:"last_dispatch_error,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+}
+
+func (o SandboxOperation) SameRequest(other *SandboxOperation) bool {
+	if other == nil {
+		return false
+	}
+	return o.SandboxID == other.SandboxID &&
+		o.AccountID == other.AccountID &&
+		o.IdempotencyKey == other.IdempotencyKey &&
+		o.Kind == other.Kind &&
+		o.DeleteAfterStop == other.DeleteAfterStop
 }
 
 type SandboxOperationUpdate struct {
@@ -118,26 +152,29 @@ type SandboxOperationUpdate struct {
 }
 
 type SandboxCommand struct {
-	ID               string            `json:"id"`
-	SandboxID        string            `json:"sandbox_id"`
-	AccountID        string            `json:"account_id"`
-	IdempotencyKey   string            `json:"idempotency_key"`
-	Generation       uint64            `json:"generation"`
-	FencingToken     uint64            `json:"fencing_token"`
-	Arguments        []string          `json:"arguments"`
-	Environment      map[string]string `json:"environment,omitempty"`
-	WorkingDirectory string            `json:"working_directory,omitempty"`
-	TimeoutSeconds   uint32            `json:"timeout_seconds"`
-	State            string            `json:"state"`
-	ExitCode         *int32            `json:"exit_code,omitempty"`
-	StandardOutput   string            `json:"stdout,omitempty"`
-	StandardError    string            `json:"stderr,omitempty"`
-	OutputTruncated  bool              `json:"output_truncated"`
-	ErrorCode        string            `json:"error_code,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	StartedAt        *time.Time        `json:"started_at,omitempty"`
-	CompletedAt      *time.Time        `json:"completed_at,omitempty"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	ID                string            `json:"id"`
+	SandboxID         string            `json:"sandbox_id"`
+	AccountID         string            `json:"account_id"`
+	IdempotencyKey    string            `json:"idempotency_key"`
+	Generation        uint64            `json:"generation"`
+	FencingToken      uint64            `json:"fencing_token"`
+	Arguments         []string          `json:"arguments"`
+	Environment       map[string]string `json:"environment,omitempty"`
+	WorkingDirectory  string            `json:"working_directory,omitempty"`
+	TimeoutSeconds    uint32            `json:"timeout_seconds"`
+	State             string            `json:"state"`
+	ExitCode          *int32            `json:"exit_code,omitempty"`
+	StandardOutput    string            `json:"stdout,omitempty"`
+	StandardError     string            `json:"stderr,omitempty"`
+	OutputTruncated   bool              `json:"output_truncated"`
+	ErrorCode         string            `json:"error_code,omitempty"`
+	DispatchAttempts  uint32            `json:"dispatch_attempts"`
+	LastDispatchedAt  *time.Time        `json:"last_dispatched_at,omitempty"`
+	LastDispatchError string            `json:"last_dispatch_error,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	StartedAt         *time.Time        `json:"started_at,omitempty"`
+	CompletedAt       *time.Time        `json:"completed_at,omitempty"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 func (c SandboxCommand) Terminal() bool {
@@ -159,8 +196,6 @@ func (c SandboxCommand) SameRequest(other *SandboxCommand) bool {
 	}
 	return c.SandboxID == other.SandboxID &&
 		c.AccountID == other.AccountID &&
-		c.Generation == other.Generation &&
-		c.FencingToken == other.FencingToken &&
 		c.IdempotencyKey == other.IdempotencyKey &&
 		c.TimeoutSeconds == other.TimeoutSeconds &&
 		c.WorkingDirectory == other.WorkingDirectory &&
@@ -182,6 +217,22 @@ type SandboxCommandUpdate struct {
 	UpdatedAt       time.Time
 }
 
+type SandboxAllocationLimits struct {
+	MaximumActive     int
+	MaximumPerAccount int
+	MaximumPerHost    int
+}
+
+type PendingSandboxOperation struct {
+	Sandbox   SandboxRecord
+	Operation SandboxOperation
+}
+
+type PendingSandboxCommand struct {
+	Sandbox SandboxRecord
+	Command SandboxCommand
+}
+
 func cloneSandboxRecord(record *SandboxRecord) *SandboxRecord {
 	if record == nil {
 		return nil
@@ -195,6 +246,10 @@ func cloneSandboxOperation(operation *SandboxOperation) *SandboxOperation {
 		return nil
 	}
 	cloned := *operation
+	if operation.LastDispatchedAt != nil {
+		lastDispatchedAt := *operation.LastDispatchedAt
+		cloned.LastDispatchedAt = &lastDispatchedAt
+	}
 	return &cloned
 }
 
@@ -222,6 +277,10 @@ func cloneSandboxCommand(command *SandboxCommand) *SandboxCommand {
 		completedAt := *command.CompletedAt
 		cloned.CompletedAt = &completedAt
 	}
+	if command.LastDispatchedAt != nil {
+		lastDispatchedAt := *command.LastDispatchedAt
+		cloned.LastDispatchedAt = &lastDispatchedAt
+	}
 	return &cloned
 }
 
@@ -247,11 +306,16 @@ func applySandboxOperationTransition(
 		operation.SandboxID != update.SandboxID ||
 		sandbox.ID != update.SandboxID ||
 		operation.Generation != update.Generation ||
-		sandbox.Generation != update.Generation ||
-		operation.FencingToken != sandbox.FencingToken {
+		sandbox.Generation != update.Generation {
 		return ErrSandboxConflict
 	}
 	if operation.Terminal() {
+		if sandboxOperationReplayEquivalent(sandbox, operation, update) {
+			return nil
+		}
+		return ErrSandboxConflict
+	}
+	if operation.FencingToken != sandbox.FencingToken {
 		return ErrSandboxConflict
 	}
 	if update.UpdatedAt.IsZero() {
@@ -301,6 +365,24 @@ func applySandboxOperationTransition(
 	operation.ErrorCode = update.ErrorCode
 	operation.UpdatedAt = update.UpdatedAt
 	return nil
+}
+
+func sandboxOperationReplayEquivalent(
+	sandbox *SandboxRecord,
+	operation *SandboxOperation,
+	update SandboxOperationUpdate,
+) bool {
+	if operation.State != update.State ||
+		operation.ErrorCode != update.ErrorCode {
+		return false
+	}
+	if operation.Kind == SandboxOperationKindRenew &&
+		update.State != SandboxOperationFailed {
+		return update.FencingToken == sandbox.FencingToken &&
+			update.LeaseExpiresAt != nil &&
+			update.LeaseExpiresAt.Equal(sandbox.LeaseExpiresAt)
+	}
+	return update.FencingToken == sandbox.FencingToken
 }
 
 func validSandboxOperationTransition(kind, from, to string) bool {
@@ -395,8 +477,13 @@ func applySandboxCommandTransition(
 		command.FencingToken != update.FencingToken {
 		return ErrSandboxConflict
 	}
-	if command.Terminal() ||
-		!validSandboxCommandTransition(command.State, update.State) {
+	if command.Terminal() {
+		if sandboxCommandReplayEquivalent(command, update) {
+			return nil
+		}
+		return ErrSandboxInvalidTransition
+	}
+	if !validSandboxCommandTransition(command.State, update.State) {
 		return ErrSandboxInvalidTransition
 	}
 	if update.UpdatedAt.IsZero() {
@@ -422,6 +509,48 @@ func applySandboxCommandTransition(
 		command.CompletedAt = &completedAt
 	}
 	return nil
+}
+
+func sandboxCommandReplayEquivalent(
+	command *SandboxCommand,
+	update SandboxCommandUpdate,
+) bool {
+	if command.State != update.State ||
+		command.ErrorCode != update.ErrorCode ||
+		command.OutputTruncated != update.OutputTruncated ||
+		!equalOptionalInt32(command.ExitCode, update.ExitCode) {
+		return false
+	}
+	if update.StandardOutput == nil {
+		if command.StandardOutput != "" {
+			return false
+		}
+	} else if command.StandardOutput != *update.StandardOutput {
+		return false
+	}
+	if update.StandardError == nil {
+		return command.StandardError == ""
+	}
+	return command.StandardError == *update.StandardError
+}
+
+func equalOptionalInt32(left, right *int32) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func validSandboxUUID(value string) bool {
+	if len(value) != 36 ||
+		value[8] != '-' ||
+		value[13] != '-' ||
+		value[18] != '-' ||
+		value[23] != '-' {
+		return false
+	}
+	_, err := uuid.Parse(value)
+	return err == nil
 }
 
 func validSandboxCommandTransition(from, to string) bool {

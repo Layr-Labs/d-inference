@@ -83,7 +83,7 @@ func TestSandboxCommandGoldenJSON(t *testing.T) {
 		`"connection_epoch":"00000000-0000-0000-0000-000000000002",` +
 		`"sequence":9,"payload":{` +
 		`"command_id":"00000000-0000-0000-0000-000000000005",` +
-		`"idempotency_key":"command-attempt-1","scope":{` +
+		`"idempotency_key":"00000000-0000-0000-0000-000000000006","scope":{` +
 		`"sandbox_id":"00000000-0000-0000-0000-000000000003",` +
 		`"generation":3,"fencing_token":7},` +
 		`"arguments":["/usr/bin/printf","hello"],` +
@@ -161,6 +161,12 @@ func TestSandboxCodecRejectsAmbiguousOrInvalidFrames(t *testing.T) {
 			valid,
 			`"timeout_seconds":900`,
 			`"timeout_seconds":901`,
+			1,
+		),
+		"non-UUID idempotency key": strings.Replace(
+			valid,
+			`"idempotency_key":"00000000-0000-0000-0000-000000000006"`,
+			`"idempotency_key":"command-attempt-1"`,
 			1,
 		),
 		"trailing JSON": valid + `{}`,
@@ -404,7 +410,7 @@ func validSandboxCommandEnvelope() SandboxEnvelope[SandboxCommandPayload] {
 		Sequence:        9,
 		Payload: SandboxCommandPayload{
 			CommandID:      testSandboxCommand,
-			IdempotencyKey: "command-attempt-1",
+			IdempotencyKey: "00000000-0000-0000-0000-000000000006",
 			Scope: SandboxScope{
 				SandboxID:    testSandboxID,
 				Generation:   3,

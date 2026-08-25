@@ -66,6 +66,13 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         XCTAssertEqual(status.state, .failed)
         XCTAssertEqual(status.errorCode, "isolation_unavailable")
         XCTAssertTrue(try fixture.capacity.snapshot().leases.isEmpty)
+        let heartbeat = try await fixture.adapter.heartbeat()
+        XCTAssertEqual(heartbeat.mode, SandboxHostMode.draining.rawValue)
+        XCTAssertEqual(heartbeat.availableCPU, 8)
+        XCTAssertEqual(
+            heartbeat.availableMemoryBytes,
+            16 * SandboxResourcePolicy.gibibyte
+        )
         let events = await fixture.runtime.events()
         XCTAssertTrue(events.isEmpty)
     }

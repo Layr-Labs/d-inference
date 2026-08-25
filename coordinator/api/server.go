@@ -77,6 +77,17 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyCredentialKind
+)
+
+type credentialKind uint8
+
+const (
+	credentialUnknown credentialKind = iota
+	credentialPrivy
+	credentialAPIKey
+	credentialProviderToken
+	credentialAdmin
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -799,6 +810,9 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.sandboxes != nil {
+		s.sandboxes.Close()
+	}
 	if s.promptPreloader != nil {
 		s.promptPreloader.Close()
 	}
@@ -1764,39 +1778,39 @@ func (s *Server) routes() {
 	// status reads remain available while the coordinator drains.
 	s.mux.HandleFunc(
 		"POST /v1/sandboxes",
-		s.drainGate(s.requireAuth(s.rateLimitFinancial(s.handleCreateSandbox))),
+		s.drainGate(s.requireSandboxAuth(s.rateLimitFinancial(s.handleCreateSandbox))),
 	)
 	s.mux.HandleFunc(
 		"GET /v1/sandboxes",
-		s.requireAuth(s.handleListSandboxes),
+		s.requireSandboxAuth(s.handleListSandboxes),
 	)
 	s.mux.HandleFunc(
 		"GET /v1/sandboxes/{sandboxID}",
-		s.requireAuth(s.handleGetSandbox),
+		s.requireSandboxAuth(s.handleGetSandbox),
 	)
 	s.mux.HandleFunc(
 		"POST /v1/sandboxes/{sandboxID}/commands",
-		s.drainGate(s.requireAuth(s.rateLimitConsumer(s.handleSandboxCommand))),
+		s.drainGate(s.requireSandboxAuth(s.rateLimitConsumer(s.handleSandboxCommand))),
 	)
 	s.mux.HandleFunc(
 		"GET /v1/sandboxes/{sandboxID}/commands/{commandID}",
-		s.requireAuth(s.handleGetSandboxCommand),
+		s.requireSandboxAuth(s.handleGetSandboxCommand),
 	)
 	s.mux.HandleFunc(
 		"POST /v1/sandboxes/{sandboxID}/renew",
-		s.drainGate(s.requireAuth(s.handleRenewSandbox)),
+		s.drainGate(s.requireSandboxAuth(s.handleRenewSandbox)),
 	)
 	s.mux.HandleFunc(
 		"POST /v1/sandboxes/{sandboxID}/stop",
-		s.drainGate(s.requireAuth(s.handleStopSandbox)),
+		s.drainGate(s.requireSandboxAuth(s.handleStopSandbox)),
 	)
 	s.mux.HandleFunc(
 		"DELETE /v1/sandboxes/{sandboxID}",
-		s.drainGate(s.requireAuth(s.handleDeleteSandbox)),
+		s.drainGate(s.requireSandboxAuth(s.handleDeleteSandbox)),
 	)
 	s.mux.HandleFunc(
 		"GET /v1/sandbox-operations/{operationID}",
-		s.requireAuth(s.handleGetSandboxOperation),
+		s.requireSandboxAuth(s.handleGetSandboxOperation),
 	)
 
 	// Key management — requires interactive Privy session (API keys rejected
@@ -2355,6 +2369,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2362,13 +2377,17 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialAdmin)
 			next(w, r.WithContext(ctx))
 			return
 		}
 
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
-		var keyRec *store.APIKey
+		var (
+			keyRec         *store.APIKey
+			credentialType = credentialAPIKey
+		)
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
@@ -2407,6 +2426,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				// until TTL. GetProviderToken is cheap and provider-token traffic
 				// is low-volume.
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
+				credentialType = credentialProviderToken
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
@@ -2442,6 +2462,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialType)
 		next(w, r.WithContext(ctx))
 	}
 }

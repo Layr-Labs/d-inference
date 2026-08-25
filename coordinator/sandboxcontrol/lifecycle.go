@@ -20,11 +20,8 @@ func (c *Controller) Execute(
 	if err != nil {
 		return nil, err
 	}
-	if sandbox.State != store.SandboxStateReady {
-		return nil, ErrSandboxNotReady
-	}
-	if request.IdempotencyKey == "" {
-		request.IdempotencyKey = uuid.NewString()
+	if !protocol.ValidSandboxUUID(request.IdempotencyKey) {
+		return nil, ErrInvalidRequest
 	}
 	if request.TimeoutSeconds == 0 {
 		request.TimeoutSeconds = CommandTimeoutSeconds
@@ -72,23 +69,15 @@ func (c *Controller) Execute(
 	if !stored.SameRequest(command) {
 		return nil, ErrIdempotencyConflict
 	}
-	if !created && stored.Terminal() {
+	if !created &&
+		(stored.Terminal() ||
+			sandbox.State != store.SandboxStateReady ||
+			sandbox.TerminationRequested ||
+			sandbox.Generation != stored.Generation ||
+			sandbox.FencingToken != stored.FencingToken) {
 		return stored, nil
 	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		if created {
-			c.failCommandDispatch(ctx, stored, "host_unavailable")
-		}
-		return nil, ErrHostUnavailable
-	}
-	payload.CommandID = stored.ID
-	if err := session.Send(ctx, protocol.SandboxTypeCommand, payload); err != nil {
-		if created {
-			c.failCommandDispatch(ctx, stored, "host_unavailable")
-		}
-		return nil, ErrHostUnavailable
-	}
+	_ = c.dispatchCommand(sandbox, stored)
 	return stored, nil
 }
 
@@ -96,7 +85,24 @@ func (c *Controller) Renew(
 	ctx context.Context,
 	accountID string,
 	sandboxID string,
+	idempotencyKey string,
 ) (*store.SandboxOperation, error) {
+	if !protocol.ValidSandboxUUID(idempotencyKey) {
+		return nil, ErrInvalidRequest
+	}
+	if existing, err := c.store.GetSandboxOperationByIdempotency(
+		ctx,
+		accountID,
+		sandboxID,
+		idempotencyKey,
+	); err == nil {
+		if existing.Kind != store.SandboxOperationKindRenew {
+			return nil, ErrIdempotencyConflict
+		}
+		return existing, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	sandbox, err := c.store.GetSandbox(ctx, accountID, sandboxID)
 	if err != nil {
 		return nil, err
@@ -105,6 +111,9 @@ func (c *Controller) Renew(
 		sandbox.State != store.SandboxStateStopped {
 		return nil, ErrSandboxNotReady
 	}
+	if sandbox.TerminationRequested {
+		return nil, store.ErrSandboxConflict
+	}
 	now := c.now().UTC()
 	expiresAt := now.Add(LeaseDuration)
 	operation := newSandboxOperation(
@@ -112,63 +121,116 @@ func (c *Controller) Renew(
 		store.SandboxOperationKindRenew,
 		false,
 		expiresAt,
+		idempotencyKey,
 		now,
 	)
-	if _, err := c.store.BeginSandboxOperation(
+	updatedSandbox, stored, created, err := c.store.BeginSandboxOperation(
 		ctx,
 		operation,
 		sandbox.State,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
+	if !stored.SameRequest(operation) {
+		return nil, ErrIdempotencyConflict
 	}
-	payload := protocol.SandboxLeaseRenewPayload{
-		OperationID:    operation.ID,
-		Scope:          sandboxScope(sandbox),
-		LeaseExpiresAt: expiresAt.Format(time.RFC3339Nano),
+	if created {
+		_ = c.dispatchOperation(updatedSandbox, stored)
 	}
-	if err := session.Send(
-		ctx,
-		protocol.SandboxTypeLeaseRenew,
-		payload,
-	); err != nil {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
-	}
-	return operation, nil
+	return stored, nil
 }
 
 func (c *Controller) Stop(
 	ctx context.Context,
 	accountID string,
 	sandboxID string,
+	idempotencyKey string,
 ) (*store.SandboxOperation, error) {
+	if !protocol.ValidSandboxUUID(idempotencyKey) {
+		return nil, ErrInvalidRequest
+	}
+	if existing, err := c.store.GetSandboxOperationByIdempotency(
+		ctx,
+		accountID,
+		sandboxID,
+		idempotencyKey,
+	); err == nil {
+		if existing.Kind != store.SandboxOperationKindStop ||
+			existing.DeleteAfterStop {
+			return nil, ErrIdempotencyConflict
+		}
+		return existing, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	sandbox, err := c.store.GetSandbox(ctx, accountID, sandboxID)
 	if err != nil {
 		return nil, err
 	}
-	return c.beginStop(ctx, sandbox, false)
+	return c.beginStop(ctx, sandbox, false, idempotencyKey)
 }
 
 func (c *Controller) Terminate(
 	ctx context.Context,
 	accountID string,
 	sandboxID string,
+	idempotencyKey string,
 ) (*store.SandboxOperation, error) {
+	if !protocol.ValidSandboxUUID(idempotencyKey) {
+		return nil, ErrInvalidRequest
+	}
+	if existing, err := c.store.GetSandboxOperationByIdempotency(
+		ctx,
+		accountID,
+		sandboxID,
+		idempotencyKey,
+	); err == nil {
+		if (existing.Kind != store.SandboxOperationKindStop ||
+			!existing.DeleteAfterStop) &&
+			existing.Kind != store.SandboxOperationKindDelete {
+			return nil, ErrIdempotencyConflict
+		}
+		return existing, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	sandbox, err := c.store.GetSandbox(ctx, accountID, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	sandbox, err = c.store.MarkSandboxTerminationRequested(
+		ctx,
+		accountID,
+		sandboxID,
+		idempotencyKey,
+		c.now().UTC(),
+	)
 	if err != nil {
 		return nil, err
 	}
 	switch sandbox.State {
 	case store.SandboxStateReady:
-		return c.beginStop(ctx, sandbox, true)
+		return c.beginStop(ctx, sandbox, true, idempotencyKey)
 	case store.SandboxStateStopped, store.SandboxStateFailed:
-		return c.beginDelete(ctx, sandbox)
+		return c.beginDelete(ctx, sandbox, idempotencyKey)
 	case store.SandboxStateDeleted:
+		return nil, store.ErrSandboxConflict
+	case store.SandboxStatePreparing,
+		store.SandboxStateStopping,
+		store.SandboxStateDeleting:
+		pending, err := c.store.ListPendingSandboxOperationsByHost(
+			ctx,
+			sandbox.HostID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for index := range pending {
+			if pending[index].Sandbox.ID == sandbox.ID {
+				return &pending[index].Operation, nil
+			}
+		}
 		return nil, store.ErrSandboxConflict
 	default:
 		return nil, ErrSandboxNotReady
@@ -179,6 +241,7 @@ func (c *Controller) beginStop(
 	ctx context.Context,
 	sandbox *store.SandboxRecord,
 	deleteAfterStop bool,
+	idempotencyKey string,
 ) (*store.SandboxOperation, error) {
 	if sandbox.State != store.SandboxStateReady {
 		return nil, ErrSandboxNotReady
@@ -189,37 +252,30 @@ func (c *Controller) beginStop(
 		store.SandboxOperationKindStop,
 		deleteAfterStop,
 		time.Time{},
+		idempotencyKey,
 		now,
 	)
-	if _, err := c.store.BeginSandboxOperation(
+	updatedSandbox, stored, created, err := c.store.BeginSandboxOperation(
 		ctx,
 		operation,
 		store.SandboxStateStopping,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
+	if !stored.SameRequest(operation) {
+		return nil, ErrIdempotencyConflict
 	}
-	if err := session.Send(
-		ctx,
-		protocol.SandboxTypeStop,
-		protocol.SandboxOperationPayload{
-			OperationID: operation.ID,
-			Scope:       sandboxScope(sandbox),
-		},
-	); err != nil {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
+	if created {
+		_ = c.dispatchOperation(updatedSandbox, stored)
 	}
-	return operation, nil
+	return stored, nil
 }
 
 func (c *Controller) beginDelete(
 	ctx context.Context,
 	sandbox *store.SandboxRecord,
+	idempotencyKey string,
 ) (*store.SandboxOperation, error) {
 	if sandbox.State != store.SandboxStateStopped &&
 		sandbox.State != store.SandboxStateFailed {
@@ -231,32 +287,24 @@ func (c *Controller) beginDelete(
 		store.SandboxOperationKindDelete,
 		false,
 		time.Time{},
+		idempotencyKey,
 		now,
 	)
-	if _, err := c.store.BeginSandboxOperation(
+	updatedSandbox, stored, created, err := c.store.BeginSandboxOperation(
 		ctx,
 		operation,
 		store.SandboxStateDeleting,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
-	session, exists := c.hosts.Session(sandbox.HostID)
-	if !exists {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
+	if !stored.SameRequest(operation) {
+		return nil, ErrIdempotencyConflict
 	}
-	if err := session.Send(
-		ctx,
-		protocol.SandboxTypeDelete,
-		protocol.SandboxOperationPayload{
-			OperationID: operation.ID,
-			Scope:       sandboxScope(sandbox),
-		},
-	); err != nil {
-		c.failOperationDispatch(ctx, sandbox, operation, "host_unavailable")
-		return nil, ErrHostUnavailable
+	if created {
+		_ = c.dispatchOperation(updatedSandbox, stored)
 	}
-	return operation, nil
+	return stored, nil
 }
 
 func newSandboxOperation(
@@ -264,12 +312,14 @@ func newSandboxOperation(
 	kind string,
 	deleteAfterStop bool,
 	expiresAt time.Time,
+	idempotencyKey string,
 	now time.Time,
 ) *store.SandboxOperation {
 	return &store.SandboxOperation{
 		ID:                      uuid.NewString(),
 		SandboxID:               sandbox.ID,
 		AccountID:               sandbox.AccountID,
+		IdempotencyKey:          idempotencyKey,
 		Kind:                    kind,
 		State:                   store.SandboxOperationPending,
 		Generation:              sandbox.Generation,
@@ -280,26 +330,6 @@ func newSandboxOperation(
 		CreatedAt:               now,
 		UpdatedAt:               now,
 	}
-}
-
-func (c *Controller) failCommandDispatch(
-	ctx context.Context,
-	command *store.SandboxCommand,
-	errorCode string,
-) {
-	now := c.now().UTC()
-	_, _ = c.store.ApplySandboxCommandUpdate(
-		ctx,
-		store.SandboxCommandUpdate{
-			CommandID:    command.ID,
-			SandboxID:    command.SandboxID,
-			Generation:   command.Generation,
-			FencingToken: command.FencingToken,
-			State:        store.SandboxCommandLost,
-			ErrorCode:    errorCode,
-			UpdatedAt:    now,
-		},
-	)
 }
 
 func cloneEnvironment(environment map[string]string) map[string]string {

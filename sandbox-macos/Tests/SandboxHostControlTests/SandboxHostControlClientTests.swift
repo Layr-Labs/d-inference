@@ -448,7 +448,7 @@ private actor RecordingControlTransport: SandboxHostControlTransport {
                 commandID: UUID(
                     uuidString: "cccccccc-0000-0000-0000-000000000003"
                 )!,
-                idempotencyKey: "command-1",
+                idempotencyKey: "00000000-0000-0000-0000-000000000006",
                 scope: SandboxWireScope(
                     sandboxID: SandboxID(
                         rawValue: UUID(

@@ -43,6 +43,9 @@ func (c *Controller) handleHeartbeat(
 	}
 	c.scheduleMu.Unlock()
 
+	if err := c.reconcileHost(ctx, session, heartbeat); err != nil {
+		return err
+	}
 	sandboxes, err := c.store.ListActiveSandboxesByHost(
 		ctx,
 		session.HostID(),
@@ -52,12 +55,7 @@ func (c *Controller) handleHeartbeat(
 	}
 	for index := range sandboxes {
 		sandbox := &sandboxes[index]
-		if !sandbox.TerminationRequested ||
-			(sandbox.State != store.SandboxStateStopped &&
-				sandbox.State != store.SandboxStateFailed) {
-			continue
-		}
-		if _, err := c.beginDelete(ctx, sandbox); err != nil &&
+		if err := c.driveTermination(ctx, sandbox); err != nil &&
 			!IsConflict(err) &&
 			!errors.Is(err, ErrHostUnavailable) {
 			return err
@@ -113,9 +111,40 @@ func (c *Controller) handleOperationState(
 	if err != nil {
 		return err
 	}
+	return c.continueSandboxOperation(ctx, updated, applied)
+}
+
+func (c *Controller) continueSandboxOperation(
+	ctx context.Context,
+	updated *store.SandboxRecord,
+	applied *store.SandboxOperation,
+) error {
 	if applied.DeleteAfterStop &&
-		payload.State == protocol.SandboxOperationStopped {
-		if _, err := c.beginDelete(ctx, updated); err != nil {
+		applied.State == protocol.SandboxOperationStopped {
+		if _, err := c.beginDelete(ctx, updated, applied.ID); err != nil {
+			return err
+		}
+		return nil
+	}
+	if applied.Kind == store.SandboxOperationKindPrepare &&
+		applied.State == protocol.SandboxOperationFailed &&
+		!updated.TerminationRequested {
+		terminated, err := c.store.MarkSandboxTerminationRequested(
+			ctx,
+			updated.AccountID,
+			updated.ID,
+			applied.ID,
+			c.now().UTC(),
+		)
+		if err != nil {
+			return err
+		}
+		updated = terminated
+	}
+	if updated.TerminationRequested {
+		if err := c.driveTermination(ctx, updated); err != nil &&
+			!IsConflict(err) &&
+			!errors.Is(err, ErrHostUnavailable) {
 			return err
 		}
 	}
@@ -135,7 +164,7 @@ func (c *Controller) handleCommandState(
 	if payload.ErrorCode != nil {
 		errorCode = *payload.ErrorCode
 	}
-	_, err = c.store.ApplySandboxCommandUpdate(
+	command, err := c.store.ApplySandboxCommandUpdate(
 		ctx,
 		store.SandboxCommandUpdate{
 			CommandID:       payload.CommandID,
@@ -151,6 +180,23 @@ func (c *Controller) handleCommandState(
 			UpdatedAt:       c.now().UTC(),
 		},
 	)
+	if err != nil || !command.Terminal() {
+		return err
+	}
+	pendingOperations, listErr := c.store.ListPendingSandboxOperationsByHost(
+		ctx,
+		session.HostID(),
+	)
+	if listErr != nil {
+		return listErr
+	}
+	for index := range pendingOperations {
+		pending := &pendingOperations[index]
+		if pending.Sandbox.ID == sandbox.ID &&
+			pending.Operation.Kind == store.SandboxOperationKindStop {
+			_ = c.dispatchOperation(&pending.Sandbox, &pending.Operation)
+		}
+	}
 	return err
 }
 
@@ -169,7 +215,7 @@ func (c *Controller) handleHostFailure(
 	}
 	now := c.now().UTC()
 	if payload.OperationID != nil {
-		_, _, err := c.store.ApplySandboxOperationUpdate(
+		updated, applied, err := c.store.ApplySandboxOperationUpdate(
 			ctx,
 			store.SandboxOperationUpdate{
 				OperationID:  *payload.OperationID,
@@ -181,7 +227,10 @@ func (c *Controller) handleHostFailure(
 				UpdatedAt:    now,
 			},
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		return c.continueSandboxOperation(ctx, updated, applied)
 	}
 	if payload.CommandID != nil {
 		_, err := c.store.ApplySandboxCommandUpdate(

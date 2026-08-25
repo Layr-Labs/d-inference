@@ -61,11 +61,17 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeSandboxAPIError(w, sandboxcontrol.ErrInvalidRequest)
 		return
 	}
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if !validSandboxAPIUUID(idempotencyKey) {
+		writeSandboxAPIError(w, sandboxcontrol.ErrInvalidRequest)
+		return
+	}
 	sandbox, operation, err := s.sandboxes.Create(
 		r.Context(),
 		consumerKeyFromContext(r.Context()),
 		keyIDFromContext(r.Context()),
 		sandboxcontrol.CreateRequest{
+			IdempotencyKey: idempotencyKey,
 			BaseImageID:    request.BaseImageID,
 			CPUCount:       request.CPUCount,
 			MemoryBytes:    memoryBytes,
@@ -198,6 +204,7 @@ func (s *Server) handleSandboxOperation(
 		context.Context,
 		string,
 		string,
+		string,
 	) (*store.SandboxOperation, error),
 ) {
 	sandboxID := r.PathValue("sandboxID")
@@ -209,6 +216,7 @@ func (s *Server) handleSandboxOperation(
 		r.Context(),
 		consumerKeyFromContext(r.Context()),
 		sandboxID,
+		r.Header.Get("Idempotency-Key"),
 	)
 	if err != nil {
 		writeSandboxAPIError(w, err)

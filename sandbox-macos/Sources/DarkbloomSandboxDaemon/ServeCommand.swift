@@ -27,7 +27,8 @@ enum ServeCommand {
             maximumReservedMemoryBytes: options.maximumMemoryBytes,
             maximumReservedGrowthBytes: options.maximumGrowthBytes,
             storageHeadroomBytes: options.storageHeadroomBytes,
-            maximumLeaseDurationSeconds: 600
+            maximumLeaseDurationSeconds:
+                SandboxCapacityPolicy.maximumSupportedLeaseDurationSeconds
         )
         let capacity = try SandboxHostCapacityArbiter(
             stateDirectory: options.capacityDirectory,

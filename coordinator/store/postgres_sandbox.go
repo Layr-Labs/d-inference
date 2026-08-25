@@ -5,56 +5,126 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const sandboxSelectColumns = `
-	id::text, account_id, created_by_key_id, host_id::text,
+	id::text, account_id, created_by_key_id, idempotency_key::text, host_id::text,
 	generation, fencing_token, base_image_id, cpu_count, memory_bytes,
 	workspace_bytes, command_timeout_seconds, gpu, state, termination_requested,
-	lease_expires_at, error_code, created_at, updated_at`
+	termination_idempotency_key, lease_expires_at, error_code, created_at,
+	updated_at`
 
 const sandboxOperationSelectColumns = `
-	id::text, sandbox_id::text, account_id, kind, state, generation,
-	fencing_token, previous_sandbox_state, delete_after_stop,
-	requested_lease_expires_at, error_code, created_at, updated_at`
+	id::text, sandbox_id::text, account_id, idempotency_key, kind, state,
+	generation, fencing_token, previous_sandbox_state, delete_after_stop,
+	requested_lease_expires_at, error_code, dispatch_attempts,
+	last_dispatched_at, last_dispatch_error, created_at, updated_at`
 
 const sandboxCommandSelectColumns = `
 	id::text, sandbox_id::text, account_id, idempotency_key, generation,
 	fencing_token, arguments, environment, working_directory, timeout_seconds,
-	state, exit_code, stdout, stderr, output_truncated, error_code, created_at,
+	state, exit_code, stdout, stderr, output_truncated, error_code,
+	dispatch_attempts, last_dispatched_at, last_dispatch_error, created_at,
 	started_at, completed_at, updated_at`
 
 func (s *PostgresStore) CreateSandbox(
 	ctx context.Context,
 	sandbox *SandboxRecord,
 	operation *SandboxOperation,
-) error {
+	limits SandboxAllocationLimits,
+) (*SandboxRecord, *SandboxOperation, bool, error) {
 	if err := validateSandboxCreate(sandbox, operation); err != nil {
-		return err
+		return nil, nil, false, err
+	}
+	if limits.MaximumActive <= 0 ||
+		limits.MaximumPerAccount <= 0 ||
+		limits.MaximumPerHost <= 0 {
+		return nil, nil, false, ErrSandboxInvalidTransition
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin sandbox create: %w", err)
+		return nil, nil, false, fmt.Errorf("begin sandbox create: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if _, err := tx.Exec(
 		ctx,
+		`SELECT pg_advisory_xact_lock(736226839154274003)`,
+	); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"lock sandbox allocation: %w",
+			err,
+		)
+	}
+	existing, err := scanSandboxRecord(tx.QueryRow(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		 FROM sandboxes
+		 WHERE account_id = $1 AND idempotency_key = $2`,
+		sandbox.AccountID,
+		sandbox.IdempotencyKey,
+	))
+	if err == nil {
+		existingOperation, operationErr := scanSandboxOperation(tx.QueryRow(
+			ctx,
+			`SELECT `+sandboxOperationSelectColumns+`
+			 FROM sandbox_host_operations
+			 WHERE sandbox_id = $1 AND kind = $2
+			 ORDER BY created_at
+			 LIMIT 1`,
+			existing.ID,
+			SandboxOperationKindPrepare,
+		))
+		if operationErr != nil {
+			return nil, nil, false, operationErr
+		}
+		return existing, existingOperation, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, false, err
+	}
+	var active, accountActive, hostActive int
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE account_id = $1),
+			COUNT(*) FILTER (WHERE host_id = $2)
+		 FROM sandboxes
+		 WHERE state <> $3`,
+		sandbox.AccountID,
+		sandbox.HostID,
+		SandboxStateDeleted,
+	).Scan(&active, &accountActive, &hostActive); err != nil {
+		return nil, nil, false, fmt.Errorf(
+			"count sandbox allocations: %w",
+			err,
+		)
+	}
+	if active >= limits.MaximumActive ||
+		accountActive >= limits.MaximumPerAccount ||
+		hostActive >= limits.MaximumPerHost {
+		return nil, nil, false, ErrSandboxCapacity
+	}
+	if _, err := tx.Exec(
+		ctx,
 		`INSERT INTO sandboxes (
-			id, account_id, created_by_key_id, host_id, generation,
-			fencing_token, base_image_id, cpu_count, memory_bytes,
-			workspace_bytes, command_timeout_seconds, gpu, state,
-			termination_requested, lease_expires_at, error_code, created_at,
-			updated_at
+			id, account_id, created_by_key_id, idempotency_key, host_id,
+			generation, fencing_token, base_image_id, cpu_count,
+			memory_bytes, workspace_bytes, command_timeout_seconds, gpu,
+			state, termination_requested, termination_idempotency_key,
+			lease_expires_at, error_code, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18
+			$14, $15, $16, $17, $18, $19, $20
 		)`,
 		sandbox.ID,
 		sandbox.AccountID,
 		sandbox.CreatedByKeyID,
+		sandbox.IdempotencyKey,
 		sandbox.HostID,
 		sandbox.Generation,
 		sandbox.FencingToken,
@@ -66,20 +136,62 @@ func (s *PostgresStore) CreateSandbox(
 		sandbox.GPU,
 		sandbox.State,
 		sandbox.TerminationRequested,
+		sandbox.TerminationIdempotencyKey,
 		sandbox.LeaseExpiresAt,
 		sandbox.ErrorCode,
 		sandbox.CreatedAt,
 		sandbox.UpdatedAt,
 	); err != nil {
-		return sandboxPostgresError("insert sandbox", err)
+		return nil, nil, false, sandboxPostgresError(
+			"insert sandbox",
+			err,
+		)
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {
-		return err
+		return nil, nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit sandbox create: %w", err)
+		return nil, nil, false, fmt.Errorf("commit sandbox create: %w", err)
 	}
-	return nil
+	return cloneSandboxRecord(sandbox),
+		cloneSandboxOperation(operation),
+		true,
+		nil
+}
+
+func (s *PostgresStore) GetSandboxByIdempotency(
+	ctx context.Context,
+	accountID string,
+	idempotencyKey string,
+) (*SandboxRecord, *SandboxOperation, error) {
+	sandbox, err := scanSandboxRecord(s.pool.QueryRow(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		 FROM sandboxes
+		 WHERE account_id = $1 AND idempotency_key = $2`,
+		accountID,
+		idempotencyKey,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	operation, err := scanSandboxOperation(s.pool.QueryRow(
+		ctx,
+		`SELECT `+sandboxOperationSelectColumns+`
+		 FROM sandbox_host_operations
+		 WHERE sandbox_id = $1 AND kind = $2
+		 ORDER BY created_at
+		 LIMIT 1`,
+		sandbox.ID,
+		SandboxOperationKindPrepare,
+	))
+	if err != nil {
+		return nil, nil, err
+	}
+	return sandbox, operation, nil
 }
 
 func (s *PostgresStore) GetSandbox(
@@ -159,11 +271,10 @@ func (s *PostgresStore) ListActiveSandboxesByHost(
 		ctx,
 		`SELECT `+sandboxSelectColumns+`
 		 FROM sandboxes
-		 WHERE host_id = $1 AND state NOT IN ($2, $3)
+		 WHERE host_id = $1 AND state <> $2
 		 ORDER BY created_at`,
 		hostID,
 		SandboxStateDeleted,
-		SandboxStateFailed,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list active host sandboxes: %w", err)
@@ -183,17 +294,51 @@ func (s *PostgresStore) ListActiveSandboxesByHost(
 	return result, nil
 }
 
+func (s *PostgresStore) ListExpiringSandboxes(
+	ctx context.Context,
+	expiresBefore time.Time,
+	limit int,
+) ([]SandboxRecord, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		 FROM sandboxes
+		 WHERE state <> $1 AND lease_expires_at <= $2
+		 ORDER BY lease_expires_at
+		 LIMIT $3`,
+		SandboxStateDeleted,
+		expiresBefore,
+		sandboxListLimit(limit),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list expiring sandboxes: %w", err)
+	}
+	defer rows.Close()
+	result := make([]SandboxRecord, 0)
+	for rows.Next() {
+		record, err := scanSandboxRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list expiring sandboxes: %w", err)
+	}
+	return result, nil
+}
+
 func (s *PostgresStore) BeginSandboxOperation(
 	ctx context.Context,
 	operation *SandboxOperation,
 	targetState string,
-) (*SandboxRecord, error) {
+) (*SandboxRecord, *SandboxOperation, bool, error) {
 	if err := validateSandboxOperationStart(operation, targetState); err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin sandbox operation: %w", err)
+		return nil, nil, false, fmt.Errorf("begin sandbox operation: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	sandbox, err := scanSandboxRecord(tx.QueryRow(
@@ -205,23 +350,65 @@ func (s *PostgresStore) BeginSandboxOperation(
 		operation.SandboxID,
 	))
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sandbox.AccountID != operation.AccountID) {
-		return nil, fmt.Errorf(
+		return nil, nil, false, fmt.Errorf(
 			"sandbox %s: %w",
 			operation.SandboxID,
 			ErrNotFound,
 		)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
+	}
+	existing, err := scanSandboxOperation(tx.QueryRow(
+		ctx,
+		`SELECT `+sandboxOperationSelectColumns+`
+		 FROM sandbox_host_operations
+		 WHERE account_id = $1
+		   AND sandbox_id = $2
+		   AND idempotency_key = $3`,
+		operation.AccountID,
+		operation.SandboxID,
+		operation.IdempotencyKey,
+	))
+	if err == nil {
+		return sandbox, existing, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, false, err
 	}
 	if sandbox.Generation != operation.Generation ||
 		sandbox.FencingToken != operation.FencingToken ||
 		sandbox.State != operation.PreviousSandboxState ||
-		sandbox.Terminal() {
-		return nil, ErrSandboxConflict
+		sandbox.Terminal() ||
+		(sandbox.TerminationRequested &&
+			operation.Kind == SandboxOperationKindRenew) {
+		return nil, nil, false, ErrSandboxConflict
+	}
+	if operation.Kind == SandboxOperationKindRenew {
+		var activeCommand bool
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT EXISTS (
+				SELECT 1
+				FROM sandbox_commands
+				WHERE sandbox_id = $1
+				  AND state NOT IN (
+					'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+				  )
+			)`,
+			sandbox.ID,
+		).Scan(&activeCommand); err != nil {
+			return nil, nil, false, fmt.Errorf(
+				"check active sandbox commands: %w",
+				err,
+			)
+		}
+		if activeCommand {
+			return nil, nil, false, ErrSandboxConflict
+		}
 	}
 	if err := insertSandboxOperation(ctx, tx, operation); err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 	sandbox.State = targetState
 	if operation.Kind == SandboxOperationKindDelete ||
@@ -241,12 +428,18 @@ func (s *PostgresStore) BeginSandboxOperation(
 		sandbox.TerminationRequested,
 		sandbox.UpdatedAt,
 	); err != nil {
-		return nil, fmt.Errorf("update sandbox operation state: %w", err)
+		return nil, nil, false, fmt.Errorf(
+			"update sandbox operation state: %w",
+			err,
+		)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit sandbox operation: %w", err)
+		return nil, nil, false, fmt.Errorf(
+			"commit sandbox operation: %w",
+			err,
+		)
 	}
-	return sandbox, nil
+	return sandbox, cloneSandboxOperation(operation), true, nil
 }
 
 func (s *PostgresStore) GetSandboxOperation(
@@ -270,6 +463,68 @@ func (s *PostgresStore) GetSandboxOperation(
 		)
 	}
 	return operation, err
+}
+
+func (s *PostgresStore) GetSandboxOperationByIdempotency(
+	ctx context.Context,
+	accountID string,
+	sandboxID string,
+	idempotencyKey string,
+) (*SandboxOperation, error) {
+	operation, err := scanSandboxOperation(s.pool.QueryRow(
+		ctx,
+		`SELECT `+sandboxOperationSelectColumns+`
+		 FROM sandbox_host_operations
+		 WHERE account_id = $1
+		   AND sandbox_id = $2
+		   AND idempotency_key = $3`,
+		accountID,
+		sandboxID,
+		idempotencyKey,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf(
+			"sandbox operation idempotency key: %w",
+			ErrNotFound,
+		)
+	}
+	return operation, err
+}
+
+func (s *PostgresStore) MarkSandboxTerminationRequested(
+	ctx context.Context,
+	accountID string,
+	sandboxID string,
+	idempotencyKey string,
+	at time.Time,
+) (*SandboxRecord, error) {
+	if !validSandboxUUID(idempotencyKey) || at.IsZero() {
+		return nil, ErrSandboxInvalidTransition
+	}
+	record, err := scanSandboxRecord(s.pool.QueryRow(
+		ctx,
+		`UPDATE sandboxes
+		 SET termination_requested = TRUE,
+		     termination_idempotency_key = CASE
+		       WHEN termination_idempotency_key = '' THEN $3
+		       ELSE termination_idempotency_key
+		     END,
+		     updated_at = CASE
+		       WHEN state = $5 THEN updated_at
+		       ELSE $4
+		     END
+		 WHERE id = $1 AND account_id = $2
+		 RETURNING `+sandboxSelectColumns,
+		sandboxID,
+		accountID,
+		idempotencyKey,
+		at,
+		SandboxStateDeleted,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("sandbox %s: %w", sandboxID, ErrNotFound)
+	}
+	return record, err
 }
 
 func (s *PostgresStore) ApplySandboxOperationUpdate(
@@ -362,20 +617,6 @@ func (s *PostgresStore) CreateSandboxCommand(
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	existing, err := getSandboxCommandByIdempotency(
-		ctx,
-		tx,
-		command.AccountID,
-		command.SandboxID,
-		command.IdempotencyKey,
-	)
-	if err == nil {
-		return existing, false, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, err
-	}
-
 	sandbox, err := scanSandboxRecord(tx.QueryRow(
 		ctx,
 		`SELECT `+sandboxSelectColumns+`
@@ -395,9 +636,7 @@ func (s *PostgresStore) CreateSandboxCommand(
 		return nil, false, err
 	}
 
-	// Re-check after taking the sandbox lock. Another transaction may have
-	// inserted the same idempotency key while this transaction was waiting.
-	existing, err = getSandboxCommandByIdempotency(
+	existing, err := getSandboxCommandByIdempotency(
 		ctx,
 		tx,
 		command.AccountID,
@@ -411,8 +650,12 @@ func (s *PostgresStore) CreateSandboxCommand(
 		return nil, false, err
 	}
 	if sandbox.State != SandboxStateReady ||
+		sandbox.TerminationRequested ||
 		sandbox.Generation != command.Generation ||
-		sandbox.FencingToken != command.FencingToken {
+		sandbox.FencingToken != command.FencingToken ||
+		command.CreatedAt.Add(
+			time.Duration(command.TimeoutSeconds)*time.Second,
+		).After(sandbox.LeaseExpiresAt) {
 		return nil, false, ErrSandboxConflict
 	}
 	arguments, environment, err := sandboxCommandJSON(command)
@@ -488,6 +731,39 @@ func (s *PostgresStore) GetSandboxCommand(
 	return command, err
 }
 
+func (s *PostgresStore) ListActiveSandboxCommands(
+	ctx context.Context,
+	sandboxID string,
+) ([]SandboxCommand, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxCommandSelectColumns+`
+		 FROM sandbox_commands
+		 WHERE sandbox_id = $1
+		   AND state NOT IN (
+		     'succeeded', 'failed', 'timed_out', 'cancelled', 'lost'
+		   )
+		 ORDER BY created_at`,
+		sandboxID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active sandbox commands: %w", err)
+	}
+	defer rows.Close()
+	result := make([]SandboxCommand, 0)
+	for rows.Next() {
+		command, err := scanSandboxCommand(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *command)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list active sandbox commands: %w", err)
+	}
+	return result, nil
+}
+
 func (s *PostgresStore) ApplySandboxCommandUpdate(
 	ctx context.Context,
 	update SandboxCommandUpdate,
@@ -558,6 +834,165 @@ func (s *PostgresStore) ApplySandboxCommandUpdate(
 	return command, nil
 }
 
+func (s *PostgresStore) RecordSandboxOperationDispatch(
+	ctx context.Context,
+	operationID string,
+	dispatchedAt time.Time,
+	dispatchError string,
+) error {
+	tag, err := s.pool.Exec(
+		ctx,
+		`UPDATE sandbox_host_operations
+		 SET dispatch_attempts = dispatch_attempts + 1,
+		     last_dispatched_at = $2,
+		     last_dispatch_error = $3,
+		     updated_at = GREATEST(updated_at, $2)
+		 WHERE id = $1`,
+		operationID,
+		dispatchedAt,
+		dispatchError,
+	)
+	if err != nil {
+		return fmt.Errorf("record sandbox operation dispatch: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListPendingSandboxOperationsByHost(
+	ctx context.Context,
+	hostID string,
+) ([]PendingSandboxOperation, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxOperationSelectColumns+`
+		 FROM sandbox_host_operations
+		 WHERE sandbox_id IN (
+		   SELECT id FROM sandboxes WHERE host_id = $1 AND state <> $2
+		 )
+		   AND state NOT IN ($3, $4, $5, $6)
+		 ORDER BY created_at`,
+		hostID,
+		SandboxStateDeleted,
+		SandboxOperationReady,
+		SandboxOperationStopped,
+		SandboxOperationDeleted,
+		SandboxOperationFailed,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending sandbox operations: %w", err)
+	}
+	operations := make([]SandboxOperation, 0)
+	for rows.Next() {
+		operation, err := scanSandboxOperation(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		operations = append(operations, *operation)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("list pending sandbox operations: %w", err)
+	}
+	rows.Close()
+
+	result := make([]PendingSandboxOperation, 0, len(operations))
+	for index := range operations {
+		sandbox, err := s.GetSandboxByID(ctx, operations[index].SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PendingSandboxOperation{
+			Sandbox:   *sandbox,
+			Operation: operations[index],
+		})
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) RecordSandboxCommandDispatch(
+	ctx context.Context,
+	commandID string,
+	dispatchedAt time.Time,
+	dispatchError string,
+) error {
+	tag, err := s.pool.Exec(
+		ctx,
+		`UPDATE sandbox_commands
+		 SET dispatch_attempts = dispatch_attempts + 1,
+		     last_dispatched_at = $2,
+		     last_dispatch_error = $3,
+		     updated_at = GREATEST(updated_at, $2)
+		 WHERE id = $1`,
+		commandID,
+		dispatchedAt,
+		dispatchError,
+	)
+	if err != nil {
+		return fmt.Errorf("record sandbox command dispatch: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListPendingSandboxCommandsByHost(
+	ctx context.Context,
+	hostID string,
+) ([]PendingSandboxCommand, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT `+sandboxCommandSelectColumns+`
+		 FROM sandbox_commands
+		 WHERE sandbox_id IN (
+		   SELECT id FROM sandboxes WHERE host_id = $1 AND state <> $2
+		 )
+		   AND state NOT IN ($3, $4, $5, $6, $7)
+		 ORDER BY created_at`,
+		hostID,
+		SandboxStateDeleted,
+		SandboxCommandSucceeded,
+		SandboxCommandFailed,
+		SandboxCommandTimedOut,
+		SandboxCommandCancelled,
+		SandboxCommandLost,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pending sandbox commands: %w", err)
+	}
+	commands := make([]SandboxCommand, 0)
+	for rows.Next() {
+		command, err := scanSandboxCommand(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		commands = append(commands, *command)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("list pending sandbox commands: %w", err)
+	}
+	rows.Close()
+
+	result := make([]PendingSandboxCommand, 0, len(commands))
+	for index := range commands {
+		sandbox, err := s.GetSandboxByID(ctx, commands[index].SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PendingSandboxCommand{
+			Sandbox: *sandbox,
+			Command: commands[index],
+		})
+	}
+	return result, nil
+}
+
 func insertSandboxOperation(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -566,16 +1001,18 @@ func insertSandboxOperation(
 	if _, err := tx.Exec(
 		ctx,
 		`INSERT INTO sandbox_host_operations (
-			id, sandbox_id, account_id, kind, state, generation,
-			fencing_token, previous_sandbox_state,
+			id, sandbox_id, account_id, idempotency_key, kind, state,
+			generation, fencing_token, previous_sandbox_state,
 			delete_after_stop, requested_lease_expires_at, error_code,
 			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			$14
 		)`,
 		operation.ID,
 		operation.SandboxID,
 		operation.AccountID,
+		operation.IdempotencyKey,
 		operation.Kind,
 		operation.State,
 		operation.Generation,
@@ -616,6 +1053,7 @@ func scanSandboxRecord(row rowScanner) (*SandboxRecord, error) {
 		&record.ID,
 		&record.AccountID,
 		&record.CreatedByKeyID,
+		&record.IdempotencyKey,
 		&record.HostID,
 		&record.Generation,
 		&record.FencingToken,
@@ -627,6 +1065,7 @@ func scanSandboxRecord(row rowScanner) (*SandboxRecord, error) {
 		&record.GPU,
 		&record.State,
 		&record.TerminationRequested,
+		&record.TerminationIdempotencyKey,
 		&record.LeaseExpiresAt,
 		&record.ErrorCode,
 		&record.CreatedAt,
@@ -643,6 +1082,7 @@ func scanSandboxOperation(row rowScanner) (*SandboxOperation, error) {
 		&operation.ID,
 		&operation.SandboxID,
 		&operation.AccountID,
+		&operation.IdempotencyKey,
 		&operation.Kind,
 		&operation.State,
 		&operation.Generation,
@@ -651,6 +1091,9 @@ func scanSandboxOperation(row rowScanner) (*SandboxOperation, error) {
 		&operation.DeleteAfterStop,
 		&operation.RequestedLeaseExpiresAt,
 		&operation.ErrorCode,
+		&operation.DispatchAttempts,
+		&operation.LastDispatchedAt,
+		&operation.LastDispatchError,
 		&operation.CreatedAt,
 		&operation.UpdatedAt,
 	); err != nil {
@@ -682,6 +1125,9 @@ func scanSandboxCommand(row rowScanner) (*SandboxCommand, error) {
 		&command.StandardError,
 		&command.OutputTruncated,
 		&command.ErrorCode,
+		&command.DispatchAttempts,
+		&command.LastDispatchedAt,
+		&command.LastDispatchError,
 		&command.CreatedAt,
 		&command.StartedAt,
 		&command.CompletedAt,

@@ -541,7 +541,7 @@ enum AppRelocationFilesystem {
                     url: entry,
                     relativePath: pathComponents.joined(separator: "/")
                 )
-            }
+            )
         }
         if let enumerationError {
             throw AppRelocationTransaction.TransactionError.filesystem(

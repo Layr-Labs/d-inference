@@ -289,13 +289,19 @@ struct DeviceLoginEventTests {
             try AuthTokenStore.save("legacy-token-without-issuer")
 
             let recorder = EventRecorder()
-            await #expect(throws: DeviceAuthError.credentialRecoveryRequired) {
+            do {
                 _ = try await performDeviceCodeLogin(
                     coordinatorURL: "http://127.0.0.1:1",
                     onDisplayCode: { _, _, _ in },
                     openBrowser: false,
                     onEvent: { recorder.record($0) }
                 )
+                Issue.record("expected legacy credential recovery refusal")
+            } catch let error as DeviceAuthError {
+                guard case .credentialRecoveryRequired = error else {
+                    Issue.record("wrong error: \(error)")
+                    return
+                }
             }
 
             guard case .error(let message) = recorder.events.first else {

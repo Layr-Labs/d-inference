@@ -110,21 +110,6 @@ func fetchAccountEarnings(
     }
 }
 
-@discardableResult
-func backfillProviderAccountID(
-    _ accountID: String,
-    existingAccountID: String? = ProviderAccountStore.load(),
-    save: (String) throws -> Void = ProviderAccountStore.save
-) -> Bool {
-    guard !accountID.isEmpty, existingAccountID != accountID else { return false }
-    do {
-        try save(accountID)
-        return true
-    } catch {
-        return false
-    }
-}
-
 private func earningsResponse(
     request: URLRequest,
     transport: @escaping EarningsTransport
@@ -285,8 +270,8 @@ struct Earnings: AsyncParsableCommand {
         abstract: "Show this provider's earnings from the coordinator.",
         discussion: """
         Reads the authenticated earnings history for the account linked via
-        `darkbloom login`. Existing installations that predate the local
-        provider-account file recover it from the authenticated response.
+        `darkbloom login`. The token, account, and issuing coordinator must be
+        present as one complete local credential.
         Use --wallet only for legacy unlinked-wallet earnings.
         """
     )
@@ -333,7 +318,6 @@ struct Earnings: AsyncParsableCommand {
                     request: request,
                     transport: transport
                 )
-                _ = backfillProviderAccountID(report.accountID)
             }
         } catch let error as EarningsFetchError {
             printError(error.description)

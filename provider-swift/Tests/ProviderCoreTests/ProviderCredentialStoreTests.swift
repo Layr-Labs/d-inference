@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 @testable import ProviderCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 @Suite("Provider credential publication", .serialized)
 struct ProviderCredentialStoreTests {
@@ -96,6 +99,77 @@ struct ProviderCredentialStoreTests {
         }
     }
 
+    #if canImport(Darwin)
+    @Test("credential publication waits for a lock owned by another process")
+    func crossProcessSerialization() async throws {
+        try await withCredentialFiles { files in
+            let lockPath = files.directory.appendingPathComponent(
+                ".provider-credential.lock"
+            )
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            child.arguments = [
+                "-e",
+                """
+                use Fcntl qw(:flock);
+                $| = 1;
+                open(my $fh, '>>', $ARGV[0]) or die $!;
+                flock($fh, LOCK_EX) or die $!;
+                print '1';
+                sleep 30;
+                """,
+                lockPath.path,
+            ]
+            let output = Pipe()
+            child.standardOutput = output
+            child.standardError = FileHandle.nullDevice
+            try child.run()
+            defer {
+                if child.isRunning {
+                    _ = kill(child.processIdentifier, SIGKILL)
+                    child.waitUntilExit()
+                }
+            }
+            let ready = output.fileHandleForReading.readData(ofLength: 1)
+            try #require(ready == Data("1".utf8))
+
+            let state = CredentialSaveState()
+            let saveTask = Task.detached {
+                await state.markStarted()
+                do {
+                    try ProviderCredentialStore.save(
+                        token: "cross-process-token",
+                        accountID: "cross-process-account",
+                        coordinatorURL: "https://issuer.example"
+                    )
+                    await state.markCompleted()
+                } catch {
+                    await state.markCompleted()
+                    throw error
+                }
+            }
+
+            for _ in 0..<1_000 {
+                if await state.started {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            let didStart = await state.started
+            try #require(didStart)
+            try await Task.sleep(for: .milliseconds(100))
+            let completedWhileChildOwnedLock = await state.completed
+            #expect(!completedWhileChildOwnedLock)
+
+            _ = kill(child.processIdentifier, SIGKILL)
+            child.waitUntilExit()
+            try await saveTask.value
+            let stored = try ProviderCredentialStore.load()
+            #expect(stored?.token == "cross-process-token")
+        }
+    }
+    #endif
+
     @Test("delayed logout cannot delete a newer credential")
     func compareAndDelete() async throws {
         try await withCredentialFiles { _ in
@@ -172,5 +246,18 @@ struct ProviderCredentialStoreTests {
             }
             return try await body(files)
         }
+    }
+}
+
+private actor CredentialSaveState {
+    private(set) var started = false
+    private(set) var completed = false
+
+    func markStarted() {
+        started = true
+    }
+
+    func markCompleted() {
+        completed = true
     }
 }

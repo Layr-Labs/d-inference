@@ -144,31 +144,6 @@ struct EarningsCommandTests {
         #expect(roundTrip == report)
     }
 
-    @Test("authenticated account id backfills missing and stale local identity")
-    func accountIDBackfill() {
-        var saved: [String] = []
-        #expect(backfillProviderAccountID(
-            "acct-server",
-            existingAccountID: nil,
-            save: { saved.append($0) }
-        ))
-        #expect(saved == ["acct-server"])
-
-        #expect(!backfillProviderAccountID(
-            "acct-server",
-            existingAccountID: "acct-server",
-            save: { saved.append($0) }
-        ))
-        #expect(saved == ["acct-server"])
-
-        #expect(backfillProviderAccountID(
-            "acct-new",
-            existingAccountID: "acct-stale",
-            save: { saved.append($0) }
-        ))
-        #expect(saved == ["acct-server", "acct-new"])
-    }
-
     @Test("legacy wallet rows adapt to the unified CLI JSON contract")
     func legacyAdapter() async throws {
         let request = try makeLegacyWalletEarningsRequest(

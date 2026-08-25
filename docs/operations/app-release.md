@@ -245,8 +245,8 @@ independently walk every raw tar header before extraction with the same limits:
 
 | Bound | Limit | Rationale |
 |---|---:|---|
-| Compressed archive | 2 GiB | Existing coordinator ceiling; over 10× the roughly 170 MiB signed bundle |
-| Aggregate entry payload | 4 GiB | Includes regular-file and metadata payloads; ample room above the current sub-1-GiB expanded app |
+| Compressed archive | 2 GiB | Enforced while shell and Swift downloads stream, then rechecked before parsing; over 10× the roughly 170 MiB signed bundle |
+| Aggregate decompressed payload | 4 GiB | Includes regular-file data, metadata, and zero trailer padding; ample room above the current sub-1-GiB expanded app |
 | Raw headers | 16,384 | Includes PAX/GNU metadata headers, bounding inode and parser work |
 | Archive path | 4,096 bytes | Matches the portable filesystem path envelope |
 | Path component | 255 bytes | Matches the APFS component ceiling |

@@ -157,6 +157,10 @@ if ($mode eq "large") {
     print "\0" x (2 * $block_size);
     print "\1" x $block_size;
     exit(0);
+} elsif ($mode eq "zero_trailer") {
+    emit_entry("file", "0", "", undef, 0);
+    print "\0" x (4 * $block_size);
+    exit(0);
 } else {
     die("unknown fixture mode: $mode\n");
 }
@@ -213,6 +217,29 @@ run_preflight "$VALID"
 run_preflight "$(make_fixture pax_path)"
 run_preflight "$(make_fixture gnu_long)"
 
+SMALL_DOWNLOAD_SOURCE="$ROOT/small-download-source"
+OVERSIZED_DOWNLOAD_SOURCE="$ROOT/oversized-download-source"
+printf 'bounded download\n' > "$SMALL_DOWNLOAD_SOURCE"
+/usr/bin/perl -e 'print "x" x 4096' > "$OVERSIZED_DOWNLOAD_SOURCE"
+for script in "$CANONICAL" "$EMBEDDED"; do
+    destination="$ROOT/download-$(basename "$script")"
+    bash "$script" --download-release-archive-test \
+        "file://$SMALL_DOWNLOAD_SOURCE" "$destination" 512
+    cmp -s "$SMALL_DOWNLOAD_SOURCE" "$destination"
+    rm -f "$destination"
+
+    if bash "$script" --download-release-archive-test \
+        "file://$OVERSIZED_DOWNLOAD_SOURCE" "$destination" 1024
+    then
+        echo "$script accepted an oversized streamed download" >&2
+        exit 1
+    fi
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+        echo "$script retained an oversized partial download" >&2
+        exit 1
+    fi
+done
+
 LARGE=$(make_fixture large)
 [ "$(wc -c < "$LARGE" | tr -d '[:space:]')" -lt 4096 ]
 expect_rejection "$LARGE" "expanded-size limit"
@@ -228,6 +255,7 @@ expect_rejection "$(make_fixture sparse)" "unsupported node type"
 expect_rejection "$(make_fixture pax_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_overflow)" "overflows"
 expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 15 16384
+expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 512 16384
 expect_rejection "$(make_fixture entries)" "entry limit" 4294967296 2
 expect_rejection "$(make_fixture bad_checksum)" "invalid checksum"
 expect_rejection "$(make_fixture trailing)" "non-zero data"

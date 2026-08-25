@@ -356,6 +356,21 @@ struct WatchdogRecoveryIntegrationTests {
                 == SelfUpdater.watchdogResourceTimeoutSeconds
         )
         #expect(!session.configuration.waitsForConnectivity)
+
+        let startup = SelfUpdater.startupURLSession()
+        #expect(
+            startup.configuration.timeoutIntervalForRequest
+                == SelfUpdater.startupRequestTimeoutSeconds
+        )
+        #expect(
+            startup.configuration.timeoutIntervalForResource
+                == SelfUpdater.startupResourceTimeoutSeconds
+        )
+        #expect(
+            SelfUpdater.startupResourceTimeoutSeconds
+                < SelfUpdater.watchdogResourceTimeoutSeconds
+        )
+        #expect(!startup.configuration.waitsForConnectivity)
     }
 
     @Test("new version without heartbeat is a failed start, even if process lives")
@@ -1310,14 +1325,10 @@ struct WatchdogRecoveryIntegrationTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
         let updater = fixture.updater(baseURL: baseURL)
-        let session = try updater.beginUpdateSession(
-            operation: "watchdog-stop-race"
-        )
-        defer { session.release() }
-        try session.recover(now: 100)
 
         let result = await updater.update(
-            session: session,
+            operation: "watchdog-stop-race",
+            manualOverride: false,
             beforeInstall: { false }
         )
         guard case .cancelled(let reason) = result else {

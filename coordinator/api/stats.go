@@ -333,6 +333,9 @@ func (s *Server) aggregateProviderLocations() (
 	regions := make(map[regionKey]*regionAgg)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if !s.registry.ProviderHardwareAdmitted(p) {
+			return
+		}
 		// Private-only providers are not part of the public fleet — keep them off
 		// the public network map and out of its provider/hardware counts.
 		if p.PrivateOnly {

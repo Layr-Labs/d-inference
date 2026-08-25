@@ -52,6 +52,12 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 		UpdatedAt:   time.Now().UTC(),
 	})
 	addProviderForStats(t, reg, "unknown-1", "hardware", nil)
+	addProviderForStats(t, reg, "pending-hardware", "hardware", &store.ProviderLocation{
+		City: "San Francisco", Region: "California", RegionCode: "CA",
+		Country: "United States", CountryCode: "US",
+	})
+	reg.SetHardwareAdmissionEnforced(true)
+	reg.SetProviderHardwareAdmitted("pending-hardware", false)
 
 	rr := httptest.NewRecorder()
 	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))

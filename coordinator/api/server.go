@@ -311,6 +311,7 @@ type Server struct {
 	hardwareAdmissionPolicy    hardwareadmission.Policy
 	hardwareAdmissionPendingMu sync.Mutex
 	hardwareAdmissionPending   map[string]pendingHardwareAdmission
+	hardwareAdmissionFinalizeRetry map[string]struct{}
 
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
 	// It can only POST /v1/releases — no admin access.
@@ -741,6 +742,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		hardwareAdmissionPending: make(map[string]pendingHardwareAdmission),
+		hardwareAdmissionFinalizeRetry: make(map[string]struct{}),
 	}
 	s.registerDefaultGauges()
 	s.routes()

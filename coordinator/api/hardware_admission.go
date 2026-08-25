@@ -35,6 +35,9 @@ func (s *Server) initializeHardwareAdmission(cfg ServerConfig) {
 			Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
 			Reason: "admission state unavailable",
 		})
+		if bootstrap, bootstrapErr := hardwareAdmissionBootstrapFromConfig(cfg); bootstrapErr == nil {
+			s.scheduleHardwareAdmissionBootstrap(bootstrap)
+		}
 		return
 	}
 	if stored != nil {
@@ -42,31 +45,17 @@ func (s *Server) initializeHardwareAdmission(cfg ServerConfig) {
 		return
 	}
 
-	rawMode := cfg.HardwareAdmissionMode
-	if strings.TrimSpace(rawMode) == "" {
-		rawMode = string(hardwareadmission.ModeDisabled)
-	}
-	mode, err := hardwareadmission.ParseMode(rawMode)
+	bootstrap, err := hardwareAdmissionBootstrapFromConfig(cfg)
 	if err != nil {
-		s.logger.Error("invalid hardware admission bootstrap mode; enforcement disabled",
+		s.logger.Error("invalid hardware admission bootstrap mode; registrations fail closed",
 			"mode", cfg.HardwareAdmissionMode, "error", err)
-		s.setHardwareAdmissionPolicy(policy)
+		s.setHardwareAdmissionPolicy(hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
+			Reason: "invalid admission bootstrap mode",
+		})
 		return
 	}
-	bootstrap := hardwareadmission.Policy{
-		Mode: mode, CatalogVersion: hardwareadmission.CatalogVersion,
-		MinMemoryGB:           cfg.HardwareAdmissionMinMemoryGB,
-		MinMemoryBandwidthGBs: cfg.HardwareAdmissionMinBandwidthGBs,
-		MinFP16MilliTFLOPS:    cfg.HardwareAdmissionMinFP16MilliTFLOPS,
-		CreatedBy:             "environment", Reason: "bootstrap policy",
-	}
-	if err := bootstrap.Validate(); err != nil {
-		s.logger.Error("invalid hardware admission bootstrap policy; enforcement disabled",
-			"error", err)
-		s.setHardwareAdmissionPolicy(policy)
-		return
-	}
-	if mode == hardwareadmission.ModeDisabled &&
+	if bootstrap.Mode == hardwareadmission.ModeDisabled &&
 		bootstrap.MinMemoryGB == 0 &&
 		bootstrap.MinMemoryBandwidthGBs == 0 &&
 		bootstrap.MinFP16MilliTFLOPS == 0 {
@@ -75,12 +64,75 @@ func (s *Server) initializeHardwareAdmission(cfg ServerConfig) {
 	}
 	activated, err := s.store.ActivateHardwareAdmissionPolicy(ctx, bootstrap, 0)
 	if err != nil {
-		s.logger.Error("failed to persist hardware admission bootstrap policy; enforcement disabled",
+		s.logger.Error("failed to persist hardware admission bootstrap policy; registrations fail closed while retrying",
 			"error", err)
-		s.setHardwareAdmissionPolicy(policy)
+		s.setHardwareAdmissionPolicy(hardwareadmission.Policy{
+			Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
+			Reason: "admission bootstrap persistence unavailable",
+		})
+		s.scheduleHardwareAdmissionBootstrap(bootstrap)
 		return
 	}
 	s.setHardwareAdmissionPolicy(activated)
+}
+
+func hardwareAdmissionBootstrapFromConfig(cfg ServerConfig) (hardwareadmission.Policy, error) {
+	rawMode := cfg.HardwareAdmissionMode
+	if strings.TrimSpace(rawMode) == "" {
+		rawMode = string(hardwareadmission.ModeDisabled)
+	}
+	mode, err := hardwareadmission.ParseMode(rawMode)
+	if err != nil {
+		return hardwareadmission.Policy{}, err
+	}
+	policy := hardwareadmission.Policy{
+		Mode: mode, CatalogVersion: hardwareadmission.CatalogVersion,
+		MinMemoryGB:           cfg.HardwareAdmissionMinMemoryGB,
+		MinMemoryBandwidthGBs: cfg.HardwareAdmissionMinBandwidthGBs,
+		MinFP16MilliTFLOPS:    cfg.HardwareAdmissionMinFP16MilliTFLOPS,
+		CreatedBy:             "environment", Reason: "bootstrap policy",
+	}
+	if err := policy.Validate(); err != nil {
+		return hardwareadmission.Policy{}, err
+	}
+	return policy, nil
+}
+
+func (s *Server) scheduleHardwareAdmissionBootstrap(bootstrap hardwareadmission.Policy) {
+	saferun.Go(s.logger, "hardwareAdmissionBootstrap", func() {
+		for attempt := 1; ; attempt++ {
+			delay := time.Duration(attempt) * 5 * time.Second
+			if delay > time.Minute {
+				delay = time.Minute
+			}
+			time.Sleep(delay)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			active, err := s.store.GetActiveHardwareAdmissionPolicy(ctx)
+			if err == nil && active != nil {
+				cancel()
+				s.setHardwareAdmissionPolicy(*active)
+				if reconcileErr := s.reconcileConnectedHardwareAdmissions(*active); reconcileErr != nil {
+					s.scheduleHardwareAdmissionReconciliation(*active)
+				}
+				return
+			}
+			if err == nil {
+				var activated hardwareadmission.Policy
+				activated, err = s.store.ActivateHardwareAdmissionPolicy(ctx, bootstrap, 0)
+				if err == nil {
+					cancel()
+					s.setHardwareAdmissionPolicy(activated)
+					if reconcileErr := s.reconcileConnectedHardwareAdmissions(activated); reconcileErr != nil {
+						s.scheduleHardwareAdmissionReconciliation(activated)
+					}
+					return
+				}
+			}
+			cancel()
+			s.logger.Warn("hardware admission bootstrap retry failed",
+				"attempt", attempt, "error", err)
+		}
+	})
 }
 
 func (s *Server) setHardwareAdmissionPolicy(policy hardwareadmission.Policy) {
@@ -208,6 +260,7 @@ func (s *Server) evaluateProviderHardwareAdmission(
 		s.recordHardwareAdmissionAttempt(
 			ctx, provider, serial, policy, "pending_identity", "", decision)
 		s.ddIncr("providers.hardware_admission", []string{"mode:enforce", "decision:pending_identity"})
+		s.finalizeOrScheduleHardwareAdmission(provider)
 		return true
 	}
 
@@ -435,10 +488,30 @@ func (s *Server) schedulePendingHardwareAdmissionFinalization(provider *registry
 	if provider == nil {
 		return
 	}
+	s.hardwareAdmissionPendingMu.Lock()
+	if s.hardwareAdmissionFinalizeRetry == nil {
+		s.hardwareAdmissionFinalizeRetry = make(map[string]struct{})
+	}
+	if _, scheduled := s.hardwareAdmissionFinalizeRetry[provider.ID]; scheduled {
+		s.hardwareAdmissionPendingMu.Unlock()
+		return
+	}
+	s.hardwareAdmissionFinalizeRetry[provider.ID] = struct{}{}
+	s.hardwareAdmissionPendingMu.Unlock()
 	saferun.Go(s.logger, "hardwareAdmissionFinalize", func() {
-		for attempt := 1; attempt <= 5; attempt++ {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
-			if !s.hasPendingHardwareAdmission(provider.ID) {
+		defer func() {
+			s.hardwareAdmissionPendingMu.Lock()
+			delete(s.hardwareAdmissionFinalizeRetry, provider.ID)
+			s.hardwareAdmissionPendingMu.Unlock()
+		}()
+		for attempt := 1; ; attempt++ {
+			delay := time.Duration(attempt) * 2 * time.Second
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			time.Sleep(delay)
+			if !s.hasPendingHardwareAdmission(provider.ID) ||
+				s.registry.GetProvider(provider.ID) != provider {
 				return
 			}
 			if s.finalizePendingHardwareAdmission(provider) {
@@ -730,7 +803,7 @@ func (s *Server) reconcileConnectedHardwareAdmissions(policy hardwareadmission.P
 			s.stagePendingHardwareAdmission(candidate.provider.ID, pendingHardwareAdmission{
 				serial: serial, policy: policy, decision: decision,
 			})
-			s.finalizePendingHardwareAdmission(candidate.provider)
+			s.finalizeOrScheduleHardwareAdmission(candidate.provider)
 			continue
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), hardwareAdmissionStoreTimeout)

@@ -174,7 +174,28 @@ func (s *PostgresStore) AdmitHardware(ctx context.Context, admission HardwareAdm
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin hardware admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var activeVersion int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(active_policy_version, 0)
+		FROM hardware_admission_state
+		WHERE singleton = TRUE
+		FOR SHARE
+	`).Scan(&activeVersion); err != nil {
+		return fmt.Errorf("store: read active policy for admission: %w", err)
+	}
+	if activeVersion != admission.PolicyVersion {
+		return fmt.Errorf(
+			"%w: admission policy %d, active %d",
+			ErrHardwareAdmissionPolicyConflict,
+			admission.PolicyVersion,
+			activeVersion)
+	}
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO hardware_admissions (
 			serial_number, source, policy_version, hardware, admitted_at
 		) VALUES ($1,$2,$3,$4,$5)
@@ -185,7 +206,7 @@ func (s *PostgresStore) AdmitHardware(ctx context.Context, admission HardwareAdm
 	}
 	if tag.RowsAffected() == 0 {
 		var revoked bool
-		if err := s.pool.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			SELECT revoked_at IS NOT NULL
 			FROM hardware_admissions WHERE serial_number = $1
 		`, serial).Scan(&revoked); err != nil {
@@ -194,6 +215,9 @@ func (s *PostgresStore) AdmitHardware(ctx context.Context, admission HardwareAdm
 		if revoked {
 			return fmt.Errorf("%w: %s", ErrHardwareAdmissionRevoked, serial)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit hardware admission: %w", err)
 	}
 	return nil
 }

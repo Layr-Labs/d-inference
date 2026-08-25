@@ -108,6 +108,13 @@ func (s *MemoryStore) AdmitHardware(_ context.Context, admission HardwareAdmissi
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.activeHardwarePolicy != admission.PolicyVersion {
+		return fmt.Errorf(
+			"%w: admission policy %d, active %d",
+			ErrHardwareAdmissionPolicyConflict,
+			admission.PolicyVersion,
+			s.activeHardwarePolicy)
+	}
 	if existing, exists := s.hardwareAdmissions[serial]; exists {
 		if existing.RevokedAt != nil {
 			return fmt.Errorf("%w: %s", ErrHardwareAdmissionRevoked, serial)

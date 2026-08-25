@@ -114,3 +114,38 @@ func TestHardwareAdmissionAttemptRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestHardwareAdmissionRejectsStalePolicyCommit(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			first, err := backend.ActivateHardwareAdmissionPolicy(
+				ctx,
+				hardwareadmission.Policy{
+					Mode: hardwareadmission.ModeShadow, CatalogVersion: hardwareadmission.CatalogVersion,
+				},
+				0,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = backend.ActivateHardwareAdmissionPolicy(
+				ctx,
+				hardwareadmission.Policy{
+					Mode: hardwareadmission.ModeEnforce, CatalogVersion: hardwareadmission.CatalogVersion,
+				},
+				first.Version,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = backend.AdmitHardware(ctx, HardwareAdmission{
+				SerialNumber:  "STALE-POLICY-" + name,
+				PolicyVersion: first.Version,
+			})
+			if !errors.Is(err, ErrHardwareAdmissionPolicyConflict) {
+				t.Fatalf("stale policy admission error = %v", err)
+			}
+		})
+	}
+}

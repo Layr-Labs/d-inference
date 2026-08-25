@@ -3201,7 +3201,7 @@ func (r *Registry) register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
 		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
 		TrustLevel:                  TrustNone,
-		HardwareAdmitted:            !r.hardwareAdmissionEnforced.Load(),
+		HardwareAdmitted:            persistenceEnabled && !r.hardwareAdmissionEnforced.Load(),
 		persistenceEnabled:          persistenceEnabled,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
@@ -5036,7 +5036,8 @@ func (r *Registry) CodeAttestationCoverage() (codeAttested, online int) {
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		if p.Status != StatusOffline && p.Status != StatusUntrusted {
+		if p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			(!r.hardwareAdmissionEnforced.Load() || p.HardwareAdmitted) {
 			online++
 			if p.CodeAttested {
 				codeAttested++

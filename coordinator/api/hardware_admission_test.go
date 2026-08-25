@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -215,6 +216,26 @@ func TestProviderRequirementsAndAdminPolicyEndpoints(t *testing.T) {
 	if strings.Contains(publicW.Body.String(), "rollout") ||
 		strings.Contains(publicW.Body.String(), "admin-key") {
 		t.Fatalf("public policy leaked operator audit fields: %s", publicW.Body.String())
+	}
+}
+
+type failingHardwarePolicyStore struct {
+	store.Store
+}
+
+func (f failingHardwarePolicyStore) GetActiveHardwareAdmissionPolicy(context.Context) (*hardwareadmission.Policy, error) {
+	return nil, errors.New("database unavailable")
+}
+
+func TestHardwareAdmissionBootstrapFailureFailsClosed(t *testing.T) {
+	base := store.NewMemory(store.Config{})
+	reg := registry.New(quietLogger())
+	_ = NewServer(reg, failingHardwarePolicyStore{Store: base}, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 32,
+	}, quietLogger())
+	if !reg.HardwareAdmissionEnforced() {
+		t.Fatal("bootstrap store failure disabled hardware enforcement")
 	}
 }
 

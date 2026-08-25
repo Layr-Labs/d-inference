@@ -38,7 +38,6 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -311,18 +310,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
-			admissionPolicy, err := s.refreshHardwareAdmissionPolicy(loopCtx)
+			_, err := s.refreshHardwareAdmissionPolicy(loopCtx)
 			if err != nil {
 				s.logger.Warn("provider registration deferred: hardware admission policy unavailable",
 					"provider_id", providerID, "error", err)
 				_ = conn.Close(websocket.StatusInternalError, "hardware admission state unavailable")
 				return
 			}
-			if admissionPolicy.Mode == hardwareadmission.ModeEnforce {
-				provider = s.registry.RegisterPendingHardwareAdmission(providerID, conn, regMsg)
-			} else {
-				provider = s.registry.Register(providerID, conn, regMsg)
-			}
+			provider = s.registry.RegisterPendingHardwareAdmission(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 
 			// Resolve account linkage before admission so a rejected machine's

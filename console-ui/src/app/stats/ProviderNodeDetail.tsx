@@ -1,20 +1,15 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   Activity,
-  CheckCircle2,
-  Clock,
   Cpu,
   HardDrive,
   Layers,
-  Loader2,
   Server,
   ShieldCheck,
-  XCircle,
   Zap,
 } from "lucide-react";
-import type { CertVerificationResult, VerificationStep } from "@/lib/cert-verify";
 import {
   compactProviderId,
   isProviderRoutable,
@@ -25,25 +20,10 @@ import {
   type ProviderStats,
 } from "./provider-fleet";
 
-interface ProviderAttestation {
-  provider_id: string;
-  trust_level: string;
-  status: string;
-  serial_number?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-}
-
 function formatCompact(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return value.toLocaleString();
-}
-
-function maskSerial(serial?: string): string {
-  if (!serial) return "Hidden";
-  if (serial.length <= 7) return serial;
-  return `${serial.slice(0, 4)}…${serial.slice(-3)}`;
 }
 
 function DetailMetric({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
@@ -54,22 +34,6 @@ function DetailMetric({ label, value, icon }: { label: string; value: string; ic
         <p className="text-[9px] font-mono uppercase tracking-wider">{label}</p>
       </div>
       <p className="mt-1 break-words font-mono text-sm font-semibold leading-5 text-text-primary">{value}</p>
-    </div>
-  );
-}
-
-function VerifyStepLine({ step }: { step: VerificationStep }) {
-  let icon = <Clock size={12} className="text-text-tertiary" />;
-  if (step.status === "success") icon = <CheckCircle2 size={12} className="text-accent-green" />;
-  if (step.status === "error") icon = <XCircle size={12} className="text-accent-red" />;
-  if (step.status === "running") icon = <Loader2 size={12} className="animate-spin text-accent-brand" />;
-  return (
-    <div className="flex gap-2 py-1.5">
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div className="min-w-0">
-        <p className="text-xs text-text-secondary">{step.label}</p>
-        {step.detail && <p className="mt-0.5 break-words font-mono text-[10px] text-text-tertiary">{step.detail}</p>}
-      </div>
     </div>
   );
 }
@@ -95,59 +59,7 @@ function RouteVerdict({ provider }: { provider: ProviderStats }) {
   );
 }
 
-async function checkProviderCertificate(
-  provider: ProviderStats,
-  onSteps: (steps: VerificationStep[]) => void,
-): Promise<{ result: CertVerificationResult; attestation: ProviderAttestation | null }> {
-  const response = await fetch("/api/attestation");
-  if (!response.ok) throw new Error(`Attestation API returned HTTP ${response.status}`);
-  const data = await response.json();
-  const attestedProviders: ProviderAttestation[] = data.providers ?? [];
-  const matched =
-    attestedProviders.find((entry) => entry.provider_id === provider.id) ??
-    attestedProviders.find((entry) => entry.provider_id?.startsWith(provider.id)) ??
-    null;
-  if (!matched) {
-    return {
-      result: { success: false, steps: [], error: "Node was not present in the public attestation feed." },
-      attestation: null,
-    };
-  }
-  const certs = matched.mda_cert_chain_b64 ?? [];
-  if (certs.length < 2) {
-    return {
-      result: {
-        success: false,
-        steps: [{ status: "error", label: "Certificate chain incomplete", detail: `Found ${certs.length}; at least 2 certificates are required.` }],
-        error: "This node does not have a complete Apple certificate chain yet.",
-      },
-      attestation: matched,
-    };
-  }
-  const { verifyCertificateChain } = await import("@/lib/cert-verify");
-  return { result: await verifyCertificateChain(certs, onSteps), attestation: matched };
-}
-
-function certificatePresentation(result: CertVerificationResult | null, available?: boolean) {
-  if (result?.success) return { label: "Apple certificate verified", color: "text-accent-green" };
-  if (result) return { label: "Certificate check failed", color: "text-accent-red" };
-  if (available) return { label: "Proof available", color: "text-text-tertiary" };
-  return { label: "No proof published", color: "text-text-tertiary" };
-}
-
 export function ProviderNodeDetail({ provider }: { provider: ProviderStats | null }) {
-  const [verifying, setVerifying] = useState(false);
-  const [verifySteps, setVerifySteps] = useState<VerificationStep[]>([]);
-  const [verifyResult, setVerifyResult] = useState<CertVerificationResult | null>(null);
-  const [attestation, setAttestation] = useState<ProviderAttestation | null>(null);
-
-  useEffect(() => {
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-    setVerifying(false);
-  }, [provider?.id]);
-
   if (!provider) {
     return (
       <div className="rounded-xl border border-dashed border-border-subtle bg-bg-secondary p-6 text-sm text-text-tertiary">
@@ -156,27 +68,10 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
     );
   }
 
-  async function verifyCertificate() {
-    if (!provider) return;
-    setVerifying(true);
-    setVerifySteps([]);
-    setVerifyResult(null);
-    setAttestation(null);
-    try {
-      const check = await checkProviderCertificate(provider, setVerifySteps);
-      setAttestation(check.attestation);
-      setVerifyResult(check.result);
-    } catch (error) {
-      setVerifyResult({ success: false, steps: [], error: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setVerifying(false);
-    }
-  }
-
   const models = provider.models ?? [];
-  const certCount = attestation?.mda_cert_chain_b64?.length ?? 0;
-  const verifiedSerial = verifyResult?.deviceInfo?.serial || attestation?.mda_serial || attestation?.serial_number;
-  const certificate = certificatePresentation(verifyResult, provider.certificate_available);
+  const certificate = provider.mda_verified
+    ? { label: "Apple attestation verified", color: "text-accent-green" }
+    : { label: "Apple attestation pending", color: "text-text-tertiary" };
 
   return (
     <article className="overflow-hidden rounded-xl border border-border-dim bg-bg-secondary shadow-sm">
@@ -254,33 +149,18 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
           <div>
             <div className="flex items-center gap-1.5">
               <ShieldCheck size={13} className="text-accent-brand" />
-              <p className="text-xs font-semibold text-text-primary">Independent certificate check</p>
+              <p className="text-xs font-semibold text-text-primary">Coordinator attestation check</p>
             </div>
             <p className={`mt-1 font-mono text-[10px] ${certificate.color}`}>
               {certificate.label}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={verifyCertificate}
-            disabled={verifying}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-accent-brand px-3 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {verifying ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-            Check proof
-          </button>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[10px]">
           <div><p className="text-text-tertiary">Route challenge</p><p className="mt-1 text-text-primary">{relativeChallengeLabel(provider.last_challenge_verified)}</p></div>
-          <div><p className="text-text-tertiary">Certificates</p><p className="mt-1 text-text-primary">{certCount || (provider.certificate_available ? "Available" : "None")}</p></div>
-          <div><p className="text-text-tertiary">Serial</p><p className="mt-1 text-text-primary">{maskSerial(verifiedSerial)}</p></div>
+          <div><p className="text-text-tertiary">Apple MDA</p><p className="mt-1 text-text-primary">{provider.mda_verified ? "Verified" : "Pending"}</p></div>
+          <div><p className="text-text-tertiary">Device identity</p><p className="mt-1 text-text-primary">Private</p></div>
         </div>
-        {(verifySteps.length > 0 || verifyResult?.error) && (
-          <div className="mt-3 border-t border-border-dim pt-2">
-            {verifySteps.map((step) => <VerifyStepLine key={step.label} step={step} />)}
-            {verifyResult?.error && <p className="mt-2 rounded-md bg-accent-red/5 px-2 py-1.5 text-[11px] text-accent-red">{verifyResult.error}</p>}
-          </div>
-        )}
       </div>
     </article>
   );

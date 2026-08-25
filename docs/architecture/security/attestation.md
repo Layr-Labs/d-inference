@@ -92,18 +92,20 @@ Limits and honest residuals:
 
 `providerSupportsPrivateTextLocked` is the single chokepoint for private text traffic. It requires an attested X25519 key, encrypted response chunks, coordinator-verified SIP from the latest challenge, runtime-manifest verification, and—once the rollout deadline passes—the APNs `CodeAttested` flag. Code: `coordinator/registry/registry.go:305-342`.
 
-## Public verification API
+## Public attestation status API
 
 `GET /v1/providers/attestation` (no auth required) returns, per provider:
 
 - Secure Enclave P-256 public key,
-- hardware info (chip, model, serial, system volume hash),
+- hardware class (chip and model) and system volume hash,
 - security state (SIP, SecureBoot, ARV, SE),
 - MDM verification status,
-- Apple MDA certificate chain (base64 DER, leaf + intermediate),
-- MDA-extracted properties (serial, UDID, OS version, SepOS version).
+- coordinator-verified Apple MDA status and OS/SepOS versions.
 
-Users can independently verify the MDA chain against Apple's public Enterprise Attestation Root CA.
+Hardware serials, UDIDs, and the raw MDA certificate chain are intentionally
+excluded. The coordinator verifies the chain against Apple's Enterprise
+Attestation Root CA and cross-checks the device identity internally; publishing
+the leaf certificate would also publish the identifiers embedded in its OIDs.
 
 ## See also
 

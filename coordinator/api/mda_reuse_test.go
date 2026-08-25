@@ -136,7 +136,7 @@ func TestAttachCachedMDAProof_ReusesWithoutMDM(t *testing.T) {
 		t.Error("SEKeyBound must be true (freshness code matched the SE key hash)")
 	}
 	if len(p.MDACertChain) == 0 {
-		t.Error("MDACertChain must be attached for the attestation endpoint")
+		t.Error("MDACertChain must remain attached for coordinator-side trust reuse")
 	}
 }
 

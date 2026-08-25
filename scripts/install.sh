@@ -486,8 +486,8 @@ if [ "$ALREADY_ENROLLED" = true ]; then
     echo "  Already enrolled ✓"
 elif [ -n "$SERIAL" ]; then
     echo "  Requesting enrollment profile from coordinator..."
-    PROFILE_PATH="/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig"
-    rm -f "$PROFILE_PATH" 2>/dev/null
+    PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX")"
+    PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"
     if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"serial_number\": \"$SERIAL\"}" \

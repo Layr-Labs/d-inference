@@ -8,7 +8,6 @@ import { Cpu, ShieldCheck, Zap } from "lucide-react";
 import type { MyProvider } from "../types";
 import { computeWarnings } from "../warnings";
 import { deriveRouting, routingMeta, selectTopWarning, type RoutingCtx } from "./routing";
-import { maskSerial } from "./format";
 import { StatusPill, TrustPill } from "./StatusPill";
 import { CardRoutingVerdict } from "./CardRoutingVerdict";
 import { CardVitals } from "./CardVitals";
@@ -49,7 +48,6 @@ export function MachineCard({
     provider.hardware.machine_model,
     provider.hardware.memory_gb ? `${provider.hardware.memory_gb}GB` : null,
     provider.hardware.gpu_cores ? `${provider.hardware.gpu_cores} GPU` : null,
-    provider.serial_number ? maskSerial(provider.serial_number) : null,
     provider.version ? `v${provider.version}` : null,
   ]
     .filter(Boolean)

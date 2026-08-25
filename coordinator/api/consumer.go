@@ -1534,22 +1534,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
-	if err != nil {
-		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "bad_param",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
+	var allowedProviderSerials []string
+	if stripProviderRoutingFields(parsed) {
 		rawBody, _ = marshalForwardBody(parsed)
 	}
 
@@ -1568,13 +1554,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	isResponsesAPI := input != nil && len(messages) == 0
 	constraintBody := originalRawBody
 	if isResponsesAPI {
-		constraintBody, err = promptcontract.LowerProviderBody(
+		loweredConstraintBody, err := promptcontract.LowerProviderBody(
 			promptcontract.EndpointResponses, originalRawBody)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse(
 				"invalid_request_error", err.Error()))
 			return
 		}
+		constraintBody = loweredConstraintBody
 	}
 	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
 	if validationErr != nil {
@@ -3966,24 +3953,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		endpointKind = promptcontract.EndpointMessages
 	}
 
-	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
-	if err != nil {
-		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "bad_param",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-	if hasProviderAllowlist {
-		stripProviderRoutingFields(parsed)
-	}
+	var allowedProviderSerials []string
+	stripProviderRoutingFields(parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)

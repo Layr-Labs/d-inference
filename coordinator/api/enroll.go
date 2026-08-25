@@ -18,9 +18,11 @@ var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
 // handleEnroll generates a per-device .mobileconfig containing MDM
 // enrollment (SCEP + MDM payloads).
 //
-// No authentication required — the serial number is not secret. Trust comes
-// from MDM SecurityInfo verification after enrollment, not from possession of
-// the profile.
+// The provider sends its own serial over TLS for the coordinator's MDM
+// cross-reference. It remains inside the generated provider bootstrap profile
+// and is never echoed in response headers or other people-facing API metadata.
+// Trust comes from MDM SecurityInfo verification after enrollment, not from
+// possession of the profile.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req enrollRequest
 	if !decodeCappedJSON(w, r, maxControlPlaneBodyBytes, &req) {
@@ -73,7 +75,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	// A signed .mobileconfig keeps the same MIME type as an unsigned one.
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Darkbloom-Enroll-%s.mobileconfig"`, req.SerialNumber))
+	w.Header().Set("Content-Disposition", `attachment; filename="Darkbloom-Enroll.mobileconfig"`)
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 }

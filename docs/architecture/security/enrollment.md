@@ -10,7 +10,12 @@ The diagram shows the sequence from `install.sh` requesting a signed profile thr
 
 ## Enrollment endpoint
 
-`POST /v1/enroll` accepts a serial number and returns a CMS-signed `.mobileconfig`. No authentication is required for the request itself; security comes from Apple's attestation during the MDA step and the MDM SecurityInfo posture check. Code:
+`POST /v1/enroll` accepts the provider's serial number and returns a CMS-signed
+`.mobileconfig` to that provider. The serial is carried over TLS for the
+coordinator's MDM cross-reference and remains inside the bootstrap profile; it
+is not echoed in the download filename or exposed by people-facing APIs. No
+authentication is required for the request itself; security comes from Apple's
+attestation during the MDA step and the MDM SecurityInfo posture check. Code:
 
 - HTTP handler: `coordinator/api/enroll.go:19-81`
 - Profile generation: `coordinator/api/enroll.go:113-266`
@@ -68,7 +73,10 @@ Apple Enterprise Attestation Root CA (P-384, embedded in coordinator)
           └─ Freshness code  (OID 1.2.840.113635.100.8.11.1)
 ```
 
-The coordinator verifies the chain against the embedded root CA, cross-checks the serial number against the provider's self-reported attestation, and stores the chain for public inspection. Code:
+The coordinator verifies the chain against the embedded root CA, cross-checks
+the serial number against the provider's self-reported attestation, and stores
+the chain privately for trust reuse. The chain is not published because its
+leaf certificate embeds the serial number and UDID. Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
 - MDA dispatch and key binding: `coordinator/api/provider.go:2342-2429`
@@ -95,7 +103,7 @@ The deprecated wire key `acme_verified` (hardcoded `false`) is still emitted by 
 
 1. Provider registers with SE-signed attestation → trust level = `self_signed`.
 2. MDM `SecurityInfo` passes → upgraded to `hardware`.
-3. MDA certificate chain verifies and the serial number matches → MDA proof stored for public inspection.
+3. MDA certificate chain verifies and the serial number matches → MDA proof stored coordinator-side.
 4. APNs code-identity round-trip passes → `CodeAttested = true`, private traffic may route.
 
 Code:
@@ -110,3 +118,6 @@ Code:
 - It cannot install/remove profiles, change settings, lock, or wipe the provider's Mac.
 - The only commands it sends are `SecurityInfo` and `DeviceInformation`.
 - The `.mobileconfig` is CMS-signed by the coordinator so the user sees a signed profile at install time.
+- Serial numbers, UDIDs, and raw MDA certificates remain between the provider,
+  Apple/MDM infrastructure, and coordinator; public APIs expose only redacted
+  trust status.

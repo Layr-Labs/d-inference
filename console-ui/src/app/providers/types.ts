@@ -100,7 +100,6 @@ export interface MyProvider {
   models: MyModelInfo[];
   backend?: string;
   version?: string;
-  serial_number?: string;
 
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
@@ -115,9 +114,6 @@ export interface MyProvider {
   secure_boot_enabled: boolean;
   authenticated_root_enabled: boolean;
   system_volume_hash?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-  mda_udid?: string;
   mda_os_version?: string;
   mda_sepos_version?: string;
 
@@ -154,13 +150,6 @@ export interface MyProvidersResponse {
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
-}
-
-// Response from DELETE /v1/me/providers/{serial}.
-export interface DeleteProviderResponse {
-  deleted: boolean;
-  serial: string;
-  rows_removed: number;
 }
 
 export interface MyFleetCounts {

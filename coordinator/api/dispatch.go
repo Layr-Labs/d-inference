@@ -3390,7 +3390,6 @@ func (d *dispatchState) writeCommittedResponse() {
 	w.Header().Set("X-Provider-Chip", chipName)
 	w.Header().Set("X-Provider-Model", machineModel)
 	if attestResult != nil {
-		w.Header().Set("X-Provider-Serial", attestResult.SerialNumber)
 		if attestResult.SecureEnclaveAvailable {
 			w.Header().Set("X-Provider-Secure-Enclave", "true")
 		} else {
@@ -3404,7 +3403,6 @@ func (d *dispatchState) writeCommittedResponse() {
 	// Consumers can use this to verify SE signatures on response hashes.
 	if attestResult != nil && attestResult.PublicKey != "" {
 		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
-		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
 	}
 
 	// Latency decomposition header for observability.

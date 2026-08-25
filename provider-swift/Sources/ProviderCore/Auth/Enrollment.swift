@@ -87,7 +87,6 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
 // MARK: - Enrollment service
 
 public struct EnrollmentResult: Sendable {
-    public let serialNumber: String
     public let profilePath: URL
     public let alreadyEnrolled: Bool
 }
@@ -118,7 +117,6 @@ public struct EnrollmentService: Sendable {
         switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
         case .enrolledDarkbloom:
             return EnrollmentResult(
-                serialNumber: macHardwareSerialNumber() ?? "<unknown>",
                 profilePath: URL(fileURLWithPath: "/dev/null"),
                 alreadyEnrolled: true
             )
@@ -162,7 +160,7 @@ public struct EnrollmentService: Sendable {
         }
 
         let profilePath = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("Darkbloom-Enroll-\(serial).mobileconfig")
+            .appendingPathComponent("Darkbloom-Enroll-\(UUID().uuidString).mobileconfig")
         do {
             try data.write(to: profilePath, options: .atomic)
         } catch {
@@ -181,7 +179,6 @@ public struct EnrollmentService: Sendable {
         }
 
         return EnrollmentResult(
-            serialNumber: serial,
             profilePath: profilePath,
             alreadyEnrolled: false
         )

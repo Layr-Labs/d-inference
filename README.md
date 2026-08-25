@@ -115,7 +115,7 @@ Providers carry one of three trust levels, surfaced to consumers on every respon
 | `self_signed` | Secure Enclave P-256 signature + periodic challenge-response |
 | `hardware` | MDM enrollment + Apple Managed Device Attestation (MDA) certificate chain |
 
-The strongest production gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. The full attestation chain for any provider is publicly verifiable at **`GET /v1/providers/attestation`**.
+The strongest live-network gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. Privacy-redacted provider trust status is public at **`GET /v1/providers/attestation`**; hardware serials, UDIDs, and raw Apple certificates remain private to providers and the coordinator.
 
 ## Quickstart (consumers)
 
@@ -168,7 +168,7 @@ OpenAI-compatible, with Anthropic Messages support. Inference endpoints require 
 | `GET /v1/models/catalog` | *Public* — full model catalog with Darkbloom metadata |
 | `GET /v1/pricing` | *Public* — live per-token pricing |
 | `GET /v1/encryption-key` | *Public* — coordinator X25519 key for optional sender-side sealing |
-| `GET /v1/providers/attestation` | *Public* — provider attestation chains for verification |
+| `GET /v1/providers/attestation` | *Public* — privacy-redacted provider attestation status |
 | `GET /v1/payments/balance`, `GET /v1/payments/usage` | Account balance and usage |
 
 Supported across the inference endpoints: **streaming (SSE)**, **tool / function calling**, **vision / multimodal** input, **reasoning models**, and server-side **continuous batching** for throughput. `n > 1` is rejected with `400` (on chat completions and the Responses API). Unimplemented OpenAI endpoints (e.g. `/v1/embeddings`) return a structured `404`.

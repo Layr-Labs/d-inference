@@ -63,8 +63,8 @@ const STEPS: StepData[] = [
     technical:
       "Apple's Enterprise Attestation Root CA (P-384, valid until 2047) signs intermediate " +
       "certificates that chain to the device leaf certificate. This X.509 chain is verified " +
-      "in your browser using the WebCrypto API. The leaf certificate embeds device-specific " +
-      "OIDs (serial number, UDID, OS version) signed by Apple — not self-reported by the device.",
+      "by the coordinator. The leaf certificate embeds device-specific OIDs signed by Apple; " +
+      "the raw certificate, serial number, and UDID remain private to the provider and coordinator.",
   },
   {
     icon: Lock,
@@ -219,12 +219,12 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
               <ShieldCheck size={20} className="text-teal shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-semibold text-text-primary">
-                  Independently Verifiable
+                  Privacy-Preserving Verification
                 </p>
                 <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                  Every step in this chain can be verified independently. Click
-                  &quot;Verify Apple Attestation&quot; on any response to run
-                  real X.509 certificate verification in your browser.
+                  The coordinator verifies Apple&apos;s certificate chain and
+                  publishes the resulting trust status without exposing the
+                  device&apos;s serial number, UDID, or raw certificate.
                 </p>
               </div>
             </div>

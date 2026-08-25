@@ -145,7 +145,10 @@ We may disclose personal information:
 Some information may also be public by design:
 
 - blockchain transaction data may be visible on public ledgers;
-- attestation or verification artifacts may be made available through public or customer-facing verification endpoints.
+- privacy-redacted attestation or verification status may be made available
+  through public or customer-facing verification endpoints. Hardware serial
+  numbers, UDIDs, and raw identity-bearing device certificates are excluded
+  from those endpoints.
 
 We do not sell personal information for money. We also do not share personal information for cross-context behavioral advertising as those terms are used in certain U.S. privacy laws.
 

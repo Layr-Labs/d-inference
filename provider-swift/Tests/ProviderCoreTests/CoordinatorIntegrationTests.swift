@@ -488,6 +488,9 @@ struct CoordinatorIntegrationTests {
             // Fresh machine: profile written to disk should match the mock.
             let written = try Data(contentsOf: result.profilePath)
             #expect(written == mockBytes)
+            if let serial = macHardwareSerialNumber() {
+                #expect(!result.profilePath.lastPathComponent.contains(serial))
+            }
             try? FileManager.default.removeItem(at: result.profilePath)
         }
     }

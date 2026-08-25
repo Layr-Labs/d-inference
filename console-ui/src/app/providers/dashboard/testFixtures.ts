@@ -32,7 +32,6 @@ export function makeProvider(overrides: Partial<MyProvider> = {}): MyProvider {
       ...hardware,
     },
     models: [],
-    serial_number: "SER-1",
     trust_level: "hardware",
     attested: true,
     mda_verified: true,

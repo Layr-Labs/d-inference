@@ -81,13 +81,11 @@ export interface TrustMetadata {
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;
-  providerSerial: string;
   providerModel: string;
   // Attestation receipt fields (per-request SE signature)
   responseHash?: string;
   seSignature?: string;
   sePublicKey?: string;
-  deviceSerial?: string;
 }
 
 export interface StreamMetrics {

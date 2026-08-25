@@ -505,51 +505,9 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 	return 256
 }
 
-func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error) {
-	var rawValues []any
-	provided := false
-	for _, key := range []string{"provider_serial", "provider_serials"} {
-		v, ok := parsed[key]
-		if !ok {
-			continue
-		}
-		provided = true
-		switch x := v.(type) {
-		case string:
-			rawValues = append(rawValues, x)
-		case []any:
-			rawValues = append(rawValues, x...)
-		default:
-			return nil, true, fmt.Errorf("%s must be a string or array of strings", key)
-		}
-	}
-	if !provided {
-		return nil, false, nil
-	}
-
-	seen := make(map[string]struct{}, len(rawValues))
-	ids := make([]string, 0, len(rawValues))
-	for _, raw := range rawValues {
-		id, ok := raw.(string)
-		if !ok {
-			return nil, true, fmt.Errorf("provider_serials must contain only strings")
-		}
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return nil, true, fmt.Errorf("provider_serials must include at least one provider serial")
-	}
-	return ids, true, nil
-}
-
+// stripProviderRoutingFields drops the retired consumer-side serial allowlist.
+// Stable hardware identity is coordinator-private and must never be forwarded
+// to a provider in the encrypted inference payload.
 func stripProviderRoutingFields(parsed map[string]any) bool {
 	changed := false
 	for _, key := range []string{"provider_serial", "provider_serials"} {

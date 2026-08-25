@@ -7,7 +7,7 @@ import { useState } from "react";
 import { AlertTriangle, ChevronDown, Info, XCircle, type LucideIcon } from "lucide-react";
 import type { AttentionGroup } from "./aggregate";
 import type { WarningSeverity } from "../warnings";
-import { maskSerial, shortModelName } from "./format";
+import { shortModelName } from "./format";
 import { FixAffordance } from "./FixAffordance";
 
 const SEV: Record<WarningSeverity, { icon: LucideIcon; color: string; rail: string }> = {
@@ -70,7 +70,6 @@ export function AttentionItem({ group }: { group: AttentionGroup }) {
                 title="Jump to machine"
               >
                 {shortModelName(p.hardware.chip_name || "machine")}
-                {p.serial_number && <span className="text-text-tertiary">{maskSerial(p.serial_number)}</span>}
               </button>
             ))}
           </div>

@@ -96,7 +96,6 @@ struct Doctor: AsyncParsableCommand {
             print("")
             print("Support")
             print("  coordinator: \(coordinatorHTTPBase(coordinator ?? snapshot.config.coordinator.url))")
-            print("  serial: \(macHardwareSerialNumber() ?? "<unavailable>")")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
             print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinator ?? snapshot.config.coordinator.url)))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
@@ -337,15 +336,15 @@ func buildDoctorChecks(
     return checks
 }
 
-private struct ProviderAttestationList: Decodable {
+struct ProviderAttestationList: Decodable {
     let providers: [ProviderAttestation]
 }
 
-private struct ProviderAttestation: Decodable {
+struct ProviderAttestation: Decodable {
     let providerID: String
     let chipName: String
     let hardwareModel: String
-    let serialNumber: String
+    let sePublicKey: String
     let trustLevel: String
     let status: String
     let mdmVerified: Bool
@@ -358,7 +357,7 @@ private struct ProviderAttestation: Decodable {
         case providerID = "provider_id"
         case chipName = "chip_name"
         case hardwareModel = "hardware_model"
-        case serialNumber = "serial_number"
+        case sePublicKey = "se_public_key"
         case trustLevel = "trust_level"
         case status
         case mdmVerified = "mdm_verified"
@@ -367,6 +366,17 @@ private struct ProviderAttestation: Decodable {
         case sipEnabled = "sip_enabled"
         case secureBootEnabled = "secure_boot_enabled"
     }
+}
+
+func selectProviderAttestation(
+    from data: Data,
+    matchingSEPublicKey sePublicKey: String
+) throws -> ProviderAttestation? {
+    let decoded = try JSONDecoder().decode(ProviderAttestationList.self, from: data)
+    return decoded.providers
+        .filter { $0.sePublicKey == sePublicKey }
+        .sorted(by: providerTrustSort)
+        .first
 }
 
 func buildCoordinatorDoctorChecks(
@@ -416,24 +426,28 @@ func buildCoordinatorDoctorChecks(
         return checks
     }
 
-    guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
+    let localSEPublicKey: String
+    do {
+        localSEPublicKey = try PersistentEnclaveKey.loadOrCreate().publicKeyBase64
+    } catch {
         checks.append(.init(
             name: "coordinator trust",
             status: .warn,
-            detail: "local serial number unavailable"
+            detail: "local Secure Enclave identity unavailable: \(error.localizedDescription)"
         ))
         return checks
     }
 
     do {
         let data = try await doctorFetch(urlString: "\(base)/v1/providers/attestation", timeout: 8)
-        let decoded = try JSONDecoder().decode(ProviderAttestationList.self, from: data)
-        let matches = decoded.providers.filter { $0.serialNumber == serial }
-        guard let provider = matches.sorted(by: providerTrustSort).first else {
+        guard let provider = try selectProviderAttestation(
+            from: data,
+            matchingSEPublicKey: localSEPublicKey
+        ) else {
             checks.append(.init(
                 name: "coordinator trust",
                 status: .warn,
-                detail: "no live provider record for this serial yet"
+                detail: "no live provider record for this Secure Enclave identity yet"
             ))
             return checks
         }

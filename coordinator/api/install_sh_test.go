@@ -130,6 +130,19 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 	})
 
+	t.Run("enrollment profile path excludes the hardware serial", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+		if strings.Contains(body, `Darkbloom-Enroll-${SERIAL}`) {
+			t.Error("install.sh embeds the hardware serial in the enrollment profile path")
+		}
+		if !strings.Contains(body, `PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"`) {
+			t.Error("install.sh is missing the privacy-safe enrollment profile path")
+		}
+	})
+
 	t.Run("fan helper is verified but never privileged-installed", func(t *testing.T) {
 		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()

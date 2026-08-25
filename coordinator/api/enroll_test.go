@@ -144,8 +144,10 @@ func TestHandleEnrollEndpoint(t *testing.T) {
 		t.Errorf("expected mobileconfig content type, got %s", ct)
 	}
 
-	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "Darkbloom-Enroll-") {
-		t.Errorf("expected Darkbloom-branded download filename, got %q", cd)
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="Darkbloom-Enroll.mobileconfig"` {
+		t.Errorf("expected privacy-safe Darkbloom download filename, got %q", cd)
+	} else if strings.Contains(cd, "ABCD1234EFGH") {
+		t.Errorf("download filename exposed device serial: %q", cd)
 	}
 
 	profile := w.Body.String()

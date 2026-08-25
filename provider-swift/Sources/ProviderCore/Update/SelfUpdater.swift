@@ -759,6 +759,23 @@ public struct SelfUpdater: Sendable {
         installRoot: URL,
         verifyCodeSignatures: Bool
     ) throws -> UpdateSession {
+        // #region agent log
+        AgentDebugLog.write(
+            hypothesisId: "B",
+            location: "SelfUpdater.swift:beginUpdateSession-entry",
+            message: "Beginning update session with resolved install root",
+            data: [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "operation": operation,
+                "timeout": timeout,
+                "installRoot": installRoot.path,
+                "standardizedInstallRoot": installRoot.standardizedFileURL.path,
+                "installRootExists": FileManager.default.fileExists(
+                    atPath: installRoot.path
+                ),
+            ]
+        )
+        // #endregion
         let store = UpdateRecoveryStore(
             installRoot: installRoot,
             verifyCodeSignatures: verifyCodeSignatures,
@@ -788,9 +805,38 @@ public struct SelfUpdater: Sendable {
                 operation: operation,
                 timeout: timeout
             )
-            if let pendingInstall = try InstallMutationLock.pendingOneShotTransaction(
+            // #region agent log
+            AgentDebugLog.write(
+                hypothesisId: "D",
+                location: "SelfUpdater.swift:beginUpdateSession-locks-acquired",
+                message: "Acquired installation and updater process locks",
+                data: [
+                    "pid": ProcessInfo.processInfo.processIdentifier,
+                    "operation": operation,
+                    "primaryLock": InstallMutationLock.primaryLockURL(
+                        in: installRoot
+                    ).path,
+                    "processLock": store.lockPath.path,
+                ]
+            )
+            // #endregion
+            let pendingInstall = try InstallMutationLock.pendingOneShotTransaction(
                 in: installRoot
-            ) {
+            )
+            // #region agent log
+            AgentDebugLog.write(
+                hypothesisId: "A",
+                location: "SelfUpdater.swift:beginUpdateSession-scan-result",
+                message: "Selected update-session branch after pending scan",
+                data: [
+                    "pid": ProcessInfo.processInfo.processIdentifier,
+                    "operation": operation,
+                    "pendingInstall": pendingInstall?.lastPathComponent ?? "<none>",
+                    "branch": pendingInstall == nil ? "return-session" : "reject",
+                ]
+            )
+            // #endregion
+            if let pendingInstall {
                 processLock.release()
                 installMutationLock.release()
                 throw UpdateError.replaceFailed(

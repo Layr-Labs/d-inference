@@ -32,6 +32,18 @@ extension SelfUpdater {
             released = true
             processLock.release()
             installMutationLock.release()
+            // #region agent log
+            AgentDebugLog.write(
+                hypothesisId: "E",
+                location: "UpdateSession.swift:release",
+                message: "Released both locks owned by update session",
+                data: [
+                    "pid": ProcessInfo.processInfo.processIdentifier,
+                    "operation": processLock.owner.operation,
+                    "processLock": processLock.path.path,
+                ]
+            )
+            // #endregion
         }
 
         func recover(now: Double = Date().timeIntervalSince1970) throws {

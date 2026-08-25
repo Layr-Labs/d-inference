@@ -74,6 +74,26 @@ struct UpdateProcessLockTests {
             at: pending,
             withIntermediateDirectories: true
         )
+        // #region agent log
+        AgentDebugLog.write(
+            hypothesisId: "C",
+            location: "UpdateProcessLockTests.swift:pending-fixture-created",
+            message: "Created pending shell transaction test fixture",
+            data: [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "root": root.path,
+                "pending": pending.lastPathComponent,
+                "pendingExists": FileManager.default.fileExists(
+                    atPath: pending.path
+                ),
+                "entries": (
+                    try? FileManager.default.contentsOfDirectory(
+                        atPath: root.path
+                    )
+                )?.sorted() ?? [],
+            ]
+        )
+        // #endregion
         let updater = SelfUpdater(
             coordinatorBaseURL: "http://127.0.0.1:1",
             installRoot: root,

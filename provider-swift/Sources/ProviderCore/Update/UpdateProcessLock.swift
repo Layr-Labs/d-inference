@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -133,8 +134,22 @@ public final class UpdateProcessLock: @unchecked Sendable {
         defer { releaseMutex.unlock() }
         guard !released else { return }
         released = true
-        _ = flock(descriptor, LOCK_UN)
-        _ = close(descriptor)
+        let unlockResult = flock(descriptor, LOCK_UN)
+        let closeResult = close(descriptor)
+        // #region agent log
+        AgentDebugLog.write(
+            hypothesisId: "D",
+            location: "UpdateProcessLock.swift:release",
+            message: "Released updater process lock descriptor",
+            data: [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "path": path.path,
+                "operation": owner.operation,
+                "unlockResult": unlockResult,
+                "closeResult": closeResult,
+            ]
+        )
+        // #endregion
     }
 
     private static func writeOwner(_ owner: Owner, to descriptor: Int32) throws {

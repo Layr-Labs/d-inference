@@ -142,11 +142,31 @@ public final class InstallMutationLock: @unchecked Sendable {
                     + error.localizedDescription
             )
         }
-        return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .first { entry in
-                entry.lastPathComponent.hasPrefix(".install-backup-")
-                    || entry.lastPathComponent.hasPrefix(".install-staging-")
-            }
+        let sortedEntries = entries.sorted {
+            $0.lastPathComponent < $1.lastPathComponent
+        }
+        let pending = sortedEntries.first { entry in
+            entry.lastPathComponent.hasPrefix(".install-backup-")
+                || entry.lastPathComponent.hasPrefix(".install-staging-")
+        }
+        // #region agent log
+        AgentDebugLog.write(
+            hypothesisId: "A",
+            location: "InstallMutationLock.swift:pendingOneShotTransaction",
+            message: "Scanned install root for pending one-shot transaction",
+            data: [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "installRoot": installRoot.path,
+                "entries": sortedEntries.map(\.lastPathComponent),
+                "recognized": sortedEntries.filter {
+                    $0.lastPathComponent.hasPrefix(".install-backup-")
+                        || $0.lastPathComponent.hasPrefix(".install-staging-")
+                }.map(\.lastPathComponent),
+                "selected": pending?.lastPathComponent ?? "<none>",
+            ]
+        )
+        // #endregion
+        return pending
     }
 
     public func release() {
@@ -159,6 +179,18 @@ public final class InstallMutationLock: @unchecked Sendable {
             _ = flock(held.descriptor, LOCK_UN)
             _ = close(held.descriptor)
         }
+        // #region agent log
+        AgentDebugLog.write(
+            hypothesisId: "D",
+            location: "InstallMutationLock.swift:release",
+            message: "Released primary installation lock descriptors",
+            data: [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "paths": heldDescriptors.map { $0.path.path },
+                "descriptorCount": heldDescriptors.count,
+            ]
+        )
+        // #endregion
         heldDescriptors.removeAll()
     }
 

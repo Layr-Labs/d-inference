@@ -52,6 +52,18 @@ public enum ProviderIssuerStore: Sendable {
 /// transaction. Account and issuer metadata are written first; the bearer token
 /// is written last and remains the sole "logged in" marker. Consequently any
 /// reader that can observe the new token can also observe its account and issuer.
+public struct ProviderCredential: Sendable, Equatable {
+    public let token: String
+    public let accountID: String
+    public let issuer: String
+
+    public init(token: String, accountID: String, issuer: String) {
+        self.token = token
+        self.accountID = accountID
+        self.issuer = issuer
+    }
+}
+
 public enum ProviderCredentialStore: Sendable {
     public static func save(
         token: String,
@@ -66,19 +78,92 @@ public enum ProviderCredentialStore: Sendable {
         }
         let issuer = try canonicalCoordinatorIssuer(coordinatorURL)
 
-        do {
-            try ProviderAccountStore.save(accountID)
-            try ProviderIssuerStore.save(issuer)
-            // Token publication is deliberately last.
-            try AuthTokenStore.save(token)
-        } catch {
-            // A failed login must not leave metadata that looks linked. The
-            // token write is atomic, so it is either absent or complete here.
-            try? AuthTokenStore.delete()
-            try? ProviderAccountStore.delete()
-            try? ProviderIssuerStore.delete()
-            throw error
+        try ProviderCredentialProcessLock.withLock {
+            guard AuthTokenStore.load() == nil else {
+                throw ProviderCredentialStoreError.alreadyLoggedIn
+            }
+
+            do {
+                try ProviderAccountStore.save(accountID)
+                try ProviderIssuerStore.save(issuer)
+                // Token publication is deliberately last. Readers take the
+                // same kernel lock, so they observe all three files or none.
+                try AuthTokenStore.save(token)
+            } catch {
+                try? AuthTokenStore.delete()
+                try? ProviderAccountStore.delete()
+                try? ProviderIssuerStore.delete()
+                throw error
+            }
         }
+    }
+
+    /// Loads one coherent credential snapshot. A token without both binding
+    /// records is rejected instead of being sent to an unverified endpoint.
+    public static func load() throws -> ProviderCredential? {
+        try ProviderCredentialProcessLock.withLock {
+            try loadUnlocked()
+        }
+    }
+
+    /// Returns the credential only when its recorded issuer matches the
+    /// configured coordinator origin.
+    public static func load(
+        for coordinatorURL: String
+    ) throws -> ProviderCredential? {
+        let expectedIssuer = try canonicalCoordinatorIssuer(coordinatorURL)
+        return try ProviderCredentialProcessLock.withLock {
+            guard let credential = try loadUnlocked() else {
+                return nil
+            }
+            guard credential.issuer == expectedIssuer else {
+                throw ProviderCredentialStoreError.issuerMismatch(
+                    expected: expectedIssuer,
+                    actual: credential.issuer
+                )
+            }
+            return credential
+        }
+    }
+
+    public static func authenticationToken(
+        for coordinatorURL: String
+    ) throws -> String? {
+        try load(for: coordinatorURL)?.token
+    }
+
+    /// Deletes the snapshot loaded by the caller. Comparing under the kernel
+    /// lock prevents a delayed logout from deleting a newer login.
+    public static func delete(
+        matching expected: ProviderCredential?
+    ) throws {
+        try ProviderCredentialProcessLock.withLock {
+            let current = try loadUnlocked()
+            guard current == expected else {
+                throw ProviderCredentialStoreError.credentialChanged
+            }
+
+            // Token removal unpublishes the credential before metadata cleanup.
+            try AuthTokenStore.delete()
+            try ProviderAccountStore.delete()
+            try ProviderIssuerStore.delete()
+        }
+    }
+
+    private static func loadUnlocked() throws -> ProviderCredential? {
+        guard let token = AuthTokenStore.load() else {
+            return nil
+        }
+        guard let accountID = ProviderAccountStore.load(),
+              let issuer = ProviderIssuerStore.load()
+        else {
+            throw ProviderCredentialStoreError.incompleteCredential
+        }
+        return ProviderCredential(
+            token: token,
+            accountID: accountID,
+            issuer: issuer
+        )
     }
 }
 
@@ -86,6 +171,11 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
     case missingToken
     case missingAccountID
     case invalidCoordinatorURL
+    case alreadyLoggedIn
+    case incompleteCredential
+    case issuerMismatch(expected: String, actual: String)
+    case credentialChanged
+    case lockUnavailable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -95,6 +185,16 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
             "coordinator authorized the device without an account identity"
         case .invalidCoordinatorURL:
             "coordinator URL is invalid"
+        case .alreadyLoggedIn:
+            "this Mac is already linked to a provider account"
+        case .incompleteCredential:
+            "the saved provider credential has no verifiable account or issuer; unlink locally and sign in again"
+        case .issuerMismatch(let expected, let actual):
+            "the saved provider credential belongs to \(actual), not \(expected); switch back or sign out before changing coordinators"
+        case .credentialChanged:
+            "the saved provider credential changed during account unlink; retry without deleting the newer login"
+        case .lockUnavailable(let reason):
+            "could not lock the saved provider credential: \(reason)"
         }
     }
 }

@@ -4,14 +4,6 @@ import Testing
 
 @Suite("Logout safely unlinks provider accounts")
 struct LogoutCommandTests {
-    @Test("persisted token issuer wins over the current coordinator config")
-    func persistedIssuerWins() {
-        #expect(resolveAccountUnlinkCoordinatorURL(
-            storedIssuer: "https://issuer.example",
-            configuredCoordinator: "wss://new-config.example/ws/provider"
-        ) == "https://issuer.example")
-    }
-
     @Test("unlink stops recovery and provider before revoking and deleting credentials")
     @MainActor
     func orderedUnlink() async throws {
@@ -32,31 +24,29 @@ struct LogoutCommandTests {
             },
             revokeToken: { token, coordinatorURL in
                 #expect(token == "tok-123")
-                #expect(coordinatorURL == "wss://coordinator.test/ws/provider")
+                #expect(coordinatorURL == "https://coordinator.test")
                 events.append("revoke")
             },
-            deleteToken: {
-                events.append("token")
+            deleteCredential: { credential in
+                #expect(credential?.accountID == "acct-456")
+                events.append("credentials")
                 try FileManager.default.removeItem(at: files.tokenPath)
-            },
-            deleteAccount: {
-                events.append("account")
                 try FileManager.default.removeItem(at: files.accountPath)
-            },
-            deleteIssuer: {
-                events.append("issuer")
                 try FileManager.default.removeItem(at: files.issuerPath)
             }
         )
 
         try await unlinkProviderAccount(
-            token: "tok-123",
-            coordinatorURL: "wss://coordinator.test/ws/provider",
+            credential: ProviderCredential(
+                token: "tok-123",
+                accountID: "acct-456",
+                issuer: "https://coordinator.test"
+            ),
             dependencies: dependencies
         )
 
         #expect(events == [
-            "watchdog", "provider", "foreground", "revoke", "token", "account", "issuer",
+            "watchdog", "provider", "foreground", "revoke", "credentials",
         ])
         #expect(!FileManager.default.fileExists(atPath: files.accountPath.path),
             "a stale account id would keep `earnings`/daemon-state identity pointing at the previous account")
@@ -81,15 +71,16 @@ struct LogoutCommandTests {
             stopProviderService: {},
             terminateRecordedProvider: { true },
             revokeToken: { _, _ in throw RevocationFailure() },
-            deleteToken: { deleted = true },
-            deleteAccount: { deleted = true },
-            deleteIssuer: { deleted = true }
+            deleteCredential: { _ in deleted = true }
         )
 
         await #expect(throws: RevocationFailure.self) {
             try await unlinkProviderAccount(
-                token: "tok-123",
-                coordinatorURL: "wss://coordinator.test/ws/provider",
+                credential: ProviderCredential(
+                    token: "tok-123",
+                    accountID: "acct-456",
+                    issuer: "https://issuer.test"
+                ),
                 dependencies: dependencies
             )
         }
@@ -109,15 +100,16 @@ struct LogoutCommandTests {
             stopProviderService: {},
             terminateRecordedProvider: { false },
             revokeToken: { _, _ in revoked = true },
-            deleteToken: { revoked = true },
-            deleteAccount: { revoked = true },
-            deleteIssuer: { revoked = true }
+            deleteCredential: { _ in revoked = true }
         )
 
         await #expect(throws: AccountUnlinkError.providerDidNotStop) {
             try await unlinkProviderAccount(
-                token: "tok-123",
-                coordinatorURL: "wss://coordinator.test/ws/provider",
+                credential: ProviderCredential(
+                    token: "tok-123",
+                    accountID: "acct-456",
+                    issuer: "https://issuer.test"
+                ),
                 dependencies: dependencies
             )
         }

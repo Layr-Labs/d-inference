@@ -1709,7 +1709,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -1718,11 +1718,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		stream:                stream,
 		requiresVision:        requiresVision,
 		hasTools:              hasTools,
+		traits:                routingTraits,
 		policy:                policy,
 	})
 	if reserveHandled {
 		return
 	}
+	// A prefer request that could not fund the paid fallback now runs owned-only
+	// and free (unfundedPreferPolicy); adopt that policy before any gate reads it.
+	policy = reservation.policy
+	reservedMicroUSD, serviceReservation := reservation.microUSD, reservation.service
 	timing.ReservedAt = time.Now()
 
 	// Refund reservation on early errors (before inference starts).
@@ -4000,11 +4005,43 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
+		candidateParsed := make(map[string]any, len(parsed))
+		for key, value := range parsed {
+			candidateParsed[key] = value
+		}
+		candidateParsed["model"] = candidateModel
+		endpointBody, _ := marshalForwardBody(candidateParsed)
+		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
+			endpointKind, endpointBody)
+		if loweringErr != nil {
+			inferenceBody = endpointBody
+		}
+		return endpointBody, inferenceBody, loweringErr
+	}
+	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
+		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
+		traits, _ := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.ToolChoiceMode = string(validatedMode)
+		traits.ToolChoiceName = toolChoiceName
+		traits.ParallelToolCalls = parallelToolCalls
+		return traits
+	}
+	providerBodyErrorForModel := func(candidateModel string) error {
+		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
+		_, sizeErr := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		return sizeErr
+	}
+	routingTraits := routingTraitsForModel(model)
+
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -4013,11 +4050,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		stream:                stream,
 		requiresVision:        requiresVision,
 		hasTools:              hasTools,
+		traits:                routingTraits,
 		policy:                policy,
 	})
 	if reserveHandled {
 		return
 	}
+	// A prefer request that could not fund the paid fallback now runs owned-only
+	// and free (unfundedPreferPolicy); adopt that policy before any gate reads it.
+	policy = reservation.policy
+	reservedMicroUSD, serviceReservation := reservation.microUSD, reservation.service
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
@@ -4056,40 +4098,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return info
 	}
 
-	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
-		candidateParsed := make(map[string]any, len(parsed))
-		for key, value := range parsed {
-			candidateParsed[key] = value
-		}
-		candidateParsed["model"] = candidateModel
-		endpointBody, _ := marshalForwardBody(candidateParsed)
-		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
-			endpointKind, endpointBody)
-		if loweringErr != nil {
-			inferenceBody = endpointBody
-		}
-		return endpointBody, inferenceBody, loweringErr
-	}
-	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
-		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
-		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
-		traits.RequiresToolConstraint = requiresToolConstraint
-		traits.ToolChoiceMode = string(validatedMode)
-		traits.ToolChoiceName = toolChoiceName
-		traits.ParallelToolCalls = parallelToolCalls
-		return traits
-	}
-	providerBodyErrorForModel := func(candidateModel string) error {
-		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
-		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
-		return sizeErr
-	}
 	var endpointBody, inferenceBody []byte
 	var loweringErr error
 	var providerBodyOverflowErr error
-	routingTraits := routingTraitsForModel(model)
 	refreshGenericBody := func(newModel string) bool {
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(

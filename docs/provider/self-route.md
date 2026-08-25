@@ -25,7 +25,7 @@ fallback); one is PREFER (owned-first, paid fallback so it's never a dead end):
 |---|---|---|---|
 | `X-Darkbloom-Route: self` header | Exclusive | Per request | Owned-only, free, no fallback. Invisible to the OpenAI body schema; works with any SDK (`extra_headers`). Never enters the (optionally sealed) body. |
 | API key `self_route_only: true` | Exclusive | Per key (hard ceiling) | Every request on the key is owned-only and free; it can never spend balance or reach the public fleet, regardless of header. |
-| `X-Darkbloom-Route: prefer` header | Prefer | Per request | Routes to your own machine whenever it can serve (free); falls back to the **paid** public fleet when it can't. Takes a normal reservation up front (refunded if your machine serves), so the account needs a balance. |
+| `X-Darkbloom-Route: prefer` header | Prefer | Per request | Routes to your own machine whenever it can serve (free); falls back to the **paid** public fleet when it can't. Takes a normal reservation up front (refunded if your machine serves) so the fallback can settle — but an account that can't fund it keeps the free half (see below) instead of being rejected. |
 
 ```bash
 # Strict free-or-error (exclusive):
@@ -45,7 +45,8 @@ In the console UI: the **My Machine** toggle in the chat composer sends
 `prefer` (prioritized, never stuck), and the **"My Machine only — free"**
 checkbox on an API key sets the strict `self_route_only` ceiling.
 
-The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
+The policy resolution is server-side in
+`coordinator/api/self_route.go:resolveSelfRoutePolicy`.
 
 ### Exclusive vs prefer
 
@@ -53,9 +54,31 @@ The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
   can't serve you get an explicit error, never a charge. Works at zero balance.
 - **Prefer** (`prefer`): prioritizes your machine for free but never strands you
   — it falls back to the paid fleet. Because it might pay, it reserves up front
-  (refunded when your machine serves), so the account must hold a balance.
-  Routing relaxes the hardware-trust floor for your own (possibly un-enrolled)
-  machine only, never for public providers.
+  (refunded when your machine serves). Routing relaxes the hardware-trust floor
+  for your own (possibly un-enrolled) machine only, never for public providers.
+
+### Unfunded prefer keeps the free half
+
+The prefer reservation exists only so the **paid fallback** can settle; the
+owned half costs nothing. So when an account can't cover it — empty balance, or
+an exhausted per-key spend cap — the coordinator drops the *fallback*, not the
+request (`api/self_route.go:unfundedPreferPolicy`, called from
+`reserveInferenceBalance`):
+
+- If the caller owns an online machine that can serve this exact request shape
+  (`OwnedProviderSummary` with the full routing traits), the request continues as
+  **exclusive** self-route: owned-only, free, no reservation. Owned-only is what
+  makes this safe — an unfunded request can never reach a public provider, and
+  settlement independently re-verifies ownership before settling at zero.
+- Otherwise it is still a `402`. On the balance half the message names both
+  causes ("your machine cannot serve this request right now … and your balance
+  is too low for the paid fallback", `insufficientBalanceMessage`); on the
+  spend-cap half it stays the cap message from `checkKeySpendCap`, which already
+  names the key and its limit.
+
+Without this, the console's **My Machine** toggle answered "Insufficient
+credits" to an owner whose idle Mac was online and able to serve, because the
+reservation ran before routing ever looked at the machine.
 
 ## Ownership model (the crux)
 
@@ -92,15 +115,21 @@ the **public** fleet on low trust.
 | No machine linked | 409 | `no_linked_machine` |
 | Machine(s) offline | 503 + Retry-After | `machine_offline` |
 | Online but model not loaded/in-catalog | 503 + Retry-After | `model_not_loaded` |
+| Model served, but not for this request shape (tools / vision) | 503 | `model_capability_unsupported` |
 | Owned machine busy (after queue) | 429 + Retry-After | `machine_busy` |
 
-These errors are written by `coordinator/api/self_route.go:73-101`.
+All but the last are written by
+`coordinator/api/self_route.go:selfRouteUnavailable`; `machine_busy` is the
+queue-wait verdict in `coordinator/api/dispatch.go` and
+`coordinator/api/consumer.go`.
 
 ## Billing
 
 Self-route skips the pre-flight reservation, the per-key spend cap, the charge,
 the platform fee, and the provider payout — a zero-balance owner is never
-blocked. A **zero-cost usage row** is still recorded for transparency.
+blocked, whether the request arrived as exclusive self-route or as a prefer
+request that fell back to it. A **zero-cost usage row** is still recorded for
+transparency.
 
 At settlement, `handleComplete` **re-verifies** that the provider which actually
 served the completion is owned by the consumer (read from the serving provider
@@ -135,8 +164,9 @@ This adds a `private_only` field to the registration message, mirrored across
   `registry/scheduler.go` + `registry/registry.go` (owner filter, trust
   relaxation, `OwnedProviderSummary`, `private_only` gating),
   `store/{interface,memory,postgres}.go` (`self_route_only` API-key flag).
-- **Console UI:** `lib/api.ts` (header + error mapping + types), `lib/store.ts`
-  (`useMyMachine`), `app/api/chat/route.ts` (header forwarding),
-  `components/ChatInput.tsx` + `components/api-keys/{KeyForm,KeyCard}.tsx`.
+- **Console UI:** `lib/chat/stream.ts` (header), `lib/chat/errors.ts` (error
+  copy), `lib/api/types.ts` (types), `lib/store.ts` (`useMyMachine`),
+  `app/api/chat/route.ts` (header forwarding), `components/ChatInput.tsx` +
+  `components/api-keys/{KeyForm,KeyCard}.tsx`.
 - **Provider (Swift):** `Protocol/Messages.swift`, `Coordinator/CoordinatorClient*.swift`,
   `Config/ProviderConfig.swift`, `ProviderLoop.swift`.

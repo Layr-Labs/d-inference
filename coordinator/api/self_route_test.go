@@ -362,9 +362,11 @@ func sendRoutedRequest(t *testing.T, ctx context.Context, tsURL, model, apiKey, 
 
 // TestSelfRoute_PreferFreeOnOwnedMachine: with X-Darkbloom-Route: prefer and a
 // funded owner whose own machine serves the request, the up-front reservation is
-// fully refunded (net free) and the provider accrues no payout. (prefer takes a
-// reservation up front so a paid fallback could settle, unlike exclusive
-// self-route which skips it — so the owner must have a balance.)
+// fully refunded (net free) and the provider accrues no payout. A FUNDED owner
+// keeps full prefer semantics — the reservation is taken so dispatch can still
+// fall back to the paid fleet mid-flight. (An owner who cannot fund it trades
+// that fallback for the free owned route instead; see
+// TestSelfRoute_PreferUnfundedRunsFreeOnOwnedMachine.)
 func TestSelfRoute_PreferFreeOnOwnedMachine(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 	ts := httptest.NewServer(srv.Handler())
@@ -433,6 +435,220 @@ func TestSelfRoute_PreferFallsBackToPaid(t *testing.T) {
 
 	if bal := ledger.Balance(caller); bal >= initial {
 		t.Errorf("caller balance = %d, want < %d (paid fallback must charge)", bal, initial)
+	}
+}
+
+// TestSelfRoute_PreferUnfundedRunsFreeOnOwnedMachine is the regression for the
+// console "My Machine · Free, else paid" toggle answering "Insufficient
+// credits". prefer reserves up front so the PAID fallback could settle, which
+// used to 402 a zero-balance owner before routing ever looked at their machine.
+// The reservation exists only for the fallback, so when it can't be funded the
+// request drops the fallback (owned-only, free), not itself.
+func TestSelfRoute_PreferUnfundedRunsFreeOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "prefer-unfunded-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	// Deliberately NOT credited: the whole point is that owning the machine is
+	// enough.
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: owner balance = %d, want 0", bal)
+	}
+
+	model := "prefer-unfunded-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("unfunded prefer status = %d, want 200 (own machine serves it for free)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Errorf("owner balance = %d, want 0 (own machine must never charge)", bal)
+	}
+	usageEntries := ledger.Usage(owner)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1 (zero-cost row for transparency)", len(usageEntries))
+	}
+	if usageEntries[0].CostMicroUSD != 0 {
+		t.Errorf("usage cost = %d, want 0 (free)", usageEntries[0].CostMicroUSD)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 for a free owned route", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferUnfundedWithoutOwnedMachineIsRejected is the other half of
+// the same rule: dropping the paid fallback is only safe because the request
+// becomes owned-only. A caller with no balance AND no machine able to serve must
+// still get a 402 — never a free ride on someone else's hardware.
+func TestSelfRoute_PreferUnfundedWithoutOwnedMachineIsRejected(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const caller = "prefer-unfunded-machineless"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	model := "prefer-unfunded-no-machine-model"
+	// A perfectly good provider, owned by somebody else.
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else")
+
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusPaymentRequired {
+		t.Fatalf("unfunded prefer without an owned machine status = %d, want 402", status)
+	}
+	// Nothing was served, so no usage may have been recorded against the caller.
+	if entries := ledger.Usage(caller); len(entries) != 0 {
+		t.Errorf("usage entries = %d, want 0 (the public fleet must not serve an unfunded caller)", len(entries))
+	}
+}
+
+// TestSelfRoute_PreferSpendCappedKeyRunsFreeOnOwnedMachine covers the other
+// funding gate: an exhausted per-key spend cap. The cap bounds what a key may
+// SPEND, and the owned route spends nothing, so a funded account whose key is
+// capped still reaches its own machine — matching self_route_only keys, which
+// bypass the cap outright.
+func TestSelfRoute_PreferSpendCappedKeyRunsFreeOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "prefer-capped-owner"
+	var spendCap int64 = 1 // 1 micro-USD: any real request exceeds it
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "capped", LimitMicroUSD: &spendCap})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	_ = st.Credit(owner, 100_000_000, store.LedgerDeposit, "test-setup")
+	initial := ledger.Balance(owner)
+
+	model := "prefer-capped-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("spend-capped prefer status = %d, want 200 (own machine spends nothing)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != initial {
+		t.Errorf("owner balance = %d, want %d (free owned route must not debit)", bal, initial)
+	}
+}
+
+// sendGenericRoutedRequest posts a legacy /v1/completions request (the generic
+// handler shared with Anthropic /v1/messages) with an explicit X-Darkbloom-Route
+// value ("" = no header). Returns the HTTP status code.
+func sendGenericRoutedRequest(t *testing.T, ctx context.Context, tsURL, model, apiKey, route string) int {
+	t.Helper()
+	body := `{"model":"` + model + `","prompt":"hello","max_tokens":32,"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+"/v1/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if route != "" {
+		req.Header.Set("X-Darkbloom-Route", route)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+	return resp.StatusCode
+}
+
+// TestSelfRoute_PreferUnfundedGenericPathRunsFreeOnOwnedMachine pins the same
+// unfunded-prefer downgrade on handleGenericInference (/v1/completions and
+// Anthropic /v1/messages): that handler takes the shared reservation but adopts
+// the downgraded policy into its OWN dispatch loop, so the chat-path test alone
+// would not catch a generic path that keeps routing under prefer semantics.
+func TestSelfRoute_PreferUnfundedGenericPathRunsFreeOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "prefer-unfunded-generic-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: owner balance = %d, want 0", bal)
+	}
+
+	model := "prefer-unfunded-generic-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendGenericRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("unfunded prefer /v1/completions status = %d, want 200 (own machine serves it for free)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Errorf("owner balance = %d, want 0 (own machine must never charge)", bal)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 for a free owned route", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferUnfundedGenericPathWithoutOwnedMachineIsRejected is the
+// generic-path half of the free-ride invariant: an unfunded prefer caller on
+// /v1/completions whose only serving provider belongs to someone else must get
+// the 402, never a dispatch onto that provider.
+func TestSelfRoute_PreferUnfundedGenericPathWithoutOwnedMachineIsRejected(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const caller = "prefer-unfunded-generic-machineless"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	model := "prefer-unfunded-generic-no-machine-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else")
+
+	if status := sendGenericRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusPaymentRequired {
+		t.Fatalf("unfunded prefer /v1/completions without an owned machine status = %d, want 402", status)
+	}
+	if entries := ledger.Usage(caller); len(entries) != 0 {
+		t.Errorf("usage entries = %d, want 0 (the public fleet must not serve an unfunded caller)", len(entries))
 	}
 }
 

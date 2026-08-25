@@ -1382,8 +1382,8 @@ transaction_value() {
 
 path_identity() {
     local path=$1
-    stat -f '%d:%i' "$path" 2>/dev/null \
-        || stat -c '%d:%i' "$path" 2>/dev/null
+    stat -c '%d:%i' "$path" 2>/dev/null \
+        || stat -f '%d:%i' "$path" 2>/dev/null
 }
 
 path_matches_identity() {

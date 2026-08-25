@@ -983,8 +983,8 @@ assert_recovery_is_restart_safe() {
 }
 
 test_path_identity() {
-    stat -f '%d:%i' "$1" 2>/dev/null \
-        || stat -c '%d:%i' "$1" 2>/dev/null
+    stat -c '%d:%i' "$1" 2>/dev/null \
+        || stat -f '%d:%i' "$1" 2>/dev/null
 }
 
 assert_fresh_recovery_rejects_replacement() {

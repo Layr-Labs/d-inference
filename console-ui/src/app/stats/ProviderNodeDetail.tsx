@@ -63,7 +63,8 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
   if (!provider) {
     return (
       <div className="rounded-xl border border-dashed border-border-subtle bg-bg-secondary p-6 text-sm text-text-tertiary">
-        Select a node to inspect its routing state, hardware, models, and certificate proof.
+        Select a node to inspect its routing state, hardware, models, and coordinator-verified
+        attestation status.
       </div>
     );
   }

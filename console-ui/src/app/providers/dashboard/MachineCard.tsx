@@ -1,6 +1,6 @@
 // One machine, top to bottom: identity header, the EARNING/NOT-EARNING hero
 // verdict, live vitals, models, earnings, and progressive-disclosure detail
-// (backend slots + the attestation chain). The left rail color and verdict all
+// (backend slots + attestation status). The left rail color and verdict all
 // come from routing.ts so this card can never disagree with the fleet strip or
 // the attention feed.
 

@@ -180,7 +180,7 @@ export function computeWarnings(
       severity: "info",
       title: "Apple Device Attestation pending",
       detail:
-        "This machine is hardware-trusted and earning at full priority — Apple Device Attestation does not affect routing. It's an extra Apple-signed identity proof that consumers can verify; it's earned automatically and reused across restarts. If it stays pending for a long time, keep the Mac awake and reachable so the coordinator can complete it.",
+        "This machine is hardware-trusted and earning at full priority — Apple Device Attestation does not affect routing. It's an extra Apple-signed identity proof that the coordinator verifies before publishing privacy-redacted status; it's earned automatically and reused across restarts. If it stays pending for a long time, keep the Mac awake and reachable so the coordinator can complete it.",
     });
   }
 

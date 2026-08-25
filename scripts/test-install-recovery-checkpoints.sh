@@ -4,8 +4,19 @@
 test_app_chmod_rollback_checkpoint() {
     local installer=$1
     local label=$2
-    assert_foreign_restored_after_failure \
-        "$installer" "$label-app-chmod" app-chmod
+    local install_dir="$ROOT/recovery-gap-app-chmod-$label"
+    installer_recovery_seed_previous_app "$install_dir"
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" app-chmod
+
+    local backup
+    backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$backup" prepared
+
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    installer_recovery_assert_previous_app "$install_dir"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "$label app-chmod recovery"
 }
 
 test_app_recovery_bin_checkpoint_restarts() {

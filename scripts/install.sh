@@ -2340,6 +2340,7 @@ commit_staged_app() {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     }
+    install_test_crash "app-chmod"
     if install_test_fault "app-chmod"; then
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1

@@ -12,7 +12,7 @@ import (
 func TestSweepExpiredCommandsPersistsTimeout(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
-	backend := store.NewMemoryStore()
+	backend := store.NewMemory(store.Config{})
 	sandbox := &store.SandboxRecord{
 		ID:                    "10000000-0000-0000-0000-000000000001",
 		AccountID:             "account-1",

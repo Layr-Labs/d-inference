@@ -236,6 +236,10 @@ public actor EngineV2Bridge {
     /// v0.8.0 MTP and paged-pool fields. Runs for every slot, MTP or not —
     /// see `configureMTPStatus`. Cancelled by `shutdown()`.
     var slotPostureTask: Task<Void, Never>?
+    /// Terminal sampler lifecycle gate. Set before shutdown's first
+    /// suspension so actor reentrancy cannot install a replacement task while
+    /// the cancelled sampler is being joined.
+    var slotPostureSamplerStopped = false
     var mtpActivationStatus = MTPActivationStatus.disabled(
         .configDisabled, configured: false)
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
@@ -1678,9 +1682,16 @@ public actor EngineV2Bridge {
     /// await the engine drain.
     public func shutdown() async {
         let statsTask = prefixCacheStatsTask
+        let postureTask = slotPostureTask
         prefixCacheStatsTask = nil
         statsTask?.cancel()
-        slotPostureTask?.cancel()
+        slotPostureSamplerStopped = true
+        postureTask?.cancel()
+        // Cancellation does not retract an actor call the sampler already
+        // queued. Retain and join the exact task before tearing down the
+        // engine so no posture work (or temporary strong bridge reference)
+        // can outlive shutdown.
+        _ = await postureTask?.value
         slotPostureTask = nil
         let live = pumpTasks
         pumpTasks.removeAll()

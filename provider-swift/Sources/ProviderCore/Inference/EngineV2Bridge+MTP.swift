@@ -32,6 +32,7 @@ extension EngineV2Bridge {
         _ status: MTPActivationStatus,
         metricsInterval: Duration = .seconds(60)
     ) {
+        guard !slotPostureSamplerStopped else { return }
         mtpActivationStatus = status
         slotPostureTask?.cancel()
         slotPostureTask = nil
@@ -43,14 +44,18 @@ extension EngineV2Bridge {
                 try? await taskSleep(metricsInterval)
                 if Task.isCancelled { return }
                 guard let bridge else { return }
-                await bridge.sampleSlotPosture()
+                await bridge.sampleSlotPosture(fromSampler: true)
             }
         }
     }
 
     /// One posture tick: read the engine's MTP metrics ONCE, log it when a
     /// drafter is loaded, and emit the telemetry sample unconditionally.
-    private func sampleSlotPosture() {
+    private func sampleSlotPosture(fromSampler: Bool = false) {
+        // Cancellation can race the actor hop above. Re-check after entering
+        // the actor so a replaced or shutting-down sampler cannot emit a stale
+        // tick that it queued before cancellation.
+        if fromSampler, Task.isCancelled { return }
         let snapshot = mtpStatusSnapshot()
         if mtpActivationStatus.active { logMTPSnapshot(snapshot) }
         emitSlotPostureTelemetry(snapshot)

@@ -84,13 +84,17 @@ struct DarkbloomApp: App {
                 fixture: productPreview?.availabilityFixture ?? .always
             )
         } else {
+            let accountSession = AccountSessionManager()
             modelLibraryStore = ModelLibraryStore(live: ProcessModelCatalogCLIRunner())
             diagnosticsStore = DiagnosticsStore(cli: ProcessDiagnosticsCLIRunner())
             contributionsStore = ContributionsStore(cli: ProcessContributionsCLI())
             localAPIStore = LocalAPIStore.live()
             myMacsStore = MyMacsStore(
-                session: AccountSessionManager(),
-                fleet: FleetClient()
+                session: accountSession,
+                fleet: FleetClient(),
+                onAccountSessionChange: { isSignedIn in
+                    contributionsStore.accountSessionDidChange(isSignedIn: isSignedIn)
+                }
             )
             availabilityStore = AvailabilityStore(cli: ProcessAvailabilityCLI())
         }
@@ -116,7 +120,7 @@ struct DarkbloomApp: App {
         _availabilityStore = State(initialValue: availabilityStore)
         _accountUnlinkStore = State(initialValue: AccountUnlinkStore(
             refreshAfterSuccess: {
-                myMacsStore.signOut()
+                try myMacsStore.signOut()
                 await providerStore.refresh()
                 await modelLibraryStore.refresh()
                 await contributionsStore.refresh()

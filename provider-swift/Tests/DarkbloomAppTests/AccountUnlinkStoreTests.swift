@@ -54,6 +54,32 @@ struct AccountUnlinkStoreTests {
         #expect(await events.values == ["cli-start", "cli-failure"])
     }
 
+    @Test("A keychain clear failure after CLI logout prevents false success")
+    @MainActor
+    func failedSessionClearDoesNotPublishSuccess() async {
+        struct ClearFailure: LocalizedError {
+            var errorDescription: String? { "Keychain is locked." }
+        }
+        let events = UnlinkEventLog()
+        let cli = ControlledUnlinkCLI(events: events)
+        let store = AccountUnlinkStore(cli: cli) {
+            await events.append("clear-session")
+            throw ClearFailure()
+        }
+
+        let unlink = Task { await store.unlinkThisMac() }
+        #expect(await cli.waitUntilStarted())
+        await cli.succeed()
+        await unlink.value
+
+        guard case .failed(let message) = store.state else {
+            Issue.record("A failed keychain clear must remain retryable")
+            return
+        }
+        #expect(message.contains("Keychain is locked"))
+        #expect(await events.values == ["cli-start", "cli-success", "clear-session"])
+    }
+
     @Test("Repeated taps cannot launch overlapping logout transactions")
     @MainActor
     func duplicateRequestIsIgnoredWhileUnlinking() async {

@@ -48,6 +48,11 @@ final class MyMacsStore {
         static let refreshFailed = "Refresh failed. Showing the last account snapshot."
         static let summaryUnavailable =
             "Machine status is current, but the account summary is unavailable."
+        static func sessionMutationFailed(_ detail: String) -> String {
+            "Darkbloom could not clear the saved account session. "
+                + "Your account data remains visible because sign-out was not completed. "
+                + detail
+        }
     }
 
     private(set) var availability: MyMacsAvailability
@@ -64,6 +69,8 @@ final class MyMacsStore {
     @ObservationIgnored
     private let fleet: (any FleetServicing)?
     @ObservationIgnored
+    private let onAccountSessionChange: (@MainActor @Sendable (Bool) -> Void)?
+    @ObservationIgnored
     private var didStart = false
     @ObservationIgnored
     private var liveTask: Task<Void, Never>?
@@ -77,17 +84,23 @@ final class MyMacsStore {
         mode = .fixture
         session = nil
         fleet = nil
+        onAccountSessionChange = nil
     }
 
     /// Live store: reads the persisted account session (Privy token in the
     /// keychain) and the coordinator's account-scoped fleet endpoints.
     /// Network starts only via `start()` / user actions — never from init.
-    init(session: any AccountSessionManaging, fleet: any FleetServicing) {
+    init(
+        session: any AccountSessionManaging,
+        fleet: any FleetServicing,
+        onAccountSessionChange: (@MainActor @Sendable (Bool) -> Void)? = nil
+    ) {
         availability = .loading
         snapshot = nil
         mode = .live
         self.session = session
         self.fleet = fleet
+        self.onAccountSessionChange = onAccountSessionChange
     }
 
     deinit {
@@ -128,6 +141,7 @@ final class MyMacsStore {
         didStart = true
         guard let session, session.isSignedIn else {
             invalidateLiveWork()
+            onAccountSessionChange?(false)
             availability = .signedOut
             return
         }
@@ -168,13 +182,14 @@ final class MyMacsStore {
         }
     }
 
-    func signOut() {
+    func signOut() throws {
         guard mode == .live else { return }
         // A Privy token in an ephemeral browser leaves no shared browser
         // session, so signing out is purely local — coordinator tokens
         // self-expire server-side.
+        try session?.signOut()
         invalidateLiveWork()
-        session?.signOut()
+        onAccountSessionChange?(false)
         didStart = false
         snapshot = nil
         signInErrorMessage = nil
@@ -220,11 +235,21 @@ final class MyMacsStore {
                 if !isSigningIn,
                    case .signedOut = availability,
                    session.accessToken() == bearerToken {
-                    session.signOut()
+                    do {
+                        try session.signOut()
+                        onAccountSessionChange?(false)
+                    } catch {
+                        availability = .unavailable(
+                            message: LiveCopy.sessionMutationFailed(
+                                error.localizedDescription
+                            )
+                        )
+                    }
                 }
                 return
             }
             signInErrorMessage = nil
+            onAccountSessionChange?(true)
             await refreshLive(
                 at: .now,
                 revision: revision,
@@ -250,6 +275,7 @@ final class MyMacsStore {
         let revision = supersedeLiveWork()
         guard let bearerToken = session?.accessToken() else {
             // No usable session: the coordinator cannot be queried at all.
+            onAccountSessionChange?(false)
             snapshot = nil
             availability = .signedOut
             return
@@ -272,7 +298,15 @@ final class MyMacsStore {
             }
             // Summary is best-effort: the providers payload alone is
             // sufficient to render inventory (see MyMacsSnapshot).
-            let summary = try? await fleet.summary(bearerToken: bearerToken)
+            let summary: MyMacsSummaryWireResponse?
+            do {
+                summary = try await fleet.summary(bearerToken: bearerToken)
+            } catch FleetClientError.sessionExpired {
+                expireSessionIfCurrent(revision: revision, bearerToken: bearerToken)
+                return
+            } catch {
+                summary = nil
+            }
             guard canPublish(revision: revision, bearerToken: bearerToken) else {
                 return
             }
@@ -313,6 +347,7 @@ final class MyMacsStore {
     private func scheduleRefreshLive() {
         let revision = supersedeLiveWork()
         guard let bearerToken = session?.accessToken() else {
+            onAccountSessionChange?(false)
             snapshot = nil
             availability = .signedOut
             return
@@ -358,8 +393,25 @@ final class MyMacsStore {
         guard canPublish(revision: revision, bearerToken: bearerToken) else {
             return
         }
+        do {
+            try session?.signOut()
+        } catch {
+            invalidateLiveWork()
+            let message = LiveCopy.sessionMutationFailed(error.localizedDescription)
+            if let retained = snapshot {
+                availability = .staleRetained(
+                    lastUpdated: retained.asOf,
+                    failedAt: .now,
+                    message: message,
+                    summary: currentSummaryAvailability
+                )
+            } else {
+                availability = .unavailable(message: message)
+            }
+            return
+        }
         invalidateLiveWork()
-        session?.signOut()
+        onAccountSessionChange?(false)
         snapshot = nil
         signInErrorMessage = nil
         availability = .signedOut

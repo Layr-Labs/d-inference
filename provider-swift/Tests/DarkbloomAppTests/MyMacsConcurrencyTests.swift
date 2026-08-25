@@ -31,7 +31,7 @@ struct MyMacsConcurrencyTests {
 
     @Test("Sign-out invalidates an in-flight refresh even when transport ignores cancellation")
     @MainActor
-    func signOutWinsPendingRefresh() async {
+    func signOutWinsPendingRefresh() async throws {
         let session = MutableAccountSession(token: "account-token")
         let fleet = OutOfOrderFleet()
         let store = MyMacsStore(session: session, fleet: fleet)
@@ -41,7 +41,7 @@ struct MyMacsConcurrencyTests {
         }
         #expect(await fleet.waitForProviderCalls(1))
 
-        store.signOut()
+        try store.signOut()
         await fleet.succeedProviderCall(0, with: Self.providers(id: "stale"))
         await pending.value
 
@@ -161,7 +161,7 @@ private final class MutableAccountSession: AccountSessionManaging, @unchecked Se
         guard let token else { throw AccountSessionError.cancelled }
         return token
     }
-    func signOut() {
+    func signOut() throws {
         token = nil
     }
 }

@@ -41,8 +41,11 @@ final class KeychainSessionStore: AccountSessionStoring, @unchecked Sendable {
 
     private let lock = NSLock()
     private var resolvedPartition: Partition?
+    private let keychain: KeychainItemAccess
 
-    init() {}
+    init(keychain: KeychainItemAccess = .live) {
+        self.keychain = keychain
+    }
 
     func loadToken() -> String? {
         for partition in candidatePartitions() {
@@ -50,7 +53,7 @@ final class KeychainSessionStore: AccountSessionStoring, @unchecked Sendable {
             query[kSecReturnData as String] = true
             query[kSecMatchLimit as String] = kSecMatchLimitOne
             var item: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            let status = keychain.copyMatching(query as CFDictionary, &item)
             switch status {
             case errSecSuccess:
                 settle(partition)
@@ -77,7 +80,7 @@ final class KeychainSessionStore: AccountSessionStoring, @unchecked Sendable {
             var attributes = baseQuery(partition: partition)
             attributes[kSecValueData as String] = data
             attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            let status = SecItemAdd(attributes as CFDictionary, nil)
+            let status = keychain.add(attributes as CFDictionary, nil)
             switch status {
             case errSecSuccess:
                 settle(partition)
@@ -88,7 +91,10 @@ final class KeychainSessionStore: AccountSessionStoring, @unchecked Sendable {
                 settle(partition)
                 let query = baseQuery(partition: partition)
                 let update: [String: Any] = [kSecValueData as String: data]
-                return SecItemUpdate(query as CFDictionary, update as CFDictionary) == errSecSuccess
+                return keychain.update(
+                    query as CFDictionary,
+                    update as CFDictionary
+                ) == errSecSuccess
             case errSecMissingEntitlement:
                 continue
             default:
@@ -98,17 +104,20 @@ final class KeychainSessionStore: AccountSessionStoring, @unchecked Sendable {
         return false
     }
 
-    func clearToken() {
+    func clearToken() throws {
         for partition in candidatePartitions() {
-            let status = SecItemDelete(baseQuery(partition: partition) as CFDictionary)
+            let status = keychain.delete(
+                baseQuery(partition: partition) as CFDictionary
+            )
             if status == errSecSuccess || status == errSecItemNotFound {
                 settle(partition)
                 return
             }
             if status != errSecMissingEntitlement {
-                return
+                throw KeychainSessionStoreError.clearFailed(status: status)
             }
         }
+        throw KeychainSessionStoreError.clearFailed(status: errSecMissingEntitlement)
     }
 
     // MARK: - Partition resolution

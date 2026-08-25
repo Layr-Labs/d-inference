@@ -89,7 +89,7 @@ struct FreshInstallHarness: Sendable {
     func locator() -> SystemDarkbloomCLILocator {
         SystemDarkbloomCLILocator(
             environment: [SystemDarkbloomCLILocator.environmentKey: executable.path],
-            bundleURL: root.appendingPathComponent("Empty.app")
+            homeDirectory: home
         )
     }
 

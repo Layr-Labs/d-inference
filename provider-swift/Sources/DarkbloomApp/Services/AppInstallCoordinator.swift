@@ -4,6 +4,7 @@ import ProviderCoreFoundation
 enum AppInstallOutcome: Equatable {
     case continueLaunch
     case relocated(to: URL, preservedForeignApp: URL?)
+    case relaunchRequired(at: URL, preservedForeignApp: URL?)
 }
 
 enum AppInstallCoordinatorError: Error, LocalizedError {
@@ -474,15 +475,20 @@ struct AppInstallCoordinator {
             )
         } catch {
             // App and bin are already durably committed and their journal has
-            // been retired. Treating an `open` failure as installation failure
-            // would falsely put the current source process on the error screen.
+            // been retired. The current process may still be the downloaded
+            // source or a predecessor image, so it must expose only a focused
+            // handoff recovery action. Normal onboarding from that image could
+            // persist a LaunchAgent outside the managed destination.
             NSLog(
                 "Darkbloom installed successfully at %@ but could not relaunch it: %@. "
-                    + "Continuing the currently running app.",
+                    + "Restricting the current app to install recovery.",
                 destinationURL.path,
                 error.localizedDescription
             )
-            return .continueLaunch
+            return .relaunchRequired(
+                at: destinationURL,
+                preservedForeignApp: preservedForeignApp
+            )
         }
     }
 

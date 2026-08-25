@@ -7,45 +7,52 @@ protocol DarkbloomCLILocating: Sendable {
 
 /// Resolution order for the provider CLI the app shells out to:
 ///
-///  1. `DARKBLOOM_CLI_PATH` — dev/test override.
-///  2. `Contents/MacOS/darkbloom` inside this app's bundle — the release
-///     layout, where the CLI ships beside the app binary.
-///  3. `~/.darkbloom/bin/darkbloom` — the installer's canonical location.
-///  4. `/usr/local/bin/darkbloom` and `/opt/homebrew/bin/darkbloom` — the
-///     installer's PATH symlinks.
+///  1. `DARKBLOOM_CLI_PATH` — debug/test override, compiled out of release
+///     builds.
+///  2. `~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom` — the only
+///     shipping candidate.
+///
+/// The GUI must invoke the managed bundle directly. Falling back to the
+/// currently-running bundle or a PATH symlink can make `darkbloom start`
+/// persist a LaunchAgent whose executable points into Downloads or another
+/// replaceable location.
 struct SystemDarkbloomCLILocator: DarkbloomCLILocating {
     static let environmentKey = "DARKBLOOM_CLI_PATH"
 
     let environment: [String: String]
-    let bundleURL: URL
+    let homeDirectory: URL
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        bundleURL: URL = Bundle.main.bundleURL
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.environment = environment
-        self.bundleURL = bundleURL
+        self.homeDirectory = homeDirectory
     }
 
     func locate() -> URL? {
+        #if DEBUG
         if let override = environment[Self.environmentKey], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        for candidate in candidates {
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return candidate
-            }
+        #endif
+
+        let candidate = managedCLIURL
+        guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
+            return nil
         }
-        return nil
+        let values = try? candidate.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
+            return nil
+        }
+        return candidate
     }
 
-    private var candidates: [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            bundleURL.appendingPathComponent("Contents/MacOS/darkbloom"),
-            home.appendingPathComponent(".darkbloom/bin/darkbloom"),
-            URL(fileURLWithPath: "/usr/local/bin/darkbloom"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/darkbloom"),
-        ]
+    var managedCLIURL: URL {
+        homeDirectory
+            .appendingPathComponent(".darkbloom/Darkbloom.app", isDirectory: true)
+            .appendingPathComponent("Contents/MacOS/darkbloom")
     }
 }

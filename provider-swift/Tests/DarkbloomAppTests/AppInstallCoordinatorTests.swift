@@ -233,7 +233,7 @@ struct AppInstallCoordinatorTests {
         }
     }
 
-    @Test("open failure after commit keeps the source app running")
+    @Test("open failure after commit restricts the source app to managed recovery")
     func relaunchFailureDoesNotInvalidateCommit() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -246,11 +246,17 @@ struct AppInstallCoordinatorTests {
             executor: executor
         ).coordinate()
 
-        #expect(result == .continueLaunch)
+        #expect(
+            result == .relaunchRequired(
+                at: fixture.destination,
+                preservedForeignApp: nil
+            )
+        )
         #expect(try fixture.payload(at: fixture.destination) == "committed")
         #expect(try fixture.payload(at: source) == "committed")
         #expect(executor.didOpen(fixture.destination))
         try fixture.expectCanonicalBin()
+        try fixture.expectManagedRuntimePaths(source: source)
         try fixture.expectNoRelocationTransactionArtifacts()
     }
 
@@ -934,8 +940,8 @@ struct AppInstallCoordinatorTests {
         try fixture.expectNoRelocationTransactionArtifacts()
     }
 
-    @Test("open failure after managed-path recovery keeps the app interactive")
-    func recoveredCommitRelaunchFailureContinuesLaunch() throws {
+    @Test("open failure after managed-path recovery exposes only managed recovery")
+    func recoveredCommitRelaunchFailureRequiresManagedRecovery() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         try fixture.makeFlatBin()
@@ -967,10 +973,16 @@ struct AppInstallCoordinatorTests {
             executor: executor
         ).coordinate()
 
-        #expect(result == .continueLaunch)
+        #expect(
+            result == .relaunchRequired(
+                at: fixture.destination,
+                preservedForeignApp: nil
+            )
+        )
         #expect(try fixture.payload(at: fixture.destination) == "candidate")
         #expect(executor.didOpen(fixture.destination))
         try fixture.expectCanonicalBin()
+        try fixture.expectManagedRuntimePaths(source: source)
         try fixture.expectNoRelocationTransactionArtifacts()
     }
 
@@ -1698,6 +1710,26 @@ private struct Fixture {
                 ) == link.target
             )
         }
+    }
+
+    func expectManagedRuntimePaths(source: URL) throws {
+        let managedCLI = destination.appendingPathComponent(
+            "Contents/MacOS/darkbloom"
+        )
+        let locator = SystemDarkbloomCLILocator(
+            environment: [:],
+            homeDirectory: home
+        )
+        #expect(locator.locate() == managedCLI)
+        #expect(locator.locate() != source.appendingPathComponent(
+            "Contents/MacOS/darkbloom"
+        ))
+        #expect(
+            bin.appendingPathComponent("darkbloom")
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                == managedCLI.resolvingSymlinksInPath().standardizedFileURL
+        )
     }
 
     func expectValidShortcut() throws {

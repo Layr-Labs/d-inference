@@ -169,10 +169,13 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		return false, nil
 	}
 	operation := &pending.Operation
+	if operation.Kind != store.SandboxOperationKindRenew &&
+		!observedExpiry.Equal(pending.Sandbox.LeaseExpiresAt) {
+		return false, nil
+	}
 	switch operation.Kind {
 	case store.SandboxOperationKindPrepare:
-		if observation.Scope.FencingToken != operation.FencingToken ||
-			!observedExpiry.Equal(pending.Sandbox.LeaseExpiresAt) {
+		if observation.Scope.FencingToken != operation.FencingToken {
 			return false, nil
 		}
 		switch observation.State {
@@ -180,7 +183,7 @@ func (c *Controller) applyHeartbeatOperationObservation(
 			protocol.SandboxOperationBooting,
 			protocol.SandboxOperationReady,
 			protocol.SandboxOperationFailed:
-			_, _, err := c.store.ApplySandboxOperationUpdate(
+			return c.applyHeartbeatOperationUpdate(
 				ctx,
 				store.SandboxOperationUpdate{
 					OperationID:  operation.ID,
@@ -191,7 +194,6 @@ func (c *Controller) applyHeartbeatOperationObservation(
 					UpdatedAt:    c.now().UTC(),
 				},
 			)
-			return true, err
 		}
 	case store.SandboxOperationKindRenew:
 		if !renewalObservationFenceMatches(
@@ -207,7 +209,7 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		if operation.PreviousSandboxState == store.SandboxStateStopped {
 			state = store.SandboxOperationStopped
 		}
-		_, _, err = c.store.ApplySandboxOperationUpdate(
+		return c.applyHeartbeatOperationUpdate(
 			ctx,
 			store.SandboxOperationUpdate{
 				OperationID:    operation.ID,
@@ -219,7 +221,6 @@ func (c *Controller) applyHeartbeatOperationObservation(
 				UpdatedAt:      c.now().UTC(),
 			},
 		)
-		return true, err
 	case store.SandboxOperationKindStop:
 		if observation.Scope.FencingToken != operation.FencingToken {
 			return false, nil
@@ -227,7 +228,7 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		switch observation.State {
 		case protocol.SandboxOperationStopping,
 			protocol.SandboxOperationStopped:
-			_, _, err := c.store.ApplySandboxOperationUpdate(
+			return c.applyHeartbeatOperationUpdate(
 				ctx,
 				store.SandboxOperationUpdate{
 					OperationID:  operation.ID,
@@ -238,12 +239,11 @@ func (c *Controller) applyHeartbeatOperationObservation(
 					UpdatedAt:    c.now().UTC(),
 				},
 			)
-			return true, err
 		}
 	case store.SandboxOperationKindDelete:
 		if observation.Scope.FencingToken == operation.FencingToken &&
 			observation.State == protocol.SandboxOperationDeleting {
-			_, _, err := c.store.ApplySandboxOperationUpdate(
+			return c.applyHeartbeatOperationUpdate(
 				ctx,
 				store.SandboxOperationUpdate{
 					OperationID:  operation.ID,
@@ -254,10 +254,20 @@ func (c *Controller) applyHeartbeatOperationObservation(
 					UpdatedAt:    c.now().UTC(),
 				},
 			)
-			return true, err
 		}
 	}
 	return false, nil
+}
+
+func (c *Controller) applyHeartbeatOperationUpdate(
+	ctx context.Context,
+	update store.SandboxOperationUpdate,
+) (bool, error) {
+	updated, applied, err := c.store.ApplySandboxOperationUpdate(ctx, update)
+	if err != nil {
+		return true, err
+	}
+	return true, c.continueSandboxOperation(ctx, updated, applied)
 }
 
 func sandboxResourcesMatchRecord(

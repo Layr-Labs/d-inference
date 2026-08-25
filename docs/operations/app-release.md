@@ -93,9 +93,10 @@ executable, and version, then validated with
 app fully synchronizes every staged regular file, hashes the complete candidate
 and predecessor trees, atomically publishes a synchronized
 `~/.darkbloom/.app-relocation-transaction.json`, and then uses a same-directory
-atomic rename or `RENAME_SWAP`. Recovery accepts only the recorded inode-plus-
-content-hash state at each endpoint: it deterministically completes a known
-transition and refuses every ambiguous combination without moving live content.
+atomic rename or `RENAME_SWAP`. Recovery accepts only the recorded inode
+identity and content hash at each endpoint: it deterministically completes a
+known transition and refuses every ambiguous combination without moving live
+content.
 An unrelated canonical destination is retained exactly once as
 `Darkbloom.app.foreign-<id>`. The convenience symlink is created or repaired
 only when doing so cannot replace an unrelated file or app. The app opens the

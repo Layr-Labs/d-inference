@@ -602,6 +602,49 @@ struct AppInstallCoordinatorTests {
         try fixture.expectNoRelocationTransactionArtifacts()
     }
 
+    @Test("managed app startup completes an interrupted exchange and hands off")
+    func managedAppRecoversInterruptedExchange() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.makeApp(
+            at: fixture.destination,
+            identifier: shippingBundleIdentifier,
+            version: "1.0.0",
+            payload: "owned-predecessor"
+        )
+        let source = try fixture.makeApp(
+            at: fixture.home.appendingPathComponent(
+                "Downloads/Darkbloom.app"
+            ),
+            identifier: shippingBundleIdentifier,
+            version: "2.0.0",
+            payload: "candidate"
+        )
+
+        #expect(throws: AppInstallCoordinatorError.self) {
+            try fixture.coordinator(
+                source: source,
+                executor: RecordingExecutor(),
+                relocationFaultInjector: failOnce(at: .liveStateMutated)
+            ).coordinate()
+        }
+
+        let executor = RecordingExecutor()
+        let result = try fixture.coordinator(
+            source: fixture.destination,
+            executor: executor
+        ).coordinate()
+        #expect(
+            result == .relocated(
+                to: fixture.destination,
+                preservedForeignApp: nil
+            )
+        )
+        #expect(try fixture.payload(at: fixture.destination) == "candidate")
+        #expect(executor.didOpen(fixture.destination))
+        try fixture.expectNoRelocationTransactionArtifacts()
+    }
+
     @Test("recovery refuses a destination that appeared after journal publication")
     func ambiguousFreshRecoveryIsRefused() throws {
         let fixture = try Fixture()

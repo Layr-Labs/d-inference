@@ -29,6 +29,42 @@ struct UpdateProcessLockTests {
         }
     }
 
+    @Test("lock path symlink is rejected without modifying its target")
+    func symlinkPathIsRejected() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(
+            "update-lock-symlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let outside = root.appendingPathComponent("outside")
+        let lockPath = root
+            .appendingPathComponent("recovery", isDirectory: true)
+            .appendingPathComponent("update.lock")
+        defer { try? fileManager.removeItem(at: root) }
+
+        try fileManager.createDirectory(
+            at: lockPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("preserve me".utf8).write(to: outside)
+        try fileManager.createSymbolicLink(
+            atPath: lockPath.path,
+            withDestinationPath: outside.path
+        )
+
+        #expect(throws: UpdateProcessLock.LockError.self) {
+            _ = try UpdateProcessLock.acquire(
+                at: lockPath,
+                operation: "must-not-follow"
+            )
+        }
+        #expect(try Data(contentsOf: outside) == Data("preserve me".utf8))
+        #expect(
+            try fileManager.destinationOfSymbolicLink(atPath: lockPath.path)
+                == outside.path
+        )
+    }
+
     @Test("self-updater session is blocked by the shared app installer lock")
     func updaterCoordinatesWithOneShotInstallers() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(

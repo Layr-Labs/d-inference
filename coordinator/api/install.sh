@@ -902,6 +902,7 @@ prepare_app_install_lock_file() {
 terminate_install_lock_child() {
     local signal=$1
     local status=$2
+    trap - HUP INT TERM
     if [ -n "${INSTALL_LOCK_CHILD_PID:-}" ]; then
         kill "-$signal" "$INSTALL_LOCK_CHILD_PID" 2>/dev/null || true
         wait "$INSTALL_LOCK_CHILD_PID" 2>/dev/null || true
@@ -909,6 +910,40 @@ terminate_install_lock_child() {
     [ -z "${INSTALL_LOCK_HELPER_PATH:-}" ] \
         || rm -f "$INSTALL_LOCK_HELPER_PATH"
     exit "$status"
+}
+
+handle_install_lock_signal() {
+    local signal=$1
+    local status=$2
+    if [ -z "${INSTALL_LOCK_CHILD_PID:-}" ]; then
+        # Bash runs traps only between commands. A signal can therefore land
+        # after the asynchronous owner exists but before `$!` is assigned.
+        # Defer that signal until the owner PID is published below.
+        if [ -z "${INSTALL_LOCK_PENDING_SIGNAL:-}" ]; then
+            INSTALL_LOCK_PENDING_SIGNAL=$signal
+            INSTALL_LOCK_PENDING_STATUS=$status
+        fi
+        return
+    fi
+    terminate_install_lock_child "$signal" "$status"
+}
+
+publish_install_lock_child_pid_for_test() {
+    [ "$INSTALL_TEST_MODE" = "1" ] || return 0
+    [ -n "${DARKBLOOM_INSTALL_TEST_OWNER_PID_FILE:-}" ] || return 0
+    printf '%s\n' "$INSTALL_LOCK_CHILD_PID" \
+        > "$DARKBLOOM_INSTALL_TEST_OWNER_PID_FILE"
+}
+
+pause_install_lock_startup_for_test() {
+    [ "$INSTALL_TEST_MODE" = "1" ] || return 0
+    [ -n "${DARKBLOOM_INSTALL_TEST_STARTUP_READY:-}" ] || return 0
+    [ -n "${DARKBLOOM_INSTALL_TEST_STARTUP_RELEASE:-}" ] || return 1
+    printf '%s\n' "$INSTALL_LOCK_CHILD_PID" \
+        > "$DARKBLOOM_INSTALL_TEST_STARTUP_READY" || return 1
+    while [ ! -e "$DARKBLOOM_INSTALL_TEST_STARTUP_RELEASE" ]; do
+        sleep 0.05
+    done
 }
 
 locked_install_dispatch() {
@@ -932,7 +967,8 @@ locked_install_dispatch() {
 
     case "$action" in
         install_bundle_atomically_locked|install_lock_noop|\
-        install_lock_probe_body|install_lock_descendant_probe_body)
+        install_lock_probe_body|install_lock_descendant_probe_body|\
+        install_lock_stubborn_probe_body)
             "$action" "$@"
             ;;
         *)
@@ -974,6 +1010,12 @@ with_app_install_lock() {
 
     INSTALL_LOCK_HELPER_PATH=$helper
     INSTALL_LOCK_CHILD_PID=""
+    INSTALL_LOCK_PENDING_SIGNAL=""
+    INSTALL_LOCK_PENDING_STATUS=""
+    trap 'handle_install_lock_signal HUP 129' HUP
+    trap 'handle_install_lock_signal INT 130' INT
+    trap 'handle_install_lock_signal TERM 143' TERM
+
     INSTALL_TEST_MODE="$INSTALL_TEST_MODE" \
     FAN_HELPER_REQUIREMENT="$FAN_HELPER_REQUIREMENT" \
     DARKBLOOM_DESIGNATED_REQUIREMENT="$DARKBLOOM_DESIGNATED_REQUIREMENT" \
@@ -990,13 +1032,78 @@ with_app_install_lock() {
         use strict;
         use warnings;
 
-        my ($primary, $legacy, $helper, @command) = @ARGV;
+        my ($expected_parent, $primary, $legacy, $helper, @command) = @ARGV;
+        $expected_parent =~ /\A[1-9][0-9]*\z/
+            or die "Invalid installer wrapper PID.\n";
         my $timeout = $ENV{DARKBLOOM_INSTALL_LOCK_TIMEOUT} // 30;
         $timeout = 30 unless $timeout =~ /\A(?:0|[1-9][0-9]*)\z/;
         my $deadline = time() + $timeout;
+        my $owner_pid = $$;
+        my $child;
+        my $pending_signal;
+        my $terminate_deadline;
+        my $kill_deadline;
+        my $terminate_grace = 1.0;
+        my $kill_settle_grace = 1.0;
+
+        END {
+            # The shell normally removes this generated dispatcher. The lock
+            # owner is its SIGKILL-safe fallback when the shell parent dies.
+            unlink($helper) if $$ == $owner_pid && defined($helper);
+        }
+
+        sub parent_is_alive {
+            return getppid() == $expected_parent;
+        }
+
+        sub require_startup_owner {
+            parent_is_alive()
+                or die "Installer wrapper exited during lock startup.\n";
+            !defined($pending_signal)
+                or die "Installer lock startup was interrupted.\n";
+        }
+
+        sub set_process_group_errno {
+            my ($pid, $group) = @_;
+            # System Perl versions disagree on the return value: some expose
+            # POSIX::setpgid as void/undef, while others return "0 but true"
+            # even on failure. errno, cleared before the call and captured
+            # immediately afterwards, is the portable success contract.
+            local $! = 0;
+            POSIX::setpgid($pid, $group);
+            return 0 + $!;
+        }
+
+        sub errno_text {
+            my ($error) = @_;
+            local $! = $error;
+            return "$!";
+        }
+
+        sub signal_locked_body {
+            my ($signal) = @_;
+            return unless defined($child) && $child > 0;
+            # The direct signal covers the pre-setpgid edge; the negative PID
+            # covers every descendant after the child becomes group leader.
+            kill($signal, $child);
+            kill($signal, -$child);
+        }
+
+        sub locked_body_group_is_alive {
+            return 0 unless defined($child) && $child > 0;
+            return kill(0, -$child) > 0;
+        }
+
+        sub begin_bounded_termination {
+            my ($signal) = @_;
+            return if defined($terminate_deadline);
+            signal_locked_body($signal);
+            $terminate_deadline = time() + $terminate_grace;
+        }
 
         sub acquire_lock {
             my ($path, $deadline) = @_;
+            require_startup_owner();
             sysopen(my $handle, $path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600)
                 or die "Could not open installation lock $path: $!\n";
             my @status = stat($handle);
@@ -1007,6 +1114,7 @@ with_app_install_lock() {
 
             while (!flock($handle, LOCK_EX | LOCK_NB)) {
                 next if $! == EINTR;
+                require_startup_owner();
                 if ($! == EWOULDBLOCK || $! == EAGAIN) {
                     die "Another Darkbloom installation is still active.\n"
                         if time() >= $deadline;
@@ -1015,6 +1123,7 @@ with_app_install_lock() {
                 }
                 die "Could not acquire installation lock $path: $!\n";
             }
+            require_startup_owner();
             return $handle;
         }
 
@@ -1025,25 +1134,22 @@ with_app_install_lock() {
         seek($legacy_handle, 0, 0)
             or die "Could not rewind legacy update lock: $!\n";
 
-        my $child;
         for my $signal (qw(HUP INT TERM)) {
             my $name = $signal;
             $SIG{$name} = sub {
-                return unless defined($child) && $child > 0;
-                # Before setpgid wins its race, signal the child directly.
-                # Afterwards, signal the whole group so tar/codesign cannot
-                # survive the installer while holding or mutating state.
-                kill($name, $child);
-                kill($name, -$child);
+                $pending_signal = $name unless defined($pending_signal);
             };
         }
 
+        require_startup_owner();
         $child = fork();
         defined($child) or die "Could not fork locked installer body: $!\n";
         if ($child == 0) {
             $SIG{$_} = "DEFAULT" for qw(HUP INT TERM);
-            POSIX::setpgid(0, 0) == 0
-                or die "Could not isolate locked installer process group: $!\n";
+            my $group_error = set_process_group_errno(0, 0);
+            die "Could not isolate locked installer process group: "
+                . errno_text($group_error) . "\n"
+                if $group_error != 0;
             fcntl($primary_handle, F_SETFD, FD_CLOEXEC)
                 or die "Could not isolate primary installation lock: $!\n";
             fcntl($legacy_handle, F_SETFD, FD_CLOEXEC)
@@ -1054,27 +1160,81 @@ with_app_install_lock() {
 
         # The child also calls setpgid. A parent-side call closes the small
         # race before exec; EACCES/ESRCH mean the child already progressed.
-        if (POSIX::setpgid($child, $child) != 0
-            && $! != EACCES && $! != ESRCH) {
-            kill("KILL", $child);
+        my $group_error = set_process_group_errno($child, $child);
+        if ($group_error != 0
+            && $group_error != EACCES && $group_error != ESRCH) {
+            signal_locked_body("KILL");
             waitpid($child, 0);
-            die "Could not isolate locked installer process group: $!\n";
+            die "Could not isolate locked installer process group: "
+                . errno_text($group_error) . "\n";
         }
 
-        my $waited;
-        do {
-            $waited = waitpid($child, 0);
-        } while ($waited < 0 && $! == EINTR);
-        $waited == $child
-            or die "Could not wait for locked installer body: $!\n";
-        my $status = $?;
+        my $reaped = 0;
+        my $status = 0;
+        while (1) {
+            if (!parent_is_alive() && !defined($pending_signal)) {
+                $pending_signal = "TERM";
+            }
+            begin_bounded_termination($pending_signal)
+                if defined($pending_signal);
+
+            my $now = time();
+            if (defined($terminate_deadline)
+                && !defined($kill_deadline)
+                && $now >= $terminate_deadline) {
+                signal_locked_body("KILL");
+                $kill_deadline = $now + $kill_settle_grace;
+            }
+
+            if (!$reaped) {
+                my $waited = waitpid($child, POSIX::WNOHANG());
+                if ($waited == $child) {
+                    $status = $?;
+                    $reaped = 1;
+                } elsif ($waited < 0 && $! != EINTR) {
+                    die "Could not wait for locked installer body: $!\n";
+                }
+            }
+
+            if ($reaped && !defined($terminate_deadline)) {
+                # Close the last race between the parent check above and a
+                # normally exiting body that may have left descendants.
+                last if parent_is_alive() && !defined($pending_signal);
+                $pending_signal = "TERM" unless defined($pending_signal);
+                next;
+            }
+            if (defined($terminate_deadline)) {
+                last if $reaped && !locked_body_group_is_alive();
+                # SIGKILL cannot interrupt an uninterruptible kernel wait.
+                # Release the owner locks after a bounded settle period rather
+                # than leaving every future installer blocked indefinitely.
+                last if defined($kill_deadline) && time() >= $kill_deadline;
+            }
+            sleep(0.05);
+        }
+
+        if (!$reaped) {
+            my $waited = waitpid($child, POSIX::WNOHANG());
+            if ($waited == $child) {
+                $status = $?;
+                $reaped = 1;
+            }
+        }
+        exit(1) unless $reaped;
         exit(128 + ($status & 127)) if $status & 127;
         exit($status >> 8);
-    ' "$primary_lock" "$legacy_lock" "$helper" "$install_dir" "$@" &
+    ' "$$" "$primary_lock" "$legacy_lock" "$helper" "$install_dir" "$@" &
     INSTALL_LOCK_CHILD_PID=$!
-    trap 'terminate_install_lock_child HUP 129' HUP
-    trap 'terminate_install_lock_child INT 130' INT
-    trap 'terminate_install_lock_child TERM 143' TERM
+    if [ -n "$INSTALL_LOCK_PENDING_SIGNAL" ]; then
+        terminate_install_lock_child \
+            "$INSTALL_LOCK_PENDING_SIGNAL" "$INSTALL_LOCK_PENDING_STATUS"
+    fi
+    publish_install_lock_child_pid_for_test \
+        || terminate_install_lock_child TERM 1
+    # This test-only pause is deliberately after launch/PID publication but
+    # before the wrapper transitions to wait. Traps must already be active.
+    pause_install_lock_startup_for_test \
+        || terminate_install_lock_child TERM 1
 
     local status=0
     wait "$INSTALL_LOCK_CHILD_PID" || status=$?
@@ -2266,6 +2426,27 @@ install_lock_descendant_probe_body() {
     printf '%s\n' "$!" > "$child_pid_file"
 }
 
+install_lock_stubborn_probe_body() {
+    local entered=$1
+    local body_pid_file=$2
+    local descendant_pid_file=$3
+    local mutation_file=$4
+    trap '' HUP INT TERM
+    printf '%s\n' "$$" > "$body_pid_file"
+    /bin/bash -c '
+        trap "" HUP INT TERM
+        mutation_file=$1
+        while :; do
+            printf "mutating\n" >> "$mutation_file"
+            sleep 0.05
+        done
+    ' darkbloom-install-probe "$mutation_file" &
+    local descendant=$!
+    printf '%s\n' "$descendant" > "$descendant_pid_file"
+    printf 'entered\n' > "$entered"
+    wait "$descendant"
+}
+
 if [ "${1:-}" = "--semver-test" ]; then
     [ "$#" -eq 2 ] || exit 64
     semver_is_valid "$2"
@@ -2297,6 +2478,14 @@ if [ "${1:-}" = "--spawn-under-install-lock-test" ]; then
     INSTALL_TEST_MODE=1
     with_app_install_lock \
         "$2" install_lock_descendant_probe_body "$3"
+    exit $?
+fi
+
+if [ "${1:-}" = "--hold-stubborn-install-lock-test" ]; then
+    [ "$#" -eq 6 ] || exit 64
+    INSTALL_TEST_MODE=1
+    with_app_install_lock \
+        "$2" install_lock_stubborn_probe_body "$3" "$4" "$5" "$6"
     exit $?
 fi
 

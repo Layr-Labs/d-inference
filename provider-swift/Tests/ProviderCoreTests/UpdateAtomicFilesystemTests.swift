@@ -26,48 +26,31 @@ struct UpdateAtomicFilesystemTests {
         #expect(calls == ["full"])
     }
 
-    @Test("full sync failure falls back to retrying fsync")
-    func fullSyncFallbackRetriesInterruptions() throws {
+    @Test("full sync failure is surfaced without weakening durability")
+    func fullSyncFailureIsSurfaced() {
         var fullResults: [UpdateAtomicFilesystem.DurabilitySyncResult] = [
             .failure(EINTR),
             .failure(ENOTSUP),
         ]
-        var fallbackResults: [UpdateAtomicFilesystem.DurabilitySyncResult] = [
-            .failure(EINTR),
-            .success,
-        ]
-        try UpdateAtomicFilesystem.synchronizeRegularFile(
-            fullSync: {
-                fullResults.removeFirst()
-            },
-            fallbackSync: {
-                fallbackResults.removeFirst()
-            },
-            operation: "test sync"
-        )
-        #expect(fullResults.isEmpty)
-        #expect(fallbackResults.isEmpty)
-    }
-
-    @Test("fallback fsync error is surfaced with its errno")
-    func fallbackErrorIsSurfaced() {
-        do {
+        var fallbackCalled = false
+        #expect(throws: NSError.self) {
             try UpdateAtomicFilesystem.synchronizeRegularFile(
-                fullSync: { .failure(ENOTSUP) },
-                fallbackSync: { .failure(EIO) },
+                fullSync: {
+                    fullResults.removeFirst()
+                },
+                fallbackSync: {
+                    fallbackCalled = true
+                    return .success
+                },
                 operation: "test sync"
             )
-            Issue.record("expected sync failure")
-        } catch {
-            let cocoa = error as NSError
-            #expect(cocoa.domain == NSPOSIXErrorDomain)
-            #expect(cocoa.code == Int(EIO))
-            #expect(cocoa.localizedDescription.contains("test sync"))
         }
+        #expect(fullResults.isEmpty)
+        #expect(!fallbackCalled)
     }
 
-    @Test("platforms without full sync use retrying fsync directly")
-    func fsyncOnlyPathRetriesInterruptions() throws {
+    @Test("platform fallback retries interruptions and surfaces errors")
+    func fsyncOnlyPathRetriesInterruptionsAndSurfacesErrors() throws {
         var results: [UpdateAtomicFilesystem.DurabilitySyncResult] = [
             .failure(EINTR),
             .success,
@@ -80,6 +63,20 @@ struct UpdateAtomicFilesystemTests {
             operation: "test sync"
         )
         #expect(results.isEmpty)
+
+        do {
+            try UpdateAtomicFilesystem.synchronizeRegularFile(
+                fullSync: nil,
+                fallbackSync: { .failure(EIO) },
+                operation: "test sync"
+            )
+            Issue.record("expected sync failure")
+        } catch {
+            let cocoa = error as NSError
+            #expect(cocoa.domain == NSPOSIXErrorDomain)
+            #expect(cocoa.code == Int(EIO))
+            #expect(cocoa.localizedDescription.contains("test sync"))
+        }
     }
 
     @Test("durable write replaces regular files and removes temporary files")

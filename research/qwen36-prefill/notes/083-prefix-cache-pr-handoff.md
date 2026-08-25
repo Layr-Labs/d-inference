@@ -1,7 +1,7 @@
 # 083 — Qwen exact prefix-cache PR handoff
 
-Status: **corrected clean branches built and fully tested; bot cannot publish
-the nested branch (GitHub 403)**
+Status: **implementation approved by both final reviews; publication requires
+a collaborator because the bot cannot push the nested branch (GitHub 403)**
 
 ## Branches
 
@@ -34,18 +34,20 @@ Initial rollout must leave prompt fork disabled.
 
 ```text
 repository  Layr-Labs/d-inference
-base        master / 080d7e66782b28ab038f34dfb5ce23469f19642b
+base        master / 545345e4fca1a327f584f5afd97656844427aa28
 branch      cursor/qwen-prefix-cache-final-74d1
-commit      9990fb1e74919519e4433e1e7cd21138146a2c79
-tree        d9a3042af42c8e2d2b53169c8286c7b017006c80
+commit      23752bbfa08c1ebb88829cb9ac6d394dfe351867
+tree        d94b7d238c7f6d1c9e6ce3531d89dcf6b41b3d6a
 gitlink     15a88f6284757fde70d0a339e866501f90ceb644
-patch       artifacts/qwen-prefix-root-9990fb1e.patch.gz
-patch sha   211fb134b1197624ce4d44d95c87651ed98a3a625958a42de2db5a54368271c5
+patch       artifacts/qwen-prefix-root-23752bbf.patch.gz
+patch sha   cb1486f5e8a774065b881c42d5f440150dc0e20fa30346e63a181ff618ff18e6
 ```
 
-The root branch contains only provider integration, telemetry/status/tests,
-and the gitlink update. It excludes the autoresearch notes and rejected
-experiments.
+The root branch contains provider integration, authenticated coordinator scope
+transport, privacy-safe telemetry/status, tests, and the gitlink update. It
+excludes the autoresearch notes and rejected experiments. Provider serving
+pins simultaneous prompt forking off explicitly; only sequential cache reuse
+is deployable.
 
 ## Human publish sequence
 
@@ -69,12 +71,17 @@ git push -u origin cursor/qwen-exact-prefix-cache-74d1
 # 2. Root repository (only after the nested commit is remotely fetchable)
 cd ../..
 git switch -c cursor/qwen-prefix-cache-final-74d1 master
-gzip -dc research/qwen36-prefill/artifacts/qwen-prefix-root-9990fb1e.patch.gz \
+gzip -dc research/qwen36-prefill/artifacts/qwen-prefix-root-23752bbf.patch.gz \
   | git am
 git push -u origin cursor/qwen-prefix-cache-final-74d1
 
 # Open root PR: cursor/qwen-prefix-cache-final-74d1 -> master
 ```
+
+The root branch is already pushed, but the PR API rejected the bot as a
+non-collaborator. A collaborator can open it from
+`https://github.com/Layr-Labs/d-inference/compare/master...cursor/qwen-prefix-cache-final-74d1?expand=1`
+after publishing the nested SHA.
 
 ## Final clean-tree validation
 
@@ -83,11 +90,15 @@ The Mac checkout used the final source tree and nested commit `15a88f6`:
 - exact-cache engine regressions: **9 tests pass**;
 - stateful-Qwen MTP regressions: **30 tests pass**;
 - nested suite: **860 tests / 115 suites pass**;
-- provider exact-cache and posture regressions: **10 + 14 tests pass**;
-- provider suite: **2,166 tests / 224 suites pass**;
-- release `darkbloom` build: pass;
+- provider exact-cache policy regressions: **11 tests pass**;
+- live encrypted remote-cache integration: **4 tests pass**, including a real
+  hybrid `EngineV2` miss/donation followed by a hit without another prefill;
+- provider suite: **2,171 tests / 225 suites pass**;
+- release `darkbloom` build: pass at the remote-cache head; the final
+  prompt-fork-only delta passed the full debug suite, while its redundant
+  release rerun was blocked by the Mac test host going offline;
 - coordinator `go test ./...`: pass;
-- console UI: **56 files / 498 tests pass**, ESLint has zero errors.
+- console UI: **57 files / 499 tests pass**, ESLint has zero errors.
 
 A final 512-prompt real-model run on Qwen 3.6 produced 100% first/full-token
 equality in all seven scenarios. Identical B1/B2/B4 warm hits measured
@@ -99,6 +110,7 @@ Walkthrough artifacts:
 
 - `/opt/cursor/artifacts/qwen_prefix_cache_e56_validation.txt`
 - `/opt/cursor/artifacts/qwen_prefix_cache_real_canary_e56_corrected.txt`
+- `/opt/cursor/artifacts/qwen_prefix_cache_remote_e57_validation.txt`
 
 ## Required PR diagrams
 
@@ -122,28 +134,40 @@ Root PR:
 ```mermaid
 flowchart LR
  subgraph Before
- A1[Provider slot] --> B1[No exact hybrid-state cache]
+ A1[Remote request] --> B1[No authenticated exact-cache scope]
+ B1 --> C1[Provider disables lookup and donation]
  end
  subgraph After
- A2[Qwen exact-cache opt-in] --> B2[Capability + identity + budget gates]
- B2 --> C2[EngineV2 exact cache]
- C2 --> D2[Status and privacy-safe telemetry]
+ A2[Exact-capable Qwen slot] --> B2[Register exact model capability]
+ B2 --> C2[Coordinator derives opaque tenant + build + contract scope]
+ C2 --> D2[Provider authorizes exact EngineV2 cache]
+ D2 --> E2[Cold donation then repeated-request hit]
+ C2 --> F2[SSD stage only with separate receipt nonce]
  end
 ```
 
 ## Initial rollout posture
 
 ```bash
+# Coordinator canary (human-operated; master key remains in Secret Manager)
+EIGENINFERENCE_CACHE_ROUTING_MODE=on
+EIGENINFERENCE_CACHE_ROUTING_PERCENT=1
+
+# Qwen provider canary
 DARKBLOOM_EXACT_PREFIX_CACHE=1
 DARKBLOOM_EXACT_PREFIX_CACHE_MAX_BYTES=2147483648
 DARKBLOOM_EXACT_PREFIX_CACHE_MAX_FRACTION=0.125
 ```
 
-Keep `DARKBLOOM_CBV2_PROMPT_FORK` unset.
+Provider serving ignores `DARKBLOOM_CBV2_PROMPT_FORK` and pins simultaneous
+prompt forking off.
 
 The profile is default-off, Qwen-capability-gated, contiguous-backend-only,
 tenant-scoped, model/prompt/policy-identity-bound, and charges resident plus
-in-flight donation bytes to one hard carve.
+in-flight donation bytes to one hard carve. The opaque HMAC scope is stable
+across providers for the same tenant/model/build/contract, so providers can
+correlate equality of that opaque value; it does not expose the account
+identity or prompt content.
 
 Measured tradeoff:
 

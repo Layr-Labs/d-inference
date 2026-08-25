@@ -835,3 +835,27 @@ That real-model harness does not bind an MTP drafter, so active MTP/cache
 coexistence remains covered by the focused integration suite until the
 installed-provider canary can run after nested publication. See
 `notes/083-prefix-cache-pr-handoff.md`.
+
+## 2026-08-25T02:30Z — E57 authenticated remote reuse closed
+
+The first shipping tree created and reported the exact RAM cache but normal
+remote requests never received the coordinator-authored scope, so they disabled
+lookup and donation. The final root branch now advertises exact-capable models
+independently from SSD receipts, derives a tenant/model/build/contract-bound
+opaque scope, and sends scope-only metadata to exact RAM. SSD staging still
+requires its separate receipt nonce.
+
+The provider also separates exact-engine authorization from SSD-stage
+authorization, so a mixed slot can use exact RAM during scope-only fallback
+without manufacturing SSD evidence. Missing/blank scope remains fail-closed.
+A live encrypted integration test traverses provider decryption into a real
+hybrid `EngineV2`: the first request records one miss and donation, and the
+second records one hit without another prefill. Provider serving explicitly pins
+simultaneous prompt forking off.
+
+Final gates at `cac20187` pass: 2,171 provider tests / 225 suites, all
+coordinator tests, 11 exact-cache policy tests, and four encrypted remote-cache
+integration tests. The branch merges cleanly with current master
+`545345e4`; 57 console test files / 499 tests and lint with zero errors pass on
+the merged tree. Publication of nested commit `15a88f6` remains the only merge
+gate.

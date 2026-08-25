@@ -140,11 +140,13 @@ struct ProcessLifecycleSubprocessTests {
     }
 
     private func requireFile(
-        _ file: URL,
-        timeout: Duration = .seconds(5)
+        _ file: URL
     ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+        // A maximally parallel Swift test run can deschedule this task while
+        // the subprocess is starting. Give the observer fresh scheduling
+        // opportunities after it resumes instead of immediately expiring a
+        // wall-clock deadline that elapsed while it could not execute.
+        for _ in 0..<3_000 {
             if FileManager.default.fileExists(atPath: file.path) {
                 return
             }
@@ -155,11 +157,9 @@ struct ProcessLifecycleSubprocessTests {
     }
 
     private func requireExit(
-        _ process: Process,
-        timeout: Duration = .seconds(5)
+        _ process: Process
     ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+        for _ in 0..<3_000 {
             if !process.isRunning {
                 process.waitUntilExit()
                 return

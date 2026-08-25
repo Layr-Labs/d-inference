@@ -177,8 +177,7 @@ struct UpdateRecoveryJournalValidationTests {
             }
         } catch {
             Issue.record(
-                "corrupt transaction produced the wrong error during "
-                    + "\(operation): \(error)"
+                "corrupt transaction produced the wrong error during \(operation): \(error)"
             )
         }
     }

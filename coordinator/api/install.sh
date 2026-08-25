@@ -1382,8 +1382,8 @@ transaction_value() {
 
 path_identity() {
     local path=$1
-    stat -f '%d:%i' "$path" 2>/dev/null \
-        || stat -c '%d:%i' "$path" 2>/dev/null
+    stat -c '%d:%i' "$path" 2>/dev/null \
+        || stat -f '%d:%i' "$path" 2>/dev/null
 }
 
 path_matches_identity() {
@@ -1519,6 +1519,281 @@ sync_install_tree() {
                 or die "Could not sync directory $path: $!\n";
         }
     ' "$root"
+}
+
+installer_ownership_record_path() {
+    local install_dir=$1
+    local transaction_id=$2
+    [[ "$transaction_id" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] || return 1
+    printf '%s\n' "$install_dir/.install-ownership-$transaction_id"
+}
+
+installer_ownership_value() {
+    local record=$1
+    local name=$2
+    awk -F= -v key="$name" '
+        $1 == key {
+            print substr($0, length(key) + 2)
+            exit
+        }
+    ' "$record" 2>/dev/null || true
+}
+
+load_installer_ownership_record() {
+    local record=$1
+    [ -f "$record" ] \
+        && [ ! -L "$record" ] \
+        && [ "$(wc -l < "$record" | tr -d '[:space:]')" = "7" ] \
+        || return 1
+
+    OWNERSHIP_VERSION=$(installer_ownership_value "$record" version)
+    OWNERSHIP_ID=$(installer_ownership_value "$record" id)
+    OWNERSHIP_KIND=$(installer_ownership_value "$record" kind)
+    OWNERSHIP_PHASE=$(installer_ownership_value "$record" phase)
+    OWNERSHIP_NAME=$(installer_ownership_value "$record" name)
+    OWNERSHIP_IDENTITY=$(installer_ownership_value "$record" identity)
+    OWNERSHIP_FINGERPRINT=$(installer_ownership_value "$record" fingerprint)
+
+    [ "$OWNERSHIP_VERSION" = "1" ] \
+        && [[ "$OWNERSHIP_ID" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] \
+        && [ "${record##*/}" = ".install-ownership-$OWNERSHIP_ID" ] \
+        && [[ "$OWNERSHIP_KIND" =~ ^(staging|garbage)$ ]] \
+        && [[ "$OWNERSHIP_PHASE" =~ ^(owned|deleting)$ ]] \
+        && [[ "$OWNERSHIP_IDENTITY" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$OWNERSHIP_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]] \
+        || return 1
+    case "$OWNERSHIP_KIND" in
+        staging)
+            [ "$OWNERSHIP_NAME" = \
+                ".install-staging-$OWNERSHIP_ID" ] || return 1
+            ;;
+        garbage)
+            [ "$OWNERSHIP_NAME" = \
+                ".install-garbage-$OWNERSHIP_ID" ] || return 1
+            ;;
+    esac
+    OWNERSHIP_RECORD_IDENTITY=$(path_identity "$record") || return 1
+}
+
+write_installer_ownership_record() {
+    local record=$1
+    local transaction_id=$2
+    local kind=$3
+    local phase=$4
+    local name=$5
+    local identity=$6
+    local fingerprint=$7
+    local replace=${8:-0}
+    local temporary="$record.tmp-$$-$RANDOM"
+
+    [[ "$transaction_id" =~ ^[0-9]+-[0-9]+-[0-9]+$ ]] \
+        && [[ "$kind" =~ ^(staging|garbage)$ ]] \
+        && [[ "$phase" =~ ^(owned|deleting)$ ]] \
+        && [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]] \
+        && [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] \
+        && [[ "$replace" =~ ^[01]$ ]] \
+        || return 1
+    case "$kind" in
+        staging)
+            [ "$name" = ".install-staging-$transaction_id" ] || return 1
+            ;;
+        garbage)
+            [ "$name" = ".install-garbage-$transaction_id" ] || return 1
+            ;;
+    esac
+    if [ "$replace" -eq 1 ]; then
+        load_installer_ownership_record "$record" \
+            && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+            || return 1
+    else
+        ! install_path_exists "$record" || return 1
+    fi
+
+    (
+        set -C
+        umask 077
+        {
+            printf 'version=1\n'
+            printf 'id=%s\n' "$transaction_id"
+            printf 'kind=%s\n' "$kind"
+            printf 'phase=%s\n' "$phase"
+            printf 'name=%s\n' "$name"
+            printf 'identity=%s\n' "$identity"
+            printf 'fingerprint=%s\n' "$fingerprint"
+        } > "$temporary"
+    ) || return 1
+
+    /usr/bin/perl -MFcntl=:DEFAULT,:mode -MIO::Handle -e '
+        use strict;
+        use warnings;
+        my ($temporary, $record, $directory, $replace) = @ARGV;
+        sysopen(my $file, $temporary, O_RDWR | O_NOFOLLOW)
+            or die "Could not open ownership record $temporary: $!\n";
+        my @status = stat($file);
+        @status && S_ISREG($status[2])
+            or die "Ownership record is not a regular file: $temporary\n";
+        $file->sync
+            or die "Could not sync ownership record $temporary: $!\n";
+        if ($^O eq "darwin") {
+            fcntl($file, 51, 0)
+                or die "Could not fully sync ownership record $temporary: $!\n";
+        }
+        close($file)
+            or die "Could not close ownership record $temporary: $!\n";
+        if ($replace) {
+            my @record_status = lstat($record);
+            @record_status && S_ISREG($record_status[2])
+                && !S_ISLNK($record_status[2])
+                or die "Ownership record cannot be replaced: $record\n";
+            rename($temporary, $record)
+                or die "Could not replace ownership record $record: $!\n";
+        } else {
+            link($temporary, $record)
+                or die "Could not publish ownership record $record: $!\n";
+            unlink($temporary)
+                or die "Could not unlink ownership temporary $temporary: $!\n";
+        }
+        sysopen(my $parent, $directory, O_RDONLY)
+            or die "Could not open ownership directory $directory: $!\n";
+        $parent->sync
+            or die "Could not sync ownership directory $directory: $!\n";
+    ' "$temporary" "$record" "${record%/*}" "$replace" || {
+        rm -f "$temporary"
+        return 1
+    }
+}
+
+record_installer_owned_tree() {
+    local path=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local kind=$4
+    local replace=${5:-0}
+    local recorded_name=${6:-${path##*/}}
+    [ -d "$path" ] && [ ! -L "$path" ] || return 1
+    local identity
+    local fingerprint
+    local record
+    identity=$(path_identity "$path") || return 1
+    fingerprint=$(path_fingerprint "$path") || return 1
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+    write_installer_ownership_record \
+        "$record" "$transaction_id" "$kind" owned "$recorded_name" \
+        "$identity" "$fingerprint" "$replace"
+}
+
+refresh_recorded_staging_ownership() {
+    local stage=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local record
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+    load_installer_ownership_record "$record" \
+        && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+        && [ "$OWNERSHIP_KIND" = "staging" ] \
+        && [ "$OWNERSHIP_PHASE" = "owned" ] \
+        && [ "$OWNERSHIP_NAME" = "${stage##*/}" ] \
+        && [ -d "$stage" ] \
+        && [ ! -L "$stage" ] \
+        && path_matches_identity "$stage" "$OWNERSHIP_IDENTITY" \
+        || return 1
+    record_installer_owned_tree \
+        "$stage" "$install_dir" "$transaction_id" staging 1
+}
+
+remove_installer_ownership_record() {
+    local record=$1
+    load_installer_ownership_record "$record" || return 1
+    path_matches_identity "$record" "$OWNERSHIP_RECORD_IDENTITY" \
+        || return 1
+    rm -f "$record" \
+        && sync_install_directories "${record%/*}"
+}
+
+remove_installer_owned_tree() {
+    local install_dir=$1
+    local transaction_id=$2
+    local expected_kind=$3
+    local remove_record=${4:-1}
+    local record
+    local expected_name
+    local path
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+    case "$expected_kind" in
+        staging) expected_name=".install-staging-$transaction_id" ;;
+        garbage) expected_name=".install-garbage-$transaction_id" ;;
+        *) return 1 ;;
+    esac
+    path="$install_dir/$expected_name"
+
+    load_installer_ownership_record "$record" \
+        && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+        && [ "$OWNERSHIP_KIND" = "$expected_kind" ] \
+        && [ "$OWNERSHIP_NAME" = "$expected_name" ] \
+        || return 1
+    if install_path_exists "$path"; then
+        [ -d "$path" ] \
+            && [ ! -L "$path" ] \
+            && path_matches_identity "$path" "$OWNERSHIP_IDENTITY" \
+            || return 1
+        if [ "$OWNERSHIP_PHASE" = "owned" ]; then
+            [ "$(path_fingerprint "$path" 2>/dev/null || true)" = \
+                "$OWNERSHIP_FINGERPRINT" ] || return 1
+            write_installer_ownership_record \
+                "$record" "$transaction_id" "$expected_kind" deleting \
+                "$expected_name" "$OWNERSHIP_IDENTITY" \
+                "$OWNERSHIP_FINGERPRINT" 1 || return 1
+            load_installer_ownership_record "$record" \
+                && [ "$OWNERSHIP_PHASE" = "deleting" ] \
+                || return 1
+        fi
+        rm -rf "$path" || return 1
+        sync_install_directories "$install_dir" || return 1
+        ! install_path_exists "$path" || return 1
+    fi
+    if [ "$remove_record" -eq 1 ]; then
+        remove_installer_ownership_record "$record"
+    fi
+}
+
+create_installer_staging() {
+    local stage=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local record
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+    ! install_path_exists "$stage" \
+        && ! install_path_exists "$record" \
+        || return 1
+    mkdir "$stage" || return 1
+    record_installer_owned_tree \
+        "$stage" "$install_dir" "$transaction_id" staging 0
+}
+
+cleanup_install_staging_after_attempt() {
+    local stage=$1
+    local install_dir=$2
+    local transaction_id=$3
+    local backup="$install_dir/.install-backup-$transaction_id"
+    local record
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+
+    # Once a journal exists, recovery exclusively owns its staging tree and
+    # ownership record. An outer error path must not erase that evidence.
+    install_path_exists "$backup" && return 0
+    if install_path_exists "$stage"; then
+        refresh_recorded_staging_ownership \
+            "$stage" "$install_dir" "$transaction_id" || return 1
+    elif ! install_path_exists "$record"; then
+        return 0
+    fi
+    remove_installer_owned_tree \
+        "$install_dir" "$transaction_id" staging 1
 }
 
 write_install_transaction() {
@@ -1698,8 +1973,25 @@ cleanup_recorded_staging() {
     local backup=$1
     local install_dir=$2
     load_install_transaction "$backup" || return 1
-    rm -rf "${install_dir:?}/$TX_STAGING_NAME"
-    sync_install_directories "$install_dir"
+    local record
+    local staging="$install_dir/$TX_STAGING_NAME"
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$TX_ID") || return 1
+    load_installer_ownership_record "$record" || return 1
+
+    if [ "$OWNERSHIP_KIND" = "garbage" ]; then
+        # Retirement may have durably advanced its ownership record before a
+        # process died moving the backup. The staging tree must already be gone.
+        [ "$OWNERSHIP_ID" = "$TX_ID" ] \
+            && [ "$OWNERSHIP_NAME" = ".install-garbage-$TX_ID" ] \
+            && ! install_path_exists "$staging"
+        return $?
+    fi
+    [ "$OWNERSHIP_ID" = "$TX_ID" ] \
+        && [ "$OWNERSHIP_KIND" = "staging" ] \
+        && [ "$OWNERSHIP_NAME" = "$TX_STAGING_NAME" ] \
+        || return 1
+    remove_installer_owned_tree "$install_dir" "$TX_ID" staging 0
 }
 
 durable_move() {
@@ -1714,11 +2006,44 @@ retire_install_transaction() {
     local install_dir=$2
     local transaction_id=$3
     local garbage="$install_dir/.install-garbage-$transaction_id"
-    rm -rf "$garbage" || return 1
+    local record
+    record=$(installer_ownership_record_path \
+        "$install_dir" "$transaction_id") || return 1
+    load_install_transaction "$backup" \
+        && [ "$TX_ID" = "$transaction_id" ] \
+        || return 1
+
+    # A destination that appeared before our recorded move is not ours.
+    ! install_path_exists "$garbage" || return 1
+    load_installer_ownership_record "$record" || return 1
+    if [ "$OWNERSHIP_KIND" = "staging" ]; then
+        [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+            && [ "$OWNERSHIP_NAME" = \
+                ".install-staging-$transaction_id" ] \
+            && ! install_path_exists \
+                "$install_dir/.install-staging-$transaction_id" \
+            || return 1
+        record_installer_owned_tree \
+            "$backup" "$install_dir" "$transaction_id" garbage 1 \
+            ".install-garbage-$transaction_id" \
+            || return 1
+    fi
+    load_installer_ownership_record "$record" \
+        && [ "$OWNERSHIP_ID" = "$transaction_id" ] \
+        && [ "$OWNERSHIP_KIND" = "garbage" ] \
+        && [ "$OWNERSHIP_PHASE" = "owned" ] \
+        && [ "$OWNERSHIP_NAME" = \
+            ".install-garbage-$transaction_id" ] \
+        && [ -d "$backup" ] \
+        && [ ! -L "$backup" ] \
+        && path_matches_identity "$backup" "$OWNERSHIP_IDENTITY" \
+        && [ "$(path_fingerprint "$backup" \
+            2>/dev/null || true)" = "$OWNERSHIP_FINGERPRINT" ] \
+        || return 1
     durable_move "$backup" "$garbage" || return 1
     install_test_crash "transaction-retired"
-    rm -rf "$garbage" || return 1
-    sync_install_directories "$install_dir"
+    remove_installer_owned_tree \
+        "$install_dir" "$transaction_id" garbage 1
 }
 
 remove_managed_links() {
@@ -1994,7 +2319,8 @@ finalize_committed_app_transaction() {
             install_path_exists "$preserved" && return 1
             durable_move "$backup/Darkbloom.app" "$preserved" || return 1
         else
-            install_path_exists "$preserved" || return 1
+            path_matches_identity \
+                "$preserved" "$TX_PREVIOUS_APP_IDENTITY" || return 1
         fi
         echo "  ⚠ Preserved the previous foreign app at:"
         echo "      $preserved"
@@ -2202,6 +2528,25 @@ legacy_install_transaction_is_valid() {
     done
 }
 
+cleanup_v1_recorded_staging() {
+    local backup=$1
+    local install_dir=$2
+    local transaction_id=${backup##*/.install-backup-}
+    local staging_name
+    staging_name=$(sed -n '1p' "$backup/.staging-name" \
+        2>/dev/null || true)
+    [ "$staging_name" = ".install-staging-$transaction_id" ] || return 1
+    local staging="$install_dir/$staging_name"
+    install_path_exists "$staging" || return 0
+    [ -d "$staging" ] && [ ! -L "$staging" ] || return 1
+
+    # Version-one journals predate inode ownership records. The exact
+    # journal/name pair is the only authority available for compatibility;
+    # the generic debris pass never deletes an unpaired legacy name.
+    rm -rf "$staging" \
+        && sync_install_directories "$install_dir"
+}
+
 recover_legacy_install_transaction() {
     local backup=$1
     local install_dir=$2
@@ -2225,6 +2570,9 @@ recover_legacy_install_transaction() {
                 "$backup/bin" "$install_dir/bin" "$install_dir" \
                 "bin" "$transaction_id" || return 1
         fi
+    fi
+    if [ "$allow_v1_metadata" -eq 1 ]; then
+        cleanup_v1_recorded_staging "$backup" "$install_dir" || return 1
     fi
     rm -rf "$backup" && sync_install_directories "$install_dir"
 }
@@ -2284,18 +2632,50 @@ recover_v1_install_transaction() {
         else
             flat_layout_complete "$install_dir/bin" || return 1
         fi
+        cleanup_v1_recorded_staging "$backup" "$install_dir" || return 1
         rm -rf "$backup"
         return
     fi
     recover_legacy_install_transaction "$backup" "$install_dir" 1
 }
 
-installer_debris_name_is_valid() {
+installer_owned_debris_transaction_id() {
     local name=$1
-    [[ "$name" =~ ^\.install-staging-[0-9]+-[0-9]+(-[0-9]+)?$ ]] \
-        || [[ "$name" =~ ^\.install-garbage-[0-9]+-[0-9]+-[0-9]+$ ]] \
-        || [[ "$name" =~ ^\.install-restore-[0-9]+-[0-9]+(-[0-9]+)?$ ]] \
-        || [[ "$name" =~ ^\.install-legacy-[A-Za-z0-9.]+-[0-9]+-[0-9]+$ ]]
+    local kind=$2
+    case "$kind" in
+        staging)
+            [[ "$name" =~ ^\.install-staging-([0-9]+-[0-9]+-[0-9]+)$ ]] \
+                || return 1
+            ;;
+        garbage)
+            [[ "$name" =~ ^\.install-garbage-([0-9]+-[0-9]+-[0-9]+)$ ]] \
+                || return 1
+            ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+recover_owned_installer_debris() {
+    local debris=$1
+    local install_dir=$2
+    local kind=$3
+    local transaction_id
+    if [ -L "$debris" ] || [ ! -d "$debris" ]; then
+        fail_install "Installer debris is not a directory: $debris."
+        return 1
+    fi
+    transaction_id=$(installer_owned_debris_transaction_id \
+        "${debris##*/}" "$kind") || {
+        fail_install "Unrecognized installer debris at $debris."
+        return 1
+    }
+    remove_installer_owned_tree \
+        "$install_dir" "$transaction_id" "$kind" 1 || {
+        fail_install \
+            "Installer debris is not paired with its ownership record: $debris."
+        return 1
+    }
 }
 
 recover_interrupted_install_transactions() {
@@ -2373,26 +2753,51 @@ recover_interrupted_install_transactions() {
     done
 
     local debris
-    local removed=0
+    for debris in "$install_dir"/.install-staging-*; do
+        install_path_exists "$debris" || continue
+        recover_owned_installer_debris \
+            "$debris" "$install_dir" staging || return 1
+    done
+    for debris in "$install_dir"/.install-garbage-*; do
+        install_path_exists "$debris" || continue
+        recover_owned_installer_debris \
+            "$debris" "$install_dir" garbage || return 1
+    done
+
+    # Old restore scratch trees did not carry an identity. If one survives its
+    # paired legacy recovery, its name alone is not authority to delete it.
     for debris in \
-        "$install_dir"/.install-staging-* \
-        "$install_dir"/.install-garbage-* \
         "$install_dir"/.install-restore-* \
         "$install_dir"/.install-legacy-*
     do
         install_path_exists "$debris" || continue
-        if [ -L "$debris" ] || [ ! -d "$debris" ]; then
-            fail_install "Installer debris is not a directory: $debris."
-            return 1
-        fi
-        installer_debris_name_is_valid "${debris##*/}" || {
-            fail_install "Unrecognized installer debris at $debris."
+        fail_install "Unpaired installer debris requires manual inspection: $debris."
+        return 1
+    done
+
+    local record
+    local target
+    for record in "$install_dir"/.install-ownership-*; do
+        install_path_exists "$record" || continue
+        load_installer_ownership_record "$record" || {
+            fail_install "Installer ownership metadata is invalid at $record."
             return 1
         }
-        rm -rf "$debris" || return 1
-        removed=1
+        target="$install_dir/$OWNERSHIP_NAME"
+        if install_path_exists "$target"; then
+            fail_install \
+                "Installer ownership metadata has unresolved debris at $target."
+            return 1
+        fi
+        if install_path_exists \
+            "$install_dir/.install-backup-$OWNERSHIP_ID"
+        then
+            fail_install \
+                "Installer ownership metadata still belongs to an active transaction at $record."
+            return 1
+        fi
+        remove_installer_ownership_record "$record" || return 1
     done
-    [ "$removed" -eq 0 ] || sync_install_directories "$install_dir"
 }
 
 create_managed_link() {
@@ -2482,6 +2887,8 @@ commit_staged_app() {
     if [ "$had_bin" -eq 1 ]; then
         sync_install_tree "$bin_dir" || return 1
     fi
+    refresh_recorded_staging_ownership \
+        "$stage_root" "$install_dir" "$transaction_id" || return 1
     local candidate_app_identity
     local candidate_bin_identity
     local candidate_app_fingerprint
@@ -2529,8 +2936,18 @@ commit_staged_app() {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     fi
+    refresh_recorded_staging_ownership \
+        "$stage_root" "$install_dir" "$transaction_id" || {
+        recover_prepared_app_transaction "$backup" "$install_dir" || true
+        return 1
+    }
     install_test_crash "staged-app-moved"
     durable_move "$candidate_bin" "$bin_dir" || {
+        recover_prepared_app_transaction "$backup" "$install_dir" || true
+        return 1
+    }
+    refresh_recorded_staging_ownership \
+        "$stage_root" "$install_dir" "$transaction_id" || {
         recover_prepared_app_transaction "$backup" "$install_dir" || true
         return 1
     }
@@ -2588,6 +3005,9 @@ commit_staged_flat_bundle() {
     if [ "$had_bin" -eq 1 ]; then
         sync_install_tree "$destination" || return 1
     fi
+    local stage_root=${staged_bin%/bin}
+    refresh_recorded_staging_ownership \
+        "$stage_root" "$install_dir" "$transaction_id" || return 1
     local candidate_bin_identity
     local candidate_bin_fingerprint
     candidate_bin_identity=$(path_identity "$staged_bin") || return 1
@@ -2619,6 +3039,11 @@ commit_staged_flat_bundle() {
         recover_prepared_flat_transaction "$backup" "$install_dir" || true
         return 1
     fi
+    refresh_recorded_staging_ownership \
+        "$stage_root" "$install_dir" "$transaction_id" || {
+        recover_prepared_flat_transaction "$backup" "$install_dir" || true
+        return 1
+    }
     install_test_crash "flat-layout-moved"
     if ! flat_layout_complete "$destination" \
         || ! path_matches_candidate_state \
@@ -2656,74 +3081,88 @@ install_bundle_atomically_locked() {
     local transaction_id
     transaction_id="$$-$RANDOM-$(date +%s)"
     local stage="$install_dir/.install-staging-$transaction_id"
-    rm -rf "$stage"
-    mkdir -p "$stage"
-    sync_install_directories "$install_dir"
+    create_installer_staging \
+        "$stage" "$install_dir" "$transaction_id" || return 1
     install_test_crash "staging-created"
     if ! tar xzf "$archive" -C "$stage"; then
-        rm -rf "$stage"
-        sync_install_directories "$install_dir" || true
+        cleanup_install_staging_after_attempt \
+            "$stage" "$install_dir" "$transaction_id" || true
         return 1
     fi
+    refresh_recorded_staging_ownership \
+        "$stage" "$install_dir" "$transaction_id" || {
+        cleanup_install_staging_after_attempt \
+            "$stage" "$install_dir" "$transaction_id" || true
+        return 1
+    }
 
     local flat_bin="$stage/bin"
     [ -f "$flat_bin/darkbloom" ] \
         && [ -f "$flat_bin/darkbloom-enclave" ] \
         && [ -f "$flat_bin/mlx.metallib" ] \
         || {
-            rm -rf "$stage"
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
             fail_install "Release bundle is missing required flat verifier files."
             return 1
         }
     verify_file_hash "$flat_bin/darkbloom" "$binary_hash" "Binary" || {
-        rm -rf "$stage"
+        cleanup_install_staging_after_attempt \
+            "$stage" "$install_dir" "$transaction_id" || true
         return 1
     }
     verify_file_hash "$flat_bin/mlx.metallib" "$metallib_hash" "Metallib" || {
-        rm -rf "$stage"
+        cleanup_install_staging_after_attempt \
+            "$stage" "$install_dir" "$transaction_id" || true
         return 1
     }
 
     if [ -d "$stage/Darkbloom.app" ]; then
         verify_staged_app_payload \
             "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
-            rm -rf "$stage"
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
             return 1
         }
         verify_staged_app "$stage/Darkbloom.app" || {
-            rm -rf "$stage"
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
             return 1
         }
         commit_staged_app \
             "$stage/Darkbloom.app" "$install_dir" "$transaction_id" || {
-            rm -rf "$stage"
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
             fail_install "Atomic app swap failed; previous install was restored."
             return 1
         }
     else
         if [ "$INSTALL_TEST_MODE" = "1" ]; then
             codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 || {
-                rm -rf "$stage"
+                cleanup_install_staging_after_attempt \
+                    "$stage" "$install_dir" "$transaction_id" || true
                 fail_install "Strict signature verification failed for legacy flat artifact."
                 return 1
             }
         else
             verify_code_requirement \
                 "$flat_bin/darkbloom" 0 "$DARKBLOOM_DESIGNATED_REQUIREMENT" || {
-                rm -rf "$stage"
+                cleanup_install_staging_after_attempt \
+                    "$stage" "$install_dir" "$transaction_id" || true
                 fail_install "Legacy flat artifact does not satisfy the pinned signature requirement."
                 return 1
             }
         fi
         commit_staged_flat_bundle \
             "$flat_bin" "$install_dir" "$transaction_id" || {
-            rm -rf "$stage"
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
             fail_install "Atomic flat-bundle swap failed; previous install was restored."
             return 1
         }
     fi
-    rm -rf "$stage"
-    sync_install_directories "$install_dir"
+    cleanup_install_staging_after_attempt \
+        "$stage" "$install_dir" "$transaction_id"
 }
 
 install_lock_noop() {

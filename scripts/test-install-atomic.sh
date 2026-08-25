@@ -971,12 +971,10 @@ assert_recovery_is_restart_safe() {
     test "$(cat "$destination/foreign-payload")" = "foreign payload"
     test "$(cat "$bin_dir/darkbloom")" = "previous darkbloom"
     test "$(cat "$bin_dir/mlx.metallib")" = "previous metallib"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "restart-safe recovery"
     local debris
-    for debris in \
-        "$install_dir"/.install-backup-* \
-        "$install_dir"/.install-staging-* \
-        "$install_dir"/*.interrupted-*
-    do
+    for debris in "$install_dir"/*.interrupted-*; do
         if [ -e "$debris" ] || [ -L "$debris" ]; then
             echo "restart-safe recovery left unexpected debris: $debris" >&2
             exit 1
@@ -985,8 +983,8 @@ assert_recovery_is_restart_safe() {
 }
 
 test_path_identity() {
-    stat -f '%d:%i' "$1" 2>/dev/null \
-        || stat -c '%d:%i' "$1" 2>/dev/null
+    stat -c '%d:%i' "$1" 2>/dev/null \
+        || stat -f '%d:%i' "$1" 2>/dev/null
 }
 
 assert_fresh_recovery_rejects_replacement() {
@@ -1075,6 +1073,8 @@ assert_fresh_recovery_removes_partial_candidate() {
     local backups=("$install_dir"/.install-backup-*)
     test "${#backups[@]}" -eq 0
     test -e "${preserved[0]}"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "partial fresh candidate recovery"
 }
 
 assert_recovery_preserves_mutated_candidate_and_restores_previous() {
@@ -1097,6 +1097,8 @@ assert_recovery_preserves_mutated_candidate_and_restores_previous() {
     test "${#preserved[@]}" -eq 1
     test "$(cat "${preserved[0]}/created-after-crash")" = \
         "created after crash"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "mutated candidate recovery"
 }
 
 for mutation_label in source embedded; do
@@ -1110,6 +1112,294 @@ for mutation_label in source embedded; do
     assert_recovery_preserves_mutated_candidate_and_restores_previous \
         "$mutation_installer" "$mutation_label"
 done
+
+assert_unpaired_installer_tree_survives() {
+    local installer=$1
+    local label=$2
+    local kind=$3
+    local install_dir="$ROOT/unpaired-$kind-$label"
+    local transaction_id=123-456-789
+    local debris="$install_dir/.install-$kind-$transaction_id"
+    mkdir -p "$debris"
+    printf 'unrelated %s\n' "$kind" > "$debris/sentinel"
+    local debris_identity
+    debris_identity=$(test_path_identity "$debris")
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer accepted unpaired $kind debris" >&2
+        return 1
+    fi
+    test "$(test_path_identity "$debris")" = "$debris_identity"
+    test "$(cat "$debris/sentinel")" = "unrelated $kind"
+}
+
+assert_replaced_staging_survives_and_owned_staging_retires() {
+    local installer=$1
+    local label=$2
+    local kind=$3
+    local install_dir="$ROOT/replaced-staging-$kind-$label"
+    local archive
+    if [ "$kind" = app ]; then
+        archive=$VALID
+    else
+        archive=$FLAT_LEGACY
+    fi
+
+    installer_recovery_expect_install_crash \
+        "$installer" "$archive" "$install_dir" transaction-prepared
+    local backup
+    backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$backup" prepared
+    local transaction_id=${backup##*/.install-backup-}
+    local stage="$install_dir/.install-staging-$transaction_id"
+    local ownership="$install_dir/.install-ownership-$transaction_id"
+    test -d "$stage"
+    test -f "$ownership"
+
+    local owned_stage="$ROOT/replaced-staging-owned-$kind-$label"
+    local unrelated_stage="$ROOT/replaced-staging-unrelated-$kind-$label"
+    mv "$stage" "$owned_stage"
+    mkdir "$stage"
+    printf 'same-name unrelated staging\n' > "$stage/sentinel"
+    local replacement_identity
+    replacement_identity=$(test_path_identity "$stage")
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer deleted a replacement staging tree" >&2
+        return 1
+    fi
+    test "$(test_path_identity "$stage")" = "$replacement_identity"
+    test "$(cat "$stage/sentinel")" = "same-name unrelated staging"
+    installer_recovery_assert_manifest_phase "$backup" rolled_back
+
+    mv "$stage" "$unrelated_stage"
+    mv "$owned_stage" "$stage"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$unrelated_stage/sentinel")" = \
+        "same-name unrelated staging"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "$kind replacement staging recovery"
+}
+
+installer_recovery_only_garbage() {
+    local install_dir=$1
+    local garbage=()
+    local candidate
+    for candidate in "$install_dir"/.install-garbage-*; do
+        if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+            garbage+=("$candidate")
+        fi
+    done
+    [ "${#garbage[@]}" -eq 1 ] || {
+        echo "expected one retired transaction in $install_dir, found ${#garbage[@]}" >&2
+        return 1
+    }
+    printf '%s\n' "${garbage[0]}"
+}
+
+assert_retirement_preserves_preexisting_garbage() {
+    local installer=$1
+    local label=$2
+    local kind=$3
+    local recovery_kind=$4
+    local install_dir="$ROOT/retirement-collision-$kind-$recovery_kind-$label"
+    local archive
+    local crash_point
+    local expected_phase
+    if [ "$kind" = app ]; then
+        archive=$VALID
+        crash_point='staged-app-moved'
+    else
+        archive=$FLAT_LEGACY
+        crash_point='flat-layout-moved'
+    fi
+    if [ "$recovery_kind" = committed ]; then
+        if [ "$kind" = app ]; then
+            crash_point='app-transaction-committed'
+        else
+            crash_point='flat-transaction-committed'
+        fi
+        expected_phase=committed
+    else
+        expected_phase=rolled_back
+    fi
+
+    installer_recovery_expect_install_crash \
+        "$installer" "$archive" "$install_dir" "$crash_point"
+    local backup
+    backup=$(installer_recovery_only_backup "$install_dir")
+    if [ "$recovery_kind" = committed ]; then
+        installer_recovery_assert_manifest_phase "$backup" committed
+    else
+        installer_recovery_assert_manifest_phase "$backup" prepared
+    fi
+    local transaction_id=${backup##*/.install-backup-}
+    local garbage_path="$install_dir/.install-garbage-$transaction_id"
+    local unrelated_garbage="$ROOT/retirement-collision-unrelated-$kind-$recovery_kind-$label"
+    mkdir "$garbage_path"
+    printf 'preexisting unrelated garbage\n' > "$garbage_path/sentinel"
+    local garbage_identity
+    garbage_identity=$(test_path_identity "$garbage_path")
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer replaced preexisting garbage during retirement" >&2
+        return 1
+    fi
+    test "$(test_path_identity "$garbage_path")" = "$garbage_identity"
+    test "$(cat "$garbage_path/sentinel")" = "preexisting unrelated garbage"
+    installer_recovery_assert_manifest_phase "$backup" "$expected_phase"
+
+    mv "$garbage_path" "$unrelated_garbage"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$unrelated_garbage/sentinel")" = \
+        "preexisting unrelated garbage"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "$kind $recovery_kind retirement collision recovery"
+}
+
+assert_replaced_garbage_survives_and_owned_garbage_retires() {
+    local installer=$1
+    local label=$2
+    local kind=$3
+    local recovery_kind=$4
+    local install_dir="$ROOT/replaced-garbage-$kind-$recovery_kind-$label"
+    local archive
+    local interrupted_point
+    if [ "$kind" = app ]; then
+        archive=$VALID
+        interrupted_point=staged-app-moved
+    else
+        archive=$FLAT_LEGACY
+        interrupted_point=flat-layout-moved
+    fi
+
+    if [ "$recovery_kind" = committed ]; then
+        installer_recovery_expect_install_crash \
+            "$installer" "$archive" "$install_dir" transaction-retired
+    else
+        installer_recovery_expect_install_crash \
+            "$installer" "$archive" "$install_dir" "$interrupted_point"
+        local interrupted_backup
+        interrupted_backup=$(installer_recovery_only_backup "$install_dir")
+        installer_recovery_assert_manifest_phase \
+            "$interrupted_backup" prepared
+        installer_recovery_expect_recovery_crash \
+            "$installer" "$install_dir" transaction-retired
+    fi
+
+    local garbage_path
+    garbage_path=$(installer_recovery_only_garbage "$install_dir")
+    local expected_phase=committed
+    if [ "$recovery_kind" = interrupted ]; then
+        expected_phase=rolled_back
+    fi
+    installer_recovery_assert_manifest_phase "$garbage_path" "$expected_phase"
+    local transaction_id=${garbage_path##*/.install-garbage-}
+    test -f "$install_dir/.install-ownership-$transaction_id"
+
+    local owned_garbage="$ROOT/replaced-garbage-owned-$kind-$recovery_kind-$label"
+    local unrelated_garbage="$ROOT/replaced-garbage-unrelated-$kind-$recovery_kind-$label"
+    mv "$garbage_path" "$owned_garbage"
+    mkdir "$garbage_path"
+    printf 'same-name unrelated garbage\n' > "$garbage_path/sentinel"
+    local replacement_identity
+    replacement_identity=$(test_path_identity "$garbage_path")
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer deleted a replacement garbage tree" >&2
+        return 1
+    fi
+    test "$(test_path_identity "$garbage_path")" = "$replacement_identity"
+    test "$(cat "$garbage_path/sentinel")" = "same-name unrelated garbage"
+    installer_recovery_assert_manifest_phase \
+        "$owned_garbage" "$expected_phase"
+
+    mv "$garbage_path" "$unrelated_garbage"
+    mv "$owned_garbage" "$garbage_path"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$unrelated_garbage/sentinel")" = \
+        "same-name unrelated garbage"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "$kind $recovery_kind replacement garbage recovery"
+}
+
+assert_committed_foreign_recovery_requires_previous_identity() {
+    local installer=$1
+    local label=$2
+    local install_dir="$ROOT/foreign-identity-$label"
+    local destination="$install_dir/Darkbloom.app"
+    write_existing_bundle "$destination" com.example.foreign-identity
+    printf 'journaled previous app\n' > "$destination/previous-only"
+
+    installer_recovery_expect_install_crash \
+        "$installer" "$VALID" "$install_dir" app-transaction-committed
+    local backup
+    backup=$(installer_recovery_only_backup "$install_dir")
+    installer_recovery_assert_manifest_phase "$backup" committed
+    local transaction_id=${backup##*/.install-backup-}
+    local preserved_path="$install_dir/Darkbloom.app.foreign-$transaction_id"
+    mv "$backup/Darkbloom.app" "$preserved_path"
+    local previous_identity
+    previous_identity=$(test_path_identity "$preserved_path")
+
+    local journaled_previous="$ROOT/foreign-identity-owned-$label"
+    local unrelated_previous="$ROOT/foreign-identity-unrelated-$label"
+    mv "$preserved_path" "$journaled_previous"
+    mkdir "$preserved_path"
+    printf 'same-name unrelated foreign app\n' > "$preserved_path/sentinel"
+    local replacement_identity
+    replacement_identity=$(test_path_identity "$preserved_path")
+
+    if bash "$installer" \
+        --recover-install-transactions-test "$install_dir"
+    then
+        echo "$installer accepted an unrelated committed foreign app" >&2
+        return 1
+    fi
+    test "$(test_path_identity "$preserved_path")" = "$replacement_identity"
+    test "$(cat "$preserved_path/sentinel")" = \
+        "same-name unrelated foreign app"
+    installer_recovery_assert_manifest_phase "$backup" committed
+
+    mv "$preserved_path" "$unrelated_previous"
+    mv "$journaled_previous" "$preserved_path"
+    test "$(test_path_identity "$preserved_path")" = "$previous_identity"
+    bash "$installer" --recover-install-transactions-test "$install_dir"
+    test "$(cat "$preserved_path/previous-only")" = "journaled previous app"
+    test "$(cat "$unrelated_previous/sentinel")" = \
+        "same-name unrelated foreign app"
+    installer_recovery_assert_no_transaction_debris \
+        "$install_dir" "committed foreign identity recovery"
+}
+
+assert_unpaired_installer_tree_survives \
+    "$REPO_ROOT/scripts/install.sh" source staging
+assert_unpaired_installer_tree_survives \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded garbage
+assert_replaced_staging_survives_and_owned_staging_retires \
+    "$REPO_ROOT/scripts/install.sh" source app
+assert_replaced_staging_survives_and_owned_staging_retires \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded flat
+assert_retirement_preserves_preexisting_garbage \
+    "$REPO_ROOT/scripts/install.sh" source app interrupted
+assert_retirement_preserves_preexisting_garbage \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded flat committed
+assert_replaced_garbage_survives_and_owned_garbage_retires \
+    "$REPO_ROOT/scripts/install.sh" source app committed
+assert_replaced_garbage_survives_and_owned_garbage_retires \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded flat interrupted
+assert_committed_foreign_recovery_requires_previous_identity \
+    "$REPO_ROOT/scripts/install.sh" source
+assert_committed_foreign_recovery_requires_previous_identity \
+    "$REPO_ROOT/coordinator/api/install.sh" embedded
 
 assert_committed_app_mutation_rolls_back() {
     local installer=$1

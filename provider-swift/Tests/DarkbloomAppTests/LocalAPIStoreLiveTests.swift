@@ -273,7 +273,8 @@ struct LocalAPIStoreLiveTests {
 
         probe.behavior = .succeeds(["gpt-oss-20b"])
         store.retryPreviewModelCatalog()
-        for _ in 0..<200 where probe.probeCount == 1 {
+        for _ in 0..<1_000
+        where store.endpoint?.availableModelIDs != ["gpt-oss-20b"] {
             try? await Task.sleep(for: .milliseconds(5))
         }
         #expect(store.endpoint?.availableModelIDs == ["gpt-oss-20b"])

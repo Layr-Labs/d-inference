@@ -135,6 +135,8 @@ func TestAdminLogReportRetrievalRequiresAdmin(t *testing.T) {
 
 func TestAdminLogReportSerialListRouteIsRemoved(t *testing.T) {
 	srv, _ := newLogReportTestServer()
+	srv.mux = http.NewServeMux()
+	srv.routes()
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/log-reports?serial=PRIVATE-SERIAL", nil)
 	req.Header.Set("Authorization", "Bearer test-admin-key")
 	recorder := httptest.NewRecorder()

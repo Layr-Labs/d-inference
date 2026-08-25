@@ -428,6 +428,32 @@ public struct SelfUpdater: Sendable {
         /// Full extracted-tree digest captured after stage verification and
         /// checked again immediately before commit.
         let stagedTreeHash: String
+        /// Exact modes of the payload that will become live.
+        let artifactModes: UpdateArtifactModes
+
+        var installedBinary: URL {
+            extractedApp?.appendingPathComponent("Contents/MacOS/darkbloom")
+                ?? flatDarkbloom
+        }
+
+        var installedEnclave: URL {
+            extractedApp?.appendingPathComponent(
+                "Contents/MacOS/darkbloom-enclave"
+            ) ?? flatEnclave
+        }
+
+        var installedMetallib: URL {
+            extractedApp?.appendingPathComponent("Contents/MacOS/mlx.metallib")
+                ?? flatMetallib
+        }
+
+        func currentArtifactModes() throws -> UpdateArtifactModes {
+            try UpdateArtifactModes(
+                binary: installedBinary,
+                enclave: installedEnclave,
+                metallib: installedMetallib
+            )
+        }
 
         /// Remove the staged contents from disk (failure/abort cleanup).
         public func discard() {
@@ -644,6 +670,28 @@ public struct SelfUpdater: Sendable {
                 }
             }
 
+            let artifactModes = try UpdateArtifactModes(
+                binary: hasAppBundle
+                    ? extractedApp.appendingPathComponent(
+                        "Contents/MacOS/darkbloom"
+                    )
+                    : flatDarkbloom,
+                enclave: hasAppBundle
+                    ? extractedApp.appendingPathComponent(
+                        "Contents/MacOS/darkbloom-enclave"
+                    )
+                    : flatEnclave,
+                metallib: hasAppBundle
+                    ? extractedApp.appendingPathComponent(
+                        "Contents/MacOS/mlx.metallib"
+                    )
+                    : flatMetallib
+            )
+            if let payload = artifactModes.nonExecutablePayload {
+                throw UpdateError.replaceFailed(
+                    "release payload \(payload) is not executable"
+                )
+            }
             let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(
                 root: hasAppBundle
                     ? extractedApp
@@ -657,7 +705,8 @@ public struct SelfUpdater: Sendable {
                 flatMetallib: flatMetallib,
                 installDir: installDir,
                 release: release,
-                stagedTreeHash: stagedTreeHash
+                stagedTreeHash: stagedTreeHash,
+                artifactModes: artifactModes
             ))
         } catch let error as UpdateError {
             try? fm.removeItem(at: stagingRoot)
@@ -690,6 +739,11 @@ public struct SelfUpdater: Sendable {
             guard currentTreeHash == staged.stagedTreeHash else {
                 return .failure(.replaceFailed(
                     "staged bundle changed after verification; refusing commit"))
+            }
+            guard try staged.currentArtifactModes() == staged.artifactModes else {
+                return .failure(.replaceFailed(
+                    "staged payload permissions changed after verification; refusing commit"
+                ))
             }
             if session.store.verifyCodeSignatures {
                 if let app = staged.extractedApp {

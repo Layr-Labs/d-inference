@@ -4,6 +4,32 @@ import Testing
 
 @Suite("Update recovery state")
 struct UpdateRecoveryStateTests {
+    @Test("legacy release records decode without permission metadata")
+    func legacyReleaseRecordModeCompatibility() throws {
+        let data = Data(
+            """
+            {
+              "version": "1.0.0",
+              "installed_bundle_hash": "bundle",
+              "binary_hash": "binary",
+              "enclave_hash": "enclave",
+              "metallib_hash": "metallib",
+              "install_generation": 1,
+              "installed_at": 10
+            }
+            """.utf8
+        )
+
+        let record = try JSONDecoder().decode(
+            InstalledReleaseRecord.self,
+            from: data
+        )
+
+        #expect(record.binaryMode == nil)
+        #expect(record.enclaveMode == nil)
+        #expect(record.metallibMode == nil)
+    }
+
     @Test("directory durability failures are surfaced")
     func directoryFsyncFailsClosed() {
         #expect(throws: (any Error).self) {

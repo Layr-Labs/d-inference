@@ -461,6 +461,19 @@ struct SelfUpdaterTests {
         try Data("old darkbloom".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom"))
         try Data("old enclave".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom-enclave"))
         try Data("old metallib".utf8).write(to: liveMacOS.appendingPathComponent("mlx.metallib"))
+        for executable in [
+            appMacOS.appendingPathComponent("darkbloom"),
+            appMacOS.appendingPathComponent("darkbloom-enclave"),
+            binFlat.appendingPathComponent("darkbloom"),
+            binFlat.appendingPathComponent("darkbloom-enclave"),
+            liveMacOS.appendingPathComponent("darkbloom"),
+            liveMacOS.appendingPathComponent("darkbloom-enclave"),
+        ] {
+            try fm.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
         try fm.createSymbolicLink(
             atPath: liveBin.appendingPathComponent("mlx.metallib").path,
             withDestinationPath: "../Darkbloom.app/Contents/MacOS/mlx.metallib")
@@ -872,6 +885,82 @@ struct SelfUpdaterTests {
         #expect(try String(
             contentsOf: install.appendingPathComponent(
                 "Darkbloom.app/Contents/MacOS/darkbloom"),
+            encoding: .utf8
+        ) == "old darkbloom")
+    }
+
+    @Test("staging refuses a non-executable provider payload")
+    func stagingRefusesNonExecutablePayload() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-stage-mode-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let sourceBinary = root.appendingPathComponent(
+            "tarball-src/Darkbloom.app/Contents/MacOS/darkbloom"
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: sourceBinary.path
+        )
+        try runTarCreate(
+            sourceDir: root.appendingPathComponent("tarball-src"),
+            tarball: tarball
+        )
+
+        let result = SelfUpdater(
+            coordinatorBaseURL: "https://api.example.test"
+        ).stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        )
+
+        guard case .failure(let error) = result else {
+            Issue.record("non-executable provider payload was staged")
+            return
+        }
+        #expect("\(error)".contains("darkbloom is not executable"))
+    }
+
+    @Test("commit refuses chmod-only mutation after verification")
+    func commitRefusesPostStageModeMutation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-stage-mode-mutation-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "https://api.example.test"
+        )
+        guard case .success(let staged) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("stageBundleForTesting failed")
+            return
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o775],
+            ofItemAtPath: staged.installedBinary.path
+        )
+
+        guard case .failure(let error) =
+            updater.commitStagedBundleForTesting(staged)
+        else {
+            Issue.record("chmod-mutated staging tree was installed")
+            return
+        }
+        #expect("\(error)".contains("permissions changed after verification"))
+        #expect(try String(
+            contentsOf: install.appendingPathComponent(
+                "Darkbloom.app/Contents/MacOS/darkbloom"
+            ),
             encoding: .utf8
         ) == "old darkbloom")
     }

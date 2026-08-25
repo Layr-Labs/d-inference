@@ -57,6 +57,16 @@ extension UpdateRecoveryStore {
         }
 
         try verifySignature(layout: layout, bundle: copiedBundle, binary: copiedBinary)
+        let modes = try UpdateArtifactModes(
+            binary: copiedBinary,
+            enclave: copiedEnclave,
+            metallib: copiedMetallib
+        )
+        if let payload = modes.nonExecutablePayload {
+            throw StoreError.predecessorVerificationFailed(
+                "installed predecessor payload \(payload) is not executable"
+            )
+        }
         let release = InstalledReleaseRecord(
             version: version,
             releaseBundleHash: releaseBundleHash,
@@ -64,6 +74,9 @@ extension UpdateRecoveryStore {
             binaryHash: try UpdateAtomicFilesystem.sha256(file: copiedBinary),
             enclaveHash: try UpdateAtomicFilesystem.sha256(file: copiedEnclave),
             metallibHash: try UpdateAtomicFilesystem.sha256(file: copiedMetallib),
+            binaryMode: modes.binary,
+            enclaveMode: modes.enclave,
+            metallibMode: modes.metallib,
             installGeneration: installGeneration,
             installedAt: stateInstallDateFallback(now)
         )
@@ -120,6 +133,21 @@ extension UpdateRecoveryStore {
             enclave = staged.flatEnclave
             metallib = staged.flatMetallib
         }
+        let modes = try UpdateArtifactModes(
+            binary: binary,
+            enclave: enclave,
+            metallib: metallib
+        )
+        guard modes == staged.artifactModes else {
+            throw StoreError.filesystem(
+                "staged payload permissions changed before transaction commit"
+            )
+        }
+        if let payload = modes.nonExecutablePayload {
+            throw StoreError.filesystem(
+                "staged release payload \(payload) is not executable"
+            )
+        }
         return InstalledReleaseRecord(
             version: staged.release.version,
             releaseBundleHash: staged.release.bundleHash,
@@ -127,6 +155,9 @@ extension UpdateRecoveryStore {
             binaryHash: try UpdateAtomicFilesystem.sha256(file: binary),
             enclaveHash: try UpdateAtomicFilesystem.sha256(file: enclave),
             metallibHash: try UpdateAtomicFilesystem.sha256(file: metallib),
+            binaryMode: modes.binary,
+            enclaveMode: modes.enclave,
+            metallibMode: modes.metallib,
             installGeneration: generation,
             installedAt: now
         )
@@ -232,6 +263,16 @@ extension UpdateRecoveryStore {
         else {
             return false
         }
+        let modes = try UpdateArtifactModes(
+            binary: paths.binary,
+            enclave: paths.enclave,
+            metallib: paths.metallib
+        )
+        guard modes.nonExecutablePayload == nil,
+              modes.matches(record)
+        else {
+            return false
+        }
         guard try UpdateAtomicFilesystem.sha256(file: paths.binary) == record.binaryHash,
               try UpdateAtomicFilesystem.sha256(file: paths.enclave) == record.enclaveHash,
               try UpdateAtomicFilesystem.sha256(file: paths.metallib) == record.metallibHash,
@@ -257,6 +298,16 @@ extension UpdateRecoveryStore {
         guard fm.fileExists(atPath: paths.binary.path),
               fm.fileExists(atPath: paths.enclave.path),
               fm.fileExists(atPath: paths.metallib.path)
+        else {
+            return false
+        }
+        let modes = try UpdateArtifactModes(
+            binary: paths.binary,
+            enclave: paths.enclave,
+            metallib: paths.metallib
+        )
+        guard modes.nonExecutablePayload == nil,
+              modes.matches(target)
         else {
             return false
         }
@@ -307,11 +358,18 @@ extension UpdateRecoveryStore {
             enclave = bundle.appendingPathComponent("darkbloom-enclave")
             metallib = bundle.appendingPathComponent("mlx.metallib")
         }
+        let modes = try UpdateArtifactModes(
+            binary: binary,
+            enclave: enclave,
+            metallib: metallib
+        )
         guard try UpdateAtomicFilesystem.treeHash(root: bundle)
                 == predecessor.release.installedBundleHash,
               try UpdateAtomicFilesystem.sha256(file: binary) == predecessor.release.binaryHash,
               try UpdateAtomicFilesystem.sha256(file: enclave) == predecessor.release.enclaveHash,
-              try UpdateAtomicFilesystem.sha256(file: metallib) == predecessor.release.metallibHash
+              try UpdateAtomicFilesystem.sha256(file: metallib) == predecessor.release.metallibHash,
+              modes.nonExecutablePayload == nil,
+              modes.matches(predecessor.release)
         else {
             throw StoreError.predecessorVerificationFailed(
                 "rollback staging copy changed during copy")

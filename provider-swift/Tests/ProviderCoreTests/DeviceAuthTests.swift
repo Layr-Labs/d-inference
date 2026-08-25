@@ -17,6 +17,21 @@ import Testing
     }
 }
 
+@Test func providerAccountIdentityRequiresPublishedToken() {
+    #expect(
+        ProviderCredentialStore.publishedAccountID(
+            token: nil,
+            accountID: "orphan-account"
+        ) == nil
+    )
+    #expect(
+        ProviderCredentialStore.publishedAccountID(
+            token: "provider-token",
+            accountID: "linked-account"
+        ) == "linked-account"
+    )
+}
+
 @Test func authTokenLoadMigratesLegacyTokenToCanonicalPath() throws {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("darkbloom-device-auth-")

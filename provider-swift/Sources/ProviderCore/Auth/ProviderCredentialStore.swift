@@ -53,6 +53,22 @@ public enum ProviderIssuerStore: Sendable {
 /// is written last and remains the sole "logged in" marker. Consequently any
 /// reader that can observe the new token can also observe its account and issuer.
 public enum ProviderCredentialStore: Sendable {
+    /// Account identity is surfaced only when the token publication marker is
+    /// present. This preserves compatibility with legacy token/account files
+    /// while preventing a pre-token crash or failed login from publishing an
+    /// orphan account id in daemon state.
+    public static func publishedAccountID() -> String? {
+        publishedAccountID(
+            token: AuthTokenStore.load(),
+            accountID: ProviderAccountStore.load()
+        )
+    }
+
+    static func publishedAccountID(token: String?, accountID: String?) -> String? {
+        guard token != nil else { return nil }
+        return accountID
+    }
+
     public static func save(
         token: String,
         accountID: String,

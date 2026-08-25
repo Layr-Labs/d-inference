@@ -20,13 +20,33 @@ struct DeviceLoginEventTests {
             .appendingPathComponent("device-login-events-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tokenPath = dir.appendingPathComponent("auth_token").path
-        let previous = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"]
+        let accountPath = dir.appendingPathComponent("provider_account").path
+        let issuerPath = dir.appendingPathComponent("provider_issuer").path
+        let previousToken = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"]
+        let previousAccount = ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PROVIDER_ACCOUNT_PATH"
+        ]
+        let previousIssuer = ProcessInfo.processInfo.environment[
+            "DARKBLOOM_PROVIDER_ISSUER_PATH"
+        ]
         setenv("DARKBLOOM_AUTH_TOKEN_PATH", tokenPath, 1)
+        setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", accountPath, 1)
+        setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", issuerPath, 1)
         defer {
-            if let previous {
-                setenv("DARKBLOOM_AUTH_TOKEN_PATH", previous, 1)
+            if let previousToken {
+                setenv("DARKBLOOM_AUTH_TOKEN_PATH", previousToken, 1)
             } else {
                 unsetenv("DARKBLOOM_AUTH_TOKEN_PATH")
+            }
+            if let previousAccount {
+                setenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH", previousAccount, 1)
+            } else {
+                unsetenv("DARKBLOOM_PROVIDER_ACCOUNT_PATH")
+            }
+            if let previousIssuer {
+                setenv("DARKBLOOM_PROVIDER_ISSUER_PATH", previousIssuer, 1)
+            } else {
+                unsetenv("DARKBLOOM_PROVIDER_ISSUER_PATH")
             }
             try? FileManager.default.removeItem(at: dir)
         }
@@ -74,6 +94,65 @@ struct DeviceLoginEventTests {
             ])
             #expect(recorder.events.last?.isTerminal == true)
             #expect(try String(contentsOf: tokenPath) == "mock-token-123")
+            #expect(ProviderAccountStore.load() == "mock-account-id")
+            #expect(ProviderIssuerStore.load() == try canonicalCoordinatorIssuer(
+                base.absoluteString
+            ))
+        }
+    }
+
+    @Test("A non-2xx poll response is terminal and preserves its HTTP detail")
+    func pollHTTPStatusIsHandled() async throws {
+        try await withAuthTokenOverride { tokenPath in
+            let mock = MockCoordinator(
+                deviceCode: MockDeviceCodeFixture(
+                    denialMessage: "session is not authorized",
+                    denialUsesUnauthorizedHTTPStatus: true
+                )
+            )
+            let base = try await mock.start()
+            defer { Task { await mock.shutdown() } }
+
+            do {
+                _ = try await performDeviceCodeLogin(
+                    coordinatorURL: base.absoluteString,
+                    onDisplayCode: { _, _, _ in },
+                    openBrowser: false
+                )
+                Issue.record("expected the HTTP refusal to terminate login")
+            } catch let error as DeviceAuthError {
+                guard case .authorizationFailed(let detail) = error else {
+                    Issue.record("wrong error: \(error)")
+                    return
+                }
+                #expect(detail.contains("HTTP 401"))
+                #expect(detail.contains("session is not authorized"))
+            }
+            #expect(!FileManager.default.fileExists(atPath: tokenPath.path))
+            #expect(ProviderAccountStore.load() == nil)
+            #expect(ProviderIssuerStore.load() == nil)
+        }
+    }
+
+    @Test("Authorization without an account id publishes no partial credential")
+    func missingAccountIdentityFailsAtomically() async throws {
+        try await withAuthTokenOverride { tokenPath in
+            let mock = MockCoordinator(
+                deviceCode: MockDeviceCodeFixture(accountID: nil)
+            )
+            let base = try await mock.start()
+            defer { Task { await mock.shutdown() } }
+
+            await #expect(throws: DeviceAuthError.self) {
+                _ = try await performDeviceCodeLogin(
+                    coordinatorURL: base.absoluteString,
+                    onDisplayCode: { _, _, _ in },
+                    openBrowser: false
+                )
+            }
+            #expect(!FileManager.default.fileExists(atPath: tokenPath.path))
+            #expect(ProviderAccountStore.load() == nil)
+            #expect(ProviderIssuerStore.load() == nil)
         }
     }
 

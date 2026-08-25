@@ -57,6 +57,20 @@ struct ProcessLifecycleTests {
         #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == current)
     }
 
+    @Test("logout fails closed when a legacy PID-only record is still live")
+    func liveLegacyPIDCannotClaimStopped() throws {
+        let pidFile = tempPIDFile()
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        try "\(currentPID)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        #expect(!ProcessLifecycle.terminateRecordedInstance(
+            at: pidFile,
+            gracePeriod: 0
+        ))
+        #expect(ProcessLifecycle.singleInstanceOwner(at: pidFile) == nil)
+    }
+
     @Test("acquire is idempotent for the running process")
     func acquireIdempotent() throws {
         let pidFile = tempPIDFile()

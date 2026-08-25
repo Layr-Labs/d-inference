@@ -97,7 +97,7 @@ struct Status: AsyncParsableCommand {
             print("Daemon: not running (run `darkbloom start`)")
             return
         }
-        let alive = daemonProcessAlive(pid: state.pid)
+        let alive = DaemonStateRuntimeTruth.belongsToLiveProcess(state)
         if !alive {
             print("Daemon: not running (stale state file)")
             return

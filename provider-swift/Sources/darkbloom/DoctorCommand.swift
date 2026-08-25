@@ -92,7 +92,9 @@ struct Doctor: AsyncParsableCommand {
         )
 
         let daemonState = DaemonStateFile.read()
-        let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
+        let daemonRunning = daemonState.map {
+            DaemonStateRuntimeTruth.belongsToLiveProcess($0)
+        } ?? false
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?

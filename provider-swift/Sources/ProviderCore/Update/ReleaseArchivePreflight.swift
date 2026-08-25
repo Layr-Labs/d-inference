@@ -179,6 +179,7 @@ private enum ReleaseArchiveNodeKind {
 
 private struct ReleaseArchivePendingMetadata {
     var path: String?
+    var pathHasTrailingSlash = false
     var size: UInt64?
     var hasCodeSignatureMetadata = false
 }
@@ -308,13 +309,13 @@ private final class ReleaseTarValidator {
                 }
                 continue
             case 76: // L: GNU long name
-                var payload = try readMetadata(
+                let payload = try readMetadata(
                     size: headerSize,
                     label: "GNU long-name")
-                while payload.last == 0 || payload.last == 10 {
-                    payload.removeLast()
-                }
-                try mergePath(try cleanPath(payload))
+                let path = try cleanGNULongName(payload)
+                try mergePath(
+                    path.value,
+                    hasTrailingSlash: path.hasTrailingSlash)
                 continue
             case 75: // K: GNU long link
                 throw ReleaseArchivePreflightError(
@@ -329,6 +330,9 @@ private final class ReleaseTarValidator {
             } else {
                 effectivePath = try cleanPath(headerPath)
             }
+            let pathHasTrailingSlash = pending.path == nil
+                ? headerPath.last == 47
+                : pending.pathHasTrailingSlash
             let effectiveSize = pending.size ?? headerSize
             let hasCodeSignatureMetadata =
                 pending.hasCodeSignatureMetadata
@@ -338,6 +342,10 @@ private final class ReleaseTarValidator {
             switch typeflag {
             case 0, 48:
                 kind = .regular
+                guard !pathHasTrailingSlash else {
+                    throw ReleaseArchivePreflightError(
+                        "release archive regular-file path \(effectivePath) ends with a slash")
+                }
             case 53:
                 kind = .directory
                 guard effectiveSize == 0 else {
@@ -593,6 +601,7 @@ private final class ReleaseTarValidator {
             switch key {
             case "path":
                 attributes.path = try cleanPath(value)
+                attributes.pathHasTrailingSlash = value.last == 47
             case "linkpath":
                 throw ReleaseArchivePreflightError(
                     "release archive contains unsupported PAX link metadata")
@@ -711,7 +720,9 @@ private final class ReleaseTarValidator {
 
     private func merge(_ attributes: ReleaseArchivePendingMetadata) throws {
         if let path = attributes.path {
-            try mergePath(path)
+            try mergePath(
+                path,
+                hasTrailingSlash: attributes.pathHasTrailingSlash)
         }
         if let size = attributes.size {
             if let existing = pending.size, existing != size {
@@ -725,12 +736,36 @@ private final class ReleaseTarValidator {
             || attributes.hasCodeSignatureMetadata
     }
 
-    private func mergePath(_ path: String) throws {
-        if let existing = pending.path, existing != path {
+    private func mergePath(
+        _ path: String,
+        hasTrailingSlash: Bool
+    ) throws {
+        if let existing = pending.path,
+           existing != path
+            || pending.pathHasTrailingSlash != hasTrailingSlash
+        {
             throw ReleaseArchivePreflightError(
                 "release archive contains conflicting path metadata")
         }
         pending.path = path
+        pending.pathHasTrailingSlash = hasTrailingSlash
+    }
+
+    private func cleanGNULongName(
+        _ payload: [UInt8]
+    ) throws -> (value: String, hasTrailingSlash: Bool) {
+        var pathBytes = payload
+        if let nul = payload.firstIndex(of: 0) {
+            guard payload[nul...].allSatisfy({ $0 == 0 }) else {
+                throw ReleaseArchivePreflightError(
+                    "release archive GNU long name contains non-zero bytes after its NUL terminator")
+            }
+            pathBytes = Array(payload[..<nul])
+        }
+        return (
+            try cleanPath(pathBytes),
+            pathBytes.last == 47
+        )
     }
 
     private func cleanPath(_ bytes: [UInt8]) throws -> String {

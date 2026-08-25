@@ -117,6 +117,19 @@ if ($mode eq "large") {
         pack("C*", 0x80, (0xff) x 11),
         1,
     );
+} elsif ($mode eq "near_overflow") {
+    emit_entry(
+        "near-overflow",
+        "0",
+        "",
+        pack(
+            "C*",
+            0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ),
+        1,
+    );
 } elsif ($mode eq "duplicate") {
     emit_entry("./bin/darkbloom", "0", "", undef, 0);
     emit_entry("bin/darkbloom", "0", "", undef, 0);
@@ -133,6 +146,8 @@ if ($mode eq "large") {
     emit_entry("/tmp/escape", "0", "", undef, 0);
 } elsif ($mode eq "traversal") {
     emit_entry("bin/../escape", "0", "", undef, 0);
+} elsif ($mode eq "regular_slash") {
+    emit_entry("regular/", "0", "", undef, 0);
 } elsif ($mode eq "symlink") {
     emit_entry("dangerous", "2", "", undef, 0);
 } elsif ($mode eq "fifo") {
@@ -145,6 +160,10 @@ if ($mode eq "large") {
     emit_entry("file", "0", "", undef, 0);
 } elsif ($mode eq "pax_sun_sparse") {
     my $pax = pax_record("SUN.holesdata", "0 4096");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("file", "0", "", undef, 0);
+} elsif ($mode eq "pax_boundary_overflow") {
+    my $pax = pax_record("size", "9223372036854775808");
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("file", "0", "", undef, 0);
 } elsif ($mode eq "pax_mode") {
@@ -260,10 +279,34 @@ if ($mode eq "large") {
     my $pax = pax_record("path", $path);
     emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
     emit_entry("placeholder", "0", "resource", undef, 0);
+} elsif ($mode eq "pax_regular_slash") {
+    my $pax = pax_record("path", "regular/");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("placeholder", "0", "", undef, 0);
 } elsif ($mode eq "gnu_long") {
     my $path = "Darkbloom.app/Contents/Resources/" . ("long-name-" x 20);
     emit_entry("././\@LongLink", "L", "$path\0", undef, 0);
     emit_entry("placeholder", "0", "resource", undef, 0);
+} elsif ($mode eq "gnu_long_newline") {
+    emit_entry("././\@LongLink", "L", "safe-name\n", undef, 0);
+    emit_entry("placeholder", "0", "", undef, 0);
+} elsif ($mode eq "gnu_long_after_nul") {
+    emit_entry(
+        "././\@LongLink",
+        "L",
+        "safe-name\0other-name",
+        undef,
+        0,
+    );
+    emit_entry("placeholder", "0", "", undef, 0);
+} elsif ($mode eq "gnu_long_slash") {
+    emit_entry("././\@LongLink", "L", "regular/\0", undef, 0);
+    emit_entry("placeholder", "0", "", undef, 0);
+} elsif ($mode eq "conflicting_slash_metadata") {
+    my $pax = pax_record("path", "regular/");
+    emit_entry("PaxHeaders/file", "x", $pax, undef, 0);
+    emit_entry("././\@LongLink", "L", "regular\0", undef, 0);
+    emit_entry("placeholder", "0", "", undef, 0);
 } elsif ($mode eq "aggregate") {
     emit_entry("first", "0", "12345678", undef, 0);
     emit_entry("second", "0", "abcdefgh", undef, 0);
@@ -407,15 +450,21 @@ LARGE=$(make_fixture large)
 expect_rejection "$LARGE" "expanded-size limit"
 expect_rejection "$(make_fixture negative)" "negative"
 expect_rejection "$(make_fixture overflow)" "overflows int64"
+expect_rejection "$(make_fixture near_overflow)" "overflows int64"
 expect_rejection "$(make_fixture duplicate)" "duplicate"
 expect_rejection "$(make_fixture conflict)" "descends through file"
 expect_rejection "$(make_fixture absolute)" "absolute"
 expect_rejection "$(make_fixture traversal)" "parent traversal"
+expect_rejection "$(make_fixture regular_slash)" "ends with a slash"
+expect_rejection "$(make_fixture pax_regular_slash)" "ends with a slash"
+expect_rejection "$(make_fixture gnu_long_slash)" "ends with a slash"
+expect_rejection "$(make_fixture conflicting_slash_metadata)" "conflicting path metadata"
 expect_rejection "$(make_fixture symlink)" "unsupported node type"
 expect_rejection "$(make_fixture fifo)" "unsupported node type"
 expect_rejection "$(make_fixture sparse)" "unsupported node type"
 expect_rejection "$(make_fixture pax_sparse)" "unsupported sparse PAX metadata"
 expect_rejection "$(make_fixture pax_sun_sparse)" "unsupported sparse PAX metadata"
+expect_rejection "$(make_fixture pax_boundary_overflow)" "overflows"
 expect_rejection "$(make_fixture pax_mode)" "unsupported PAX mode metadata"
 expect_rejection "$(make_fixture pax_xattr)" "unsupported PAX metadata key"
 expect_rejection "$(make_fixture pax_acl)" "unsupported PAX metadata key"
@@ -434,6 +483,8 @@ expect_rejection "$(make_fixture app_payload_mode)" "expected 0755"
 expect_rejection "$(make_fixture metallib_payload_mode)" "expected 0644"
 expect_rejection "$(make_fixture special_mode_bits)" "portable permission bits"
 expect_rejection "$(make_fixture pax_overflow)" "overflows"
+expect_rejection "$(make_fixture gnu_long_newline)" "non-portable bytes"
+expect_rejection "$(make_fixture gnu_long_after_nul)" "after its NUL terminator"
 expect_rejection "$(make_fixture aggregate)" "expanded-size limit" 2047 16384
 expect_rejection "$(make_fixture zero_trailer)" "expanded-size limit" 1536 16384
 expect_rejection "$(make_fixture entries)" "entry limit" 4294967296 2

@@ -26,6 +26,42 @@ struct ReleaseArchivePreflightTests {
         try ReleaseArchivePreflight.validate(archive)
     }
 
+    @Test("rejects GNU long-name aliases")
+    func rejectsGNULongNameAliases() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let cases: [(String, Data, String)] = [
+            (
+                "terminal-newline",
+                Data("safe-name\n".utf8),
+                "non-portable bytes"
+            ),
+            (
+                "newline-before-terminator",
+                Data("safe-name\n".utf8) + Data([0]),
+                "non-portable bytes"
+            ),
+            (
+                "data-after-terminator",
+                Data("safe-name".utf8) + Data([0]) + Data("other-name".utf8),
+                "after its NUL terminator"
+            ),
+        ]
+
+        for (name, payload, expected) in cases {
+            let archive = try fixture.writeArchive(
+                named: name,
+                entries: [
+                    .init(
+                        name: "././@LongLink",
+                        typeflag: 76,
+                        body: payload),
+                    .init(name: "placeholder"),
+                ])
+            expectPreflightFailure(archive, contains: expected)
+        }
+    }
+
     @Test("rejects unsafe aliases and file-directory conflicts")
     func rejectsUnsafePaths() throws {
         let fixture = try ArchivePreflightFixture()
@@ -45,6 +81,48 @@ struct ReleaseArchivePreflightTests {
                 "backslash",
                 [.init(name: #"bin\darkbloom"#)],
                 "backslash"
+            ),
+            (
+                "regular-trailing-slash",
+                [.init(name: "regular/")],
+                "ends with a slash"
+            ),
+            (
+                "pax-regular-trailing-slash",
+                [
+                    .init(
+                        name: "PaxHeaders/regular",
+                        typeflag: 120,
+                        body: paxRecord(key: "path", value: "regular/")),
+                    .init(name: "placeholder"),
+                ],
+                "ends with a slash"
+            ),
+            (
+                "gnu-regular-trailing-slash",
+                [
+                    .init(
+                        name: "././@LongLink",
+                        typeflag: 76,
+                        body: Data("regular/".utf8) + Data([0])),
+                    .init(name: "placeholder"),
+                ],
+                "ends with a slash"
+            ),
+            (
+                "conflicting-trailing-slash-metadata",
+                [
+                    .init(
+                        name: "PaxHeaders/regular",
+                        typeflag: 120,
+                        body: paxRecord(key: "path", value: "regular/")),
+                    .init(
+                        name: "././@LongLink",
+                        typeflag: 76,
+                        body: Data("regular".utf8) + Data([0])),
+                    .init(name: "placeholder"),
+                ],
+                "conflicting path metadata"
             ),
             (
                 "duplicate",
@@ -144,6 +222,11 @@ struct ReleaseArchivePreflightTests {
     func rejectsInvalidBase256Sizes() throws {
         let fixture = try ArchivePreflightFixture()
         defer { fixture.remove() }
+        let nearBoundaryOverflow = Data([
+            0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ])
         let cases: [(String, Data, String)] = [
             (
                 "negative",
@@ -153,6 +236,11 @@ struct ReleaseArchivePreflightTests {
             (
                 "overflow",
                 Data([0x80] + Array(repeating: 0xff, count: 11)),
+                "overflows Int64"
+            ),
+            (
+                "int64-boundary-overflow",
+                nearBoundaryOverflow,
                 "overflows Int64"
             ),
         ]
@@ -186,6 +274,12 @@ struct ReleaseArchivePreflightTests {
                 "SUN.holesdata",
                 "0 4096",
                 "unsupported sparse PAX metadata"
+            ),
+            (
+                "int64-boundary-overflow",
+                "size",
+                "9223372036854775808",
+                "overflows"
             ),
             (
                 "overflow",

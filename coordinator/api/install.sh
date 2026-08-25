@@ -77,23 +77,41 @@ my (
     $max_metadata,
 ) = @ARGV;
 my $block_size = 512;
-my $max_int64 = 9223372036854775807;
+my $max_int64 = "9223372036854775807";
+my $max_int64_div_256 = 36028797018963967;
 
 sub reject {
     die "release archive preflight: $_[0]\n";
 }
 
-for my $argument (
-    $max_compressed,
-    $max_expanded,
-    $max_entries,
-    $max_path,
-    $max_component,
-    $max_metadata,
-) {
-    reject("invalid numeric policy") unless defined($argument)
-        && $argument =~ /\A[0-9]+\z/;
+sub normalized_decimal {
+    my ($value) = @_;
+    $value =~ s/\A0+(?=[0-9])//;
+    return $value;
 }
+
+sub decimal_exceeds {
+    my ($value, $limit) = @_;
+    $value = normalized_decimal($value);
+    $limit = normalized_decimal("$limit");
+    return length($value) > length($limit)
+        || (length($value) == length($limit) && $value gt $limit);
+}
+
+sub policy_integer {
+    my ($argument) = @_;
+    reject("invalid numeric policy") unless defined($argument)
+        && $argument =~ /\A[0-9]+\z/
+        && !decimal_exceeds($argument, $max_int64);
+    return 0 + $argument;
+}
+
+$max_compressed = policy_integer($max_compressed);
+$max_expanded = policy_integer($max_expanded);
+$max_entries = policy_integer($max_entries);
+$max_path = policy_integer($max_path);
+$max_component = policy_integer($max_component);
+$max_metadata = policy_integer($max_metadata);
 reject("invalid numeric policy") unless $max_entries > 0
     && $max_path > 0
     && $max_component > 0;
@@ -174,7 +192,7 @@ sub parse_tar_number {
     for my $index (1 .. $#bytes) {
         my $byte = $bytes[$index];
         reject("$label overflows int64")
-            if $value > int(($max_int64 - $byte) / 256);
+            if $value > $max_int64_div_256;
         $value = $value * 256 + $byte;
     }
     return $value;
@@ -185,15 +203,9 @@ sub parse_decimal {
     reject("$label is empty") unless length($raw);
     reject("$label is not an unsigned decimal integer")
         unless $raw =~ /\A[0-9]+\z/;
-    my $value = 0;
-    for my $digit (split(//, $raw)) {
-        my $numeric = ord($digit) - ord("0");
-        reject("$label overflows its supported range")
-            if $numeric > $limit
-                || $value > int(($limit - $numeric) / 10);
-        $value = $value * 10 + $numeric;
-    }
-    return $value;
+    reject("$label overflows its supported range")
+        if decimal_exceeds($raw, $limit);
+    return 0 + $raw;
 }
 
 sub validate_pax_timestamp {
@@ -313,6 +325,8 @@ sub parse_pax {
             if sparse_pax_key($key);
         if ($key eq "path") {
             $attributes{path} = clean_path($value);
+            $attributes{path_has_trailing_slash} =
+                substr($value, -1, 1) eq "/";
         } elsif ($key eq "linkpath") {
             reject("unsupported PAX link metadata");
         } elsif ($key eq "size") {
@@ -329,7 +343,7 @@ sub parse_pax {
             reject("unsupported PAX mode metadata");
         } elsif ($stripped_code_signature_metadata{$key}) {
             # Compatibility with already-published macOS metallib signatures.
-            # Extraction disables xattrs, so these values never reach disk.
+            # Preflight scopes these xattrs to the signed metallib payload.
             $attributes{code_signature_metadata} = 1;
         } else {
             reject("unsupported PAX metadata key $key");
@@ -447,18 +461,25 @@ sub validate_checksum {
 }
 
 my $pending_path;
+my $pending_path_has_trailing_slash;
 my $pending_size;
 my $pending_code_signature_metadata = 0;
 sub merge_path {
-    my ($path) = @_;
+    my ($path, $has_trailing_slash) = @_;
     reject("conflicting path metadata")
-        if defined($pending_path) && $pending_path ne $path;
+        if defined($pending_path)
+            && ($pending_path ne $path
+                || $pending_path_has_trailing_slash != $has_trailing_slash);
     $pending_path = $path;
+    $pending_path_has_trailing_slash = $has_trailing_slash;
 }
 
 sub merge_attributes {
     my ($attributes) = @_;
-    merge_path($attributes->{path}) if exists($attributes->{path});
+    merge_path(
+        $attributes->{path},
+        $attributes->{path_has_trailing_slash},
+    ) if exists($attributes->{path});
     if (exists($attributes->{size})) {
         reject("conflicting size metadata")
             if defined($pending_size)
@@ -544,8 +565,16 @@ sub validate_archive {
                 $header_size,
                 "GNU long-name",
             );
-            $long_name =~ s/[\0\n]+\z//;
-            merge_path(clean_path($long_name));
+            my $nul = index($long_name, "\0");
+            if ($nul >= 0) {
+                reject("GNU long name contains non-zero bytes after its NUL terminator")
+                    unless all_zero(substr($long_name, $nul));
+                $long_name = substr($long_name, 0, $nul);
+            }
+            merge_path(
+                clean_path($long_name),
+                substr($long_name, -1, 1) eq "/",
+            );
             next;
         }
         reject("unsupported GNU long-link metadata")
@@ -554,18 +583,24 @@ sub validate_archive {
         my $path = defined($pending_path)
             ? $pending_path
             : clean_path($raw_path);
+        my $path_has_trailing_slash = defined($pending_path)
+            ? $pending_path_has_trailing_slash
+            : substr($raw_path, -1, 1) eq "/";
         my $size = defined($pending_size)
             ? $pending_size
             : $header_size;
         my $has_code_signature_metadata =
             $pending_code_signature_metadata;
         undef($pending_path);
+        undef($pending_path_has_trailing_slash);
         undef($pending_size);
         $pending_code_signature_metadata = 0;
 
         my $kind;
         if ($typeflag eq "\0" || $typeflag eq "0") {
             $kind = "regular";
+            reject("regular-file path $path ends with a slash")
+                if $path_has_trailing_slash;
         } elsif ($typeflag eq "5") {
             $kind = "directory";
             reject("directory $path has a non-zero size") if $size != 0;

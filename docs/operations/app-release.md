@@ -246,7 +246,7 @@ independently walk every raw tar header before extraction with the same limits:
 | Bound | Limit | Rationale |
 |---|---:|---|
 | Compressed archive | 2 GiB | Enforced while shell and Swift downloads stream, then rechecked before parsing; over 10× the roughly 170 MiB signed bundle |
-| Aggregate decompressed payload | 4 GiB | Includes regular-file data, metadata, and zero trailer padding; ample room above the current sub-1-GiB expanded app |
+| Total decompressed tar stream | 4 GiB | Includes headers, payloads, padding, end markers, and the zero trailer; ample room above the current sub-1-GiB expanded app |
 | Raw headers | 16,384 | Includes PAX/GNU metadata headers, bounding inode and parser work |
 | Archive path | 4,096 bytes | Matches the portable filesystem path envelope |
 | Path component | 255 bytes | Matches the APFS component ceiling |
@@ -254,11 +254,14 @@ independently walk every raw tar header before extraction with the same limits:
 
 Only portable ASCII paths, regular files, and directories are allowed. Bounded
 per-entry PAX metadata and GNU long-name records are understood; links, sparse
-encodings, devices, FIFOs, alternate file-type metadata, absolute/traversing
-paths, duplicate or case-conflicting names, and file/descendant conflicts are
-rejected. Declared sizes use checked octal/base-256/PAX parsing, so negative or
-overflowing sizes fail before payload reads. Two zero end blocks and a
-block-aligned all-zero trailer are required.
+encodings (including GNU, SCHILY, LIBARCHIVE, and `SUN.holesdata`), devices,
+FIFOs, alternate file-type metadata, absolute/traversing paths, regular-file
+paths ending in `/`, duplicate or case-conflicting names, and file/descendant
+conflicts are rejected. Declared sizes use checked octal/base-256/PAX parsing,
+so negative or overflowing sizes fail before payload reads. GNU long names
+permit only a NUL terminator, never a newline alias. Two zero end blocks and a
+block-aligned all-zero trailer are required and counted toward the expanded
+limit.
 
 Release registration downloads the exact versioned object, verifies its bundle
 hash, performs this complete raw-header walk, and hashes `bin/darkbloom` during

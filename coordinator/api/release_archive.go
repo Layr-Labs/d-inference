@@ -57,6 +57,7 @@ type releaseArchiveVisitor func(releaseArchiveEntry, io.Reader) error
 
 type releaseArchivePendingMetadata struct {
 	path                  *string
+	pathHasTrailingSlash  bool
 	size                  *int64
 	codeSignatureMetadata bool
 }
@@ -198,12 +199,18 @@ func validateReleaseArchive(
 			if err != nil {
 				return fmt.Errorf("read release archive GNU long-name metadata: %w", err)
 			}
-			longName := string(bytes.TrimRight(payload, "\x00\n"))
-			cleanName, err := cleanReleaseArchivePath(longName, policy)
+			cleanName, hasTrailingSlash, err := parseReleaseGNULongName(
+				payload,
+				policy,
+			)
 			if err != nil {
 				return fmt.Errorf("release archive GNU long name: %w", err)
 			}
-			if err := mergeReleasePendingPath(&pending, cleanName); err != nil {
+			if err := mergeReleasePendingPath(
+				&pending,
+				cleanName,
+				hasTrailingSlash,
+			); err != nil {
 				return err
 			}
 			continue
@@ -215,8 +222,10 @@ func validateReleaseArchive(
 		if err != nil {
 			return fmt.Errorf("release archive entry path %q: %w", headerPath, err)
 		}
+		pathHasTrailingSlash := strings.HasSuffix(headerPath, "/")
 		if pending.path != nil {
 			effectivePath = *pending.path
+			pathHasTrailingSlash = pending.pathHasTrailingSlash
 		}
 		effectiveSize := headerSize
 		if pending.size != nil {
@@ -229,6 +238,12 @@ func validateReleaseArchive(
 		switch typeflag {
 		case 0, '0':
 			kind = releaseArchiveRegular
+			if pathHasTrailingSlash {
+				return fmt.Errorf(
+					"release archive regular-file path %q ends with a slash",
+					effectivePath,
+				)
+			}
 		case '5':
 			kind = releaseArchiveDirectory
 			if effectiveSize != 0 {
@@ -513,11 +528,13 @@ func parseReleasePAX(
 		}
 		switch key {
 		case "path":
-			cleanPath, err := cleanReleaseArchivePath(string(value), policy)
+			rawPath := string(value)
+			cleanPath, err := cleanReleaseArchivePath(rawPath, policy)
 			if err != nil {
 				return attrs, fmt.Errorf("release archive PAX path: %w", err)
 			}
 			attrs.path = &cleanPath
+			attrs.pathHasTrailingSlash = strings.HasSuffix(rawPath, "/")
 		case "linkpath":
 			return attrs, fmt.Errorf("release archive contains unsupported PAX link metadata")
 		case "size":
@@ -633,7 +650,11 @@ func mergeReleasePendingMetadata(
 	attrs releaseArchivePendingMetadata,
 ) error {
 	if attrs.path != nil {
-		if err := mergeReleasePendingPath(pending, *attrs.path); err != nil {
+		if err := mergeReleasePendingPath(
+			pending,
+			*attrs.path,
+			attrs.pathHasTrailingSlash,
+		); err != nil {
 			return err
 		}
 	}
@@ -652,13 +673,40 @@ func mergeReleasePendingMetadata(
 func mergeReleasePendingPath(
 	pending *releaseArchivePendingMetadata,
 	cleanPath string,
+	hasTrailingSlash bool,
 ) error {
-	if pending.path != nil && *pending.path != cleanPath {
+	if pending.path != nil &&
+		(*pending.path != cleanPath ||
+			pending.pathHasTrailingSlash != hasTrailingSlash) {
 		return fmt.Errorf("release archive contains conflicting path metadata")
 	}
 	pathCopy := cleanPath
 	pending.path = &pathCopy
+	pending.pathHasTrailingSlash = hasTrailingSlash
 	return nil
+}
+
+func parseReleaseGNULongName(
+	payload []byte,
+	policy releaseArchivePolicy,
+) (string, bool, error) {
+	pathBytes := payload
+	if nul := bytes.IndexByte(payload, 0); nul >= 0 {
+		for _, value := range payload[nul:] {
+			if value != 0 {
+				return "", false, fmt.Errorf(
+					"contains non-zero bytes after its NUL terminator",
+				)
+			}
+		}
+		pathBytes = payload[:nul]
+	}
+	rawPath := string(pathBytes)
+	cleanPath, err := cleanReleaseArchivePath(rawPath, policy)
+	if err != nil {
+		return "", false, err
+	}
+	return cleanPath, strings.HasSuffix(rawPath, "/"), nil
 }
 
 func cleanReleaseArchivePath(

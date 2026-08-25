@@ -107,6 +107,51 @@ func TestReleaseArchiveAcceptsGNUEncodedLongName(t *testing.T) {
 	}
 }
 
+func TestReleaseArchiveRejectsGNUEncodedLongNameAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		want    string
+	}{
+		{
+			name:    "terminal newline",
+			payload: []byte("safe-name\n"),
+			want:    "non-portable bytes",
+		},
+		{
+			name:    "newline before terminator",
+			payload: []byte("safe-name\n\x00"),
+			want:    "non-portable bytes",
+		},
+		{
+			name:    "data after terminator",
+			payload: []byte("safe-name\x00other-name"),
+			want:    "after its NUL terminator",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{
+					name:     "././@LongLink",
+					typeflag: 'L',
+					body:     test.payload,
+				},
+				rawReleaseTarEntry{name: "placeholder", typeflag: '0'},
+			)
+			err := validateReleaseArchive(
+				bytes.NewReader(archive),
+				defaultReleaseArchivePolicy,
+				nil,
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestReleaseArchiveRejectsUnsafeDuplicateAndConflictingPaths(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -133,6 +178,60 @@ func TestReleaseArchiveRejectsUnsafeDuplicateAndConflictingPaths(t *testing.T) {
 				rawReleaseTarEntry{name: `bin\darkbloom`, typeflag: '0'},
 			),
 			want: "backslash",
+		},
+		{
+			name: "regular file ending with slash",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{name: "regular/", typeflag: '0'},
+			),
+			want: "ends with a slash",
+		},
+		{
+			name: "PAX regular file ending with slash",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{
+					name:     "PaxHeaders/regular",
+					typeflag: 'x',
+					body: releasePAXRecordForTest(
+						"path",
+						"regular/",
+					),
+				},
+				rawReleaseTarEntry{name: "placeholder", typeflag: '0'},
+			),
+			want: "ends with a slash",
+		},
+		{
+			name: "GNU regular file ending with slash",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{
+					name:     "././@LongLink",
+					typeflag: 'L',
+					body:     []byte("regular/\x00"),
+				},
+				rawReleaseTarEntry{name: "placeholder", typeflag: '0'},
+			),
+			want: "ends with a slash",
+		},
+		{
+			name: "conflicting trailing slash metadata",
+			archive: buildRawReleaseArchiveForTest(
+				rawReleaseTarEntry{
+					name:     "PaxHeaders/regular",
+					typeflag: 'x',
+					body: releasePAXRecordForTest(
+						"path",
+						"regular/",
+					),
+				},
+				rawReleaseTarEntry{
+					name:     "././@LongLink",
+					typeflag: 'L',
+					body:     []byte("regular\x00"),
+				},
+				rawReleaseTarEntry{name: "placeholder", typeflag: '0'},
+			),
+			want: "conflicting path metadata",
 		},
 		{
 			name: "duplicate normalized path",
@@ -240,6 +339,11 @@ func TestReleaseArchiveRejectsExpandedSizeBeforeReadingPayload(t *testing.T) {
 func TestReleaseArchiveRejectsNegativeAndOverflowingBase256Sizes(t *testing.T) {
 	negative := bytes.Repeat([]byte{0xff}, 12)
 	overflow := append([]byte{0x80}, bytes.Repeat([]byte{0xff}, 11)...)
+	nearBoundaryOverflow := []byte{
+		0x80, 0x00, 0x00, 0x00,
+		0x80, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
 
 	tests := []struct {
 		name      string
@@ -248,6 +352,11 @@ func TestReleaseArchiveRejectsNegativeAndOverflowingBase256Sizes(t *testing.T) {
 	}{
 		{name: "negative", sizeField: negative, want: "negative"},
 		{name: "overflow", sizeField: overflow, want: "overflows int64"},
+		{
+			name:      "int64 boundary overflow",
+			sizeField: nearBoundaryOverflow,
+			want:      "overflows int64",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -303,6 +412,12 @@ func TestReleaseArchiveRejectsDangerousPAXMetadata(t *testing.T) {
 			key:   "SUN.holesdata",
 			value: "0 4096",
 			want:  "unsupported sparse PAX metadata",
+		},
+		{
+			name:  "int64 boundary overflow",
+			key:   "size",
+			value: "9223372036854775808",
+			want:  "overflows",
 		},
 		{
 			name:  "overflowing size",

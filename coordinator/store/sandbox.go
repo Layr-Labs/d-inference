@@ -156,6 +156,23 @@ func isSandboxTerminationStop(
 		sandbox.TerminationRequested
 }
 
+func isSandboxTerminationOperation(
+	operation *SandboxOperation,
+	sandbox *SandboxRecord,
+) bool {
+	if operation == nil || sandbox == nil || !sandbox.TerminationRequested {
+		return false
+	}
+	switch operation.Kind {
+	case SandboxOperationKindStop:
+		return operation.DeleteAfterStop
+	case SandboxOperationKindDelete:
+		return true
+	default:
+		return false
+	}
+}
+
 type SandboxOperationUpdate struct {
 	OperationID    string
 	SandboxID      string

@@ -396,7 +396,7 @@ func (s *PostgresStore) BeginSandboxOperation(
 		sandbox.State != operation.PreviousSandboxState ||
 		sandbox.Terminal() ||
 		(sandbox.TerminationRequested &&
-			!isSandboxTerminationStop(operation, sandbox)) {
+			!isSandboxTerminationOperation(operation, sandbox)) {
 		return nil, nil, false, ErrSandboxConflict
 	}
 	var activeOperation, activeCommand bool

@@ -51,13 +51,15 @@ func TestSandboxMigrationRepairsConcurrentActiveCommands(t *testing.T) {
 			fencing_token, arguments, timeout_seconds, state,
 			created_at, updated_at
 		) VALUES
-			($1, $3, $4, $1, 1, $5, '["/usr/bin/true"]', 900, 'running', $6, $6),
-			($2, $3, $4, $2, 1, $5, '["/usr/bin/true"]', 900, 'pending', $7, $7)`,
+			($1, $3, $4, $6, 1, $5, '["/usr/bin/true"]', 900, 'running', $8, $8),
+			($2, $3, $4, $7, 1, $5, '["/usr/bin/true"]', 900, 'pending', $9, $9)`,
 		"50000000-0000-0000-0000-000000000305",
 		"60000000-0000-0000-0000-000000000306",
 		stored.ID,
 		stored.AccountID,
 		stored.FencingToken,
+		"50000000-0000-0000-0000-000000000305",
+		"60000000-0000-0000-0000-000000000306",
 		now.Add(time.Second),
 		now.Add(2*time.Second),
 	); err != nil {

@@ -83,8 +83,11 @@ struct WatchdogRecoveryIntegrationTests {
                 now: 100
             )
         }
-        guard await gate.waitUntilRequested() else {
+        guard await gate.waitUntilRequested(cleanupOnFailure: {
             recovery.cancel()
+            _ = await recovery.value
+            await mock.shutdown()
+        }) else {
             Issue.record("watchdog release transfer never reached the deterministic gate")
             return
         }

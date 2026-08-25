@@ -304,18 +304,22 @@ struct EnrollmentTests {
             URL(string: "https://api.darkbloom.dev/v1/enroll")
         )
         let profile = Data("signed-mobileconfig".utf8)
-        let response = httpResponse(
-            endpoint,
-            status: 201,
-            headers: [
-                "Content-Type":
-                    "Application/X-Apple-Aspen-Config; charset=\"binary\"",
-            ]
+        let payload = InvalidProfileResponse(
+            name: "valid",
+            data: profile,
+            response: httpResponse(
+                endpoint,
+                status: 201,
+                headers: [
+                    "Content-Type":
+                        "Application/X-Apple-Aspen-Config; charset=\"binary\"",
+                ]
+            )
         )
         let recorder = EnrollmentOpenRecorder()
         let service = EnrollmentService(
             openCommand: recorder.run,
-            requestProfile: { _ in (profile, response) },
+            requestProfile: { _ in (payload.data, payload.response) },
             enrollmentStateReader: { _ in .notEnrolled },
             serialNumberReader: { fixture.serial },
             profileDirectory: fixture.root
@@ -356,7 +360,7 @@ struct EnrollmentTests {
     }
 }
 
-private struct InvalidProfileResponse {
+private struct InvalidProfileResponse: @unchecked Sendable {
     let name: String
     let data: Data
     let response: URLResponse
@@ -375,7 +379,7 @@ private func httpResponse(
     )!
 }
 
-private struct EnrollmentProfileFixture {
+private struct EnrollmentProfileFixture: Sendable {
     let root: URL
     let serial = "SERIAL1234"
 

@@ -76,3 +76,26 @@ func TestClaimProviderSerialKeepsFirstVerifiedOwner(t *testing.T) {
 		t.Fatal("duplicate serial claimant remained connected")
 	}
 }
+
+func TestVerifiedSerialClaimReplacesLegacyOwnerMap(t *testing.T) {
+	reg := New(testLogger())
+	legacy := reg.Register("legacy-owner", nil, testRegisterMessage())
+	verified := reg.Register("verified-owner", nil, testRegisterMessage())
+	legacy.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
+	verified.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
+
+	reg.DisconnectDuplicatesBySerial(legacy.ID, "SERIAL-UPGRADE")
+	// Re-register the future verified claimant because legacy dedup intentionally
+	// evicted the duplicate under pre-enforcement semantics.
+	verified = reg.Register("verified-owner-2", nil, testRegisterMessage())
+	verified.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SERIAL-UPGRADE"})
+	if !reg.ClaimProviderSerial(verified.ID, "SERIAL-UPGRADE") {
+		t.Fatal("legacy owner map blocked independently verified serial claim")
+	}
+	if reg.GetProvider(verified.ID) == nil {
+		t.Fatal("verified owner was evicted by legacy serial state")
+	}
+	if reg.GetProvider(legacy.ID) != nil {
+		t.Fatal("legacy serial owner survived verified replacement")
+	}
+}

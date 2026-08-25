@@ -265,6 +265,47 @@ func TestHardwareAdmissionPolicyPublicationIsMonotonic(t *testing.T) {
 	}
 }
 
+func TestPendingAdmissionGenerationCannotClearNewerPolicy(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.stagePendingHardwareAdmission("provider-generation", pendingHardwareAdmission{
+		policy: hardwareadmission.Policy{Version: 1},
+	})
+	srv.stagePendingHardwareAdmission("provider-generation", pendingHardwareAdmission{
+		policy: hardwareadmission.Policy{Version: 2},
+	})
+	if srv.clearPendingHardwareAdmissionIf("provider-generation", 1) {
+		t.Fatal("stale finalizer cleared newer pending policy")
+	}
+	srv.hardwareAdmissionPendingMu.Lock()
+	pending := srv.hardwareAdmissionPending["provider-generation"]
+	srv.hardwareAdmissionPendingMu.Unlock()
+	if pending.policy.Version != 2 {
+		t.Fatalf("pending policy = %d, want 2", pending.policy.Version)
+	}
+}
+
+func TestEnforcedHardwareTrustRequiresCodeIdentity(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.setHardwareAdmissionPolicy(hardwareadmission.Policy{
+		Version: 1, Mode: hardwareadmission.ModeEnforce,
+		CatalogVersion: hardwareadmission.CatalogVersion,
+	})
+	provider := srv.registry.Register("code-gated-grant", nil, admissionTestRegister())
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustSelfSigned
+	provider.Mu().Unlock()
+	if srv.grantProviderHardwareTrust(provider) {
+		t.Fatal("enforce-mode MDM grant succeeded without code identity")
+	}
+	if provider.GetTrustLevel() != registry.TrustSelfSigned {
+		t.Fatal("failed code-gated grant changed provider trust")
+	}
+	provider.SetCodeAttested(true)
+	if !srv.grantProviderHardwareTrust(provider) {
+		t.Fatal("code-attested provider did not receive hardware trust")
+	}
+}
+
 func ptrAdmissionResult(result attestation.VerificationResult) *attestation.VerificationResult {
 	return &result
 }

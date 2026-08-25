@@ -489,6 +489,20 @@ func (s *Server) clearPendingHardwareAdmission(providerID string) {
 	s.hardwareAdmissionPendingMu.Unlock()
 }
 
+func (s *Server) clearPendingHardwareAdmissionIf(
+	providerID string,
+	policyVersion int64,
+) bool {
+	s.hardwareAdmissionPendingMu.Lock()
+	defer s.hardwareAdmissionPendingMu.Unlock()
+	pending, ok := s.hardwareAdmissionPending[providerID]
+	if !ok || pending.policy.Version != policyVersion {
+		return false
+	}
+	delete(s.hardwareAdmissionPending, providerID)
+	return true
+}
+
 func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) bool {
 	if provider == nil {
 		return false
@@ -522,7 +536,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		if !s.commitProviderAdmissionState(provider, policy, false) {
 			return false
 		}
-		s.clearPendingHardwareAdmission(provider.ID)
+		s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 		return true
 	}
 	decision := pending.decision
@@ -540,7 +554,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		s.recordHardwareAdmissionAttempt(
 			ctx, provider, pending.serial, policy, "rejected",
 			"hardware_below_minimum", decision)
-		s.clearPendingHardwareAdmission(provider.ID)
+		s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 		return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
 			code: "hardware_below_minimum", retryable: false, policy: policy,
 			decision: &decision, reason: hardwareAdmissionReason(decision),
@@ -551,7 +565,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 		Hardware: decision.Observed, AdmittedAt: time.Now().UTC(),
 	}); err != nil {
 		if errors.Is(err, store.ErrHardwareAdmissionRevoked) {
-			s.clearPendingHardwareAdmission(provider.ID)
+			s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 			return s.rejectHardwareAdmission(provider, hardwareAdmissionRejection{
 				code: "hardware_admission_revoked", retryable: false, policy: policy,
 				reason: "This machine's provider admission was revoked by a network operator.",
@@ -566,7 +580,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 	s.invalidateHardwareAdmissionCaches()
 	s.recordHardwareAdmissionAttempt(
 		ctx, provider, pending.serial, policy, "admitted", "", decision)
-	s.clearPendingHardwareAdmission(provider.ID)
+	s.clearPendingHardwareAdmissionIf(provider.ID, pending.policy.Version)
 	s.sendTrustStatus(
 		provider, registry.TrustHardware, "online",
 		"Hardware admission passed; provider is eligible for routing")

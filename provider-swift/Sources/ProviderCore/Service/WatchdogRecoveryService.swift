@@ -505,13 +505,13 @@ public struct WatchdogRecoveryService: Sendable {
                 guardedVersion = candidate.release.version
                 updatedTo = candidate.release.version
             } else {
-                guardedVersion = SelfUpdater.effectiveInstalledVersion(
-                    processVersion: updater.currentVersion,
-                    recorded: state.current?.version
+                guardedVersion = updater.resolvedInstalledVersion(
+                    recoveryState: state,
+                    installRoot: session.store.installRoot
                 )
-                if updatedTo != nil {
-                    updatedTo = guardedVersion
-                }
+                updatedTo = guardedVersion == updater.currentVersion
+                    ? nil
+                    : guardedVersion
             }
         } catch {
             let reason =
@@ -545,7 +545,7 @@ public struct WatchdogRecoveryService: Sendable {
         {
             let staged = deps.tripKVBackendGuard(
                 scopedCrashLoopCount,
-                now,
+                freshNow(),
                 guardedVersion
             )
             // Emitted even when the record write failed (the event carries

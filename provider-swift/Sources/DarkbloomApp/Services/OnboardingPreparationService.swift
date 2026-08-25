@@ -134,22 +134,21 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
         fallbackAvailableBytes: Int64?
     ) -> Bool {
         if let plan {
+            guard plan.hasSufficientCapacity else { return false }
             let reserve = max(Self.downloadHeadroomBytes, max(0, plan.reserveBytes))
             let remaining = max(0, plan.remainingBytes)
-            let required = remaining > Int64.max - reserve
-                ? Int64.max
-                : remaining + reserve
+            let (required, overflow) = remaining.addingReportingOverflow(reserve)
+            guard !overflow else { return false }
             if let available = plan.availableBytes {
                 return available >= required
             }
-            return plan.hasSufficientCapacity
+            return true
         }
 
         guard let fallbackAvailableBytes else { return true }
         let size = max(0, fullSizeBytes)
-        let required = size > Int64.max - Self.downloadHeadroomBytes
-            ? Int64.max
-            : size + Self.downloadHeadroomBytes
+        let (required, overflow) = size.addingReportingOverflow(Self.downloadHeadroomBytes)
+        guard !overflow else { return false }
         return fallbackAvailableBytes >= required
     }
 

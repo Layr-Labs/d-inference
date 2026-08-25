@@ -97,6 +97,53 @@ struct OnboardingPreparationLiveTests {
         }
     }
 
+    @Test("Overflowed storage plans are rejected even at the Int64 capacity ceiling")
+    func overflowedStoragePlanIsRejected() async {
+        let model = catalogModel(
+            id: "catalog/overflowed-plan",
+            minRAM: 16,
+            size: Int64.max
+        )
+        let reserve = Int64(2 * 1_073_741_824)
+        let service = service(
+            snapshot: snapshot(
+                catalog: [model],
+                memoryGB: 32,
+                downloadPlans: [
+                    model.id: CLIModelDownloadStoragePlan(
+                        remainingBytes: Int64.max,
+                        reserveBytes: reserve,
+                        requiredAvailableBytes: Int64.max,
+                        availableBytes: Int64.max,
+                        hasSufficientCapacity: false
+                    ),
+                ]
+            ),
+            availableStorageBytes: UInt64(Int64.max)
+        )
+
+        await #expect(throws: OnboardingPreparationServiceError.noCompatibleModel) {
+            try await service.fetchPlan()
+        }
+    }
+
+    @Test("Fallback storage arithmetic rejects unrepresentable requirements")
+    func fallbackStorageOverflowIsRejected() async {
+        let model = catalogModel(
+            id: "catalog/overflowed-fallback",
+            minRAM: 16,
+            size: Int64.max
+        )
+        let service = service(
+            snapshot: snapshot(catalog: [model], memoryGB: 32),
+            availableStorageBytes: UInt64(Int64.max)
+        )
+
+        await #expect(throws: OnboardingPreparationServiceError.noCompatibleModel) {
+            try await service.fetchPlan()
+        }
+    }
+
     @Test("Unknown fit, excessive RAM, excessive disk, and embedding-only rows yield no compatible model")
     func noCompatibleModel() async {
         let entries = [

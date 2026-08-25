@@ -74,6 +74,8 @@ env:
   CLI_NAME: 'darkbloom'
   APP_BINARY_NAME: 'DarkbloomApp'
   ENCLAVE_NAME: 'darkbloom-enclave'
+  ENCLAVE_ID: 'io.darkbloom.enclave'
+  METALLIB_ID: 'io.darkbloom.metallib'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
@@ -525,13 +527,15 @@ jobs:
             "-R=$FAN_HELPER_REQUIREMENT" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
           codesign --force --options runtime --timestamp \
+            --identifier "$METALLIB_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
-          # It gets its own entitlements without keychain-access-groups and
-          # application-identifier so AMFI doesn't require a provisioning
-          # profile match for it.
+          # It gets its own pinned identity and entitlements without
+          # keychain-access-groups/application-identifier so AMFI doesn't
+          # require a provisioning profile match for it.
           codesign --force --options runtime --timestamp \
+            --identifier "$ENCLAVE_ID" \
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
@@ -553,12 +557,14 @@ jobs:
           # GUI main executable: its own entitlements (network only — no
           # keychain-access-groups / application-identifier / aps-environment)
           # so profile authorization stays a CLI-only property. Its signing
-          # identifier is derived from Info.plist => io.darkbloom.provider.
+          # identifier is pinned to the same Info.plist identity.
           codesign --force --options runtime --timestamp \
+            --identifier "io.darkbloom.provider" \
             --entitlements scripts/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$APP_BINARY_NAME"
           codesign --force --options runtime --timestamp \
+            --identifier "io.darkbloom.provider" \
             --entitlements scripts/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
@@ -1045,11 +1051,33 @@ jobs:
           }
           print(json.dumps(payload))
           PY
-          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
+          RELEASE_RESPONSE=$(curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
             -H "Authorization: Bearer ${RELEASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d @/tmp/release-payload.json
-          echo
+            -d @/tmp/release-payload.json)
+          printf '%s\n' "$RELEASE_RESPONSE"
+          RELEASE_RESPONSE="$RELEASE_RESPONSE" python3 - <<'PY'
+          import json, os, sys
+          response = json.loads(os.environ["RELEASE_RESPONSE"])
+          release = response.get("release")
+          expected = {
+              "has_app": True,
+              "has_fan_helper": True,
+              "has_paged_kernel": True,
+          }
+          if not isinstance(release, dict):
+              sys.exit("coordinator registration response omitted release metadata")
+          mismatches = {
+              key: release.get(key)
+              for key, value in expected.items()
+              if release.get(key) is not value
+          }
+          if mismatches:
+              sys.exit(
+                  "coordinator-derived capability flags disagree with signed artifact: "
+                  + repr(mismatches)
+              )
+          PY
           echo "Release v${VERSION} registered with coordinator"
 
       - name: Create GitHub Release

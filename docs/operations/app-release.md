@@ -158,16 +158,16 @@ extracted release.
 
 ### Signing sequence (what changed and what to double-check)
 
-Nested code is signed before the bundle, exactly as before, with one identity
-change:
+Nested code is signed before the bundle. Every shipped code payload now has an
+explicit identifier so qualification can reject basename-derived drift:
 
 | Component | Identifier | Entitlements | Note |
 |---|---|---|---|
 | `Contents/Helpers/darkbloom-fan-helper` | `io.darkbloom.fan-helper` (explicit) | none | unchanged |
-| `Contents/MacOS/mlx.metallib` | derived | none | unchanged |
-| `Contents/MacOS/darkbloom-enclave` | derived | `provider-swift/entitlements-enclave.plist` | unchanged |
+| `Contents/MacOS/mlx.metallib` | `io.darkbloom.metallib` (explicit) | none | pinned for payload qualification |
+| `Contents/MacOS/darkbloom-enclave` | `io.darkbloom.enclave` (explicit) | `provider-swift/entitlements-enclave.plist` | pinned for payload qualification |
 | `Contents/MacOS/darkbloom` (CLI, now nested) | **`io.darkbloom.provider` (explicit pin — NEW)** | `provider-swift/entitlements.plist` (keychain group + `aps-environment=production`) | was the bundle's main executable before |
-| `Contents/MacOS/DarkbloomApp` (main executable) | derived from Info.plist → `io.darkbloom.provider` | `scripts/entitlements.plist` (network only) | **NEW** |
+| `Contents/MacOS/DarkbloomApp` (main executable) | `io.darkbloom.provider` (explicit) | `scripts/entitlements.plist` (network only) | **NEW** |
 | `Darkbloom.app` bundle | — | `scripts/entitlements.plist` | seals everything |
 
 Two verified facts relax two historical assumptions:
@@ -262,10 +262,13 @@ block-aligned all-zero trailer are required.
 
 Release registration downloads the exact versioned object, verifies its bundle
 hash, performs this complete raw-header walk, and hashes `bin/darkbloom` during
-the same pass before saving the release row. The shell installer uses only
-base-macOS `/usr/bin/perl` and `/usr/bin/gzip`; `SelfUpdater` performs its own
-Swift header walk over a system-gzip stream. Both complete preflight before
-invoking `/usr/bin/tar`.
+the same pass before saving the release row. It also derives `has_app`,
+`has_fan_helper`, and `has_paged_kernel` from the verified app, capability
+markers, resources, helper, and binary code strings. Installers reject any
+coordinator flag that disagrees with the staged archive. The shell installer
+uses only base-macOS `/usr/bin/perl` and `/usr/bin/gzip`; `SelfUpdater`
+performs its own Swift header walk over a system-gzip stream. Both complete
+preflight before invoking `/usr/bin/tar`.
 
 ## Steps (human-approved release operator)
 
@@ -312,13 +315,16 @@ zip, qualify that artifact without modifying it:
   /path/to/Darkbloom-macOS-arm64.zip
 ```
 
-The command extracts zips only into a temporary directory, then requires the
-pinned Developer ID requirements, hardened runtime, strict deep signature,
-stapled notarization ticket, Gatekeeper acceptance, matching semantic bundle
-versions, the shipping APNs/keychain profile contract, GUI entitlement
-separation, and required sealed resources. It has no ad-hoc or fake-notary
-mode. The release workflow runs the same command against the exact public zip
-before upload, preventing the operator checklist from drifting.
+The command extracts zips only into a temporary directory, then rejects
+missing or extra signing payloads, symlinks, non-canonical modes, malformed
+capability markers, and unexpected executable resources. It verifies every
+signed payload's pinned identifier and Developer ID team before requiring
+hardened runtime, a strict deep signature, stapled notarization ticket,
+Gatekeeper acceptance, matching semantic bundle versions, the shipping
+APNs/keychain profile contract, GUI entitlement separation, and required
+sealed resources. It has no ad-hoc or fake-notary mode. The release workflow
+runs the same command against the exact public zip before upload, preventing
+the operator checklist from drifting.
 
 This static qualification still cannot prove AMFI authorization at process
 spawn or relocation behavior. Those remain the clean-Mac steps below.

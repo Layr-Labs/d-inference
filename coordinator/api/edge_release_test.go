@@ -128,6 +128,11 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	if latest["version"] != "1.0.0" {
 		t.Errorf("latest version = %v, want 1.0.0", latest["version"])
 	}
+	if latest["has_app"] != true ||
+		latest["has_fan_helper"] != false ||
+		latest["has_paged_kernel"] != false {
+		t.Errorf("latest release capability flags were not derived: %+v", latest)
+	}
 
 	// Verify binary hashes were synced
 	releases := st.ListReleases()

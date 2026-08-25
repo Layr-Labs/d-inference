@@ -55,6 +55,8 @@ case "$ARTIFACT" in
         ;;
 esac
 
+"$ROOT/scripts/verify-macos-release-payload.sh" "$APP"
+
 INFO_PLIST="$APP/Contents/Info.plist"
 APP_BINARY="$APP/Contents/MacOS/DarkbloomApp"
 CLI="$APP/Contents/MacOS/darkbloom"
@@ -63,7 +65,6 @@ METALLIB="$APP/Contents/MacOS/mlx.metallib"
 FAN_HELPER="$APP/Contents/Helpers/darkbloom-fan-helper"
 PROFILE="$APP/Contents/embedded.provisionprofile"
 APP_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 EXPECTED_ACCESS_GROUP='SLDQ2GJ6TL.io.darkbloom.provider'
 EXPECTED_APNS_ENVIRONMENT='production' # pragma: allowlist secret
 
@@ -100,11 +101,26 @@ fi
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 \
     "-R=$APP_REQUIREMENT" "$APP"
-/usr/bin/codesign --verify --strict --verbose=2 \
-    "-R=$APP_REQUIREMENT" "$CLI"
-/usr/bin/codesign --verify --strict --verbose=2 \
-    "-R=$FAN_REQUIREMENT" "$FAN_HELPER"
-for signed_code in "$APP" "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$APP" io.darkbloom.provider SLDQ2GJ6TL
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$APP_BINARY" io.darkbloom.provider SLDQ2GJ6TL
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$CLI" io.darkbloom.provider SLDQ2GJ6TL
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$ENCLAVE" io.darkbloom.enclave SLDQ2GJ6TL
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$METALLIB" io.darkbloom.metallib SLDQ2GJ6TL
+"$ROOT/scripts/verify-macos-code-identity.sh" \
+    "$FAN_HELPER" io.darkbloom.fan-helper SLDQ2GJ6TL
+for signed_code in \
+    "$APP" \
+    "$APP_BINARY" \
+    "$CLI" \
+    "$ENCLAVE" \
+    "$METALLIB" \
+    "$FAN_HELPER"
+do
     /usr/bin/codesign -dvvv "$signed_code" 2>&1 \
         | /usr/bin/grep -Eq '^CodeDirectory .*flags=.*runtime' \
         || fail "hardened runtime flag is missing: $signed_code"

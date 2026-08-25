@@ -29,9 +29,9 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 			name: "legacy flat",
 			got:  releaseFlatPayloadSpecs,
 			want: []releasePayloadSpec{
-				{path: "bin/darkbloom", kind: releasePayloadBinary, executable: true},
-				{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-				{path: "bin/mlx.metallib", kind: releasePayloadMetallib},
+				{path: "bin/darkbloom", kind: releasePayloadBinary, mode: 0o755},
+				{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, mode: 0o755},
+				{path: "bin/mlx.metallib", kind: releasePayloadMetallib, mode: 0o644},
 			},
 		},
 		{
@@ -39,18 +39,19 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 			got:  releaseAppPayloadSpecs,
 			want: []releasePayloadSpec{
 				{
-					path:       "Darkbloom.app/Contents/MacOS/darkbloom",
-					kind:       releasePayloadBinary,
-					executable: true,
+					path: "Darkbloom.app/Contents/MacOS/darkbloom",
+					kind: releasePayloadBinary,
+					mode: 0o755,
 				},
 				{
-					path:       "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
-					kind:       releasePayloadEnclave,
-					executable: true,
+					path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+					kind: releasePayloadEnclave,
+					mode: 0o755,
 				},
 				{
 					path: "Darkbloom.app/Contents/MacOS/mlx.metallib",
 					kind: releasePayloadMetallib,
+					mode: 0o644,
 				},
 			},
 		},

@@ -89,6 +89,12 @@ func newReleaseBundleTestFixture(
 				typeflag: tar.TypeDir,
 			},
 			releaseBundleTestEntry{
+				name:     releaseAppIdentityPayloadSpecs[0].path,
+				mode:     0o755,
+				typeflag: tar.TypeReg,
+				body:     []byte("signed-layout-neutral-app"),
+			},
+			releaseBundleTestEntry{
 				name:     releaseAppPayloadSpecs[0].path,
 				mode:     0o755,
 				typeflag: tar.TypeReg,
@@ -107,6 +113,14 @@ func newReleaseBundleTestFixture(
 				body:     append([]byte(nil), payloads[releasePayloadMetallib]...),
 			},
 		)
+		for _, spec := range releaseAppRequiredDataPayloadSpecs {
+			fixture.entries = append(fixture.entries, releaseBundleTestEntry{
+				name:     spec.path,
+				mode:     spec.mode,
+				typeflag: tar.TypeReg,
+				body:     []byte("signed app data"),
+			})
+		}
 	}
 	return fixture
 }

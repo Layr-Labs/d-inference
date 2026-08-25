@@ -118,6 +118,9 @@ public struct MockReleaseFixture: Sendable {
     public var bundleHash: String
     public var binaryHash: String?
     public var metallibHash: String?
+    public var hasApp: Bool?
+    public var hasFanHelper: Bool?
+    public var hasPagedKernel: Bool?
 
     public init(
         version: String = "0.99.0",
@@ -125,7 +128,10 @@ public struct MockReleaseFixture: Sendable {
         url: String = "https://example.test/darkbloom-bundle-macos-arm64.tar.gz",
         bundleHash: String = String(repeating: "a", count: 64),
         binaryHash: String? = nil,
-        metallibHash: String? = nil
+        metallibHash: String? = nil,
+        hasApp: Bool? = nil,
+        hasFanHelper: Bool? = nil,
+        hasPagedKernel: Bool? = nil
     ) {
         self.version = version
         self.platform = platform
@@ -133,6 +139,9 @@ public struct MockReleaseFixture: Sendable {
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
+        self.hasApp = hasApp
+        self.hasFanHelper = hasFanHelper
+        self.hasPagedKernel = hasPagedKernel
     }
 }
 
@@ -532,7 +541,10 @@ public final class MockCoordinator: @unchecked Sendable {
                 url: releaseURL,
                 bundle_hash: self.release.bundleHash,
                 binary_hash: self.release.binaryHash,
-                metallib_hash: self.release.metallibHash
+                metallib_hash: self.release.metallibHash,
+                has_app: self.release.hasApp,
+                has_fan_helper: self.release.hasFanHelper,
+                has_paged_kernel: self.release.hasPagedKernel
             )
             return MockCoordinator.makeJSONResponse(body: body)
         }
@@ -777,6 +789,9 @@ private struct ReleaseLatestPayload: Encodable {
     let bundle_hash: String
     let binary_hash: String?
     let metallib_hash: String?
+    let has_app: Bool?
+    let has_fan_helper: Bool?
+    let has_paged_kernel: Bool?
 }
 
 private struct APIVersionPayload: Encodable {

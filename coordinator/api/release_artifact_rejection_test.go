@@ -46,6 +46,22 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			want: releaseAppPayloadSpecs[0].path,
 		},
 		{
+			name:   "missing app main executable",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.remove(releaseAppIdentityPayloadSpecs[0].path)
+			},
+			want: releaseAppIdentityPayloadSpecs[0].path,
+		},
+		{
+			name:   "missing embedded provisioning profile",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.remove(releaseAppRequiredDataPayloadSpecs[1].path)
+			},
+			want: releaseAppRequiredDataPayloadSpecs[1].path,
+		},
+		{
 			name:   "missing app enclave",
 			layout: releaseBundleTestApp,
 			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
@@ -175,7 +191,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[0].path).mode = 0o644
 			},
-			want: "bin/darkbloom\" is not executable",
+			want: "bin/darkbloom\" has mode 0644, want 0755",
 		},
 		{
 			name:   "flat enclave is not executable",
@@ -183,7 +199,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[1].path).mode = 0o644
 			},
-			want: "bin/darkbloom-enclave\" is not executable",
+			want: "bin/darkbloom-enclave\" has mode 0644, want 0755",
 		},
 		{
 			name:   "flat metallib is executable",
@@ -191,7 +207,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseFlatPayloadSpecs[2].path).mode = 0o755
 			},
-			want: "bin/mlx.metallib\" must not be executable",
+			want: "bin/mlx.metallib\" has mode 0755, want 0644",
 		},
 		{
 			name:   "app binary is not executable",
@@ -199,7 +215,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[0].path).mode = 0o644
 			},
-			want: "Darkbloom.app/Contents/MacOS/darkbloom\" is not executable",
+			want: "Darkbloom.app/Contents/MacOS/darkbloom\" has mode 0644, want 0755",
 		},
 		{
 			name:   "app enclave is not executable",
@@ -207,7 +223,7 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[1].path).mode = 0o644
 			},
-			want: "Darkbloom.app/Contents/MacOS/darkbloom-enclave\" is not executable",
+			want: "Darkbloom.app/Contents/MacOS/darkbloom-enclave\" has mode 0644, want 0755",
 		},
 		{
 			name:   "app metallib is executable",
@@ -215,7 +231,50 @@ func TestReleaseRegistrationRejectsInvalidPayloadsBeforePersistence(t *testing.T
 			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
 				fixture.entry(t, releaseAppPayloadSpecs[2].path).mode = 0o755
 			},
-			want: "Darkbloom.app/Contents/MacOS/mlx.metallib\" must not be executable",
+			want: "Darkbloom.app/Contents/MacOS/mlx.metallib\" has mode 0755, want 0644",
+		},
+		{
+			name:   "app main has noncanonical mode",
+			layout: releaseBundleTestApp,
+			mutate: func(t *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entry(
+					t,
+					releaseAppIdentityPayloadSpecs[0].path,
+				).mode = 0o775
+			},
+			want: "DarkbloomApp\" has mode 0775, want 0755",
+		},
+		{
+			name:   "unexpected executable beside app binaries",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entries = append(
+					fixture.entries,
+					releaseBundleTestEntry{
+						name:     "Darkbloom.app/Contents/MacOS/extra-tool",
+						mode:     0o755,
+						typeflag: tarTypeReg,
+						body:     []byte("unexpected"),
+					},
+				)
+			},
+			want: "unexpected payload \"Darkbloom.app/Contents/MacOS/extra-tool\"",
+		},
+		{
+			name:   "unexpected executable app resource",
+			layout: releaseBundleTestApp,
+			mutate: func(_ *testing.T, fixture *releaseBundleTestFixture) {
+				fixture.entries = append(
+					fixture.entries,
+					releaseBundleTestEntry{
+						name:     "Darkbloom.app/Contents/Resources/hidden-tool",
+						mode:     0o755,
+						typeflag: tarTypeReg,
+						body:     []byte("unexpected"),
+					},
+				)
+			},
+			want: "unexpected executable payload",
 		},
 		{
 			name:   "unsafe archive path",

@@ -499,6 +499,19 @@ run_install_without_hashes() {
         "$1" "$2" "" "" "$FAN_HELPER_REQUIREMENT"
 }
 
+run_install_with_capabilities() {
+    local installer=$1
+    local archive=$2
+    local install_dir=$3
+    local has_app=$4
+    local has_fan=$5
+    local has_paged=$6
+    artifact_hashes "$archive"
+    PATH="$CLT_SHIMS:$PATH" bash "$installer" --install-bundle-test \
+        "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
+        "$FAN_HELPER_REQUIREMENT" "$has_app" "$has_fan" "$has_paged"
+}
+
 VALID="$ROOT/valid.tar.gz"
 OLDER="$ROOT/older.tar.gz"
 NEWEST="$ROOT/newest.tar.gz"
@@ -1918,6 +1931,33 @@ printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
 
 assert_fan_variants_rejected "$INSTALL"
 test -f "$INSTALL/Darkbloom.app/sentinel"
+for installer in \
+    "$REPO_ROOT/scripts/install.sh" \
+    "$REPO_ROOT/coordinator/api/install.sh"
+do
+    for declaration in \
+        "false true true" \
+        "true false true" \
+        "true true false"
+    do
+        # Deliberately split the three literal booleans into function args.
+        # shellcheck disable=SC2086
+        if run_install_with_capabilities \
+            "$installer" "$VALID" "$INSTALL" $declaration
+        then
+            echo "installer accepted capability metadata that disagrees with app payload" >&2
+            exit 1
+        fi
+        test -f "$INSTALL/Darkbloom.app/sentinel"
+    done
+    if run_install_with_capabilities \
+        "$installer" "$FLAT_LEGACY" "$INSTALL" true false false
+    then
+        echo "installer accepted has_app=true for a flat release" >&2
+        exit 1
+    fi
+    test -f "$INSTALL/Darkbloom.app/sentinel"
+done
 if run_install_without_hashes "$VALID" "$INSTALL"; then
     echo "app release without payload hashes unexpectedly installed" >&2
     exit 1

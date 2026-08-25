@@ -26,6 +26,9 @@ public struct ReleaseInfo: Sendable, Equatable {
     public let bundleHash: String
     public let binaryHash: String?
     public let metallibHash: String?
+    public let hasApp: Bool?
+    public let hasFanHelper: Bool?
+    public let hasPagedKernel: Bool?
 
     public init(
         version: String,
@@ -33,7 +36,10 @@ public struct ReleaseInfo: Sendable, Equatable {
         url: String,
         bundleHash: String,
         binaryHash: String? = nil,
-        metallibHash: String? = nil
+        metallibHash: String? = nil,
+        hasApp: Bool? = nil,
+        hasFanHelper: Bool? = nil,
+        hasPagedKernel: Bool? = nil
     ) {
         self.version = version
         self.platform = platform
@@ -41,6 +47,9 @@ public struct ReleaseInfo: Sendable, Equatable {
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
+        self.hasApp = hasApp
+        self.hasFanHelper = hasFanHelper
+        self.hasPagedKernel = hasPagedKernel
     }
 
     public var sha256: String {
@@ -449,6 +458,23 @@ public struct SelfUpdater: Sendable {
             else {
                 return .failed("missing release hash field")
             }
+            let capabilityKeys = [
+                "has_app",
+                "has_fan_helper",
+                "has_paged_kernel",
+            ]
+            let presentCapabilityKeys = capabilityKeys.filter {
+                json[$0] != nil
+            }
+            if !presentCapabilityKeys.isEmpty {
+                guard presentCapabilityKeys.count == capabilityKeys.count,
+                      capabilityKeys.allSatisfy({ json[$0] is Bool })
+                else {
+                    return .failed(
+                        "release capability flags must be complete booleans"
+                    )
+                }
+            }
 
             return .release(ReleaseInfo(
                 version: version,
@@ -456,7 +482,10 @@ public struct SelfUpdater: Sendable {
                 url: downloadURL,
                 bundleHash: bundleHash,
                 binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
+                metallibHash: json["metallib_hash"] as? String,
+                hasApp: json["has_app"] as? Bool,
+                hasFanHelper: json["has_fan_helper"] as? Bool,
+                hasPagedKernel: json["has_paged_kernel"] as? Bool
             ))
         } catch {
             return .failed(error.localizedDescription)
@@ -848,6 +877,16 @@ public struct SelfUpdater: Sendable {
                         policy: signaturePolicy)
                 }
             }
+            try verifyDeclaredReleaseCapabilities(
+                release,
+                app: hasAppBundle ? extractedApp : nil,
+                executable: hasAppBundle
+                    ? extractedApp.appendingPathComponent(
+                        "Contents/MacOS/darkbloom"
+                    )
+                    : flatDarkbloom,
+                fileManager: fm
+            )
 
             let artifactModes = try UpdateArtifactModes(
                 binary: hasAppBundle

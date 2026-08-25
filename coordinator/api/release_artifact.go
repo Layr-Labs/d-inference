@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -16,7 +17,6 @@ import (
 
 const (
 	maxReleasePayloadBytes int64 = 512 << 20
-	releaseExecutableBits        = 0o111
 )
 
 type releasePayloadKind uint8
@@ -28,25 +28,62 @@ const (
 )
 
 type releasePayloadSpec struct {
-	path       string
-	kind       releasePayloadKind
-	executable bool
+	path            string
+	kind            releasePayloadKind
+	mode            int64
+	expectedContent string
 }
 
 var (
 	releaseFlatPayloadSpecs = []releasePayloadSpec{
-		{path: "bin/darkbloom", kind: releasePayloadBinary, executable: true},
-		{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-		{path: "bin/mlx.metallib", kind: releasePayloadMetallib},
+		{path: "bin/darkbloom", kind: releasePayloadBinary, mode: 0o755},
+		{path: "bin/darkbloom-enclave", kind: releasePayloadEnclave, mode: 0o755},
+		{path: "bin/mlx.metallib", kind: releasePayloadMetallib, mode: 0o644},
 	}
 	releaseAppPayloadSpecs = []releasePayloadSpec{
-		{path: "Darkbloom.app/Contents/MacOS/darkbloom", kind: releasePayloadBinary, executable: true},
-		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, executable: true},
-		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib},
+		{path: "Darkbloom.app/Contents/MacOS/darkbloom", kind: releasePayloadBinary, mode: 0o755},
+		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: 0o755},
+		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: 0o644},
+	}
+	releaseAppIdentityPayloadSpecs = []releasePayloadSpec{
+		{path: "Darkbloom.app/Contents/MacOS/DarkbloomApp", mode: 0o755},
+	}
+	releaseAppRequiredDataPayloadSpecs = []releasePayloadSpec{
+		{path: "Darkbloom.app/Contents/Info.plist", mode: 0o644},
+		{path: "Darkbloom.app/Contents/embedded.provisionprofile", mode: 0o644},
+		{path: "Darkbloom.app/Contents/Resources/Chivo-Regular.ttf", mode: 0o644},
+		{path: "Darkbloom.app/Contents/Resources/Chivo-Medium.ttf", mode: 0o644},
+		{
+			path: "Darkbloom.app/Contents/Resources/DarkbloomProvider_DarkbloomApp.bundle/default.metallib",
+			mode: 0o644,
+		},
+	}
+	releaseFanCapabilityPayloadSpecs = []releasePayloadSpec{
+		{path: "Darkbloom.app/Contents/Helpers/darkbloom-fan-helper", mode: 0o755},
+		{
+			path:            "Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1",
+			mode:            0o644,
+			expectedContent: "1\n",
+		},
+	}
+	releasePagedCapabilityPayloadSpecs = []releasePayloadSpec{
+		{
+			path:            "Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1",
+			mode:            0o644,
+			expectedContent: "1\n",
+		},
+		{
+			path: "Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
+			mode: 0o644,
+		},
 	}
 	releasePayloadSpecsByPath = indexReleasePayloadSpecs(
 		releaseFlatPayloadSpecs,
 		releaseAppPayloadSpecs,
+		releaseAppIdentityPayloadSpecs,
+		releaseAppRequiredDataPayloadSpecs,
+		releaseFanCapabilityPayloadSpecs,
+		releasePagedCapabilityPayloadSpecs,
 	)
 )
 
@@ -55,13 +92,18 @@ type releasePayload struct {
 }
 
 type releasePayloadCollector struct {
-	found  map[string]releasePayload
-	hasApp bool
+	found              map[string]releasePayload
+	hasApp             bool
+	binaryCapabilities *releaseBytePatternScanner
 }
 
 func newReleasePayloadCollector() *releasePayloadCollector {
 	return &releasePayloadCollector{
 		found: make(map[string]releasePayload, len(releasePayloadSpecsByPath)),
+		binaryCapabilities: newReleaseBytePatternScanner(
+			"darkbloom-fan-helper-v1",
+			"engine_v2_kv_backend",
+		),
 	}
 }
 
@@ -83,6 +125,9 @@ func (collector *releasePayloadCollector) visit(
 	entry releaseArchiveEntry,
 	contents io.Reader,
 ) error {
+	if err := validateReleasePayloadPath(entry); err != nil {
+		return err
+	}
 	foldedPath := foldReleaseArchivePath(entry.Path)
 	collector.hasApp = collector.hasApp ||
 		foldedPath == "darkbloom.app" ||
@@ -108,21 +153,38 @@ func (collector *releasePayloadCollector) visit(
 			maxReleasePayloadBytes,
 		)
 	}
-	if spec.executable {
-		if entry.Mode&releaseExecutableBits == 0 {
-			return fmt.Errorf("release payload %q is not executable", entry.Path)
-		}
-	} else if entry.Mode&releaseExecutableBits != 0 {
-		return fmt.Errorf("release data payload %q must not be executable", entry.Path)
+	if entry.Mode != spec.mode {
+		return fmt.Errorf(
+			"release payload %q has mode %#o, want %#o",
+			entry.Path,
+			entry.Mode,
+			spec.mode,
+		)
+	}
+	if spec.expectedContent != "" &&
+		entry.Size != int64(len(spec.expectedContent)) {
+		return fmt.Errorf("release payload %q has invalid contents", entry.Path)
 	}
 
 	hasher := sha256.New()
-	n, err := io.Copy(hasher, contents)
+	writers := []io.Writer{hasher}
+	if entry.Path == releaseFlatPayloadSpecs[0].path {
+		writers = append(writers, collector.binaryCapabilities)
+	}
+	var captured bytes.Buffer
+	if spec.expectedContent != "" {
+		writers = append(writers, &captured)
+	}
+	n, err := io.Copy(io.MultiWriter(writers...), contents)
 	if err != nil {
 		return fmt.Errorf("read release payload %q: %w", entry.Path, err)
 	}
 	if n != entry.Size {
 		return fmt.Errorf("release payload %q is truncated", entry.Path)
+	}
+	if spec.expectedContent != "" &&
+		captured.String() != spec.expectedContent {
+		return fmt.Errorf("release payload %q has invalid contents", entry.Path)
 	}
 	collector.found[entry.Path] = releasePayload{
 		hash: hex.EncodeToString(hasher.Sum(nil)),
@@ -145,9 +207,15 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 	}
 
 	if !collector.hasApp {
-		return nil
+		return collector.recordCapabilities(release, false, false, false)
 	}
 	if err := collector.require(releaseAppPayloadSpecs); err != nil {
+		return err
+	}
+	if err := collector.require(releaseAppIdentityPayloadSpecs); err != nil {
+		return err
+	}
+	if err := collector.require(releaseAppRequiredDataPayloadSpecs); err != nil {
 		return err
 	}
 	for index, appSpec := range releaseAppPayloadSpecs {
@@ -159,7 +227,29 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 			)
 		}
 	}
-	return nil
+
+	hasFanHelper, err := collector.validateCapability(
+		"fan helper",
+		"darkbloom-fan-helper-v1",
+		releaseFanCapabilityPayloadSpecs,
+	)
+	if err != nil {
+		return err
+	}
+	hasPagedKernel, err := collector.validateCapability(
+		"paged kernel",
+		"engine_v2_kv_backend",
+		releasePagedCapabilityPayloadSpecs,
+	)
+	if err != nil {
+		return err
+	}
+	return collector.recordCapabilities(
+		release,
+		true,
+		hasFanHelper,
+		hasPagedKernel,
+	)
 }
 
 func (collector *releasePayloadCollector) require(specs []releasePayloadSpec) error {

@@ -724,6 +724,45 @@ verify_staged_app_payload() {
         && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
 }
 
+verify_release_capability_flags() {
+    local stage=$1
+    local expected_app=${2:-}
+    local expected_fan=${3:-}
+    local expected_paged=${4:-}
+    [ -n "$expected_app$expected_fan$expected_paged" ] || return 0
+    if [ -z "$expected_app" ] \
+        || [ -z "$expected_fan" ] \
+        || [ -z "$expected_paged" ]; then
+        fail_install "Coordinator release capability flags must be all present or all absent."
+        return 1
+    fi
+
+    local app="$stage/Darkbloom.app"
+    local actual_app=false
+    local actual_fan=false
+    local actual_paged=false
+    if [ -d "$app" ] && [ ! -L "$app" ]; then
+        actual_app=true
+        [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1" ] \
+            && actual_fan=true
+        [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1" ] \
+            && actual_paged=true
+    fi
+
+    [ "$actual_app" = "$expected_app" ] || {
+        fail_install "Coordinator has_app=$expected_app does not match the verified release artifact ($actual_app)."
+        return 1
+    }
+    [ "$actual_fan" = "$expected_fan" ] || {
+        fail_install "Coordinator has_fan_helper=$expected_fan does not match the verified release artifact ($actual_fan)."
+        return 1
+    }
+    [ "$actual_paged" = "$expected_paged" ] || {
+        fail_install "Coordinator has_paged_kernel=$expected_paged does not match the verified release artifact ($actual_paged)."
+        return 1
+    }
+}
+
 # ~/.darkbloom/Darkbloom.app ownership: release bundles have always carried
 # OUR id (io.darkbloom.provider — first the CLI wrapper, now the combined
 # app); dev loops via script/build_and_run.sh produce the unsigned dev build
@@ -3074,6 +3113,9 @@ install_bundle_atomically_locked() {
     local install_dir=$2
     local binary_hash=${3:-}
     local metallib_hash=${4:-}
+    local expected_app=${5:-}
+    local expected_fan=${6:-}
+    local expected_paged=${7:-}
     if ! preflight_release_archive "$archive"; then
         fail_install "Release archive failed structural safety checks."
         return 1
@@ -3129,6 +3171,12 @@ install_bundle_atomically_locked() {
                 "$stage" "$install_dir" "$transaction_id" || true
             return 1
         }
+        verify_release_capability_flags \
+            "$stage" "$expected_app" "$expected_fan" "$expected_paged" || {
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
+            return 1
+        }
         commit_staged_app \
             "$stage/Darkbloom.app" "$install_dir" "$transaction_id" || {
             cleanup_install_staging_after_attempt \
@@ -3153,6 +3201,12 @@ install_bundle_atomically_locked() {
                 return 1
             }
         fi
+        verify_release_capability_flags \
+            "$stage" "$expected_app" "$expected_fan" "$expected_paged" || {
+            cleanup_install_staging_after_attempt \
+                "$stage" "$install_dir" "$transaction_id" || true
+            return 1
+        }
         commit_staged_flat_bundle \
             "$flat_bin" "$install_dir" "$transaction_id" || {
             cleanup_install_staging_after_attempt \
@@ -3295,13 +3349,14 @@ if [ "${1:-}" = "--release-download-block-limit-test" ]; then
 fi
 
 if [ "${1:-}" = "--install-bundle-test" ]; then
-    { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || {
-        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement]" >&2
+    { [ "$#" -eq 5 ] || [ "$#" -eq 6 ] || [ "$#" -eq 9 ]; } || {
+        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement [has-app has-fan-helper has-paged-kernel]]" >&2
         exit 64
     }
     INSTALL_TEST_MODE=1
-    if [ "$#" -eq 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
-    install_bundle_atomically "$2" "$3" "$4" "$5"
+    if [ "$#" -ge 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
+    install_bundle_atomically \
+        "$2" "$3" "$4" "$5" "${7:-}" "${8:-}" "${9:-}"
     exit $?
 fi
 
@@ -3346,16 +3401,40 @@ fi
 
 # Extract JSON string fields with sed — no python3 needed (no Xcode CLT prompt).
 json_val() { echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
+json_bool() {
+    echo "$1" \
+        | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p"
+}
+json_has_key() {
+    echo "$1" | sed -n "/\"$2\"[[:space:]]*:/p" | grep -q .
+}
 BUNDLE_URL=$(json_val "$RELEASE_JSON" url)
 BUNDLE_HASH=$(json_val "$RELEASE_JSON" bundle_hash)
 BINARY_HASH=$(json_val "$RELEASE_JSON" binary_hash)
 METALLIB_HASH=$(json_val "$RELEASE_JSON" metallib_hash)
 VERSION=$(json_val "$RELEASE_JSON" version)
 BACKEND=$(json_val "$RELEASE_JSON" backend)
+HAS_APP=$(json_bool "$RELEASE_JSON" has_app)
+HAS_FAN_HELPER=$(json_bool "$RELEASE_JSON" has_fan_helper)
+HAS_PAGED_KERNEL=$(json_bool "$RELEASE_JSON" has_paged_kernel)
+CAPABILITY_KEY_COUNT=0
+for capability_key in has_app has_fan_helper has_paged_kernel; do
+    if json_has_key "$RELEASE_JSON" "$capability_key"; then
+        CAPABILITY_KEY_COUNT=$((CAPABILITY_KEY_COUNT + 1))
+    fi
+done
 
 if [ -z "$BUNDLE_URL" ] || [ -z "$BUNDLE_HASH" ] || [ -z "$VERSION" ]; then
     echo "  ✗ Coordinator response missing required fields (url / bundle_hash / version)."
     echo "    Raw response: $RELEASE_JSON"
+    exit 1
+fi
+if [ "$CAPABILITY_KEY_COUNT" -ne 0 ] \
+    && { [ "$CAPABILITY_KEY_COUNT" -ne 3 ] \
+        || [ -z "$HAS_APP" ] \
+        || [ -z "$HAS_FAN_HELPER" ] \
+        || [ -z "$HAS_PAGED_KERNEL" ]; }; then
+    echo "  ✗ Coordinator response contains malformed or incomplete release capability flags."
     exit 1
 fi
 
@@ -3404,7 +3483,15 @@ fi
 echo "  Bundle hash verified ✓"
 
 echo "  Staging and verifying the complete app before touching the live install ..."
-if ! install_bundle_atomically "$TARBALL" "$INSTALL_DIR" "$BINARY_HASH" "$METALLIB_HASH"; then
+if ! install_bundle_atomically \
+    "$TARBALL" \
+    "$INSTALL_DIR" \
+    "$BINARY_HASH" \
+    "$METALLIB_HASH" \
+    "$HAS_APP" \
+    "$HAS_FAN_HELPER" \
+    "$HAS_PAGED_KERNEL"
+then
     echo "  Existing installation was left unchanged."
     exit 1
 fi

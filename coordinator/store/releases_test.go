@@ -7,6 +7,9 @@ import (
 
 func TestReleases(t *testing.T) {
 	s := NewMemory(Config{})
+	hasApp := true
+	hasFanHelper := true
+	hasPagedKernel := false
 
 	// Empty initially.
 	releases := s.ListReleases()
@@ -26,13 +29,16 @@ func TestReleases(t *testing.T) {
 		URL:        "https://r2.example.com/releases/v0.2.0/bundle.tar.gz",
 	}
 	r2 := &Release{
-		Version:      "0.2.1",
-		Platform:     "macos-arm64",
-		Backend:      "mlx-swift",
-		BinaryHash:   "ccc333",
-		BundleHash:   "ddd444",
-		MetallibHash: "eee555",
-		URL:          "https://r2.example.com/releases/v0.2.1/bundle.tar.gz",
+		Version:        "0.2.1",
+		Platform:       "macos-arm64",
+		Backend:        "mlx-swift",
+		BinaryHash:     "ccc333",
+		BundleHash:     "ddd444",
+		MetallibHash:   "eee555",
+		HasApp:         &hasApp,
+		HasFanHelper:   &hasFanHelper,
+		HasPagedKernel: &hasPagedKernel,
+		URL:            "https://r2.example.com/releases/v0.2.1/bundle.tar.gz",
 	}
 	if err := s.SetRelease(r1); err != nil {
 		t.Fatalf("SetRelease r1: %v", err)
@@ -64,6 +70,11 @@ func TestReleases(t *testing.T) {
 	}
 	if latest.MetallibHash != "eee555" {
 		t.Errorf("expected metallib_hash eee555, got %s", latest.MetallibHash)
+	}
+	if latest.HasApp == nil || !*latest.HasApp ||
+		latest.HasFanHelper == nil || !*latest.HasFanHelper ||
+		latest.HasPagedKernel == nil || *latest.HasPagedKernel {
+		t.Errorf("derived release capabilities were not preserved: %+v", latest)
 	}
 
 	// Unknown platform returns nil.

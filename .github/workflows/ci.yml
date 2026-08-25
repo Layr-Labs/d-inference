@@ -293,6 +293,10 @@ jobs:
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
+      - name: Test macOS release payload preflight
+        run: ./scripts/test-macos-release-payload.sh
+      - name: Test macOS signing identity rejection
+        run: ./scripts/test-macos-code-identity.sh
 
   cache-swift:
     name: Swift Build + Cache

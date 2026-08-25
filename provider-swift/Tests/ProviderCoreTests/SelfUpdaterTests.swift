@@ -128,7 +128,10 @@ struct SelfUpdaterTests {
             version: "99.0.0",
             bundleHash: String(repeating: "a", count: 64),
             binaryHash: String(repeating: "b", count: 64),
-            metallibHash: String(repeating: "c", count: 64)
+            metallibHash: String(repeating: "c", count: 64),
+            hasApp: true,
+            hasFanHelper: true,
+            hasPagedKernel: true
         ))
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
@@ -143,6 +146,28 @@ struct SelfUpdaterTests {
         #expect(latest.bundleHash == String(repeating: "a", count: 64))
         #expect(latest.binaryHash == String(repeating: "b", count: 64))
         #expect(latest.metallibHash == String(repeating: "c", count: 64))
+        #expect(latest.hasApp == true)
+        #expect(latest.hasFanHelper == true)
+        #expect(latest.hasPagedKernel == true)
+    }
+
+    @Test("release endpoint rejects incomplete capability metadata")
+    func releaseEndpointRejectsIncompleteCapabilities() async throws {
+        let mock = MockCoordinator(release: MockReleaseFixture(
+            version: "99.0.0",
+            hasApp: true
+        ))
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let result = await SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString
+        ).checkForUpdate()
+        guard case .checkFailed(let reason) = result else {
+            Issue.record("incomplete capability metadata was accepted")
+            return
+        }
+        #expect(reason.contains("capability flags must be complete booleans"))
     }
 
     @Test("release endpoint refuses a mismatched platform")
@@ -850,6 +875,82 @@ struct SelfUpdaterTests {
 
         staged.discard()
         #expect(!FileManager.default.fileExists(atPath: staged.stagingRoot.path))
+    }
+
+    @Test("staging rejects coordinator capability flags that disagree with the archive")
+    func stagingRejectsCapabilityFlagMismatch() throws {
+        for (label, hasApp, hasFan, hasPaged) in [
+            ("app", false, false, false),
+            ("fan", true, true, false),
+            ("paged", true, false, true),
+        ] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "self-updater-capability-\(label)-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            defer { try? FileManager.default.removeItem(at: root) }
+            let (tarball, release, install) = try makeAppBundleFixture(root: root)
+            let declared = ReleaseInfo(
+                version: release.version,
+                platform: release.platform,
+                url: release.url,
+                bundleHash: release.bundleHash,
+                binaryHash: release.binaryHash,
+                metallibHash: release.metallibHash,
+                hasApp: hasApp,
+                hasFanHelper: hasFan,
+                hasPagedKernel: hasPaged
+            )
+
+            let result = SelfUpdater(
+                coordinatorBaseURL: "https://api.example.test"
+            ).stageBundleForTesting(
+                from: tarball,
+                release: declared,
+                installDir: install
+            )
+            guard case .failure(let error) = result else {
+                Issue.record("\(label) capability mismatch was accepted")
+                continue
+            }
+            #expect("\(error)".contains("does not match"))
+        }
+    }
+
+    @Test("staging accepts capability flags derived from the same archive")
+    func stagingAcceptsMatchingCapabilityFlags() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-capability-match-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let declared = ReleaseInfo(
+            version: release.version,
+            platform: release.platform,
+            url: release.url,
+            bundleHash: release.bundleHash,
+            binaryHash: release.binaryHash,
+            metallibHash: release.metallibHash,
+            hasApp: true,
+            hasFanHelper: false,
+            hasPagedKernel: false
+        )
+
+        let result = SelfUpdater(
+            coordinatorBaseURL: "https://api.example.test"
+        ).stageBundleForTesting(
+            from: tarball,
+            release: declared,
+            installDir: install
+        )
+        guard case .success(let staged) = result else {
+            Issue.record("matching capability flags were rejected: \(result)")
+            return
+        }
+        staged.discard()
     }
 
     @Test("commit swaps the staged bundle into the live layout and cleans up")

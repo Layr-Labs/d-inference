@@ -177,8 +177,20 @@ private final class BlockingTestGate: @unchecked Sendable {
         return result
     }
 
-    func waitUntilBlocked() async -> DispatchTimeoutResult {
-        await waitForSemaphore(entered, timeout: .now() + Self.failsafeTimeout)
+    /// Returns false only after releasing the gate and fully awaiting the
+    /// caller's teardown. A timed-out setup must not throw past a synchronous
+    /// `defer` while its detached/background operation is still alive.
+    func waitUntilBlocked(
+        cleanupOnFailure: @Sendable () async -> Void
+    ) async -> Bool {
+        let result = await waitForSemaphore(entered, timeout: .now() + Self.failsafeTimeout)
+        guard result == .success else {
+            Issue.record("BlockingTestGate operation never reached the blocking point")
+            release()
+            await cleanupOnFailure()
+            return false
+        }
+        return true
     }
 
     func release() {
@@ -1140,7 +1152,10 @@ struct SSDPrefixCacheLifecycleTests {
                 gate.block()
             }
         }
-        try #require(await gate.waitUntilBlocked() == .success)
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            _ = await mutation.value
+            await cache.closeAndWait()
+        }) else { return }
 
         let mutationAdvertisement = cache.prefixCacheAdvertisement(
             base: PrefixCacheModelStatus(
@@ -1511,7 +1526,9 @@ struct SSDPrefixCacheReadyReceiptTests {
             return true
         }
         #expect(await returned.value)
-        try #require(await gate.waitUntilBlocked() == .success)
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            await cache.closeAndWait()
+        }) else { return }
         gate.release()
     }
 }
@@ -1694,7 +1711,11 @@ struct SSDReadyWriteBarrierTests {
                 totalBytes: 1,
                 onDurable: onDurable,
                 onOutcome: outcome.set)))
-            try #require(await gate.waitUntilBlocked() == .success)
+            guard await gate.waitUntilBlocked(cleanupOnFailure: {
+                writer.close()
+                await writer.waitUntilDrained()
+                try? FileManager.default.removeItem(at: dir)
+            }) else { return }
             writer.close()
             gate.release()
             await writer.waitUntilDrained()
@@ -1720,7 +1741,11 @@ struct SSDReadyWriteBarrierTests {
             blocks: [block(0xC3)],
             totalBytes: 1,
             onOutcome: failedOutcome.set)))
-        try #require(await failedGate.waitUntilBlocked() == .success)
+        guard await failedGate.waitUntilBlocked(cleanupOnFailure: {
+            failedWriter.close()
+            await failedWriter.waitUntilDrained()
+            try? FileManager.default.removeItem(at: failedDir)
+        }) else { return }
         failedWriter.close()
         failedGate.release()
         await failedWriter.waitUntilDrained()
@@ -1743,7 +1768,10 @@ struct SSDReadyWriteBarrierTests {
         }, onBlockSettled: { _ in settled.increment() })
         defer { gate.release(); pipeline.close() }
         #expect(pipeline.submit(.init(blocks: [block(1)], totalBytes: 1)))
-        try #require(await gate.waitUntilBlocked() == .success)
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            pipeline.close()
+            await pipeline.waitUntilDrained()
+        }) else { return }
         #expect(pipeline.submit(.init(blocks: [block(2)], totalBytes: 1)))
         let dropped = Counter()
         #expect(pipeline.submitWithResult(.init(

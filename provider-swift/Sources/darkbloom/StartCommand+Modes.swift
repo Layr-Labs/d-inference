@@ -379,39 +379,122 @@ extension Start {
         loopConfig: ProviderLoopConfig,
         schedule: Schedule
     ) async throws {
+        let downtimeState = ScheduledDaemonStateWriter(loopConfig: loopConfig)
+        var hasWrittenOffState = false
+        var announcedOffBoundary: Int64?
+
         while !Task.isCancelled {
-            if !schedule.isActiveNow() {
-                let wait = schedule.durationUntilNextActive()
-                print("Outside availability schedule; next window opens in \(formatDuration(wait)).")
-                try await Task.sleep(nanoseconds: sleepNanoseconds(for: wait))
+            let sampledAt = Date()
+            if !schedule.isActive(at: sampledAt) {
+                let wait = schedule.durationUntilNextActive(from: sampledAt)
+                let boundary = Int64(
+                    (sampledAt.timeIntervalSince1970 + wait).rounded()
+                )
+                if announcedOffBoundary != boundary {
+                    print("Outside availability schedule; next window opens in \(formatDuration(wait)).")
+                    announcedOffBoundary = boundary
+                }
+                if hasWrittenOffState {
+                    await downtimeState.refresh(schedule: schedule, at: sampledAt)
+                } else {
+                    await downtimeState.persistInitialOffWindow(
+                        schedule: schedule,
+                        at: sampledAt
+                    )
+                    hasWrittenOffState = true
+                }
+                let refreshIn = ScheduledDaemonStateWriter.refreshDelay(
+                    untilNextActive: wait
+                )
+                try await Task.sleep(
+                    nanoseconds: sleepNanoseconds(for: refreshIn)
+                )
                 continue
             }
 
-            let activeFor = schedule.durationUntilInactive() ?? 3600
+            announcedOffBoundary = nil
+            hasWrittenOffState = false
+            let activeFor = schedule.durationUntilInactive(from: sampledAt) ?? 3600
             print("Availability window active for \(formatDuration(activeFor)).")
 
             let loop = try ProviderLoop(config: loopConfig)
-            try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
-                group.addTask {
-                    try await runProviderLoopWithFanLease(loop)
-                    return .loopEnded
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: sleepNanoseconds(for: activeFor))
-                    return .windowClosed
-                }
+            var transitionRefreshTask: Task<Void, Never>?
+            do {
+                try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
+                    group.addTask {
+                        try await runProviderLoopWithFanLease(loop)
+                        return .loopEnded
+                    }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: sleepNanoseconds(for: activeFor))
+                        return .windowClosed
+                    }
 
-                guard let result = try await group.next() else { return }
-                group.cancelAll()
+                    guard let result = try await group.next() else { return }
+                    group.cancelAll()
 
-                switch result {
-                case .loopEnded:
-                    return
-                case .windowClosed:
-                    print("Availability window closed; disconnecting until the next scheduled window.")
-                    return
+                    switch result {
+                    case .loopEnded:
+                        return
+                    case .windowClosed:
+                        print("Availability window closed; disconnecting until the next scheduled window.")
+                        let transitionAt = Date()
+                        let activeState = await loop.beginScheduledDowntime(at: transitionAt)
+                        await downtimeState.persistTransitionFromActive(
+                            activeState,
+                            schedule: schedule,
+                            at: transitionAt
+                        )
+                        hasWrittenOffState = true
+                        // ProviderLoop drains/cancels work before its task
+                        // returns. Keep the supervisor record fresh throughout
+                        // that wait so the watchdog never restarts intentional
+                        // scheduled downtime.
+                        transitionRefreshTask = Task {
+                            await refreshScheduledDowntimeState(
+                                downtimeState,
+                                schedule: schedule
+                            )
+                        }
+                        return
+                    }
                 }
+            } catch {
+                transitionRefreshTask?.cancel()
+                if let transitionRefreshTask {
+                    await transitionRefreshTask.value
+                }
+                throw error
             }
+            transitionRefreshTask?.cancel()
+            if let transitionRefreshTask {
+                await transitionRefreshTask.value
+            }
+        }
+    }
+
+    private func refreshScheduledDowntimeState(
+        _ writer: ScheduledDaemonStateWriter,
+        schedule: Schedule
+    ) async {
+        while !Task.isCancelled {
+            let sampledAt = Date()
+            guard !schedule.isActive(at: sampledAt) else { return }
+            let wait = schedule.durationUntilNextActive(from: sampledAt)
+            let refreshIn = ScheduledDaemonStateWriter.refreshDelay(
+                untilNextActive: wait
+            )
+            do {
+                try await Task.sleep(
+                    nanoseconds: sleepNanoseconds(for: refreshIn)
+                )
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let refreshAt = Date()
+            guard !schedule.isActive(at: refreshAt) else { return }
+            await writer.refresh(schedule: schedule, at: refreshAt)
         }
     }
 

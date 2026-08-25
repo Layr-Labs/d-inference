@@ -93,7 +93,7 @@ func TestSweepExpiredCommandsPersistsTimeout(t *testing.T) {
 			Generation:   sandbox.Generation,
 			FencingToken: sandbox.FencingToken,
 			State:        store.SandboxCommandRunning,
-			UpdatedAt:    now.Add(-time.Second),
+			UpdatedAt:    now.Add(-1500 * time.Millisecond),
 		},
 	); err != nil {
 		t.Fatalf("run command: %v", err)

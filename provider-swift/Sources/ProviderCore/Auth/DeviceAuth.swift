@@ -216,11 +216,7 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
 ///   - `wss://api.darkbloom.dev/ws/provider` -> `https://api.darkbloom.dev`
 ///   - `ws://localhost:8080/ws/provider` -> `http://localhost:8080`
 public func coordinatorHTTPBase(_ wsURL: String) -> String {
-    wsURL
-        .replacingOccurrences(of: "wss://", with: "https://")
-        .replacingOccurrences(of: "ws://", with: "http://")
-        .replacingOccurrences(of: "/ws/provider", with: "")
-        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    (try? canonicalCoordinatorIssuer(wsURL)) ?? ""
 }
 
 /// Run the device code login flow.

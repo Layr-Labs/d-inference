@@ -17,6 +17,16 @@ import Testing
     }
 }
 
+@Test func coordinatorHTTPBaseUsesTheStructurallyParsedIssuer() throws {
+    let maliciousPath = "wss://api.darkbloom.dev/ws/provider@attacker.example"
+    let base = coordinatorHTTPBase(maliciousPath)
+    #expect(base == "https://api.darkbloom.dev")
+
+    let endpoint = try #require(URL(string: base + "/v1/device/token"))
+    #expect(endpoint.host == "api.darkbloom.dev")
+    #expect(endpoint.user == nil)
+}
+
 @Test func authTokenLoadMigratesLegacyTokenToCanonicalPath() throws {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("darkbloom-device-auth-")

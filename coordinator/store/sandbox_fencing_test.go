@@ -184,6 +184,139 @@ func TestSandboxStoreConcurrentHostFencingTokens(t *testing.T) {
 	}
 }
 
+func TestSandboxStoreSerializesConcurrentCreateAndRenewFences(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 8, 25, 8, 0, 0, 0, time.UTC)
+			hostID := "a2000000-0000-0000-0000-000000000221"
+			existing, prepare := sandboxFencingFixture(
+				"b2000000-0000-0000-0000-000000000222",
+				"c2000000-0000-0000-0000-000000000223",
+				"d2000000-0000-0000-0000-000000000224",
+				uniqueID("concurrent-fencing-existing"),
+				hostID,
+				30,
+				now,
+			)
+			storedExisting, _, _, err := backend.CreateSandbox(
+				ctx,
+				existing,
+				prepare,
+				SandboxAllocationLimits{
+					MaximumActive:     10,
+					MaximumPerAccount: 10,
+					MaximumPerHost:    10,
+				},
+			)
+			if err != nil {
+				t.Fatalf("create existing sandbox: %v", err)
+			}
+			if _, _, err := backend.ApplySandboxOperationUpdate(
+				ctx,
+				SandboxOperationUpdate{
+					OperationID:  prepare.ID,
+					SandboxID:    existing.ID,
+					Generation:   existing.Generation,
+					FencingToken: storedExisting.FencingToken,
+					State:        SandboxOperationReady,
+					UpdatedAt:    now.Add(time.Second),
+				},
+			); err != nil {
+				t.Fatalf("ready existing sandbox: %v", err)
+			}
+
+			createdSandbox, createdPrepare := sandboxFencingFixture(
+				"e2000000-0000-0000-0000-000000000225",
+				"f2000000-0000-0000-0000-000000000226",
+				"a3000000-0000-0000-0000-000000000227",
+				uniqueID("concurrent-fencing-create"),
+				hostID,
+				storedExisting.FencingToken+1,
+				now.Add(2*time.Second),
+			)
+			renew := &SandboxOperation{
+				ID:                      "b3000000-0000-0000-0000-000000000228",
+				SandboxID:               existing.ID,
+				AccountID:               existing.AccountID,
+				IdempotencyKey:          "c3000000-0000-0000-0000-000000000229",
+				Kind:                    SandboxOperationKindRenew,
+				State:                   SandboxOperationPending,
+				Generation:              existing.Generation,
+				FencingToken:            storedExisting.FencingToken,
+				RequestedFencingToken:   storedExisting.FencingToken + 1,
+				PreviousSandboxState:    SandboxStateReady,
+				RequestedLeaseExpiresAt: now.Add(time.Hour),
+				CreatedAt:               now.Add(2 * time.Second),
+				UpdatedAt:               now.Add(2 * time.Second),
+			}
+
+			type result struct {
+				token uint64
+				err   error
+			}
+			start := make(chan struct{})
+			results := make(chan result, 2)
+			go func() {
+				<-start
+				_, operation, created, err := backend.BeginSandboxOperation(
+					ctx,
+					renew,
+					SandboxStateReady,
+				)
+				if err == nil && !created {
+					err = ErrSandboxConflict
+				}
+				if err != nil {
+					results <- result{err: err}
+					return
+				}
+				results <- result{token: operation.RequestedFencingToken}
+			}()
+			go func() {
+				<-start
+				sandbox, _, created, err := backend.CreateSandbox(
+					ctx,
+					createdSandbox,
+					createdPrepare,
+					SandboxAllocationLimits{
+						MaximumActive:     10,
+						MaximumPerAccount: 10,
+						MaximumPerHost:    10,
+					},
+				)
+				if err == nil && !created {
+					err = ErrSandboxConflict
+				}
+				if err != nil {
+					results <- result{err: err}
+					return
+				}
+				results <- result{token: sandbox.FencingToken}
+			}()
+			close(start)
+
+			tokens := make([]uint64, 0, 2)
+			for range 2 {
+				result := <-results
+				if result.err != nil {
+					t.Fatalf("concurrent create and renewal: %v", result.err)
+				}
+				tokens = append(tokens, result.token)
+			}
+			sort.Slice(tokens, func(left, right int) bool {
+				return tokens[left] < tokens[right]
+			})
+			if tokens[0] != 31 || tokens[1] != 32 {
+				t.Fatalf(
+					"concurrent create and renewal fences = %v, want [31 32]",
+					tokens,
+				)
+			}
+		})
+	}
+}
+
 func sandboxFencingFixture(
 	sandboxID string,
 	idempotencyKey string,

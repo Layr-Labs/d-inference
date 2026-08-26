@@ -295,13 +295,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced tool_choice is not supported for multimodal requests")
             }
-            // Decode + validate inline media SYNCHRONOUSLY, before returning the
-            // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
-            // here propagates through this `async throws` to the caller — so both
-            // the buffered (non-streaming) and the SSE (streaming) HTTP paths, and
-            // the coordinator WebSocket path, surface the correct 4xx instead of a
-            // 200 with a truncated/error stream body. (Deferring the decode into
-            // the generation task would let the HTTP layer commit a 200 first.)
+            // Media is decoded exactly once by EngineV2VisionPrefill.prepare
+            // below, still synchronously inside this async-throws call before
+            // any stream is returned. Its MediaError therefore keeps the same
+            // clean pre-header 4xx contract without paying a second AVFoundation
+            // decode on the first-content critical path.
             // Reserve this vision request's unified memory against the 90% cap
             // BEFORE rasterizing. The vision path bypasses the batched
             // `submitTokenized` reservation, so it commits two kinds of memory the
@@ -352,18 +350,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     "insufficient global kv cache headroom for vision request "
                     + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
             }
-            let mediaValidationRequest = visionRequest
-            do {
-                try await raceFirstContentDeadline {
-                    try await MediaIngest.validateMedia(mediaValidationRequest)
-                }
-                try checkFirstContentDeadline()
-            } catch {
-                await mediaGate.release(requestId: mediaReqId)
-                await releaseBox.fire()
-                throw error
-            }
-
             // MEDIA → ENGINE V2: image, video, and mixed requests use the
             // wrapper's vision tower/projector, then prefill its same owned
             // text tower through CBv2. Per-image / per-video-frame embeddings
@@ -475,11 +461,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     await releaseBox.fire()
                     throw CancellationError()
                 } catch let mediaError as MediaIngest.MediaError {
-                    // Deterministic input fault (malformed/oversized media —
-                    // the same class `validateMedia` rejects above). Fails
-                    // identically on any provider, so it keeps its existing
-                    // 4xx mapping instead of becoming a misleading retriable
-                    // refusal.
+                    // Deterministic input fault from the preparer's single
+                    // decode pass. It fails identically on any provider, so it
+                    // keeps its 4xx mapping instead of becoming a misleading
+                    // retriable refusal.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw mediaError
@@ -735,15 +720,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
-    }
-
-    private func raceFirstContentDeadline<T: Sendable>(
-        _ operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        guard let firstContentDeadline else {
-            return try await operation()
-        }
-        return try await firstContentDeadline.race(operation)
     }
 
     /// Build the outer event stream only while the absolute pre-content

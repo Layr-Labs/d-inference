@@ -26,10 +26,13 @@
   `<|video_pad|>` run into per-frame spans. Image decode applies EXIF
   orientation on the full raster (not a JPEG thumbnail). Media requests
   default `enable_thinking=false` unless the client sets
-  `reasoning.enabled`. Qwen samples at most 16 video frames. Coordinator
-  remote-media fetch is bounded by the leftover first-content clock minus
-  an inference reserve, so a 15s origin download cannot expire the
-  OpenRouter-shaped 9s+1ms/token budget before the provider starts.
+  `reasoning.enabled`. Qwen decodes media once and uniformly samples at most
+  8 video frames at no more than 512² pixels each, bounding its unfused
+  vision score tensor to 512 MiB. Coordinator remote-media fetch is bounded
+  by the leftover first-content clock minus an inference reserve, and media
+  bypasses the text-only estimated-TTFT hard gate while retaining the same
+  request-absolute deadline. Its incomplete estimates do not train text TTFT
+  calibration or emit synthetic warm-pool pressure.
 
 Release rationale, limitations, compatibility, and rollout gates:
 [`docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md`](docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md).

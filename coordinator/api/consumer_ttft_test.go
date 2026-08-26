@@ -240,6 +240,50 @@ func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 	}
 }
 
+func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetTTFTHardReject(true)
+	warmCfg := registry.ReadConfig().WarmPool
+	warmCfg.Enabled = true
+	warmCfg.ObserveOnly = false
+	srv.registry.ConfigureWarmPool(warmCfg)
+	model := "media-estimate-is-partial"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	srv.registry.RecordWarmPoolSpeculativeStarted(model) // seed an observable bucket
+	p := registerBuildsProvider(srv, "vision-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2
+	p.Models[0].IsVision = true
+	p.Mu().Unlock()
+
+	body := strings.ReplaceAll(
+		`{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":16}`,
+		"MODEL", model)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests || strings.Contains(w.Body.String(), "TTFT target") {
+		t.Fatalf("hard gate used a text-only estimate to reject media: status=%d body=%s", w.Code, w.Body.String())
+	}
+	found := false
+	for _, snap := range srv.registry.TriggerWarmPool() {
+		if snap.Model != model {
+			continue
+		}
+		found = true
+		if snap.TTFTMisses != 0 {
+			t.Fatalf("media token proxy emitted %d synthetic warm-pool TTFT miss(es), want 0", snap.TTFTMisses)
+		}
+	}
+	if !found {
+		t.Fatal("warm-pool snapshot missing media model")
+	}
+}
+
 func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	srv, _ := testServer(t)
 	publicModel := "public-ttft-alias"

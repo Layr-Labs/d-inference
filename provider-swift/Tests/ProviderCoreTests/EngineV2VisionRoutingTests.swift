@@ -31,7 +31,7 @@ import Testing
 @testable import ProviderCore
 
 // A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// MediaIngestTests; passes `validateMedia`'s real decode.
+// MediaIngestTests.
 private let tinyPNGDataURI =
     "data:image/png;base64,"
     + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
@@ -40,9 +40,7 @@ private let tinyPNGDataURI =
     + "AElFTkSuQmCC"
 
 // A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
-// fixture as MediaIngestTests; passes `validateMedia`'s real
-// AVFoundation metadata probe, so video-bearing requests reach the v2
-// routing branch in these tests.
+// fixture as MediaIngestTests.
 private let tinyMP4DataURI =
     "data:video/mp4;base64,"
     + "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
@@ -1138,7 +1136,6 @@ struct EngineV2VisionRoutingTests {
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // Real tinyMP4 so validateMedia passes and the preparer is reached.
         let request = imageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
         ])
@@ -1216,9 +1213,8 @@ struct EngineV2VisionRoutingTests {
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
-        // the request reaches the v2 branch (a pre-release draft gated video to legacy
-        // here; v0.7.5 routes it through the engine).
+        // A pre-release draft gated video to legacy here; v0.7.5 routes it
+        // through the engine.
         let request = imageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
         ])
@@ -1240,14 +1236,15 @@ struct EngineV2VisionRoutingTests {
         #expect(visionEvents.first?.fields?["media_kind"]?.description == "video")
     }
 
-    @Test("garbage inline video still dies in validateMedia (4xx) before the preparer")
-    func garbageVideoRejectedBeforePreparer() async throws {
+    @Test("MediaError from the single v2 preparer remains a pre-stream 4xx")
+    func garbageVideoRejectedByPreparer() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, request, _ in
                 counter.increment()
+                _ = try await MediaIngest.buildUserInput(from: request)
                 throw VisionStubProcessorError()
             },
             emitTelemetry: { _ in }
@@ -1255,9 +1252,9 @@ struct EngineV2VisionRoutingTests {
         let router = makeRoutingEngine(
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
-        // The garbage inline video dies in `validateMedia` (a 400-class
-        // MediaError) BEFORE the v2 attempt — the preparer must not fire
-        // and the engine must stay untouched.
+        // The production preparer owns decode and model preparation in one
+        // pass. Its MediaError must escape this async-throws call before a
+        // stream is returned, and the engine must stay untouched.
         let request = imageRequest(parts: [
             .imageURL(tinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
@@ -1270,7 +1267,7 @@ struct EngineV2VisionRoutingTests {
         } catch {
             Issue.record("expected MediaError, got \(error)")
         }
-        #expect(counter.count == 0)
+        #expect(counter.count == 1)
         #expect(engine.submitted.isEmpty)
     }
 

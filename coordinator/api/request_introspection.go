@@ -29,7 +29,9 @@ import (
 // bounded number of soft tokens (Gemma 4 caps around a few hundred per image)
 // regardless of the base64 byte length, so counting a `data:` URI as text
 // inflates the estimate by orders of magnitude — distorting routing admission and
-// over-reserving balance. These flat per-media costs keep both sane.
+// over-reserving balance. Qwen's serving cap (8 frames, 512² pixels, temporal
+// patch 2, spatial merge 2) is at most ~1024 video soft tokens, so 1500 remains
+// conservative. These flat per-media costs keep both sane.
 const (
 	imagePromptTokenCost = 300
 	videoPromptTokenCost = 1500

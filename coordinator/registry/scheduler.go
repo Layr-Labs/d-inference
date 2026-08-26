@@ -508,8 +508,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// observation (API layer, RecordTTFTObservation) can be joined to it.
 	// Warm-slot winners only (StateMs == 0): a cold dispatch's actual includes
 	// model-load time the flow estimate does not model, which would poison the
-	// ratio sample.
-	if bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+	// ratio sample. Text only: media decode and vision-tower work are also absent
+	// from the projection and must not train the text-prefill calibrator.
+	if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
 		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
 	}
 	decision := RoutingDecision{
@@ -650,7 +651,10 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	bestTTFTMs := 0.0
 	breakerRejected := 0
 	now := time.Now()
-	enforceTTFT := pr.MaxTTFTMs > 0
+	// Vision preparation is absent from the token-prefill projection, so media
+	// estimates are advisory even if a caller accidentally supplies a ceiling.
+	// The request-absolute first-content deadline remains authoritative.
+	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never

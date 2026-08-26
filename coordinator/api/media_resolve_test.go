@@ -138,9 +138,10 @@ func TestResolveRemoteMediaInlinesOnSuccess(t *testing.T) {
 
 func TestResolveRemoteMediaNoRemoteNoOp(t *testing.T) {
 	s := minimalMediaServer(mediafetch.DefaultConfig())
+	s.firstContentDeadlineBase = 5 * time.Second
 	raw, parsed := chatBodyBytes(t, "data:image/png;base64,iVBORw0KGgo=")
 	w := httptest.NewRecorder()
-	timing := &registry.RequestTiming{}
+	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}
 
 	out, inlined, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
 	if !ok || inlined || !bytes.Equal(out, raw) {

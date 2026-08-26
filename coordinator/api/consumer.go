@@ -693,6 +693,17 @@ func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) 
 	return hasTTFT && bestTTFT > threshold
 }
 
+// hardTTFTGateApplies reports whether the scheduler's token-prefill estimate is
+// authoritative enough to reject this request before dispatch. Media requests
+// run CPU decode plus a separate vision tower before text prefill; neither cost
+// exists in estimatedTTFTFromSnapshot, so treating that partial estimate as a
+// hard ceiling rejects healthy video/image requests on a number that cannot
+// predict their TTFT. They still use the best-available provider and remain
+// bounded by the same request-absolute first-content deadline.
+func (s *Server) hardTTFTGateApplies(requiresVision bool) bool {
+	return s.ttftHardReject && !requiresVision
+}
+
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
 	if alternateOK && alternate < primary {
 		return alternateModel, alternate
@@ -888,7 +899,7 @@ func (s *Server) dispatchOneProvider(
 	// dispatch serves the best-available provider instead of re-rejecting an
 	// over-threshold request the preflight already chose to soft-serve. (Mirrors
 	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.ttftHardReject {
+	if !policy.enabled && !policy.prefer && s.hardTTFTGateApplies(requiresVision) {
 		pr.MaxTTFTMs = float64(requestDeadline.Milliseconds())
 	}
 	// Refresh immediately before reservation: every retry spends the same

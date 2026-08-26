@@ -26,6 +26,7 @@
 import Foundation
 import MLX
 import MLXLMCommon
+import MLXVLM
 import Testing
 
 @testable import ProviderCore
@@ -238,6 +239,27 @@ struct VisionTowerBudgetIncidentTests {
         #expect(
             VisionTowerBudget.attentionBytes(patches: 5_184, bytesPerSquaredPatch: 32)
                 < UInt64(1 << 30))
+    }
+
+    @Test("Qwen serving video cap bounds the unfused score tensor to 512 MiB")
+    func qwenVideoServingCapBoundsTower() {
+        #expect(Qwen3VLProcessor.maxVideoFrames == 8)
+        #expect(Qwen3VLProcessor.maxVideoFramePixels == 512 * 512)
+
+        // 512² / 16² = 1,024 spatial patches; temporal patch size 2 packs
+        // eight sampled frames into t=4, so N <= 4,096. Qwen's 72-dim heads
+        // take the 16-plane fallback: 4,096² × 16 × 2 bytes = 512 MiB.
+        let patches = (Qwen3VLProcessor.maxVideoFrames / 2)
+            * (Qwen3VLProcessor.maxVideoFramePixels / (16 * 16))
+        #expect(patches == 4_096)
+        #expect(
+            VisionTowerBudget.attentionBytes(
+                patches: patches, bytesPerSquaredPatch: 16 * 2)
+                == UInt64(512 * 1024 * 1024))
+        #expect(
+            VisionTowerBudget.admit(
+                patches: patches, subject: "this video",
+                limits: limits(headFactor: 16)) == .admit)
     }
 
     @Test("an unknown device limit fails open rather than refusing all media")

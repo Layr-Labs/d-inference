@@ -732,10 +732,9 @@ public enum EngineV2VisionPrefill {
     /// `EngineV2VisionPrefillError` (content-safe by construction — see the
     /// enum doc). Foreign throws (processor/MLX/media errors) carry
     /// `error_class` only: `MediaError.invalidURL`, for one, embeds up to
-    /// 200 chars of the request's URI, and relying on call-site ordering
-    /// (validateMedia running first) to keep such strings out of telemetry
-    /// would be one refactor away from a leak — the same defense-in-depth
-    /// stance as the bridge's engine-error telemetry.
+    /// 200 chars of the request's URI. The same throw now comes directly from
+    /// this preparer's single decode pass, so filtering by class is the
+    /// privacy boundary rather than call-site ordering.
     static func refusalTelemetryEvent(
         modelId: String, mediaKind: EngineV2MediaKind, error: Error
     ) -> TelemetryEvent {

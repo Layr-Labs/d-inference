@@ -216,6 +216,9 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
 		return rawBody, false, true
 	}
+	if !mediafetch.HasRemoteMedia(parsed) {
+		return rawBody, false, true
+	}
 
 	// Self-route skips the balance reservation, so nothing has yet gated egress
 	// on serve-ability. Before fetching, confirm the owner has an online machine
@@ -224,7 +227,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	// egress and only then get the self-route error. Only runs when a fetch would
 	// actually happen (remote media present); selfRouteUnavailable writes its own
 	// terminal response. The later runInferenceAdmission re-checks (idempotent).
-	if meta.selfRoute && mediafetch.HasRemoteMedia(parsed) {
+	if meta.selfRoute {
 		if s.selfRouteUnavailable(w, r, meta.ownerAccountID, meta.model,
 			meta.traits, meta.requiresVision) {
 			return nil, false, false

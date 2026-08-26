@@ -921,16 +921,6 @@ type ProviderLocation struct {
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
-// LogReport represents a stored provider log report retrieved by its opaque
-// support ID.
-type LogReport struct {
-	ID           int64     `json:"id"`
-	AccountID    string    `json:"account_id"`
-	LogSizeBytes int64     `json:"log_size_bytes"`
-	CreatedAt    time.Time `json:"created_at"`
-	LogData      []byte    `json:"log_data,omitempty"`
-}
-
 // ReputationRecord is the persistent representation of a provider's reputation.
 type ReputationRecord struct {
 	TotalJobs          int   `json:"total_jobs"`

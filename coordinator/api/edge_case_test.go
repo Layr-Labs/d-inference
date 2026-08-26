@@ -399,3 +399,26 @@ func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
 		t.Fatalf("metallib_hash = %q, want %q", resp["metallib_hash"], metallibHash)
 	}
 }
+
+func TestEdge_ProviderLogReportRoutesAreNotRegistered(t *testing.T) {
+	srv, _ := testServer(t)
+
+	for _, testCase := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/v1/provider/log-report"},
+		{method: http.MethodGet, path: "/v1/admin/log-reports/1"},
+	} {
+		t.Run(testCase.method+" "+testCase.path, func(t *testing.T) {
+			req := httptest.NewRequest(testCase.method, testCase.path, nil)
+			recorder := httptest.NewRecorder()
+
+			srv.Handler().ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			}
+		})
+	}
+}

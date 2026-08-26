@@ -682,12 +682,4 @@ type ProviderStore interface {
 	// record — keeping "hard untrust always takes effect" durable across restarts.
 	// Best-effort; must not block the read loop.
 	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
-
-	// --- Provider Log Reports ---
-
-	// StoreLogReport stores a provider log report and returns its support ID.
-	StoreLogReport(accountID string, logData []byte) (int64, error)
-
-	// GetLogReport retrieves a single log report by ID.
-	GetLogReport(id int64) (*LogReport, error)
 }

@@ -268,6 +268,15 @@ func (s *Server) handleTelemetryIngest(w http.ResponseWriter, r *http.Request) {
 	))
 }
 
+// handleProviderLogReportGone gives old provider CLIs an explicit terminal
+// response without reading, decoding, storing, or logging the request body.
+func (s *Server) handleProviderLogReportGone(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusGone, errorResponse(
+		"provider_log_reports_disabled",
+		"provider log report uploads are disabled",
+	))
+}
+
 // telemetryAuthContext holds the resolved identity of a telemetry submitter.
 type telemetryAuthContext struct {
 	Source    protocol.TelemetrySource // override for events coming from this submitter

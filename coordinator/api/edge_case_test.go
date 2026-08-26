@@ -400,15 +400,16 @@ func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
 	}
 }
 
-func TestEdge_ProviderLogReportRoutesAreNotRegistered(t *testing.T) {
+func TestEdge_ProviderLogReportRoutesAreRetired(t *testing.T) {
 	srv, _ := testServer(t)
 
 	for _, testCase := range []struct {
-		method string
-		path   string
+		method     string
+		path       string
+		wantStatus int
 	}{
-		{method: http.MethodPost, path: "/v1/provider/log-report"},
-		{method: http.MethodGet, path: "/v1/admin/log-reports/1"},
+		{method: http.MethodPost, path: "/v1/provider/log-report", wantStatus: http.StatusGone},
+		{method: http.MethodGet, path: "/v1/admin/log-reports/1", wantStatus: http.StatusNotFound},
 	} {
 		t.Run(testCase.method+" "+testCase.path, func(t *testing.T) {
 			req := httptest.NewRequest(testCase.method, testCase.path, nil)
@@ -416,8 +417,8 @@ func TestEdge_ProviderLogReportRoutesAreNotRegistered(t *testing.T) {
 
 			srv.Handler().ServeHTTP(recorder, req)
 
-			if recorder.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			if recorder.Code != testCase.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, testCase.wantStatus)
 			}
 		})
 	}

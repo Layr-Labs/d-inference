@@ -15,11 +15,13 @@
   bypasses the text-only estimated-TTFT hard gate while retaining the same
   request-absolute deadline. Its incomplete estimates do not train text TTFT
   calibration or emit synthetic warm-pool pressure.
-- **Current MLX-LM main pin** — `libs/mlx-swift-lm` advances to `23c287c`,
+- **Current MLX-LM main pin** — `libs/mlx-swift-lm` advances to `fe01df9`,
   containing the merged Qwen prefill/decode optimization
   ([mlx-swift-lm#120](https://github.com/Layr-Labs/mlx-swift-lm/pull/120))
   and bounded video-tower input fix
-  ([mlx-swift-lm#123](https://github.com/Layr-Labs/mlx-swift-lm/pull/123)).
+  ([mlx-swift-lm#123](https://github.com/Layr-Labs/mlx-swift-lm/pull/123)),
+  plus Qwen3-VL 30B-A3B support
+  ([mlx-swift-lm#122](https://github.com/Layr-Labs/mlx-swift-lm/pull/122)).
 - Provider and coordinator fallback version authorities move together to
   `0.8.13`; there is no new protocol.
 

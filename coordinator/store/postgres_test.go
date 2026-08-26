@@ -728,3 +728,34 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 		t.Errorf("duplicate attempt leaked a debit: balance = %d", bal)
 	}
 }
+
+func TestPostgresMigrationDropsProviderLogReports(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	if _, err := s.pool.Exec(ctx, `CREATE TABLE provider_log_reports (
+		id BIGSERIAL PRIMARY KEY,
+		report_data BYTEA NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy provider_log_reports table: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO provider_log_reports (report_data) VALUES ('legacy')`); err != nil {
+		t.Fatalf("seed legacy provider_log_reports table: %v", err)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate legacy provider_log_reports table: %v", err)
+	}
+
+	var tableName *string
+	if err := s.pool.QueryRow(ctx, `SELECT to_regclass('provider_log_reports')::text`).Scan(&tableName); err != nil {
+		t.Fatalf("query provider_log_reports existence: %v", err)
+	}
+	if tableName != nil {
+		t.Fatalf("provider_log_reports still exists after migration: %q", *tableName)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("re-run migration after provider_log_reports removal: %v", err)
+	}
+}

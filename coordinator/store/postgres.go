@@ -146,6 +146,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
+		// Provider log reports are permanently retired. DROP TABLE is idempotent,
+		// so upgraded databases discard historical rows and fresh databases keep
+		// no dead schema behind.
+		`DROP TABLE IF EXISTS provider_log_reports`,
+
 		`CREATE TABLE IF NOT EXISTS providers (
 			id TEXT PRIMARY KEY,
 			hardware JSONB NOT NULL,

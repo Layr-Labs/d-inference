@@ -9,12 +9,43 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+type providerPersistenceLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (r *Registry) lockProviderPersistence(providerID string) func() {
+	r.providerPersistenceLocksMu.Lock()
+	if r.providerPersistenceLocks == nil {
+		r.providerPersistenceLocks = make(map[string]*providerPersistenceLock)
+	}
+	lock := r.providerPersistenceLocks[providerID]
+	if lock == nil {
+		lock = &providerPersistenceLock{}
+		r.providerPersistenceLocks[providerID] = lock
+	}
+	lock.refs++
+	r.providerPersistenceLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		r.providerPersistenceLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 && r.providerPersistenceLocks[providerID] == lock {
+			delete(r.providerPersistenceLocks, providerID)
+		}
+		r.providerPersistenceLocksMu.Unlock()
+	}
+}
 
 func (r *Registry) SetStore(st store.Store) {
 	r.store = st
@@ -246,32 +277,47 @@ func (r *Registry) persistProviderNow(p *Provider) {
 	})
 }
 
-// PersistProviderSync durably writes one exact provider snapshot before
-// returning. Control-plane transitions use this while holding their own
-// transition lock when persistence and policy cutoffs must be atomic.
-func (r *Registry) PersistProviderSync(ctx context.Context, p *Provider) error {
+func (r *Registry) persistProviderSyncWithoutLifecycleLock(
+	ctx context.Context,
+	p *Provider,
+) error {
 	if r.store == nil || p == nil {
 		return nil
 	}
 	p.persistMu.Lock()
 	defer p.persistMu.Unlock()
-	rec, providerKey, enabled := providerRecordSnapshot(p)
-	if !enabled {
-		return nil
+	_, err := r.persistProviderSnapshotLocked(ctx, p, false)
+	return err
+}
+
+// persistProviderSnapshotLocked writes the current snapshot while p.persistMu
+// is held. The boolean distinguishes a durable write from the intentional
+// no-op used by providers still behind the first-admission fence.
+func (r *Registry) persistProviderSnapshotLocked(
+	ctx context.Context,
+	p *Provider,
+	allowDisabled bool,
+) (bool, error) {
+	rec, providerKey, enabled := providerRecordSnapshot(p, allowDisabled)
+	if rec.ID == "" {
+		return false, nil
 	}
 	if err := r.store.UpsertProvider(ctx, rec); err != nil {
-		return err
+		return false, err
+	}
+	if !enabled {
+		return true, nil
 	}
 	if err := r.store.TouchProviderSession(
 		ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
-// PersistProviderSyncIfCurrent persists only the exact live connection. Holding
-// the registry read lock through the write prevents a delayed attestation
-// callback from overwriting a replacement connection's durable row.
+// PersistProviderSyncIfCurrent persists only the exact live connection. A
+// provider-ID-scoped lifecycle lock prevents replacement during the write
+// without blocking unrelated registry readers or writers on database I/O.
 func (r *Registry) PersistProviderSyncIfCurrent(
 	ctx context.Context,
 	p *Provider,
@@ -279,20 +325,49 @@ func (r *Registry) PersistProviderSyncIfCurrent(
 	if p == nil {
 		return false, nil
 	}
+	unlockPersistence := r.lockProviderPersistence(p.ID)
+	defer unlockPersistence()
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	if current, ok := r.providers[p.ID]; !ok || current != p {
+		r.mu.RUnlock()
 		return false, nil
 	}
-	return true, r.PersistProviderSync(ctx, p)
+	r.mu.RUnlock()
+	return true, r.persistProviderSyncWithoutLifecycleLock(ctx, p)
+}
+
+// PersistPendingHardwareAdmissionSnapshotIfCurrent checkpoints a first-time
+// provider's complete identity proof before the serial admission is committed.
+// It does not enable heartbeat persistence or create a provider session.
+func (r *Registry) PersistPendingHardwareAdmissionSnapshotIfCurrent(
+	ctx context.Context,
+	p *Provider,
+) (bool, error) {
+	if p == nil || r.store == nil {
+		return false, nil
+	}
+	unlockPersistence := r.lockProviderPersistence(p.ID)
+	defer unlockPersistence()
+	p.persistMu.Lock()
+	defer p.persistMu.Unlock()
+
+	r.mu.RLock()
+	if current, ok := r.providers[p.ID]; !ok || current != p {
+		r.mu.RUnlock()
+		return false, nil
+	}
+	r.mu.RUnlock()
+	return r.persistProviderSnapshotLocked(ctx, p, true)
 }
 
 func providerRecordSnapshot(
 	p *Provider,
+	allowDisabled bool,
 ) (store.ProviderRecord, string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.persistenceEnabled {
+	enabled := p.persistenceEnabled
+	if !enabled && !allowDisabled {
 		return store.ProviderRecord{}, "", false
 	}
 	hardwareJSON, _ := json.Marshal(p.Hardware)
@@ -351,7 +426,7 @@ func providerRecordSnapshot(
 		LastSessionStats:           lastSessionStatsJSON,
 		RegisteredAt:               now,
 		LastSeen:                   now,
-	}, p.PublicKey, true
+	}, p.PublicKey, enabled
 }
 
 // persistReputation saves a provider's current reputation to the store.

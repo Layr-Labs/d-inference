@@ -212,6 +212,66 @@ func TestStaleConnectionCannotOverwriteReplacementPersistence(t *testing.T) {
 	}
 }
 
+func TestSlowPersistenceOnlyBlocksReplacementForSameProvider(t *testing.T) {
+	memory := store.NewMemory(store.Config{})
+	blocking := &blockingProviderUpsertStore{
+		Store: memory, started: make(chan struct{}),
+		second: make(chan struct{}), release: make(chan struct{}),
+	}
+	reg := New(testLogger())
+	reg.SetStore(blocking)
+	provider := reg.RegisterPendingHardwareAdmission(
+		"slow-persistence", nil, testRegisterMessage())
+	provider.mu.Lock()
+	provider.persistenceEnabled = true
+	provider.mu.Unlock()
+
+	persisted := make(chan error, 1)
+	go func() {
+		_, err := reg.PersistProviderSyncIfCurrent(
+			context.Background(), provider)
+		persisted <- err
+	}()
+	<-blocking.started
+
+	replacementStarted := make(chan struct{})
+	replacementDone := make(chan *Provider, 1)
+	go func() {
+		close(replacementStarted)
+		replacementDone <- reg.RegisterPendingHardwareAdmission(
+			provider.ID, nil, testRegisterMessage())
+	}()
+	<-replacementStarted
+
+	unrelatedDone := make(chan *Provider, 1)
+	go func() {
+		unrelatedDone <- reg.RegisterPendingHardwareAdmission(
+			"unrelated-provider", nil, testRegisterMessage())
+	}()
+	select {
+	case unrelated := <-unrelatedDone:
+		if unrelated == nil {
+			t.Fatal("unrelated registration returned nil")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("slow persistence blocked an unrelated registry mutation")
+	}
+	select {
+	case <-replacementDone:
+		t.Fatal("same-ID replacement bypassed in-flight persistence")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	if err := <-persisted; err != nil {
+		t.Fatal(err)
+	}
+	replacement := <-replacementDone
+	if reg.GetProvider(provider.ID) != replacement {
+		t.Fatal("replacement did not become current after persistence completed")
+	}
+}
+
 func TestSynchronousTrustGrantSupersedesOlderPersistence(t *testing.T) {
 	memory := store.NewMemory(store.Config{})
 	blocking := &blockingProviderUpsertStore{
@@ -234,7 +294,9 @@ func TestSynchronousTrustGrantSupersedesOlderPersistence(t *testing.T) {
 
 	persisted := make(chan error, 1)
 	go func() {
-		persisted <- reg.PersistProviderSync(context.Background(), provider)
+		_, err := reg.PersistProviderSyncIfCurrent(
+			context.Background(), provider)
+		persisted <- err
 	}()
 	<-blocking.started
 

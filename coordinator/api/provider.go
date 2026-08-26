@@ -3189,6 +3189,12 @@ func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string
 func (s *Server) persistCurrentProviderSnapshot(
 	provider *registry.Provider,
 ) bool {
+	// First-time providers deliberately have no durable row until admission is
+	// complete. Their finalizer commits the full MDA-bearing snapshot before
+	// lifting the routing fence.
+	if !provider.PersistenceEnabled() {
+		return true
+	}
 	ctx, cancel := context.WithTimeout(
 		context.Background(), hardwareAdmissionStoreTimeout)
 	defer cancel()
@@ -3258,12 +3264,9 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 		// Not hardware-trusted (yet) — nothing to attach the proof to.
 		return false
 	}
-	// Persist immediately under THIS connection's record. The grant-path
-	// PersistProvider ran before this attach, so without this write the new
-	// session's row would carry an empty mda_cert_chain until the next throttled
-	// heartbeat — and a disconnect in that window would lose the chain (serial now
-	// indexes this session's row), forcing a fresh, rate-limited refetch on the
-	// next reconnect. Mirrors the fresh-MDA path's immediate persist.
+	// Existing providers persist the refreshed chain immediately. A first-time
+	// provider has no row yet; its admission finalizer durably writes this full
+	// snapshot before lifting the routing fence.
 	if !s.persistCurrentProviderSnapshot(provider) {
 		return false
 	}
@@ -3450,13 +3453,9 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		return false
 	}
 
-	// Persist the freshly-earned chain NOW so it is durable for reuse. The
-	// hardware-grant PersistProvider ran before this MDA leg, so without an explicit
-	// write here the chain would only reach the store on the next throttled
-	// heartbeat persist — and would be lost (and re-fetched, hitting Apple's
-	// ~1/device/7d rate limit) if the provider disconnects in that window. With a
-	// durable (Postgres) store this is what makes the proof recoverable across a
-	// coordinator restart.
+	// Existing providers persist the refreshed chain immediately. A first-time
+	// provider remains fenced with persistence disabled here; its admission
+	// finalizer synchronously writes this MDA-bearing snapshot before routing.
 	if !s.persistCurrentProviderSnapshot(provider) {
 		return false
 	}

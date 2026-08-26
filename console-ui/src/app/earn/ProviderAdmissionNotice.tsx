@@ -28,7 +28,8 @@ export function selectedHardwareIsBlocked(
   const belowBandwidth =
     policy.min_memory_bandwidth_gbs > 0 &&
     calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
-  return belowMemory || belowBandwidth;
+  const fp16EligibilityUnknown = policy.min_fp16_millitflops > 0;
+  return belowMemory || belowBandwidth || fp16EligibilityUnknown;
 }
 
 export function ProviderAdmissionNotice({
@@ -82,7 +83,10 @@ export function ProviderAdmissionNotice({
     policy.mode === "enforce" &&
     policy.min_memory_bandwidth_gbs > 0 &&
     calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
-  const blocked = belowMemoryFloor || belowBandwidthFloor;
+  const fp16EligibilityUnknown =
+    policy.mode === "enforce" && policy.min_fp16_millitflops > 0;
+  const blocked =
+    belowMemoryFloor || belowBandwidthFloor || fp16EligibilityUnknown;
   const Icon = blocked ? AlertTriangle : ShieldCheck;
   let blockedTitle = "";
   let blockedDetail = "";
@@ -92,6 +96,9 @@ export function ProviderAdmissionNotice({
   } else if (belowBandwidthFloor) {
     blockedTitle = "This chip is below the current new-provider bandwidth floor";
     blockedDetail = `${calc.hardware.bandwidthGBs} GB/s is catalogued for ${calc.selectedChip}; policy v${policy.version} requires at least ${policy.min_memory_bandwidth_gbs} GB/s. This configuration will not be admitted as a new provider.`;
+  } else if (fp16EligibilityUnknown) {
+    blockedTitle = "This calculator cannot verify the current FP16 floor";
+    blockedDetail = `Policy v${policy.version} enforces an FP16 threshold that this calculator cannot verify. Setup stays paused until the coordinator can confirm eligibility.`;
   }
 
   return (

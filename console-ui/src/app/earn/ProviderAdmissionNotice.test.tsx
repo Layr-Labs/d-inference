@@ -63,6 +63,21 @@ describe("ProviderAdmissionNotice", () => {
     expect(selectedHardwareIsBlocked(calc, requirements)).toBe(true);
   });
 
+  it("fails closed when an enforced FP16 floor cannot be verified", () => {
+    const requirements = state("enforce");
+    requirements.requirements!.policy.min_fp16_millitflops = 1;
+    expect(selectedHardwareIsBlocked(calc, requirements)).toBe(true);
+    render(
+      <ProviderAdmissionNotice
+        calc={calc}
+        requirementsState={requirements}
+      />
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "cannot verify the current FP16 floor"
+    );
+  });
+
   it("does not imply approval when requirements are unavailable", () => {
     const unavailable: ProviderRequirementsState = {
       status: "error",

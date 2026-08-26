@@ -199,7 +199,7 @@ func (s *Server) liveTrustedHardwareAdmissions(
 			return
 		}
 		if legacySignedCapacityOmitted(result) {
-			if hardware.MemoryGB <= 0 || hardware.GPUCores <= 0 {
+			if hardware.MemoryGB <= 0 || hardware.GPUCores < 0 {
 				return
 			}
 			// Pre-capacity-attestation providers cannot sign RAM/GPU claims.
@@ -637,7 +637,7 @@ func canonicalLegacyAdmissionHardware(
 	admitted hardwareadmission.Observed,
 	result attestation.VerificationResult,
 ) (hardwareadmission.Observed, bool) {
-	if admitted.MemoryGB <= 0 || admitted.GPUCores <= 0 {
+	if admitted.MemoryGB <= 0 || admitted.GPUCores < 0 {
 		return hardwareadmission.Observed{}, false
 	}
 	if admitted.MachineModel == "" {
@@ -661,7 +661,7 @@ func canonicalLegacyAdmissionHardware(
 	if !ok {
 		return hardwareadmission.Observed{}, false
 	}
-	decision := hardwareadmission.Evaluate(
+	return hardwareadmission.Evaluate(
 		hardwareadmission.DisabledPolicy(),
 		hardwareadmission.Input{
 			MachineModel: admitted.MachineModel,
@@ -671,11 +671,7 @@ func canonicalLegacyAdmissionHardware(
 			MemoryGB:     admitted.MemoryGB,
 			GPUCores:     admitted.GPUCores,
 		},
-	)
-	if !decision.Observed.CatalogKnown {
-		return hardwareadmission.Observed{}, false
-	}
-	return decision.Observed, true
+	).Observed, true
 }
 
 func hardwareIntegrityReason(failure hardwareadmission.Failure) string {
@@ -735,7 +731,7 @@ func hardwareCapacityClaimMismatch(
 	regMsg *protocol.RegisterMessage,
 	result attestation.VerificationResult,
 ) string {
-	if result.MemoryGB <= 0 || result.GPUCores <= 0 {
+	if result.MemoryGB <= 0 || result.GPUCores < 0 {
 		return "attested_hardware"
 	}
 	if result.MemoryGB != regMsg.Hardware.MemoryGB {
@@ -868,6 +864,7 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 	identityReady := provider.TrustLevel == registry.TrustHardware &&
 		provider.Status != registry.StatusUntrusted &&
 		provider.MDAVerified && provider.MDAFreshnessVerified &&
+		len(provider.MDACertChain) > 0 &&
 		provider.CodeAttested &&
 		provider.AttestationResult != nil &&
 		strings.EqualFold(
@@ -938,6 +935,16 @@ func (s *Server) finalizePendingHardwareAdmission(provider *registry.Provider) b
 			code: reasonCode, retryable: false, policy: policy,
 			decision: &decision, reason: hardwareAdmissionReason(decision),
 		})
+	}
+	snapshotPersisted, err :=
+		s.registry.PersistPendingHardwareAdmissionSnapshotIfCurrent(ctx, provider)
+	if err != nil {
+		s.logger.Warn("hardware admission identity snapshot could not persist",
+			"provider_id", provider.ID, "error", err)
+		return false
+	}
+	if !snapshotPersisted {
+		return false
 	}
 	if err := s.store.AdmitHardware(ctx, store.HardwareAdmission{
 		SerialNumber: pending.serial, Source: "policy", PolicyVersion: policy.Version,

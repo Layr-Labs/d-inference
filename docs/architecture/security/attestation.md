@@ -8,9 +8,9 @@ Attestation binds a provider machine to an Apple Secure Enclave identity, indepe
 |---|---|---|---|
 | `none` | Open Mode | No attestation provided; consumer is warned. | `coordinator/registry/registry.go:305-342` |
 | `self_signed` | Self-attested | SE-signed blob verified; periodic challenge-response active. | `coordinator/attestation/attestation.go:119-231` |
-| `hardware` | Hardware-attested | Live SE proof + independent MDM SecurityInfo posture passed. | `coordinator/api/provider.go` |
+| `hardware` | Hardware-attested | Live SE proof + independent MDM SecurityInfo posture passed. | `coordinator/api/provider.go:2774-2932` |
 
-Private text traffic has an additional per-connection gate: APNs code-identity attestation (Layer 5). Enforced new-machine onboarding also keeps the provider unroutable until Layer 3 MDA freshness passes. Thus the `hardware` enum can be visible briefly while admission is still `pending`; it is not, by itself, the complete routing decision. The single routing chokepoint is `providerSupportsPrivateTextLocked` in `coordinator/registry/registry.go:305-342`.
+Private text traffic has an additional per-connection gate: APNs code-identity attestation (Layer 5). Enforced new-machine onboarding also keeps the provider unroutable until Layer 3 MDA freshness passes. Thus the `hardware` enum can be visible briefly while admission is still `pending`; it is not, by itself, the complete routing decision. Private-text checks run in `coordinator/registry/registry.go:938-975`; the separate onboarding fence is `coordinator/registry/hardware_admission.go:32-35`, lifted only by `coordinator/api/hardware_admission.go:844-985`.
 
 ## Provider trust stack
 
@@ -38,8 +38,8 @@ The coordinator uses MicroMDM to send a `SecurityInfo` command. The response com
 
 Code:
 
-- MDM client / webhook: `coordinator/mdm/mdm.go`
-- MDM verification flow: `coordinator/api/provider.go:2268-2339`
+- MDM command and response waiters: `coordinator/mdm/mdm.go:300-345`, `coordinator/mdm/mdm.go:616-677`
+- MDM verification flow: `coordinator/api/provider.go:2774-2932`
 
 ### Layer 3: MDA-over-MDM — Apple-signed hardware certificate
 
@@ -55,7 +55,7 @@ requires MDA device identity, live SE-key possession, and APNs code identity.
 Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
-- MDA dispatch, serial cross-check, and freshness correlation: `coordinator/api/provider.go`
+- MDA dispatch, serial cross-check, and freshness correlation: `coordinator/api/provider.go:3351-3471`
 
 ### Layer 4: Challenge-response — fresh security posture every ~5 minutes
 
@@ -95,7 +95,7 @@ Limits and honest residuals:
 
 ## Routing gate
 
-`providerSupportsPrivateTextLocked` is the single chokepoint for private text traffic. It requires an attested X25519 key, encrypted response chunks, coordinator-verified SIP from the latest challenge, runtime-manifest verification, and—once the rollout deadline passes—the APNs `CodeAttested` flag. Code: `coordinator/registry/registry.go:305-342`.
+`providerSupportsPrivateTextLocked` is the single chokepoint for private text traffic. It requires an attested X25519 key, encrypted response chunks, coordinator-verified SIP from the latest challenge, runtime-manifest verification, and—once the rollout deadline passes—the APNs `CodeAttested` flag. Code: `coordinator/registry/registry.go:938-975`.
 
 ## Public attestation status API
 

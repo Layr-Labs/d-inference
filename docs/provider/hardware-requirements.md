@@ -57,8 +57,10 @@ scripts/admin.sh hardware-policy set enforce 48 0 0 <expected-version> \
 
 Bandwidth and FP16 throughput are derived from the coordinator's versioned Apple
 Silicon catalog. They are not accepted from arbitrary provider values. A new
-machine's actual memory and GPU-core count are included in its signed Secure
-Enclave attestation and must match registration; first admission is committed
+machine's memory and its GPU-core count when detectable are included in its
+signed Secure Enclave attestation and must match registration. Memory is
+mandatory for the launch gate; an unavailable GPU-core measurement is recorded
+as zero and does not block the memory-only policy. First admission is committed
 only after MDM verification, official-code attestation, and a fresh Apple Device
 Attestation correlated to the live SE public-key digest.
 
@@ -69,6 +71,19 @@ Those hardware fields remain provider measurements constrained by the
 coordinator catalog. A colluding relay or deliberately modified provider can
 therefore misrepresent capacity; runtime load failures, performance telemetry,
 and operator revocation remain the enforcement backstops for adversarial nodes.
+
+Implementation references:
+
+- `coordinator/api/hardware_admission.go:545-608` — signed identity and capacity
+  claim checks.
+- `coordinator/api/hardware_admission.go:1147-1172` — public policy response
+  consumed by setup and earnings pages.
+- `coordinator/hardwareadmission/policy.go:125-179` — threshold evaluation;
+  zero bandwidth/FP16 floors are disabled.
+- `coordinator/registry/persistence.go:339-361` — synchronous identity snapshot
+  before first admission.
+- `coordinator/registry/hardware_admission.go:147-176` — routing-fence commit
+  after the durable serial decision.
 
 ## Recommended configurations
 

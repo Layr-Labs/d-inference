@@ -18,6 +18,17 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+type failingHardwareAdmissionStore struct {
+	store.Store
+}
+
+func (s *failingHardwareAdmissionStore) AdmitHardware(
+	context.Context,
+	store.HardwareAdmission,
+) error {
+	return errors.New("forced hardware admission failure")
+}
+
 func admissionTestRegister() *protocol.RegisterMessage {
 	return &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
@@ -59,6 +70,20 @@ func TestHardwareAdmissionRejectsNewMachineBelowEnforcedFloor(t *testing.T) {
 	if len(attempts) != 1 || attempts[0].Decision != "rejected" ||
 		attempts[0].ReasonCode != "hardware_below_minimum" {
 		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestHardwareAdmissionAllowsUnknownGPUWhenOnlyMemoryIsEnforced(t *testing.T) {
+	msg := admissionTestRegister()
+	msg.Hardware.GPUCores = 0
+	result := admissionTestAttestation("MEMORY-ONLY-1")
+	result.GPUCores = 0
+
+	decision := evaluateHardwareClaims(hardwareadmission.Policy{
+		Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 16,
+	}, msg, result)
+	if !decision.Allowed || !decision.MeetsThresholds {
+		t.Fatalf("memory-only launch policy rejected optional GPU metadata: %+v", decision)
 	}
 }
 
@@ -276,7 +301,8 @@ func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
 		HardwareAdmissionMinMemoryGB: 16,
 	})
 	msg := admissionTestRegister()
-	provider := srv.registry.Register("new-qualified", nil, msg)
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"new-qualified", nil, msg)
 	result := admissionTestAttestation("NEW-QUALIFIED-1")
 	provider.SetAttestationResult(&result)
 
@@ -294,6 +320,7 @@ func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
 	provider.TrustLevel = registry.TrustHardware
 	provider.MDAVerified = true
 	provider.MDAFreshnessVerified = true
+	provider.MDACertChain = [][]byte{[]byte("mda-leaf")}
 	provider.Mu().Unlock()
 	if srv.finalizePendingHardwareAdmission(provider) {
 		t.Fatal("hardware admission finalized before official-code attestation")
@@ -304,6 +331,58 @@ func TestHardwareAdmissionCommitsOnlyAfterBoundDeviceIdentity(t *testing.T) {
 	}
 	if admitted, err := st.IsHardwareAdmitted(context.Background(), result.SerialNumber); err != nil || !admitted {
 		t.Fatalf("persisted admission = (%v,%v)", admitted, err)
+	}
+	record, err := st.GetProviderRecord(context.Background(), provider.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || !record.MDAVerified || len(record.MDACertChain) == 0 {
+		t.Fatalf("admission returned before MDA snapshot was durable: %+v", record)
+	}
+}
+
+func TestHardwareAdmissionPersistsMDAChainBeforeSerialDecision(t *testing.T) {
+	memory := store.NewMemory(store.Config{})
+	st := &failingHardwareAdmissionStore{Store: memory}
+	reg := registry.New(quietLogger())
+	srv := NewServer(reg, st, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	}, quietLogger())
+	msg := admissionTestRegister()
+	provider := reg.RegisterPendingHardwareAdmission(
+		"identity-checkpoint", nil, msg)
+	result := admissionTestAttestation("IDENTITY-CHECKPOINT-1")
+	provider.SetAttestationResult(&result)
+	if !srv.evaluateProviderHardwareAdmission(
+		provider.ID, provider, msg, result) {
+		t.Fatal("qualified hardware was rejected before identity verification")
+	}
+
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustHardware
+	provider.MDAVerified = true
+	provider.MDAFreshnessVerified = true
+	provider.MDACertChain = [][]byte{[]byte("mda-leaf")}
+	provider.Mu().Unlock()
+	provider.SetCodeAttested(true)
+	if srv.finalizePendingHardwareAdmission(provider) {
+		t.Fatal("admission finalized despite serial-decision store failure")
+	}
+
+	record, err := memory.GetProviderRecord(context.Background(), provider.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || !record.MDAVerified || len(record.MDACertChain) == 0 {
+		t.Fatalf("MDA snapshot was not checkpointed before serial decision: %+v", record)
+	}
+	if admitted, err := memory.IsHardwareAdmitted(
+		context.Background(), result.SerialNumber); err != nil || admitted {
+		t.Fatalf("serial admission = (%v,%v), want false,nil", admitted, err)
+	}
+	if provider.HardwareAdmissionStatus() {
+		t.Fatal("provider became routable after serial-decision failure")
 	}
 }
 
@@ -478,6 +557,7 @@ func TestFirstEnforcementGrandfathersLegacySignedCapacityOmission(t *testing.T) 
 	})
 
 	registration := admissionTestRegister()
+	registration.Hardware.GPUCores = 0
 	provider := srv.registry.RegisterPendingHardwareAdmission(
 		"legacy-live-grandfather", nil, registration)
 	result := admissionTestAttestation("LEGACY-LIVE-GRANDFATHER")
@@ -509,6 +589,40 @@ func TestFirstEnforcementGrandfathersLegacySignedCapacityOmission(t *testing.T) 
 	}
 	if !provider.HardwareAdmissionStatus() {
 		t.Fatal("legacy live grandfather was fenced during first enforcement")
+	}
+
+	srv.registry.DisconnectProvider(provider)
+	reconnectRegistration := admissionTestRegister()
+	reconnectRegistration.Hardware.GPUCores = 0
+	reconnected := srv.registry.RegisterPendingHardwareAdmission(
+		"legacy-live-grandfather-reconnect", nil, reconnectRegistration)
+	reconnectResult := admissionTestAttestation(result.SerialNumber)
+	reconnectResult.MemoryGB = 0
+	reconnectResult.GPUCores = 0
+	if !srv.evaluateProviderHardwareAdmission(
+		reconnected.ID, reconnected, reconnectRegistration, reconnectResult) {
+		t.Fatal("grandfathered provider with optional GPU metadata was rejected on reconnect")
+	}
+	if !reconnected.HardwareAdmissionStatus() {
+		t.Fatal("grandfathered reconnect remained fenced")
+	}
+}
+
+func TestFirstEnforcementDoesNotGrandfatherNegativeGPUCount(t *testing.T) {
+	srv, _ := testServer(t)
+	registration := admissionTestRegister()
+	registration.Hardware.GPUCores = -1
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"legacy-negative-gpu", nil, registration)
+	result := admissionTestAttestation("LEGACY-NEGATIVE-GPU")
+	result.MemoryGB = 0
+	result.GPUCores = 0
+	provider.SetAttestationResult(&result)
+	provider.SetAttested(true, registry.TrustHardware)
+
+	if admissions := srv.liveTrustedHardwareAdmissions(
+		hardwareadmission.Policy{Mode: hardwareadmission.ModeEnforce, MinMemoryGB: 48}); len(admissions) != 0 {
+		t.Fatalf("negative GPU count was grandfathered: %+v", admissions)
 	}
 }
 
@@ -835,6 +949,7 @@ func TestPolicyChangeRechecksHardwareClaimIntegrity(t *testing.T) {
 	provider.Mu().Lock()
 	provider.MDAVerified = true
 	provider.MDAFreshnessVerified = true
+	provider.MDACertChain = [][]byte{[]byte("mda-leaf")}
 	provider.Mu().Unlock()
 	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
@@ -890,6 +1005,7 @@ func TestStaleFinalizerCannotPersistNewPendingGeneration(t *testing.T) {
 	provider.Mu().Lock()
 	provider.MDAVerified = true
 	provider.MDAFreshnessVerified = true
+	provider.MDACertChain = [][]byte{[]byte("mda-leaf")}
 	provider.Mu().Unlock()
 	initialPolicy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{
@@ -943,6 +1059,7 @@ func TestHardUntrustedProviderCannotFinalizeHardwareAdmission(t *testing.T) {
 	provider.Mu().Lock()
 	provider.MDAVerified = true
 	provider.MDAFreshnessVerified = true
+	provider.MDACertChain = [][]byte{[]byte("mda-leaf")}
 	provider.Mu().Unlock()
 	policy := srv.hardwareAdmissionPolicySnapshot()
 	srv.stagePendingHardwareAdmission(provider.ID, pendingHardwareAdmission{

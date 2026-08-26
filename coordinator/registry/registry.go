@@ -1097,9 +1097,9 @@ func (r *Registry) GrantProviderHardwareIfCurrent(p *Provider) bool {
 }
 
 // GrantProviderHardwareAndPersistIfCurrent optionally makes the trust row
-// durable while holding registry membership stable. Disconnect and replacement
-// registration need r.mu exclusively, so a stale provider can neither disappear
-// from the first-enforcement snapshot nor overwrite a replacement's durable row.
+// durable while holding this provider ID's lifecycle lock. Disconnect and
+// replacement wait on the same keyed lock, so database I/O never holds the
+// global registry lock and a stale connection cannot overwrite its replacement.
 func (r *Registry) GrantProviderHardwareAndPersistIfCurrent(
 	ctx context.Context,
 	p *Provider,
@@ -1108,21 +1108,24 @@ func (r *Registry) GrantProviderHardwareAndPersistIfCurrent(
 	if p == nil {
 		return false, nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	current, ok := r.providers[p.ID]
-	if !ok || current != p {
-		return false, nil
-	}
 	if persist {
+		unlockPersistence := r.lockProviderPersistence(p.ID)
+		defer unlockPersistence()
 		p.persistMu.Lock()
 		defer p.persistMu.Unlock()
+	}
+	r.mu.RLock()
+	current, ok := r.providers[p.ID]
+	if !ok || current != p {
+		r.mu.RUnlock()
+		return false, nil
 	}
 	p.mu.Lock()
 	previousTrust := p.TrustLevel
 	previousAttested := p.Attested
 	granted := p.grantHardwareIfNotUntrustedLocked()
 	p.mu.Unlock()
+	r.mu.RUnlock()
 	if !granted || !persist {
 		return granted, nil
 	}
@@ -1139,7 +1142,7 @@ func (r *Registry) GrantProviderHardwareAndPersistIfCurrent(
 		rollback()
 		return false, fmt.Errorf("registry: provider store is not configured")
 	}
-	rec, _, enabled := providerRecordSnapshot(p)
+	rec, _, enabled := providerRecordSnapshot(p, false)
 	if !enabled {
 		rollback()
 		return false, fmt.Errorf("registry: provider persistence is disabled")
@@ -1758,6 +1761,11 @@ type Registry struct {
 	modelAliases map[string]AliasTarget
 
 	store store.Store
+	// providerPersistenceLocks serialize durable writes with connection
+	// replacement for one provider ID without holding the global registry lock
+	// across database I/O.
+	providerPersistenceLocksMu sync.Mutex
+	providerPersistenceLocks   map[string]*providerPersistenceLock
 	// serialOwners fences duplicate live connections. Claims are updated under
 	// r.mu so simultaneous reconnects cannot evict each other in both directions.
 	serialOwners         map[string]string
@@ -3208,8 +3216,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 }
 
 // RegisterPendingHardwareAdmission adds a connection behind the mandatory
-// routing gate without creating durable provider/session rows. The API calls
-// CommitProviderHardwareAdmission only after the durable decision commits.
+// routing gate without enabling heartbeat persistence or a provider session.
+// Finalization checkpoints the identity proof, commits the serial decision,
+// then calls CommitProviderHardwareAdmission.
 func (r *Registry) RegisterPendingHardwareAdmission(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
 	return r.register(id, conn, msg, false)
 }
@@ -3313,6 +3322,7 @@ func (r *Registry) register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// into a new connection" invariant explicit and robust to future Provider reuse.
 	p.ResetChallengeSettled()
 
+	unlockPersistence := r.lockProviderPersistence(id)
 	r.mu.Lock()
 	r.providers[id] = p
 	r.onlineCount.Add(1)
@@ -3325,6 +3335,7 @@ func (r *Registry) register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// old register-time clear was the reconnect exploit — a churning zombie
 	// wiped its record every session.
 	r.mu.Unlock()
+	unlockPersistence()
 
 	// Open a session row for this connection (async; durable uptime history).
 	// serial/account are empty here (set after attestation/linking) and are
@@ -4338,6 +4349,8 @@ func (r *Registry) DisconnectProvider(p *Provider) {
 func (r *Registry) disconnect(id string, expected *Provider) {
 	var disconnectedModels []string
 	var persistenceEnabled bool
+	unlockPersistence := r.lockProviderPersistence(id)
+	defer unlockPersistence()
 	r.mu.Lock()
 	p, ok := r.providers[id]
 	if ok && expected != nil && p != expected {

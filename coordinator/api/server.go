@@ -2554,11 +2554,12 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // publicCORSMethods is the exact unauthenticated method that is safe from any
 // browser origin. Other methods on the same path remain single-origin.
 var publicCORSMethods = map[string]string{
-	"/v1/models/catalog":    http.MethodGet,
-	"/v1/pricing":           http.MethodGet,
-	"/v1/stats":             http.MethodGet,
-	"/v1/network/series":    http.MethodGet,
-	"/v1/provider-waitlist": http.MethodPost,
+	"/v1/models/catalog":        http.MethodGet,
+	"/v1/pricing":               http.MethodGet,
+	"/v1/stats":                 http.MethodGet,
+	"/v1/network/series":        http.MethodGet,
+	"/v1/provider-requirements": http.MethodGet,
+	"/v1/provider-waitlist":     http.MethodPost,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

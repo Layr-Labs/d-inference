@@ -88,6 +88,12 @@ type myProvider struct {
 	LastChallengeVerified *time.Time `json:"last_challenge_verified,omitempty"`
 	FailedChallenges      int        `json:"failed_challenges"`
 
+	// Routing is the coordinator's own verdict on whether this machine is
+	// advertising, and the specific gates blocking it when it is not. Computed
+	// from the same predicates the router uses, so it can never claim the
+	// machine is serving when it is fenced (or the reverse).
+	Routing *registry.ProviderRoutingDiagnostics `json:"routing,omitempty"`
+
 	// Live snapshot (only set when the machine is currently connected)
 	SystemMetrics   *protocol.SystemMetrics   `json:"system_metrics,omitempty"`
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
@@ -235,10 +241,23 @@ func tallyCounts(c *myFleetCounts, mp *myProvider, minVersion string) {
 	}
 }
 
-// needsAttention is the server-side mirror of the client warning logic. It's
-// only used for the summary count, not for individual warning text. The UI
-// renders detailed warnings from the per-machine payload.
+// needsAttention drives the dashboard header count. When the coordinator has
+// a routing verdict for the machine it defers to it, so the header and the
+// per-machine card cannot disagree — a machine the router is fencing counts,
+// and one it is happily serving does not. The checks below it are the older
+// approximation, kept for machines with no live verdict (offline rows) and for
+// the two facts routing does not cover: challenge failures and version
+// currency.
 func needsAttention(mp *myProvider, minVersion string) bool {
+	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
+		return true
+	}
+	if mp.FailedChallenges > 0 {
+		return true
+	}
+	if mp.Routing != nil {
+		return !mp.Routing.Routable
+	}
 	if mp.Status == string(registry.StatusUntrusted) {
 		return true
 	}
@@ -249,12 +268,6 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 		return true
 	}
 	if mp.TrustLevel != string(registry.TrustHardware) {
-		return true
-	}
-	if mp.FailedChallenges > 0 {
-		return true
-	}
-	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
 		return true
 	}
 	return false
@@ -293,6 +306,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 	deduped := dedupeRecordsByIdentity(records)
 	seenIDs := make(map[string]bool, len(deduped))
 	seenLive := make(map[string]bool)
+	now := time.Now()
 	out := make([]myProvider, 0, len(deduped))
 	for i := range deduped {
 		// Prefer session-ID match; fall back to identity (serial/SE key)
@@ -302,6 +316,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		s.attachRoutingDiagnostics(&mp, live, now)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -315,9 +330,29 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		s.attachRoutingDiagnostics(&mp, p, now)
+		out = append(out, mp)
 	}
 	return out, nil
+}
+
+// attachRoutingDiagnostics asks the registry why this machine is (or is not)
+// advertising, so the owner sees the coordinator's ACTUAL verdict instead of
+// inferring it from a handful of green booleans. Offline machines get a
+// synthetic offline verdict — there is no live provider to interrogate, and
+// omitting the field entirely would read as "no problems".
+func (s *Server) attachRoutingDiagnostics(
+	mp *myProvider, live *registry.Provider, now time.Time,
+) {
+	if live == nil {
+		mp.Routing = &registry.ProviderRoutingDiagnostics{
+			Blockers:               []registry.RoutingBlocker{registry.BlockerOffline},
+			ChallengeMaxAgeSeconds: int(registry.ChallengeFreshnessMaxAge.Seconds()),
+		}
+		return
+	}
+	mp.Routing = s.registry.RoutingDiagnostics(live.ID, now)
 }
 
 func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +377,10 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
 		HeartbeatTimeoutSec:   90,
-		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
+		// The window routing actually enforces. A second, tighter copy used to
+		// live here, so a card could warn "challenge stale" at 8 minutes while
+		// the coordinator was still happily routing.
+		ChallengeMaxAgeSec: int(registry.ChallengeFreshnessMaxAge.Seconds()),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

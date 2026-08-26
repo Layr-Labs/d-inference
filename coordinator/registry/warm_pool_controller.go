@@ -700,7 +700,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
 		return warmPoolCandidate{}, warmColdTrust
 	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > ChallengeFreshnessMaxAge {
 		return warmPoolCandidate{}, warmColdStaleChallenge
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {

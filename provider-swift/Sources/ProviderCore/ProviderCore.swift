@@ -248,5 +248,7 @@ public enum ProviderCore {
     // DARKBLOOM_PREFILL_DEADLINE_MODE=off is the direct forecast rollback;
     // FCFS cap zero restores unlimited interleave and necessarily bypasses the
     // bounded forecast while preserving hard absolute expiry.
-    public static let version = "0.8.12"
+    // 0.8.13 serves Qwen image/video requests through the bounded vision path,
+    // including single-decode media ingest and first-content-safe video caps.
+    public static let version = "0.8.13"
 }

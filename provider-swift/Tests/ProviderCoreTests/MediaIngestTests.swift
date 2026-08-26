@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
@@ -149,6 +150,45 @@ func vlmDecodeImageGarbageThrows() {
     #expect(throws: MediaIngest.MediaError.self) {
         _ = try MediaIngest.decodeImage(garbage)
     }
+}
+
+@Test("decodeImageData applies EXIF orientation so the raster matches what the camera saw")
+func decodeImageAppliesExifOrientation() throws {
+    // 2×1: left red, right green. Orientation .right (EXIF 6) rotates 90° CW
+    // → 1×2 with red on top. Without applyOrientationProperty the model sees
+    // a sideways crop and hallucinates a different scene.
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    var pixels: [UInt8] = [
+        255, 0, 0, 255,
+        0, 255, 0, 255,
+    ]
+    let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+    let cgImage = try #require(
+        CGImage(
+            width: 2, height: 1,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent))
+
+    let destData = NSMutableData()
+    let dest = try #require(
+        CGImageDestinationCreateWithData(
+            destData, UTType.jpeg.identifier as CFString, 1, nil))
+    CGImageDestinationAddImage(
+        dest, cgImage,
+        [kCGImagePropertyOrientation: CGImagePropertyOrientation.right.rawValue] as CFDictionary)
+    #expect(CGImageDestinationFinalize(dest))
+
+    let decoded = try MediaIngest.decodeImageData(destData as Data)
+    guard case .ciImage(let image) = decoded else {
+        Issue.record("expected .ciImage, got \(decoded)")
+        return
+    }
+    #expect(Int(image.extent.width.rounded()) == 1)
+    #expect(Int(image.extent.height.rounded()) == 2)
+    #expect(image.extent.origin == .zero)
 }
 
 // MARK: - decodeVideo

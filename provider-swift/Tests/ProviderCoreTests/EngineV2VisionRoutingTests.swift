@@ -478,6 +478,23 @@ struct EngineV2VisionSpanCarvingTests {
         }
     }
 
+    @Test("Qwen video: one contiguous video_pad run splits into adjacent frame spans")
+    func qwenContiguousVideoRun() throws {
+        // Qwen emits ONE run of T × spatial `video_pad` tokens. Two frames of
+        // 3 spatial tokens each is 6 adjacent pads — not Gemma's per-frame
+        // blocks with timestamps between them.
+        let tokens = [1, v, v, v, v, v, v, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 1, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 4, length: 3)),
+        ])
+    }
+
     @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
     func disabledKindIgnored() throws {
         // No video features ⇒ the video id is not watched: a stray 991 in
@@ -504,6 +521,20 @@ struct MediaKindClassificationTests {
             let input = try await MediaIngest.buildUserInput(from: request)
             #expect(input.additionalContext?["enable_thinking"] as? Bool == enabled)
         }
+    }
+
+    @Test("media requests default thinking off unless the client asks")
+    func mediaDefaultsThinkingOff() async throws {
+        let request = imageRequest()
+        let input = try await MediaIngest.buildUserInput(from: request)
+        #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+
+        let text = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: OpenAIChatCompletionRequest(
+                model: "qwen3.5-35b-a3b",
+                messages: [.init(role: .user, content: .text("hi"))]),
+            reasoningEffort: nil)
+        #expect(text?["enable_thinking"] == nil)
     }
 
     @Test("media processor preserves out-of-band reasoning effort")
@@ -1032,7 +1063,7 @@ struct EngineV2VisionRoutingTests {
             })
     }
 
-    @Test("unsupported Qwen video maps to deterministic 400 without refusal telemetry")
+    @Test("injected unsupportedMedia maps to deterministic 400 without refusal telemetry")
     func unsupportedVideoMapsTo400() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)

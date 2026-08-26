@@ -342,6 +342,16 @@ struct EngineV2VisionPixelRunTests {
     func subjectsAreOperatorReadable() {
         #expect(EngineV2VisionPrefill.imageSubject(index: 0, of: 1) == "this image")
         #expect(EngineV2VisionPrefill.imageSubject(index: 3, of: 6) == "image 4 of 6")
+        #expect(EngineV2VisionPrefill.videoSubject(index: 0, of: 1) == "this video")
+        #expect(EngineV2VisionPrefill.videoSubject(index: 1, of: 3) == "video 2 of 3")
+    }
+
+    @Test("a T>1 video grid is one packed run, not per-frame slices")
+    func videoGridIsOneRun() throws {
+        // T=4, H=2, W=3 → 24 packed rows belonging to ONE video tower call.
+        let runs = try EngineV2VisionPrefill.imagePixelRuns(
+            grids: [THW(4, 2, 3)], totalRows: 24)
+        #expect(runs == [0 ..< 24])
     }
 }
 

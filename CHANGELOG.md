@@ -20,6 +20,16 @@
   absolute expiry remains active. It does not rewrite the deadline-mode setting.
 - Provider and coordinator fallback version authorities move together to
   `0.8.12`; there is no new protocol.
+- **Qwen 3.5 video + grounded image captions** — Qwen vision prefill no
+  longer fail-closes video as `invalid media input`. The tower runs one
+  video (full T×H×W grid) at a time and carves the contiguous
+  `<|video_pad|>` run into per-frame spans. Image decode applies EXIF
+  orientation on the full raster (not a JPEG thumbnail). Media requests
+  default `enable_thinking=false` unless the client sets
+  `reasoning.enabled`. Qwen samples at most 16 video frames. Coordinator
+  remote-media fetch is bounded by the leftover first-content clock minus
+  an inference reserve, so a 15s origin download cannot expire the
+  OpenRouter-shaped 9s+1ms/token budget before the provider starts.
 
 Release rationale, limitations, compatibility, and rollout gates:
 [`docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md`](docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md).

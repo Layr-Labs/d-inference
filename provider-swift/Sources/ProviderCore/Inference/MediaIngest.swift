@@ -18,6 +18,7 @@
 // → 4xx).
 
 import AVFoundation
+import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
@@ -298,7 +299,7 @@ public enum MediaIngest {
         return UserInput(
             chat: chatMessages,
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request, reasoningEffort: reasoningEffort))
+                for: request, reasoningEffort: reasoningEffort, hasMedia: true))
     }
 
 
@@ -672,7 +673,27 @@ public enum MediaIngest {
             throw MediaError.mediaTooLarge(
                 "image is \(pixels) px; per-image cap is \(maxImagePixels) px")
         }
-        guard let image = CIImage(data: data) else {
+        // Full image at index 0 (never the EXIF thumbnail) with the file's
+        // orientation applied. `CIImage(data:)` skips EXIF rotation and can
+        // surface a JPEG thumbnail — both turn a real photograph into
+        // abstract pixels the model then confidently misdescribes.
+        let image: CIImage
+        if let src = CGImageSourceCreateWithData(
+            data as CFData, [kCGImageSourceShouldCache: true] as CFDictionary),
+            let cgImage = CGImageSourceCreateImageAtIndex(
+                src, 0, [kCGImageSourceShouldCache: true] as CFDictionary)
+        {
+            var decoded = CIImage(cgImage: cgImage)
+            if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                let raw = props[kCGImagePropertyOrientation] as? UInt32,
+                let orientation = CGImagePropertyOrientation(rawValue: raw)
+            {
+                decoded = decoded.oriented(orientation)
+            }
+            image = normalizedExtent(decoded)
+        } else if let decoded = CIImage(data: data, options: [.applyOrientationProperty: true]) {
+            image = normalizedExtent(decoded)
+        } else {
             throw MediaError.imageDecodeFailed
         }
         // Backstop: if ImageIO couldn't size the header (imagePixelCount nil) but
@@ -684,6 +705,16 @@ public enum MediaIngest {
                 "image extent is \(extentPixels) px; per-image cap is \(maxImagePixels) px")
         }
         return .ciImage(image)
+    }
+
+    /// `oriented()` (and some ImageIO decodes) can leave a non-zero origin.
+    /// The Qwen processor sizes from `extent.size` but `asMLXArray` renders
+    /// `extent`; a shifted origin is a silent crop/empty-raster class of bugs.
+    private static func normalizedExtent(_ image: CIImage) -> CIImage {
+        let origin = image.extent.origin
+        guard origin != .zero else { return image }
+        return image.transformed(
+            by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
     }
 
     /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The

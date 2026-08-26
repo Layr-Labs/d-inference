@@ -23,15 +23,18 @@
 //     limit, MLX's default error handler called `fatalError`, and the daemon
 //     died with every co-batched request on it.
 //
-// So the Qwen path here drives the tower ONE IMAGE AT A TIME and evaluates
-// each image's features before starting the next. Attention is block-diagonal
-// per image already, and every other stage of the tower (patch embed,
-// positional interpolation, rotary coordinates, layer norms, patch merge) is
-// per-token or per-grid, so a per-image call is MATHEMATICALLY equivalent to
-// the batched one — it only refuses to build the cross-image half of the
-// mask, which was always zeros doing nothing. (Bitwise equality is not
-// guaranteed: SDPA's reduction shape changes with N, so float reduction order
-// can differ.) Peak attention bytes go from `(Σᵢ nᵢ)²` to `maxᵢ nᵢ²`.
+// So the Qwen path here drives the tower ONE IMAGE AT A TIME (and ONE VIDEO
+// AT A TIME — the full T×H×W grid, never one temporal frame) and evaluates
+// each subject's features before starting the next. Attention is
+// block-diagonal per image already, and every other stage of the tower
+// (patch embed, positional interpolation, rotary coordinates, layer norms,
+// patch merge) is per-token or per-grid, so a per-image call is
+// MATHEMATICALLY equivalent to the batched one — it only refuses to build
+// the cross-image half of the mask, which was always zeros doing nothing.
+// (Bitwise equality is not guaranteed: SDPA's reduction shape changes with
+// N, so float reduction order can differ.) Peak attention bytes go from
+// `(Σᵢ nᵢ)²` to `maxᵢ nᵢ²`. Video must stay one tower call per clip:
+// splitting frames first drops temporal packing.
 //
 // Each image is also checked for MLX faults immediately after its `eval`.
 // `MLX.withError`'s handler RECORDS and RETURNS — the C++ op yields a
@@ -149,8 +152,64 @@ extension EngineV2VisionPrefill {
         return features
     }
 
+    /// One `[1, softTokens, textHidden]` embedding per sampled video frame,
+    /// produced by driving the Qwen3-VL tower once per VIDEO (the full T×H×W
+    /// grid). Splitting a clip into temporal frames BEFORE the tower would
+    /// drop `temporalPatchSize` packing and disagree with `positionResult`,
+    /// which treats each video as one visual-token run of T×spatial tokens.
+    ///
+    /// The seam then splits that one tower output into T frame embeddings;
+    /// `carveSpans` carves the matching adjacent spans out of the single
+    /// contiguous `<|video_pad|>` run the processor emitted.
+    static func qwenPerVideoVisionFeatures(
+        wrapper: MLXVLM.Qwen35MoE,
+        pixels: MLXArray,
+        grids: [THW],
+        towerLimits: VisionTowerBudget.Limits,
+        mlxErrors: MLX.ErrorBox
+    ) throws -> [MLXArray] {
+        guard !grids.isEmpty else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+        }
+        let runs = try imagePixelRuns(grids: grids, totalRows: pixels.dim(0))
+        let limits = towerLimits.withHeadFactor(qwenAttentionHeadFactor(wrapper))
+
+        var features: [MLXArray] = []
+        features.reserveCapacity(grids.reduce(0) { $0 + max(0, $1.t) })
+        for (index, grid) in grids.enumerated() {
+            switch VisionTowerBudget.admit(
+                grids: [grid],
+                subject: Self.videoSubject(index: index, of: grids.count),
+                limits: limits)
+            {
+            case .admit:
+                break
+            case .reject(let reason):
+                throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
+            }
+
+            let single = try wrapper.visionFeatures(
+                videoPixels: pixels[runs[index], 0...], videoGrids: [grid])
+            guard single.ordered.count == grid.t, grid.t > 0 else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+            }
+            for item in single.ordered {
+                let embedding = item.features
+                eval(embedding)
+                try EngineV2VisionPrefill.throwIfMLXFaulted(mlxErrors)
+                features.append(embedding)
+            }
+        }
+        return features
+    }
+
     /// Content-free subject for a rejection message ("image 2 of 5").
     static func imageSubject(index: Int, of count: Int) -> String {
         count == 1 ? "this image" : "image \(index + 1) of \(count)"
+    }
+
+    /// Content-free subject for a rejection message ("video 2 of 3").
+    static func videoSubject(index: Int, of count: Int) -> String {
+        count == 1 ? "this video" : "video \(index + 1) of \(count)"
     }
 }

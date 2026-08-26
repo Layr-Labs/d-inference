@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -206,6 +207,18 @@ func TestIsRemoteMediaURL(t *testing.T) {
 		if got := isRemoteMediaURL(in); got != want {
 			t.Errorf("isRemoteMediaURL(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+func TestIsRemoteMediaURLDoesNotCopyInlinePayload(t *testing.T) {
+	inline := "data:video/quicktime;base64," + strings.Repeat("A", 1<<20)
+	if isRemoteMediaURL(inline) {
+		t.Fatal("inline video classified as remote")
+	}
+	if allocs := testing.AllocsPerRun(10, func() {
+		_ = isRemoteMediaURL(inline)
+	}); allocs != 0 {
+		t.Fatalf("inline URL classification allocations = %v, want 0", allocs)
 	}
 }
 

@@ -53,12 +53,14 @@ struct Qwen36ProductionCanaryTests {
             let elapsed = startedAt.duration(to: .now)
             print("QWEN_VIDEO_CANARY request_elapsed=\(elapsed)")
 
+            let firstContentLatency = try #require(result.firstContentLatency)
+            #expect(firstContentLatency < .seconds(11))
             let groundedColors = result.text.lowercased()
                 .split(whereSeparator: { !$0.isLetter })
                 .map(String.init)
             #expect(groundedColors == ["red", "blue"])
             #expect(probe.preparedCount == 1)
-            #expect((1 ... Qwen3VLProcessor.maxVideoFrames).contains(probe.lastSpanCount))
+            #expect(probe.lastSpanCount == Qwen3VLProcessor.maxVideoFrames / 2)
             #expect(probe.refusalCount == 0)
             #expect(result.info?.completionTokens ?? 0 > 0)
             #expect(await fixture.kvBudget.outstandingReservedBytes() == 0)
@@ -366,11 +368,15 @@ private enum Qwen36ProductionCanary {
         _ engine: MultiModelBatchSchedulerEngine,
         request: OpenAIChatCompletionRequest
     ) async throws -> Qwen36ProductionCanaryServerResult {
+        let startedAt = ContinuousClock.now
         let stream = try await engine.streamChatCompletion(request: request)
         var result = Qwen36ProductionCanaryServerResult()
         for try await event in stream {
             switch event {
             case .content(let text):
+                if result.firstContentLatency == nil, !text.isEmpty {
+                    result.firstContentLatency = startedAt.duration(to: .now)
+                }
                 result.text += text
             case .toolCall(let call):
                 result.toolCalls.append(call)
@@ -624,7 +630,6 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
                             + "Reply with only the two lowercase color names."),
                     .videoURL(uri),
                 ]))],
-            reasoning: .init(enabled: false),
             temperature: 0,
             topP: 1,
             topK: 0,
@@ -755,6 +760,7 @@ private struct Qwen36ProductionCanaryServerResult {
     var text = ""
     var toolCalls: [ToolCall] = []
     var info: ServerGenerationInfo?
+    var firstContentLatency: Duration?
 }
 
 private struct Qwen36ProductionCanaryCancellationResult {

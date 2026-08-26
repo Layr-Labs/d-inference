@@ -128,8 +128,10 @@ func isRemoteMediaURL(s string) bool {
 	if len(t) < 7 {
 		return false
 	}
-	lower := strings.ToLower(t)
-	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+	if strings.EqualFold(t[:7], "http://") {
+		return true
+	}
+	return len(t) >= 8 && strings.EqualFold(t[:8], "https://")
 }
 
 // fetchOne downloads one media URL under the SSRF policy and size cap, validates

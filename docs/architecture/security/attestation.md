@@ -47,10 +47,13 @@ Layer 3 proves the device is genuine Apple hardware. The coordinator sends a `De
 
 The coordinator supplies a `DeviceAttestationNonce` equal to SHA-256 of the
 provider's SE public key. Apple embeds that hash in the `FreshnessCode` OID
-(`1.2.840.113635.100.8.11.1`). This proves request freshness and prevents a
-cached MDA chain from being reused across provider-key rotation. It does not
-prove that the application key resides on the MDA device; the system separately
-requires MDA device identity, live SE-key possession, and APNs code identity.
+(`1.2.840.113635.100.8.11.1`). This proves freshness when Apple issues the
+certificate and prevents the chain from being reused across provider-key
+rotation. A valid chain reused on reconnect proves historical Apple issuance
+correlated to the same persistent key; it does not prove recency of the current
+connection or that the application key resides on the MDA device. The system
+separately requires MDA device identity, live SE-key possession, and APNs code
+identity.
 
 Code:
 

@@ -751,7 +751,7 @@ type Provider struct {
 	MDAVerified          bool                   // true if Apple Device Attestation cert chain verified
 	MDACertChain         [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult            *attestation.MDAResult // parsed OIDs from Apple cert
-	MDAFreshnessVerified bool                   // nonce digest matched the exact live SE public key
+	MDAFreshnessVerified bool                   // certificate nonce matched this SE key; not current-connection recency
 	// HardwareAdmitted is the coordinator-owned onboarding decision for this
 	// physical machine. It is independent from TrustLevel: owner self-routing may
 	// relax trust, but it must never bypass an enforced new-machine hardware gate.
@@ -4562,7 +4562,17 @@ func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
 // non-recoverable: the provider stays untrusted until it reconnects and
 // re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.markUntrusted(providerID, false)
+	r.markUntrusted(providerID, nil, false)
+}
+
+// MarkProviderUntrustedIfCurrent hard-deroutes only the exact live connection.
+// Delayed MDM/MDA callbacks must use this form so a stale connection cannot
+// mark a same-ID replacement untrusted.
+func (r *Registry) MarkProviderUntrustedIfCurrent(provider *Provider) bool {
+	if provider == nil {
+		return false
+	}
+	return r.markUntrusted(provider.ID, provider, false)
 }
 
 // MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
@@ -4576,7 +4586,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 // model hash and runtime before RecordChallengeSuccess is reached, so using it
 // as the recovery trigger is safe.
 func (r *Registry) MarkUntrustedTransient(providerID string) {
-	r.markUntrusted(providerID, true)
+	r.markUntrusted(providerID, nil, true)
 }
 
 // markUntrusted is the shared implementation. recoverable=true marks the untrust
@@ -4590,12 +4600,16 @@ func (r *Registry) MarkUntrustedTransient(providerID string) {
 //   - already untrusted + transient (recoverable=true): leave the flag as-is, so
 //     a transient timeout can never *upgrade* a hard deroute to recoverable
 //     (matters for an in-flight challenge timeout that races a hard deroute).
-func (r *Registry) markUntrusted(providerID string, recoverable bool) {
+func (r *Registry) markUntrusted(
+	providerID string,
+	expected *Provider,
+	recoverable bool,
+) bool {
 	r.mu.Lock()
 	p, ok := r.providers[providerID]
-	if !ok {
+	if !ok || (expected != nil && p != expected) {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	hook := r.onHardUntrust // capture under r.mu (race-safe)
 
@@ -4641,6 +4655,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 			hook(seKey)
 		}
 	}
+	return true
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).

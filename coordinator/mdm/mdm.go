@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,9 +55,10 @@ type DeviceAttestationResponse struct {
 	CertChain   [][]byte // DER-encoded certificates, leaf first
 }
 
-// OnMDACallback is called when a DevicePropertiesAttestation response arrives.
-// The UDID identifies the device; certChain is the DER-encoded Apple cert chain.
-type OnMDACallback func(udid string, certChain [][]byte)
+// OnMDACallback is called when a DevicePropertiesAttestation response arrives
+// after its synchronous waiter has gone away. CommandUUID preserves the exact
+// originating request/connection correlation.
+type OnMDACallback func(response *DeviceAttestationResponse)
 
 // OnLateSecurityInfoCallback is called when a SecurityInfo response arrives
 // for a UDID with no active waiter (the original verification timed out).
@@ -157,6 +159,10 @@ var readOnlyMDMRequestTypes = map[string]struct{}{
 // command that is not on the read-only allowlist.
 var ErrMutatingCommandBlocked = fmt.Errorf("mdm: refusing to send non-read-only command (provider machines are read-only)")
 
+// ErrDeviceAttestationTimeout marks a request whose command may still produce
+// a valid late webhook response.
+var ErrDeviceAttestationTimeout = errors.New("device attestation response timed out")
+
 // assertReadOnlyCommand fails closed unless requestType is a known read-only
 // query. This is the guarantee that the coordinator can never "do something" to
 // a provider's Mac via MDM.
@@ -201,6 +207,20 @@ func (c *Client) consumeCommand(commandUUID string, now time.Time) (string, bool
 		return "", false
 	}
 	return cmd.udid, true
+}
+
+func (c *Client) expireCommandLater(
+	commandUUID string,
+	issuedAt time.Time,
+) {
+	time.AfterFunc(outstandingCommandTTL, func() {
+		c.outstandingMu.Lock()
+		defer c.outstandingMu.Unlock()
+		if command, ok := c.outstanding[commandUUID]; ok &&
+			command.issuedAt.Equal(issuedAt) {
+			delete(c.outstanding, commandUUID)
+		}
+	})
 }
 
 // SetOnMDA registers a callback for late-arriving MDA attestation certs.
@@ -429,29 +449,49 @@ func (c *Client) sendDeviceAttestationWithNonce(
 
 func (c *Client) registerDeviceAttestationWaiter(
 	commandUUID string,
-) (<-chan *DeviceAttestationResponse, func()) {
+) (<-chan *DeviceAttestationResponse, func() bool) {
 	ch := make(chan *DeviceAttestationResponse, 1)
 	c.waitMu.Lock()
 	c.attestWaiters[commandUUID] = ch
 	c.waitMu.Unlock()
-	return ch, func() {
+	return ch, func() bool {
 		c.waitMu.Lock()
+		defer c.waitMu.Unlock()
 		if cur, ok := c.attestWaiters[commandUUID]; ok && cur == ch {
 			delete(c.attestWaiters, commandUUID)
+			return true
 		}
-		c.waitMu.Unlock()
+		return false
 	}
 }
 
-func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationResponse, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+func awaitDeviceAttestation(
+	ctx context.Context,
+	ch <-chan *DeviceAttestationResponse,
+	abandon func() bool,
+	udid string,
+	timeout time.Duration,
+) (*DeviceAttestationResponse, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case resp := <-ch:
+		abandon()
 		return resp, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("device attestation wait cancelled for %s: %w", udid, ctx.Err())
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
+		if abandon() {
+			return nil, fmt.Errorf(
+				"device attestation wait cancelled for %s: %w", udid, ctx.Err())
+		}
+	case <-timer.C:
+		if abandon() {
+			return nil, fmt.Errorf("%w from %s", ErrDeviceAttestationTimeout, udid)
+		}
 	}
+	// The webhook atomically removed this waiter before the timeout/cancel path
+	// could abandon it, and enqueued the response while holding waitMu. Delivery
+	// is therefore guaranteed even when the select chose the boundary event.
+	return <-ch, nil
 }
 
 // RequestDeviceAttestation closes the fast-device webhook race by registering
@@ -460,18 +500,28 @@ func (c *Client) RequestDeviceAttestation(
 	ctx context.Context,
 	udid string,
 	nonce string,
+	commandUUID string,
 	timeout time.Duration,
 ) (*DeviceAttestationResponse, error) {
-	commandUUID := uuid.New().String()
-	ch, release := c.registerDeviceAttestationWaiter(commandUUID)
-	defer release()
-	c.trackCommand(commandUUID, udid, time.Now())
+	if commandUUID == "" {
+		commandUUID = uuid.New().String()
+	}
+	ch, abandon := c.registerDeviceAttestationWaiter(commandUUID)
+	issuedAt := time.Now()
+	c.trackCommand(commandUUID, udid, issuedAt)
 	if err := c.sendDeviceAttestationWithNonce(
 		ctx, udid, nonce, commandUUID); err != nil {
-		c.consumeCommand(commandUUID, time.Now())
+		if !abandon() {
+			return <-ch, nil
+		}
+		// A transport or context error is ambiguous: MicroMDM may have accepted
+		// the command before the response path failed. Keep the solicited-command
+		// gate alive for one bounded late response instead of destroying proof
+		// ownership at the cancellation boundary.
+		c.expireCommandLater(commandUUID, issuedAt)
 		return nil, err
 	}
-	return awaitDeviceAttestation(ctx, ch, udid, timeout)
+	return awaitDeviceAttestation(ctx, ch, abandon, udid, timeout)
 }
 
 // HandleWebhook processes a MicroMDM webhook payload and extracts
@@ -595,13 +645,14 @@ func (c *Client) HandleWebhook(body []byte) {
 		ch, waiting := c.attestWaiters[cmdUUID]
 		if waiting {
 			delete(c.attestWaiters, cmdUUID)
+			// Delivery and waiter ownership transfer are one atomic transition.
+			// The channel is capacity one, so this cannot block while waitMu is held.
+			ch <- resp
 		}
 		c.waitMu.Unlock()
-		if waiting {
-			ch <- resp
-		} else if c.onMDA != nil {
-			c.onMDA(resp.UDID, resp.CertChain)
-		} else {
+		if !waiting && c.onMDA != nil {
+			c.onMDA(resp)
+		} else if !waiting {
 			c.logger.Debug("mdm attestation response dropped (no waiter, no callback)", "udid", resp.UDID)
 		}
 	}

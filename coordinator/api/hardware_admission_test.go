@@ -87,6 +87,60 @@ func TestHardwareAdmissionAllowsUnknownGPUWhenOnlyMemoryIsEnforced(t *testing.T)
 	}
 }
 
+func TestHardwareAdmissionRejectsSignedGPUCountMismatchWhenThresholdDisabled(
+	t *testing.T,
+) {
+	srv, st := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 48,
+	})
+	registration := admissionTestRegister()
+	registration.Hardware.MemoryGB = 64
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"signed-gpu-mismatch", nil, registration)
+	result := admissionTestAttestation("SIGNED-GPU-MISMATCH")
+	result.MemoryGB = 64
+	result.GPUCores = registration.Hardware.GPUCores + 1
+
+	if srv.evaluateProviderHardwareAdmission(
+		provider.ID, provider, registration, result) {
+		t.Fatal("mismatched signed GPU count was admitted")
+	}
+	attempts, err := st.ListHardwareAdmissionAttempts(
+		context.Background(), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 ||
+		attempts[0].ReasonCode != "hardware_claim_mismatch" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestProvidersOnlineGaugeExcludesPendingAndRevokedProviders(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{
+		HardwareAdmissionMode:        "enforce",
+		HardwareAdmissionMinMemoryGB: 16,
+	})
+	provider := srv.registry.RegisterPendingHardwareAdmission(
+		"gauge-admission", nil, admissionTestRegister())
+	if got := srv.Metrics().Snapshot().Gauges["providers_online"]; got != 0 {
+		t.Fatalf("pending providers_online = %v, want 0", got)
+	}
+	if !srv.registry.CommitProviderHardwareAdmission(provider) {
+		t.Fatal("failed to admit provider")
+	}
+	if got := srv.Metrics().Snapshot().Gauges["providers_online"]; got != 1 {
+		t.Fatalf("admitted providers_online = %v, want 1", got)
+	}
+	if !srv.registry.SetProviderHardwareRevoked(provider, true) {
+		t.Fatal("failed to revoke provider")
+	}
+	if got := srv.Metrics().Snapshot().Gauges["providers_online"]; got != 0 {
+		t.Fatalf("revoked providers_online = %v, want 0", got)
+	}
+}
+
 func TestHardwareAdmissionGrandfathersExistingTrustedSerial(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	now := time.Now()
@@ -1041,6 +1095,37 @@ func TestStaleFinalizerCannotPersistNewPendingGeneration(t *testing.T) {
 			pending.policy.Version, nextPolicy.Version)
 	}
 	srv.clearPendingHardwareAdmissionForProvider(provider)
+}
+
+func TestStaleConnectionCleanupCannotEvictReplacement(t *testing.T) {
+	srv, _ := testServer(t)
+	const providerID = "reused-connection-id"
+	stale := srv.registry.RegisterPendingHardwareAdmission(
+		providerID, nil, admissionTestRegister())
+	srv.stagePendingHardwareAdmission(providerID, pendingHardwareAdmission{
+		provider: stale,
+		policy:   hardwareadmission.Policy{Version: 1},
+	})
+	replacement := srv.registry.RegisterPendingHardwareAdmission(
+		providerID, nil, admissionTestRegister())
+	srv.stagePendingHardwareAdmission(providerID, pendingHardwareAdmission{
+		provider: replacement,
+		policy:   hardwareadmission.Policy{Version: 2},
+	})
+
+	srv.cleanupProviderConnection(stale)
+
+	if current := srv.registry.GetProvider(providerID); current != replacement {
+		t.Fatal("stale connection cleanup evicted the replacement")
+	}
+	srv.hardwareAdmissionPendingMu.Lock()
+	pending := srv.hardwareAdmissionPending[providerID]
+	srv.hardwareAdmissionPendingMu.Unlock()
+	if pending.provider != replacement || pending.policy.Version != 2 {
+		t.Fatalf("replacement pending admission was cleared: %+v", pending)
+	}
+	srv.clearPendingHardwareAdmissionForProvider(replacement)
+	srv.registry.DisconnectProvider(replacement)
 }
 
 func TestHardUntrustedProviderCannotFinalizeHardwareAdmission(t *testing.T) {

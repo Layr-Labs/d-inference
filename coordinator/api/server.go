@@ -198,15 +198,17 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool     // emails that have admin access
-	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
-	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
+	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
+	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool // emails that have admin access
+	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	mdmWebhookSecret              string          // optional shared secret MicroMDM must present on the webhook
+	mdaRequestMu                  sync.Mutex
+	mdaRequests                   map[string]mdaRequestState
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
@@ -2035,7 +2037,7 @@ func (s *Server) routes() {
 // the metrics registry at construction time.
 func (s *Server) registerDefaultGauges() {
 	s.metrics.RegisterGauge("providers_online", func() float64 {
-		return float64(s.registry.ProviderCount())
+		return float64(s.registry.OnlineCount())
 	})
 	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
 		if s.minProviderVersion != "" {

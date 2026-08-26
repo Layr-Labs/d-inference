@@ -1,12 +1,15 @@
 package mdm
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -201,5 +204,119 @@ func TestDeviceAttestationWaitersCorrelateByCommandUUID(t *testing.T) {
 		}
 	default:
 		t.Fatal("old command response did not reach its exact waiter")
+	}
+}
+
+func TestLateDeviceAttestationCallbackPreservesCommandUUID(t *testing.T) {
+	c := testClient()
+	responses := make(chan *DeviceAttestationResponse, 1)
+	c.SetOnMDA(func(response *DeviceAttestationResponse) {
+		responses <- response
+	})
+	c.trackCommand("mda-late", "UDID-LATE", time.Now())
+
+	c.HandleWebhook(buildDeviceAttestationWebhook(
+		"UDID-LATE", "mda-late", []byte("late-cert")))
+
+	select {
+	case response := <-responses:
+		if response.CommandUUID != "mda-late" ||
+			response.UDID != "UDID-LATE" ||
+			string(response.CertChain[0]) != "late-cert" {
+			t.Fatalf("late response = %+v", response)
+		}
+	default:
+		t.Fatal("late callback did not preserve command correlation")
+	}
+}
+
+func TestDeviceAttestationTimeoutIsTyped(t *testing.T) {
+	c := testClient()
+	ch, abandon := c.registerDeviceAttestationWaiter("mda-timeout")
+	_, err := awaitDeviceAttestation(
+		context.Background(),
+		ch,
+		abandon,
+		"UDID-TIMEOUT",
+		time.Millisecond,
+	)
+	if !errors.Is(err, ErrDeviceAttestationTimeout) {
+		t.Fatalf("timeout error = %v, want ErrDeviceAttestationTimeout", err)
+	}
+}
+
+func TestDeviceAttestationClaimAtTimeoutBoundaryIsDelivered(t *testing.T) {
+	c := testClient()
+	ch, abandon := c.registerDeviceAttestationWaiter("mda-boundary")
+	expected := &DeviceAttestationResponse{CommandUUID: "mda-boundary"}
+
+	// Model the webhook's atomic claim-and-enqueue transition immediately before
+	// the timeout path attempts to abandon the waiter.
+	c.waitMu.Lock()
+	waiter := c.attestWaiters["mda-boundary"]
+	delete(c.attestWaiters, "mda-boundary")
+	waiter <- expected
+	c.waitMu.Unlock()
+
+	response, err := awaitDeviceAttestation(
+		context.Background(), ch, abandon, "UDID-BOUNDARY", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response != expected {
+		t.Fatalf("response = %p, want %p", response, expected)
+	}
+}
+
+func TestDeviceAttestationAfterTimeoutUsesLateCallback(t *testing.T) {
+	c := testClient()
+	ch, abandon := c.registerDeviceAttestationWaiter("mda-after-timeout")
+	c.trackCommand("mda-after-timeout", "UDID-LATE", time.Now())
+	_, err := awaitDeviceAttestation(
+		context.Background(), ch, abandon, "UDID-LATE", time.Millisecond)
+	if !errors.Is(err, ErrDeviceAttestationTimeout) {
+		t.Fatalf("timeout error = %v, want ErrDeviceAttestationTimeout", err)
+	}
+	responses := make(chan *DeviceAttestationResponse, 1)
+	c.SetOnMDA(func(response *DeviceAttestationResponse) {
+		responses <- response
+	})
+
+	c.HandleWebhook(buildDeviceAttestationWebhook(
+		"UDID-LATE", "mda-after-timeout", []byte("late-cert")))
+
+	select {
+	case response := <-responses:
+		if response.CommandUUID != "mda-after-timeout" {
+			t.Fatalf("late command UUID = %q", response.CommandUUID)
+		}
+	default:
+		t.Fatal("post-timeout response did not use the late callback")
+	}
+}
+
+func TestDeviceAttestationSendErrorPreservesSolicitedOwnership(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "ambiguous upstream failure", http.StatusBadGateway)
+		},
+	))
+	defer server.Close()
+	client := NewClient(server.URL, "test-key",
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, err := client.RequestDeviceAttestation(
+		context.Background(),
+		"UDID-SEND-ERROR",
+		"",
+		"mda-send-error",
+		time.Millisecond,
+	)
+	if err == nil {
+		t.Fatal("send error was not returned")
+	}
+	udid, owned := client.consumeCommand("mda-send-error", time.Now())
+	if !owned || udid != "UDID-SEND-ERROR" {
+		t.Fatalf("solicited ownership = (%q,%v), want preserved", udid, owned)
 	}
 }

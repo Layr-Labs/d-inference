@@ -180,6 +180,27 @@ func TestStaleTrustGrantCannotPromoteReplacementConnection(t *testing.T) {
 	}
 }
 
+func TestStaleProviderCannotMarkReplacementUntrusted(t *testing.T) {
+	reg := New(testLogger())
+	stale := reg.RegisterPendingHardwareAdmission(
+		"reused-untrust-id", nil, testRegisterMessage())
+	replacement := reg.RegisterPendingHardwareAdmission(
+		stale.ID, nil, testRegisterMessage())
+
+	if reg.MarkProviderUntrustedIfCurrent(stale) {
+		t.Fatal("stale provider pointer marked a replacement untrusted")
+	}
+	if replacement.GetStatus() == StatusUntrusted {
+		t.Fatal("replacement connection was marked untrusted")
+	}
+	if !reg.MarkProviderUntrustedIfCurrent(replacement) {
+		t.Fatal("current provider was not marked untrusted")
+	}
+	if replacement.GetStatus() != StatusUntrusted {
+		t.Fatal("current provider remained trusted")
+	}
+}
+
 func TestStaleConnectionCannotOverwriteReplacementPersistence(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	reg := New(testLogger())

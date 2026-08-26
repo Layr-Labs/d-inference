@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
+import type { ProviderRequirementsResponse } from "@/lib/api/provider-requirements";
 import type { ProviderRequirementsState } from "../providers/useProviderRequirements";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
@@ -11,6 +12,46 @@ function waitlistHref(calc: EarningsCalculator): string {
   return `/provider-waitlist?${params.toString()}`;
 }
 
+interface HardwareAssessment {
+  blocked: boolean;
+  title: string;
+  detail: string;
+}
+
+function assessHardware(
+  calc: EarningsCalculator,
+  policy: ProviderRequirementsResponse["policy"]
+): HardwareAssessment {
+  if (policy.mode !== "enforce") {
+    return { blocked: false, title: "", detail: "" };
+  }
+  if (policy.min_memory_gb > 0 && calc.effectiveRAM < policy.min_memory_gb) {
+    return {
+      blocked: true,
+      title: "This Mac is below the current new-provider memory floor",
+      detail: `${calc.effectiveRAM} GiB is selected; policy v${policy.version} requires at least ${policy.min_memory_gb} GiB. This configuration will not be admitted as a new provider.`,
+    };
+  }
+  if (
+    policy.min_memory_bandwidth_gbs > 0 &&
+    calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs
+  ) {
+    return {
+      blocked: true,
+      title: "This chip is below the current new-provider bandwidth floor",
+      detail: `${calc.hardware.bandwidthGBs} GB/s is catalogued for ${calc.selectedChip}; policy v${policy.version} requires at least ${policy.min_memory_bandwidth_gbs} GB/s. This configuration will not be admitted as a new provider.`,
+    };
+  }
+  if (policy.min_fp16_millitflops > 0) {
+    return {
+      blocked: true,
+      title: "This calculator cannot verify the current FP16 floor",
+      detail: `Policy v${policy.version} enforces an FP16 threshold that this calculator cannot verify. Setup stays paused until the coordinator can confirm eligibility.`,
+    };
+  }
+  return { blocked: false, title: "", detail: "" };
+}
+
 export function selectedHardwareIsBlocked(
   calc: EarningsCalculator,
   requirementsState: ProviderRequirementsState
@@ -19,17 +60,7 @@ export function selectedHardwareIsBlocked(
   if (requirementsState.status !== "ready" || !policy) {
     return true;
   }
-  if (policy.mode !== "enforce") {
-    return false;
-  }
-  const belowMemory =
-    policy.min_memory_gb > 0 &&
-    calc.effectiveRAM < policy.min_memory_gb;
-  const belowBandwidth =
-    policy.min_memory_bandwidth_gbs > 0 &&
-    calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
-  const fp16EligibilityUnknown = policy.min_fp16_millitflops > 0;
-  return belowMemory || belowBandwidth || fp16EligibilityUnknown;
+  return assessHardware(calc, policy).blocked;
 }
 
 export function ProviderAdmissionNotice({
@@ -75,31 +106,9 @@ export function ProviderAdmissionNotice({
     return null;
   }
 
-  const belowMemoryFloor =
-    policy.mode === "enforce" &&
-    policy.min_memory_gb > 0 &&
-    calc.effectiveRAM < policy.min_memory_gb;
-  const belowBandwidthFloor =
-    policy.mode === "enforce" &&
-    policy.min_memory_bandwidth_gbs > 0 &&
-    calc.hardware.bandwidthGBs < policy.min_memory_bandwidth_gbs;
-  const fp16EligibilityUnknown =
-    policy.mode === "enforce" && policy.min_fp16_millitflops > 0;
-  const blocked =
-    belowMemoryFloor || belowBandwidthFloor || fp16EligibilityUnknown;
+  const assessment = assessHardware(calc, policy);
+  const { blocked } = assessment;
   const Icon = blocked ? AlertTriangle : ShieldCheck;
-  let blockedTitle = "";
-  let blockedDetail = "";
-  if (belowMemoryFloor) {
-    blockedTitle = "This Mac is below the current new-provider memory floor";
-    blockedDetail = `${calc.effectiveRAM} GiB is selected; policy v${policy.version} requires at least ${policy.min_memory_gb} GiB. This configuration will not be admitted as a new provider.`;
-  } else if (belowBandwidthFloor) {
-    blockedTitle = "This chip is below the current new-provider bandwidth floor";
-    blockedDetail = `${calc.hardware.bandwidthGBs} GB/s is catalogued for ${calc.selectedChip}; policy v${policy.version} requires at least ${policy.min_memory_bandwidth_gbs} GB/s. This configuration will not be admitted as a new provider.`;
-  } else if (fp16EligibilityUnknown) {
-    blockedTitle = "This calculator cannot verify the current FP16 floor";
-    blockedDetail = `Policy v${policy.version} enforces an FP16 threshold that this calculator cannot verify. Setup stays paused until the coordinator can confirm eligibility.`;
-  }
 
   return (
     <section
@@ -119,12 +128,12 @@ export function ProviderAdmissionNotice({
         <div>
           <p className="font-semibold text-text-primary">
             {blocked
-              ? blockedTitle
+              ? assessment.title
               : `New-machine policy v${policy.version} is ${policy.mode}`}
           </p>
           <p className="mt-1 leading-relaxed text-text-secondary">
             {blocked
-              ? blockedDetail
+              ? assessment.detail
               : "This projection measures model fit and possible earnings, not admission approval. The coordinator verifies the exact chip, GPU-core count, signed hardware, and current policy when a provider connects."}
           </p>
           {(blocked || policy.mode === "enforce") && (

@@ -70,6 +70,11 @@ const (
 	// back. Must be > MaxFailedChallenges so a brief blip (sleep/network) still
 	// self-recovers without a disconnect.
 	MaxConsecutiveChallengeTimeoutsBeforeReconnect = 6
+
+	// lateMDARequestTTL matches the MDM command-correlation window. A timed-out
+	// request remains eligible for one exact CommandUUID callback during this
+	// window, then its provider pointer is discarded.
+	lateMDARequestTTL = 30 * time.Minute
 )
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
@@ -184,8 +189,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
-		s.clearPendingHardwareAdmission(providerID)
-		s.registry.Disconnect(providerID)
+		s.cleanupProviderConnection(provider)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -267,7 +271,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && provider.PersistenceEnabled() &&
-				ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+				ctx.Err() == nil && s.providerConnectionCurrent(provider) {
 				// The socket is dead, but the deferred registry.Disconnect
 				// only runs after the stamp lands (first close wins requires
 				// that order). Flip the provider offline first — StatusOffline
@@ -1003,6 +1007,14 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 		tracker.remove(nonce)
 		s.handleTransientChallengeFailure(provider.Conn, providerID, "timeout")
 	}
+}
+
+func (s *Server) cleanupProviderConnection(provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	s.clearPendingHardwareAdmissionForProvider(provider)
+	s.registry.DisconnectProvider(provider)
 }
 
 // handleAttestationResponse processes an attestation response from a provider.
@@ -2867,7 +2879,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		)
 		provider.SetMDMFailureReason("posture-mismatch")
 		s.ddIncr("mdm.verification", []string{"outcome:posture-mismatch"})
-		s.registry.MarkUntrusted(providerID)
+		s.registry.MarkProviderUntrustedIfCurrent(provider)
 		return mdmVerifyTerminal
 	}
 
@@ -3280,70 +3292,286 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 	return true
 }
 
-// ApplyLateMDA attaches an asynchronously delivered Apple device-attestation
-// chain only when its freshness nonce matches the exact live Secure Enclave key
-// digest. Serial equality alone is not sufficient: an old chain for the same Mac
-// must not finalize a reconnect after that key rotated.
-func (s *Server) ApplyLateMDA(udid string, certChain [][]byte) {
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-	if err != nil {
-		s.logger.Error("late MDA cert parse error", "udid", udid, "error", err)
+type mdaRequestContext struct {
+	origin      *registry.Provider
+	udid        string
+	serial      string
+	sePublicKey string
+}
+
+type mdaRequestState struct {
+	context  mdaRequestContext
+	response *mdm.DeviceAttestationResponse
+}
+
+func (s *Server) trackMDARequest(
+	commandUUID string,
+	provider *registry.Provider,
+	udid string,
+	result attestation.VerificationResult,
+) {
+	serial := strings.TrimSpace(result.SerialNumber)
+	sePublicKey := strings.TrimSpace(result.PublicKey)
+	if commandUUID == "" || provider == nil ||
+		serial == "" || sePublicKey == "" {
 		return
+	}
+	s.mdaRequestMu.Lock()
+	if s.mdaRequests == nil {
+		s.mdaRequests = make(map[string]mdaRequestState)
+	}
+	s.mdaRequests[commandUUID] = mdaRequestState{
+		context: mdaRequestContext{
+			origin: provider, udid: udid, serial: serial, sePublicKey: sePublicKey,
+		},
+	}
+	s.mdaRequestMu.Unlock()
+}
+
+func (s *Server) expireMDARequestLater(
+	commandUUID string,
+	provider *registry.Provider,
+) {
+	time.AfterFunc(lateMDARequestTTL, func() {
+		s.removeMDARequest(commandUUID, provider)
+	})
+}
+
+func (s *Server) removeMDARequest(
+	commandUUID string,
+	expected *registry.Provider,
+) (mdaRequestContext, bool) {
+	s.mdaRequestMu.Lock()
+	defer s.mdaRequestMu.Unlock()
+	state, ok := s.mdaRequests[commandUUID]
+	if !ok || (expected != nil && state.context.origin != expected) {
+		return mdaRequestContext{}, false
+	}
+	delete(s.mdaRequests, commandUUID)
+	return state.context, true
+}
+
+func (s *Server) storeMDAResponse(
+	commandUUID string,
+	response *mdm.DeviceAttestationResponse,
+) (mdaRequestContext, bool) {
+	s.mdaRequestMu.Lock()
+	defer s.mdaRequestMu.Unlock()
+	state, ok := s.mdaRequests[commandUUID]
+	if !ok {
+		return mdaRequestContext{}, false
+	}
+	state.response = response
+	s.mdaRequests[commandUUID] = state
+	return state.context, true
+}
+
+func providerMatchesMDARequest(
+	provider *registry.Provider,
+	request mdaRequestContext,
+) bool {
+	if provider == nil {
+		return false
+	}
+	result := provider.GetAttestationResult()
+	return result != nil && result.Valid &&
+		strings.TrimSpace(result.PublicKey) == request.sePublicKey &&
+		strings.EqualFold(
+			strings.TrimSpace(result.SerialNumber), request.serial)
+}
+
+func (s *Server) providerForMDARequest(
+	request mdaRequestContext,
+) *registry.Provider {
+	if s.providerConnectionCurrent(request.origin) &&
+		providerMatchesMDARequest(request.origin, request) {
+		return request.origin
+	}
+	var match *registry.Provider
+	ambiguous := false
+	s.registry.ForEachProvider(func(provider *registry.Provider) {
+		if !providerMatchesMDARequest(provider, request) {
+			return
+		}
+		if match != nil {
+			ambiguous = true
+			return
+		}
+		match = provider
+	})
+	if ambiguous {
+		return nil
+	}
+	return match
+}
+
+type mdaApplyResult uint8
+
+const (
+	mdaApplyRetry mdaApplyResult = iota
+	mdaApplyConsumed
+	mdaApplyVerified
+)
+
+func (s *Server) applyMDAResponse(
+	request mdaRequestContext,
+	response *mdm.DeviceAttestationResponse,
+	outcome string,
+) mdaApplyResult {
+	mdaResult, err := attestation.VerifyMDADeviceAttestation(response.CertChain)
+	if err != nil {
+		s.logger.Error("MDA cert parse error",
+			"provider_id", request.origin.ID,
+			"udid", response.UDID,
+			"error", err,
+		)
+		return mdaApplyConsumed
 	}
 	if mdaResult == nil || !mdaResult.Valid {
-		return
+		return mdaApplyConsumed
 	}
-	if udid != "" && mdaResult.DeviceUDID != "" &&
-		mdaResult.DeviceUDID != udid {
-		s.logger.Warn("late MDA UDID mismatch",
-			"callback_udid", udid, "mda_udid", mdaResult.DeviceUDID)
-		return
+	provider := s.providerForMDARequest(request)
+	if provider == nil {
+		return mdaApplyRetry
 	}
-
-	var providers []*registry.Provider
-	s.registry.ForEachProvider(func(provider *registry.Provider) {
-		providers = append(providers, provider)
-	})
-	for _, provider := range providers {
-		attestResult := provider.GetAttestationResult()
-		if attestResult == nil || !attestResult.Valid ||
-			attestResult.PublicKey == "" ||
-			len(mdaResult.FreshnessCode) == 0 {
-			continue
-		}
-		if mdaResult.DeviceSerial != "" &&
-			!strings.EqualFold(
-				strings.TrimSpace(mdaResult.DeviceSerial),
-				strings.TrimSpace(attestResult.SerialNumber)) {
-			continue
-		}
-		expectedFreshness := sha256.Sum256([]byte(attestResult.PublicKey))
-		if !bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:]) {
-			continue
-		}
-		// MDA and SecurityInfo callbacks can arrive in either order. Preserve an
-		// exact-key-bound chain now so a later SecurityInfo grant can attach it
-		// without spending another Apple device-attestation request.
-		provider.StageMDAChain(certChain)
-		if !s.registry.SetProviderMDAProofIfHardwareFreshForKey(
-			provider, certChain, mdaResult, attestResult.PublicKey) {
-			continue
-		}
-
-		if !s.persistCurrentProviderSnapshot(provider) {
-			continue
-		}
-		s.logger.Info("late MDA cert bound to live provider",
+	if (request.udid != "" && response.UDID != "" &&
+		request.udid != response.UDID) ||
+		(request.udid != "" && mdaResult.DeviceUDID != "" &&
+			request.udid != mdaResult.DeviceUDID) {
+		s.logger.Error("MDA device identity mismatch",
 			"provider_id", provider.ID,
-			"serial", attestResult.SerialNumber,
-			"udid", mdaResult.DeviceUDID,
-			"os_version", mdaResult.OSVersion,
+			"command_udid", request.udid,
+			"callback_udid", response.UDID,
+			"mda_udid", mdaResult.DeviceUDID,
 		)
-		s.ddIncr("mda.verification", []string{"outcome:verified-late"})
-		s.finalizeOrScheduleHardwareAdmission(provider)
-		s.sendHardwareTrustStatus(
-			provider, "Apple device attestation verified")
+		if !s.registry.MarkProviderUntrustedIfCurrent(provider) {
+			return mdaApplyRetry
+		}
+		return mdaApplyConsumed
 	}
+	if mdaResult.DeviceSerial != "" &&
+		!strings.EqualFold(
+			strings.TrimSpace(mdaResult.DeviceSerial),
+			request.serial) {
+		s.logger.Error("MDA serial mismatch",
+			"provider_id", provider.ID,
+			"expected_serial", request.serial,
+			"mda_serial", mdaResult.DeviceSerial,
+		)
+		if !s.registry.MarkProviderUntrustedIfCurrent(provider) {
+			return mdaApplyRetry
+		}
+		return mdaApplyConsumed
+	}
+	expectedFreshness := sha256.Sum256([]byte(request.sePublicKey))
+	if !bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:]) {
+		return mdaApplyConsumed
+	}
+	// MDA and SecurityInfo callbacks can arrive in either order. Preserve an
+	// exact-key-correlated chain now so a later SecurityInfo grant can attach it
+	// without spending another Apple device-attestation request.
+	provider.StageMDAChain(response.CertChain)
+	if !s.registry.SetProviderMDAProofIfHardwareFreshForKey(
+		provider, response.CertChain, mdaResult, request.sePublicKey) {
+		// The current connection may not have earned hardware trust yet, or it
+		// may have been replaced during binding. Keep the response until a
+		// matching identity consumes it; the staged copy is only a fast path.
+		return mdaApplyRetry
+	}
+	if !s.persistCurrentProviderSnapshot(provider) {
+		return mdaApplyRetry
+	}
+	s.logger.Info("MDA cert bound to provider identity",
+		"provider_id", provider.ID,
+		"serial", request.serial,
+		"udid", mdaResult.DeviceUDID,
+		"os_version", mdaResult.OSVersion,
+		"outcome", outcome,
+	)
+	s.ddIncr("mda.verification", []string{"outcome:" + outcome})
+	s.finalizeOrScheduleHardwareAdmission(provider)
+	s.sendHardwareTrustStatus(
+		provider, "Apple device attestation verified")
+	return mdaApplyVerified
+}
+
+func (s *Server) processMDAResponse(
+	commandUUID string,
+	response *mdm.DeviceAttestationResponse,
+	outcome string,
+) mdaApplyResult {
+	request, ok := s.storeMDAResponse(commandUUID, response)
+	if !ok {
+		return mdaApplyConsumed
+	}
+	result := s.applyMDAResponse(request, response, outcome)
+	if result == mdaApplyRetry {
+		s.expireMDARequestLater(commandUUID, request.origin)
+	} else {
+		s.removeMDARequest(commandUUID, request.origin)
+	}
+	return result
+}
+
+type pendingMDAResponse struct {
+	commandUUID string
+	response    *mdm.DeviceAttestationResponse
+}
+
+func (s *Server) pendingMDAResponsesFor(
+	result attestation.VerificationResult,
+	udid string,
+) []pendingMDAResponse {
+	s.mdaRequestMu.Lock()
+	defer s.mdaRequestMu.Unlock()
+	var pending []pendingMDAResponse
+	for commandUUID, state := range s.mdaRequests {
+		if state.response == nil ||
+			state.context.sePublicKey != strings.TrimSpace(result.PublicKey) ||
+			!strings.EqualFold(state.context.serial,
+				strings.TrimSpace(result.SerialNumber)) ||
+			(udid != "" && state.context.udid != "" &&
+				udid != state.context.udid) {
+			continue
+		}
+		pending = append(pending, pendingMDAResponse{
+			commandUUID: commandUUID,
+			response:    state.response,
+		})
+	}
+	return pending
+}
+
+func (s *Server) applyPendingMDAResponse(
+	provider *registry.Provider,
+	result attestation.VerificationResult,
+	udid string,
+) bool {
+	for _, pending := range s.pendingMDAResponsesFor(result, udid) {
+		if s.processMDAResponse(
+			pending.commandUUID, pending.response, "verified-reconnect",
+		) == mdaApplyVerified {
+			provider.Mu().Lock()
+			verified := provider.MDAVerified
+			provider.Mu().Unlock()
+			if verified {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ApplyLateMDA consumes one exact CommandUUID and binds its Apple-signed result
+// to the originating connection or a unique reconnect presenting the same
+// serial and Secure Enclave key. This preserves a valid late response across a
+// reconnect without allowing it to cross an identity or key rotation.
+func (s *Server) ApplyLateMDA(response *mdm.DeviceAttestationResponse) {
+	if response == nil {
+		return
+	}
+	s.processMDAResponse(
+		response.CommandUUID, response, "verified-late")
 }
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
@@ -3359,6 +3587,9 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	if s.attachCachedMDAProof(providerID, provider, attestResult) {
 		return true
 	}
+	if s.applyPendingMDAResponse(provider, attestResult, udid) {
+		return true
+	}
 
 	if udid == "" {
 		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
@@ -3372,11 +3603,9 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	// in the signed cert. This prevents cross-key reuse; it does not prove that
 	// the application key resides on the device.
 	var freshnessNonce string
-	var expectedFreshness [32]byte
 	if attestResult.PublicKey != "" {
 		seKeyHash := sha256.Sum256([]byte(attestResult.PublicKey))
 		freshnessNonce = base64.StdEncoding.EncodeToString(seKeyHash[:])
-		expectedFreshness = seKeyHash
 		s.logger.Info("requesting MDA with live-key freshness correlation",
 			"provider_id", providerID,
 			"udid", udid,
@@ -3391,83 +3620,23 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 
 	// Register the waiter before sending: an awake device can answer immediately,
 	// and a post-send waiter would miss that response and stall for 60 seconds.
+	commandUUID := uuid.New().String()
+	s.trackMDARequest(commandUUID, provider, udid, attestResult)
 	attestResp, err := s.mdmClient.RequestDeviceAttestation(
-		ctx, udid, freshnessNonce, 60*time.Second)
+		ctx, udid, freshnessNonce, commandUUID, 60*time.Second)
 	if err != nil {
+		// Command-submission failures are ambiguous: MicroMDM may have accepted
+		// the request before the transport or caller context failed. Preserve its
+		// exact ownership for one bounded late callback.
+		s.expireMDARequestLater(commandUUID, provider)
 		s.logger.Warn("DevicePropertiesAttestation request failed",
 			"provider_id", providerID,
 			"error", err,
 		)
 		return false
 	}
-
-	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(attestResp.CertChain)
-	if err != nil {
-		s.logger.Error("MDA certificate chain parse error",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return false
-	}
-
-	if !mdaResult.Valid {
-		s.logger.Warn("MDA certificate chain verification FAILED — Apple did not attest this device",
-			"provider_id", providerID,
-			"error", mdaResult.Error,
-		)
-		return false
-	}
-
-	// Cross-check: MDA serial must match the provider's self-reported serial
-	if mdaResult.DeviceSerial != "" &&
-		!strings.EqualFold(
-			strings.TrimSpace(mdaResult.DeviceSerial),
-			strings.TrimSpace(attestResult.SerialNumber)) {
-		s.logger.Error("MDA serial mismatch — provider is impersonating another device",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"attestation_serial", attestResult.SerialNumber,
-		)
-		s.registry.MarkUntrusted(providerID)
-		return false
-	}
-
-	freshnessVerified := freshnessNonce != "" &&
-		len(mdaResult.FreshnessCode) > 0 &&
-		bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])
-	if !freshnessVerified {
-		s.logger.Warn("MDA verified but live-key freshness digest mismatched",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"expected_freshness", hex.EncodeToString(expectedFreshness[:8])+"...",
-			"got_freshness", hex.EncodeToString(
-				mdaResult.FreshnessCode[:min(8, len(mdaResult.FreshnessCode))])+"...",
-		)
-		return false
-	}
-	// Attach only to the exact current connection and exact live key. A response
-	// can race disconnect/replacement after the waiter returns.
-	if !s.registry.SetProviderMDAProofIfHardwareFreshForKey(
-		provider, attestResp.CertChain, mdaResult, attestResult.PublicKey) {
-		return false
-	}
-
-	// Existing providers persist the refreshed chain immediately. A first-time
-	// provider remains fenced with persistence disabled here; its admission
-	// finalizer synchronously writes this MDA-bearing snapshot before routing.
-	if !s.persistCurrentProviderSnapshot(provider) {
-		return false
-	}
-	s.finalizeOrScheduleHardwareAdmission(provider)
-
-	s.logger.Info("MDA verified with live-key freshness correlation",
-		"provider_id", providerID,
-		"mda_serial", mdaResult.DeviceSerial,
-		"mda_udid", mdaResult.DeviceUDID,
-		"mda_freshness_verified", true,
-	)
-	return true
+	return s.processMDAResponse(
+		commandUUID, attestResp, "verified") == mdaApplyVerified
 }
 
 // handleProviderAttestation returns privacy-redacted trust status for all providers.

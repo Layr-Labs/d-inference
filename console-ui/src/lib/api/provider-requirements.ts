@@ -21,7 +21,11 @@ export async function fetchProviderRequirements(
   const controller = new AbortController();
   const abort = () => controller.abort();
   const timeout = globalThis.setTimeout(abort, 7_000);
-  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
   try {
     const response = await fetch("/api/provider-requirements", {
       cache: "no-store",
@@ -30,7 +34,7 @@ export async function fetchProviderRequirements(
     if (!response.ok) {
       throw new Error(`Provider requirements unavailable (${response.status})`);
     }
-    return response.json() as Promise<ProviderRequirementsResponse>;
+    return (await response.json()) as ProviderRequirementsResponse;
   } finally {
     globalThis.clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);

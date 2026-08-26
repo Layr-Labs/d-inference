@@ -1820,6 +1820,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
 
+	// Public provider profile — no auth, pseudonymized, 30s cache.
+	// Returns hardware, warm models, trust tier and reputation for any
+	// currently-connected provider. Never exposes earnings or identity.
+	// NOTE: must be registered AFTER /v1/providers/attestation (more-specific
+	// patterns win in Go's ServeMux, so this wildcard is the fallback).
+	s.mux.HandleFunc("GET /v1/providers/{pseudonym}", s.handlePublicProviderProfile)
+
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 

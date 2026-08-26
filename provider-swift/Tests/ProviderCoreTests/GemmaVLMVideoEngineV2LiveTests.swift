@@ -81,7 +81,7 @@ private struct VideoFixtureError: Error, CustomStringConvertible {
 /// ends at colors.count/fps, so a 4-frame 32 fps clip is 0.125 s (the
 /// Gemma4 sampler — `round(32/max(duration,1) × duration)` — then samples
 /// ~4 frames) and a 40-frame 1 fps clip is 40 s (sampled at the 32 cap).
-private func makeSolidColorClip(
+func makeSolidColorClip(
     colors: [(r: UInt8, g: UInt8, b: UInt8)],
     fps: Int32,
     width: Int = 128,
@@ -162,7 +162,7 @@ private func makeSolidColorClip(
     return try Data(contentsOf: url)
 }
 
-private func dataURI(forMP4 data: Data) -> String {
+func dataURI(forMP4 data: Data) -> String {
     "data:video/mp4;base64," + data.base64EncodedString()
 }
 

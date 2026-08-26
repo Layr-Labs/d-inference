@@ -17,7 +17,8 @@ extension MultiModelBatchSchedulerEngine {
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
         reasoningEffort: String?,
-        modelType: String? = nil
+        modelType: String? = nil,
+        hasMedia: Bool = false
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
         let fixContext = ChatTemplateFixContext(
@@ -31,6 +32,13 @@ extension MultiModelBatchSchedulerEngine {
         }
         if let reasoningEnabled = request.reasoning?.enabled {
             context["enable_thinking"] = reasoningEnabled
+        } else if hasMedia {
+            // Qwen 3.5/3.6 templates default thinking ON when this key is
+            // absent. A long ungrounded think block both misses vision
+            // captions (OpenRouter flower regex) and burns the first-content
+            // clock on video. Clients that want thinking send
+            // `reasoning.enabled`.
+            context["enable_thinking"] = false
         }
         return context.isEmpty ? nil : context
     }

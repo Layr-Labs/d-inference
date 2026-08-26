@@ -5,8 +5,7 @@
 // Everything between an OpenAI request's inline `data:` media parts and a
 // model-ready `UserInput`: decode (CIImage / memory-backed AVFoundation assets),
 // decompression-bomb caps (per-image + per-request pixels, byte/second/
-// count limits), up-front validation (`validateMedia` — throws the 4xx
-// before any stream starts), memory projections for the vision gate
+// count limits), memory projections for the vision gate
 // (`projectedDecodeBytes` / `projectedKVTokens`), and media classification
 // (`hasMedia` / `hasVideo`).
 //
@@ -18,6 +17,7 @@
 // → 4xx).
 
 import AVFoundation
+import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
@@ -224,37 +224,6 @@ public enum MediaIngest {
         return overflow ? Int.max : total
     }
 
-    // MARK: - Up-front validation
-
-    /// Validate all inline media for a request UP FRONT, throwing `MediaError`
-    /// synchronously on any oversized/malformed/non-`data:` payload (or video-cap
-    /// violation). Callers MUST call this (and propagate the throw) BEFORE
-    /// returning a streaming response, so the correct 4xx is surfaced instead of
-    /// a 200 SSE body that only errors mid-iteration.
-    ///
-    /// This runs the decode path (`buildUserInput`) purely for its throwing
-    /// side-effects and discards the result. Inline-video bytes remain in the
-    /// returned input's owned memory-backed assets and are released with it;
-    /// they are never materialized on disk. The decode work is bounded by the
-    /// very caps it enforces (≤ per-image / aggregate pixels, ≤ byte cap), so
-    /// the up-front pass can't itself be a DoS, and the eventual rebuild in
-    /// the v2 media prefill re-validates identically.
-    public static func validateMedia(
-        _ request: OpenAIChatCompletionRequest,
-        maxImagePixels: Int = Self.maxImagePixels,
-        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
-        maxImagesPerRequest: Int = Self.maxImagesPerRequest,
-        maxVideosPerRequest: Int = Self.maxVideosPerRequest,
-        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
-    ) async throws {
-        _ = try await buildUserInput(
-            from: request, maxImagePixels: maxImagePixels,
-            maxRequestImagePixels: maxRequestImagePixels,
-            maxImagesPerRequest: maxImagesPerRequest,
-            maxVideosPerRequest: maxVideosPerRequest,
-            maxRequestVideoFramePixels: maxRequestVideoFramePixels)
-    }
-
     // MARK: - UserInput construction
 
     /// Build a model-agnostic `UserInput` from the OpenAI request, decoding any
@@ -298,7 +267,7 @@ public enum MediaIngest {
         return UserInput(
             chat: chatMessages,
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request, reasoningEffort: reasoningEffort))
+                for: request, reasoningEffort: reasoningEffort, hasMedia: true))
     }
 
 
@@ -542,14 +511,14 @@ public enum MediaIngest {
     /// HEADER pixel counts (no decode); when a header is unreadable the per-image
     /// cap is used as the worst case the media caps still admit.
     ///
-    /// The estimate is clamped to the SAME ceilings `validateMedia` enforces, so
+    /// The estimate is clamped to the SAME ceilings `buildUserInput` enforces, so
     /// it can never exceed what a maximally-large *valid* request consumes:
     ///   • image pixels are summed but clamped to the aggregate image cap
     ///     (`maxRequestImagePixels`) — a single oversized image, or many
     ///     unreadable-header images, can't project past the request-wide image
     ///     ceiling validation guarantees;
     ///   • videos are charged the aggregate per-request video-frame cap ONCE if
-    ///     any video is present — NOT per video. `validateMedia` bounds the SUM
+    ///     any video is present — NOT per video. `buildUserInput` bounds the SUM
     ///     of all videos' frame pixels by `maxRequestVideoFramePixels`, so
     ///     charging it per-video would over-reserve by the video count and could
     ///     falsely 503 a valid multi-video request.
@@ -590,7 +559,7 @@ public enum MediaIngest {
             }
         }
         // Clamp images to the request-wide aggregate cap, then add the video
-        // aggregate once. Both mirror validateMedia's ceilings exactly.
+        // aggregate once. Both mirror buildUserInput's ceilings exactly.
         var pixels = min(imagePixels, UInt64(max(0, maxRequestImagePixels)))
         if hasVideo {
             let (s, o) = pixels.addingReportingOverflow(UInt64(max(0, maxRequestVideoFramePixels)))
@@ -672,7 +641,27 @@ public enum MediaIngest {
             throw MediaError.mediaTooLarge(
                 "image is \(pixels) px; per-image cap is \(maxImagePixels) px")
         }
-        guard let image = CIImage(data: data) else {
+        // Full image at index 0 (never the EXIF thumbnail) with the file's
+        // orientation applied. `CIImage(data:)` skips EXIF rotation and can
+        // surface a JPEG thumbnail — both turn a real photograph into
+        // abstract pixels the model then confidently misdescribes.
+        let image: CIImage
+        if let src = CGImageSourceCreateWithData(
+            data as CFData, [kCGImageSourceShouldCache: true] as CFDictionary),
+            let cgImage = CGImageSourceCreateImageAtIndex(
+                src, 0, [kCGImageSourceShouldCache: true] as CFDictionary)
+        {
+            var decoded = CIImage(cgImage: cgImage)
+            if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                let raw = props[kCGImagePropertyOrientation] as? UInt32,
+                let orientation = CGImagePropertyOrientation(rawValue: raw)
+            {
+                decoded = decoded.oriented(orientation)
+            }
+            image = normalizedExtent(decoded)
+        } else if let decoded = CIImage(data: data, options: [.applyOrientationProperty: true]) {
+            image = normalizedExtent(decoded)
+        } else {
             throw MediaError.imageDecodeFailed
         }
         // Backstop: if ImageIO couldn't size the header (imagePixelCount nil) but
@@ -684,6 +673,16 @@ public enum MediaIngest {
                 "image extent is \(extentPixels) px; per-image cap is \(maxImagePixels) px")
         }
         return .ciImage(image)
+    }
+
+    /// `oriented()` (and some ImageIO decodes) can leave a non-zero origin.
+    /// The Qwen processor sizes from `extent.size` but `asMLXArray` renders
+    /// `extent`; a shifted origin is a silent crop/empty-raster class of bugs.
+    private static func normalizedExtent(_ image: CIImage) -> CIImage {
+        let origin = image.extent.origin
+        guard origin != .zero else { return image }
+        return image.transformed(
+            by: CGAffineTransform(translationX: -origin.x, y: -origin.y))
     }
 
     /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The

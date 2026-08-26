@@ -135,6 +135,40 @@ func scanRemoteMediaRefs(parsed map[string]any) remoteMediaScan {
 	return scan
 }
 
+// mediaFetchInferenceReserve is leftover first-content time kept for the
+// provider after the coordinator inlines remote media. The mediafetch defaults
+// (15s/file, 25s total) are larger than the production first-content clock
+// (9s + 1ms/token), so an unbounded fetch can expire the clock before the
+// provider starts — the video-url eval failed as
+// "timeout waiting for first response (backup)" after a successful fetch.
+const mediaFetchInferenceReserve = 5 * time.Second
+
+// mediaFetchMinBudget is the smallest fetch window worth starting.
+const mediaFetchMinBudget = 500 * time.Millisecond
+
+// mediaFetchBudget returns how long Resolve may run against the request-absolute
+// first-content clock. bound=false means the clock was never stamped and the
+// caller must keep the historical unbounded (mediafetch-default) path.
+// bound=true and budget==0 means the leftover clock cannot both fetch and
+// produce first content — fail closed without starting a 15s download.
+func mediaFetchBudget(receivedAt time.Time, firstContentDeadline time.Duration) (budget time.Duration, bound bool) {
+	if receivedAt.IsZero() || firstContentDeadline <= 0 {
+		return 0, false
+	}
+	remaining := firstTokenRemainingSince(receivedAt, firstContentDeadline)
+	reserve := mediaFetchInferenceReserve
+	if half := firstContentDeadline / 2; half < reserve {
+		reserve = half
+	}
+	if reserve < mediaFetchMinBudget {
+		reserve = mediaFetchMinBudget
+	}
+	if remaining <= reserve+mediaFetchMinBudget {
+		return 0, true
+	}
+	return remaining - reserve, true
+}
+
 // mediaResolveMeta carries the request descriptors resolveRemoteMedia needs to
 // record rejection telemetry with the same fidelity as the surrounding gates,
 // plus the self-route context used to gate egress on serve-ability.
@@ -182,6 +216,9 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
 		return rawBody, false, true
 	}
+	if !mediafetch.HasRemoteMedia(parsed) {
+		return rawBody, false, true
+	}
 
 	// Self-route skips the balance reservation, so nothing has yet gated egress
 	// on serve-ability. Before fetching, confirm the owner has an online machine
@@ -190,7 +227,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	// egress and only then get the self-route error. Only runs when a fetch would
 	// actually happen (remote media present); selfRouteUnavailable writes its own
 	// terminal response. The later runInferenceAdmission re-checks (idempotent).
-	if meta.selfRoute && mediafetch.HasRemoteMedia(parsed) {
+	if meta.selfRoute {
 		if s.selfRouteUnavailable(w, r, meta.ownerAccountID, meta.model,
 			meta.traits, meta.requiresVision) {
 			return nil, false, false
@@ -198,7 +235,23 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	}
 
 	start := time.Now()
-	res, err := s.mediaResolver.Resolve(r.Context(), parsed)
+	resolveCtx := r.Context()
+	if receivedAt := timingReceivedAt(timing); !receivedAt.IsZero() {
+		deadline := s.FirstContentDeadline(meta.estimatedPromptTokens)
+		budget, bound := mediaFetchBudget(receivedAt, deadline)
+		if bound && budget <= 0 {
+			s.logger.Warn("remote media rejected", "code", "media_fetch_timeout", "status", http.StatusRequestTimeout)
+			s.mediaFetchRejected(w, r, parsed, meta, http.StatusRequestTimeout, "media_fetch_timeout",
+				"timed out fetching remote media")
+			return nil, false, false
+		}
+		if bound {
+			var cancel context.CancelFunc
+			resolveCtx, cancel = context.WithTimeout(r.Context(), budget)
+			defer cancel()
+		}
+	}
+	res, err := s.mediaResolver.Resolve(resolveCtx, parsed)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The client is gone. The caller still refunds the monetary reservation,

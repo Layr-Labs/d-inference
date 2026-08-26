@@ -174,7 +174,9 @@ type PendingRequest struct {
 	// MaxTTFTMs is an optional per-request TTFT ceiling in milliseconds.
 	// When > 0, the scheduler only selects providers whose estimated TTFT is
 	// <= MaxTTFTMs. Used by public inference routes to honor the public
-	// TTFT target. Self-route / prefer-owner requests leave this at 0.
+	// TTFT target. Self-route / prefer-owner and vision requests leave this at
+	// 0; the scheduler also ignores an accidental ceiling on vision because its
+	// decode and tower work are absent from the text-prefill estimate.
 	MaxTTFTMs float64
 	// MinDecodeTPS is an optional per-request sustained-decode floor in tokens/sec
 	// (Routing v2 W2). When > 0, the scheduler PREFERS providers that would still

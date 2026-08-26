@@ -189,3 +189,29 @@ func TestTTFTCalibrationSkipsColdPredictions(t *testing.T) {
 		t.Fatal("cold-slot prediction must not be joinable")
 	}
 }
+
+func TestTTFTCalibrationSkipsVisionPredictions(t *testing.T) {
+	resetCalibrator(t)
+	reg := New(testLogger())
+	model := "calib-vision-model"
+	p := calibrationTestProvider(t, reg, "vision-box", model, 100, 100)
+	p.mu.Lock()
+	p.Models[0].IsVision = true
+	p.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:             "vision-req",
+		Model:                 model,
+		EstimatedPromptTokens: 200,
+		RequestedMaxTokens:    128,
+		RequiresVision:        true,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("vision reserve failed: %+v", decision)
+	}
+	if _, ok := RecordTTFTObservation(req.RequestID, req.Attempt, 2_000); ok {
+		t.Fatal("vision prediction must not train the text-prefill calibrator")
+	}
+	selected.RemovePending(req.RequestID)
+}

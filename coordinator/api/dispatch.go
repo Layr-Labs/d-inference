@@ -1213,13 +1213,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
-			MinDecodeTPS:           d.s.minDecodeTPS,
-			AcceptedCh:             make(chan struct{}, 1),
-			ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
-			CompleteCh:             make(chan protocol.UsageInfo, 1),
-			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-			Timing:                 d.timing,
+			MaxTTFTMs: queueMaxTTFTMs(
+				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
+			MinDecodeTPS: d.s.minDecodeTPS,
+			AcceptedCh:   make(chan struct{}, 1),
+			ChunkCh:      make(chan registry.ProviderChunk, chunkBufferSize),
+			CompleteCh:   make(chan protocol.UsageInfo, 1),
+			ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
+			Timing:       d.timing,
 		}
 		d.configurePending(queuePR)
 		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() {

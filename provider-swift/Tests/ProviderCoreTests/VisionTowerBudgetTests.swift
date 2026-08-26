@@ -26,6 +26,7 @@
 import Foundation
 import MLX
 import MLXLMCommon
+import MLXVLM
 import Testing
 
 @testable import ProviderCore
@@ -240,6 +241,27 @@ struct VisionTowerBudgetIncidentTests {
                 < UInt64(1 << 30))
     }
 
+    @Test("Qwen serving video cap bounds the unfused score tensor to 512 MiB")
+    func qwenVideoServingCapBoundsTower() {
+        #expect(Qwen3VLProcessor.maxVideoFrames == 8)
+        #expect(Qwen3VLProcessor.maxVideoFramePixels == 512 * 512)
+
+        // 512² / 16² = 1,024 spatial patches; temporal patch size 2 packs
+        // eight sampled frames into t=4, so N <= 4,096. Qwen's 72-dim heads
+        // take the 16-plane fallback: 4,096² × 16 × 2 bytes = 512 MiB.
+        let patches = (Qwen3VLProcessor.maxVideoFrames / 2)
+            * (Qwen3VLProcessor.maxVideoFramePixels / (16 * 16))
+        #expect(patches == 4_096)
+        #expect(
+            VisionTowerBudget.attentionBytes(
+                patches: patches, bytesPerSquaredPatch: 16 * 2)
+                == UInt64(512 * 1024 * 1024))
+        #expect(
+            VisionTowerBudget.admit(
+                patches: patches, subject: "this video",
+                limits: limits(headFactor: 16)) == .admit)
+    }
+
     @Test("an unknown device limit fails open rather than refusing all media")
     func unknownDeviceLimitFailsOpen() {
         let unknown = limits(maxBufferBytes: 0)
@@ -342,6 +364,16 @@ struct EngineV2VisionPixelRunTests {
     func subjectsAreOperatorReadable() {
         #expect(EngineV2VisionPrefill.imageSubject(index: 0, of: 1) == "this image")
         #expect(EngineV2VisionPrefill.imageSubject(index: 3, of: 6) == "image 4 of 6")
+        #expect(EngineV2VisionPrefill.videoSubject(index: 0, of: 1) == "this video")
+        #expect(EngineV2VisionPrefill.videoSubject(index: 1, of: 3) == "video 2 of 3")
+    }
+
+    @Test("a T>1 video grid is one packed run, not per-frame slices")
+    func videoGridIsOneRun() throws {
+        // T=4, H=2, W=3 → 24 packed rows belonging to ONE video tower call.
+        let runs = try EngineV2VisionPrefill.imagePixelRuns(
+            grids: [THW(4, 2, 3)], totalRows: 24)
+        #expect(runs == [0 ..< 24])
     }
 }
 

@@ -20,6 +20,19 @@
   absolute expiry remains active. It does not rewrite the deadline-mode setting.
 - Provider and coordinator fallback version authorities move together to
   `0.8.12`; there is no new protocol.
+- **Qwen 3.5 video + grounded image captions** — Qwen vision prefill no
+  longer fail-closes video as `invalid media input`. The tower runs one
+  video (full T×H×W grid) at a time and carves the contiguous
+  `<|video_pad|>` run into per-frame spans. Image decode applies EXIF
+  orientation on the full raster (not a JPEG thumbnail). Media requests
+  default `enable_thinking=false` unless the client sets
+  `reasoning.enabled`. Qwen decodes media once and uniformly samples at most
+  8 video frames at no more than 512² pixels each, bounding its unfused
+  vision score tensor to 512 MiB. Coordinator remote-media fetch is bounded
+  by the leftover first-content clock minus an inference reserve, and media
+  bypasses the text-only estimated-TTFT hard gate while retaining the same
+  request-absolute deadline. Its incomplete estimates do not train text TTFT
+  calibration or emit synthetic warm-pool pressure.
 
 Release rationale, limitations, compatibility, and rollout gates:
 [`docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md`](docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md).

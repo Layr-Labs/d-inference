@@ -58,8 +58,9 @@
 //      at every `eval` site (not just on block exit — the handler records and
 //      RETURNS), so an MLX fault becomes a Swift throw the catch arms above
 //      already handle: one failed request, not one dead provider.
-//   2. The Qwen tower is driven ONE IMAGE AT A TIME and each image is admitted
-//      against `MTLDevice.maxBufferLength` first (`VisionTowerBudget`), so the
+//   2. The Qwen tower is driven ONE IMAGE AT A TIME and ONE VIDEO AT A TIME
+//      (full T×H×W grid) and each subject is admitted against
+//      `MTLDevice.maxBufferLength` first (`VisionTowerBudget`), so the
 //      dominant fault — the tower's N×N attention intermediate growing
 //      quadratically in the request's TOTAL patch count — is neither produced
 //      nor left for the allocator to discover. See `EngineV2VisionTowerRun`.
@@ -380,8 +381,10 @@ public enum EngineV2VisionPrefill {
             wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens)
     }
 
-    /// Qwen3-VL: causal visual tokens, M-RoPE position state, and a vision
-    /// tower driven ONE IMAGE AT A TIME (see `qwenPerImageVisionFeatures`).
+    /// Qwen3-VL: causal visual tokens, M-RoPE position state, a vision tower
+    /// driven ONE IMAGE AT A TIME and ONE VIDEO AT A TIME (the full T×H×W
+    /// grid — never one temporal frame; that would break temporal packing).
+    /// See `qwenPerImageVisionFeatures` / `qwenPerVideoVisionFeatures`.
     private static func buildQwenSubmission(
         wrapper: MLXVLM.Qwen35MoE,
         lmInput: LMInput,
@@ -389,48 +392,84 @@ public enum EngineV2VisionPrefill {
         towerLimits: VisionTowerBudget.Limits,
         mlxErrors: MLX.ErrorBox
     ) throws -> PreparedSubmission {
-        // Video remains fail-closed until a real processor/output
-        // representation canary pins temporal packing end-to-end.
-        guard lmInput.video == nil else {
-            throw EngineV2VisionPrefillError.unsupportedMedia(
-                "Qwen35MoE video media is not production-proven")
-        }
         // `noProcessedMedia` means "the processor consumed no media", which
         // maps to a deterministic 400. Pixels WITHOUT grids is a different
         // thing — the processor produced something the seam cannot describe —
         // and must keep its retriable refusal rather than tell the caller
         // their media was attached to the wrong role.
-        guard let image = lmInput.image else {
+        var imageFeatures: [MLXArray] = []
+        var imageGrids: [THW] = []
+        if let image = lmInput.image {
+            guard let grids = image.frames, !grids.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+            }
+            imageGrids = grids
+            imageFeatures = try qwenPerImageVisionFeatures(
+                wrapper: wrapper, pixels: image.pixels, grids: grids,
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
+        }
+
+        var videoFeatures: [MLXArray] = []
+        var videoGrids: [THW] = []
+        if let video = lmInput.video {
+            guard let grids = video.frames, !grids.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+            }
+            videoGrids = grids
+            videoFeatures = try qwenPerVideoVisionFeatures(
+                wrapper: wrapper, pixels: video.pixels, grids: grids,
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
+        }
+        guard !imageFeatures.isEmpty || !videoFeatures.isEmpty else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
-        guard let grids = image.frames, !grids.isEmpty else {
-            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
-        }
-        let imageFeatures = try qwenPerImageVisionFeatures(
-            wrapper: wrapper, pixels: image.pixels, grids: grids,
-            towerLimits: towerLimits, mlxErrors: mlxErrors)
+
         let carved = try carveSpans(
             tokens: promptTokens,
-            imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+            imagePlaceholderId: imageFeatures.isEmpty
+                ? nil : wrapper.imagePlaceholderTokenId,
             imageSpanLengths: imageFeatures.map { $0.dim(1) },
-            videoPlaceholderId: nil,
-            videoSpanLengths: [])
+            videoPlaceholderId: videoFeatures.isEmpty
+                ? nil : wrapper.videoPlaceholderTokenId,
+            videoSpanLengths: videoFeatures.map { $0.dim(1) })
+
+        // Pair prompt-ordered spans back to their features. Qwen packs each
+        // video as ONE contiguous `video_pad` run of T×spatial tokens;
+        // `carveSpans` splits that run into adjacent per-frame spans that
+        // match the temporal slices `visionFeatures` already returns.
+        var embeddings: [MLXArray] = []
+        embeddings.reserveCapacity(carved.count)
+        var imageCursor = 0
+        var videoCursor = 0
+        for entry in carved {
+            switch entry.kind {
+            case .image:
+                embeddings.append(imageFeatures[imageCursor])
+                imageCursor += 1
+            case .video:
+                embeddings.append(videoFeatures[videoCursor])
+                videoCursor += 1
+            }
+        }
+
         let position = try wrapper.positionResult(
             tokens: lmInput.text.tokens,
-            imageGrids: grids,
+            imageGrids: imageGrids.isEmpty ? nil : imageGrids,
+            videoGrids: videoGrids.isEmpty ? nil : videoGrids,
             attentionMask: lmInput.text.mask)
-        // The features are already materialized per image; only the position
-        // ids are still lazy here.
+        // Features are already materialized per image/video; only the
+        // position ids are still lazy here.
         eval(position.promptPositionIds)
         return PreparedSubmission(
             promptTokens: promptTokens,
             spans: carved.map(\.span),
-            embeddings: imageFeatures,
+            embeddings: embeddings,
             attention: .causal,
             positionState: CBv2PositionState(
                 promptPositionIds: position.promptPositionIds,
                 decodeDeltas: position.decodeState.deltas),
-            mediaKind: .image)
+            mediaKind: lmInput.video == nil
+                ? .image : (lmInput.image == nil ? .video : .mixed))
     }
 
     /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
@@ -693,10 +732,9 @@ public enum EngineV2VisionPrefill {
     /// `EngineV2VisionPrefillError` (content-safe by construction — see the
     /// enum doc). Foreign throws (processor/MLX/media errors) carry
     /// `error_class` only: `MediaError.invalidURL`, for one, embeds up to
-    /// 200 chars of the request's URI, and relying on call-site ordering
-    /// (validateMedia running first) to keep such strings out of telemetry
-    /// would be one refactor away from a leak — the same defense-in-depth
-    /// stance as the bridge's engine-error telemetry.
+    /// 200 chars of the request's URI. The same throw now comes directly from
+    /// this preparer's single decode pass, so filtering by class is the
+    /// privacy boundary rather than call-site ordering.
     static func refusalTelemetryEvent(
         modelId: String, mediaKind: EngineV2MediaKind, error: Error
     ) -> TelemetryEvent {

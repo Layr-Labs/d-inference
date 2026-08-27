@@ -58,6 +58,12 @@ func canonicalHeartbeatModelState(
 		freeForLoadGB := *reportedCapacity.FreeForLoadGB
 		capacity.FreeForLoadGB = &freeForLoadGB
 	}
+	if reportedCapacity.FreeForLoadBeforeActivationGB != nil {
+		freeForLoadBeforeActivationGB :=
+			*reportedCapacity.FreeForLoadBeforeActivationGB
+		capacity.FreeForLoadBeforeActivationGB =
+			&freeForLoadBeforeActivationGB
+	}
 	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
 		reportedCapacity.MLXCacheReclaimer)
 	if reportedCapacity.Slots != nil {
@@ -106,6 +112,12 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 	if p.BackendCapacity.FreeForLoadGB != nil {
 		freeForLoadGB := *p.BackendCapacity.FreeForLoadGB
 		capacity.FreeForLoadGB = &freeForLoadGB
+	}
+	if p.BackendCapacity.FreeForLoadBeforeActivationGB != nil {
+		freeForLoadBeforeActivationGB :=
+			*p.BackendCapacity.FreeForLoadBeforeActivationGB
+		capacity.FreeForLoadBeforeActivationGB =
+			&freeForLoadBeforeActivationGB
 	}
 	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
 		p.BackendCapacity.MLXCacheReclaimer)

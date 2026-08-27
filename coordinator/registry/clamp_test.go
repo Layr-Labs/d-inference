@@ -91,20 +91,39 @@ func TestClampBackendCapacityFreeForLoad(t *testing.T) {
 	// heuristic) rather than trusted.
 	for _, bad := range []float64{math.NaN(), math.Inf(1), -3, 1e9} {
 		v := bad
-		bc := &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: &v}
+		base := bad
+		bc := &protocol.BackendCapacity{
+			TotalMemoryGB:                 64,
+			FreeForLoadGB:                 &v,
+			FreeForLoadBeforeActivationGB: &base,
+		}
 		clampBackendCapacity(logger, "p1", bc)
 		if bc.FreeForLoadGB != nil {
 			t.Errorf("FreeForLoadGB=%v should be nilled, got %v", bad, *bc.FreeForLoadGB)
+		}
+		if bc.FreeForLoadBeforeActivationGB != nil {
+			t.Errorf("FreeForLoadBeforeActivationGB=%v should be nilled, got %v",
+				bad, *bc.FreeForLoadBeforeActivationGB)
 		}
 	}
 
 	// A legitimate value (including 0) is preserved.
 	for _, ok := range []float64{0, 9, 128} {
 		v := ok
-		bc := &protocol.BackendCapacity{TotalMemoryGB: 64, FreeForLoadGB: &v}
+		base := ok
+		bc := &protocol.BackendCapacity{
+			TotalMemoryGB:                 64,
+			FreeForLoadGB:                 &v,
+			FreeForLoadBeforeActivationGB: &base,
+		}
 		clampBackendCapacity(logger, "p1", bc)
 		if bc.FreeForLoadGB == nil || *bc.FreeForLoadGB != ok {
 			t.Errorf("FreeForLoadGB=%v should be preserved, got %v", ok, bc.FreeForLoadGB)
+		}
+		if bc.FreeForLoadBeforeActivationGB == nil ||
+			*bc.FreeForLoadBeforeActivationGB != ok {
+			t.Errorf("FreeForLoadBeforeActivationGB=%v should be preserved, got %v",
+				ok, bc.FreeForLoadBeforeActivationGB)
 		}
 	}
 }

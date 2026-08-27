@@ -304,3 +304,39 @@ func TestDesiredModelsMessageMarshal(t *testing.T) {
 		t.Errorf("entry 1 previous_build should be empty, got %q", decoded.Models[1].PreviousBuild)
 	}
 }
+
+func TestBackendCapacityFreeForLoadBeforeActivationSymmetry(t *testing.T) {
+	free := 10.25
+	capacity := BackendCapacity{
+		TotalMemoryGB:                 64,
+		FreeForLoadBeforeActivationGB: &free,
+	}
+	data, err := json.Marshal(capacity)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(
+		data,
+		[]byte(`"free_for_load_before_activation_gb":10.25`),
+	) {
+		t.Fatalf("missing pre-activation load capacity: %s", data)
+	}
+
+	var decoded BackendCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.FreeForLoadBeforeActivationGB == nil ||
+		*decoded.FreeForLoadBeforeActivationGB != free {
+		t.Fatalf("round-trip pre-activation capacity = %v, want %.2f",
+			decoded.FreeForLoadBeforeActivationGB, free)
+	}
+
+	without, err := json.Marshal(BackendCapacity{})
+	if err != nil {
+		t.Fatalf("marshal omitted field: %v", err)
+	}
+	if bytes.Contains(without, []byte("free_for_load_before_activation_gb")) {
+		t.Fatalf("nil pre-activation capacity should be omitted: %s", without)
+	}
+}

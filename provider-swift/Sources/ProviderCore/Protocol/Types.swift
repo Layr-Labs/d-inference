@@ -760,11 +760,17 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// Max additional model-WEIGHT footprint (GB) the provider can load right
     /// now, accounting for the 90% unified cap, OS/operator reserve, real
     /// OS-available memory, eviction of idle resident models, and load headroom
-    /// for the largest activation profile in the advertised model set. A current
-    /// coordinator adds back the baseline/profile difference for a lower-reserve
-    /// candidate using `ModelInfo.activationReserveBytes`; old coordinators stay
-    /// conservatively compatible. 0 means "cannot load anything new right now".
+    /// for the largest activation profile in the advertised model set. Kept as
+    /// the conservative compatibility value for old coordinators. 0 means
+    /// "cannot load anything new right now".
     public var freeForLoadGb: Double
+    /// Max additional model-WEIGHT footprint after the cap, OS/operator
+    /// reserve, outstanding KV, eviction, and the minimum serveable KV floor,
+    /// but BEFORE activation reserve. Current coordinators subtract each
+    /// candidate's reported `ModelInfo.activationReserveBytes` from this
+    /// unclamped base, avoiding information loss when `freeForLoadGb` is zero.
+    /// nil identifies an older provider.
+    public var freeForLoadBeforeActivationGb: Double?
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
@@ -776,6 +782,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
+        case freeForLoadBeforeActivationGb = "free_for_load_before_activation_gb"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
     }
 
@@ -786,6 +793,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
+        freeForLoadBeforeActivationGb: Double? = nil,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil
     ) {
         self.slots = slots
@@ -794,6 +802,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
+        self.freeForLoadBeforeActivationGb = freeForLoadBeforeActivationGb
         self.mlxCacheReclaimer = mlxCacheReclaimer
     }
 
@@ -807,6 +816,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
         self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
+        self.freeForLoadBeforeActivationGb = try c.decodeIfPresent(
+            Double.self, forKey: .freeForLoadBeforeActivationGb)
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
     }

@@ -1089,6 +1089,8 @@ import Testing
             gpuMemoryPeakGb: 6.5,
             gpuMemoryCacheGb: 1.5,
             totalMemoryGb: 36,
+            freeForLoadGb: 4.5,
+            freeForLoadBeforeActivationGb: 10,
             mlxCacheReclaimer: MLXCacheReclaimerTelemetry(
                 cacheLimitBytes: 8 * 1024 * 1024 * 1024,
                 sweepSignals: 12,
@@ -1109,6 +1111,8 @@ import Testing
     #expect(capacity?["gpu_memory_peak_gb"] as? Double == 6.5)
     #expect(capacity?["gpu_memory_cache_gb"] as? Double == 1.5)
     #expect(capacity?["total_memory_gb"] as? Double == 36)
+    #expect(capacity?["free_for_load_gb"] as? Double == 4.5)
+    #expect(capacity?["free_for_load_before_activation_gb"] as? Double == 10)
     #expect((reclaimer?["cache_limit_bytes"] as? NSNumber)?.uint64Value == UInt64(8) * 1024 * 1024 * 1024)
     #expect(reclaimer?["sweep_signals"] as? Int == 12)
     #expect(reclaimer?["reclaims"] as? Int == 4)

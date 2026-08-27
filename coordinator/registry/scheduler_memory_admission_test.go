@@ -183,6 +183,7 @@ func TestFreeMemoryAdmitsColdLoadUsesReportedFreeForLoad(t *testing.T) {
 
 func TestAdjustedFreeForLoadUsesCandidateActivationProfile(t *testing.T) {
 	reportedFree := 8.0
+	beforeActivation := 13.5
 	const (
 		measuredReserve     = uint64(3 * bytesPerGB)
 		conservativeReserve = uint64(11 * bytesPerGB / 2)
@@ -193,7 +194,10 @@ func TestAdjustedFreeForLoadUsesCandidateActivationProfile(t *testing.T) {
 			{ID: "gpt-oss", ActivationReserveBytes: measuredReserve},
 			{ID: "gemma", ActivationReserveBytes: conservativeReserve},
 		},
-		BackendCapacity: &protocol.BackendCapacity{FreeForLoadGB: &reportedFree},
+		BackendCapacity: &protocol.BackendCapacity{
+			FreeForLoadGB:                 &reportedFree,
+			FreeForLoadBeforeActivationGB: &beforeActivation,
+		},
 	}
 
 	gptFree := adjustedFreeForLoadGBLocked(p, "gpt-oss")
@@ -214,13 +218,57 @@ func TestAdjustedFreeForLoadUsesCandidateActivationProfile(t *testing.T) {
 			unknownFree, reportedFree)
 	}
 
-	// A provider advertising only the lower profile computes its scalar against
-	// that same profile; there is no phantom add-back.
+	// The provider-reported pre-activation basis is authoritative even when the
+	// advertised inventory changes before the next capacity heartbeat.
 	p.Models = p.Models[:1]
 	onlyMeasured := adjustedFreeForLoadGBLocked(p, "gpt-oss")
-	if onlyMeasured == nil || *onlyMeasured != reportedFree {
-		t.Fatalf("single-profile adjusted free-for-load = %v, want %.1f GiB",
-			onlyMeasured, reportedFree)
+	if onlyMeasured == nil || *onlyMeasured != 10.5 {
+		t.Fatalf("single-profile adjusted free-for-load = %v, want 10.5 GiB",
+			onlyMeasured)
+	}
+}
+
+func TestAdjustedFreeForLoadPreservesUnclampedCapacity(t *testing.T) {
+	reportedZero := 0.0
+	beforeActivation := 4.0
+	p := &Provider{
+		Version: "0.8.0",
+		Models: []protocol.ModelInfo{
+			{ID: "gpt-oss", ActivationReserveBytes: 3 * bytesPerGB},
+		},
+		BackendCapacity: &protocol.BackendCapacity{
+			FreeForLoadGB:                 &reportedZero,
+			FreeForLoadBeforeActivationGB: &beforeActivation,
+		},
+	}
+
+	got := adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if got == nil || *got != 1 {
+		t.Fatalf("adjusted free-for-load = %v, want 1 GiB", got)
+	}
+
+	beforeActivation = 2.0
+	got = adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if got == nil || *got != 0 {
+		t.Fatalf("negative adjusted free-for-load = %v, want clamped 0", got)
+	}
+}
+
+func TestAdjustedFreeForLoadLeavesLegacyScalarUnchanged(t *testing.T) {
+	reportedFree := 8.0
+	p := &Provider{
+		Version: "0.8.0",
+		Models: []protocol.ModelInfo{
+			{ID: "gpt-oss", ActivationReserveBytes: 3 * bytesPerGB},
+			{ID: "gemma", ActivationReserveBytes: 11 * bytesPerGB / 2},
+		},
+		BackendCapacity: &protocol.BackendCapacity{FreeForLoadGB: &reportedFree},
+	}
+
+	got := adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if got == nil || *got != reportedFree {
+		t.Fatalf("legacy adjusted free-for-load = %v, want raw %.1f GiB",
+			got, reportedFree)
 	}
 }
 

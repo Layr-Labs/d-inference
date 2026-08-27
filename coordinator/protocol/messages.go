@@ -391,10 +391,15 @@ type BackendCapacity struct {
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom for the largest advertised
 	// activation profile, clamped to real OS-available memory, and treating idle
-	// resident models as evictable. Routing adds back the baseline/profile delta
-	// for lower-reserve candidates. A pointer so a legacy provider that doesn't
-	// report it is nil (→ coordinator falls back to the total-memory heuristic).
+	// resident models as evictable. This is the conservative compatibility value
+	// for older coordinators. A pointer so a legacy provider that doesn't report
+	// it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
+	// FreeForLoadBeforeActivationGB is the same live loadable-weight basis after
+	// the minimum KV floor but before activation reserve. Current coordinators
+	// subtract the candidate's exact reported reserve from this unclamped value;
+	// nil identifies providers that only report the compatibility scalar.
+	FreeForLoadBeforeActivationGB *float64 `json:"free_for_load_before_activation_gb,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
 }

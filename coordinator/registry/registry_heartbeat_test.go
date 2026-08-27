@@ -296,6 +296,7 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	knownKVBackend := KVBackendPaged
 	unknownKVBackend := KVBackendContiguous
 	freeForLoadGB := 24.0
+	freeForLoadBeforeActivationGB := 29.5
 	reclaimerTelemetry := &protocol.MLXCacheReclaimerTelemetry{
 		CacheLimitBytes: 8 << 30,
 		SweepSignals:    12,
@@ -307,8 +308,9 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 		ActiveModel: &activeModel,
 		WarmModels:  []string{knownModel, leakSentinel, knownModel},
 		BackendCapacity: &protocol.BackendCapacity{
-			FreeForLoadGB:     &freeForLoadGB,
-			MLXCacheReclaimer: reclaimerTelemetry,
+			FreeForLoadGB:                 &freeForLoadGB,
+			FreeForLoadBeforeActivationGB: &freeForLoadBeforeActivationGB,
+			MLXCacheReclaimer:             reclaimerTelemetry,
 			Slots: []protocol.BackendSlotCapacity{
 				{
 					Model:             leakSentinel,
@@ -390,6 +392,8 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	hb.BackendCapacity.Slots[1].Model = leakSentinel
 	snapshot.Slots[0].Model = leakSentinel
 	freeForLoadGB = 1
+	freeForLoadBeforeActivationGB = 2
+	*snapshot.FreeForLoadBeforeActivationGB = 3
 	reclaimerTelemetry.Reclaims = 99
 	snapshot.MLXCacheReclaimer.Reclaims = 88
 	p.mu.Lock()
@@ -399,6 +403,9 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	}
 	if got := *p.BackendCapacity.FreeForLoadGB; got != 24 {
 		t.Fatalf("retained free_for_load_gb = %v after decoded value changed, want 24", got)
+	}
+	if got := *p.BackendCapacity.FreeForLoadBeforeActivationGB; got != 29.5 {
+		t.Fatalf("retained free_for_load_before_activation_gb = %v after decoded value changed, want 29.5", got)
 	}
 	if got := p.BackendCapacity.MLXCacheReclaimer.Reclaims; got != 4 {
 		t.Fatalf("retained mlx cache reclaims = %d after source/snapshot mutation, want 4", got)

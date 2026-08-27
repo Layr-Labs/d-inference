@@ -1329,27 +1329,26 @@ func advertisedActivationReserveBytesLocked(p *Provider, model string) uint64 {
 	return 0
 }
 
-// adjustedFreeForLoadGBLocked converts the provider's conservative scalar
-// free_for_load_gb into the exact limit for model. Providers compute the scalar
-// with the largest resolved activation reserve in their advertised set so old
-// coordinators remain safe. Current coordinators add back that baseline's delta
-// for a lower-reserve measured profile. Caller holds p.mu.
+// adjustedFreeForLoadGBLocked returns the exact loadable model-weight limit for
+// model. Current providers report an unclamped pre-activation basis, after every
+// other live load constraint including the minimum KV floor; subtracting the
+// candidate's provider-resolved reserve reproduces the load gate even when the
+// compatibility scalar was clamped to zero. Older providers omit the basis, so
+// their conservative scalar is used unchanged. Caller holds p.mu.
 func adjustedFreeForLoadGBLocked(p *Provider, model string) *float64 {
-	if p.BackendCapacity == nil || p.BackendCapacity.FreeForLoadGB == nil {
+	if p.BackendCapacity == nil {
 		return nil
+	}
+	if p.BackendCapacity.FreeForLoadBeforeActivationGB == nil {
+		return p.BackendCapacity.FreeForLoadGB
 	}
 	candidateReserve := servabilityActivationReserveBytes(
 		advertisedActivationReserveBytesLocked(p, model), p.Version)
-	baselineReserve := candidateReserve
-	for _, advertised := range p.Models {
-		reserve := servabilityActivationReserveBytes(
-			advertised.ActivationReserveBytes, p.Version)
-		if reserve > baselineReserve {
-			baselineReserve = reserve
-		}
+	adjusted := *p.BackendCapacity.FreeForLoadBeforeActivationGB -
+		float64(candidateReserve)/float64(bytesPerGB)
+	if adjusted < 0 {
+		adjusted = 0
 	}
-	adjusted := *p.BackendCapacity.FreeForLoadGB +
-		float64(baselineReserve-candidateReserve)/float64(bytesPerGB)
 	return &adjusted
 }
 

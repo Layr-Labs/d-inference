@@ -112,12 +112,12 @@ extension ProviderLoop {
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
 
-        // Max model weight we could load right now (single source of truth for
-        // the coordinator's cold-load routing). The scalar is based on the
-        // largest advertised activation profile; the coordinator uses each
-        // model's reported reserve to add back any candidate-specific delta.
-        // This keeps old coordinators conservative while making current routing
-        // agree with the candidate's real load gate.
+        // Max model weight we could load right now. The compatibility scalar
+        // subtracts the largest advertised activation profile so old
+        // coordinators remain conservative. The second scalar stops before
+        // activation (but after the minimum KV floor), allowing current
+        // coordinators to subtract the candidate's exact reported reserve
+        // without trying to invert a value already clamped at zero.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
         // models on a cold load — BUT ONLY when nothing is being served. MLX
@@ -139,14 +139,17 @@ extension ProviderLoop {
         // streams), exactly as the real load gate (availableMemoryGb) does, so the
         // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
         let outstandingKV = await kvBudget.outstandingReservedBytes()
-        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
+        let freeForLoadBeforeActivationGb = ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
-            headroomGb: Self.loadHeadroomGb(
-                activationReserveBytes: advertisedActivationReserveBytes()),
+            headroomGb: Double(UnifiedMemoryCap.minimumLoadKVBytes) / gbDivisor,
             outstandingReservationBytes: outstandingKV)
+        let freeForLoadGb = max(
+            0,
+            freeForLoadBeforeActivationGb
+                - Double(advertisedActivationReserveBytes()) / gbDivisor)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -164,6 +167,7 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
+            freeForLoadBeforeActivationGb: freeForLoadBeforeActivationGb,
             mlxCacheReclaimer: reclaimerTelemetry
         )
         state.inferenceActive = totalActive > 0

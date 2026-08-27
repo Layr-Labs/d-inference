@@ -3015,6 +3015,14 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			bc.FreeForLoadGB = nil
 		}
 	}
+	if bc.FreeForLoadBeforeActivationGB != nil {
+		v := *bc.FreeForLoadBeforeActivationGB
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > maxMemoryGBFloat {
+			logger.Warn("provider free_for_load_before_activation_gb out of range; ignoring",
+				"provider_id", providerID, "reported", v)
+			bc.FreeForLoadBeforeActivationGB = nil
+		}
+	}
 	for i := range bc.Slots {
 		s := &bc.Slots[i]
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {

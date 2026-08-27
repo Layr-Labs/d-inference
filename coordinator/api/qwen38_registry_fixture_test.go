@@ -48,9 +48,19 @@ func qwen38RegistryFixture() *store.ModelRegistryEntry {
 			"source_revision":        qwen38TargetRev,
 			"mtp_artifact_id":        qwen38MTPModel,
 			"mtp_source_revision":    qwen38MTPRev,
-			"runtime_compatibility":  "provider>=0.8.11",
-			"openrouter_slug":        qwen38PublicAlias,
-			"openrouter_is_ready":    true,
+			"spec_dec": map[string]any{
+				"r2_prefix":          "v2-specdec/qwen3.8-27b-mtp-4bit/2026-08-24-r1",
+				"manifest_sha256":    testHash,
+				"total_size_bytes":   int64(536_870_912),
+				"file_count":         2,
+				"max_file_count":     2,
+				"allowed_file_types": []string{"config", "weight"},
+				"config_sha256":      testHash,
+				"revision":           qwen38MTPRev,
+			},
+			"runtime_compatibility": "provider>=0.8.11",
+			"openrouter_slug":       qwen38PublicAlias,
+			"openrouter_is_ready":   true,
 		},
 		CreatedAt: time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC),
 	}
@@ -171,6 +181,14 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		metadata, _ := model["metadata"].(map[string]any)
 		if metadata["source_revision"] != qwen38TargetRev || metadata["mtp_artifact_id"] != qwen38MTPModel || metadata["mtp_source_revision"] != qwen38MTPRev {
 			t.Fatalf("artifact metadata = %#v", metadata)
+		}
+		specDec, ok := metadata["spec_dec"].(map[string]any)
+		if !ok || specDec["r2_prefix"] != "v2-specdec/qwen3.8-27b-mtp-4bit/2026-08-24-r1" ||
+			specDec["manifest_sha256"] != testHash || specDec["config_sha256"] != testHash ||
+			specDec["total_size_bytes"] != float64(536_870_912) || specDec["file_count"] != float64(2) ||
+			specDec["max_file_count"] != float64(2) || specDec["revision"] != qwen38MTPRev ||
+			!reflect.DeepEqual(specDec["allowed_file_types"], []any{"config", "weight"}) {
+			t.Fatalf("spec_dec metadata = %#v", metadata["spec_dec"])
 		}
 	})
 

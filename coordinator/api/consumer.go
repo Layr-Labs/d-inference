@@ -4066,6 +4066,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	genericMaxOutput := defaultMaxOutputTokens
 	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		// Keep generic endpoints aligned with chat completions: parser defaults
+		// are catalog-owned request semantics, not provider inference guesses.
+		injectModelRuntimeDefaults(parsed, rec.RuntimeParameters)
 		if rec.MaxOutputLength > 0 {
 			genericMaxOutput = rec.MaxOutputLength
 		}

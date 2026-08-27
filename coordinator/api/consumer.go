@@ -2100,7 +2100,6 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		if firstChunk == "" {
 			continue
 		}
-		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
 		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
 		}
@@ -2110,6 +2109,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				continue
 			}
 		}
+		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
 		// A usage-only first chunk (no content/reasoning deltas streamed before it)
 		// is still terminal usage — hold it so the reasoning breakdown is spliced in
 		// at stream end instead of being emitted raw without reasoning_tokens.
@@ -2242,7 +2242,6 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 					sawResponsesAPI = true
 				}
 			}
-			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
 			// Swallow provider-owned [DONE] events, including SSE groups decorated
 			// with event/id/comment fields, while retaining any sibling event. The
 			// coordinator appends terminal events of its own (held usage with
@@ -2257,6 +2256,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 					continue
 				}
 			}
+			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
 			// emit it without reasoning_tokens.
@@ -3242,13 +3242,17 @@ func isSSEDoneEventGroup(group string) bool {
 	if len(data) > 0 {
 		return strings.TrimSpace(strings.Join(data, "\n")) == "[DONE]"
 	}
-	return len(lines) == 1 && strings.TrimSpace(group) == "[DONE]"
+	return len(lines) == 1 &&
+		strings.TrimSpace(strings.TrimPrefix(group, "\uFEFF")) == "[DONE]"
 }
 
 // stripSSEDoneEvents removes provider-owned SSE terminators while preserving
 // sibling events in the same chunk. The coordinator owns stream termination so
 // authoritative usage, signature, and metadata events always precede [DONE].
 func stripSSEDoneEvents(chunk string) (string, bool) {
+	if !strings.Contains(chunk, "[DONE]") {
+		return chunk, false
+	}
 	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
 	groups := strings.Split(normalized, "\n\n")
 	kept := make([]string, 0, len(groups))

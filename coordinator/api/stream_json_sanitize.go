@@ -3,6 +3,7 @@ package api
 import "strings"
 
 func sseDataValue(line string) (string, bool) {
+	line = strings.TrimPrefix(line, "\uFEFF")
 	colon := strings.IndexByte(line, ':')
 	field, value := line, ""
 	if colon >= 0 {

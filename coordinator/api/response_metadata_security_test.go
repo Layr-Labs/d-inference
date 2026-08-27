@@ -28,6 +28,10 @@ func TestStripProviderChatMetadata(t *testing.T) {
 			input: `data: {"choices":[],"metadata":{"provider_id":"forged"},"sentinel":1e400}`,
 		},
 		{
+			name:  "SSE byte-order mark",
+			input: "\uFEFF" + `data: {"choices":[],"metadata":{"provider_id":"forged"}}`,
+		},
+		{
 			name: "multiline SSE event",
 			input: ": keepalive\nid: event-1\n" +
 				"data: {\"choices\":[],\n" +

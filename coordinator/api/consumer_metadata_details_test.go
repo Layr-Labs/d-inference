@@ -321,7 +321,8 @@ func TestStreamingChatSwallowsDecoratedProviderDone(t *testing.T) {
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 	}
 	pr.ChunkCh <- registry.ProviderChunk{
-		Data: "event: done\nid: provider-terminal\n: provider comment\ndata: [DONE]\n\n",
+		Data: "event: done\nid: provider-terminal\n: provider comment\ndata: [DONE]\n\n" +
+			`data: {"id":"provider-extra","object":"chat.completion.chunk","choices":[],"\u006detadata":{"provider_id":"forged"}}` + "\n\n",
 	}
 	close(pr.ChunkCh)
 
@@ -346,6 +347,9 @@ func TestStreamingChatSwallowsDecoratedProviderDone(t *testing.T) {
 	if strings.Contains(body, "provider-terminal") || strings.Contains(body, "provider comment") {
 		t.Fatalf("decorated provider terminator was forwarded:\n%s", body)
 	}
+	if strings.Contains(body, "forged") {
+		t.Fatalf("provider metadata in sibling event was forwarded:\n%s", body)
+	}
 }
 
 func TestStripSSEDoneEventsPreservesSiblingEvents(t *testing.T) {
@@ -362,6 +366,11 @@ func TestStripSSEDoneEventsPreservesSiblingEvents(t *testing.T) {
 	}
 	if !strings.Contains(got, `"content":"hi"`) {
 		t.Fatalf("sibling content event was removed: %s", got)
+	}
+
+	got, removed = stripSSEDoneEvents("\uFEFFdata: [DONE]\n\n")
+	if !removed || strings.TrimSpace(got) != "" {
+		t.Fatalf("BOM-prefixed provider terminator survived: %q", got)
 	}
 }
 

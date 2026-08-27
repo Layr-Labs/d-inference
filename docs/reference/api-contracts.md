@@ -55,6 +55,7 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
+| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the same consumer-safe provider/attestation/timing fields already returned as `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` headers. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The flag is stripped before the body is sealed to the provider. Default `false`. |
 
 The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).
 
@@ -96,13 +97,36 @@ Rollback is fail closed: first stop admitting new constrained traffic or point t
     "completion_tokens_details": { "reasoning_tokens": 0 }
   },
   "se_signature": "...",
-  "response_hash": "..."
+  "response_hash": "...",
+  "metadata": {
+    "provider_id": "...",
+    "provider_attested": true,
+    "provider_trust_level": "hardware",
+    "provider_encrypted": true,
+    "provider_chip": "Apple M4 Max",
+    "provider_machine_model": "Mac16,7",
+    "provider_secure_enclave": true,
+    "provider_mda_verified": true,
+    "attestation_se_public_key": "...",
+    "job_id": "...",
+    "timing": {
+      "parse_us": 120,
+      "reserve_us": 80,
+      "route_us": 400,
+      "queue_us": 0,
+      "encrypt_us": 50,
+      "dispatch_us": 30,
+      "provider_us": 180000
+    }
+  }
 }
 ```
 
+`metadata` is omitted unless the caller opted in with `metadata_details=true` or `X-Darkbloom-Metadata-Details: true`. It never includes device serials.
+
 #### Response (streaming)
 
-`Content-Type: text/event-stream`. Each event is a JSON `chat.completion.chunk`. The coordinator appends a single `data: [DONE]` terminator and may splice in `se_signature` / `response_hash` on the terminal usage chunk. See [`consumer.go:1614-1865`](../../coordinator/api/consumer.go).
+`Content-Type: text/event-stream`. Each event is a JSON `chat.completion.chunk`. The coordinator appends a single `data: [DONE]` terminator and may splice in `se_signature` / `response_hash` (and, when opted in, `metadata`) on the terminal usage chunk. See [`consumer.go`](../../coordinator/api/consumer.go) and [`response_metadata.go`](../../coordinator/api/response_metadata.go).
 
 ### `POST /v1/responses`
 
@@ -230,6 +254,7 @@ If the consumer does not set a max-output bound, the coordinator injects one so 
 | `X-Darkbloom-Route` | `self` requests self-routing to an owned provider (free); see [`self-route`](../provider/self-route.md) |
 | `X-Inference-Job-ID` | Provider-side job UUID for the winning attempt |
 | `X-Timing` | Per-request latency decomposition (when emitted by middleware) |
+| `X-Darkbloom-Metadata-Details` | `true` asks `POST /v1/chat/completions` to copy the consumer-safe `X-Provider-*` / `X-Timing` details into the JSON `metadata` object. Equivalent body flag: `metadata_details`. |
 
 ## Error format
 

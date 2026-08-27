@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced to consumers on every response via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`):
+Providers carry one of three trust levels, surfaced to consumers on every response via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). `POST /v1/chat/completions` can copy those same consumer-safe fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`):
 
 | Level | Verification |
 |-------|--------------|

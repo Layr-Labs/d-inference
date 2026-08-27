@@ -880,6 +880,7 @@ func (s *Server) dispatchOneProvider(
 		PreferOwner:            policy.prefer,
 		OwnerAccountID:         policy.ownerAccountID,
 		FreeSelfRoute:          policy.enabled,
+		MetadataDetails:        metadataDetailsFromRequest(r),
 		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
@@ -1546,7 +1547,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var allowedProviderSerials []string
-	if stripProviderRoutingFields(parsed) {
+	stripped := stripProviderRoutingFields(parsed)
+	if applyMetadataDetailsRequest(r, parsed) {
+		stripped = true
+	}
+	if stripped {
 		rawBody, _ = marshalForwardBody(parsed)
 	}
 
@@ -2184,24 +2189,30 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 							pendingUsage["se_signature"] = pr.SESignature
 							pendingUsage["response_hash"] = pr.ResponseHash
 						}
+						attachChatCompletionMetadata(pendingUsage, pr)
 						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
 							fmt.Fprintf(w, "%s\n\n", out)
 							flusher.Flush()
 						}
-					} else if pr.SESignature != "" {
-						// No held usage chunk to ride on: emit the signature as a
-						// fully-shaped chat.completion.chunk (id/object/created/model/
-						// choices) so strict decoders parse it; the extra fields are
-						// additive. It precedes the single [DONE] below.
-						sigEvent, _ := json.Marshal(map[string]any{
-							"id":            "chatcmpl-" + pr.RequestID,
-							"object":        "chat.completion.chunk",
-							"created":       time.Now().Unix(),
-							"model":         consumerModel(pr),
-							"choices":       []any{},
-							"se_signature":  pr.SESignature,
-							"response_hash": pr.ResponseHash,
-						})
+					} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
+						// No held usage chunk to ride on: emit the signature and/or
+						// opt-in metadata as a fully-shaped chat.completion.chunk
+						// (id/object/created/model/choices) so strict decoders parse
+						// it; the extra fields are additive. It precedes the single
+						// [DONE] below.
+						event := map[string]any{
+							"id":      "chatcmpl-" + pr.RequestID,
+							"object":  "chat.completion.chunk",
+							"created": time.Now().Unix(),
+							"model":   consumerModel(pr),
+							"choices": []any{},
+						}
+						if pr.SESignature != "" {
+							event["se_signature"] = pr.SESignature
+							event["response_hash"] = pr.ResponseHash
+						}
+						attachChatCompletionMetadata(event, pr)
+						sigEvent, _ := json.Marshal(event)
 						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
 					}
@@ -2539,6 +2550,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 								obj["se_signature"] = pr.SESignature
 								obj["response_hash"] = pr.ResponseHash
 							}
+							if isChatCompletionsConsumer(pr) {
+								attachChatCompletionMetadata(obj, pr)
+							}
 							s.noteInferenceSuccess(pr)
 							writeJSON(w, http.StatusOK, obj)
 							return
@@ -2571,7 +2585,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 						pr.ConsumerEndpoint == messagesEndpoint {
 						resp = buildGenericEndpointResponse(pr, msg, usage)
 					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						applyChatCompletionMetadataToResponse(&chatResp, pr)
+						resp = chatResp
 					}
 					s.noteInferenceSuccess(pr)
 					writeJSON(w, http.StatusOK, resp)
@@ -3968,6 +3984,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	var allowedProviderSerials []string
 	stripProviderRoutingFields(parsed)
+	applyMetadataDetailsRequest(r, parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)

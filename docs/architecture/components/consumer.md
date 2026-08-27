@@ -28,11 +28,9 @@ See [`provider/self-route.md`](../../provider/self-route.md).
 
 ## Response extensions
 
-Responses include:
+Every inference response includes Darkbloom provider headers (`X-Provider-Attested`, `X-Provider-Trust-Level`, `X-Provider-Id`, `X-Provider-Chip`, `X-Provider-Encrypted`, `X-Provider-Secure-Enclave`, `X-Timing`, …). OpenAI-compatible SDKs often hide custom headers, so `POST /v1/chat/completions` can copy the same consumer-safe fields into the JSON body when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The body object is `metadata` (`provider_attested`, `provider_trust_level`, `timing`, …). Device serials are never included.
 
-- `provider_attested` (bool)
-- `provider_trust_level` (string, e.g. `hardware`)
-- `X-Timing` header decomposing per-request latency.
+Implementation: `coordinator/api/response_metadata.go`, attached from `handleChatCompletions` writers in `coordinator/api/consumer.go`.
 
 ## Supported operations
 

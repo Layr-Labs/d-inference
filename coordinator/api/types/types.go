@@ -64,14 +64,48 @@ type CompletionTokensDetails struct {
 
 // ChatCompletionResponse is an OpenAI-compatible chat completion response.
 type ChatCompletionResponse struct {
-	ID           string                 `json:"id"`
-	Object       string                 `json:"object"`
-	Created      int64                  `json:"created"`
-	Model        string                 `json:"model"`
-	Choices      []ChatCompletionChoice `json:"choices"`
-	Usage        ChatCompletionUsage    `json:"usage"`
-	SESignature  string                 `json:"se_signature,omitempty"`
-	ResponseHash string                 `json:"response_hash,omitempty"`
+	ID           string                  `json:"id"`
+	Object       string                  `json:"object"`
+	Created      int64                   `json:"created"`
+	Model        string                  `json:"model"`
+	Choices      []ChatCompletionChoice  `json:"choices"`
+	Usage        ChatCompletionUsage     `json:"usage"`
+	SESignature  string                  `json:"se_signature,omitempty"`
+	ResponseHash string                  `json:"response_hash,omitempty"`
+	Metadata     *ChatCompletionMetadata `json:"metadata,omitempty"`
+}
+
+// RequestTimingDetails is the X-Timing latency decomposition, in microseconds.
+// media_fetch_us is omitted when the request did not fetch remote media.
+type RequestTimingDetails struct {
+	ParseUs      int64 `json:"parse_us"`
+	ReserveUs    int64 `json:"reserve_us"`
+	MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
+	RouteUs      int64 `json:"route_us"`
+	QueueUs      int64 `json:"queue_us"`
+	EncryptUs    int64 `json:"encrypt_us"`
+	DispatchUs   int64 `json:"dispatch_us"`
+	ProviderUs   int64 `json:"provider_us"`
+}
+
+// ChatCompletionMetadata is the opt-in consumer-safe provider, attestation,
+// and timing block returned on POST /v1/chat/completions when the caller sets
+// metadata_details=true (or X-Darkbloom-Metadata-Details: true). These are the
+// same fields already exposed on X-Provider-* / X-Timing / X-Inference-Job-ID
+// headers; the body copy exists because OpenAI-compatible SDKs often hide
+// custom headers. Device serials are never included.
+type ChatCompletionMetadata struct {
+	ProviderID             string                `json:"provider_id,omitempty"`
+	ProviderAttested       bool                  `json:"provider_attested"`
+	ProviderTrustLevel     string                `json:"provider_trust_level,omitempty"`
+	ProviderEncrypted      bool                  `json:"provider_encrypted"`
+	ProviderChip           string                `json:"provider_chip,omitempty"`
+	ProviderMachineModel   string                `json:"provider_machine_model,omitempty"`
+	ProviderSecureEnclave  *bool                 `json:"provider_secure_enclave,omitempty"`
+	ProviderMDAVerified    bool                  `json:"provider_mda_verified"`
+	AttestationSEPublicKey string                `json:"attestation_se_public_key,omitempty"`
+	JobID                  string                `json:"job_id,omitempty"`
+	Timing                 *RequestTimingDetails `json:"timing,omitempty"`
 }
 
 // ── Responses API ────────────────────────────────────────────────────

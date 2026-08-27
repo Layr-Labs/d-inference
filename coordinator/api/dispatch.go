@@ -31,7 +31,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -3366,94 +3365,14 @@ func (d *dispatchState) writeCommittedResponse() {
 		s.registry.RecordLatency(provider.ID, sample)
 	}
 
-	// Write provider attestation headers now that we're committed.
-	provider.Mu().Lock()
-	pubKey := provider.PublicKey
-	attested := provider.Attested
-	trustLevel := provider.TrustLevel
-	attestResult := provider.AttestationResult
-	mdaVerified := provider.MDAVerified
-	provider.Mu().Unlock()
-
-	providerID := provider.ID
-	chipName := provider.Hardware.ChipName
-	machineModel := provider.Hardware.MachineModel
-	if pubKey != "" {
-		w.Header().Set("X-Provider-Encrypted", "true")
-	}
-	if attested {
-		w.Header().Set("X-Provider-Attested", "true")
-	} else {
-		w.Header().Set("X-Provider-Attested", "false")
-	}
-	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
-	w.Header().Set("X-Provider-Id", providerID)
-	w.Header().Set("X-Provider-Chip", chipName)
-	w.Header().Set("X-Provider-Model", machineModel)
-	if attestResult != nil {
-		if attestResult.SecureEnclaveAvailable {
-			w.Header().Set("X-Provider-Secure-Enclave", "true")
-		} else {
-			w.Header().Set("X-Provider-Secure-Enclave", "false")
-		}
-	}
-	if mdaVerified {
-		w.Header().Set("X-Provider-Mda-Verified", "true")
-	}
-	// SE public key for attestation receipt verification.
-	// Consumers can use this to verify SE signatures on response hashes.
-	if attestResult != nil && attestResult.PublicKey != "" {
-		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
-	}
-
-	// Latency decomposition header for observability.
-	if timing := pr.Timing; timing != nil {
-		type timingJSON struct {
-			ParseUs   int64 `json:"parse_us"`
-			ReserveUs int64 `json:"reserve_us"`
-			// MediaFetchUs covers the post-reservation remote media download +
-			// inline step (media_resolve.go); omitted for the (typical) request
-			// that fetched nothing.
-			MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
-			RouteUs      int64 `json:"route_us"`
-			QueueUs      int64 `json:"queue_us"`
-			EncryptUs    int64 `json:"encrypt_us"`
-			DispatchUs   int64 `json:"dispatch_us"`
-			ProviderUs   int64 `json:"provider_us"`
-		}
-		tj := timingJSON{}
-		if !timing.ParsedAt.IsZero() {
-			tj.ParseUs = timing.ParsedAt.Sub(timing.ReceivedAt).Microseconds()
-		}
-		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
-			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
-		}
-		// Media fetch (when present) sits between reserve and route; anchor the
-		// route segment past it so a download never inflates route_us.
-		routeAnchor := timing.ReservedAt
-		if !timing.MediaFetchedAt.IsZero() && !timing.ReservedAt.IsZero() {
-			tj.MediaFetchUs = timing.MediaFetchedAt.Sub(timing.ReservedAt).Microseconds()
-			routeAnchor = timing.MediaFetchedAt
-		}
-		if !timing.RoutedAt.IsZero() && !routeAnchor.IsZero() {
-			tj.RouteUs = timing.RoutedAt.Sub(routeAnchor).Microseconds()
-		}
-		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
-			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()
-		}
-		if !timing.EncryptedAt.IsZero() && !timing.RoutedAt.IsZero() {
-			tj.EncryptUs = timing.EncryptedAt.Sub(timing.RoutedAt).Microseconds()
-		}
-		if !timing.DispatchedAt.IsZero() && !timing.EncryptedAt.IsZero() {
-			tj.DispatchUs = timing.DispatchedAt.Sub(timing.EncryptedAt).Microseconds()
-		}
-		if !timing.FirstChunkAt.IsZero() && !timing.DispatchedAt.IsZero() {
-			tj.ProviderUs = timing.FirstChunkAt.Sub(timing.DispatchedAt).Microseconds()
-		}
-		if tjJSON, err := json.Marshal(tj); err == nil {
-			w.Header().Set("X-Timing", string(tjJSON))
-		}
-	}
+	// Write provider attestation headers now that we're committed. When the
+	// caller opted into metadata_details, snapshot the same consumer-safe
+	// fields onto the pending request so chat-completions writers can attach
+	// them to the JSON body (OpenAI SDKs often hide custom headers).
+	info := collectCommittedProviderInfo(provider)
+	writeCommittedProviderHeaders(w, info)
+	writeTimingHeader(w, pr.Timing)
+	snapshotChatCompletionMetadata(pr, info)
 
 	// On return (disconnect/timeout/completion): free the slot, tell the
 	// provider to stop, and preserve billing for a mid-stream disconnect.

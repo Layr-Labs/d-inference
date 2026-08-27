@@ -218,6 +218,15 @@ type PendingRequest struct {
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
 	SESignature    string    // SE signature over response hash
 	ResponseHash   string    // SHA-256 of response data
+	// MetadataDetails asks chat-completions writers to include the same
+	// consumer-safe provider/attestation/timing details already returned in
+	// X-Provider-* / X-Timing headers in the JSON body. Opt-in so default
+	// OpenAI-compatible responses stay clean.
+	MetadataDetails bool
+	// ResponseMetadata is the JSON object snapshotted at commit when
+	// MetadataDetails is true. Opaque to the registry; writers attach it as
+	// the response "metadata" field. Nil when the caller did not opt in.
+	ResponseMetadata json.RawMessage
 	// Speculative backup telemetry. UsedBackup means a backup race was launched
 	// for this logical request; BackupWon is true only on the serving backup.
 	UsedBackup bool

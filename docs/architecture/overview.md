@@ -78,8 +78,10 @@ Key subsystems:
 Consumers use any OpenAI-compatible client pointed at the coordinator. The
 consumer HTTP path is wrapped as
 `requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
-(`coordinator/api/server.go:1411`). Responses include Darkbloom-specific fields
-`provider_attested` and `provider_trust_level`.
+(`coordinator/api/server.go:1411`). Provider trust and timing are always
+returned as `X-Provider-*` / `X-Timing` headers. `POST /v1/chat/completions`
+also copies those consumer-safe fields into a JSON `metadata` object when the
+caller sets `metadata_details=true` (`coordinator/api/response_metadata.go`).
 
 ## Privacy model
 

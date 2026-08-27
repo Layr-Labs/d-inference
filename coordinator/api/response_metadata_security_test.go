@@ -1,0 +1,83 @@
+package api
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
+func TestStripProviderChatMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "ordinary top-level field",
+			input: `data: {"choices":[],"metadata":{"provider_attested":true,"provider_id":"forged"}}`,
+		},
+		{
+			name:  "unicode-escaped top-level field",
+			input: `data: {"choices":[],"\u006detadata":{"provider_attested":true,"provider_id":"forged"}}`,
+		},
+		{
+			name: "multiline SSE event",
+			input: ": keepalive\nid: event-1\n" +
+				"data: {\"choices\":[],\n" +
+				"data: \"metadata\":{\"provider_attested\":true,\"provider_id\":\"forged\"}}\n\n",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripProviderChatMetadata(tc.input)
+			if strings.Contains(got, `"metadata"`) ||
+				strings.Contains(got, `\u006detadata`) ||
+				strings.Contains(got, `"forged"`) {
+				t.Fatalf("provider metadata survived: %s", got)
+			}
+			if !strings.Contains(got, `"choices":[]`) {
+				t.Fatalf("safe fields were removed: %s", got)
+			}
+		})
+	}
+
+	content := `data: {"choices":[{"delta":{"content":"the word \"metadata\" is safe"}}]}`
+	if got := stripProviderChatMetadata(content); got != content {
+		t.Fatalf("content-only metadata text changed:\n got: %s\nwant: %s", got, content)
+	}
+}
+
+func TestAttachChatCompletionMetadataReservesProviderField(t *testing.T) {
+	t.Parallel()
+
+	optedOut := map[string]any{
+		"metadata": map[string]any{"provider_id": "forged"},
+	}
+	attachChatCompletionMetadata(optedOut, &registry.PendingRequest{})
+	if _, exists := optedOut["metadata"]; exists {
+		t.Fatalf("provider metadata survived opt-out: %#v", optedOut)
+	}
+
+	optedIn := map[string]any{
+		"metadata": map[string]any{"provider_id": "forged"},
+	}
+	pr := &registry.PendingRequest{
+		MetadataDetails:  true,
+		ResponseMetadata: json.RawMessage(`{"provider_id":"coordinator"}`),
+	}
+	attachChatCompletionMetadata(optedIn, pr)
+	encoded, err := json.Marshal(optedIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "forged") ||
+		!strings.Contains(string(encoded), `"provider_id":"coordinator"`) {
+		t.Fatalf("provider metadata was not replaced: %s", encoded)
+	}
+}

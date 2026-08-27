@@ -78,13 +78,18 @@ Key subsystems:
 Consumers use any OpenAI-compatible client pointed at the coordinator. The
 consumer HTTP path is wrapped as
 `requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
-(`coordinator/api/server.go:1411`). Provider trust and timing are always
-returned as `X-Provider-*` / `X-Timing` headers. `POST /v1/chat/completions`
-can copy those header fields into a JSON `metadata` object when the
-caller sets `metadata_details=true`. That object also includes region/country
-GeoIP of the serving provider (`metadata.location`; not a header; no
-city, coordinates, lookup source, or raw IPs)
-(`coordinator/api/response_metadata.go`).
+([`server.go:1411`](../../coordinator/api/server.go#L1411)). After a request
+commits to a provider, the coordinator returns provider trust, timing, and job
+identity as `X-Provider-*`, `X-Timing`, and `X-Inference-Job-ID` headers;
+pre-commit failures do not have provider headers
+([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
+`POST /v1/chat/completions` can copy those fields into a JSON `metadata` object
+when the caller sets `metadata_details=true`
+([`response_metadata.go:51-99`](../../coordinator/api/response_metadata.go#L51-L99),
+[`response_metadata.go:241-267`](../../coordinator/api/response_metadata.go#L241-L267)).
+That object also includes region/country GeoIP of the serving provider; city,
+coordinates, lookup source, and raw IPs are excluded
+([`response_metadata.go:208-239`](../../coordinator/api/response_metadata.go#L208-L239)).
 
 ## Privacy model
 

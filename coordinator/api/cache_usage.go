@@ -146,7 +146,10 @@ func sseDataValue(line string) (string, bool) {
 	return value, field == "data"
 }
 
-func sanitizeStreamCacheEventGroup(group string) (string, bool) {
+func sanitizeStreamJSONEventGroup(
+	group string,
+	sanitizeJSON func(string) (string, bool),
+) (string, bool) {
 	lines := strings.Split(group, "\n")
 	data := make([]string, 0, len(lines))
 	firstData := -1
@@ -160,13 +163,13 @@ func sanitizeStreamCacheEventGroup(group string) (string, bool) {
 	}
 	if firstData < 0 {
 		if len(lines) == 1 {
-			if sanitized, ok := sanitizeStreamCacheDetailsJSON(strings.TrimSpace(group)); ok {
+			if sanitized, ok := sanitizeJSON(strings.TrimSpace(group)); ok {
 				return sanitized, true
 			}
 		}
 		return group, false
 	}
-	sanitized, changed := sanitizeStreamCacheDetailsJSON(strings.Join(data, "\n"))
+	sanitized, changed := sanitizeJSON(strings.Join(data, "\n"))
 	if !changed {
 		return group, false
 	}
@@ -201,7 +204,7 @@ func sanitizeStreamCacheDetails(chunk string) string {
 	groups := strings.Split(normalized, "\n\n")
 	changed := false
 	for i, group := range groups {
-		if sanitized, ok := sanitizeStreamCacheEventGroup(group); ok {
+		if sanitized, ok := sanitizeStreamJSONEventGroup(group, sanitizeStreamCacheDetailsJSON); ok {
 			groups[i] = sanitized
 			changed = true
 		}

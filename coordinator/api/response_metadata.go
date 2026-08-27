@@ -255,7 +255,13 @@ func hasChatCompletionMetadata(pr *registry.PendingRequest) bool {
 }
 
 func attachChatCompletionMetadata(obj map[string]any, pr *registry.PendingRequest) {
-	if obj == nil || !hasChatCompletionMetadata(pr) {
+	if obj == nil {
+		return
+	}
+	// Provider output is untrusted. Reserve this top-level key even when the
+	// caller opted out, then add only the coordinator-authored snapshot.
+	delete(obj, "metadata")
+	if !hasChatCompletionMetadata(pr) {
 		return
 	}
 	obj["metadata"] = json.RawMessage(pr.ResponseMetadata)

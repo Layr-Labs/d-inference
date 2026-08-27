@@ -2100,7 +2100,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
 			continue
 		}
-		firstChunk = sanitizeStreamCacheDetails(firstChunk)
+		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
 		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
 		}
@@ -2147,8 +2147,8 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
-					flusher.Flush()
+					s.writeChatStreamTerminalError(
+						w, flusher, pr, "provider_error", "provider ended without completion")
 					return
 				}
 				// Channel closed — inference complete.
@@ -2201,13 +2201,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 						// (id/object/created/model/choices) so strict decoders parse
 						// it; the extra fields are additive. It precedes the single
 						// [DONE] below.
-						event := map[string]any{
-							"id":      "chatcmpl-" + pr.RequestID,
-							"object":  "chat.completion.chunk",
-							"created": time.Now().Unix(),
-							"model":   consumerModel(pr),
-							"choices": []any{},
-						}
+						event := newChatCompletionExtrasEvent(pr)
 						if pr.SESignature != "" {
 							event["se_signature"] = pr.SESignature
 							event["response_hash"] = pr.ResponseHash
@@ -2242,7 +2236,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 					sawResponsesAPI = true
 				}
 			}
-			chunk = sanitizeStreamCacheDetails(chunk)
+			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
 			// Swallow the provider's own "data: [DONE]" terminator. The
 			// coordinator appends terminal events of its own (held usage with
 			// the reasoning breakdown, SE signature) and then emits exactly ONE
@@ -2287,8 +2281,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
-			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
-			flusher.Flush()
+			s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out")
 			return
 
 		case <-r.Context().Done():
@@ -2307,14 +2300,8 @@ func (s *Server) writeChatStreamProviderError(
 	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 	s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 	s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-	errData, _ := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"message": clientSafeInferenceErrorMessage(errMsg),
-			"type":    "provider_error",
-		},
-	})
-	fmt.Fprintf(w, "data: %s\n\n", errData)
-	flusher.Flush()
+	s.writeChatStreamTerminalError(
+		w, flusher, pr, "provider_error", clientSafeInferenceErrorMessage(errMsg))
 }
 
 func (s *Server) handleResponsesStreamingResponseWithFirstChunk(

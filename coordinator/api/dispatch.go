@@ -3375,6 +3375,7 @@ func (d *dispatchState) writeCommittedResponse() {
 	info := collectCommittedProviderInfo(provider)
 	writeCommittedProviderHeaders(w, info)
 	writeTimingHeader(w, pr.Timing)
+	writeInferenceJobIDHeader(w, pr.RequestID)
 	snapshotChatCompletionMetadata(pr, info)
 
 	// On return (disconnect/timeout/completion): free the slot, tell the

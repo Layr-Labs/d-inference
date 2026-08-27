@@ -245,6 +245,68 @@ func TestStreamingChatMetadataDetailsWithoutUsageChunk(t *testing.T) {
 	}
 }
 
+func TestStreamingChatReservesMetadataOnProviderError(t *testing.T) {
+	tests := []struct {
+		name            string
+		metadataDetails bool
+		responseMeta    json.RawMessage
+	}{
+		{
+			name:            "opted in gets authoritative metadata before error",
+			metadataDetails: true,
+			responseMeta:    json.RawMessage(`{"provider_id":"coordinator","job_id":"job-meta"}`),
+		},
+		{
+			name: "opted out gets no metadata",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			logger := quietLogger()
+			srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+			pr := &registry.PendingRequest{
+				RequestID:        "job-meta",
+				Model:            "gpt-oss-20b",
+				MetadataDetails:  tc.metadataDetails,
+				ResponseMetadata: tc.responseMeta,
+			}
+			firstChunks := []string{
+				`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"metadata":{"provider_id":"forged"}}`,
+			}
+			initialError := protocol.InferenceErrorMessage{Error: "backend failed", StatusCode: http.StatusInternalServerError}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			rec := httptest.NewRecorder()
+			srv.handleStreamingResponseWithFirstChunkAndError(
+				rec, req, pr, firstChunks, &initialError)
+			body := rec.Body.String()
+
+			if strings.Contains(body, "forged") {
+				t.Fatalf("provider metadata leaked into failed stream:\n%s", body)
+			}
+			errorIndex := strings.Index(body, `"error"`)
+			if errorIndex < 0 {
+				t.Fatalf("terminal provider error missing:\n%s", body)
+			}
+			metadataIndex := strings.Index(body, `"metadata"`)
+			if tc.metadataDetails {
+				if metadataIndex < 0 || metadataIndex > errorIndex {
+					t.Fatalf("authoritative metadata must precede the terminal error:\n%s", body)
+				}
+				if strings.Count(body, `"metadata"`) != 1 ||
+					!strings.Contains(body, `"provider_id":"coordinator"`) {
+					t.Fatalf("expected exactly one authoritative metadata event:\n%s", body)
+				}
+			} else if metadataIndex >= 0 {
+				t.Fatalf("opt-out stream included metadata:\n%s", body)
+			}
+		})
+	}
+}
+
 func startChatMetadataTestServer(t *testing.T, model string) (*httptest.Server, *websocket.Conn, string) {
 	t.Helper()
 	logger := quietLogger()
@@ -330,13 +392,14 @@ func serveOneChatCompletion(t *testing.T, ctx context.Context, conn *websocket.C
 		}
 		break
 	}
-	chunk := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}` + "\n\n"
 	if stream {
-		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, chunk)
 		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
+			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}],"metadata":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
+		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"metadata":{"provider_id":"forged-provider"}}`+"\n\n")
 	} else {
-		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, chunk)
+		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+			`data: {"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"meta-model","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"metadata":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
 	}
 	complete := protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,
@@ -368,8 +431,8 @@ func assertChatMetadataMatchesHeaders(t *testing.T, header http.Header, meta map
 	if _, ok := meta["timing"].(map[string]any); !ok {
 		t.Errorf("metadata.timing missing: %#v", meta)
 	}
-	if got, _ := meta["job_id"].(string); got == "" {
-		t.Error("job_id missing")
+	if got, _ := meta["job_id"].(string); got == "" || got != header.Get("X-Inference-Job-ID") {
+		t.Errorf("job_id = %v, header = %q", meta["job_id"], header.Get("X-Inference-Job-ID"))
 	}
 	loc, _ := meta["location"].(map[string]any)
 	if loc == nil {

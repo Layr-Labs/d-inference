@@ -32,14 +32,21 @@ Inference responses expose the provider's Secure Enclave public key and signed
 response receipt without exposing its device serial. Consumers can verify that
 receipt against the published key.
 
-The same consumer-safe provider fields (`provider_id`, `provider_attested`,
-`provider_trust_level`, `attestation_se_public_key`, timing) are always on
-the `X-Provider-*` / `X-Timing` headers. Region/country GeoIP of the serving
-provider is included only in the opt-in JSON `metadata.location` object
-(no city, no coordinates, no raw IP). To read these from an OpenAI SDK that does not
-surface custom headers, send `metadata_details: true` (or
+On a provider-committed response, the consumer-safe provider fields
+(`provider_id`, `provider_attested`, `provider_trust_level`,
+`attestation_se_public_key`, timing) are exposed through `X-Provider-*` /
+`X-Timing` headers. Pre-commit validation, capacity, and availability errors do
+not have a selected provider and therefore do not have provider headers
+([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
+
+Region/country GeoIP of the serving provider is included only in the opt-in
+JSON `metadata.location` object (no city, coordinates, lookup source, or raw
+IP). To read these fields from an OpenAI SDK that does not surface custom
+headers, send `metadata_details: true` (or
 `X-Darkbloom-Metadata-Details: true`) on `POST /v1/chat/completions` and read
-the JSON `metadata` object. See [`api-contracts.md`](../reference/api-contracts.md).
+the JSON `metadata` object
+([`response_metadata.go:208-267`](../../coordinator/api/response_metadata.go#L208-L267)).
+See [`api-contracts.md`](../reference/api-contracts.md).
 
 ## Code-identity attestation
 

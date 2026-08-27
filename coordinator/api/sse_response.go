@@ -2,6 +2,12 @@ package api
 
 import "net/http"
 
+func writeInferenceJobIDHeader(w http.ResponseWriter, jobID string) {
+	if jobID != "" {
+		w.Header().Set("X-Inference-Job-ID", jobID)
+	}
+}
+
 // writeSSEResponseHeader commits the streaming response only after dispatch has
 // received real content. Pre-content paths must retain status-code ownership.
 func writeSSEResponseHeader(w http.ResponseWriter, jobID string) {
@@ -11,8 +17,6 @@ func writeSSEResponseHeader(w http.ResponseWriter, jobID string) {
 	// X-Request-ID is set by the logging middleware to the trace ID. The internal
 	// job UUID can change across retries, so surface it under its own header for
 	// callers correlating to provider-side logs.
-	if jobID != "" {
-		w.Header().Set("X-Inference-Job-ID", jobID)
-	}
+	writeInferenceJobIDHeader(w, jobID)
 	w.WriteHeader(http.StatusOK)
 }

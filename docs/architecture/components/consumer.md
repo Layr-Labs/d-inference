@@ -28,9 +28,31 @@ See [`provider/self-route.md`](../../provider/self-route.md).
 
 ## Response extensions
 
-Every inference response includes Darkbloom provider headers (`X-Provider-Attested`, `X-Provider-Trust-Level`, `X-Provider-Id`, `X-Provider-Chip`, `X-Provider-Encrypted`, `X-Provider-Secure-Enclave`, `X-Timing`, …). OpenAI-compatible SDKs often hide custom headers, so `POST /v1/chat/completions` can copy those header fields into the JSON body when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The body object is `metadata` (`provider_attested`, `provider_trust_level`, `timing`, region/country `location`, …). Device serials, city, coordinates, lookup source, and raw IPs are never included. `location` is not a header.
+Successful, provider-committed inference responses include Darkbloom provider
+headers (`X-Provider-Attested`, `X-Provider-Trust-Level`, `X-Provider-Id`,
+`X-Provider-Chip`, `X-Provider-Encrypted`, `X-Provider-Secure-Enclave`,
+`X-Timing`, …). Validation, capacity, and other pre-commit failures do not have
+a selected provider and therefore do not carry these headers
+([`dispatch.go:3371-3379`](../../../coordinator/api/dispatch.go#L3371-L3379)).
 
-Implementation: `coordinator/api/response_metadata.go`, attached from `handleChatCompletions` writers in `coordinator/api/consumer.go`.
+OpenAI-compatible SDKs often hide custom headers, so
+`POST /v1/chat/completions` can copy the committed fields into the JSON body
+when the caller sets `metadata_details: true` (or
+`X-Darkbloom-Metadata-Details: true`). The coordinator consumes the flag before
+provider encryption
+([`response_metadata.go:51-99`](../../../coordinator/api/response_metadata.go#L51-L99)),
+builds `metadata` with region/country-only `location`
+([`response_metadata.go:208-239`](../../../coordinator/api/response_metadata.go#L208-L239)),
+and reserves that top-level key against provider-supplied values before
+attaching its snapshot
+([`chat_metadata_stream.go:13-50`](../../../coordinator/api/chat_metadata_stream.go#L13-L50),
+[`response_metadata.go:241-267`](../../../coordinator/api/response_metadata.go#L241-L267)).
+Device serials, city, coordinates, lookup source, and raw IPs are never
+included. `location` is body-only, not a header. Successful streams attach
+metadata to the terminal chunk; failed committed streams emit it immediately
+before the terminal in-band error
+([`consumer.go:2185-2216`](../../../coordinator/api/consumer.go#L2185-L2216),
+[`chat_metadata_stream.go:63-87`](../../../coordinator/api/chat_metadata_stream.go#L63-L87)).
 
 ## Supported operations
 

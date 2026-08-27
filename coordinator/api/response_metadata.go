@@ -214,7 +214,7 @@ func buildChatCompletionMetadata(info committedProviderInfo, jobID string, timin
 }
 
 func snapshotChatCompletionMetadata(pr *registry.PendingRequest, info committedProviderInfo) {
-	if pr == nil || !pr.MetadataDetails {
+	if pr == nil || !pr.MetadataDetails || !isChatCompletionsConsumer(pr) {
 		return
 	}
 	meta := buildChatCompletionMetadata(info, pr.RequestID, requestTimingDetails(pr.Timing))

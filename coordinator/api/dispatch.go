@@ -114,6 +114,7 @@ type dispatchState struct {
 	consumerEndpoint       string
 	requestedStopSequences []string
 	stream                 bool
+	metadataDetails        bool
 	policy                 selfRoutePolicy
 	allowedProviderSerials []string
 	cachePlan              registry.CachePlan
@@ -250,6 +251,7 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	pr.ConsumerEndpoint = d.consumerEndpoint
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)
+	pr.MetadataDetails = d.metadataDetails
 }
 
 func (d *dispatchState) excludedProviderIDs() []string {
@@ -1212,6 +1214,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
+			MetadataDetails:        d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
 				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,

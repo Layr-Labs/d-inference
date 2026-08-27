@@ -57,6 +57,44 @@ func TestNonStreamingChatMetadataDetails(t *testing.T) {
 	<-providerDone
 }
 
+func TestNonStreamingChatMetadataDetailsHeader(t *testing.T) {
+	ts, conn, pubKey := startChatMetadataTestServer(t, "meta-model")
+	defer ts.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	providerDone := make(chan struct{})
+	go serveOneChatCompletion(t, ctx, conn, pubKey, providerDone, false)
+
+	chatBody := `{"model":"meta-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	httpReq, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set(metadataDetailsHeader, "true")
+	resp, err := ts.Client().Do(httpReq)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, body)
+	}
+	meta, ok := result["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("header opt-in expected metadata object, body = %s", body)
+	}
+	assertChatMetadataMatchesHeaders(t, resp.Header, meta)
+	<-providerDone
+}
+
 func TestNonStreamingChatOmitsMetadataByDefault(t *testing.T) {
 	ts, conn, pubKey := startChatMetadataTestServer(t, "meta-model")
 	defer ts.Close()

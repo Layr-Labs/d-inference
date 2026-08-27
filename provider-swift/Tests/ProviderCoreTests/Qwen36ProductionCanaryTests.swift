@@ -34,11 +34,11 @@ struct Qwen36ProductionCanaryTests {
             let scheduler = fixture.scheduler(
                 bundle: bundle,
                 vision: EngineV2VisionPlumbing(
-                    prepare: { container, request, reasoningEffort in
+                    prepare: { container, request, templateControls in
                         let prepared = try await EngineV2VisionPrefill.prepare(
                             container: container,
                             request: request,
-                            reasoningEffort: reasoningEffort)
+                            templateControls: templateControls)
                         probe.recordPrepared(spanCount: prepared.spans.count)
                         return prepared
                     },

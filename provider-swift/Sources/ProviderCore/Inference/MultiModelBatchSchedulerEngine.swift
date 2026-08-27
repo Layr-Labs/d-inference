@@ -601,10 +601,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     requested: request.toolCallParser,
                     modelType: modelType
                 )
-                if prepared.mode.requiresInferenceGrammar, format != .gemma {
-                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "inference-enforced Gemma tool_choice requires the gemma tool parser")
-                }
                 try checkFirstContentDeadline()
                 let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                     mode: prepared.mode,

@@ -77,8 +77,8 @@ Key subsystems:
 
 Consumers use any OpenAI-compatible client pointed at the coordinator. The
 consumer HTTP path is wrapped as
-`requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
-([`server.go:1411`](../../coordinator/api/server.go#L1411)). After a request
+`drainGate → requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
+([`server.go:1755-1766`](../../coordinator/api/server.go#L1755-L1766)). After a request
 commits to a provider, the coordinator returns provider trust, timing, and job
 identity as `X-Provider-*`, `X-Timing`, and `X-Inference-Job-ID` headers;
 pre-commit failures do not have provider headers

@@ -2097,12 +2097,18 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	// preamble first, then the committing content chunk), each through the
 	// same per-chunk special-casing the relay loop below applies.
 	for _, firstChunk := range firstChunks {
-		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
+		if firstChunk == "" {
 			continue
 		}
 		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
 		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
+		}
+		if !sawResponsesAPI {
+			firstChunk, _ = stripSSEDoneEvents(firstChunk)
+			if strings.TrimSpace(firstChunk) == "" {
+				continue
+			}
 		}
 		// A usage-only first chunk (no content/reasoning deltas streamed before it)
 		// is still terminal usage — hold it so the reasoning breakdown is spliced in
@@ -2237,15 +2243,19 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				}
 			}
 			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
-			// Swallow the provider's own "data: [DONE]" terminator. The
+			// Swallow provider-owned [DONE] events, including SSE groups decorated
+			// with event/id/comment fields, while retaining any sibling event. The
 			// coordinator appends terminal events of its own (held usage with
 			// the reasoning breakdown, SE signature) and then emits exactly ONE
 			// [DONE] — forwarding the provider's produced a stream shaped
 			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
 			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
 			// signature event).
-			if !sawResponsesAPI && isSSEDoneChunk(chunk) {
-				continue
+			if !sawResponsesAPI {
+				chunk, _ = stripSSEDoneEvents(chunk)
+				if strings.TrimSpace(chunk) == "" {
+					continue
+				}
 			}
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
@@ -3221,18 +3231,39 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 	obj["usage"] = usageObj
 }
 
-// parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
-// + a non-null usage object, carrying the final usage and no content delta) and
-// returns the parsed object. ok is false for any other chunk. Parsing here once
-// lets the caller hold the object and finalize it at stream end without re-parsing.
-// isSSEDoneChunk reports whether a provider stream chunk is the SSE
-// "data: [DONE]" terminator (with or without the data: prefix). The
-// coordinator owns stream termination — provider terminators are swallowed
-// so coordinator-appended events (held usage, SE signature) never trail a
-// [DONE] that SDKs treat as final.
-func isSSEDoneChunk(chunk string) bool {
-	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
-	return line == "[DONE]"
+func isSSEDoneEventGroup(group string) bool {
+	lines := strings.Split(group, "\n")
+	data := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if value, ok := sseDataValue(line); ok {
+			data = append(data, value)
+		}
+	}
+	if len(data) > 0 {
+		return strings.TrimSpace(strings.Join(data, "\n")) == "[DONE]"
+	}
+	return len(lines) == 1 && strings.TrimSpace(group) == "[DONE]"
+}
+
+// stripSSEDoneEvents removes provider-owned SSE terminators while preserving
+// sibling events in the same chunk. The coordinator owns stream termination so
+// authoritative usage, signature, and metadata events always precede [DONE].
+func stripSSEDoneEvents(chunk string) (string, bool) {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
+	groups := strings.Split(normalized, "\n\n")
+	kept := make([]string, 0, len(groups))
+	removed := false
+	for _, group := range groups {
+		if isSSEDoneEventGroup(group) {
+			removed = true
+			continue
+		}
+		kept = append(kept, group)
+	}
+	if !removed {
+		return chunk, false
+	}
+	return strings.Join(kept, "\n\n"), true
 }
 
 // isResponsesAPIEventChunk reports whether a streamed chunk is a Responses API
@@ -3347,6 +3378,10 @@ func isBoilerplateChunk(chunk string) bool {
 	return true
 }
 
+// parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
+// + a non-null usage object, carrying the final usage and no content delta) and
+// returns the parsed object. ok is false for any other chunk. Parsing here once
+// lets the caller hold the object and finalize it at stream end without re-parsing.
 func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Cheap gate: skip the parse for content deltas and usage:null chunks.

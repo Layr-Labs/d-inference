@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,9 +12,17 @@ import (
 )
 
 func stripProviderChatMetadataJSON(raw string) (string, bool) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
 	var obj map[string]any
-	if json.Unmarshal([]byte(raw), &obj) != nil {
-		return raw, false
+	if err := decoder.Decode(&obj); err != nil {
+		// This function is reached only for a frame that contains either the
+		// reserved key or a JSON Unicode escape. Never relay a suspicious frame
+		// that the coordinator cannot parse but a more permissive client might.
+		return "", true
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return "", true
 	}
 	if _, exists := obj["metadata"]; !exists {
 		return raw, false
@@ -21,7 +30,7 @@ func stripProviderChatMetadataJSON(raw string) (string, bool) {
 	delete(obj, "metadata")
 	sanitized, err := marshalForwardBody(obj)
 	if err != nil {
-		return raw, false
+		return "", true
 	}
 	return string(sanitized), true
 }

@@ -307,6 +307,64 @@ func TestStreamingChatReservesMetadataOnProviderError(t *testing.T) {
 	}
 }
 
+func TestStreamingChatSwallowsDecoratedProviderDone(t *testing.T) {
+	t.Parallel()
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	pr := &registry.PendingRequest{
+		RequestID:        "job-meta",
+		Model:            "gpt-oss-20b",
+		MetadataDetails:  true,
+		ResponseMetadata: json.RawMessage(`{"provider_id":"coordinator","job_id":"job-meta"}`),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- registry.ProviderChunk{
+		Data: "event: done\nid: provider-terminal\n: provider comment\ndata: [DONE]\n\n",
+	}
+	close(pr.ChunkCh)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(
+		rec,
+		req,
+		pr,
+		[]string{`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`},
+	)
+	body := rec.Body.String()
+
+	if got := strings.Count(body, "data: [DONE]"); got != 1 {
+		t.Fatalf("expected one coordinator terminator, got %d:\n%s", got, body)
+	}
+	metadataIndex := strings.Index(body, `"metadata"`)
+	doneIndex := strings.Index(body, "data: [DONE]")
+	if metadataIndex < 0 || doneIndex < metadataIndex {
+		t.Fatalf("authoritative metadata must precede [DONE]:\n%s", body)
+	}
+	if strings.Contains(body, "provider-terminal") || strings.Contains(body, "provider comment") {
+		t.Fatalf("decorated provider terminator was forwarded:\n%s", body)
+	}
+}
+
+func TestStripSSEDoneEventsPreservesSiblingEvents(t *testing.T) {
+	t.Parallel()
+	input := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"event: done\nid: provider-terminal\ndata: [DONE]\n\n"
+
+	got, removed := stripSSEDoneEvents(input)
+	if !removed {
+		t.Fatal("expected provider terminator to be removed")
+	}
+	if strings.Contains(got, "[DONE]") || strings.Contains(got, "provider-terminal") {
+		t.Fatalf("provider terminator survived: %s", got)
+	}
+	if !strings.Contains(got, `"content":"hi"`) {
+		t.Fatalf("sibling content event was removed: %s", got)
+	}
+}
+
 func startChatMetadataTestServer(t *testing.T, model string) (*httptest.Server, *websocket.Conn, string) {
 	t.Helper()
 	logger := quietLogger()

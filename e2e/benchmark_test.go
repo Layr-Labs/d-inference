@@ -120,11 +120,31 @@ func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
 	}))
 }
 
-// runBenchmark records full capacity saturation as a valid benchmark outcome.
-// The blocking integration suite owns functional-success guarantees; this
-// approval-gated workflow measures throughput and overload posture. A zero-
-// success cell is valid only when every request received the canonical 429 —
-// transport errors and 5xx responses still fail the run.
+func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
+	t.Helper()
+	for _, modelID := range suite.Config.AllModelIDs() {
+		control := testbed.DefaultRequestConfig()
+		control.ModelID = modelID
+		control.Streaming = false
+		control.TotalRequests = 1
+		control.Concurrency = 1
+		control.MaxTokens = 1
+
+		result := testbed.NewLoadGenerator(suite, control).Run()
+		require.Equal(t, 1, result.SuccessCount,
+			"prewarmed model %s must serve a low-load control before saturation is measurable",
+			modelID)
+		require.Len(t, result.RequestResults, 1)
+		require.Equal(t, http.StatusOK, result.RequestResults[0].StatusCode)
+	}
+}
+
+// runBenchmark records full capacity saturation as a valid benchmark outcome
+// only after every model serves a low-load control request. The blocking
+// integration suite owns broader functional guarantees; this approval-gated
+// workflow measures throughput and overload posture. A zero-success measured
+// cell is valid only when every request received the canonical 429 — transport
+// errors and 5xx responses still fail the run.
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {
 	t.Helper()
 
@@ -137,6 +157,8 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 	t.Logf("[%s] %d providers (%v), %d users, models=%v, requests=%d, concurrency=%d, streaming=%v",
 		name, suiteCfg.TotalProviders(), suiteCfg.ModelSpecs, suiteCfg.NumUsers, suiteCfg.AllModelIDs(),
 		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming)
+
+	requireBenchmarkControls(t, s)
 
 	lg := testbed.NewLoadGenerator(s, reqCfg)
 	result := lg.Run()

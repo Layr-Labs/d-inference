@@ -165,19 +165,44 @@ struct ConfigVersionStampTests {
         }
     }
 
+    @Test("quoted legacy MTP key migrates atomically with concurrency")
+    func migratesQuotedLegacyMTPKeyAtomically() throws {
+        try withTempConfig(
+            """
+            config_version = 1
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            engine_v2_max_concurrent = 8
+            "mtp" = false # quoted legacy key
+            """
+        ) { path in
+            #expect(migrateConfigSchema(in: path).count == 1)
+            let migratedText = try read(path)
+            let migratedConfig = try ConfigManager.load(from: path)
+            #expect(migratedText.hasPrefix("config_version = 3\n"))
+            #expect(migratedText.contains("engine_v2_max_concurrent = 4"))
+            #expect(migratedText.contains("mtp_mode = \"auto\" # quoted legacy key"))
+            #expect(migratedConfig.backend.engineV2MaxConcurrent == 4)
+            #expect(migratedConfig.backend.mtpMode == .auto)
+        }
+    }
+
     @Test("unrewritable legacy MTP forms keep their old stamp and stay automatic")
     func preservesVersionForValidUnrewritableMTPForms() throws {
         let forms = [
             """
-            config_version = 2
+            config_version = 1
             backend.mtp = false
+            backend.engine_v2_max_concurrent = 8
 
             [provider]
             name = "test-provider"
             """,
             """
-            config_version = 2
-            backend = { mtp = false }
+            config_version = 1
+            backend = { mtp = false, engine_v2_max_concurrent = 8 }
 
             [provider]
             name = "test-provider"
@@ -191,12 +216,14 @@ struct ConfigVersionStampTests {
                 let firstConfig = try ConfigManager.load(from: path)
                 #expect(firstText == original)
                 #expect(firstConfig.backend.mtpMode == .auto)
+                #expect(firstConfig.backend.engineV2MaxConcurrent == 4)
 
                 #expect(migrateConfigSchema(in: path).isEmpty)
                 let secondText = try read(path)
                 let secondConfig = try ConfigManager.load(from: path)
                 #expect(secondText == original)
                 #expect(secondConfig.backend.mtpMode == .auto)
+                #expect(secondConfig.backend.engineV2MaxConcurrent == 4)
             }
         }
     }

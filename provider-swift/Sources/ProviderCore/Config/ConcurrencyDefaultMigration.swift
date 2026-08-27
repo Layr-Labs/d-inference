@@ -58,7 +58,7 @@ public enum MTPModeDefaultMigration {
         #"(?m)^[ \t]*\[backend\][ \t]*(?:[#;].*)?$"#
     private static let tableHeaderPattern = #"(?m)^[ \t]*\["#
     private static let legacyAssignmentPattern =
-        #"(?m)^([ \t]*)mtp[ \t]*=[ \t]*(true|false)((?:[ \t]*[#;].*)?)[ \t]*$"#
+        #"(?m)^([ \t]*)(?:mtp|"mtp"|'mtp')[ \t]*=[ \t]*(true|false)((?:[ \t]*[#;].*)?)[ \t]*$"#
 
     /// Normalize an old generated `mtp` line without reserializing the rest of
     /// the operator's TOML (and therefore without dropping comments).
@@ -346,10 +346,10 @@ public enum ConcurrencyDefaultMigration {
         text = MTPModeDefaultMigration.rewriteLegacyAssignment(
             in: text, onDiskVersion: onDiskVersion)
         if requiresMTPNormalization, text == beforeMTPNormalization {
-            // Preserve the old stamp when dotted-key or inline-table syntax is
-            // semantically migratable but cannot be rewritten without
+            // Never persist only part of a schema step under the old stamp.
+            // Dotted-key and inline-table syntax cannot be normalized without
             // reserializing the operator's file and dropping comments.
-            return text == content ? nil : Outcome(text: text, applied: applied)
+            return nil
         }
 
         guard let restamped = rewriteStamp(in: text, to: current) else { return nil }

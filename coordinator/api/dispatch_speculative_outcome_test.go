@@ -18,7 +18,7 @@ func TestPrimaryFailureThenBackupErrorKeepsRecordedAttempts(t *testing.T) {
 		ErrorReason: "primary_failure",
 		StatusCode:  http.StatusInternalServerError,
 	}
-	d.updateSpeculativeFailure(primaryPR, primaryFailure)
+	d.updateSpeculativeFailure(primary, primaryPR, primaryFailure)
 
 	backupPR.ErrorCh <- protocol.InferenceErrorMessage{
 		Error:       "backup failed",
@@ -41,7 +41,7 @@ func TestPrimaryFailureThenBackupTimeoutKeepsRecordedAttempts(t *testing.T) {
 		ErrorReason: "primary_failure",
 		StatusCode:  http.StatusInternalServerError,
 	}
-	d.updateSpeculativeFailure(primaryPR, primaryFailure)
+	d.updateSpeculativeFailure(primary, primaryPR, primaryFailure)
 
 	if got := d.racePrimaryFailedWaitBackup(backup, backupPR, nil); got != outcomeRetry {
 		t.Fatalf("outcome = %v, want retry", got)
@@ -112,7 +112,7 @@ func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
 			// ...then the primary failed: runRace's ErrorCh arm records the
 			// failure and clears d.provider/d.pr/d.requestID before entering
 			// the backup wait.
-			d.updateSpeculativeFailure(primaryPR, protocol.InferenceErrorMessage{
+			d.updateSpeculativeFailure(primary, primaryPR, protocol.InferenceErrorMessage{
 				Error:       "primary failed",
 				ErrorReason: "primary_failure",
 				StatusCode:  http.StatusInternalServerError,
@@ -176,7 +176,7 @@ func TestDeterministicPrimaryVerdictKeepsPrimaryAttribution(t *testing.T) {
 		ErrorReason: "bad_request",
 		StatusCode:  http.StatusBadRequest,
 	}
-	d.updateSpeculativeFailure(primaryPR, verdict)
+	d.updateSpeculativeFailure(primary, primaryPR, verdict)
 	d.latchDeterministicLoser(primary, verdict)
 	if !d.terminalClientError {
 		t.Fatal("the primary's 400 must latch a terminal client verdict")

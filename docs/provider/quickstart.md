@@ -36,7 +36,7 @@ The installer (`scripts/install.sh`):
 5. Adds `~/.darkbloom/bin` to your `PATH` in zsh and bash startup files. If
    this terminal still cannot find `darkbloom`, run
    `export PATH="$HOME/.darkbloom/bin:$PATH"` — `curl | bash` cannot change the
-   parent shell.
+   parent shell (`scripts/install.sh:340-424`).
 6. Provisions the Secure Enclave identity helper (`darkbloom-enclave`).
 7. Offers to install the MDM enrollment profile for hardware-trust attestation.
 

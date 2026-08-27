@@ -18,8 +18,18 @@ fail() {
 
 assert_file_has_path() {
     local file=$1
+    local path_line='export PATH="$HOME/.darkbloom/bin:$PATH"'
     [ -f "$file" ] || fail "expected $file to exist"
-    grep -q '\.darkbloom/bin' "$file" || fail "$file missing ~/.darkbloom/bin PATH entry"
+    grep -Fqx "$path_line" "$file" \
+        || fail "$file missing active ~/.darkbloom/bin PATH export"
+}
+
+assert_fish_has_path() {
+    local file=$1
+    local path_line='set -gx PATH "$HOME/.darkbloom/bin" $PATH'
+    [ -f "$file" ] || fail "expected $file to exist"
+    grep -Fqx "$path_line" "$file" \
+        || fail "$file missing active ~/.darkbloom/bin fish PATH command"
 }
 
 assert_file_missing() {
@@ -32,6 +42,13 @@ assert_single_marker() {
     local count
     count=$(grep -c '# Darkbloom' "$file" || true)
     [ "$count" = "1" ] || fail "$file has $count Darkbloom markers, want 1"
+}
+
+file_mode() {
+    case "$(uname)" in
+        Darwin) stat -f '%Lp' "$1" ;;
+        *) stat -c '%a' "$1" ;;
+    esac
 }
 
 assert_command_on_path() {
@@ -76,11 +93,9 @@ assert_command_on_path "$TWEET" "$TWEET/.bash_profile"
 assert_command_on_path "$TWEET" "$TWEET/.bashrc"
 assert_command_on_path "$TWEET" "$TWEET/.zshrc"
 
-# bash --login reads .bash_profile, not .zshrc
-LOGIN_FOUND=$(HOME="$TWEET" bash --login -c 'command -v darkbloom' \
-    || true)
-[ "$LOGIN_FOUND" = "$TWEET/.darkbloom/bin/darkbloom" ] \
-    || fail "bash --login did not find darkbloom (tweet regression); got ${LOGIN_FOUND:-empty}"
+# The selected login file is sourced directly: host /etc/profile files can
+# overwrite HOME, which makes `bash --login` unsuitable for an isolated test.
+assert_file_missing "$TWEET/.bash_login"
 
 # --- Prefer existing ~/.profile over creating ~/.bash_profile --------------
 PROFILE_HOME="$ROOT/profile"
@@ -101,9 +116,6 @@ run_setup "$BASH_LOGIN"
 assert_file_has_path "$BASH_LOGIN/.bash_login"
 assert_file_missing "$BASH_LOGIN/.bash_profile"
 assert_command_on_path "$BASH_LOGIN" "$BASH_LOGIN/.bash_login"
-LOGIN2=$(HOME="$BASH_LOGIN" bash --login -c 'command -v darkbloom' 2>/dev/null || true)
-[ "$LOGIN2" = "$BASH_LOGIN/.darkbloom/bin/darkbloom" ] \
-    || fail "bash --login with only ~/.bash_login did not find darkbloom; got ${LOGIN2:-empty}"
 
 # --- Existing bash_profile + profile both get patched ----------------------
 BOTH="$ROOT/both"
@@ -130,9 +142,7 @@ mkdir -p "$FISH/.config/fish"
 printf '# fish\n' > "$FISH/.config/fish/config.fish"
 seed_binary "$FISH"
 run_setup "$FISH"
-assert_file_has_path "$FISH/.config/fish/config.fish"
-grep -q 'set -gx PATH' "$FISH/.config/fish/config.fish" \
-    || fail "fish config missing set -gx PATH"
+assert_fish_has_path "$FISH/.config/fish/config.fish"
 
 # --- Idempotent: second run does not duplicate -----------------------------
 run_setup "$TWEET"
@@ -140,7 +150,39 @@ assert_single_marker "$TWEET/.zshrc"
 assert_single_marker "$TWEET/.bashrc"
 assert_single_marker "$TWEET/.bash_profile"
 
-# --- Legacy eigeninference lines are replaced ------------------------------
+# --- A commented mention does not suppress the active managed export -------
+COMMENTED="$ROOT/commented"
+mkdir -p "$COMMENTED"
+cat > "$COMMENTED/.zshrc" <<'RC'
+# export PATH="$HOME/.darkbloom/bin:$PATH"
+# ~/.darkbloom/bin is installed by Darkbloom.
+RC
+seed_binary "$COMMENTED"
+run_setup "$COMMENTED"
+assert_file_has_path "$COMMENTED/.zshrc"
+assert_command_on_path "$COMMENTED" "$COMMENTED/.zshrc"
+[ "$(grep -Fxc 'export PATH="$HOME/.darkbloom/bin:$PATH"' "$COMMENTED/.zshrc")" = "1" ] \
+    || fail "commented PATH mention suppressed or duplicated the managed export"
+
+# --- Existing metadata and symlinked dotfiles are preserved ----------------
+METADATA="$ROOT/metadata"
+DOTFILES="$ROOT/dotfiles"
+mkdir -p "$METADATA" "$DOTFILES"
+printf 'export PRIVATE_SHELL_VALUE=secret\n' > "$DOTFILES/zshrc"
+chmod 0600 "$DOTFILES/zshrc"
+ln -s "$DOTFILES/zshrc" "$METADATA/.zshrc"
+seed_binary "$METADATA"
+run_setup "$METADATA"
+[ -L "$METADATA/.zshrc" ] || fail "installer replaced symlinked ~/.zshrc"
+[ "$(readlink "$METADATA/.zshrc")" = "$DOTFILES/zshrc" ] \
+    || fail "installer changed ~/.zshrc symlink target"
+[ "$(file_mode "$DOTFILES/zshrc")" = "600" ] \
+    || fail "installer changed ~/.zshrc target mode"
+grep -Fqx 'export PRIVATE_SHELL_VALUE=secret' "$DOTFILES/zshrc" \
+    || fail "installer lost existing shell configuration"
+assert_file_has_path "$METADATA/.zshrc"
+
+# --- Legacy lines remain intact; Darkbloom is prepended independently -------
 LEGACY="$ROOT/legacy"
 mkdir -p "$LEGACY"
 cat > "$LEGACY/.zshrc" <<'RC'
@@ -152,10 +194,10 @@ seed_binary "$LEGACY"
 run_setup "$LEGACY"
 assert_file_has_path "$LEGACY/.zshrc"
 assert_single_marker "$LEGACY/.zshrc"
-grep -q '\.eigeninference/bin' "$LEGACY/.zshrc" \
-    && fail "legacy eigeninference PATH survived"
-grep -q 'alias eigeninf' "$LEGACY/.zshrc" \
-    && fail "legacy eigeninf alias survived"
+grep -Fqx 'export PATH="$HOME/.eigeninference/bin:$PATH"' "$LEGACY/.zshrc" \
+    || fail "installer rewrote legacy PATH configuration"
+grep -Fqx 'alias eigeninf=eigeninference' "$LEGACY/.zshrc" \
+    || fail "installer rewrote legacy alias configuration"
 
 # --- Symlink into a writable dir already on PATH ---------------------------
 LINK_HOME="$ROOT/link"

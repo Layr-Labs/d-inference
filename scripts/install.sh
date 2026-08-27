@@ -329,16 +329,6 @@ path_contains() {
     esac
 }
 
-strip_legacy_path_lines() {
-    local file=$1
-    local tmp
-    [ -f "$file" ] || return 0
-    tmp="${file}.darkbloom-path-$$"
-    grep -vE '\.dginf/bin|\.eigeninference/bin|alias eigeninf|alias dginf|# EigenInference$|# Darkbloom$' \
-        "$file" > "$tmp" || true
-    mv "$tmp" "$file"
-}
-
 ensure_trailing_newline() {
     local file=$1
     local last
@@ -349,23 +339,24 @@ ensure_trailing_newline() {
 
 ensure_path_in_file() {
     local file=$1
-    if [ -f "$file" ] && grep -q '\.darkbloom/bin' "$file" 2>/dev/null; then
+    local path_line='export PATH="$HOME/.darkbloom/bin:$PATH"'
+    if [ -f "$file" ] && grep -Fqx "$path_line" "$file" 2>/dev/null; then
         return 0
     fi
-    [ -f "$file" ] && strip_legacy_path_lines "$file"
     mkdir -p "$(dirname "$file")"
     ensure_trailing_newline "$file"
-    printf '\n# Darkbloom\nexport PATH="$HOME/.darkbloom/bin:$PATH"\n' >> "$file"
+    printf '\n# Darkbloom\n%s\n' "$path_line" >> "$file"
 }
 
 ensure_path_in_fish() {
     local file=$1
-    if [ -f "$file" ] && grep -q '\.darkbloom/bin' "$file" 2>/dev/null; then
+    local path_line='set -gx PATH "$HOME/.darkbloom/bin" $PATH'
+    if [ -f "$file" ] && grep -Fqx "$path_line" "$file" 2>/dev/null; then
         return 0
     fi
     mkdir -p "$(dirname "$file")"
     ensure_trailing_newline "$file"
-    printf '\n# Darkbloom\nset -gx PATH "$HOME/.darkbloom/bin" $PATH\n' >> "$file"
+    printf '\n# Darkbloom\n%s\n' "$path_line" >> "$file"
 }
 
 setup_path_symlinks() {

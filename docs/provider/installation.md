@@ -29,7 +29,8 @@ templating. `scripts/install.sh` is the sole editable source;
    `~/.zshrc`, `~/.bashrc`, and the bash login file bash will actually read
    (`~/.bash_profile`, else `~/.bash_login`, else `~/.profile`). `curl | bash`
    cannot change the current terminal; the installer also tries `/usr/local/bin`
-   and Homebrew's bin for a symlink already on `PATH`.
+   and Homebrew's bin for a symlink already on `PATH`
+   (`scripts/install.sh:340-424`).
 8. **Migrates legacy state** — copies tokens/keys from `~/.dginf` or
    `~/.eigeninference` if present.
 9. **Provisions Secure Enclave identity** — runs `darkbloom-enclave info`.

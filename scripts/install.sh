@@ -29,6 +29,7 @@ DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbl
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
+PATH_SYMLINK_DIR=""
 
 fail_install() {
     echo "  ✗ $*" >&2
@@ -315,6 +316,121 @@ install_bundle_atomically() {
     rm -rf "$stage"
 }
 
+# PATH setup. `curl | bash` cannot change the parent shell, so the installer
+# (1) writes ~/.darkbloom/bin into every common startup file a new terminal
+# will actually read, and (2) tries a symlink into a directory already on
+# PATH (/usr/local/bin, Homebrew) so `darkbloom` works in the current
+# session when that write is allowed. Writing only ~/.zshrc left bash login
+# shells (macOS Terminal after chsh/bash) with "command not found".
+path_contains() {
+    case ":$PATH:" in
+        *":$1:"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+strip_legacy_path_lines() {
+    local file=$1
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp="${file}.darkbloom-path-$$"
+    grep -vE '\.dginf/bin|\.eigeninference/bin|alias eigeninf|alias dginf|# EigenInference$|# Darkbloom$' \
+        "$file" > "$tmp" || true
+    mv "$tmp" "$file"
+}
+
+ensure_trailing_newline() {
+    local file=$1
+    local last
+    [ -s "$file" ] || return 0
+    last=$(tail -c 1 "$file" 2>/dev/null || true)
+    [ -z "$last" ] || [ "$last" = $'\n' ] || printf '\n' >> "$file"
+}
+
+ensure_path_in_file() {
+    local file=$1
+    if [ -f "$file" ] && grep -q '\.darkbloom/bin' "$file" 2>/dev/null; then
+        return 0
+    fi
+    [ -f "$file" ] && strip_legacy_path_lines "$file"
+    mkdir -p "$(dirname "$file")"
+    ensure_trailing_newline "$file"
+    printf '\n# Darkbloom\nexport PATH="$HOME/.darkbloom/bin:$PATH"\n' >> "$file"
+}
+
+ensure_path_in_fish() {
+    local file=$1
+    if [ -f "$file" ] && grep -q '\.darkbloom/bin' "$file" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$file")"
+    ensure_trailing_newline "$file"
+    printf '\n# Darkbloom\nset -gx PATH "$HOME/.darkbloom/bin" $PATH\n' >> "$file"
+}
+
+setup_path_symlinks() {
+    PATH_SYMLINK_DIR=""
+    local candidates dest rest
+    if [ -n "${DARKBLOOM_PATH_LINK_CANDIDATES+x}" ]; then
+        candidates="$DARKBLOOM_PATH_LINK_CANDIDATES"
+    else
+        candidates="/usr/local/bin:/opt/homebrew/bin"
+    fi
+    rest="$candidates"
+    while [ -n "$rest" ]; do
+        dest="${rest%%:*}"
+        if [ "$rest" = "$dest" ]; then
+            rest=""
+        else
+            rest="${rest#*:}"
+        fi
+        [ -n "$dest" ] || continue
+        mkdir -p "$dest" 2>/dev/null || true
+        if [ -d "$dest" ] && [ -w "$dest" ] \
+            && ln -sfn "$BIN_DIR/darkbloom" "$dest/darkbloom" 2>/dev/null
+        then
+            if path_contains "$dest"; then
+                PATH_SYMLINK_DIR="$dest"
+                return 0
+            fi
+        fi
+    done
+}
+
+setup_shell_path() {
+    PATH_SYMLINK_DIR=""
+    mkdir -p "$BIN_DIR"
+    setup_path_symlinks
+
+    # zsh is the macOS default. Always create ~/.zshrc so a stock Terminal
+    # window finds darkbloom after install.
+    ensure_path_in_file "$HOME/.zshrc"
+    [ -f "$HOME/.zprofile" ] && ensure_path_in_file "$HOME/.zprofile"
+
+    # bash interactive (bash launched from zsh, Linux, some IDEs).
+    ensure_path_in_file "$HOME/.bashrc"
+
+    # bash login: macOS Terminal starts a login shell. That reads
+    # ~/.bash_profile, or ~/.profile when bash_profile is absent — never
+    # ~/.zshrc. Creating bash_profile when profile already exists would
+    # shadow profile, so prefer the file bash will actually load.
+    if [ -f "$HOME/.bash_profile" ]; then
+        ensure_path_in_file "$HOME/.bash_profile"
+        [ -f "$HOME/.profile" ] && ensure_path_in_file "$HOME/.profile"
+    elif [ -f "$HOME/.profile" ]; then
+        ensure_path_in_file "$HOME/.profile"
+    else
+        ensure_path_in_file "$HOME/.bash_profile"
+    fi
+
+    if [ -f "$HOME/.config/fish/config.fish" ] \
+        || [ "$(basename "${SHELL:-}")" = "fish" ]; then
+        ensure_path_in_fish "$HOME/.config/fish/config.fish"
+    fi
+
+    export PATH="$BIN_DIR:$PATH"
+}
+
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
     [ "$#" -eq 3 ] || {
         echo "usage: $0 --verify-staged-app-signature-test <app> <requirement>" >&2
@@ -332,6 +448,22 @@ if [ "${1:-}" = "--install-bundle-test" ]; then
     INSTALL_TEST_MODE=1
     if [ "$#" -eq 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
     install_bundle_atomically "$2" "$3" "$4" "$5"
+    exit $?
+fi
+
+if [ "${1:-}" = "--setup-path-test" ]; then
+    if [ -n "${2:-}" ]; then
+        HOME="$2"
+        INSTALL_DIR="$HOME/.darkbloom"
+        BIN_DIR="$INSTALL_DIR/bin"
+    fi
+    # Opt-in only: an unset override skips /usr/local/bin so CI never
+    # writes host PATH directories. Live installs use the default
+    # candidate list inside setup_shell_path.
+    if [ -z "${DARKBLOOM_PATH_LINK_CANDIDATES+x}" ]; then
+        DARKBLOOM_PATH_LINK_CANDIDATES=""
+    fi
+    setup_shell_path
     exit $?
 fi
 
@@ -420,32 +552,13 @@ fi
 rm -f "$TARBALL"
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
-# Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
-if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
-    :
-fi
-RC="$HOME/.zshrc"
-if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
-    RC="$HOME/.bashrc"
-fi
-if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
-    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
-    cat >> "$RC" << 'SHELL'
-
-# Darkbloom
-export PATH="$HOME/.darkbloom/bin:$PATH"
-SHELL
-fi
-export PATH="$BIN_DIR:$PATH"
-
-# Source rc so commands work in this shell. Disable -eu around it: rc files
-# may use unbound vars or shell-specific builtins that fail under bash strict.
-set +eu
-source "$RC" 2>/dev/null || true
-set -eu
-
+setup_shell_path
 echo "  Binaries installed ✓"
-echo "  Shortcut: darkbloom"
+if [ -n "$PATH_SYMLINK_DIR" ]; then
+    echo "  On PATH via $PATH_SYMLINK_DIR/darkbloom"
+else
+    echo "  Added ~/.darkbloom/bin to PATH in zsh/bash startup files"
+fi
 
 # ─── Migrate from old installs ───────────────────────────────
 # Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
@@ -559,6 +672,10 @@ echo "║  Install complete                            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 echo "  Next steps:"
+if [ -z "$PATH_SYMLINK_DIR" ]; then
+    echo "    export PATH=\"\$HOME/.darkbloom/bin:\$PATH\"   # this terminal"
+    echo ""
+fi
 echo "    darkbloom doctor             # verify the system is ready"
 echo "    darkbloom models catalog     # browse available models"
 echo "    darkbloom models download <id>"

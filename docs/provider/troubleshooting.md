@@ -12,11 +12,12 @@ darkbloom logs --last 1h
 
 ### `darkbloom: command not found`
 
-The installer adds `~/.darkbloom/bin` to `~/.zshrc` (or `~/.bashrc`). Either open
-a new shell or run:
+The installer adds `~/.darkbloom/bin` to `~/.zshrc`, `~/.bashrc`, and the bash
+login file (`~/.bash_profile` or `~/.profile`). `curl | bash` cannot change the
+parent shell, so either open a new terminal or run:
 
 ```bash
-source ~/.zshrc
+export PATH="$HOME/.darkbloom/bin:$PATH"
 ```
 
 ### Bundle or binary hash mismatch

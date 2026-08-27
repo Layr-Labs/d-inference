@@ -419,4 +419,6 @@ run_install "$LEGACY" "$COORD_LEGACY_INSTALL"
 test -x "$COORD_LEGACY_INSTALL/bin/darkbloom"
 test ! -e "$COORD_LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 
+"$REPO_ROOT/scripts/test-install-path.sh"
+
 echo "atomic installer tests passed"

@@ -34,10 +34,56 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
+	if cfg.ExpectKVBackend != "" {
+		return cfg
+	}
+
+	// Benchmarks measure steady serving throughput, not cold model-load time.
+	// Declaring the expected backend makes Suite.Start pre-warm every
+	// (provider, model) slot through the production load_model push and wait for
+	// the first capacity heartbeat before the measured load begins.
+	requested := testbed.ResolveKVBackend(cfg.KVBackend)
+	switch requested {
+	case "", testbed.KVBackendAuto, testbed.KVBackendContiguous:
+		cfg.ExpectKVBackend = testbed.KVBackendContiguous
+	default:
+		// Explicit paged resolves to paged or refuses; malformed values are
+		// rejected by ResolveExpectedKVBackend during suite startup.
+		cfg.ExpectKVBackend = requested
+	}
+	return cfg
+}
+
+func TestBenchmarkSuiteConfigPrewarmsResolvedBackend(t *testing.T) {
+	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "")
+
+	for _, tc := range []struct {
+		name     string
+		cfg      testbed.SuiteConfig
+		expected string
+	}{
+		{name: "provider default", cfg: testbed.SuiteConfig{}, expected: testbed.KVBackendContiguous},
+		{name: "auto", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendAuto}, expected: testbed.KVBackendContiguous},
+		{name: "contiguous", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendContiguous}, expected: testbed.KVBackendContiguous},
+		{name: "paged", cfg: testbed.SuiteConfig{KVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},
+		{name: "caller expectation wins", cfg: testbed.SuiteConfig{ExpectKVBackend: testbed.KVBackendPaged}, expected: testbed.KVBackendPaged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.expected, benchmarkSuiteConfig(tc.cfg).ExpectKVBackend)
+		})
+	}
+
+	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", testbed.KVBackendPaged)
+	require.Equal(t, testbed.KVBackendPaged,
+		benchmarkSuiteConfig(testbed.SuiteConfig{}).ExpectKVBackend)
+}
+
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {
 	t.Helper()
 
 	ctx := context.Background()
+	suiteCfg = benchmarkSuiteConfig(suiteCfg)
 	s := testbed.NewSuite(suiteCfg)
 	require.NoError(t, s.Start(ctx), "suite startup failed")
 	t.Cleanup(s.Stop)

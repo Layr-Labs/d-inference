@@ -55,7 +55,7 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
-| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the consumer-safe provider/attestation/timing fields already returned as `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` headers, plus city/region GeoIP of the serving provider (`metadata.location`). Coordinates, lookup source, and raw IPs are omitted. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The flag is stripped before the body is sealed to the provider. Default `false`. |
+| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the consumer-safe provider/attestation/timing fields already returned as `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` headers, plus region/country GeoIP of the serving provider (`metadata.location`). City, coordinates, lookup source, and raw IPs are omitted. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The flag is stripped before the body is sealed to the provider. Default `false`. |
 
 The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).
 
@@ -110,7 +110,6 @@ Rollback is fail closed: first stop admitting new constrained traffic or point t
     "attestation_se_public_key": "...",
     "job_id": "...",
     "location": {
-      "city": "Austin",
       "region": "Texas",
       "region_code": "TX",
       "country": "United States",
@@ -130,7 +129,7 @@ Rollback is fail closed: first stop admitting new constrained traffic or point t
 }
 ```
 
-`metadata` is omitted unless the caller opted in with `metadata_details=true` or `X-Darkbloom-Metadata-Details: true`. It never includes device serials, raw IPs, coordinates, or GeoIP lookup source. `location` is city/region-level GeoIP of the serving provider when known.
+`metadata` is omitted unless the caller opted in with `metadata_details=true` or `X-Darkbloom-Metadata-Details: true`. It never includes device serials, city, raw IPs, coordinates, or GeoIP lookup source. `location` is region/country-level GeoIP of the serving provider when known.
 
 #### Response (streaming)
 

@@ -226,11 +226,10 @@ func consumerSafeLocation(loc *store.ProviderLocation) *types.ProviderApproxLoca
 	if loc == nil {
 		return nil
 	}
-	if loc.City == "" && loc.Region == "" && loc.RegionCode == "" && loc.Country == "" && loc.CountryCode == "" && loc.Timezone == "" {
+	if loc.Region == "" && loc.RegionCode == "" && loc.Country == "" && loc.CountryCode == "" && loc.Timezone == "" {
 		return nil
 	}
 	return &types.ProviderApproxLocation{
-		City:        loc.City,
 		Region:      loc.Region,
 		RegionCode:  loc.RegionCode,
 		Country:     loc.Country,

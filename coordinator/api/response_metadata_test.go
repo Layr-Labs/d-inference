@@ -175,7 +175,7 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 	if collected.SEPublicKey != "se-pub" {
 		t.Fatalf("se public key = %q", collected.SEPublicKey)
 	}
-	if collected.Location == nil || collected.Location.City != "Austin" || collected.Location.CountryCode != "US" {
+	if collected.Location == nil || collected.Location.Region != "Texas" || collected.Location.CountryCode != "US" {
 		t.Fatalf("location = %+v", collected.Location)
 	}
 	info.Location = collected.Location
@@ -187,8 +187,8 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 	if strings.Contains(string(raw), "SECRET-SERIAL") || strings.Contains(string(raw), "serial") {
 		t.Fatalf("metadata leaked a device serial: %s", raw)
 	}
-	if strings.Contains(string(raw), "30.2672") || strings.Contains(string(raw), "-97.7431") || strings.Contains(string(raw), "ip-api") || strings.Contains(string(raw), "latitude") {
-		t.Fatalf("metadata leaked precise geo or lookup source: %s", raw)
+	if strings.Contains(string(raw), "30.2672") || strings.Contains(string(raw), "-97.7431") || strings.Contains(string(raw), "ip-api") || strings.Contains(string(raw), "latitude") || strings.Contains(string(raw), `"city"`) || strings.Contains(string(raw), "Austin") {
+		t.Fatalf("metadata leaked city, precise geo, or lookup source: %s", raw)
 	}
 	var decoded types.ChatCompletionMetadata
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -200,7 +200,7 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 	if decoded.JobID != "job-1" || decoded.Timing == nil || decoded.Timing.ParseUs != 10 {
 		t.Fatalf("job/timing missing: %+v", decoded)
 	}
-	if decoded.Location == nil || decoded.Location.City != "Austin" || decoded.Location.Region != "Texas" || decoded.Location.Timezone != "America/Chicago" {
+	if decoded.Location == nil || decoded.Location.Region != "Texas" || decoded.Location.Timezone != "America/Chicago" {
 		t.Fatalf("location missing from body: %+v", decoded.Location)
 	}
 }
@@ -249,15 +249,15 @@ func TestConsumerSafeLocationOmitsPreciseGeo(t *testing.T) {
 		t.Fatal("empty location must stay omitted")
 	}
 	got := consumerSafeLocation(&store.ProviderLocation{
-		City: "Austin", CountryCode: "US", Latitude: 30.2672, Source: "ip-api-pro",
+		City: "Austin", Region: "Texas", CountryCode: "US", Latitude: 30.2672, Source: "ip-api-pro",
 	})
-	if got == nil || got.City != "Austin" || got.CountryCode != "US" {
+	if got == nil || got.Region != "Texas" || got.CountryCode != "US" {
 		t.Fatalf("coarse location = %+v", got)
 	}
 	if consumerSafeLocation(&store.ProviderLocation{
-		Latitude: 30.2672, Longitude: -97.7431, Source: "ip-api-pro",
+		City: "Austin", Latitude: 30.2672, Longitude: -97.7431, Source: "ip-api-pro",
 	}) != nil {
-		t.Fatal("coords-only location must stay omitted")
+		t.Fatal("city/coords-only location must stay omitted")
 	}
 }
 

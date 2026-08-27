@@ -81,9 +81,9 @@ consumer HTTP path is wrapped as
 (`coordinator/api/server.go:1411`). Provider trust and timing are always
 returned as `X-Provider-*` / `X-Timing` headers. `POST /v1/chat/completions`
 can copy those header fields into a JSON `metadata` object when the
-caller sets `metadata_details=true`. That object also includes city/region
+caller sets `metadata_details=true`. That object also includes region/country
 GeoIP of the serving provider (`metadata.location`; not a header; no
-coordinates, lookup source, or raw IPs)
+city, coordinates, lookup source, or raw IPs)
 (`coordinator/api/response_metadata.go`).
 
 ## Privacy model

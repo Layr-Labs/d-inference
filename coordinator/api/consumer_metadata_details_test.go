@@ -375,8 +375,11 @@ func assertChatMetadataMatchesHeaders(t *testing.T, header http.Header, meta map
 	if loc == nil {
 		t.Fatal("metadata.location missing")
 	}
-	if got, _ := loc["city"].(string); got != "Austin" {
-		t.Errorf("location.city = %v, want Austin", loc["city"])
+	if _, ok := loc["city"]; ok {
+		t.Errorf("location must not include city: %#v", loc)
+	}
+	if got, _ := loc["region"].(string); got != "Texas" {
+		t.Errorf("location.region = %v, want Texas", loc["region"])
 	}
 	if got, _ := loc["country_code"].(string); got != "US" {
 		t.Errorf("location.country_code = %v, want US", loc["country_code"])

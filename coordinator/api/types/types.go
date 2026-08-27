@@ -92,8 +92,8 @@ type RequestTimingDetails struct {
 // timing, and coarse location block returned on POST /v1/chat/completions when
 // the caller sets metadata_details=true (or X-Darkbloom-Metadata-Details: true).
 // Provider/attestation/timing match the X-Provider-* / X-Timing headers.
-// Location is city/region GeoIP only — coordinates, lookup source, and raw
-// IPs are omitted. Device serials are never included.
+// Location is region/country GeoIP only — city, coordinates, lookup source,
+// and raw IPs are omitted. Device serials are never included.
 type ChatCompletionMetadata struct {
 	ProviderID             string                  `json:"provider_id,omitempty"`
 	ProviderAttested       bool                    `json:"provider_attested"`
@@ -109,11 +109,9 @@ type ChatCompletionMetadata struct {
 	Location               *ProviderApproxLocation `json:"location,omitempty"`
 }
 
-// ProviderApproxLocation is the city/region-level GeoIP area of the serving
-// provider. Coordinates, lookup source, and raw IPs are omitted: this is the
-// same coarse grain already used in operational telemetry, not a precise pin.
+// ProviderApproxLocation is the region/country-level GeoIP area of the serving
+// provider. City, coordinates, lookup source, and raw IPs are omitted.
 type ProviderApproxLocation struct {
-	City        string `json:"city,omitempty"`
 	Region      string `json:"region,omitempty"`
 	RegionCode  string `json:"region_code,omitempty"`
 	Country     string `json:"country,omitempty"`

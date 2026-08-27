@@ -35,7 +35,9 @@ func envOr(key, fallback string) string {
 }
 
 func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
-	if cfg.ExpectKVBackend != "" {
+	if cfg.ExpectKVBackend != "" || os.Getenv(testbed.EnvExpectKVBackend) != "" {
+		// Preserve the verifier's environment fallback verbatim, including its
+		// fail-closed validation of malformed expectations.
 		return cfg
 	}
 
@@ -77,6 +79,14 @@ func TestBenchmarkSuiteConfigPrewarmsResolvedBackend(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", testbed.KVBackendPaged)
 	require.Equal(t, testbed.KVBackendPaged,
 		benchmarkSuiteConfig(testbed.SuiteConfig{}).ExpectKVBackend)
+}
+
+func TestBenchmarkSuiteConfigPreservesExpectedBackendEnvironment(t *testing.T) {
+	for _, value := range []string{testbed.KVBackendPaged, "pagd"} {
+		t.Setenv(testbed.EnvExpectKVBackend, value)
+		cfg := benchmarkSuiteConfig(testbed.SuiteConfig{})
+		require.Empty(t, cfg.ExpectKVBackend)
+	}
 }
 
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {

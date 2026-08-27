@@ -14,8 +14,8 @@ interface RawSupplyPressureRow {
   model: string;
   display_name: string | null;
   min_ram_gb: number | null;
-  unserved_1h: string;
-  unserved_24h: string;
+  supply_rejects_1h: string;
+  supply_rejects_24h: string;
   capacity_sheds_1h: string;
   capacity_sheds_24h: string;
   latency_sheds_1h: string;
@@ -56,10 +56,10 @@ const SUPPLY_PRESSURE_SQL = `
            count(*) FILTER (
              WHERE reason_code = ANY($3::text[])
                AND created_at >= now() - interval '1 hour'
-           )::bigint AS unserved_1h,
+           )::bigint AS supply_rejects_1h,
            count(*) FILTER (
              WHERE reason_code = ANY($3::text[])
-           )::bigint AS unserved_24h,
+           )::bigint AS supply_rejects_24h,
            count(*) FILTER (
              WHERE reason_code = ANY($1::text[])
                AND created_at >= now() - interval '1 hour'
@@ -119,6 +119,7 @@ const SUPPLY_PRESSURE_SQL = `
      WHERE created_at >= now() - interval '24 hours'
        AND model <> ''
        AND actual_ttft_ms > 0
+       AND COALESCE(self_route_only, false) = false
      GROUP BY model
   ),
   model_keys AS (
@@ -131,8 +132,8 @@ const SUPPLY_PRESSURE_SQL = `
   SELECT mk.model,
          mr.display_name,
          mr.min_ram_gb,
-         COALESCE(rr.unserved_1h, 0)::bigint AS unserved_1h,
-         COALESCE(rr.unserved_24h, 0)::bigint AS unserved_24h,
+         COALESCE(rr.supply_rejects_1h, 0)::bigint AS supply_rejects_1h,
+         COALESCE(rr.supply_rejects_24h, 0)::bigint AS supply_rejects_24h,
          COALESCE(rr.capacity_sheds_1h, 0)::bigint AS capacity_sheds_1h,
          COALESCE(rr.capacity_sheds_24h, 0)::bigint AS capacity_sheds_24h,
          COALESCE(rr.latency_sheds_1h, 0)::bigint AS latency_sheds_1h,
@@ -151,9 +152,9 @@ const SUPPLY_PRESSURE_SQL = `
     LEFT JOIN usage_rollup ur USING (model)
     LEFT JOIN ttft_rollup tr USING (model)
     LEFT JOIN model_registry mr ON mr.id = mk.model
-   ORDER BY COALESCE(rr.unserved_1h, 0) DESC,
+   ORDER BY COALESCE(rr.supply_rejects_1h, 0) DESC,
             COALESCE(rr.hardware_mismatches_1h, 0) DESC,
-            COALESCE(rr.unserved_24h, 0) DESC,
+            COALESCE(rr.supply_rejects_24h, 0) DESC,
             COALESCE(ur.served_24h, 0) DESC,
             mk.model
 `;
@@ -178,8 +179,8 @@ export async function getSupplyPressure(): Promise<SupplyPressureOverview> {
     model: row.model,
     displayName: row.display_name || row.model,
     minRamGB: row.min_ram_gb,
-    unserved1h: numeric(row.unserved_1h),
-    unserved24h: numeric(row.unserved_24h),
+    supplyRejects1h: numeric(row.supply_rejects_1h),
+    supplyRejects24h: numeric(row.supply_rejects_24h),
     capacitySheds1h: numeric(row.capacity_sheds_1h),
     capacitySheds24h: numeric(row.capacity_sheds_24h),
     latencySheds1h: numeric(row.latency_sheds_1h),

@@ -124,7 +124,7 @@ func TestDispatch_TransientCapacity_StillFailsOver(t *testing.T) {
 // walk all maxDispatchAttempts=64). Five providers are present so the cap — not
 // candidate exhaustion — is what stops it.
 func TestDispatch_TransientCapacity_CappedRetries(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
+	reg, st, ts := setupFailoverServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -154,4 +154,16 @@ func TestDispatch_TransientCapacity_CappedRetries(t *testing.T) {
 		t.Errorf("total dispatches = %d, want %d (transient capacity must be capped, not stormed to %d)",
 			total, maxCapacityClassRetries, maxDispatchAttempts)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rejections := st.RejectionRecordsSince(time.Time{})
+		if len(rejections) > 0 {
+			if got := rejections[0].ReasonCode; got != rejectionReasonCapacityExhausted {
+				t.Fatalf("rejection reason = %q, want %q", got, rejectionReasonCapacityExhausted)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("transient-capacity rejection was not recorded")
 }

@@ -1,16 +1,16 @@
 import { formatMilliseconds, formatPercent } from "@/lib/format";
 import {
-  getMachineRecommendation,
-  supplyLossRate,
+  getDominantSupplySignal,
+  supplyRejectShare,
   type SupplyPressureModel,
 } from "@/lib/supply-pressure";
 
-export function MachineSignal({ model }: { model: SupplyPressureModel }) {
-  const recommendation = getMachineRecommendation(model);
+export function DominantSignal({ model }: { model: SupplyPressureModel }) {
+  const signal = getDominantSupplySignal(model);
   const color =
-    recommendation.window === "1h"
+    signal.window === "1h"
       ? "var(--red)"
-      : recommendation.window === "24h"
+      : signal.window === "24h"
         ? "var(--amber)"
         : "var(--green)";
 
@@ -20,28 +20,28 @@ export function MachineSignal({ model }: { model: SupplyPressureModel }) {
         className="inline-flex rounded px-1.5 py-0.5 text-xs font-medium"
         style={{ background: "var(--bg-hover)", color }}
       >
-        {recommendation.label}
+        {signal.label}
       </span>
-      <div className="mt-1 text-xs text-[var(--text-faint)]">
-        {recommendation.window === "1h"
-          ? "active in the last hour"
-          : recommendation.window === "24h"
+      <div className="mt-1 text-xs text-[var(--text-dim)]">
+        {signal.window === "1h"
+          ? "seen in the last hour"
+          : signal.window === "24h"
             ? "seen in the last 24h"
-            : "no supply sheds in 24h"}
+            : "none in the last 24h"}
       </div>
     </div>
   );
 }
 
-export function SupplyLossMeter({
-  unserved,
+export function SupplyRejectShareMeter({
+  rejected,
   served,
 }: {
-  unserved: number;
+  rejected: number;
   served: number;
 }) {
-  const ratio = supplyLossRate(unserved, served);
-  if (ratio === null) return <span className="text-[var(--text-faint)]">—</span>;
+  const ratio = supplyRejectShare(rejected, served);
+  if (ratio === null) return <span className="text-[var(--text-dim)]">—</span>;
 
   const width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
   const color = ratio >= 0.1 ? "var(--red)" : ratio > 0 ? "var(--amber)" : "var(--green)";
@@ -64,12 +64,12 @@ export function TTFTValue({
   fallback: number | null;
 }) {
   const value = current ?? fallback;
-  if (value === null) return <span className="text-[var(--text-faint)]">—</span>;
+  if (value === null) return <span className="text-[var(--text-dim)]">—</span>;
 
   return (
     <span className="whitespace-nowrap">
       {formatMilliseconds(value)}
-      <span className="ml-1 text-xs text-[var(--text-faint)]">
+      <span className="ml-1 text-xs text-[var(--text-dim)]">
         {current === null ? "24h" : "1h"}
       </span>
     </span>

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   SUPPLY_SHED_REASONS,
-  getMachineRecommendation,
+  getDominantSupplySignal,
   summarizeSupplyPressure,
-  supplyLossRate,
+  supplyRejectShare,
   type SupplyPressureModel,
   type SupplySignalCounts,
 } from "./supply-pressure";
@@ -30,8 +30,8 @@ function model(
     ...EMPTY_SIGNALS,
     displayName: overrides.model,
     minRamGB: null,
-    unserved1h: 0,
-    unserved24h: 0,
+    supplyRejects1h: 0,
+    supplyRejects24h: 0,
     served24h: 0,
     actualTTFTP95Ms1h: null,
     actualTTFTP95Ms24h: null,
@@ -47,6 +47,7 @@ describe("supply rejection taxonomy", () => {
       "machine_busy",
       "queue_timeout",
       "queue_full",
+      "capacity_exhausted",
       "ttft_too_slow",
       "first_chunk_timeout",
       "deadline_unreachable",
@@ -57,75 +58,89 @@ describe("supply rejection taxonomy", () => {
   });
 });
 
-describe("getMachineRecommendation", () => {
+describe("getDominantSupplySignal", () => {
   it("uses active one-hour saturation ahead of older signals", () => {
     expect(
-      getMachineRecommendation(
+      getDominantSupplySignal(
         signals({
           capacitySheds1h: 3,
           capacitySheds24h: 3,
           unavailableSheds24h: 100,
         }),
       ),
-    ).toEqual({ kind: "add_machines", label: "Add machines", window: "1h" });
+    ).toEqual({ kind: "capacity", label: "Capacity rejects", window: "1h" });
   });
 
   it("falls back to the dominant 24-hour signal", () => {
     expect(
-      getMachineRecommendation(
+      getDominantSupplySignal(
         signals({
           capacitySheds24h: 2,
           latencySheds24h: 8,
           unavailableSheds24h: 1,
         }),
       ),
-    ).toEqual({ kind: "warm_or_faster", label: "Warm / faster", window: "24h" });
+    ).toEqual({ kind: "latency", label: "TTFT / deadline rejects", window: "24h" });
   });
 
   it("distinguishes machines that are too small from too few machines", () => {
     expect(
-      getMachineRecommendation(signals({ hardwareMismatches1h: 4 })),
-    ).toEqual({ kind: "larger_machines", label: "Larger RAM", window: "1h" });
+      getDominantSupplySignal(signals({ hardwareMismatches1h: 4 })),
+    ).toEqual({ kind: "hardware_mismatch", label: "Needs larger RAM", window: "1h" });
   });
 
-  it("reports no shortage when no tracked signal exists", () => {
-    expect(getMachineRecommendation(EMPTY_SIGNALS)).toEqual({
+  it("reports unavailable providers without asserting the cause", () => {
+    expect(
+      getDominantSupplySignal(signals({ unavailableSheds1h: 3 })),
+    ).toEqual({ kind: "unavailable", label: "No eligible provider", window: "1h" });
+  });
+
+  it("does not hide equal-strength hardware and capacity evidence", () => {
+    expect(
+      getDominantSupplySignal(
+        signals({ capacitySheds1h: 2, hardwareMismatches1h: 2 }),
+      ),
+    ).toEqual({ kind: "mixed", label: "Mixed signals", window: "1h" });
+  });
+
+  it("reports no tracked rejects when no signal exists", () => {
+    expect(getDominantSupplySignal(EMPTY_SIGNALS)).toEqual({
       kind: "none",
-      label: "No shortage",
+      label: "No tracked rejects",
       window: null,
     });
   });
 });
 
 describe("supply pressure summary", () => {
-  it("totals served and unserved demand and counts active models", () => {
+  it("totals served and rejected requests and counts recent signals", () => {
     const summary = summarizeSupplyPressure([
       model({
         model: "model-a",
-        unserved1h: 2,
-        unserved24h: 5,
+        supplyRejects1h: 2,
+        supplyRejects24h: 5,
         served24h: 15,
         capacitySheds1h: 2,
       }),
       model({
         model: "model-b",
-        unserved24h: 1,
+        supplyRejects24h: 1,
         served24h: 4,
         hardwareMismatches1h: 1,
       }),
     ]);
 
     expect(summary).toEqual({
-      unserved1h: 2,
-      unserved24h: 6,
+      supplyRejects1h: 2,
+      supplyRejects24h: 6,
       served24h: 19,
-      supplyLossRate24h: 0.24,
+      supplyRejectShare24h: 0.24,
       pressuredModels1h: 2,
     });
   });
 
-  it("returns no loss rate when there was no traffic", () => {
-    expect(supplyLossRate(0, 0)).toBeNull();
-    expect(supplyLossRate(2, 8)).toBe(0.2);
+  it("returns no reject share when there was no traffic", () => {
+    expect(supplyRejectShare(0, 0)).toBeNull();
+    expect(supplyRejectShare(2, 8)).toBe(0.2);
   });
 });

@@ -58,6 +58,11 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 	if !d.unservable {
 		t.Fatal("capacity-cap stop must latch unservable (the 429 path), not a fault 503")
 	}
+	if d.unservableReason != rejectionReasonCapacityExhausted {
+		t.Fatalf(
+			"capacity-cap reason = %q, want %q (must not look like request oversize)",
+			d.unservableReason, rejectionReasonCapacityExhausted)
+	}
 	if d.terminalClientError {
 		t.Fatal("admission_timeout is capacity, never a terminal client error")
 	}

@@ -184,8 +184,9 @@ type dispatchState struct {
 	lastFailureDeadline bool
 	// unservable is set when the dispatch loop stops because the request cannot
 	// be served (deterministic-context rejection, or a transient that exhausted
-	// maxCapacityClassRetries). The exhausted ladder then emits a single
-	// uptime-neutral 429 with unservableReason instead of retrying/5xx'ing.
+	// maxCapacityClassRetries). unservableReason preserves that distinction for
+	// the rejection ledger. The exhausted ladder then emits a single
+	// uptime-neutral 429 instead of retrying/5xx'ing.
 	unservable       bool
 	unservableReason string
 	// terminalClientError is set when a dispatched provider returned a DETERMINISTIC
@@ -1550,12 +1551,15 @@ func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *regis
 	return d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, terminalCause, held)
 }
 
-// rejectionReasonOversized is the rejection-ledger reason_code for a request the
-// dispatch loop stopped because no provider can serve it (deterministic context
-// overflow, or a transient-capacity shortage that exhausted
-// maxCapacityClassRetries). Distinct from the preflight "context_exceeded" /
-// "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
+// rejectionReasonOversized is the rejection-ledger reason_code for a
+// deterministic request-size failure discovered after dispatch.
 const rejectionReasonOversized = "oversized_request"
+
+// rejectionReasonCapacityExhausted identifies a transient provider-capacity
+// failure that persisted through the bounded failover ladder. Keeping it
+// separate from oversized_request lets supply planning distinguish "more
+// capacity may help" from "this request shape cannot fit."
+const rejectionReasonCapacityExhausted = "capacity_exhausted"
 
 // rejectionReasonDeadlineUnreachable is the rejection-ledger reason for a
 // request whose remaining absolute first-content budget was refused by one or
@@ -1655,7 +1659,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 		d.capacityRetries++
 		if d.capacityRetries >= maxCapacityClassRetries {
 			d.unservable = true
-			d.unservableReason = rejectionReasonOversized
+			d.unservableReason = rejectionReasonCapacityExhausted
 			return true
 		}
 		return false

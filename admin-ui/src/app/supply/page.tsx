@@ -1,7 +1,7 @@
 import { DataTable, type Column } from "@/components/DataTable";
 import {
-  MachineSignal,
-  SupplyLossMeter,
+  DominantSignal,
+  SupplyRejectShareMeter,
   TTFTValue,
 } from "@/components/supply/SupplyPressureCells";
 import { StatCard } from "@/components/StatCard";
@@ -18,10 +18,10 @@ function ModelCell({ model }: { model: SupplyPressureModel }) {
     <div className="min-w-56">
       <div className="font-medium">{model.displayName}</div>
       {model.displayName !== model.model && (
-        <div className="mono mt-0.5 text-[var(--text-faint)]">{model.model}</div>
+        <div className="mono mt-0.5 text-[var(--text-dim)]">{model.model}</div>
       )}
       {model.minRamGB !== null && model.minRamGB > 0 && (
-        <div className="mt-1 text-xs text-[var(--text-faint)]">
+        <div className="mt-1 text-xs text-[var(--text-dim)]">
           catalog minimum {formatNumber(model.minRamGB)} GB RAM
         </div>
       )}
@@ -33,7 +33,7 @@ function PressureCount({ value }: { value: number }) {
   return value > 0 ? (
     <span style={{ color: "var(--red)" }}>{formatNumber(value)}</span>
   ) : (
-    <span className="text-[var(--text-faint)]">0</span>
+    <span className="text-[var(--text-dim)]">0</span>
   );
 }
 
@@ -41,20 +41,20 @@ const COLUMNS: Column<SupplyPressureModel>[] = [
   { key: "model", header: "Model", render: (model) => <ModelCell model={model} /> },
   {
     key: "signal",
-    header: "Machine signal",
-    render: (model) => <MachineSignal model={model} />,
+    header: "Dominant signal",
+    render: (model) => <DominantSignal model={model} />,
   },
   {
-    key: "unserved1h",
-    header: "Unserved 1h",
+    key: "supplyRejects1h",
+    header: "Supply rejects 1h",
     align: "right",
-    render: (model) => <PressureCount value={model.unserved1h} />,
+    render: (model) => <PressureCount value={model.supplyRejects1h} />,
   },
   {
-    key: "unserved24h",
-    header: "Unserved 24h",
+    key: "supplyRejects24h",
+    header: "Supply rejects 24h",
     align: "right",
-    render: (model) => <PressureCount value={model.unserved24h} />,
+    render: (model) => <PressureCount value={model.supplyRejects24h} />,
   },
   {
     key: "served24h",
@@ -63,34 +63,37 @@ const COLUMNS: Column<SupplyPressureModel>[] = [
     render: (model) => formatNumber(model.served24h),
   },
   {
-    key: "lossRate",
-    header: "Supply loss",
+    key: "rejectShare",
+    header: "Reject share 24h",
     align: "right",
     render: (model) => (
-      <SupplyLossMeter unserved={model.unserved24h} served={model.served24h} />
+      <SupplyRejectShareMeter
+        rejected={model.supplyRejects24h}
+        served={model.served24h}
+      />
     ),
   },
   {
     key: "capacitySheds24h",
-    header: "Busy / queue",
+    header: "Busy / queue 24h",
     align: "right",
     render: (model) => <PressureCount value={model.capacitySheds24h} />,
   },
   {
     key: "latencySheds24h",
-    header: "TTFT / deadline",
+    header: "TTFT / deadline 24h",
     align: "right",
     render: (model) => <PressureCount value={model.latencySheds24h} />,
   },
   {
     key: "unavailableSheds24h",
-    header: "No provider",
+    header: "No provider 24h",
     align: "right",
     render: (model) => <PressureCount value={model.unavailableSheds24h} />,
   },
   {
     key: "actualTTFT",
-    header: "Observed p95 TTFT",
+    header: "Dispatch→content p95",
     align: "right",
     render: (model) => (
       <TTFTValue
@@ -101,7 +104,7 @@ const COLUMNS: Column<SupplyPressureModel>[] = [
   },
   {
     key: "rejectedTTFT",
-    header: "Rejected best p95",
+    header: "Rejected best p95 TTFT",
     align: "right",
     render: (model) => (
       <TTFTValue
@@ -112,7 +115,7 @@ const COLUMNS: Column<SupplyPressureModel>[] = [
   },
   {
     key: "hardwareMismatches24h",
-    header: "Needs larger RAM",
+    header: "Needs larger RAM 24h",
     align: "right",
     render: (model) => <PressureCount value={model.hardwareMismatches24h} />,
   },
@@ -147,31 +150,40 @@ export default async function SupplyPage() {
       <div>
         <h1 className="text-lg font-semibold">Supply pressure</h1>
         <p className="mt-1 text-sm text-[var(--text-dim)]">
-          Public-network demand lost to saturation, unavailable providers, or TTFT
-          deadlines. Exclusive self-route traffic and non-supply rejections are excluded.
+          Public-network requests rejected because of saturation, unavailable providers,
+          or TTFT deadlines. Exclusive self-route traffic and non-supply rejections are
+          excluded.
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard label="Unserved (1h)" value={formatNumber(data.summary.unserved1h)} />
-        <StatCard label="Unserved (24h)" value={formatNumber(data.summary.unserved24h)} />
         <StatCard
-          label="Supply loss (24h)"
-          value={formatPercent(data.summary.supplyLossRate24h)}
+          label="Supply rejects (1h)"
+          value={formatNumber(data.summary.supplyRejects1h)}
         />
         <StatCard
-          label="Models pressured now"
+          label="Supply rejects (24h)"
+          value={formatNumber(data.summary.supplyRejects24h)}
+        />
+        <StatCard
+          label="Reject share (24h)"
+          value={formatPercent(data.summary.supplyRejectShare24h)}
+        />
+        <StatCard
+          label="Models with signals (1h)"
           value={formatNumber(data.summary.pressuredModels1h)}
         />
       </div>
 
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 text-sm text-[var(--text-dim)]">
         <span className="font-medium text-[var(--text)]">How to read this:</span>{" "}
-        <span className="text-[var(--red)]">Add machines</span> means capacity or queue
-        sheds dominate. <span className="text-[var(--amber)]">Warm / faster</span> means
-        TTFT or deadline sheds dominate. Model-too-large requests are reported separately
-        because adding more machines of the same size cannot serve them. P95 values use
-        the last hour when available, otherwise the last 24 hours.
+        Capacity rejects are the clearest signal to add machines. TTFT/deadline rejects
+        point to warmer or faster supply. No-eligible-provider signals can also reflect
+        offline, trust-gated, or cooling-down machines. Model-too-large requests are
+        separate because adding machines of the same size cannot serve them. Reject share
+        compares rejection rows with successful usage rows; retries can produce additional
+        rows. Dispatch→content p95 excludes queue time. P95 values use the last hour when
+        available, otherwise the last 24 hours.
       </div>
 
       <DataTable

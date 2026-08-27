@@ -2,6 +2,7 @@ export const CAPACITY_SHED_REASONS = [
   "machine_busy",
   "queue_timeout",
   "queue_full",
+  "capacity_exhausted",
 ] as const;
 
 export const LATENCY_SHED_REASONS = [
@@ -39,8 +40,8 @@ export interface SupplyPressureModel extends SupplySignalCounts {
   model: string;
   displayName: string;
   minRamGB: number | null;
-  unserved1h: number;
-  unserved24h: number;
+  supplyRejects1h: number;
+  supplyRejects24h: number;
   served24h: number;
   actualTTFTP95Ms1h: number | null;
   actualTTFTP95Ms24h: number | null;
@@ -49,77 +50,81 @@ export interface SupplyPressureModel extends SupplySignalCounts {
 }
 
 export interface SupplyPressureSummary {
-  unserved1h: number;
-  unserved24h: number;
+  supplyRejects1h: number;
+  supplyRejects24h: number;
   served24h: number;
-  supplyLossRate24h: number | null;
+  supplyRejectShare24h: number | null;
   pressuredModels1h: number;
 }
 
-export type MachineRecommendationKind =
-  | "add_machines"
-  | "warm_or_faster"
-  | "restore_supply"
-  | "larger_machines"
+export type DominantSupplySignalKind =
+  | "capacity"
+  | "latency"
+  | "unavailable"
+  | "hardware_mismatch"
+  | "mixed"
   | "none";
 
-export interface MachineRecommendation {
-  kind: MachineRecommendationKind;
+export interface DominantSupplySignal {
+  kind: DominantSupplySignalKind;
   label: string;
   window: "1h" | "24h" | null;
 }
 
 interface RankedSignal {
-  kind: Exclude<MachineRecommendationKind, "none">;
+  kind: Exclude<DominantSupplySignalKind, "mixed" | "none">;
   count1h: number;
   count24h: number;
 }
 
-const LABELS: Record<Exclude<MachineRecommendationKind, "none">, string> = {
-  add_machines: "Add machines",
-  warm_or_faster: "Warm / faster",
-  restore_supply: "Restore / add supply",
-  larger_machines: "Larger RAM",
+const LABELS: Record<Exclude<DominantSupplySignalKind, "mixed" | "none">, string> = {
+  capacity: "Capacity rejects",
+  latency: "TTFT / deadline rejects",
+  unavailable: "No eligible provider",
+  hardware_mismatch: "Needs larger RAM",
 };
 
 function rankedSignals(counts: SupplySignalCounts): RankedSignal[] {
   return [
     {
-      kind: "add_machines",
+      kind: "capacity",
       count1h: counts.capacitySheds1h,
       count24h: counts.capacitySheds24h,
     },
     {
-      kind: "warm_or_faster",
+      kind: "latency",
       count1h: counts.latencySheds1h,
       count24h: counts.latencySheds24h,
     },
     {
-      kind: "restore_supply",
+      kind: "unavailable",
       count1h: counts.unavailableSheds1h,
       count24h: counts.unavailableSheds24h,
     },
     {
-      kind: "larger_machines",
+      kind: "hardware_mismatch",
       count1h: counts.hardwareMismatches1h,
       count24h: counts.hardwareMismatches24h,
     },
   ];
 }
 
-export function getMachineRecommendation(
+export function getDominantSupplySignal(
   counts: SupplySignalCounts,
-): MachineRecommendation {
+): DominantSupplySignal {
   const signals = rankedSignals(counts);
   const window = signals.some((signal) => signal.count1h > 0) ? "1h" : "24h";
   const countKey = window === "1h" ? "count1h" : "count24h";
-  const dominant = signals.reduce((best, signal) =>
-    signal[countKey] > best[countKey] ? signal : best,
-  );
+  const topCount = Math.max(...signals.map((signal) => signal[countKey]));
 
-  if (dominant[countKey] === 0) {
-    return { kind: "none", label: "No shortage", window: null };
+  if (topCount === 0) {
+    return { kind: "none", label: "No tracked rejects", window: null };
   }
+  const leaders = signals.filter((signal) => signal[countKey] === topCount);
+  if (leaders.length > 1) {
+    return { kind: "mixed", label: "Mixed signals", window };
+  }
+  const dominant = leaders[0];
   return {
     kind: dominant.kind,
     label: LABELS[dominant.kind],
@@ -127,9 +132,9 @@ export function getMachineRecommendation(
   };
 }
 
-export function supplyLossRate(unserved: number, served: number): number | null {
-  const total = unserved + served;
-  return total > 0 ? unserved / total : null;
+export function supplyRejectShare(rejected: number, served: number): number | null {
+  const total = rejected + served;
+  return total > 0 ? rejected / total : null;
 }
 
 export function summarizeSupplyPressure(
@@ -137,17 +142,17 @@ export function summarizeSupplyPressure(
 ): SupplyPressureSummary {
   const summary = models.reduce(
     (acc, model) => {
-      acc.unserved1h += model.unserved1h;
-      acc.unserved24h += model.unserved24h;
+      acc.supplyRejects1h += model.supplyRejects1h;
+      acc.supplyRejects24h += model.supplyRejects24h;
       acc.served24h += model.served24h;
-      if (model.unserved1h + model.hardwareMismatches1h > 0) {
+      if (model.supplyRejects1h + model.hardwareMismatches1h > 0) {
         acc.pressuredModels1h += 1;
       }
       return acc;
     },
     {
-      unserved1h: 0,
-      unserved24h: 0,
+      supplyRejects1h: 0,
+      supplyRejects24h: 0,
       served24h: 0,
       pressuredModels1h: 0,
     },
@@ -155,6 +160,9 @@ export function summarizeSupplyPressure(
 
   return {
     ...summary,
-    supplyLossRate24h: supplyLossRate(summary.unserved24h, summary.served24h),
+    supplyRejectShare24h: supplyRejectShare(
+      summary.supplyRejects24h,
+      summary.served24h,
+    ),
   };
 }

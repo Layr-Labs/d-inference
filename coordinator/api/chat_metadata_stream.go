@@ -37,26 +37,21 @@ func stripProviderChatMetadataJSON(raw string) (string, bool) {
 }
 
 func containsChatMetadataKeyToken(raw string) bool {
-	for searchFrom := 0; searchFrom < len(raw); {
-		relativeStart := strings.IndexByte(raw[searchFrom:], '"')
-		if relativeStart < 0 {
-			return false
+	const maxFoldedKeyBytes = 4 * len(chatCompletionMetadataField)
+	for start := 0; start < len(raw); start++ {
+		if raw[start] != '"' {
+			continue
 		}
-		start := searchFrom + relativeStart + 1
-		end := start
-		for end < len(raw) && raw[end] != '"' {
-			if raw[end] == '\\' {
-				end++
+		limit := min(start+1+maxFoldedKeyBytes, len(raw)-1)
+		for end := start + 1; end <= limit; end++ {
+			if raw[end] == '\n' {
+				break
 			}
-			end++
+			if raw[end] == '"' &&
+				strings.EqualFold(raw[start+1:end], chatCompletionMetadataField) {
+				return true
+			}
 		}
-		if end >= len(raw) {
-			return false
-		}
-		if strings.EqualFold(raw[start:end], chatCompletionMetadataField) {
-			return true
-		}
-		searchFrom = end + 1
 	}
 	return false
 }

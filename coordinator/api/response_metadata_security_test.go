@@ -28,6 +28,11 @@ func TestStripProviderChatMetadata(t *testing.T) {
 			input: `data: {"choices":[],"METADATA":{"provider_attested":true,"provider_id":"forged"}}`,
 		},
 		{
+			name: "unmatched quote in SSE comment",
+			input: ": unmatched \"\n" +
+				`data: {"choices":[],"Metadata":{"provider_attested":true,"provider_id":"forged"}}`,
+		},
+		{
 			name:  "unicode-escaped top-level field",
 			input: `data: {"choices":[],"\u006detadata":{"provider_attested":true,"provider_id":"forged"}}`,
 		},

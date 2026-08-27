@@ -286,7 +286,8 @@ func TestStreamingChatReservesMetadataOnProviderError(t *testing.T) {
 				ResponseMetadata: tc.responseMeta,
 			}
 			firstChunks := []string{
-				`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"Metadata":{"provider_id":"forged"}}`,
+				": unmatched \"\n" +
+					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"Metadata":{"provider_id":"forged"}}`,
 			}
 			initialError := protocol.InferenceErrorMessage{Error: "backend failed", StatusCode: http.StatusInternalServerError}
 

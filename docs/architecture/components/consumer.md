@@ -45,14 +45,14 @@ builds `metadata` with region/country-only `location`
 ([`response_metadata.go:209-240`](../../../coordinator/api/response_metadata.go#L209-L240)),
 and reserves that top-level key and all case-insensitive aliases against
 provider-supplied values before attaching its snapshot
-([`chat_metadata_stream.go:14-87`](../../../coordinator/api/chat_metadata_stream.go#L14-L87),
+([`chat_metadata_stream.go:14-82`](../../../coordinator/api/chat_metadata_stream.go#L14-L82),
 [`response_metadata.go:242-276`](../../../coordinator/api/response_metadata.go#L242-L276)).
 Device serials, city, coordinates, lookup source, and raw IPs are never
 included. `location` is body-only, not a header. Successful streams attach
 metadata to the terminal chunk; failed committed streams emit it immediately
 before the terminal in-band error
 ([`consumer.go:2191-2222`](../../../coordinator/api/consumer.go#L2191-L2222),
-[`chat_metadata_stream.go:99-122`](../../../coordinator/api/chat_metadata_stream.go#L99-L122)).
+[`chat_metadata_stream.go:94-117`](../../../coordinator/api/chat_metadata_stream.go#L94-L117)).
 
 ## Supported operations
 

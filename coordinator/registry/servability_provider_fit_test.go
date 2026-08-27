@@ -57,15 +57,15 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 	// gemma-4-26b shape: 28 GB catalog weights on a 48 GB box. Padded weights
 	// = 28 × ~1.1176 ≈ 31.3 GiB ≤ free_for_load 32 → the weight gate admits.
 	// 48 GB leaves ~11.9 GB post-load, out of which the provider holds back the
-	// flat 5.5 GiB activation reserve — the same amount for every model, whatever
-	// its attention posture (UnifiedMemoryCap.defaultActivationReserveBytes).
+	// resolved 5.5 GiB activation reserve reported for this measured profile.
 	freeForLoad := 32.0
 	snap := routingSnapshot{
-		totalMemoryGB:   48,
-		modelSizeGB:     28,
-		freeForLoadGB:   &freeForLoad,
-		availableOnDisk: true,
-		binaryVersion:   "0.8.0",
+		totalMemoryGB:          48,
+		modelSizeGB:            28,
+		freeForLoadGB:          &freeForLoad,
+		availableOnDisk:        true,
+		binaryVersion:          "0.8.0",
+		activationReserveBytes: 11 * bytesPerGB / 2,
 	}
 	if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); !reported || !admit {
 		t.Fatalf("precondition: weight-only cold gate must admit (admit=%v, reported=%v)", admit, reported)
@@ -73,7 +73,9 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 
 	// Post-load budget per the provider's own headroom math:
 	// (0.90×48 − paddedWeights − 5.5 GiB activation floor) / 400000 B/token.
-	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion)
+	budget := coldTokenBudgetEstimate(
+		snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion,
+		snap.activationReserveBytes)
 	if budget <= 0 || budget >= 30_000 {
 		t.Fatalf("cold post-load budget = %d, want a positive value below the 30k request", budget)
 	}
@@ -124,7 +126,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	cold.Version = "0.8.0"
 	cold.mu.Unlock()
 
-	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0")
+	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0", 0)
 	if budget <= 0 {
 		t.Fatalf("cold budget = %d, want > 0", budget)
 	}

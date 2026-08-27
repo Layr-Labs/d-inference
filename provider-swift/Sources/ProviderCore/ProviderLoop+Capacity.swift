@@ -100,6 +100,7 @@ extension ProviderLoop {
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
+                    activationReserveBytes: fleetActivationReserveBytes(),
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),
                     physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
@@ -112,8 +113,11 @@ extension ProviderLoop {
         let totalMem = ProcessInfo.processInfo.physicalMemory
 
         // Max model weight we could load right now (single source of truth for
-        // the coordinator's cold-load routing). Holds back the same load reserve
-        // the load gate uses, so it enforces the 90% cap.
+        // the coordinator's cold-load routing). The scalar is based on the
+        // largest advertised activation profile; the coordinator uses each
+        // model's reported reserve to add back any candidate-specific delta.
+        // This keeps old coordinators conservative while making current routing
+        // agree with the candidate's real load gate.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
         // models on a cold load — BUT ONLY when nothing is being served. MLX
@@ -140,6 +144,8 @@ extension ProviderLoop {
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
+            headroomGb: Self.loadHeadroomGb(
+                activationReserveBytes: advertisedActivationReserveBytes()),
             outstandingReservationBytes: outstandingKV)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(

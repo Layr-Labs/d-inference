@@ -710,7 +710,8 @@ import Testing
         quantization: "4bit",
         sizeBytes: 15_600_000_000,
         estimatedMemoryGb: 16.0,
-        weightHash: String(repeating: "ab", count: 32)
+        weightHash: String(repeating: "ab", count: 32),
+        activationReserveBytes: 5_905_580_032
     )
     let message: ProviderMessage = .modelsUpdate(ProviderMessage.ModelsUpdate(models: [info]))
 
@@ -727,19 +728,21 @@ import Testing
     #expect(m["quantization"] as? String == "4bit")
     #expect((m["size_bytes"] as? NSNumber)?.int64Value == 15_600_000_000)
     #expect(m["weight_hash"] as? String == info.weightHash)
+    #expect((m["activation_reserve_bytes"] as? NSNumber)?.uint64Value == 5_905_580_032)
 
     // Full round-trip through the Codable envelope preserves the message.
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: encoded)
     #expect(decoded == message)
 
     // Decodes a Go-emitted wire form too (forward compat with the coordinator).
-    let goWire = #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef"}]}"#
+    let goWire = #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef","activation_reserve_bytes":3221225472}]}"#
     guard case .modelsUpdate(let u) = try ProviderProtocolCodec.decodeProviderMessage(from: goWire) else {
         throw TestFailure.unexpectedMessage
     }
     #expect(u.models.count == 1)
     #expect(u.models[0].id == "org/m")
     #expect(u.models[0].weightHash == "deadbeef")
+    #expect(u.models[0].activationReserveBytes == 3_221_225_472)
 }
 
 @Test func modelInfoTemplateRenderOKTriState() throws {

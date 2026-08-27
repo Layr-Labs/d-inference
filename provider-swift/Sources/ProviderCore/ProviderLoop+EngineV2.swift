@@ -154,7 +154,10 @@ extension ProviderLoop {
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        candidateActivationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in modelSlots {
             let (sum, overflow) = totalWeights
@@ -166,6 +169,8 @@ extension ProviderLoop {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            activationReserveBytes: fleetActivationReserveBytes(
+                including: candidateActivationReserveBytes),
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
     }
@@ -309,7 +314,9 @@ extension ProviderLoop {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
-        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var fleetBudget = fleetKVBudgetBytes(
+            extraWeightBytes: sizing.weightsBytes,
+            candidateActivationReserveBytes: sizing.activationReserveBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
@@ -332,7 +339,9 @@ extension ProviderLoop {
             await kvBudget.replacePendingLoadReservation(
                 requestID: "pending-load:\(modelId)", bytes: 0)
             MLX.Memory.clearCache()
-            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            fleetBudget = fleetKVBudgetBytes(
+                extraWeightBytes: sizing.weightsBytes,
+                candidateActivationReserveBytes: sizing.activationReserveBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,

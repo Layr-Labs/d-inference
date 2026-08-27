@@ -181,6 +181,49 @@ func TestFreeMemoryAdmitsColdLoadUsesReportedFreeForLoad(t *testing.T) {
 	}
 }
 
+func TestAdjustedFreeForLoadUsesCandidateActivationProfile(t *testing.T) {
+	reportedFree := 8.0
+	const (
+		measuredReserve     = uint64(3 * bytesPerGB)
+		conservativeReserve = uint64(11 * bytesPerGB / 2)
+	)
+	p := &Provider{
+		Version: "0.8.0",
+		Models: []protocol.ModelInfo{
+			{ID: "gpt-oss", ActivationReserveBytes: measuredReserve},
+			{ID: "gemma", ActivationReserveBytes: conservativeReserve},
+		},
+		BackendCapacity: &protocol.BackendCapacity{FreeForLoadGB: &reportedFree},
+	}
+
+	gptFree := adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if gptFree == nil || *gptFree != 10.5 {
+		t.Fatalf("gpt-oss adjusted free-for-load = %v, want 10.5 GiB", gptFree)
+	}
+	gemmaFree := adjustedFreeForLoadGBLocked(p, "gemma")
+	if gemmaFree == nil || *gemmaFree != reportedFree {
+		t.Fatalf("gemma adjusted free-for-load = %v, want baseline %.1f GiB",
+			gemmaFree, reportedFree)
+	}
+
+	// Unknown/unreported current profiles resolve to the v0.8 conservative
+	// fallback, so no optimistic delta is added.
+	unknownFree := adjustedFreeForLoadGBLocked(p, "unknown")
+	if unknownFree == nil || *unknownFree != reportedFree {
+		t.Fatalf("unknown adjusted free-for-load = %v, want baseline %.1f GiB",
+			unknownFree, reportedFree)
+	}
+
+	// A provider advertising only the lower profile computes its scalar against
+	// that same profile; there is no phantom add-back.
+	p.Models = p.Models[:1]
+	onlyMeasured := adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if onlyMeasured == nil || *onlyMeasured != reportedFree {
+		t.Fatalf("single-profile adjusted free-for-load = %v, want %.1f GiB",
+			onlyMeasured, reportedFree)
+	}
+}
+
 // A reported 0 ("can't load anything now") must reject any cold load, not fall
 // back to the heuristic (nil is the only fallback trigger).
 func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {

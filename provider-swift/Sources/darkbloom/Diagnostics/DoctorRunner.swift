@@ -109,18 +109,25 @@ enum DoctorRunner {
             // instead of flagging the one that will never load.
             let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
             let alternatives = allModels.map {
-                ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
+                ModelFitDiagnostic.ModelOption(
+                    id: $0.id,
+                    weightGb: $0.estimatedMemoryGb,
+                    activationReserveBytes: $0.activationReserveBytes)
             }
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
-                    usableGb: usableGb, alternatives: alternatives))
+                    usableGb: usableGb,
+                    activationReserveBytes: target.activationReserveBytes,
+                    alternatives: alternatives))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
                     out.append(ModelFitDiagnostic.diagnose(
                         modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
+                        usableGb: usableGb,
+                        activationReserveBytes: biggest.activationReserveBytes,
+                        alternatives: alternatives))
                 }
             }
         }

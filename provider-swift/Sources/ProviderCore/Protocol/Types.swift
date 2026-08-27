@@ -92,6 +92,11 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     public var sizeBytes: UInt64
     public var estimatedMemoryGb: Double
     public var weightHash: String?
+    /// Resolved activation working-set reserve for this exact local model
+    /// profile, in bytes. Current providers always report it; nil means a
+    /// legacy provider/model record and makes the coordinator use its
+    /// conservative compatibility fallback.
+    public var activationReserveBytes: UInt64?
     /// True when this build can serve image/video (VLM) input. Encoded only when
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
     /// providers and text-only builds omit it and are never routed media requests.
@@ -117,6 +122,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
         case weightHash = "weight_hash"
+        case activationReserveBytes = "activation_reserve_bytes"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
@@ -130,6 +136,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         sizeBytes: UInt64,
         estimatedMemoryGb: Double,
         weightHash: String? = nil,
+        activationReserveBytes: UInt64? = nil,
         isVision: Bool? = nil,
         templateRenderOK: Bool? = nil,
         toolConstraintTemplateHash: String? = nil
@@ -141,6 +148,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
         self.weightHash = weightHash
+        self.activationReserveBytes = activationReserveBytes
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
@@ -155,6 +163,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encode(sizeBytes, forKey: .sizeBytes)
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
+        try container.encodeIfPresent(
+            activationReserveBytes, forKey: .activationReserveBytes)
         // Encode only when true so text-only builds stay byte-compatible on the wire.
         if isVision == true {
             try container.encode(true, forKey: .isVision)
@@ -748,12 +758,12 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var gpuMemoryCacheGb: Double
     public var totalMemoryGb: Double
     /// Max additional model-WEIGHT footprint (GB) the provider can load right
-    /// now, accounting for the 90% unified cap, OS/operator reserve, load
-    /// headroom, real OS-available memory, and eviction of idle resident models
-    /// (see `ModelLoadAdmission.maxLoadableWeightGb`). The coordinator consumes
-    /// this as the single source of truth for cold-load routing instead of
-    /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
-    /// anything new right now".
+    /// now, accounting for the 90% unified cap, OS/operator reserve, real
+    /// OS-available memory, eviction of idle resident models, and load headroom
+    /// for the largest activation profile in the advertised model set. A current
+    /// coordinator adds back the baseline/profile difference for a lower-reserve
+    /// candidate using `ModelInfo.activationReserveBytes`; old coordinators stay
+    /// conservatively compatible. 0 means "cannot load anything new right now".
     public var freeForLoadGb: Double
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.

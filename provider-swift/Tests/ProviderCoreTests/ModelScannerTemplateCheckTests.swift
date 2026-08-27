@@ -32,6 +32,7 @@ private func makeSnapshot(template: String?, configJSON: String) throws -> URL {
 
     let info = try #require(ModelScanner.parseModelInfo(snapshotDir: dir, modelName: "org/healthy"))
     #expect(info.templateRenderOK == true)
+    #expect(info.activationReserveBytes == UnifiedMemoryCap.defaultActivationReserveBytes)
 }
 
 @Test func parseModelInfoStampsTemplateRenderOKFalse() throws {

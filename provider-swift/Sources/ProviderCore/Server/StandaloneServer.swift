@@ -645,7 +645,41 @@ public actor StandaloneServer {
     /// cap minus Σ resident weights (all slots + the newcomer's), with no
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+    private func fleetActivationReserveBytes(
+        including candidate: UInt64? = nil
+    ) -> UInt64 {
+        var reserves = slots.values.map(\.sizing.activationReserveBytes)
+        reserves.append(contentsOf: modelsLoading.compactMap { modelId in
+            models.first(where: { $0.id == modelId })
+                .map { ModelActivationPolicy.reportedOrDefault($0.activationReserveBytes) }
+        })
+        return ModelActivationPolicy.fleetReserveBytes(
+            reserves, including: candidate)
+    }
+
+    private func publishFleetActivationReserve(
+        including candidate: UInt64? = nil
+    ) async {
+        await kvBudget.setActivationReserveBytes(
+            fleetActivationReserveBytes(including: candidate))
+    }
+
+    private func requiredLoadGb(
+        weightsGb: Double,
+        candidateActivationReserveBytes: UInt64
+    ) -> Double {
+        ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: weightsGb,
+            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(
+                activationReserveBytes: fleetActivationReserveBytes(
+                    including: candidateActivationReserveBytes)
+            )) / Double(ModelActivationPolicy.bytesPerGiB))
+    }
+
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        candidateActivationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in slots {
             let (sum, overflow) = totalWeights
@@ -657,6 +691,8 @@ public actor StandaloneServer {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            activationReserveBytes: fleetActivationReserveBytes(
+                including: candidateActivationReserveBytes),
             configReserveBytes: 0)
     }
 
@@ -779,7 +815,9 @@ public actor StandaloneServer {
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
-        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var fleetBudget = fleetKVBudgetBytes(
+            extraWeightBytes: sizing.weightsBytes,
+            candidateActivationReserveBytes: sizing.activationReserveBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
@@ -798,7 +836,9 @@ public actor StandaloneServer {
             await kvBudget.replacePendingLoadReservation(
                 requestID: "pending-load:\(modelId)", bytes: 0)
             MLX.Memory.clearCache()
-            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            fleetBudget = fleetKVBudgetBytes(
+                extraWeightBytes: sizing.weightsBytes,
+                candidateActivationReserveBytes: sizing.activationReserveBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
                 newcomer: newcomer,
@@ -989,6 +1029,7 @@ public actor StandaloneServer {
         // the next load's gate and the surviving model's KV budget don't see the
         // freed memory. Mirrors ProviderLoop.unloadModel.
         MLX.Memory.clearCache()
+        await publishFleetActivationReserve()
         // Re-slice GROW the survivors: with this model's weights gone the
         // fleet KV budget rises, and the remaining engines take their new
         // fair shares (a lone survivor gets the FULL budget back).
@@ -1007,10 +1048,20 @@ public actor StandaloneServer {
         }
     }
 
-    private func ensureMemoryHeadroomForLoad(requiredGb: Double) async throws {
-        guard requiredGb.isFinite, requiredGb > 0 else { return }
-
-        while await availableMemoryGb() < requiredGb {
+    private func ensureMemoryHeadroomForLoad(
+        weightsGb: Double,
+        candidateActivationReserveBytes: UInt64
+    ) async throws {
+        while true {
+            let requiredGb = requiredLoadGb(
+                weightsGb: weightsGb,
+                candidateActivationReserveBytes: candidateActivationReserveBytes)
+            guard requiredGb.isFinite, requiredGb > 0 else { return }
+            await publishFleetActivationReserve(
+                including: candidateActivationReserveBytes)
+            if await availableMemoryGb() >= requiredGb {
+                return
+            }
             guard await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
@@ -1221,6 +1272,8 @@ public actor StandaloneServer {
         guard let modelInfo = models.first(where: { $0.id == modelId }) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
+        let modelActivationReserveBytes =
+            ModelActivationPolicy.reportedOrDefault(modelInfo.activationReserveBytes)
 
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
@@ -1271,12 +1324,12 @@ public actor StandaloneServer {
         do {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
-            let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: modelInfo.estimatedMemoryGb,
-                    // Cap-aware: activation reserve + min serveable KV, so a model
-                    // that loads can actually serve (matches the runtime KV gate).
-                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
-            try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
+            try await ensureMemoryHeadroomForLoad(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                candidateActivationReserveBytes: modelActivationReserveBytes)
+            let targetRequiredGb = requiredLoadGb(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                candidateActivationReserveBytes: modelActivationReserveBytes)
             if let artifact = mtpPreparation.artifact {
                 if !ProviderLoop.assistantMemoryFits(
                     availableGb: await availableMemoryGb(),
@@ -1351,7 +1404,8 @@ public actor StandaloneServer {
             let targetSizing = try await SlotSizingSnapshot.build(
                 container: newcomer.borrow(),
                 modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+                fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens,
+                activationReserveBytes: modelActivationReserveBytes)
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
             await kvBudget.replacePendingLoadReservation(
@@ -1379,10 +1433,16 @@ public actor StandaloneServer {
             // a model with no serveable KV headroom under the cap rather than
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            let effectiveActivationReserveBytes = fleetActivationReserveBytes(
+                including: modelActivationReserveBytes)
+            if !KVHeadroomProbe.hasServeableKVHeadroom(
+                activationReserveBytes: effectiveActivationReserveBytes)
+            {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        activationReserveBytes: effectiveActivationReserveBytes
+                    )) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -1436,7 +1496,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
-                pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                activationReserveBytes: effectiveActivationReserveBytes)
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
             if bundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -1470,12 +1531,15 @@ public actor StandaloneServer {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
-                    pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                    activationReserveBytes: effectiveActivationReserveBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        activationReserveBytes: effectiveActivationReserveBytes
+                    )) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident
@@ -1503,6 +1567,7 @@ public actor StandaloneServer {
                 isVLM: slotIsVLM,
                 sizing: sizing,
                 lastUsedAt: .now)
+            await publishFleetActivationReserve()
             standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
             modelsLoading.remove(modelId)
@@ -1519,6 +1584,7 @@ public actor StandaloneServer {
             await kvBudget.release(requestID: pendingLoadID)
             // Release pool buffers a failed load left behind.
             MLX.Memory.clearCache()
+            await publishFleetActivationReserve()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }

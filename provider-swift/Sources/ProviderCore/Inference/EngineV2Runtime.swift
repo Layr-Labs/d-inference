@@ -64,6 +64,9 @@ public actor EngineV2Runtime {
         /// Sum of resident model weights across all slots, including each
         /// bridge's own model.
         public let totalResidentWeightBytes: UInt64
+        /// Maximum activation working-set reserve required by any resident
+        /// model. MLX evaluations serialize, so resident transients do not sum.
+        public let activationReserveBytes: UInt64
         /// Operator `memory_reserve_gb`, in bytes (see `EngineV2KVSizing`).
         public let configReserveBytes: UInt64
         /// Injectable for tests; the machine's real memory in production.
@@ -71,10 +74,13 @@ public actor EngineV2Runtime {
 
         public init(
             totalResidentWeightBytes: UInt64,
+            activationReserveBytes: UInt64? = nil,
             configReserveBytes: UInt64 = 0,
             physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
         ) {
             self.totalResidentWeightBytes = totalResidentWeightBytes
+            self.activationReserveBytes =
+                activationReserveBytes ?? UnifiedMemoryCap.resolvedActivationReserveBytes()
             self.configReserveBytes = configReserveBytes
             self.physicalBytes = physicalBytes
         }
@@ -115,6 +121,7 @@ public actor EngineV2Runtime {
                     grantedKVBytesCapacity: grant,
                     totalResidentWeightBytes: fleetKV.totalResidentWeightBytes,
                     otherEngineKVCapacities: otherClaims,
+                    activationReserveBytes: fleetKV.activationReserveBytes,
                     configReserveBytes: fleetKV.configReserveBytes,
                     physicalBytes: fleetKV.physicalBytes)
             }

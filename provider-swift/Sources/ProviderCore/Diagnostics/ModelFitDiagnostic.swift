@@ -24,12 +24,18 @@ public enum ModelFitDiagnostic {
     /// footprint plus one-request headroom — exactly `ensureModelLoaded`'s
     /// requirement. `estimatedMemoryGb` is the scanner's overhead-included size
     /// (the same value the runtime passes), not the raw on-disk bytes.
-    public static func requiredGb(estimatedMemoryGb: Double) -> Double {
+    public static func requiredGb(
+        estimatedMemoryGb: Double,
+        activationReserveBytes: UInt64? = nil
+    ) -> Double {
         // Cap-aware headroom (activation reserve + min serveable KV) so the
         // doctor's "needs ~X GB" matches what the runtime load gate requires.
         ModelLoadAdmission.requiredToLoadGb(
             weightsGb: estimatedMemoryGb,
-            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(
+                activationReserveBytes: ModelActivationPolicy.reportedOrDefault(
+                    activationReserveBytes)
+            )) / gib)
     }
 
     /// The memory (GB) the provider would actually have free to load a model,
@@ -67,9 +73,16 @@ public enum ModelFitDiagnostic {
     public struct ModelOption: Sendable, Equatable {
         public let id: String
         public let weightGb: Double
-        public init(id: String, weightGb: Double) {
+        public let activationReserveBytes: UInt64?
+
+        public init(
+            id: String,
+            weightGb: Double,
+            activationReserveBytes: UInt64? = nil
+        ) {
             self.id = id
             self.weightGb = weightGb
+            self.activationReserveBytes = activationReserveBytes
         }
     }
 
@@ -80,6 +93,7 @@ public enum ModelFitDiagnostic {
         modelID: String,
         weightGb: Double,
         usableGb: Double,
+        activationReserveBytes: UInt64? = nil,
         alternatives: [ModelOption] = []
     ) -> Diagnostic {
         guard weightGb > 0, usableGb > 0 else {
@@ -88,7 +102,9 @@ public enum ModelFitDiagnostic {
                 message: "couldn't determine the model size or available memory; skipping the fit check.",
                 fix: nil)
         }
-        let needed = requiredGb(estimatedMemoryGb: weightGb)
+        let needed = requiredGb(
+            estimatedMemoryGb: weightGb,
+            activationReserveBytes: activationReserveBytes)
         if needed <= usableGb {
             return Diagnostic(
                 section: .traffic, name: "model fits in RAM", level: .pass,
@@ -96,13 +112,22 @@ public enum ModelFitDiagnostic {
                 fix: nil)
         }
         let fits = alternatives
-            .filter { requiredGb(estimatedMemoryGb: $0.weightGb) <= usableGb }
+            .filter {
+                requiredGb(
+                    estimatedMemoryGb: $0.weightGb,
+                    activationReserveBytes: $0.activationReserveBytes) <= usableGb
+            }
             .sorted { $0.weightGb > $1.weightGb }
         let suggestion: String
         if fits.isEmpty {
             suggestion = "this box's RAM is too small for the models on this network; consider a machine with more unified memory."
         } else {
-            let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb))) GB)" }.joined(separator: ", ")
+            let list = fits.prefix(3).map { option in
+                let required = requiredGb(
+                    estimatedMemoryGb: option.weightGb,
+                    activationReserveBytes: option.activationReserveBytes)
+                return "\(option.id) (~\(fmt(required)) GB)"
+            }.joined(separator: ", ")
             suggestion = "set `enabled_models` in provider.toml to a model that fits: \(list)."
         }
         return Diagnostic(

@@ -34,10 +34,8 @@ public enum UnifiedMemoryCap {
     /// OS (e.g. an 8 GiB box gets a 6 GiB cap, not 7.2 GiB).
     static let minimumReserveBytes: UInt64 = 2 * 1024 * 1024 * 1024  // 2 GiB
 
-    /// The activation/working-memory reserve carved out INSIDE the cap — for
-    /// every model, every attention posture, every batch. FLAT. Nothing in
-    /// this type scales it; only an explicit operator or programmatic override
-    /// moves it (`DARKBLOOM_ACTIVATION_RESERVE_GB`, which may only RAISE it).
+    /// Conservative activation/working-memory reserve carved out INSIDE the
+    /// cap when a model has no measured execution profile.
     ///
     /// 5.5 GiB as of v0.8.0, sized against the table below: this release
     /// raises the decode batch to 8, and the measured gemma-4 peak at B=8 is
@@ -57,8 +55,8 @@ public enum UnifiedMemoryCap {
     ///     gemma-4-26B-qat-4bit  composed, head_dim 256/512   B=4 3.40  B=8 5.05 GiB
     ///     gpt-oss-20b-MXFP4-Q8  fused,    head_dim 64        B=4 2.20  B=8 2.56 GiB
     ///
-    /// Two things follow, and together they are why this is NOT a function of
-    /// prefill shape. The composed/fused gap is real but small (+1.2 GiB at
+    /// Two things follow, and together they are why this is NOT derived from a
+    /// prefill-shape formula. The composed/fused gap is real but small (+1.2 GiB at
     /// B=4), and the FUSED model — which materialises no score tensor at all —
     /// still spends 2.2 GiB. The dominant term is the non-attention working
     /// set, which no attention-shape estimate models: a `[rows, heads, C, kL]`
@@ -70,10 +68,9 @@ public enum UnifiedMemoryCap {
     /// bytes. Transient growth during a step is already visible to
     /// ``liveKVHeadroomBytes``, which subtracts real MLX `active + cache`; the
     /// reserve only has to keep the NEXT step's working set from crossing the
-    /// cap. Retune it against a measurement, in one place, for the whole fleet
-    /// — and mirror any change in `coordinator/registry/servability.go`
-    /// (`servabilityActivationFloorGB`), which predicts this exact arithmetic
-    /// for cold providers.
+    /// cap. ``ModelActivationPolicy`` may select a lower reserve only for an
+    /// exact, measured execution profile. Unknown or changed profiles stay on
+    /// this conservative value.
     ///
     /// KNOWN EXCEPTIONS, neither new nor yet measured as harmful. A composed
     /// attention model (head_dim outside MLX's fused-SDPA set {64, 80, 128})
@@ -93,9 +90,9 @@ public enum UnifiedMemoryCap {
     /// still on and the score tensor gets SMALLER, so it costs exactness
     /// (summation order), not memory. Either way the answer here is the env
     /// override, not a per-model formula.
-    // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Mirrored by
-    // coordinator/registry/servability.go (servabilityActivationFloorGB);
-    // the two MUST move in the same commit — see the doc comment above.
+    // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Current providers report the
+    // resolved per-model value to the coordinator. This constant remains the
+    // coordinator's compatibility fallback for providers that omit the field.
     static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
@@ -282,31 +279,27 @@ public enum UnifiedMemoryCap {
         return defaultCapFraction
     }
 
-    /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
+    /// Activation reserve from explicit bytes, model profile, env
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or
+    /// ``defaultActivationReserveBytes``.
     ///
-    /// The env override is RAISE-ONLY, enforced, not just documented: the
-    /// resolved value is `max(env, default)`. A value below the floor —
-    /// most likely a legacy `3` set when 3 GiB WAS the default — would
-    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
-    /// prevent, while the coordinator keeps predicting capacity with the
-    /// floor (`servability.go`). A `<= 0` or non-finite env value is
-    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
-    /// the activation headroom the cap exists to guarantee. An explicit
-    /// programmatic value (tests) is honored as given, below the floor
-    /// included — test fixtures legitimately model small boxes.
+    /// The env override is RAISE-ONLY relative to the selected profile:
+    /// `max(env, modelProfile)`. A `<= 0` or non-finite env value is treated as
+    /// unset. An explicit programmatic value (tests) is honored as given.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
+        modelReserveBytes: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
         if let explicit { return explicit }
+        let floor = modelReserveBytes ?? defaultActivationReserveBytes
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
             let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
-            return max(bytes, defaultActivationReserveBytes)
+            return max(bytes, floor)
         }
-        return defaultActivationReserveBytes
+        return floor
     }
 
     // MARK: - Helpers

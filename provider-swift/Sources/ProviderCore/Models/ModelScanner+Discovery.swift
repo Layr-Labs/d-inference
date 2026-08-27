@@ -126,6 +126,10 @@ extension ModelScanner {
         // wire-identical to one decoded from an older provider's registration.
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
             && configDeclaresVision(at: configPath)
+        let activationReserveBytes = ModelActivationPolicy.reserveBytes(
+            modelType: modelType,
+            configURL: configPath,
+            isVision: isVision)
 
         // Template-render self-check (DAR-130 class): render the model's chat
         // template(s) against canonical request fixtures so the coordinator can
@@ -146,6 +150,7 @@ extension ModelScanner {
             quantization: quantization,
             sizeBytes: sizeBytes,
             estimatedMemoryGb: estimatedMemoryGb,
+            activationReserveBytes: activationReserveBytes,
             isVision: isVision ? true : nil,
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash

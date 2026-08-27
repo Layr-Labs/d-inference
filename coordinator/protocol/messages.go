@@ -119,6 +119,11 @@ type ModelInfo struct {
 	ModelType    string `json:"model_type"`
 	Quantization string `json:"quantization"`
 	WeightHash   string `json:"weight_hash,omitempty"` // SHA-256 fingerprint of weight files
+	// ActivationReserveBytes is the provider-resolved activation working-set
+	// reserve for this exact local execution profile. Current providers report
+	// it for every model; zero means an older provider and selects the
+	// version-gated compatibility fallback in coordinator cold-load estimates.
+	ActivationReserveBytes uint64 `json:"activation_reserve_bytes,omitempty"`
 	// IsVision is true when the provider can serve this build with image/video
 	// input (a VLM, detected via vision_config). v0.6.0+ only; older providers omit
 	// it (decodes to false) so they are never selected for media requests. The
@@ -384,11 +389,11 @@ type BackendCapacity struct {
 	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
-	// reserve, and activation+min-KV load headroom, clamped to real OS-available
-	// memory, and treating idle resident models as evictable. It is the single
-	// source of truth for cold-load admission (the coordinator no longer
-	// re-derives free memory). A pointer so a legacy provider that doesn't report
-	// it is nil (→ coordinator falls back to the total-memory heuristic).
+	// reserve, and activation+min-KV load headroom for the largest advertised
+	// activation profile, clamped to real OS-available memory, and treating idle
+	// resident models as evictable. Routing adds back the baseline/profile delta
+	// for lower-reserve candidates. A pointer so a legacy provider that doesn't
+	// report it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`

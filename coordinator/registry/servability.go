@@ -44,62 +44,30 @@ const (
 	// servabilityCapFraction mirrors the provider's UnifiedMemoryCap default
 	// (90% of physical memory usable for MLX).
 	servabilityCapFraction = 0.90
-	// servabilityActivationFloorGB mirrors the provider's activation reserve
-	// (UnifiedMemoryCap.defaultActivationReserveBytes, 5.5 GiB): the working
-	// set held back on top of weights before any KV cache. It is FLAT on the
-	// provider — every model, every attention posture, every batch — so it is
-	// flat here. It does not scale with anything.
-	//
-	// 5.5 as of v0.8.0, moved in the SAME commit as the provider constant:
-	// the release ships decode batch 8 and the measured gemma-4 B=8
-	// activation peak is 5.05 GiB, above the old 3 GiB floor (which was
-	// sized against the B=4 sweep). The coordinator consequence is a smaller
-	// predicted cold post-load budget — 2.5 GiB / 400000 B-per-token ≈ 6.7k
-	// fewer tokens per box — which is the deliberate, protective direction:
-	// the provider now genuinely leaves that much less KV.
-	//
-	// A per-token surcharge for composed-attention models (head_dim outside
-	// MLX's fused-SDPA set {64, 80, 128}) briefly lived beside it and has been
-	// removed: the provider half it claimed to mirror was never wired, so the
-	// coordinator was charging for a reserve no provider ever held. See
-	// coldTokenBudgetEstimate's "Mirroring, not modelling" note before adding
-	// any term here. Moving the FLAT floor — what this change does — is the
-	// sanctioned shape; re-adding a model-dependent term is not.
-	servabilityActivationFloorGB = 5.5
-	// servabilityLegacyActivationFloorGB is the reserve a pre-0.8.0 provider
-	// actually holds (the old defaultActivationReserveBytes). During the
-	// staged rollout the fleet is mixed, and this mirror must charge each
-	// provider the reserve ITS binary holds — a flat 5.5 against a cold
-	// legacy box falsely 429s (prompt_too_long, terminal) a request sized
-	// between the two reserves that the legacy fleet could serve. See
-	// servabilityActivationFloorForVersion.
-	servabilityLegacyActivationFloorGB = 3.0
-	// servabilityActivationFloorMinVersion is the first provider release
-	// whose UnifiedMemoryCap holds the 5.5 GiB reserve.
-	servabilityActivationFloorMinVersion = "0.8.0"
+	// Compatibility reserves for providers that predate per-model reporting.
+	// Current providers send the exact resolved byte count in ModelInfo; unknown
+	// model profiles resolve conservatively to 5.5 GiB on the provider itself.
+	servabilityDefaultActivationReserveBytes uint64 = 11 * bytesPerGB / 2
+	servabilityLegacyActivationReserveBytes  uint64 = 3 * bytesPerGB
+	// servabilityDefaultReserveMinVersion is the first provider release whose
+	// unreported compatibility reserve is 5.5 GiB rather than 3 GiB.
+	servabilityDefaultReserveMinVersion = "0.8.0"
 )
 
-// servabilityActivationFloorForVersion selects the activation reserve the
-// given provider binary actually holds. This is the same version-gated
-// selection shape as slotBudgetLayoutForVersion: the registry snapshot carries
-// the provider's reported binary version (p.Version → snap.binaryVersion), so
-// the cold estimate can mirror the right constant per provider — which is
-// what makes it converge to that provider's own warm report as the slot loads
-// (a legacy provider's active_token_budget_max reflects its 3 GiB reserve).
-//
-// An EMPTY/unreported version fails toward the LEGACY (larger) budget, the
-// fail-open direction this file mandates: over-predicting a budget risks one
-// provider-side refusal that the dispatch retry machinery absorbs;
-// under-predicting produces a terminal client-visible 429. The asymmetry is
-// also self-correcting — the fleet trends to ≥0.8.0 as it upgrades, and every
-// RESIDENT slot reports its real budget, which snapshotStructuralBudget
-// prefers over this estimate.
-func servabilityActivationFloorForVersion(version string) float64 {
-	if version == "" ||
-		CompareVersions(version, servabilityActivationFloorMinVersion) < 0 {
-		return servabilityLegacyActivationFloorGB
+// servabilityActivationReserveBytes returns the provider's exact reported
+// per-model reserve when available. Omission falls back by binary generation.
+// An empty version takes the legacy 3 GiB value: over-predicting a cold budget
+// can cause a retryable provider refusal, while under-predicting causes a
+// terminal coordinator 429 for a request an old provider could serve.
+func servabilityActivationReserveBytes(reported uint64, version string) uint64 {
+	if reported > 0 {
+		return reported
 	}
-	return servabilityActivationFloorGB
+	if version == "" ||
+		CompareVersions(version, servabilityDefaultReserveMinVersion) < 0 {
+		return servabilityLegacyActivationReserveBytes
+	}
+	return servabilityDefaultActivationReserveBytes
 }
 
 // ServabilityReason is the low-cardinality reason a request was judged
@@ -130,17 +98,15 @@ type ServabilityVerdict struct {
 }
 
 // coldTokenBudgetEstimate approximates the token budget a cold (on-disk, not yet
-// loaded) provider would have AFTER loading the model. The provider holds back a
-// flat activation reserve on top of the padded weights, so the budget is
+// loaded) provider would have AFTER loading the model. Current providers report
+// the resolved activation reserve for each exact local profile, so the budget is
 //
-//	(cap*totalMemoryGB - paddedWeightsGB - activationFloor) / kvBytesPerToken
+//	(cap*totalMemoryGB - paddedWeightsGB - activationReserve) / kvBytesPerToken
 //
 // paddedWeightsGB uses the same catalog→padded-GiB conversion the cold-load gate
 // uses (coldLoadCatalogGBToMemGiB). kvBytesPerToken prefers the provider-reported
-// per-model value, falling back to the kvCacheBytesPerToken default.
-// providerVersion selects the activation reserve THAT binary holds — 3 GiB
-// before 0.8.0, 5.5 GiB after (servabilityActivationFloorForVersion) — so a
-// mixed-version fleet is charged per-provider, not at the newest constant. The
+// per-model value, falling back to the kvCacheBytesPerToken default. A missing
+// reserve uses the version-gated 3/5.5 GiB compatibility value. The
 // estimate is deliberately OPTIMISTIC (uses only the activation reserve, not
 // the extra min-KV load floor) so the predictor errs toward serving. Returns 0
 // when the inputs are unusable or no headroom remains.
@@ -149,26 +115,13 @@ type ServabilityVerdict struct {
 //
 // This function's only job is to reproduce the PROVIDER's own reserve arithmetic
 // for a slot that has no heartbeat yet. It is not an independent opinion about
-// how much memory prefill needs. UnifiedMemoryCap.kvBudgetBytes computes
-// cap − Σweights − reserve with reserve flat at 5.5 GiB, and a resident slot
-// reports exactly that back as active_token_budget_max (EngineV2Bridge+Capacity:
-// kvBytesCapacity / kvBytesPerToken) — which snapshotStructuralBudget prefers
-// whenever it exists. So the cold estimate has to converge to the warm report as
-// the slot loads, and it does, because both are the same subtraction.
-//
-// That is why there is no attention-posture term here. A composed-attention
-// model (gemma-4: head_dim 256 sliding / 512 full) really does materialise a
-// bigger prefill score tensor than a fused one (gpt-oss: head_dim 64, inside
-// MLX's fused-SDPA set), but the provider does not charge it — UnifiedMemoryCap
-// holds back 5.5 GiB either way. Charging it here made this gate strictly
-// TIGHTER than the gate it mirrors and 429'd prompts every provider in the
-// fleet could have served. Whether 5.5 GiB is the right number is the
-// provider's question, answered in one place; a second opinion here can only
-// desync. Retune this ONLY when defaultActivationReserveBytes moves — as it
-// did for v0.8.0 (3 → 5.5, the measured B=8 activation peak) — and keep the
-// LEGACY constant beside it while any pre-move provider remains in the fleet:
-// convergence is per-provider, so the mirror must charge each binary the
-// reserve it actually holds (servabilityActivationFloorForVersion).
+// how much memory prefill needs. Swift selects a lower reserve only for an exact
+// measured execution profile, applies the raise-only operator override, and
+// reports the resulting bytes. Go consumes those bytes without reimplementing
+// the model classifier. A resident slot then reports the resulting real
+// active_token_budget_max, which snapshotStructuralBudget prefers. This makes
+// the cold estimate converge to the warm report and prevents the prior defect
+// where coordinator-only modelling produced false terminal 429s.
 //
 // Being optimistic is the safe direction because the coordinator is not the
 // backstop. The provider is, and its checks are measurement-based, not
@@ -179,7 +132,12 @@ type ServabilityVerdict struct {
 // (liveKVHeadroomBytes). An over-generous estimate therefore costs a declined
 // load, which the dispatch path retries elsewhere — strictly better than a
 // terminal 429 on a request that was servable all along.
-func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64, providerVersion string) int64 {
+func coldTokenBudgetEstimate(
+	totalMemoryGB, modelSizeGB float64,
+	kvBytesPerToken int64,
+	providerVersion string,
+	reportedActivationReserveBytes uint64,
+) int64 {
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
 	}
@@ -193,8 +151,9 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 		kvpt = kvCacheBytesPerToken
 	}
 	postLoadBytes := postLoadGB * float64(bytesPerGB)
-	floorBytes := servabilityActivationFloorForVersion(providerVersion) * float64(bytesPerGB)
-	tokens := (postLoadBytes - floorBytes) / float64(kvpt)
+	activationBytes := servabilityActivationReserveBytes(
+		reportedActivationReserveBytes, providerVersion)
+	tokens := (postLoadBytes - float64(activationBytes)) / float64(kvpt)
 	if tokens <= 0 {
 		return 0
 	}
@@ -222,7 +181,12 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 		return 0, false
 	}
 	return coldTokenBudgetEstimate(
-		snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken, snap.binaryVersion), true
+		snap.totalMemoryGB,
+		snap.modelSizeGB,
+		snap.kvBytesPerToken,
+		snap.binaryVersion,
+		snap.activationReserveBytes,
+	), true
 }
 
 // liveRemainingBudget is snapshotStructuralBudget minus the provider's CURRENTLY

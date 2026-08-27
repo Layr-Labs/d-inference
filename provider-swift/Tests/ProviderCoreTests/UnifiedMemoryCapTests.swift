@@ -138,25 +138,29 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "5.5"]) == def)
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
         explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "6"]) == 6 * gib)
+
+    // A measured model profile replaces the conservative default, while the
+    // operator override stays raise-only relative to that selected profile.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        modelReserveBytes: 3 * gib, env: [:]) == 3 * gib)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        modelReserveBytes: 3 * gib,
+        env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "2"]) == 3 * gib)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        modelReserveBytes: 3 * gib,
+        env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"]) == 4 * gib)
 }
 
 /// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator
-/// hard-codes the same figure (`servabilityActivationFloorGB = 5.5`, in
-/// `coordinator/registry/servability.go`) and subtracts it in
-/// `coldTokenBudgetEstimate` to predict what THIS gate will leave a freshly
-/// loaded slot. A cold slot sends no heartbeat, so the coordinator has no way
-/// to observe a provider that quietly retuned the reserve — the two figures
-/// stay equal only because someone moves both.
+/// keeps the same figure as the compatibility fallback in
+/// `coordinator/registry/servability.go`. Current providers report the
+/// model-specific resolved byte count in `ModelInfo`, and
+/// `coldTokenBudgetEstimate` consumes that exact value.
 ///
-/// FLATNESS is the other half of that contract. A per-model reserve scaled by
-/// batch, context, head count and attention posture (`ActivationReserveShape` /
-/// `peakPrefillScoreBytes`) once lived in this file. It was deleted because it
-/// shipped on the coordinator side and never on this one: every gate here kept
-/// taking the floor while the coordinator charged composed AND fused models a
-/// per-token surcharge, leaving the predictor strictly TIGHTER than the gate it
-/// mirrors and 429ing prompts the fleet could serve. Anything that makes this
-/// figure depend on the model has to land on both sides in one change.
-@Test func activationReserveIsFlatAndIsTheFigureTheCoordinatorMirrors() {
+/// The provider's load gate and KV gate must carve out the same selected
+/// reserve for every profile. A prior coordinator-only model formula violated
+/// this invariant and caused false terminal 429s.
+@Test func selectedActivationReserveIsTheFigureEveryProviderGateUses() {
     // 5.5 GiB as of v0.8.0: the release ships decode batch 8, and gemma-4's
     // MEASURED B=8 peak-over-weights is 5.05 GiB — above the old 3 GiB floor
     // that was sized against the B=4 sweep. See the constant's doc comment.
@@ -165,22 +169,19 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.defaultActivationReserveBytes
         > UInt64(5.05 * Double(gib)), "the floor must cover the measured B=8 peak")
 
-    // The coordinator's cold estimate subtracts ONE reserve and assumes both
-    // provider gates hold back that same figure. They must: the load gate
-    // carving out less than the KV gate is the exact cross-phase bug
-    // `loadHeadroomBytes` documents (a model admitted with zero serveable KV).
-    let reserve = UnifiedMemoryCap.defaultActivationReserveBytes
-    let phys: UInt64 = 128 * gib
-    let weights: UInt64 = 28 * gib  // gemma-4-26b, the composed-attention model
-    let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: phys)
-    let carvedByKVGate = cap - weights - UnifiedMemoryCap.kvBudgetBytes(
-        physicalBytes: phys, residentWeightBytes: weights,
-        activationReserveBytes: reserve)
-    let carvedByLoadGate =
-        UnifiedMemoryCap.loadHeadroomBytes(activationReserveBytes: reserve)
-        - UnifiedMemoryCap.minimumLoadKVBytes
-    #expect(carvedByKVGate == reserve)
-    #expect(carvedByLoadGate == reserve)
+    for reserve in [3 * gib, UnifiedMemoryCap.defaultActivationReserveBytes] {
+        let phys: UInt64 = 128 * gib
+        let weights: UInt64 = 28 * gib
+        let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: phys)
+        let carvedByKVGate = cap - weights - UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: phys, residentWeightBytes: weights,
+            activationReserveBytes: reserve)
+        let carvedByLoadGate =
+            UnifiedMemoryCap.loadHeadroomBytes(activationReserveBytes: reserve)
+            - UnifiedMemoryCap.minimumLoadKVBytes
+        #expect(carvedByKVGate == reserve)
+        #expect(carvedByLoadGate == reserve)
+    }
 }
 
 // MARK: - canAdmit (the general N-model load gate)

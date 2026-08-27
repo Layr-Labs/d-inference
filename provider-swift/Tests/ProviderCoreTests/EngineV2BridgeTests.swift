@@ -1313,9 +1313,12 @@ struct EngineV2CapacityTests {
         let physical = 64 * gib
         let weights = Int(8 * gib)
         let rate = 4096
+        let measuredActivation = 3 * gib
         let grant = EngineV2KVSizing.engineKVBytesCapacity(
             newModelWeightBytes: weights, coResidentWeightBytes: 0,
-            existingEngineKVCapacities: [], physicalBytes: physical)
+            existingEngineKVCapacities: [],
+            activationReserveBytes: measuredActivation,
+            physicalBytes: physical)
         let engine = ScriptedCBv2Engine(
             script: .manual,
             capacity: CBv2CapacitySnapshot(
@@ -1329,15 +1332,31 @@ struct EngineV2CapacityTests {
         // Fleet unchanged since construction: reported max == the grant.
         let alone = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
-                totalResidentWeightBytes: UInt64(weights), physicalBytes: physical))
+                totalResidentWeightBytes: UInt64(weights),
+                activationReserveBytes: measuredActivation,
+                physicalBytes: physical))
         #expect(alone.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
 
-        // A 12 GiB model loaded later (legacy — subtracts nothing from the
-        // grant): the reported max shrinks by exactly its weights in tokens.
+        // A co-resident model with a larger activation profile raises the
+        // process-wide max and shrinks this bridge's live report by the exact
+        // reserve delta, even before resident weights change.
+        let conservativeActivation = 11 * gib / 2
+        let profileClamped = await runtime.capacitySummary(
+            fleetKV: EngineV2Runtime.FleetKVContext(
+                totalResidentWeightBytes: UInt64(weights),
+                activationReserveBytes: conservativeActivation,
+                physicalBytes: physical))
+        let activationDelta = conservativeActivation - measuredActivation
+        #expect(profileClamped.slots.first?.activeTokenBudgetMax
+            == Int64((grant - Int(activationDelta)) / rate))
+
+        // A 12 GiB model loaded later with the same activation profile shrinks
+        // the reported max by exactly its weights in tokens.
         let laterWeights = 12 * gib
         let grown = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
                 totalResidentWeightBytes: UInt64(weights) + laterWeights,
+                activationReserveBytes: measuredActivation,
                 physicalBytes: physical))
         #expect(grown.slots.first?.activeTokenBudgetMax
             == Int64((grant - Int(laterWeights)) / rate))

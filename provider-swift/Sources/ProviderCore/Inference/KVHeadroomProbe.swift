@@ -19,10 +19,21 @@ public enum KVHeadroomProbe {
     /// KV) clamped to real OS-available memory. NO floor is applied, so it
     /// reports a true zero when the cap is already exhausted.
     public static var measuredLiveKVHeadroomBytes: UInt64 {
+        measuredLiveKVHeadroomBytes(
+            activationReserveBytes:
+                UnifiedMemoryCap.resolvedActivationReserveBytes())
+    }
+
+    /// Model-aware variant used by live hosts. `activationReserveBytes` is the
+    /// maximum required by the current resident/loading model set.
+    public static func measuredLiveKVHeadroomBytes(
+        activationReserveBytes: UInt64
+    ) -> UInt64 {
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         return UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            activationReserveBytes: activationReserveBytes)
     }
 
     /// Post-load guard: true iff the freshly-loaded model leaves at least
@@ -35,6 +46,14 @@ public enum KVHeadroomProbe {
     public static func hasServeableKVHeadroom() -> Bool {
         UnifiedMemoryCap.loadIsServeable(
             measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
+    }
+
+    public static func hasServeableKVHeadroom(
+        activationReserveBytes: UInt64
+    ) -> Bool {
+        UnifiedMemoryCap.loadIsServeable(
+            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes(
+                activationReserveBytes: activationReserveBytes))
     }
 
     /// Post-BRIDGE serveable-KV verdict for a freshly-built slot.
@@ -60,14 +79,39 @@ public enum KVHeadroomProbe {
         measuredHeadroomBytes: @autoclosure () -> UInt64 = KVHeadroomProbe
             .measuredLiveKVHeadroomBytes
     ) -> Bool {
+        postBuildServeable(
+            kvBackendKind: kvBackendKind,
+            pagedPoolBytes: pagedPoolBytes,
+            resolvedHeadroomBytes: measuredHeadroomBytes())
+    }
+
+    /// Model-aware live-host overload. Kept separate from the injectable
+    /// measured-headroom overload so existing pure tests remain deterministic.
+    public static func postBuildServeable(
+        kvBackendKind: EngineV2KVBackendKind,
+        pagedPoolBytes: UInt64,
+        activationReserveBytes: UInt64
+    ) -> Bool {
+        postBuildServeable(
+            kvBackendKind: kvBackendKind,
+            pagedPoolBytes: pagedPoolBytes,
+            resolvedHeadroomBytes: measuredLiveKVHeadroomBytes(
+                activationReserveBytes: activationReserveBytes))
+    }
+
+    private static func postBuildServeable(
+        kvBackendKind: EngineV2KVBackendKind,
+        pagedPoolBytes: UInt64,
+        resolvedHeadroomBytes: UInt64
+    ) -> Bool {
         switch kvBackendKind {
         case .paged:
             return pagedPoolBytes >= UnifiedMemoryCap.minimumLoadKVBytes
                 && UnifiedMemoryCap.loadIsServeable(
-                    measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+                    measuredLiveKVHeadroomBytes: resolvedHeadroomBytes)
         case .contiguous:
             return UnifiedMemoryCap.loadIsServeable(
-                measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+                measuredLiveKVHeadroomBytes: resolvedHeadroomBytes)
         }
     }
 }

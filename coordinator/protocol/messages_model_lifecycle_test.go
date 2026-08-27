@@ -46,6 +46,38 @@ func TestModelInfoIsVisionSymmetry(t *testing.T) {
 	}
 }
 
+func TestModelInfoActivationReserveBytesSymmetry(t *testing.T) {
+	const measuredReserve = uint64(3 * 1024 * 1024 * 1024)
+	model := ModelInfo{
+		ID:                     "gpt-oss-20b",
+		SizeBytes:              1,
+		ActivationReserveBytes: measuredReserve,
+	}
+	encoded, err := json.Marshal(model)
+	if err != nil {
+		t.Fatalf("marshal activation reserve: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"activation_reserve_bytes":3221225472`)) {
+		t.Fatalf("expected activation_reserve_bytes in JSON, got %s", encoded)
+	}
+
+	var decoded ModelInfo
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal activation reserve: %v", err)
+	}
+	if decoded.ActivationReserveBytes != measuredReserve {
+		t.Fatalf("ActivationReserveBytes=%d, want %d", decoded.ActivationReserveBytes, measuredReserve)
+	}
+
+	legacy, err := json.Marshal(ModelInfo{ID: "gpt-oss-20b", SizeBytes: 1})
+	if err != nil {
+		t.Fatalf("marshal legacy model: %v", err)
+	}
+	if bytes.Contains(legacy, []byte("activation_reserve_bytes")) {
+		t.Fatalf("zero compatibility value must be omitted, got %s", legacy)
+	}
+}
+
 // TestModelInfoTemplateRenderOKSymmetry verifies the tri-state
 // template_render_ok field survives the wire: true encodes, FALSE ENCODES
 // (pointer false is the exclusion signal — omitempty must not drop it), nil is

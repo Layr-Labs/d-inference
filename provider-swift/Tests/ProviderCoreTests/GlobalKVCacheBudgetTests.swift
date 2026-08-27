@@ -8,7 +8,7 @@ import Testing
 //   min(hardCap − mlxUsed, systemAvailable) − activationReserve
 // where hardCap = min(capFraction × total, total − 2 GiB floor). Tests pin
 // capFraction / activationReserve so the arithmetic is exact; production uses
-// the 0.90 / 3 GiB defaults.
+// the 0.90 cap and the current residency set's model-profile reserve.
 //
 // NOTE: `total` must exceed the 2 GiB hardCap OS floor or hardCap collapses to 0
 // (correct for a sub-2 GiB "machine", but not what these accounting tests model).
@@ -109,6 +109,20 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     }
     #expect(!(await budget.reserve(requestID: "over", kvBytesPerToken: 1, tokenCount: Int(2 * gib + 1))))
     #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: Int(2 * gib)))
+}
+
+@Test func globalKVCacheBudgetTracksFleetActivationReserve() async {
+    let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 3 * gib) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 64 * gib, active: 0, cache: 0, systemAvailable: 8 * gib)
+    }
+
+    #expect(await budget.reserveBytes(requestID: "measured-profile", bytes: 4 * gib))
+    await budget.release(requestID: "measured-profile")
+
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserveBytes(requestID: "too-large-after-profile-change", bytes: 4 * gib)))
+    #expect(await budget.reserveBytes(requestID: "fits-after-profile-change", bytes: 2 * gib))
 }
 
 /// Q6 (serve-while-load): a loading model's weights are not in MLX active/cache

@@ -74,8 +74,19 @@ public enum KVEstimation {
     /// All numeric fields are clamped to defend against malicious or
     /// corrupt configs in operator-writable model directories.
     public static func parseModelArchitecture(at configURL: URL) -> ModelArchitecture {
-        guard let data = readBoundedConfigJSON(configURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let data = readBoundedConfigJSON(configURL) else {
+            return .empty
+        }
+        return parseModelArchitecture(configData: data)
+    }
+
+    /// Parse architecture metadata from bytes already read by a caller. Keeping
+    /// digest and architecture classification on one immutable snapshot avoids a
+    /// config replacement race in measured activation-profile selection.
+    static func parseModelArchitecture(configData: Data) -> ModelArchitecture {
+        guard configData.count <= maxConfigJSONBytes,
+              let json = try? JSONSerialization.jsonObject(with: configData)
+                as? [String: Any] else {
             return .empty
         }
 

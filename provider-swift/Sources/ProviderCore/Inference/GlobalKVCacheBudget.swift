@@ -15,11 +15,14 @@ public actor GlobalKVCacheBudget {
     }
 
     /// Cap fraction and activation reserve are nil → ``UnifiedMemoryCap``
-    /// defaults (0.90 / env / 3 GiB floor). Held as overrides so tests can pin
+    /// defaults (0.90 / env / conservative profile). Held as overrides so tests can pin
     /// them; production uses the defaults so this budget and the load gate share
     /// one policy.
     private let capFraction: Double?
-    private let activationReserveBytes: UInt64?
+    /// Updated by the model host to the maximum activation reserve required by
+    /// the current resident/loading model set. nil uses the conservative
+    /// ``UnifiedMemoryCap`` fallback.
+    private var activationReserveBytes: UInt64?
     /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
     /// the live KV gate just as the load gate holds it back, so runtime KV can't
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
@@ -184,6 +187,16 @@ public actor GlobalKVCacheBudget {
         // making progress. Unknown ids don't count: they prove nothing.
         rejectionStreakStart = nil
         lastRejectionAt = nil
+    }
+
+    /// Publish the reserve required by the current residency set. The host calls
+    /// this before candidate weights begin loading and after every load/unload
+    /// terminal, keeping concurrent KV admission aligned with load and re-slice
+    /// arithmetic.
+    public func setActivationReserveBytes(_ bytes: UInt64) {
+        activationReserveBytes = bytes > 0
+            ? bytes
+            : UnifiedMemoryCap.resolvedActivationReserveBytes()
     }
 
     /// Reserve an arbitrary BYTE amount against the same live cap headroom KV

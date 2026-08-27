@@ -112,22 +112,19 @@ import Testing
 }
 
 @Test func modelFitMatchesRuntimeGateNotRawAvailable() {
-    // Parity with the runtime gate, cap-aware: gpt-oss (~13.5 GB weights)
-    // needs 13.5 + 6.5 (activation 5.5 + min-KV 1) = 20 GB. On a 32 GB box
-    // with the OS reporting ~30 GB free it FITS — usable 30 − 4 = 26 ≥ 20 —
-    // matching ProviderLoop, which would load it with serveable KV headroom.
-    // (A 24 GB box no longer clears this bar at all under the v0.8.0
-    // reserve: 22 − 4 = 18 < 20. That refusal is the point of the raise —
-    // the daemon was spending the memory at B=8 whether or not the ledger
-    // admitted it.)
+    // Parity with the model-aware runtime gate: measured GPT-OSS 20B uses a
+    // 3 GiB activation reserve, so 13.5 GB weights need 13.5 + 3 + 1 = 17.5 GB.
     let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 30)
-    let ok = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: usable)
+    let measuredReserve: UInt64 = 3 * 1024 * 1024 * 1024
+    let ok = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss", weightGb: 13.5, usableGb: usable,
+        activationReserveBytes: measuredReserve)
     #expect(ok.level == .pass, "doctor must agree with the runtime gate that gpt-oss fits with serveable KV")
-    // But a tighter box (OS only 22 GB free → usable 18) must FAIL: 18 < 20.
-    // Pre-cap-aware this wrongly "passed", then the runtime KV gate would
-    // have rejected every request — the bug this stricter headroom fixes.
-    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 22)
-    let bad = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: tight)
+    // OS only 20 GB free leaves 16 GB after the operator reserve, below 17.5.
+    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 20)
+    let bad = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss", weightGb: 13.5, usableGb: tight,
+        activationReserveBytes: measuredReserve)
     #expect(bad.level == .fail)
 }
 

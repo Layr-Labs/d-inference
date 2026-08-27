@@ -57,6 +57,11 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// when the context is known, else the provider default (mirrors the
     /// legacy `applyPostLoadBudgets` policy).
     public let defaultMaxTokens: Int
+    /// Measured-profile activation reserve resolved at scan/load time,
+    /// including the raise-only operator override. Fleet memory policy uses
+    /// the maximum across resident slots because MLX evaluations serialize on
+    /// the process-global eval lock.
+    public let activationReserveBytes: UInt64
 
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the
     /// model container (the MTP drafter — never scanned, advertised, or
@@ -68,7 +73,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         auxiliaryWeightBytes: Int = 0,
         fp16KVBytesPerToken: Int,
         maxContextLength: Int,
-        defaultMaxTokens: Int
+        defaultMaxTokens: Int,
+        activationReserveBytes: UInt64? = nil
     ) {
         self.targetWeightsBytes = max(0, weightsBytes)
         self.auxiliaryWeightBytes = max(0, auxiliaryWeightBytes)
@@ -78,6 +84,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         self.fp16KVBytesPerToken = fp16KVBytesPerToken
         self.maxContextLength = maxContextLength
         self.defaultMaxTokens = defaultMaxTokens
+        self.activationReserveBytes =
+            activationReserveBytes ?? UnifiedMemoryCap.resolvedActivationReserveBytes()
     }
 
     /// Replace, rather than add to, the auxiliary charge. This is the only
@@ -89,7 +97,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             auxiliaryWeightBytes: Int(min(bytes, UInt64(Int.max))),
             fp16KVBytesPerToken: fp16KVBytesPerToken,
             maxContextLength: maxContextLength,
-            defaultMaxTokens: defaultMaxTokens)
+            defaultMaxTokens: defaultMaxTokens,
+            activationReserveBytes: activationReserveBytes)
     }
 
     // MARK: - Builder
@@ -111,7 +120,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         container: ModelContainer,
         modelPath: URL?,
         fallbackDefaultMaxTokens: Int,
-        auxiliaryWeightBytes: Int = 0
+        auxiliaryWeightBytes: Int = 0,
+        activationReserveBytes: UInt64? = nil
     ) async -> SlotSizingSnapshot {
         struct ModuleFacts: @unchecked Sendable {
             let bytes: Int
@@ -185,7 +195,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             auxiliaryWeightBytes: auxiliaryWeightBytes,
             fp16KVBytesPerToken: kvRate,
             maxContextLength: maxContext,
-            defaultMaxTokens: defaultMaxTokens
+            defaultMaxTokens: defaultMaxTokens,
+            activationReserveBytes: activationReserveBytes
         )
     }
 

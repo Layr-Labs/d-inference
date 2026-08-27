@@ -3,23 +3,21 @@ package registry
 import "testing"
 
 // TestColdTokenBudgetEstimate pins the pure cold post-load KV-budget estimator.
-// The provider's activation reserve is a FLAT floor — it does not scale with
-// context, batch, or attention posture (UnifiedMemoryCap
-// .defaultActivationReserveBytes) — so this is one linear expression with no
-// regimes and no crossover:
+// Current providers report the exact reserve selected by Swift's measured
+// execution-profile policy. Older providers omit it, so the coordinator uses a
+// flat compatibility fallback selected by binary version:
 //
 //	postLoadGB = servabilityCapFraction*total - size*coldLoadCatalogGBToMemGiB
 //	postLoadB  = postLoadGB * bytesPerGB
-//	floorB     = floorGB * bytesPerGB   // 5.5*2^30 (≥0.8.0) or 3*2^30 (legacy)
-//	tokens     = (postLoadB - floorB) / kvBytesPerToken
+//	reserveB   = reported bytes, else 5.5*2^30 (≥0.8.0) or 3*2^30 (legacy)
+//	tokens     = (postLoadB - reserveB) / kvBytesPerToken
 //
 // with servabilityCapFraction=0.90, coldLoadCatalogGBToMemGiB≈
 // 1.1175870895385742, bytesPerGB=1<<30, and kvBytesPerToken<=0 → 400000.
-// floorGB is VERSION-GATED (servabilityActivationFloorForVersion): the floor
-// moved 3.0 → 5.5 with the provider's v0.8.0 B=8 reserve raise, so a ≥0.8.0
-// provider's golden sits exactly 2.5*2^30/400000 = 6710.9 tokens below the
-// legacy one, and nothing else moves — flat stays flat. An empty/pre-0.8.0
-// version keeps the legacy 3 GiB floor (that is what those binaries hold).
+// The fallback moved 3.0 → 5.5 GiB with v0.8.0. An empty/pre-0.8.0 version keeps
+// 3 GiB because that is what those binaries hold. A reported value always wins:
+// this is how the coordinator mirrors model-aware Swift policy without
+// reimplementing the model classifier.
 //
 // A per-token score-tensor surcharge (65536 B/token above a 49152-token
 // crossover) briefly made this piecewise. It was removed because the provider
@@ -38,10 +36,10 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// floor) — TIGHTER than the provider it claimed to mirror, on a model
 	// that materialises no score tensor at all. That gap is the defect.
 	const wantRoomy = int64(103854)
-	if got := coldTokenBudgetEstimate(64, 12, 400000, v080); got != wantRoomy {
+	if got := coldTokenBudgetEstimate(64, 12, 400000, v080, 0); got != wantRoomy {
 		t.Fatalf("roomy estimate = %d, want %d", got, wantRoomy)
 	}
-	if got := coldTokenBudgetEstimate(64, 12, 400000, v080); got <= 0 {
+	if got := coldTokenBudgetEstimate(64, 12, 400000, v080, 0); got <= 0 {
 		t.Fatalf("roomy estimate = %d, want > 0", got)
 	}
 
@@ -50,23 +48,38 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// = 6710.9 tokens higher — (47447529062.4 - 3221225472)/400000 = 110565.7.
 	// An EMPTY (unreported) version fails toward the same legacy budget: the
 	// larger estimate is the fail-open direction (see
-	// servabilityActivationFloorForVersion).
+	// servabilityActivationReserveBytes).
 	const wantRoomyLegacy = int64(110565)
-	if got := coldTokenBudgetEstimate(64, 12, 400000, "0.7.12"); got != wantRoomyLegacy {
+	if got := coldTokenBudgetEstimate(64, 12, 400000, "0.7.12", 0); got != wantRoomyLegacy {
 		t.Fatalf("legacy roomy estimate = %d, want %d", got, wantRoomyLegacy)
 	}
-	if got := coldTokenBudgetEstimate(64, 12, 400000, ""); got != wantRoomyLegacy {
+	if got := coldTokenBudgetEstimate(64, 12, 400000, "", 0); got != wantRoomyLegacy {
 		t.Fatalf("unreported-version roomy estimate = %d, want %d (fail toward legacy)", got, wantRoomyLegacy)
 	}
 	// The gate is >= 0.8.0, not > 0.8.0, and later releases keep the floor.
-	if got := coldTokenBudgetEstimate(64, 12, 400000, "0.8.1"); got != wantRoomy {
+	if got := coldTokenBudgetEstimate(64, 12, 400000, "0.8.1", 0); got != wantRoomy {
 		t.Fatalf("post-0.8.0 estimate = %d, want %d", got, wantRoomy)
+	}
+	// Current providers report the resolved model profile. GPT-OSS 20B's
+	// measured 3 GiB value overrides the 5.5 GiB v0.8 fallback exactly.
+	if got := coldTokenBudgetEstimate(
+		64, 12, 400000, v080, 3*bytesPerGB,
+	); got != wantRoomyLegacy {
+		t.Fatalf("reported 3 GiB profile estimate = %d, want %d", got, wantRoomyLegacy)
+	}
+	// Reported bytes are authoritative regardless of the version fallback.
+	const sevenGiB = uint64(7 * bytesPerGB)
+	wantSevenGiB := providerPostLoadTokenBudget(64, 12, 400000, 7)
+	if got := coldTokenBudgetEstimate(
+		64, 12, 400000, "0.7.12", sevenGiB,
+	); got != wantSevenGiB {
+		t.Fatalf("reported 7 GiB profile estimate = %d, want %d", got, wantSevenGiB)
 	}
 
 	// (b) Tiny node: weights (padded) alone exceed 90% of the 8 GB cap, so
 	// there is no post-load memory at all, let alone room for the activation
 	// reserve → 0 (never negative).
-	if got := coldTokenBudgetEstimate(8, 12, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(8, 12, 400000, v080, 0); got != 0 {
 		t.Fatalf("tiny-node estimate = %d, want 0 (weights exceed cap)", got)
 	}
 
@@ -79,37 +92,32 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// clamps it. Drop that guard and this returns a NEGATIVE budget, which
 	// PredictServable would publish as FleetMaxBudget. Distinct from (b): there
 	// the weights alone bust the cap and the reserve never enters it.
-	if got := coldTokenBudgetEstimate(20, 14, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(20, 14, 400000, v080, 0); got != 0 {
 		t.Fatalf("reserve-bound estimate = %d, want 0 (weights fit, activation floor does not)", got)
 	}
 
-	// (b2) A 48 GB node loading 28 GB of gemma-4 weights. gemma-4 is the
-	// COMPOSED-attention model (head_dim 256 sliding / 512 full, both outside
-	// MLX's fused set), and it is charged exactly what fused gpt-oss is: the
-	// flat floor, nothing more — because that is all the provider holds back.
+	// (b2) A 48 GB node loading 28 GB of gemma-4 weights. With no reported
+	// profile, a v0.8 provider uses the conservative 5.5 GiB fallback.
 	//   padded    = 28 * 1.1175870895385742      = 31.292438507080078
 	//   postLoadGB= 0.90*48 - 31.292438507080078 = 11.907561492919925 GB
 	//   tokens    = (11.907561492919925*2^30 - 5905580032) / 400000 = 17200.17
-	if got := coldTokenBudgetEstimate(48, 28, 400000, v080); got != int64(17200) {
+	if got := coldTokenBudgetEstimate(48, 28, 400000, v080, 0); got != int64(17200) {
 		t.Fatalf("gemma-4-shaped estimate = %d, want 17200", got)
 	}
 	// The same box under a legacy binary: 3 GiB floor →
 	// (11.907561492919925*2^30 - 3221225472)/400000 = 23911.1.
-	if got := coldTokenBudgetEstimate(48, 28, 400000, "0.7.12"); got != int64(23911) {
+	if got := coldTokenBudgetEstimate(48, 28, 400000, "0.7.12", 0); got != int64(23911) {
 		t.Fatalf("legacy gemma-4-shaped estimate = %d, want 23911", got)
 	}
 
-	// (b3) FLAT means LINEAR: equal steps in node memory must buy equal
-	// tokens, everywhere. The slope is 0.90*2^30/400000 = 2415.9 tokens per GB,
-	// so a 0.05 GB step buys 120.8 — i.e. 120 or 121 after truncation, and
-	// nothing else. Re-introduce a piecewise reserve and this fails twice: the
-	// slope above the crossover collapses to ~104/step, and the crossover
-	// itself plants one anomalous step in the sweep (the retired formula's
-	// deltas over this exact range ran 103..121, and it began diverging at
-	// total=24.95).
+	// (b3) For any one reported/fallback profile the reserve is a constant byte
+	// count, so equal steps in node memory buy equal tokens. The slope is
+	// 0.90*2^30/400000 = 2415.9 tokens per GB; a 0.05 GB step buys 120 or 121
+	// after truncation. Re-introducing a coordinator-only per-token surcharge
+	// makes this piecewise and breaks the mirror.
 	prev := int64(0)
 	for total := 20.0; total <= 30.0; total += 0.05 {
-		got := coldTokenBudgetEstimate(total, 1, 400000, v080)
+		got := coldTokenBudgetEstimate(total, 1, 400000, v080, 0)
 		if prev > 0 {
 			if d := got - prev; d < 120 || d > 121 {
 				t.Fatalf("non-linear step at total=%.2f: %d after %d (delta %d, want 120-121)",
@@ -127,30 +135,30 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// (c) kvBytesPerToken <= 0 falls back to the kvCacheBytesPerToken default
 	// (400000): an unreported per-model KV cost must match the explicit default,
 	// for both a zero and a negative input.
-	explicit := coldTokenBudgetEstimate(64, 12, 400000, v080)
-	if got := coldTokenBudgetEstimate(64, 12, 0, v080); got != explicit {
+	explicit := coldTokenBudgetEstimate(64, 12, 400000, v080, 0)
+	if got := coldTokenBudgetEstimate(64, 12, 0, v080, 0); got != explicit {
 		t.Fatalf("kvpt=0 fallback estimate = %d, want %d (== explicit 400000)", got, explicit)
 	}
-	if got := coldTokenBudgetEstimate(64, 12, -1, v080); got != explicit {
+	if got := coldTokenBudgetEstimate(64, 12, -1, v080, 0); got != explicit {
 		t.Fatalf("kvpt=-1 fallback estimate = %d, want %d (== explicit 400000)", got, explicit)
 	}
 	// A reported per-model KV cost is honored (and a cheaper per-token cost
 	// yields strictly more tokens), proving the parameter is actually used.
-	if got := coldTokenBudgetEstimate(64, 12, 200000, v080); got <= explicit {
+	if got := coldTokenBudgetEstimate(64, 12, 200000, v080, 0); got <= explicit {
 		t.Fatalf("cheaper kvpt estimate = %d, want > default-kvpt estimate %d", got, explicit)
 	}
 
 	// (d) Unusable inputs → 0 (gate disabled): no total memory, or no model size.
-	if got := coldTokenBudgetEstimate(0, 12, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(0, 12, 400000, v080, 0); got != 0 {
 		t.Fatalf("totalMemoryGB<=0 estimate = %d, want 0", got)
 	}
-	if got := coldTokenBudgetEstimate(-1, 12, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(-1, 12, 400000, v080, 0); got != 0 {
 		t.Fatalf("totalMemoryGB<0 estimate = %d, want 0", got)
 	}
-	if got := coldTokenBudgetEstimate(64, 0, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(64, 0, 400000, v080, 0); got != 0 {
 		t.Fatalf("modelSizeGB<=0 estimate = %d, want 0", got)
 	}
-	if got := coldTokenBudgetEstimate(64, -1, 400000, v080); got != 0 {
+	if got := coldTokenBudgetEstimate(64, -1, 400000, v080, 0); got != 0 {
 		t.Fatalf("modelSizeGB<0 estimate = %d, want 0", got)
 	}
 }
@@ -159,74 +167,95 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 // coordinator/provider activation-reserve desync.
 //
 // coldTokenBudgetEstimate exists to reproduce ONE thing: the post-load KV budget
-// UnifiedMemoryCap will actually leave a freshly-loaded slot. That budget is
-// cap − paddedWeights − a FLAT 5.5 GiB reserve, and once the slot is resident the
-// provider reports precisely it back as active_token_budget_max
-// (EngineV2Bridge+Capacity: kvBytesCapacity / kvBytesPerToken), which
-// snapshotStructuralBudget then prefers. The cold estimate must therefore
-// converge to the warm report — for EVERY model, including one whose attention
-// composes.
+// UnifiedMemoryCap will actually leave a freshly-loaded slot:
+// cap − paddedWeights − the provider-reported model reserve. Once resident, the
+// provider reports the resulting active_token_budget_max, which
+// snapshotStructuralBudget prefers. The cold estimate must converge to that warm
+// report for every profile.
 //
 // The shipped defect: the coordinator charged every cold model a 65536 B/token
 // score-tensor surcharge that no provider gate ever held back
 // (UnifiedMemoryCap.ActivationReserveShape had zero call sites, so every gate
-// took the flat floor). That made this predictor strictly TIGHTER than the gate
+// took its configured fallback). That made this predictor strictly TIGHTER than the gate
 // it mirrors and 429'd prompts the fleet could serve. gpt-oss-20b — head_dim 64,
 // inside MLX's fused-SDPA set {64, 80, 128}, so it materialises no score tensor
 // whatsoever — was surcharged anyway.
 //
-// Both fleet models are pinned, against the provider formula recomputed
-// independently below rather than against a copied literal, so a surcharge
-// re-added for EITHER attention posture breaks this.
+// Both measured fleet profiles are pinned against the provider formula
+// recomputed independently below. Swift selects the reserve and reports its
+// resolved bytes; Go must consume those bytes without deriving its own profile.
 func TestColdTokenBudgetMirrorsProviderReserveArithmetic(t *testing.T) {
 	for _, tc := range []struct {
-		model         string
-		posture       string
-		totalMemoryGB float64
-		modelSizeGB   float64
+		model                string
+		posture              string
+		totalMemoryGB        float64
+		modelSizeGB          float64
+		reportedReserveBytes uint64
+		providerReserveGiB   float64
 	}{
-		// head_dim 64 → FUSED. No prefill score tensor exists for this model,
-		// and it was the loudest victim of the surcharge.
-		{"gpt-oss-20b", "fused, head_dim 64", 64, 12},
-		// head_dim 256 (sliding) / 512 (full) → COMPOSED. This one really does
-		// materialise the larger score tensor, and the provider STILL holds
-		// back only the flat floor for it, so the coordinator must too.
-		{"gemma-4-26b", "composed, head_dim 256/512", 128, 28},
+		{
+			model: "gpt-oss-20b", posture: "fused, head_dim 64",
+			totalMemoryGB: 64, modelSizeGB: 12,
+			reportedReserveBytes: 3 * bytesPerGB, providerReserveGiB: 3,
+		},
+		{
+			model: "gemma-4-26b", posture: "composed, head_dim 256/512",
+			totalMemoryGB: 128, modelSizeGB: 28,
+			reportedReserveBytes: 11 * bytesPerGB / 2, providerReserveGiB: 5.5,
+		},
 	} {
-		got := coldTokenBudgetEstimate(tc.totalMemoryGB, tc.modelSizeGB, 400000, "0.8.0")
-		want := providerPostLoadTokenBudget(tc.totalMemoryGB, tc.modelSizeGB, 400000, 5.5)
+		got := coldTokenBudgetEstimate(
+			tc.totalMemoryGB,
+			tc.modelSizeGB,
+			400000,
+			"0.8.0",
+			tc.reportedReserveBytes,
+		)
+		want := providerPostLoadTokenBudget(
+			tc.totalMemoryGB, tc.modelSizeGB, 400000, tc.providerReserveGiB)
 		if got != want {
 			t.Errorf("%s (%s): cold estimate = %d, want the provider's own post-load budget %d",
 				tc.model, tc.posture, got, want)
 		}
 		// Premise: both shapes sit ABOVE the retired 49152-token crossover, so
 		// a re-added surcharge would move them. Without this the case could
-		// pass vacuously on inputs where the flat floor bound either way.
+		// pass vacuously on inputs where the reserve bound either way.
 		if got <= 49152 {
 			t.Errorf("%s: budget %d is below the retired crossover — case no longer discriminates",
 				tc.model, got)
 		}
 	}
 
-	// Direction matters more than any single point: across the fleet's real box
-	// sizes and weight footprints the coordinator must never land BELOW the
-	// provider. Coming in tighter is what turns into a terminal 429 on a prompt
-	// the provider would have served; coming in looser only costs a declined
-	// load, which dispatch retries elsewhere. Convergence is PER-BINARY: a
-	// ≥0.8.0 provider is mirrored against the 5.5 GiB gate its binary holds,
-	// a pre-0.8.0 provider against its 3 GiB gate.
+	// Across real box sizes and weight footprints, each reported profile must
+	// equal the provider byte-for-byte. Coming in tighter creates terminal 429s;
+	// coming in looser dispatches work the provider will reject.
 	for _, totalGB := range []float64{24, 36, 48, 64, 96, 128, 192, 512} {
 		for _, sizeGB := range []float64{1, 12, 20, 28, 40} {
-			got := coldTokenBudgetEstimate(totalGB, sizeGB, 400000, "0.8.0")
-			want := providerPostLoadTokenBudget(totalGB, sizeGB, 400000, 5.5)
-			if got < want {
-				t.Fatalf("total=%.0fGB size=%.0fGB: cold estimate %d is TIGHTER than the provider's %d",
-					totalGB, sizeGB, got, want)
+			for _, reserveGiB := range []float64{3, 5.5, 7} {
+				reported := uint64(reserveGiB * float64(bytesPerGB))
+				got := coldTokenBudgetEstimate(
+					totalGB, sizeGB, 400000, "0.8.0", reported)
+				want := providerPostLoadTokenBudget(
+					totalGB, sizeGB, 400000, reserveGiB)
+				if got != want {
+					t.Fatalf("total=%.0fGB size=%.0fGB reserve=%.1fGiB: cold estimate %d, provider %d",
+						totalGB, sizeGB, reserveGiB, got, want)
+				}
 			}
-			legacyGot := coldTokenBudgetEstimate(totalGB, sizeGB, 400000, "0.7.12")
+
+			// Unreported values retain per-binary compatibility.
+			currentGot := coldTokenBudgetEstimate(
+				totalGB, sizeGB, 400000, "0.8.0", 0)
+			currentWant := providerPostLoadTokenBudget(
+				totalGB, sizeGB, 400000, 5.5)
+			if currentGot != currentWant {
+				t.Fatalf("total=%.0fGB size=%.0fGB: current fallback %d, provider %d",
+					totalGB, sizeGB, currentGot, currentWant)
+			}
+			legacyGot := coldTokenBudgetEstimate(totalGB, sizeGB, 400000, "0.7.12", 0)
 			legacyWant := providerPostLoadTokenBudget(totalGB, sizeGB, 400000, 3.0)
-			if legacyGot < legacyWant {
-				t.Fatalf("total=%.0fGB size=%.0fGB: LEGACY cold estimate %d is TIGHTER than the pre-0.8.0 provider's %d",
+			if legacyGot != legacyWant {
+				t.Fatalf("total=%.0fGB size=%.0fGB: legacy fallback %d, provider %d",
 					totalGB, sizeGB, legacyGot, legacyWant)
 			}
 		}
@@ -240,14 +269,10 @@ func TestColdTokenBudgetMirrorsProviderReserveArithmetic(t *testing.T) {
 //	UnifiedMemoryCap.kvBudgetBytes = 0.90*physical − paddedWeights − reserve
 //	active_token_budget_max        = kvBudgetBytes / kvBytesPerToken
 //
-// reserveGB is spelled as a literal at each CALL SITE (5.5 for ≥0.8.0 —
-// UnifiedMemoryCap.defaultActivationReserveBytes — and 3.0 for the pre-0.8.0
-// binaries still in the fleet) rather than read from the servability
-// constants, on purpose: if one side's reserve is retuned and the other is
-// not, those literals are what fail — as they did (by design) when the
-// provider moved 3 → 5.5 for v0.8.0's B=8 activation peak, forcing this file
-// to move with it. (bytesPerGB and coldLoadCatalogGBToMemGiB are shared
-// because they are unit conversions, not policy.)
+// reserveGB is supplied independently at each call site instead of reading a
+// servability constant. If provider and coordinator policy drift, these
+// literals fail. bytesPerGB and coldLoadCatalogGBToMemGiB are shared because
+// they are unit conversions, not activation policy.
 func providerPostLoadTokenBudget(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64, reserveGB float64) int64 {
 	reserveBytes := reserveGB * float64(bytesPerGB)
 	capBytes := 0.90 * totalMemoryGB * float64(bytesPerGB)
@@ -287,12 +312,12 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	// Cold/on-disk with memory + size data: known, using the optimistic cold
 	// estimate. Unreported kvBytesPerToken falls back to the 400000 default;
 	// an unreported binaryVersion falls toward the legacy reserve.
-	wantCold := coldTokenBudgetEstimate(64, 12, 0, "")
+	wantCold := coldTokenBudgetEstimate(64, 12, 0, "", 0)
 	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 64, modelSizeGB: 12}); !known || budget != wantCold {
 		t.Fatalf("cold-fitting = (%d, %v), want (%d, true)", budget, known, wantCold)
 	}
 	// A cold slot threads its reported per-model KV cost into the estimate.
-	wantColdKVPT := coldTokenBudgetEstimate(64, 12, 200000, "")
+	wantColdKVPT := coldTokenBudgetEstimate(64, 12, 200000, "", 0)
 	if budget, known := snapshotStructuralBudget(routingSnapshot{
 		totalMemoryGB:   64,
 		modelSizeGB:     12,
@@ -303,7 +328,7 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	// A cold slot threads its provider's binary version into the estimate:
 	// a ≥0.8.0 binary is charged the 5.5 GiB reserve it actually holds,
 	// which lands strictly below the legacy default above.
-	wantColdV080 := coldTokenBudgetEstimate(64, 12, 0, "0.8.0")
+	wantColdV080 := coldTokenBudgetEstimate(64, 12, 0, "0.8.0", 0)
 	if budget, known := snapshotStructuralBudget(routingSnapshot{
 		totalMemoryGB: 64,
 		modelSizeGB:   12,
@@ -314,6 +339,23 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	if wantColdV080 >= wantCold {
 		t.Fatalf("v0.8.0 cold budget %d must sit below the legacy cold budget %d (bigger reserve)",
 			wantColdV080, wantCold)
+	}
+	// A current model's reported profile overrides the binary fallback and is
+	// threaded through the snapshot. GPT-OSS 20B reports the measured 3 GiB
+	// reserve, restoring exactly the corresponding post-load KV budget.
+	wantReported := coldTokenBudgetEstimate(64, 12, 0, "0.8.0", 3*bytesPerGB)
+	if budget, known := snapshotStructuralBudget(routingSnapshot{
+		totalMemoryGB:          64,
+		modelSizeGB:            12,
+		binaryVersion:          "0.8.0",
+		activationReserveBytes: 3 * bytesPerGB,
+	}); !known || budget != wantReported {
+		t.Fatalf("cold-fitting+reported-reserve = (%d, %v), want (%d, true)",
+			budget, known, wantReported)
+	}
+	if wantReported <= wantColdV080 {
+		t.Fatalf("3 GiB reported budget %d must exceed 5.5 GiB fallback budget %d",
+			wantReported, wantColdV080)
 	}
 
 	// Cold but missing memory or size data: cannot estimate → unknown.
@@ -512,8 +554,8 @@ func TestPredictServableMixedVersionFleetStagedRollout(t *testing.T) {
 	//   legacy (3 GiB reserve)  cold budget = 110565 tokens
 	//   v0.8.0 (5.5 GiB reserve) cold budget = 103854 tokens
 	// Request 105000 + 256 = 105256 sits strictly between the two.
-	legacyBudget := coldTokenBudgetEstimate(64, 12, 0, "0.7.12")
-	newBudget := coldTokenBudgetEstimate(64, 12, 0, "0.8.0")
+	legacyBudget := coldTokenBudgetEstimate(64, 12, 0, "0.7.12", 0)
+	newBudget := coldTokenBudgetEstimate(64, 12, 0, "0.8.0", 0)
 	const reqPrompt, reqMax = 105000, 256
 	if int64(reqPrompt+reqMax) <= newBudget || int64(reqPrompt+reqMax) > legacyBudget {
 		t.Fatalf("fixture broke: request %d must sit between new budget %d and legacy budget %d",

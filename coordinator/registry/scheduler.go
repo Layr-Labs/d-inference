@@ -102,10 +102,8 @@ type routingSnapshot struct {
 	model      string
 	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
 	// binaryVersion is the provider's reported binary version (p.Version, read
-	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
-	// version-gated activation-reserve selection in the cold servability
-	// estimate (servabilityActivationFloorForVersion) so a mixed-version fleet
-	// is charged the reserve each binary actually holds.
+	// under p.mu at snapshot time; empty = unreported/legacy). It selects the
+	// compatibility activation reserve only when the model did not report one.
 	binaryVersion    string
 	slotState        string
 	hasHeadroom      bool
@@ -139,11 +137,15 @@ type routingSnapshot struct {
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
 	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
-	freeForLoadGB   *float64
-	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded     bool    // true when the requested model is resident (running or idle)
-	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	freeForLoadGB *float64
+	modelSizeGB   float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	minRAMGb      int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	// activationReserveBytes is the provider-resolved working-set reserve for
+	// this exact model profile. Zero means a legacy provider; the cold-budget
+	// estimator then falls back by binary version.
+	activationReserveBytes uint64
+	modelLoaded            bool // true when the requested model is resident (running or idle)
+	availableOnDisk        bool // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -1236,6 +1238,8 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
 		modelSizeGB:   r.modelSizeGBForFitLocked(p, model),
 		minRAMGb:      r.catalogMinRAMGbLocked(model),
+		activationReserveBytes: advertisedActivationReserveBytesLocked(
+			p, model),
 	}
 
 	fillSnapshotPendingAndPool(&snap, p, model)
@@ -1252,7 +1256,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
+		snap.freeForLoadGB = adjustedFreeForLoadGBLocked(p, model)
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
@@ -1314,13 +1318,39 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 // this stays safe (slightly stricter); it must not be set BELOW the provider's.
 const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1176
 
-// backendFreeForLoadGB returns the provider-reported free_for_load_gb (nil-safe).
-// Caller must hold the provider lock when passing p.BackendCapacity.
-func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
-	if bc == nil {
+// advertisedActivationReserveBytesLocked returns the provider-resolved reserve
+// for one model, or zero when an older provider omitted it. Caller holds p.mu.
+func advertisedActivationReserveBytesLocked(p *Provider, model string) uint64 {
+	for _, advertised := range p.Models {
+		if advertised.ID == model {
+			return advertised.ActivationReserveBytes
+		}
+	}
+	return 0
+}
+
+// adjustedFreeForLoadGBLocked converts the provider's conservative scalar
+// free_for_load_gb into the exact limit for model. Providers compute the scalar
+// with the largest resolved activation reserve in their advertised set so old
+// coordinators remain safe. Current coordinators add back that baseline's delta
+// for a lower-reserve measured profile. Caller holds p.mu.
+func adjustedFreeForLoadGBLocked(p *Provider, model string) *float64 {
+	if p.BackendCapacity == nil || p.BackendCapacity.FreeForLoadGB == nil {
 		return nil
 	}
-	return bc.FreeForLoadGB
+	candidateReserve := servabilityActivationReserveBytes(
+		advertisedActivationReserveBytesLocked(p, model), p.Version)
+	baselineReserve := candidateReserve
+	for _, advertised := range p.Models {
+		reserve := servabilityActivationReserveBytes(
+			advertised.ActivationReserveBytes, p.Version)
+		if reserve > baselineReserve {
+			baselineReserve = reserve
+		}
+	}
+	adjusted := *p.BackendCapacity.FreeForLoadGB +
+		float64(baselineReserve-candidateReserve)/float64(bytesPerGB)
+	return &adjusted
 }
 
 // reportedFreeForLoadAdmits reports whether a cold load of a model with the given
@@ -2253,24 +2283,26 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		// Build a snapshot for the admission gate (slot state + free memory).
 		snap := routingSnapshot{
-			provider:           p,
-			model:              model,
-			chipFamily:         p.Hardware.ChipFamily,
-			binaryVersion:      p.Version,
-			slotState:          "unknown",
-			totalPending:       p.pendingCount(),
-			systemMetrics:      p.SystemMetrics,
-			decodeTPS:          resolvedDecodeTPS(p),
-			prefillTPS:         resolvedPrefillTPS(p),
-			totalMemoryGB:      float64(p.Hardware.MemoryGB),
-			modelSizeGB:        r.modelSizeGBForFitLocked(p, model),
-			minRAMGb:           r.catalogMinRAMGbLocked(model),
+			provider:      p,
+			model:         model,
+			chipFamily:    p.Hardware.ChipFamily,
+			binaryVersion: p.Version,
+			slotState:     "unknown",
+			totalPending:  p.pendingCount(),
+			systemMetrics: p.SystemMetrics,
+			decodeTPS:     resolvedDecodeTPS(p),
+			prefillTPS:    resolvedPrefillTPS(p),
+			totalMemoryGB: float64(p.Hardware.MemoryGB),
+			modelSizeGB:   r.modelSizeGBForFitLocked(p, model),
+			minRAMGb:      r.catalogMinRAMGbLocked(model),
+			activationReserveBytes: advertisedActivationReserveBytesLocked(
+				p, model),
 			hasBackendCapacity: p.BackendCapacity != nil,
 		}
 		fillSnapshotPendingAndPool(&snap, p, model)
 		if snap.hasBackendCapacity {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
+			snap.freeForLoadGB = adjustedFreeForLoadGBLocked(p, model)
 			if p.BackendCapacity.TotalMemoryGB > 0 {
 				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 			}

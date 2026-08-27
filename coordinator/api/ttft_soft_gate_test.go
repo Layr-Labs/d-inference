@@ -3,17 +3,16 @@ package api
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// TestQueueMaxTTFTMsSoftVsHard pins the soft/hard TTFT-gate contract that the
-// dispatch layer feeds into the scheduler via PendingRequest.MaxTTFTMs.
+// TestQueueMaxTTFTMsSoftVsHard pins whether the dispatch layer carries a
+// first-content budget into PendingRequest.MaxTTFTMs.
 //
-// In soft mode (default) a public route gets a zero ceiling, which disables the
-// scheduler's enforceTTFT path so a slow-but-eligible provider is still selected
-// (see TestReserveProviderExcludesSlowProviderWhenTTFTCeilingSet: MaxTTFTMs==0
-// selects the slow provider). In hard mode the public route inherits the
-// prompt-scaled deadline so the legacy 429-on-slow-estimate behavior returns.
-// Self-route and prefer-owner are never subject to the public SLA ceiling.
+// Ordinary soft mode gets zero. Hard mode and occupancy-enforce mode carry the
+// prompt-scaled budget, though enforce consumes it only as a routing preference.
+// Self-route and prefer-owner never receive the public SLA budget.
 func TestQueueMaxTTFTMsSoftVsHard(t *testing.T) {
 	deadline := 6 * time.Second
 	public := selfRoutePolicy{}
@@ -25,12 +24,39 @@ func TestQueueMaxTTFTMsSoftVsHard(t *testing.T) {
 		t.Fatalf("hard public ceiling = %v, want %d", got, deadline.Milliseconds())
 	}
 
-	for _, hardReject := range []bool{false, true} {
-		if got := queueMaxTTFTMs(selfRoutePolicy{enabled: true}, deadline, hardReject); got != 0 {
-			t.Fatalf("self-route ceiling (hardReject=%v) = %v, want 0", hardReject, got)
+	for _, withBudget := range []bool{false, true} {
+		if got := queueMaxTTFTMs(selfRoutePolicy{enabled: true}, deadline, withBudget); got != 0 {
+			t.Fatalf("self-route ceiling (withBudget=%v) = %v, want 0", withBudget, got)
 		}
-		if got := queueMaxTTFTMs(selfRoutePolicy{prefer: true}, deadline, hardReject); got != 0 {
-			t.Fatalf("prefer-owner ceiling (hardReject=%v) = %v, want 0", hardReject, got)
+		if got := queueMaxTTFTMs(selfRoutePolicy{prefer: true}, deadline, withBudget); got != 0 {
+			t.Fatalf("prefer-owner ceiling (withBudget=%v) = %v, want 0", withBudget, got)
 		}
+	}
+}
+
+func TestTTFTEnforceCarriesBudgetWithoutHardGate(t *testing.T) {
+	previous := registry.TTFTAdmissionModeValue()
+	t.Cleanup(func() { registry.SetTTFTAdmissionMode(previous) })
+
+	s := &Server{ttftHardReject: true}
+	registry.SetTTFTAdmissionMode(registry.TTFTAdmissionShadow)
+	if !s.hardTTFTGateApplies(false) || !s.ttftRoutingBudgetApplies(false) {
+		t.Fatal("shadow + hard reject must preserve the hard gate and carry its budget")
+	}
+
+	registry.SetTTFTAdmissionMode(registry.TTFTAdmissionEnforce)
+	if s.hardTTFTGateApplies(false) {
+		t.Fatal("enforce mode must disable TTFT estimate rejection")
+	}
+	if !s.ttftRoutingBudgetApplies(false) {
+		t.Fatal("enforce mode must still carry the first-content budget for preference")
+	}
+
+	s.ttftHardReject = false
+	if !s.ttftRoutingBudgetApplies(false) {
+		t.Fatal("enforce mode must carry a budget even when legacy hard reject is off")
+	}
+	if s.ttftRoutingBudgetApplies(true) || s.hardTTFTGateApplies(true) {
+		t.Fatal("vision requests must bypass token-prefill TTFT policy")
 	}
 }

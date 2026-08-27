@@ -168,8 +168,12 @@ type dispatchState struct {
 	// lastErr* per-attempt scratch used to persist each attempt's route outcome.
 	// Capacity/lifecycle refusals, deadline refusals, neutral typed causes, and
 	// deterministic client/model errors never enter this slot.
-	genuineFault      *dispatchTerminalFailure
-	committed         bool
+	genuineFault *dispatchTerminalFailure
+	committed    bool
+	// lastFailedVersion is the most recent provider version implicated by a
+	// version-sensitive fault. Capacity/deadline/client failures never write or
+	// clear it: they say nothing about the binary, and using them as
+	// AvoidVersion evidence can exclude almost the whole healthy fleet.
 	lastFailedVersion string
 	excludeProviders  map[string]struct{}
 	// capacityRetries counts pre-content TRANSIENT-capacity failovers (this
@@ -231,7 +235,8 @@ type dispatchState struct {
 }
 
 // traits builds the routing traits for the current attempt, steering away from
-// the most recently failed provider's binary version.
+// the most recently implicated binary version. Capacity/deadline/client failures
+// never populate this hint.
 func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{
 		HasTools:               d.hasTools,
@@ -313,21 +318,17 @@ func jinjaTerminalRejectEnabled() bool {
 // template internals no API consumer can act on).
 const jinjaTerminalRejectMessage = "the request's tool schemas or message history cannot be rendered by this model's chat template; simplify the tool parameter schemas or message structure, or use a different model"
 
-// queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
-// inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
-// are not subject to the public SLA ceiling.
+// queueMaxTTFTMs carries the first-content budget for queued public requests.
+// Hard mode consumes it as a ceiling; occupancy-enforce mode consumes it only
+// as a fail-open routing preference. Self-route / prefer-owner paths remain
+// outside the public SLA policy.
 //
-// When hardReject is false (the default soft gate), a zero ceiling is returned
-// so the scheduler's enforceTTFT path is disabled: candidates over the estimated
-// deadline are no longer dropped (and no errTTFTTooSlow is produced). The router
-// still ranks by cost (which is TTFT-weighted), so the fastest provider wins, but
-// a request is served on the best-available provider instead of being rejected
-// on a pessimistic prefill estimate.
-func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration, hardReject bool) float64 {
+// When withBudget is false, a zero value preserves the ordinary soft mode.
+func queueMaxTTFTMs(policy selfRoutePolicy, deadline time.Duration, withBudget bool) float64 {
 	if policy.enabled || policy.prefer {
 		return 0
 	}
-	if !hardReject {
+	if !withBudget {
 		return 0
 	}
 	return float64(deadline.Milliseconds())
@@ -798,6 +799,7 @@ func (d *dispatchState) latchProviderBodyTooLarge(errText string) {
 func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
 	providerBudget := providerReportedBudget(provider, d.model)
+	d.noteVersionSensitiveFailure(provider, msg, providerBudget)
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
@@ -807,6 +809,49 @@ func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg p
 	d.lastErrCoordinatorCause = msg.CoordinatorCause
 	d.lastErrAttemptUsage = msg.AttemptUsage
 	d.captureGenuineFault(provider, msg, providerBudget)
+}
+
+// noteVersionSensitiveFailure updates the retry's AvoidVersion hint only when
+// the failure carries evidence about the provider binary. A provider-local
+// capacity or deadline refusal is not such evidence: excluding that version can
+// collapse a dominant-version fleet onto a tiny legacy pool and amplify retries.
+//
+// Neutral failures deliberately leave an earlier valid hint intact. A genuine
+// fault on version A followed by a capacity refusal on version B is still
+// evidence to avoid A, not B.
+func (d *dispatchState) noteVersionSensitiveFailure(
+	provider *registry.Provider,
+	msg protocol.InferenceErrorMessage,
+	providerBudget int64,
+) {
+	if provider == nil || !versionSensitiveInferenceFailure(msg, providerBudget, d.modelMaxContext) {
+		return
+	}
+	if version := failedProviderVersion(provider); version != "" {
+		d.lastFailedVersion = version
+	}
+}
+
+func versionSensitiveInferenceFailure(
+	msg protocol.InferenceErrorMessage,
+	providerBudget int64,
+	modelContext int,
+) bool {
+	if msg.CoordinatorCause != "" ||
+		normalizeInferenceErrorReason(msg.ErrorReason) == errorReasonModelLoad {
+		return false
+	}
+	// Template rendering is request-shaped and health-neutral, but a newer
+	// provider release can carry a corrected template/runtime. Preserve the
+	// existing version-diverse retry for that explicit compatibility case.
+	if msg.FailureCode == protocol.FailureCodeTemplateRender ||
+		isJinjaTemplateErrorReason(msg.ErrorReason) {
+		return true
+	}
+	// Reuse the canonical fault classifier so typed capacity/policy terminals,
+	// media/client faults, model-local load failures, cancellations, and
+	// deadline_unreachable can never become version evidence.
+	return isGenuinePreContentFault(msg, providerBudget, modelContext)
 }
 
 // providerReportedBudget reads a provider's reported token budget for a model,
@@ -1026,10 +1071,16 @@ func (d *dispatchState) markSpeculativeLoser(pr *registry.PendingRequest) {
 	d.s.updateInferenceRouteOutcomeForPending(pr, speculativeLoserOutcome(pr))
 }
 
-func (d *dispatchState) updateSpeculativeFailure(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) {
+func (d *dispatchState) updateSpeculativeFailure(
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+	msg protocol.InferenceErrorMessage,
+) {
 	if pr == nil {
 		return
 	}
+	msg = normalizeInferenceErrorForInternalUse(msg)
+	d.noteVersionSensitiveFailure(provider, msg, providerReportedBudget(provider, d.model))
 	pr.UsedBackup = true
 	d.s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, msg))
 }
@@ -1214,7 +1265,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
 			MaxTTFTMs: queueMaxTTFTMs(
-				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
+				d.policy, d.deadline, d.s.ttftRoutingBudgetApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,
 			AcceptedCh:   make(chan struct{}, 1),
 			ChunkCh:      make(chan registry.ProviderChunk, chunkBufferSize),
@@ -1813,7 +1864,6 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
-					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
@@ -1840,7 +1890,6 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
-			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed, retrying",
 				"request_id", d.requestID,
 				"provider_id", provider.ID,
@@ -2063,7 +2112,6 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
-					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
@@ -2083,7 +2131,6 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
-			d.lastFailedVersion = failedProviderVersion(provider)
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
@@ -2249,7 +2296,6 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
-					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
@@ -2306,8 +2352,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				case errMsg := <-backupPR.ErrorCh:
 					// Backup failed too. Keep primary context for retry.
 					d.excludeProviders[backupProvider.ID] = struct{}{}
-					d.lastFailedVersion = failedProviderVersion(backupProvider)
-					d.updateSpeculativeFailure(backupPR, errMsg)
+					d.updateSpeculativeFailure(backupProvider, backupPR, errMsg)
 					d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &backupHeld)
 					// Preserve a deterministic-unservable verdict from this loser so the
 					// surviving primary's error can't mask it (see latchDeterministicLoser).
@@ -2382,8 +2427,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
-			d.lastFailedVersion = failedProviderVersion(provider)
-			d.updateSpeculativeFailure(pr, errMsg)
+			d.updateSpeculativeFailure(provider, pr, errMsg)
 			d.noteProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving backup's error can't mask it (see latchDeterministicLoser).
@@ -2416,8 +2460,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.cancelDispatch(backupProvider, backupPR)
-			d.lastFailedVersion = failedProviderVersion(backupProvider)
-			d.updateSpeculativeFailure(backupPR, errMsg)
+			d.updateSpeculativeFailure(backupProvider, backupPR, errMsg)
 			d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &backupHeld)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving primary's error can't mask it (see latchDeterministicLoser).
@@ -2554,8 +2597,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
-					d.lastFailedVersion = failedProviderVersion(provider)
-					d.updateSpeculativeFailure(pr, errMsg2)
+					d.updateSpeculativeFailure(provider, pr, errMsg2)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
@@ -2580,8 +2622,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.setLastInferenceError(provider, errMsg2)
-			d.lastFailedVersion = failedProviderVersion(provider)
-			d.updateSpeculativeFailure(pr, errMsg2)
+			d.updateSpeculativeFailure(provider, pr, errMsg2)
 			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
@@ -2671,8 +2712,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.excludeProviders[backupProvider.ID] = struct{}{}
 					s.cancelDispatch(backupProvider, backupPR)
 					d.setLastInferenceError(backupProvider, errMsg2)
-					d.lastFailedVersion = failedProviderVersion(backupProvider)
-					d.updateSpeculativeFailure(backupPR, errMsg2)
+					d.updateSpeculativeFailure(backupProvider, backupPR, errMsg2)
 					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &backupHeld)
 					d.provider = nil
 					d.pr = nil
@@ -2706,8 +2746,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.cancelDispatch(backupProvider, backupPR)
 			d.setLastInferenceError(backupProvider, errMsg2)
-			d.lastFailedVersion = failedProviderVersion(backupProvider)
-			d.updateSpeculativeFailure(backupPR, errMsg2)
+			d.updateSpeculativeFailure(backupProvider, backupPR, errMsg2)
 			d.noteProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &backupHeld)
 			d.provider = nil
 			d.pr = nil
@@ -2788,7 +2827,6 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
-					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
@@ -2808,8 +2846,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.setLastInferenceError(provider, errMsg2)
-			d.lastFailedVersion = failedProviderVersion(provider)
-			d.updateSpeculativeFailure(pr, errMsg2)
+			d.updateSpeculativeFailure(provider, pr, errMsg2)
 			d.noteProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
@@ -2924,7 +2961,6 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 					d.excludeProviders[provider.ID] = struct{}{}
 					s.cancelDispatch(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
-					d.lastFailedVersion = failedProviderVersion(provider)
 					s.logger.Warn("provider failed after accepting request, retrying",
 						"request_id", d.requestID,
 						"provider_id", provider.ID,
@@ -2959,7 +2995,6 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.cancelDispatch(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
-			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed after accepting request, retrying",
 				"request_id", d.requestID,
 				"provider_id", provider.ID,

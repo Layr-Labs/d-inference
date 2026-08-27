@@ -446,25 +446,23 @@ func main() {
 		}
 	}
 
-	// Routing (Phase-0 TTFT-contention, shadow + measurement slice). All three
-	// knobs are behavior-neutral at their defaults:
+	// Occupancy-aware first-content routing. All three knobs are
+	// behavior-neutral at their defaults:
 	//
 	//   - EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA (float, default 0): coefficient of
-	//     the occupancy term added to the TTFT estimate (ttftMsFromSnapshot). 0
-	//     leaves the estimate — and therefore the routing cost's TTFTMs, the
-	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
-	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
-	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
+	//     the occupancy term added to the diagnostic/preference estimate. It
+	//     never enters the hard TTFT ceiling. 0 leaves both shadow and enforce
+	//     predictions at the occupancy-free base. Reuses the occupancy the
+	//     snapshot already tracks (max(pendingForModel,
+	//     backend_running+backend_waiting)); herd-aware.
 	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
 	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
-	//     ~10s+1ms/token; the instance-owned live first-content deadline
-	//     configured above is independent. Used ONLY by the shadow evaluator.
+	//     ~10s+1ms/token; enforce mode instead uses each request's decreasing
+	//     absolute first-content budget.
 	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
-	//     off => no evaluation; shadow/enforce => compute would_shed +
-	//     would_redirect_to_idle and emit routing.ttft_admission /
-	//     routing.ttft_spread WITHOUT changing the routing decision. enforce is
-	//     reserved for a future step that would actually shed; it currently
-	//     behaves like shadow.
+	//     off => no evaluation; shadow => measurement only; enforce => retain
+	//     unknown estimates, prefer known deadline fits, and otherwise try the
+	//     best known estimate. Enforce is fail-open and never creates a 429.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA"); v != "" {
 		if alpha, ok := validateTTFTOccupancyAlpha(v); ok {
 			registry.SetTTFTOccupancyAlpha(alpha)
@@ -486,11 +484,15 @@ func main() {
 	if v := os.Getenv("EIGENINFERENCE_TTFT_ADMISSION_MODE"); v != "" {
 		mode := registry.ParseTTFTAdmissionMode(v)
 		registry.SetTTFTAdmissionMode(mode)
-		if mode == registry.TTFTAdmissionOff {
+		switch mode {
+		case registry.TTFTAdmissionOff:
 			logger.Info("TTFT admission shadow evaluation OFF (EIGENINFERENCE_TTFT_ADMISSION_MODE)", "value", v)
-		} else {
+		case registry.TTFTAdmissionShadow:
 			logger.Warn("TTFT admission shadow evaluation ENABLED (measurement only — no decision change)",
 				"mode", mode.String(), "deadline_base_ms", registry.TTFTDeadlineBaseMs(), "occupancy_alpha", registry.TTFTOccupancyAlpha())
+		case registry.TTFTAdmissionEnforce:
+			logger.Warn("TTFT occupancy-aware routing preference ENABLED (fail-open, no estimate-based rejection)",
+				"mode", mode.String(), "occupancy_alpha", registry.TTFTOccupancyAlpha())
 		}
 	}
 

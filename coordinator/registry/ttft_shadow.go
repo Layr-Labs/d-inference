@@ -2,13 +2,13 @@ package registry
 
 import "strings"
 
-// Phase-0 SLA-aware, occupancy-aware admission — SHADOW + MEASUREMENT slice.
+// SLA-aware, occupancy-aware routing measurement and enforcement.
 //
-// This file holds the configuration and the read-only evaluator for the TTFT
-// admission/spread shadow. It deliberately changes NO routing decision: in
-// `off` (default) the evaluator is a no-op; in `shadow` (and, for now, `enforce`)
-// it computes two signals against the winning candidate and hands them to the
-// caller as fields on RoutingDecision, which the API layer emits as metrics.
+// This file holds the configuration and evaluator shared by the TTFT
+// admission/spread shadow. `off` is a no-op; `shadow` computes signals without
+// changing selection; `enforce` additionally lets ttft_routing.go narrow the
+// candidate pool by the same occupancy-aware estimate. Enforcement is a
+// fail-open routing preference: it never creates a rejection.
 //
 //   - WouldShed: the occupancy-aware TTFT estimate
 //     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
@@ -36,10 +36,10 @@ const (
 	// TTFTAdmissionShadow computes the would-shed / would-redirect signals and
 	// emits metrics, but SERVES exactly as today (no decision change).
 	TTFTAdmissionShadow
-	// TTFTAdmissionEnforce is reserved for a future step that would actually shed
-	// on the signal. In this Phase-0 slice it behaves identically to shadow
-	// (evaluate + emit, no decision change) so it can be wired and validated
-	// without flipping live behavior.
+	// TTFTAdmissionEnforce applies occupancy-aware deadline preference during
+	// candidate selection and still emits the shadow diagnostics. It never sheds:
+	// unknown estimates remain eligible, and all-miss pools retain the best known
+	// candidate.
 	TTFTAdmissionEnforce
 )
 
@@ -106,10 +106,10 @@ func TTFTDeadlineBaseMs() float64 {
 	return ttftDeadlineBaseMs
 }
 
-// ttftDeadlineMsForPrompt is the shadow gate's per-request SLA in ms:
+// ttftDeadlineMsForPrompt is the diagnostic evaluator's per-request SLA in ms:
 // base + 1ms·prompt_tokens, matching the per-token slope of consumer.ttftDeadline
-// but with the verified ~10s base instead of 5s. Used ONLY by the shadow
-// evaluator — the live consumer.go ttftDeadline path is untouched.
+// but with the verified ~10s base instead of 5s. Candidate enforcement uses the
+// request's decreasing MaxTTFTMs instead; this value remains diagnostic only.
 func ttftDeadlineMsForPrompt(promptTokens int) float64 {
 	if promptTokens < 0 {
 		promptTokens = 0
@@ -143,9 +143,10 @@ func (e ttftShadowEval) applyTo(d *RoutingDecision) {
 	d.ShadowOccupancy = e.Occupancy
 }
 
-// evaluateTTFTShadowLocked computes the Phase-0 shadow signals for the winning
-// candidate WITHOUT changing the routing decision. Returns the zero value (a
-// no-op for applyTo) when the admission mode is off.
+// evaluateTTFTShadowLocked computes diagnostic signals for the winning
+// candidate. The evaluator itself never changes a decision; enforce-mode pool
+// narrowing happens earlier in ttft_routing.go. Returns the zero value when the
+// admission mode is off.
 //
 // Caller holds r.mu and NO provider lock — the peer scan in
 // loadedIdleAlternativeExistsLocked snapshots each provider under its own p.mu,
@@ -167,10 +168,10 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 		reqPrompt = 0
 	}
 	snap := winner.snapshot
-	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
-	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
-	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
-	// live 5s HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
+	// Occupancy-aware estimate (base + occupancy term). ttftMsFromSnapshot (the
+	// cost / hard-ceiling / bestTTFT input) stays occupancy-free so raising alpha
+	// cannot tighten a hard-reject ceiling. Enforce mode reuses this combined
+	// estimate only for fail-open pool preference in ttft_routing.go.
 	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
 	deadline := ttftDeadlineMsForPrompt(reqPrompt)
 	occ := snapshotOccupancy(snap)

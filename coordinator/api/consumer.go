@@ -550,10 +550,9 @@ func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *regi
 }
 
 // failedProviderVersion reads a provider's reported binary version under its
-// lock (mirroring the policy.prefer owner reads). Captured when an attempt
-// fails so the next attempt's Traits.AvoidVersion can steer the retry to a
-// different build — a deterministic per-version bug must not burn every retry
-// on identical binaries.
+// lock (mirroring the policy.prefer owner reads). The dispatch classifier calls
+// it only for version-sensitive failures, so request-local capacity/deadline
+// misses never steer the next attempt away from an otherwise healthy release.
 func failedProviderVersion(p *registry.Provider) string {
 	if p == nil {
 		return ""
@@ -699,9 +698,23 @@ func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) 
 // exists in estimatedTTFTFromSnapshot, so treating that partial estimate as a
 // hard ceiling rejects healthy video/image requests on a number that cannot
 // predict their TTFT. They still use the best-available provider and remain
-// bounded by the same request-absolute first-content deadline.
+// bounded by the same request-absolute first-content deadline. Occupancy-enforce
+// mode also disables estimate-based rejection: it carries the deadline into the
+// scheduler as a fail-open preference instead.
 func (s *Server) hardTTFTGateApplies(requiresVision bool) bool {
-	return s.ttftHardReject && !requiresVision
+	return s.ttftHardReject &&
+		!requiresVision &&
+		registry.TTFTAdmissionModeValue() != registry.TTFTAdmissionEnforce
+}
+
+// ttftRoutingBudgetApplies reports whether a text request should carry its
+// decreasing first-content budget into scheduler selection. Hard mode uses the
+// value as a ceiling; occupancy-enforce mode uses it only as a fail-open
+// preference. Vision remains excluded because its tower work is not modeled.
+func (s *Server) ttftRoutingBudgetApplies(requiresVision bool) bool {
+	return !requiresVision &&
+		(s.ttftHardReject ||
+			registry.TTFTAdmissionModeValue() == registry.TTFTAdmissionEnforce)
 }
 
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
@@ -894,12 +907,10 @@ func (s *Server) dispatchOneProvider(
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
-	// Routing v2 (P1 fix): only enforce the TTFT ceiling inside the scheduler when
-	// the HARD gate is on. In soft mode (default) MaxTTFTMs stays 0 so the primary
-	// dispatch serves the best-available provider instead of re-rejecting an
-	// over-threshold request the preflight already chose to soft-serve. (Mirrors
-	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.hardTTFTGateApplies(requiresVision) {
+	// Hard mode treats MaxTTFTMs as a ceiling. Occupancy-enforce mode carries the
+	// same absolute budget but uses it only to prefer a provider likely to reach
+	// first content; scheduler selection never rejects on that estimate.
+	if !policy.enabled && !policy.prefer && s.ttftRoutingBudgetApplies(requiresVision) {
 		pr.MaxTTFTMs = float64(requestDeadline.Milliseconds())
 	}
 	// Refresh immediately before reservation: every retry spends the same

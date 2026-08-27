@@ -5,25 +5,61 @@ import (
 	"testing"
 )
 
-func TestNarrowCandidatesByStructuralFit(t *testing.T) {
+func TestStructuralFitWeightedRendezvousPreservesSpread(t *testing.T) {
 	t.Parallel()
 
-	tight := &routingCandidate{fitKnown: true, fitSlackTokens: 2_000}
-	roomy := &routingCandidate{fitKnown: true, fitSlackTokens: 60_000}
-	if got := narrowCandidatesByStructuralFit([]*routingCandidate{roomy, tight}); len(got) != 1 || got[0] != tight {
-		t.Fatalf("known structural fit selected %+v, want tight candidate", got)
+	candidate := func(id string, capacity int64, known bool, memoryGB float64) *routingCandidate {
+		provider := &Provider{ID: id}
+		return &routingCandidate{
+			provider:          provider,
+			snapshot:          routingSnapshot{provider: provider, totalMemoryGB: memoryGB},
+			fitCapacityTokens: capacity,
+			fitKnown:          known,
+		}
 	}
 
-	smallRAM := &routingCandidate{snapshot: routingSnapshot{totalMemoryGB: 32}}
-	largeRAM := &routingCandidate{snapshot: routingSnapshot{totalMemoryGB: 128}}
-	if got := narrowCandidatesByStructuralFit([]*routingCandidate{largeRAM, smallRAM}); len(got) != 1 || got[0] != smallRAM {
-		t.Fatalf("unknown-budget RAM fit selected %+v, want 32 GB candidate", got)
+	assertBoundedBias := func(name string, candidates []*routingCandidate, preferredID string) {
+		t.Helper()
+		counts := map[string]int{}
+		const requests = 2_000
+		for i := 0; i < requests; i++ {
+			selected := selectCandidateByStructuralFit(
+				candidates, fmt.Sprintf("%s-%d", name, i))
+			counts[selected.provider.ID]++
+		}
+		share := float64(counts[preferredID]) / requests
+		if share < 0.58 || share > 0.72 {
+			t.Fatalf("%s preferred share = %.3f, want bounded ~2:1 bias; counts=%v", name, share, counts)
+		}
+		for _, candidate := range candidates {
+			if counts[candidate.provider.ID] == 0 {
+				t.Fatalf("%s starved candidate %q; counts=%v", name, candidate.provider.ID, counts)
+			}
+		}
 	}
 
-	// Mixed reporting must not turn "known" into an advantage over a legacy
-	// provider whose structural ceiling is simply unavailable.
-	if got := narrowCandidatesByStructuralFit([]*routingCandidate{tight, largeRAM}); len(got) != 2 {
-		t.Fatalf("mixed budget knowledge narrowed to %d candidates, want neutral set of 2", len(got))
+	assertBoundedBias("known-budget", []*routingCandidate{
+		candidate("roomy", 131_072, true, 128),
+		candidate("tight", 8_192, true, 32),
+	}, "tight")
+	assertBoundedBias("unknown-budget", []*routingCandidate{
+		candidate("large-ram", 0, false, 128),
+		candidate("small-ram", 0, false, 32),
+	}, "small-ram")
+
+	// Mixed reporting is uniform: knowledge itself cannot become an advantage.
+	mixed := []*routingCandidate{
+		candidate("known", 8_192, true, 32),
+		candidate("legacy", 0, false, 128),
+	}
+	counts := map[string]int{}
+	for i := 0; i < 2_000; i++ {
+		selected := selectCandidateByStructuralFit(mixed, fmt.Sprintf("mixed-%d", i))
+		counts[selected.provider.ID]++
+	}
+	knownShare := float64(counts["known"]) / 2_000
+	if knownShare < 0.42 || knownShare > 0.58 {
+		t.Fatalf("mixed-knowledge share = %.3f, want neutral split; counts=%v", knownShare, counts)
 	}
 }
 
@@ -31,39 +67,41 @@ func TestStructuralFitCannotOverrideLatencyOrLoad(t *testing.T) {
 	t.Parallel()
 
 	tight := &routingCandidate{
-		costMs:         nearTieCostWindowMs + 1,
-		effectiveQueue: 0,
-		fitKnown:       true,
-		fitSlackTokens: 1,
+		costMs:            nearTieCostWindowMs + 1,
+		effectiveQueue:    0,
+		fitKnown:          true,
+		fitCapacityTokens: 1,
 	}
 	fastRoomy := &routingCandidate{
-		costMs:         0,
-		effectiveQueue: 0,
-		fitKnown:       true,
-		fitSlackTokens: 100_000,
+		costMs:            0,
+		effectiveQueue:    0,
+		fitKnown:          true,
+		fitCapacityTokens: 100_000,
 	}
 	if got := selectRoutingCandidate(
 		[]*routingCandidate{tight, fastRoomy},
 		func(candidate *routingCandidate) float64 { return candidate.costMs },
+		"latency",
 	); got != fastRoomy {
 		t.Fatal("structural fit crossed the bounded latency window")
 	}
 
 	idleRoomy := &routingCandidate{
-		costMs:         100,
-		effectiveQueue: 0,
-		fitKnown:       true,
-		fitSlackTokens: 100_000,
+		costMs:            100,
+		effectiveQueue:    0,
+		fitKnown:          true,
+		fitCapacityTokens: 100_000,
 	}
 	busyTight := &routingCandidate{
-		costMs:         100,
-		effectiveQueue: 1,
-		fitKnown:       true,
-		fitSlackTokens: 1,
+		costMs:            100,
+		effectiveQueue:    1,
+		fitKnown:          true,
+		fitCapacityTokens: 1,
 	}
 	if got := selectRoutingCandidate(
 		[]*routingCandidate{busyTight, idleRoomy},
 		func(candidate *routingCandidate) float64 { return candidate.costMs },
+		"load",
 	); got != idleRoomy {
 		t.Fatal("structural fit overrode the lower-occupancy candidate")
 	}
@@ -90,24 +128,32 @@ func TestReserveProviderExFleetScaleUsesStructuralSizeClasses(t *testing.T) {
 		roomy.mu.Unlock()
 	}
 
-	short := &PendingRequest{
-		RequestID:             "short",
-		Model:                 model,
-		EstimatedPromptTokens: 512,
-		RequestedMaxTokens:    256,
+	counts := map[int]int{}
+	const shortRequests = 300
+	for i := 0; i < shortRequests; i++ {
+		requestID := fmt.Sprintf("short-%d", i)
+		selected, decision := reg.ReserveProviderEx(model, &PendingRequest{
+			RequestID:             requestID,
+			Model:                 model,
+			EstimatedPromptTokens: 512,
+			RequestedMaxTokens:    256,
+		})
+		if selected == nil {
+			t.Fatalf("short request %d was not routed: %+v", i, decision)
+		}
+		selected.mu.Lock()
+		selectedMemory := selected.Hardware.MemoryGB
+		selected.mu.Unlock()
+		counts[selectedMemory]++
+		if decision.CandidateCount != 2*providersPerClass {
+			t.Fatalf("short request candidate count = %d, want %d", decision.CandidateCount, 2*providersPerClass)
+		}
+		selected.RemovePending(requestID)
+		reg.SetProviderIdle(selected.ID)
 	}
-	selected, decision := reg.ReserveProviderEx(model, short)
-	if selected == nil {
-		t.Fatalf("short request was not routed: %+v", decision)
-	}
-	selected.mu.Lock()
-	selectedMemory := selected.Hardware.MemoryGB
-	selected.mu.Unlock()
-	if selectedMemory != 32 {
-		t.Fatalf("short request selected %d GB provider, want constrained 32 GB class", selectedMemory)
-	}
-	if decision.CandidateCount != 2*providersPerClass {
-		t.Fatalf("short request candidate count = %d, want %d", decision.CandidateCount, 2*providersPerClass)
+	tightShare := float64(counts[32]) / shortRequests
+	if tightShare < 0.55 || tightShare > 0.78 || counts[128] == 0 {
+		t.Fatalf("short-request size-class split = %v (tight share %.3f), want bounded preference without starvation", counts, tightShare)
 	}
 
 	long := &PendingRequest{
@@ -116,12 +162,12 @@ func TestReserveProviderExFleetScaleUsesStructuralSizeClasses(t *testing.T) {
 		EstimatedPromptTokens: 32_000,
 		RequestedMaxTokens:    4_096,
 	}
-	selected, decision = reg.ReserveProviderEx(model, long)
+	selected, decision := reg.ReserveProviderEx(model, long)
 	if selected == nil {
 		t.Fatalf("long request was not routed: %+v", decision)
 	}
 	selected.mu.Lock()
-	selectedMemory = selected.Hardware.MemoryGB
+	selectedMemory := selected.Hardware.MemoryGB
 	selected.mu.Unlock()
 	if selectedMemory != 128 {
 		t.Fatalf("long request selected %d GB provider, want 128 GB class", selectedMemory)

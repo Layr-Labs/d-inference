@@ -2,7 +2,6 @@ package registry
 
 import (
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -196,10 +195,10 @@ type routingCandidate struct {
 	effectiveQueue int
 	breakdown      costBreakdown
 	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
-	// fitSlackTokens is the structural token ceiling left after this request.
+	// fitCapacityTokens is the candidate's structural token size class.
 	// It only breaks otherwise-equivalent ties; see capacity_fit.go.
-	fitSlackTokens int64
-	fitKnown       bool
+	fitCapacityTokens int64
+	fitKnown          bool
 	// capacityRejectRate is the pair's windowed capacity-503 rate
 	// (capacity_rate.go), captured at candidate build so the winning
 	// RoutingDecision can expose it. 0 when no rejects are in the window.
@@ -886,7 +885,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 
 	winner := selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
 		return candidate.costMs
-	})
+	}, pr.RequestID)
 	r.logRoutingDecision(model, pr, winner, candidateCount)
 	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
 }
@@ -896,6 +895,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 func selectRoutingCandidate(
 	pool []*routingCandidate,
 	cost func(*routingCandidate) float64,
+	requestID string,
 ) *routingCandidate {
 	if len(pool) == 0 {
 		return nil
@@ -955,15 +955,12 @@ func selectRoutingCandidate(
 		equivalent = best
 	}
 
-	// Latency/load/cache policy has declared these candidates equivalent. Pack
-	// the request into the smallest sufficient structural size class so small
-	// work uses constrained machines and scarce large-request headroom remains
-	// available. Equal size classes retain uniform random spreading.
-	equivalent = narrowCandidatesByStructuralFit(equivalent)
-	if len(equivalent) > 1 {
-		return equivalent[rand.Intn(len(equivalent))]
-	}
-	return equivalent[0]
+	// Latency/load/cache policy has declared these candidates equivalent. A
+	// bounded structural-fit weight sends more small work to constrained
+	// machines without monopolizing a class; large requests still hard-filter
+	// to providers they fit. Rendezvous hashing keeps the split stable and
+	// allocation-free.
+	return selectCandidateByStructuralFit(equivalent, requestID)
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -1554,7 +1551,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	if reqPrompt < 0 {
 		reqPrompt = 0
 	}
-	fitSlackTokens, fitKnown := routingStructuralFit(
+	fitCapacityTokens, fitKnown := routingStructuralFit(
 		snap, int64(reqPrompt)+int64(reqMax))
 
 	// Absolute hardware-fit gate (cold-load only, both admission modes). A model
@@ -1664,7 +1661,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		costMs:             cost,
 		effectiveQueue:     effectiveQueue,
 		effectiveTPS:       effectiveTPS,
-		fitSlackTokens:     fitSlackTokens,
+		fitCapacityTokens:  fitCapacityTokens,
 		fitKnown:           fitKnown,
 		capacityRejectRate: capacityRejectRate,
 		breakdown: costBreakdown{

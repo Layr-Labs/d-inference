@@ -48,9 +48,10 @@ The problem was not aggregate capacity.
   the minimum prediction gets first chance; unknown estimates stay eligible.
   The mode disables estimate-based TTFT rejection but preserves the absolute
   request clock and provider-side atomic admission.
-- Existing near-cost, equal-load, cache-equivalent ties use the smallest
-  sufficient structural token-budget class. If every budget is unknown, the
-  smallest RAM class is the fallback. Mixed knowledge stays neutral.
+- Existing near-cost, equal-load, cache-equivalent ties use bounded weighted
+  rendezvous over structural token-budget class. If every budget is unknown,
+  RAM class is the fallback. A constrained provider gets at most 2× an
+  equivalent larger provider's share; mixed knowledge stays uniform.
 
 The checked-in deployment configuration remains `shadow`. The version and structural-fit
 corrections are unconditional because they only remove false evidence and refine

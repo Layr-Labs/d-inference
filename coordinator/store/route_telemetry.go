@@ -78,6 +78,49 @@ func mergeInferenceRouteOutcome(dst *InferenceRouteOutcome, src *InferenceRouteO
 	if src.BackupWon {
 		dst.BackupWon = true
 	}
+	if src.MediaFetchMs != 0 {
+		dst.MediaFetchMs = src.MediaFetchMs
+	}
+	if src.CacheOutcome != "" {
+		dst.CacheOutcome = src.CacheOutcome
+		dst.CacheTier = src.CacheTier
+		dst.CachedTokens = src.CachedTokens
+		dst.PrefillTokensSaved = src.PrefillTokensSaved
+		dst.CacheStageMs = src.CacheStageMs
+	}
+	if src.ClientOutcome != "" {
+		dst.ClientOutcome = src.ClientOutcome
+	}
+	if src.ProviderOutcome != "" {
+		dst.ProviderOutcome = src.ProviderOutcome
+	}
+	if src.BillingOutcome != "" {
+		dst.BillingOutcome = src.BillingOutcome
+	}
+	if src.ResponseCommitted {
+		dst.ResponseCommitted = true
+	}
+	if src.IsFinalAttempt {
+		dst.IsFinalAttempt = true
+	}
+	if src.TotalAttempts != 0 {
+		dst.TotalAttempts = src.TotalAttempts
+	}
+	if src.TerminalSource != "" {
+		dst.TerminalSource = src.TerminalSource
+	}
+	if src.ReservedMicroUSD != 0 {
+		dst.ReservedMicroUSD = src.ReservedMicroUSD
+	}
+	if src.SettledMicroUSD != 0 {
+		dst.SettledMicroUSD = src.SettledMicroUSD
+	}
+	if src.OverageMicroUSD != 0 {
+		dst.OverageMicroUSD = src.OverageMicroUSD
+	}
+	if src.RefundMicroUSD != 0 {
+		dst.RefundMicroUSD = src.RefundMicroUSD
+	}
 }
 
 func applyInferenceRouteOutcomeToRecord(rec *InferenceRouteRecord, outcome InferenceRouteOutcome) {
@@ -105,4 +148,21 @@ func applyInferenceRouteOutcomeToRecord(rec *InferenceRouteRecord, outcome Infer
 	rec.AdmittedButFailed = outcome.AdmittedButFailed
 	rec.UsedBackup = outcome.UsedBackup
 	rec.BackupWon = outcome.BackupWon
+	rec.MediaFetchMs = outcome.MediaFetchMs
+	rec.CacheOutcome = outcome.CacheOutcome
+	rec.CacheTier = outcome.CacheTier
+	rec.CachedTokens = outcome.CachedTokens
+	rec.PrefillTokensSaved = outcome.PrefillTokensSaved
+	rec.CacheStageMs = outcome.CacheStageMs
+	rec.ClientOutcome = outcome.ClientOutcome
+	rec.ProviderOutcome = outcome.ProviderOutcome
+	rec.BillingOutcome = outcome.BillingOutcome
+	rec.ResponseCommitted = outcome.ResponseCommitted
+	rec.IsFinalAttempt = outcome.IsFinalAttempt
+	rec.TotalAttempts = outcome.TotalAttempts
+	rec.TerminalSource = outcome.TerminalSource
+	rec.ReservedMicroUSD = outcome.ReservedMicroUSD
+	rec.SettledMicroUSD = outcome.SettledMicroUSD
+	rec.OverageMicroUSD = outcome.OverageMicroUSD
+	rec.RefundMicroUSD = outcome.RefundMicroUSD
 }

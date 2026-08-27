@@ -68,6 +68,33 @@ func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
 	if diff := sum - decision.CostMs; diff > 0.001 || diff < -0.001 {
 		t.Fatalf("breakdown sum %f != CostMs %f", sum, decision.CostMs)
 	}
+	if len(decision.Candidates) != 2 {
+		t.Fatalf("decision.Candidates=%d, want 2", len(decision.Candidates))
+	}
+	selectedCount := 0
+	var cheapest *RouteCandidateSnapshot
+	for i := range decision.Candidates {
+		c := decision.Candidates[i]
+		if c.Selected {
+			selectedCount++
+			if c.ProviderID != provider.ID || !c.Eligible {
+				t.Fatalf("selected candidate = %+v", c)
+			}
+		}
+		if c.Eligible && c.Rank == 0 {
+			row := c
+			cheapest = &row
+		}
+	}
+	if selectedCount != 1 {
+		t.Fatalf("selected candidates = %d, want 1", selectedCount)
+	}
+	if cheapest == nil || cheapest.CostMs > decision.CostMs+0.001 {
+		t.Fatalf("rank 0 must be the cheapest eligible candidate, got %+v cost=%f", cheapest, decision.CostMs)
+	}
+	if req.PredictedCostMs != decision.CostMs || req.PredictedEffectiveTPS != decision.EffectiveTPS {
+		t.Fatalf("pending predictions not stamped: cost=%f tps=%f", req.PredictedCostMs, req.PredictedEffectiveTPS)
+	}
 }
 
 func TestQuickCapacityCheckWithTTFTEstimatesBestEligibleProvider(t *testing.T) {

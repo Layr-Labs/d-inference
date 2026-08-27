@@ -509,6 +509,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 			s.registry.Heartbeat(providerID, hbMsg)
+			s.maybeRecordCapacitySample(provider)
 			// Emit only from the accepted registry snapshot: malformed values
 			// have been clamped and slot model IDs constrained to this
 			// connection's coordinator-known inventory.
@@ -634,10 +635,18 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
+				if duration > 0 {
+					s.ddHistogram("routing.model_load_ms", float64(duration.Milliseconds()),
+						[]string{"model:" + statusMsg.ModelID, "outcome:succeeded"})
+				}
 				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
+				if duration > 0 {
+					s.ddHistogram("routing.model_load_ms", float64(duration.Milliseconds()),
+						[]string{"model:" + statusMsg.ModelID, "outcome:failed"})
+				}
 				// Quantify WHY proactive loads are rejected. The reason
 				// is derived only from the existing error string (no new wire
 				// field). The proactive path's string is often a generic
@@ -1995,6 +2004,7 @@ func (s *Server) handleCompleteAt(
 	}
 
 	billingFinalized := true
+	reservedAtStart := pr.ReservedMicroUSD
 
 	// Settle billing against the pre-flight reservation. All balance
 	// mutations (overage charge, refund) happen inside the finalization
@@ -2191,6 +2201,13 @@ func (s *Server) handleCompleteAt(
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
 		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		overage, refund := int64(0), int64(0)
+		if totalCost > reservedAtStart {
+			overage = totalCost - reservedAtStart
+		} else if reservedAtStart > totalCost {
+			refund = reservedAtStart - totalCost
+		}
+		applyBillingSettlement(outcome, reservedAtStart, totalCost, overage, refund)
 		// Join only after both inputs are authoritative: cacheUsageValid was
 		// established from the terminal usage above, and completeRouteOutcome read
 		// the committed attempt's mutex-guarded first-content timestamp after the

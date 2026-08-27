@@ -138,6 +138,11 @@ type MemoryStore struct {
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
 
+	// Per-candidate routing scores and sampled heartbeat snapshots.
+	inferenceRouteCandidates     []InferenceRouteCandidateRecord
+	inferenceRouteCandidateIndex map[string]int // request_id/attempt/provider_id
+	providerCapacitySamples      []ProviderCapacitySample
+
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
 	providerFloorDraws []ProviderFloorDraw
 	floorDrawSeq       int64
@@ -195,6 +200,9 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		inferenceRouteCandidates:      make([]InferenceRouteCandidateRecord, 0),
+		inferenceRouteCandidateIndex:  make(map[string]int),
+		providerCapacitySamples:       make([]ProviderCapacitySample, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
 	}
@@ -1017,6 +1025,90 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	}
 	if out == nil {
 		return []RejectionRecord{}
+	}
+	return out
+}
+
+// RecordInferenceRouteCandidates writes scored/rejected candidate snapshots.
+func (s *MemoryStore) RecordInferenceRouteCandidates(records []InferenceRouteCandidateRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rec := range records {
+		if rec.RequestID == "" || rec.ProviderID == "" {
+			continue
+		}
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = now
+		}
+		key := rec.RequestID + "/" + strconv.Itoa(rec.Attempt) + "/" + rec.ProviderID
+		if idx, ok := s.inferenceRouteCandidateIndex[key]; ok {
+			rec.CreatedAt = s.inferenceRouteCandidates[idx].CreatedAt
+			s.inferenceRouteCandidates[idx] = rec
+			continue
+		}
+		s.inferenceRouteCandidates = append(s.inferenceRouteCandidates, rec)
+		s.inferenceRouteCandidateIndex[key] = len(s.inferenceRouteCandidates) - 1
+	}
+	return nil
+}
+
+// InferenceRouteCandidatesSince returns candidate rows newest-first.
+func (s *MemoryStore) InferenceRouteCandidatesSince(since time.Time) []InferenceRouteCandidateRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]InferenceRouteCandidateRecord, 0, len(s.inferenceRouteCandidates))
+	for i := len(s.inferenceRouteCandidates) - 1; i >= 0; i-- {
+		r := s.inferenceRouteCandidates[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	if out == nil {
+		return []InferenceRouteCandidateRecord{}
+	}
+	return out
+}
+
+// RecordProviderCapacitySample writes one sampled heartbeat snapshot.
+func (s *MemoryStore) RecordProviderCapacitySample(record *ProviderCapacitySample) error {
+	if record == nil || record.ProviderID == "" {
+		return nil
+	}
+	rec := *record
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = time.Now()
+	}
+	s.mu.Lock()
+	s.providerCapacitySamples = append(s.providerCapacitySamples, rec)
+	s.mu.Unlock()
+	return nil
+}
+
+// ProviderCapacitySamplesSince returns capacity samples newest-first.
+func (s *MemoryStore) ProviderCapacitySamplesSince(since time.Time) []ProviderCapacitySample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ProviderCapacitySample, 0, len(s.providerCapacitySamples))
+	for i := len(s.providerCapacitySamples) - 1; i >= 0; i-- {
+		r := s.providerCapacitySamples[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	if out == nil {
+		return []ProviderCapacitySample{}
 	}
 	return out
 }

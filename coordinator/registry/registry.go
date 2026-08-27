@@ -223,6 +223,12 @@ type PendingRequest struct {
 	UsedBackup bool
 	BackupWon  bool
 
+	// Predicted* are the scheduler estimates at reservation. Completion uses
+	// them to emit prediction-error histograms without re-reading the route row.
+	PredictedTTFTMs       float64
+	PredictedCostMs       float64
+	PredictedEffectiveTPS float64
+
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
@@ -3714,6 +3720,18 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 		actions = append(actions, modelLoadAction{providerID: providerID, modelID: model})
 	}
 	return actions
+}
+
+// HasWarmProvider reports whether any connected, publicly-routable provider
+// already has the model warm. Used by rejection telemetry for the
+// counterfactual "was the model already resident somewhere?" flag.
+func (r *Registry) HasWarmProvider(model string) bool {
+	if r == nil || model == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.hasWarmProviderLocked(model, time.Now())
 }
 
 // hasWarmProviderLocked reports whether a connected provider already has the

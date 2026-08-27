@@ -387,39 +387,62 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 	}
 
 	record := &store.InferenceRouteRecord{
-		RequestID:               requestID,
-		Attempt:                 attempt,
-		ProviderID:              providerID,
-		Model:                   d.model,
-		PublicModel:             d.publicModel,
-		ConsumerKeyHash:         store.HashKey(d.consumerKey),
-		KeyID:                   keyID,
-		Outcome:                 outcome,
-		CostMs:                  decision.CostMs,
-		StateMs:                 decision.StateMs,
-		QueueMs:                 decision.QueueMs,
-		PendingMs:               decision.PendingMs,
-		BacklogMs:               decision.BacklogMs,
-		ThisReqMs:               decision.ThisReqMs,
-		HealthMs:                decision.HealthMs,
-		TTFTMs:                  decision.TTFTMs,
-		BestTTFTMs:              decision.BestTTFTMs,
-		EffectiveQueue:          decision.EffectiveQueue,
-		CandidateCount:          decision.CandidateCount,
-		CapacityRejections:      decision.CapacityRejections,
-		ModelTooLargeRejections: decision.ModelTooLargeRejections,
-		VisionRejections:        decision.VisionRejections,
-		TTFTRejections:          decision.TTFTRejections,
-		EffectiveTPS:            decision.EffectiveTPS,
-		StaticTPS:               decision.StaticTPS,
-		EstimatedPromptTokens:   d.estimatedPromptTokens,
-		RequestedMaxTokens:      d.requestedMaxTokens,
-		RequiresVision:          d.requiresVision,
-		HasTools:                d.hasTools,
-		SelfRouteOnly:           d.policy.enabled,
-		PreferOwner:             d.policy.prefer,
-		CreatedAt:               time.Now(),
-		UpdatedAt:               time.Now(),
+		RequestID:                 requestID,
+		Attempt:                   attempt,
+		ProviderID:                providerID,
+		Model:                     d.model,
+		PublicModel:               d.publicModel,
+		ConsumerKeyHash:           store.HashKey(d.consumerKey),
+		KeyID:                     keyID,
+		Outcome:                   outcome,
+		CostMs:                    decision.CostMs,
+		StateMs:                   decision.StateMs,
+		QueueMs:                   decision.QueueMs,
+		PendingMs:                 decision.PendingMs,
+		BacklogMs:                 decision.BacklogMs,
+		ThisReqMs:                 decision.ThisReqMs,
+		HealthMs:                  decision.HealthMs,
+		TTFTMs:                    decision.TTFTMs,
+		BestTTFTMs:                decision.BestTTFTMs,
+		EffectiveQueue:            decision.EffectiveQueue,
+		CandidateCount:            decision.CandidateCount,
+		CapacityRejections:        decision.CapacityRejections,
+		ModelTooLargeRejections:   decision.ModelTooLargeRejections,
+		VisionRejections:          decision.VisionRejections,
+		TTFTRejections:            decision.TTFTRejections,
+		EffectiveTPS:              decision.EffectiveTPS,
+		StaticTPS:                 decision.StaticTPS,
+		EstimatedPromptTokens:     d.estimatedPromptTokens,
+		RequestedMaxTokens:        d.requestedMaxTokens,
+		RequiresVision:            d.requiresVision,
+		HasTools:                  d.hasTools,
+		SelfRouteOnly:             d.policy.enabled,
+		PreferOwner:               d.policy.prefer,
+		CapacityRateMs:            decision.CapacityRateMs,
+		CapacityRejectRate:        decision.CapacityRejectRate,
+		AffinityTier:              decision.CacheTier,
+		AffinityDiscountMs:        decision.CacheDiscountMs,
+		Endpoint:                  d.telemetryEndpoint(),
+		FreeForLoadGB:             decision.FreeForLoadGB,
+		WedgeSuspected:            decision.WedgeSuspected,
+		TotalPending:              decision.TotalPending,
+		EffectivePrefillTPS:       decision.EffectivePrefillTPS,
+		StaticPrefillTPS:          decision.StaticPrefillTPS,
+		CacheEstimatedTTFTSavedMs: decision.CacheEstimatedTTFTSavedMs,
+		NearTieCount:              decision.NearTieCount,
+		TieBreakReason:            decision.TieBreakReason,
+		ShadowWouldShed:           decision.ShadowWouldShed,
+		ShadowIdleAlternative:     decision.ShadowIdleAlternativeExists,
+		ShadowEstimateMs:          decision.ShadowEstimateMs,
+		ShadowDeadlineMs:          decision.ShadowDeadlineMs,
+		BreakerRejections:         decision.BreakerRejections,
+		SoftFilterRejections:      decision.SoftFilterRejections,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
+	}
+
+	if d.consumerLocation != nil {
+		record.ConsumerRegion = coarseRegion(d.consumerLocation)
 	}
 
 	if provider != nil {
@@ -436,6 +459,7 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		record.SystemMemoryPressure = provider.SystemMetrics.MemoryPressure
 		record.SystemCPUUsage = provider.SystemMetrics.CPUUsage
 		record.SystemThermalState = provider.SystemMetrics.ThermalState
+		loc := provider.Location
 		if cap := provider.BackendCapacity; cap != nil {
 			record.GPUMemoryActiveGB = cap.GPUMemoryActiveGB
 			record.GPUMemoryPeakGB = cap.GPUMemoryPeakGB
@@ -453,6 +477,12 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 			}
 		}
 		provider.Mu().Unlock()
+		record.ProviderRegion = coarseRegion(loc)
+		if d.s != nil {
+			attr := d.s.providerKVBackendAttribution(provider, d.model)
+			record.KVBackend = attr.Backend
+			record.KVBackendFallback = attr.Fallback
+		}
 	}
 
 	// Phase-0 shadow TTFT admission/spread metrics. No-op unless the request was
@@ -466,6 +496,7 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		})
 	}
 
+	candidates := routeCandidatesFromDecision(requestID, attempt, decision.Candidates)
 	s.submitTelemetry("recordInferenceRoute", func() {
 		if err := s.store.RecordInferenceRoute(record); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes record write failed",
@@ -476,6 +507,33 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 				"error", err,
 			)
 		}
+		if len(candidates) > 0 {
+			if err := s.store.RecordInferenceRouteCandidates(candidates); err != nil && s.logger != nil {
+				s.logger.Error("inference_route_candidates record write failed",
+					"request_id", requestID,
+					"attempt", attempt,
+					"count", len(candidates),
+					"error", err,
+				)
+			}
+		}
+	})
+}
+
+func (d *dispatchState) stampFinalAttempt() {
+	if d == nil || d.s == nil {
+		return
+	}
+	requestID := d.routingOutcomeKey()
+	if requestID == "" && d.pr != nil {
+		requestID = d.pr.RequestID
+	}
+	if requestID == "" {
+		return
+	}
+	d.s.updateInferenceRouteOutcomeWithModel(requestID, d.attempt, d.model, &store.InferenceRouteOutcome{
+		IsFinalAttempt: true,
+		TotalAttempts:  d.attempt + 1,
 	})
 }
 
@@ -514,6 +572,7 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 	routeAnchor := t.ReservedAt
 	if !t.MediaFetchedAt.IsZero() {
 		routeAnchor = t.MediaFetchedAt
+		out.MediaFetchMs = timingMsBetween(t.ReservedAt, t.MediaFetchedAt)
 	}
 	out.RouteMs = timingMsBetween(routeAnchor, t.RoutedAt)
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
@@ -3040,6 +3099,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 // range maxDispatchAttempts { ... }` block plus the post-loop !committed ladder,
 // attestation headers, timing header, settlement defer, and final response handoff.
 func (d *dispatchState) run() {
+	defer d.stampFinalAttempt()
 	s := d.s
 	w, r := d.w, d.r
 	d.preflightLegacyCacheBust()

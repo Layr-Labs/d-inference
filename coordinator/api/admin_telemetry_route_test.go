@@ -29,6 +29,12 @@ func TestRouteCSVIncludesOutcomeFields(t *testing.T) {
 		AdmittedButFailed:      true,
 		UsedBackup:             true,
 		BackupWon:              true,
+		CapacityRateMs:         50,
+		AffinityTier:           "ssd",
+		CacheOutcome:           "hit",
+		ClientOutcome:          "completed",
+		ProviderOutcome:        "completed",
+		BillingOutcome:         "charged",
 	}
 	row := routeCSVRow(rec)
 	if len(routeCSVHeader) != len(row) {
@@ -38,13 +44,18 @@ func TestRouteCSVIncludesOutcomeFields(t *testing.T) {
 	for i, name := range routeCSVHeader {
 		values[name] = row[i]
 	}
-	for _, name := range []string{"final_status", "error_code", "error_class", "error_reason", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cost_micro_usd", "actual_ttft_ms", "dispatch_to_first_chunk_ms", "total_duration_ms", "parse_ms", "reserve_ms", "route_ms", "encrypt_ms", "queue_wait_ms", "dispatch_ms", "actual_decode_tps", "admitted_but_failed", "used_backup", "backup_won"} {
+	for _, name := range []string{"final_status", "error_code", "error_class", "error_reason", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cost_micro_usd", "actual_ttft_ms", "dispatch_to_first_chunk_ms", "total_duration_ms", "parse_ms", "reserve_ms", "route_ms", "encrypt_ms", "queue_wait_ms", "dispatch_ms", "actual_decode_tps", "admitted_but_failed", "used_backup", "backup_won", "capacity_rate_ms", "affinity_tier", "cache_outcome", "client_outcome", "provider_outcome", "billing_outcome"} {
 		if _, ok := values[name]; !ok {
 			t.Fatalf("route CSV missing %q", name)
 		}
 	}
 	if values["final_status"] != "partial_success" || values["error_code"] != "499" || values["error_reason"] != "cancelled" || values["used_backup"] != "true" || values["backup_won"] != "true" {
 		t.Fatalf("unexpected CSV outcome values: %+v", values)
+	}
+	for _, name := range []string{"endpoint", "kv_backend", "free_for_load_gb", "near_tie_count", "terminal_source", "reserved_micro_usd"} {
+		if _, ok := values[name]; !ok {
+			t.Fatalf("route CSV missing %q", name)
+		}
 	}
 }
 

@@ -213,8 +213,9 @@ All already in `inference_routes`. These are the **inputs** the cost used.
 | **`used_backup`, `backup_won`** | Speculative/backup-race dispatch happens (`raceBackupErrWaitPrimary`) but its win/loss is invisible. Tells us if speculation helps. |
 | **`provider_region`, `consumer_region`** | "Closest machine" reasoning; geo-aware routing later. (Provider geo from registry; consumer geo already GeoIP-bucketed for usage.) |
 | **`admitted_but_failed`** (bool) + `provider_reported_free_gb` | Detect the coordinator-admits / provider-OOMs mismatch (§2). Calibrates `kvCacheBytesPerToken` and the 2.0-vs-3.0 headroom gap. |
-| **`prefix_cache_hit`, `prefix_cache_hit_tokens`** | Whether the provider actually reused KV/prefix cache. Validates cache-affinity routing. (Requires one new optional field on the provider `complete` message — only protocol touch in the whole plan, and it's additive.) |
-| **`is_final_attempt`, `total_attempts`** | Make retry chains queryable without window functions. |
+| **`prefix_cache_hit`, `prefix_cache_hit_tokens`** | **Done via existing `UsageInfo` fields** (`cache_outcome`, `cache_tier`, `cached_tokens`, `prefill_tokens_saved`, `cache_stage_ms`) persisted on the route outcome. No new protocol field. |
+| **`is_final_attempt`, `total_attempts`** | Make retry chains queryable without window functions. **Done** — stamped at dispatch `run()` tail. |
+| **`endpoint`, `kv_backend`, `free_for_load_gb`, `wedge_suspected`, `total_pending`, prefill TPS, near-tie audit, TTFT-shadow, billing settlement, `terminal_source`** | Decision/outcome extras that already existed in-process. Now persisted on the route row. |
 
 ### 4.7 Per-candidate scores — `inference_route_candidates` (Phase 2, the new ask)
 One row per provider the scheduler *considered* for an attempt. This is what lets
@@ -224,9 +225,8 @@ regret** analysis.
 | Field | Why |
 |-------|-----|
 | `route_id` (FK → `inference_routes.id`), `request_id`, `attempt` | Link to the parent decision. |
-| `provider_id`, `rank` (0 = winner) | Identify each candidate and its finishing position. |
-| `selected` (bool) | Was this the winner? |
-| `eligible` (bool), `rejection_reason` (`capacity`/`model_too_large`/`vision`/`ttft`/`thermal`/`trust`/`slot_state`/`none`) | **Why a candidate lost before scoring** — the per-machine mismatch. |
+| `provider_id`, `rank` (0 = cheapest eligible by cost), `selected` (who was reserved) | Rank is cost-order so regret is `selected` vs rank 0. Near-tie spread can reserve a non-cheapest candidate. |
+| `eligible` (bool), `rejection_reason` (`capacity`/`model_too_large`/`vision`/`ttft`/`catalog`/`breaker`/`liveness`/`trait`/`prefer_owner`/…) | **Why a candidate lost** — post-gate, structural, or soft-filter. |
 | `cost_ms` + full breakdown (`state_ms`,`queue_ms`,`pending_ms`,`backlog_ms`,`this_req_ms`,`health_ms`,`ttft_ms`) | The loser's score, term by term. "A won at 1.2s, B was 1.35s (its `backlog_ms` was 2× higher)." |
 | `effective_queue`, `effective_tps`, `static_tps`, `batch_size` | The loser's live state — needed to know if the model *correctly* ranked it. |
 | hardware snapshot (`chip_family`, `tier`, `memory_gb`, `slot_state`, mem pressure, thermal, gpu active) | Compare winner vs loser hardware; detect "we picked a worse machine." |
@@ -432,8 +432,8 @@ Rather than paging a giant JSON reply, **stream the rows straight to a file**:
 |-------|-------------|------|
 | **0 — done** | `inference_routes` table + two-phase write wired through dispatch/complete; memory+postgres stores; tests green. | shipped on this branch |
 | **1** | Add §4.6 gap fields (timing decomposition, actual queue wait, actual decode TPS, admit-but-failed, backup win/loss). **Add `request_rejections` table (§4.9) — the rejection / lost-demand ledger with counterfactual servability.** Add read endpoints (§6). | low-medium — additive columns + a `recordRejection(...)` helper called at each 4xx exit |
-| **2** | `inference_route_candidates` table + surface per-candidate scores from `selectBestCandidateLockedFull` (return the scored pool + rejections, not just the winner). Sampling controls. | medium — touches the hot scheduler path; must stay allocation-light and behind the existing `r.mu` |
-| **3** | `provider_capacity_samples` from heartbeats; offline calibration notebooks/SQL views; Datadog dashboard. | low — read-only analysis |
+| **2 — done** | `inference_route_candidates` table + surface per-candidate scores from `selectBestCandidateLockedFull` (return the scored pool + rejections, not just the winner). Winner + top eligible + post-gate/structural/soft-filter rejects persisted (capped). Rank is cost-order; `selected` is who we reserved. Admin JSON/CSV at `/v1/admin/candidates`. | shipped |
+| **3 — done** | `provider_capacity_samples` from heartbeats (1/min/provider) + admin JSON/CSV at `/v1/admin/capacity-samples`. Prediction-error DogStatsD histograms (`routing.ttft_error_ms`, `routing.decode_tps_ratio`, `routing.duration_vs_cost_ms`, `routing.prompt_token_estimate_error`) and `routing.model_load_ms`. Route-row extras: geo, kv_backend, prefill TPS, admission snapshot, near-tie audit, shadow TTFT, billing settlement, terminal_source, retry totals. | shipped |
 | **4** | Promote the worst-fitting constants to a DB-backed `routing_params[tier][model]` config the scheduler reads; close the loop. | higher — changes live routing; gate behind validation + rollback |
 
 ---

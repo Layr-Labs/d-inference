@@ -153,6 +153,9 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		// A request could have produced output iff at least one provider could
 		// serve it right now. This is the headline "was the 'no' necessary?" flag.
 		rec.CouldHaveServed = rec.CandidateCount > 0
+		if resolvedModel != "" && reg != nil {
+			rec.WarmProviderExisted = reg.HasWarmProvider(resolvedModel)
+		}
 		_ = s.store.RecordRejection(rec)
 	})
 }

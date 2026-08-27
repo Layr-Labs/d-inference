@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -98,9 +99,11 @@ const (
 )
 
 type routingSnapshot struct {
-	provider   *Provider
-	model      string
-	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
+	provider     *Provider
+	model        string
+	chipFamily   string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
+	hardwareTier string
+	memoryGB     int
 	// binaryVersion is the provider's reported binary version (p.Version, read
 	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
 	// version-gated activation-reserve selection in the cold servability
@@ -296,13 +299,11 @@ type RoutingDecision struct {
 	ThisReqMs  float64 // this request's prefill+decode contribution
 	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
 	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
-	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
-	// observability only — not persisted (inference_routes has no column and
-	// the schema is not altered for it).
+	// winner's cost (capacity_rate.go); 0 for healthy pairs.
 	CapacityRateMs float64
 	// CapacityRejectRate is the winner's windowed capacity-503 rate at
 	// selection time (rejects / (rejects + accepts)); 0 when no rejects are in
-	// the window. Same persistence note as CapacityRateMs.
+	// the window.
 	CapacityRejectRate float64
 	EffectiveQueue     int // max(pendingForModel, backendRunning+backendWaiting)
 	CandidateCount     int // total candidates that passed all gates
@@ -349,6 +350,25 @@ type RoutingDecision struct {
 	ShadowEstimateMs            float64
 	ShadowDeadlineMs            float64
 	ShadowOccupancy             int
+
+	// Winner admission/prefill snapshot at selection time.
+	FreeForLoadGB        float64
+	WedgeSuspected       bool
+	TotalPending         int
+	EffectivePrefillTPS  float64
+	StaticPrefillTPS     float64
+	NearTieCount         int
+	TieBreakReason       string
+	BreakerRejections    int
+	SoftFilterRejections int
+
+	// Candidates is the compact, lock-copied snapshot of scored and
+	// post-gate-rejected providers for this selection. Empty when the
+	// fleet scan produced nothing. Persistence is best-effort and off
+	// the request path. Rank is cost-order (0 = cheapest eligible);
+	// Selected is who was actually reserved (near-tie spread can pick
+	// a non-cheapest candidate).
+	Candidates []RouteCandidateSnapshot
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -397,7 +417,6 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Configuration can change while tracker hints are computed outside r.mu.
 	// Revalidate under the selection lock so an off transition is linearizable:
 	// once ConfigureCacheRouting(off) returns, no stale hint can receive a
@@ -408,17 +427,14 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		pr.CacheSelectionMode = ""
 	}
 
-	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, scan := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	tally := scan.routingTally()
 	if selected == nil {
-		return nil, RoutingDecision{
-			Model:                   model,
-			CandidateCount:          candidateCount,
-			CapacityRejections:      capacityRejections,
-			ModelTooLargeRejections: tooLargeRejections,
-			VisionRejections:        visionRejections,
-			TTFTRejections:          ttftRejections,
-			BestTTFTMs:              bestTTFTMs,
-		}
+		decision := tally
+		decision.Model = model
+		r.mu.Unlock()
+		decision.Candidates = snapshotRouteCandidates(nil, scan, false)
+		return nil, decision
 	}
 
 	// Phase-0 shadow TTFT evaluation: computed here (r.mu held, no provider lock
@@ -434,7 +450,6 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	p := selected.provider
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Re-check capacity under the provider lock in case another goroutine
 	// changed the pending set between snapshot and reservation. relaxTrust
@@ -469,15 +484,12 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	}
 	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, ignoreBreaker) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
-		return nil, RoutingDecision{
-			Model:                   model,
-			CandidateCount:          candidateCount,
-			CapacityRejections:      capacityRejections,
-			ModelTooLargeRejections: tooLargeRejections,
-			VisionRejections:        visionRejections,
-			TTFTRejections:          ttftRejections,
-			BestTTFTMs:              bestTTFTMs,
-		}
+		p.mu.Unlock()
+		r.mu.Unlock()
+		decision := tally
+		decision.Model = model
+		decision.Candidates = snapshotRouteCandidates(selected, scan, false)
+		return nil, decision
 	}
 
 	bd := selected.breakdown
@@ -513,34 +525,62 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
 		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
 	}
-	decision := RoutingDecision{
-		ProviderID:                p.ID,
-		Model:                     model,
-		CostMs:                    bd.Total,
-		StateMs:                   bd.StateMs,
-		QueueMs:                   bd.QueueMs,
-		PendingMs:                 bd.PendingMs,
-		BacklogMs:                 bd.BacklogMs,
-		ThisReqMs:                 bd.ThisReqMs,
-		HealthMs:                  bd.HealthMs,
-		CapacityRateMs:            bd.CapacityRateMs,
-		CapacityRejectRate:        selected.capacityRejectRate,
-		EffectiveQueue:            selected.effectiveQueue,
-		CandidateCount:            candidateCount,
-		CapacityRejections:        capacityRejections,
-		ModelTooLargeRejections:   tooLargeRejections,
-		VisionRejections:          visionRejections,
-		TTFTRejections:            ttftRejections,
-		BestTTFTMs:                bestTTFTMs,
-		TTFTMs:                    bd.TTFTMs,
-		CacheTier:                 selected.cacheTier,
-		CacheDiscountMs:           bd.CacheDiscountMs,
-		CacheEstimatedTTFTSavedMs: selected.cacheEstimatedTTFTSavedMs,
-		EffectiveTPS:              selected.effectiveTPS,
-		StaticTPS:                 selected.snapshot.decodeTPS,
-	}
+	decision := tally
+	decision.ProviderID = p.ID
+	decision.Model = model
+	decision.CostMs = bd.Total
+	decision.StateMs = bd.StateMs
+	decision.QueueMs = bd.QueueMs
+	decision.PendingMs = bd.PendingMs
+	decision.BacklogMs = bd.BacklogMs
+	decision.ThisReqMs = bd.ThisReqMs
+	decision.HealthMs = bd.HealthMs
+	decision.CapacityRateMs = bd.CapacityRateMs
+	decision.CapacityRejectRate = selected.capacityRejectRate
+	decision.EffectiveQueue = selected.effectiveQueue
+	decision.TTFTMs = bd.TTFTMs
+	decision.CacheTier = selected.cacheTier
+	decision.CacheDiscountMs = bd.CacheDiscountMs
+	decision.CacheEstimatedTTFTSavedMs = selected.cacheEstimatedTTFTSavedMs
+	decision.EffectiveTPS = selected.effectiveTPS
+	decision.StaticTPS = selected.snapshot.decodeTPS
+	applyWinnerSnapshot(&decision, selected)
+	pr.PredictedTTFTMs = decision.TTFTMs
+	pr.PredictedCostMs = decision.CostMs
+	pr.PredictedEffectiveTPS = decision.EffectiveTPS
 	shadowEval.applyTo(&decision)
+	p.mu.Unlock()
+	r.mu.Unlock()
+	decision.Candidates = snapshotRouteCandidates(selected, scan, true)
 	return p, decision
+}
+
+func (scan candidateScan) routingTally() RoutingDecision {
+	return RoutingDecision{
+		CandidateCount:          scan.candidateCount,
+		CapacityRejections:      scan.capacityRejections,
+		ModelTooLargeRejections: scan.tooLargeRejections,
+		VisionRejections:        scan.visionRejections,
+		TTFTRejections:          scan.ttftRejections,
+		BestTTFTMs:              scan.bestTTFTMs,
+		BreakerRejections:       scan.breakerRejected,
+		SoftFilterRejections:    scan.softFilterRejections,
+		NearTieCount:            scan.nearTieCount,
+		TieBreakReason:          scan.tieBreakReason,
+	}
+}
+
+func applyWinnerSnapshot(decision *RoutingDecision, selected *routingCandidate) {
+	if decision == nil || selected == nil {
+		return
+	}
+	decision.TotalPending = selected.snapshot.totalPending
+	decision.WedgeSuspected = selected.snapshot.wedgeSuspected
+	if selected.snapshot.freeForLoadGB != nil {
+		decision.FreeForLoadGB = *selected.snapshot.freeForLoadGB
+	}
+	decision.EffectivePrefillTPS = resolvePrefillTPS(selected.snapshot)
+	decision.StaticPrefillTPS = selected.snapshot.prefillTPS
 }
 
 // selectBestCandidateLockedFull is the full-fidelity selection that
@@ -549,8 +589,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // distinguish "no provider serves this model" from "every fitting
 // provider is over-subscribed", which is the difference between the
 // no_provider and over_capacity outcome counters.
-// Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
-// visionRejections, ttftRejections, bestTTFTMs).
+// Returns (winner, scan) where scan carries the scored pool, post-gate
+// rejects, and the rejection tallies.
 //
 // FAIL-OPEN SAFETY VALVE: selection runs in two passes. Pass 1 honors the
 // per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
@@ -564,19 +604,18 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // when it yields a candidate, and its counters (not pass 1's) are returned so
 // metrics are never double-counted. This mirrors servability.go's fail-open
 // philosophy: when in doubt, keep serving.
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64) {
-	winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected :=
-		r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
-	if !shouldBypassBreakerFailOpen(winner, breakerRejected, capacityRejections, ttftRejections) {
-		return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, candidateScan) {
+	winner, scan := r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
+	if !shouldBypassBreakerFailOpen(winner, scan.breakerRejected, scan.capacityRejections, scan.ttftRejections) {
+		return winner, scan
 	}
 	// The node-health breaker is the SOLE reason this request has no route: re-scan
 	// with the breaker bypassed. Use pass 2 only when it actually finds a candidate,
 	// so a genuinely empty fleet still reports pass 1's (accurate) counters.
-	if w2, cc2, cr2, tl2, vr2, tr2, bt2, _ := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
-		return w2, cc2, cr2, tl2, vr2, tr2, bt2
+	if w2, scan2 := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
+		return w2, scan2
 	}
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+	return winner, scan
 }
 
 // shouldBypassBreakerFailOpen decides whether selection should retry with the
@@ -605,14 +644,27 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 // idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
 // never drift on which providers are routable.
 type candidateScan struct {
-	pool               []*routingCandidate
-	candidateCount     int
-	capacityRejections int
-	tooLargeRejections int
-	visionRejections   int
-	ttftRejections     int
-	bestTTFTMs         float64
-	breakerRejected    int
+	pool                 []*routingCandidate
+	rejected             []rejectedCandidate
+	candidateCount       int
+	capacityRejections   int
+	tooLargeRejections   int
+	visionRejections     int
+	ttftRejections       int
+	bestTTFTMs           float64
+	breakerRejected      int
+	softFilterRejections int
+	nearTieCount         int
+	tieBreakReason       string
+}
+
+// rejectedCandidate is a provider that passed structural gates but lost
+// a later admission/TTFT/vision gate. TTFT rejects keep their cost scores
+// so we can measure false-reject rate against the ceiling.
+type rejectedCandidate struct {
+	candidate *routingCandidate
+	snap      routingSnapshot
+	reason    string
 }
 
 // scanCandidatesLocked builds the eligible candidate pool for a request — every
@@ -643,6 +695,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// best) were dropped from the pool, making the queue-depth tie-
 	// break flaky under map iteration randomness.
 	candidates := make([]*routingCandidate, 0, len(r.providers))
+	rejected := make([]rejectedCandidate, 0)
 	candidateCount := 0
 	capacityRejections := 0
 	tooLargeRejections := 0
@@ -716,6 +769,19 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 					capacityRejections++
 				}
 			}
+			p.mu.Lock()
+			reason := r.routingGateRejectReasonLocked(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker)
+			light := routingSnapshot{
+				provider:      p,
+				chipFamily:    p.Hardware.ChipFamily,
+				hardwareTier:  p.Hardware.ChipTier,
+				memoryGB:      p.Hardware.MemoryGB,
+				systemMetrics: p.SystemMetrics,
+			}
+			p.mu.Unlock()
+			if reason != "" {
+				rejected = appendRejected(rejected, rejectedCandidate{snap: light, reason: reason})
+			}
 			continue
 		}
 		// Vision gate: a media request must only go to a provider advertising a
@@ -730,6 +796,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			p.mu.Unlock()
 			if !servesVision {
 				visionRejections++
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectVision})
 				continue
 			}
 		}
@@ -738,10 +805,13 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			switch reason {
 			case rejectCapacity:
 				capacityRejections++
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectCapacity})
 			case rejectModelTooLarge:
 				tooLargeRejections++
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectModelTooLarge})
 			case rejectVisionUnsupported:
 				visionRejections++
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectVision})
 			}
 			continue
 		}
@@ -763,6 +833,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// not enforced on them (matching the preflight behavior).
 		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 			ttftRejections++
+			rejected = appendRejected(rejected, rejectedCandidate{candidate: candidate, snap: snap, reason: store.CandidateRejectTTFT})
 			continue
 		}
 
@@ -794,6 +865,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// only; otherwise fall back to the full pool (a public provider, charged
 	// normally). Exclusive self-route already filtered to owned above.
 	pool := candidates
+	softReason := ""
 	if pr.PreferOwner {
 		owned := make([]*routingCandidate, 0, len(candidates))
 		for _, c := range candidates {
@@ -801,7 +873,10 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				owned = append(owned, c)
 			}
 		}
-		if len(owned) > 0 {
+		if len(owned) > 0 && len(owned) < len(candidates) {
+			pool = owned
+			softReason = store.CandidateRejectPreferOwner
+		} else if len(owned) > 0 {
 			pool = owned
 		}
 	}
@@ -819,7 +894,10 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				diverse = append(diverse, c)
 			}
 		}
-		if len(diverse) > 0 {
+		if len(diverse) > 0 && len(diverse) < len(pool) {
+			pool = diverse
+			softReason = store.CandidateRejectAvoidVersion
+		} else if len(diverse) > 0 {
 			pool = diverse
 		}
 	}
@@ -838,20 +916,46 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				quality = append(quality, c)
 			}
 		}
-		if len(quality) > 0 {
+		if len(quality) > 0 && len(quality) < len(pool) {
+			pool = quality
+			softReason = store.CandidateRejectMinDecodeTPS
+		} else if len(quality) > 0 {
 			pool = quality
 		}
 	}
 
+	softFilterRejections := 0
+	if softReason != "" {
+		inPool := make(map[string]struct{}, len(pool))
+		for _, c := range pool {
+			if id := providerIDOf(c); id != "" {
+				inPool[id] = struct{}{}
+			}
+		}
+		for _, c := range candidates {
+			id := providerIDOf(c)
+			if id == "" {
+				continue
+			}
+			if _, ok := inPool[id]; ok {
+				continue
+			}
+			softFilterRejections++
+			rejected = appendRejected(rejected, rejectedCandidate{candidate: c, snap: c.snapshot, reason: softReason})
+		}
+	}
+
 	return candidateScan{
-		pool:               pool,
-		candidateCount:     candidateCount,
-		capacityRejections: capacityRejections,
-		tooLargeRejections: tooLargeRejections,
-		visionRejections:   visionRejections,
-		ttftRejections:     ttftRejections,
-		bestTTFTMs:         bestTTFTMs,
-		breakerRejected:    breakerRejected,
+		pool:                 pool,
+		rejected:             rejected,
+		candidateCount:       candidateCount,
+		capacityRejections:   capacityRejections,
+		tooLargeRejections:   tooLargeRejections,
+		visionRejections:     visionRejections,
+		ttftRejections:       ttftRejections,
+		bestTTFTMs:           bestTTFTMs,
+		breakerRejected:      breakerRejected,
+		softFilterRejections: softFilterRejections,
 	}
 }
 
@@ -862,19 +966,24 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 // breakerRejected (providers dropped while their breaker was OPEN) is the signal
 // selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
 // fail-open re-scan could help, and is always 0 in that mode.
-func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, candidateScan) {
 	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
 	if len(scan.pool) == 0 {
-		return nil, scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+		return nil, scan
 	}
-	pool := scan.pool
-	candidateCount := scan.candidateCount
-
-	winner := selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
+	sel := selectRoutingCandidate(scan.pool, func(candidate *routingCandidate) float64 {
 		return candidate.costMs
 	})
-	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+	scan.nearTieCount = sel.nearTieCount
+	scan.tieBreakReason = sel.tieBreakReason
+	r.logRoutingDecision(model, pr, sel.winner, scan.candidateCount)
+	return sel.winner, scan
+}
+
+type routingSelection struct {
+	winner         *routingCandidate
+	nearTieCount   int
+	tieBreakReason string
 }
 
 // selectRoutingCandidate centralizes cost ranking, near-tie admission, and
@@ -882,9 +991,9 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 func selectRoutingCandidate(
 	pool []*routingCandidate,
 	cost func(*routingCandidate) float64,
-) *routingCandidate {
+) routingSelection {
 	if len(pool) == 0 {
-		return nil
+		return routingSelection{}
 	}
 	best := pool[0]
 	for _, candidate := range pool[1:] {
@@ -897,6 +1006,9 @@ func selectRoutingCandidate(
 		if math.Abs(cost(candidate)-cost(best)) <= nearTieCostWindowMs {
 			nearTies = append(nearTies, candidate)
 		}
+	}
+	if len(nearTies) == 1 {
+		return routingSelection{winner: best, nearTieCount: 1, tieBreakReason: "cost"}
 	}
 	winner := nearTies[0]
 	for _, candidate := range nearTies[1:] {
@@ -927,26 +1039,34 @@ func selectRoutingCandidate(
 	}
 	if hasCacheDiscount {
 		bestCost := cost(equivalent[0])
-		best := equivalent[:1]
+		bestEq := equivalent[:1]
 		for _, candidate := range equivalent[1:] {
 			candidateCost := cost(candidate)
 			switch {
 			case candidateCost < bestCost:
 				bestCost = candidateCost
-				best = []*routingCandidate{candidate}
+				bestEq = []*routingCandidate{candidate}
 			case candidateCost == bestCost:
-				best = append(best, candidate)
+				bestEq = append(bestEq, candidate)
 			}
 		}
-		if len(best) > 1 {
-			return best[rand.Intn(len(best))]
+		if len(bestEq) > 1 {
+			return routingSelection{
+				winner:         bestEq[rand.Intn(len(bestEq))],
+				nearTieCount:   len(nearTies),
+				tieBreakReason: "cache_discount",
+			}
 		}
-		return best[0]
+		return routingSelection{winner: bestEq[0], nearTieCount: len(nearTies), tieBreakReason: "cache_discount"}
 	}
 	if len(equivalent) > 1 {
-		return equivalent[rand.Intn(len(equivalent))]
+		return routingSelection{
+			winner:         equivalent[rand.Intn(len(equivalent))],
+			nearTieCount:   len(nearTies),
+			tieBreakReason: "random",
+		}
 	}
-	return winner
+	return routingSelection{winner: winner, nearTieCount: len(nearTies), tieBreakReason: "queue"}
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -1193,6 +1313,42 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	return true
 }
 
+// routingGateRejectReasonLocked returns the first structural gate that dropped
+// p. Caller holds r.mu and p.mu. Closed enum — never raw provider text.
+func (r *Registry) routingGateRejectReasonLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker bool) string {
+	if !r.providerServesRoutableModelLocked(p, model, selfRouteOwner) {
+		return store.CandidateRejectCatalog
+	}
+	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
+		return store.CandidateRejectLoadCooldown
+	}
+	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
+		return store.CandidateRejectErrorCooldown
+	}
+	if r.capacityCooldownActiveLocked(p.ID, model, now) {
+		return store.CandidateRejectCapacityCooldown
+	}
+	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
+		return store.CandidateRejectBreaker
+	}
+	if !ignoreProviderBreaker && healthEjectionEnabled() {
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
+			return store.CandidateRejectHealthEjection
+		}
+	}
+	minTrust := r.MinTrustLevel
+	if selfRouteOwner {
+		minTrust = TrustNone
+	}
+	if !r.providerLivenessGateLocked(p, minTrust, selfRouteOwner, now) {
+		return store.CandidateRejectLiveness
+	}
+	if !r.providerEligibleForTraitsLocked(p, model, traits) {
+		return store.CandidateRejectTrait
+	}
+	return ""
+}
+
 // snapshotProviderLocked builds a routing snapshot for p, returning ok=false
 // when p fails any structural/privacy/capacity/trait gate. selfRouteOwner is
 // true when this is a self-route request and p is owned by the requesting
@@ -1227,6 +1383,8 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		provider:      p,
 		model:         model,
 		chipFamily:    p.Hardware.ChipFamily,
+		hardwareTier:  p.Hardware.ChipTier,
+		memoryGB:      p.Hardware.MemoryGB,
 		binaryVersion: p.Version,
 		slotState:     "unknown",
 		totalPending:  p.pendingCount(),

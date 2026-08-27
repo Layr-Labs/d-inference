@@ -159,6 +159,25 @@ type InferenceRouteRecord struct {
 	ProviderRegion string `json:"provider_region,omitempty"`
 	ConsumerRegion string `json:"consumer_region,omitempty"`
 
+	// Decision-time extras that were previously computed and discarded.
+	Endpoint                  string  `json:"endpoint,omitempty"`
+	KVBackend                 string  `json:"kv_backend,omitempty"`
+	KVBackendFallback         string  `json:"kv_backend_fallback,omitempty"`
+	FreeForLoadGB             float64 `json:"free_for_load_gb"`
+	WedgeSuspected            bool    `json:"wedge_suspected"`
+	TotalPending              int     `json:"total_pending"`
+	EffectivePrefillTPS       float64 `json:"effective_prefill_tps"`
+	StaticPrefillTPS          float64 `json:"static_prefill_tps"`
+	CacheEstimatedTTFTSavedMs float64 `json:"cache_estimated_ttft_saved_ms"`
+	NearTieCount              int     `json:"near_tie_count"`
+	TieBreakReason            string  `json:"tie_break_reason,omitempty"`
+	ShadowWouldShed           bool    `json:"shadow_would_shed"`
+	ShadowIdleAlternative     bool    `json:"shadow_idle_alternative"`
+	ShadowEstimateMs          float64 `json:"shadow_estimate_ms"`
+	ShadowDeadlineMs          float64 `json:"shadow_deadline_ms"`
+	BreakerRejections         int     `json:"breaker_rejections"`
+	SoftFilterRejections      int     `json:"soft_filter_rejections"`
+
 	// Final outcome data, merged from InferenceRouteOutcome updates.
 	FinalStatus            string  `json:"final_status"`
 	ErrorCode              int     `json:"error_code"`
@@ -181,6 +200,31 @@ type InferenceRouteRecord struct {
 	AdmittedButFailed      bool    `json:"admitted_but_failed"`
 	UsedBackup             bool    `json:"used_backup"`
 	BackupWon              bool    `json:"backup_won"`
+
+	// Scheduler terms that were previously computed and discarded.
+	CapacityRateMs     float64 `json:"capacity_rate_ms"`
+	CapacityRejectRate float64 `json:"capacity_reject_rate"`
+	AffinityTier       string  `json:"affinity_tier,omitempty"`
+	AffinityDiscountMs float64 `json:"affinity_discount_ms"`
+
+	// Outcome extras merged from InferenceRouteOutcome.
+	MediaFetchMs       float64 `json:"media_fetch_ms"`
+	CacheOutcome       string  `json:"cache_outcome,omitempty"`
+	CacheTier          string  `json:"cache_tier,omitempty"`
+	CachedTokens       int     `json:"cached_tokens"`
+	PrefillTokensSaved int     `json:"prefill_tokens_saved"`
+	CacheStageMs       float64 `json:"cache_stage_ms"`
+	ClientOutcome      string  `json:"client_outcome,omitempty"`
+	ProviderOutcome    string  `json:"provider_outcome,omitempty"`
+	BillingOutcome     string  `json:"billing_outcome,omitempty"`
+	ResponseCommitted  bool    `json:"response_committed"`
+	IsFinalAttempt     bool    `json:"is_final_attempt"`
+	TotalAttempts      int     `json:"total_attempts"`
+	TerminalSource     string  `json:"terminal_source,omitempty"`
+	ReservedMicroUSD   int64   `json:"reserved_micro_usd"`
+	SettledMicroUSD    int64   `json:"settled_micro_usd"`
+	OverageMicroUSD    int64   `json:"overage_micro_usd"`
+	RefundMicroUSD     int64   `json:"refund_micro_usd"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -217,6 +261,24 @@ type InferenceRouteOutcome struct {
 	// Speculative/backup-race dispatch outcome.
 	UsedBackup bool `json:"used_backup"`
 	BackupWon  bool `json:"backup_won"`
+
+	MediaFetchMs       float64 `json:"media_fetch_ms"`
+	CacheOutcome       string  `json:"cache_outcome,omitempty"`
+	CacheTier          string  `json:"cache_tier,omitempty"`
+	CachedTokens       int     `json:"cached_tokens"`
+	PrefillTokensSaved int     `json:"prefill_tokens_saved"`
+	CacheStageMs       float64 `json:"cache_stage_ms"`
+	ClientOutcome      string  `json:"client_outcome,omitempty"`
+	ProviderOutcome    string  `json:"provider_outcome,omitempty"`
+	BillingOutcome     string  `json:"billing_outcome,omitempty"`
+	ResponseCommitted  bool    `json:"response_committed"`
+	IsFinalAttempt     bool    `json:"is_final_attempt"`
+	TotalAttempts      int     `json:"total_attempts"`
+	TerminalSource     string  `json:"terminal_source,omitempty"`
+	ReservedMicroUSD   int64   `json:"reserved_micro_usd"`
+	SettledMicroUSD    int64   `json:"settled_micro_usd"`
+	OverageMicroUSD    int64   `json:"overage_micro_usd"`
+	RefundMicroUSD     int64   `json:"refund_micro_usd"`
 
 	// CompletionTokensSet forces the completion_tokens column to be written from
 	// CompletionTokens even when it is 0. Without it, a terminal cancel/error/

@@ -117,6 +117,112 @@ func (s *Server) handleAdminRejectionsExport(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+func (s *Server) handleAdminCandidates(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminKey(w, r) {
+		return
+	}
+	records := filterCandidateRecords(
+		s.store.InferenceRouteCandidatesSince(parseSince(r)),
+		r.URL.Query().Get("provider"), r.URL.Query().Get("request_id"),
+	)
+	records = capRecords(records, parseLimit(r, defaultBrowseLimit))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"count":  len(records),
+		"data":   records,
+	})
+}
+
+func (s *Server) handleAdminCandidatesExport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminKey(w, r) {
+		return
+	}
+	records := filterCandidateRecords(
+		s.store.InferenceRouteCandidatesSince(parseSince(r)),
+		r.URL.Query().Get("provider"), r.URL.Query().Get("request_id"),
+	)
+	records = capRecords(records, parseLimit(r, 0))
+	format := exportFormat(r)
+	setExportHeaders(w, "candidates", format)
+	if format == "ndjson" {
+		if err := writeNDJSON(w, records); err != nil {
+			s.logger.Error("admin candidates ndjson export failed", "error", err)
+		}
+		return
+	}
+	if err := writeCandidateCSV(w, records); err != nil {
+		s.logger.Error("admin candidates csv export failed", "error", err)
+	}
+}
+
+func (s *Server) handleAdminCapacitySamples(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminKey(w, r) {
+		return
+	}
+	records := filterCapacitySamples(
+		s.store.ProviderCapacitySamplesSince(parseSince(r)),
+		r.URL.Query().Get("provider"),
+	)
+	records = capRecords(records, parseLimit(r, defaultBrowseLimit))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"count":  len(records),
+		"data":   records,
+	})
+}
+
+func (s *Server) handleAdminCapacitySamplesExport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminKey(w, r) {
+		return
+	}
+	records := filterCapacitySamples(
+		s.store.ProviderCapacitySamplesSince(parseSince(r)),
+		r.URL.Query().Get("provider"),
+	)
+	records = capRecords(records, parseLimit(r, 0))
+	format := exportFormat(r)
+	setExportHeaders(w, "capacity-samples", format)
+	if format == "ndjson" {
+		if err := writeNDJSON(w, records); err != nil {
+			s.logger.Error("admin capacity samples ndjson export failed", "error", err)
+		}
+		return
+	}
+	if err := writeCapacitySampleCSV(w, records); err != nil {
+		s.logger.Error("admin capacity samples csv export failed", "error", err)
+	}
+}
+
+func filterCandidateRecords(records []store.InferenceRouteCandidateRecord, providerID, requestID string) []store.InferenceRouteCandidateRecord {
+	if providerID == "" && requestID == "" {
+		return records
+	}
+	out := make([]store.InferenceRouteCandidateRecord, 0, len(records))
+	for _, rec := range records {
+		if providerID != "" && rec.ProviderID != providerID {
+			continue
+		}
+		if requestID != "" && rec.RequestID != requestID {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func filterCapacitySamples(records []store.ProviderCapacitySample, providerID string) []store.ProviderCapacitySample {
+	if providerID == "" {
+		return records
+	}
+	out := make([]store.ProviderCapacitySample, 0, len(records))
+	for _, rec := range records {
+		if rec.ProviderID == providerID {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
 // --- Request parsing helpers ---------------------------------------------
 
 // parseSince resolves the ?since= query parameter to an absolute lower-bound
@@ -293,6 +399,17 @@ var routeCSVHeader = []string{
 	"actual_ttft_ms", "dispatch_to_first_chunk_ms", "total_duration_ms",
 	"parse_ms", "reserve_ms", "route_ms", "encrypt_ms", "queue_wait_ms", "dispatch_ms",
 	"actual_decode_tps", "admitted_but_failed", "used_backup", "backup_won",
+	"capacity_rate_ms", "capacity_reject_rate", "affinity_tier", "affinity_discount_ms",
+	"media_fetch_ms", "cache_outcome", "cache_tier", "cached_tokens", "prefill_tokens_saved", "cache_stage_ms",
+	"client_outcome", "provider_outcome", "billing_outcome", "response_committed",
+	"is_final_attempt", "total_attempts",
+	"endpoint", "kv_backend", "kv_backend_fallback",
+	"free_for_load_gb", "wedge_suspected", "total_pending",
+	"effective_prefill_tps", "static_prefill_tps", "cache_estimated_ttft_saved_ms",
+	"near_tie_count", "tie_break_reason",
+	"shadow_would_shed", "shadow_idle_alternative", "shadow_estimate_ms", "shadow_deadline_ms",
+	"breaker_rejections", "soft_filter_rejections",
+	"terminal_source", "reserved_micro_usd", "settled_micro_usd", "overage_micro_usd", "refund_micro_usd",
 	"created_at", "updated_at",
 }
 
@@ -390,6 +507,44 @@ func routeCSVRow(rec store.InferenceRouteRecord) []string {
 		csvBool(rec.AdmittedButFailed),
 		csvBool(rec.UsedBackup),
 		csvBool(rec.BackupWon),
+		csvFloat(rec.CapacityRateMs),
+		csvFloat(rec.CapacityRejectRate),
+		rec.AffinityTier,
+		csvFloat(rec.AffinityDiscountMs),
+		csvFloat(rec.MediaFetchMs),
+		rec.CacheOutcome,
+		rec.CacheTier,
+		csvInt(rec.CachedTokens),
+		csvInt(rec.PrefillTokensSaved),
+		csvFloat(rec.CacheStageMs),
+		rec.ClientOutcome,
+		rec.ProviderOutcome,
+		rec.BillingOutcome,
+		csvBool(rec.ResponseCommitted),
+		csvBool(rec.IsFinalAttempt),
+		csvInt(rec.TotalAttempts),
+		rec.Endpoint,
+		rec.KVBackend,
+		rec.KVBackendFallback,
+		csvFloat(rec.FreeForLoadGB),
+		csvBool(rec.WedgeSuspected),
+		csvInt(rec.TotalPending),
+		csvFloat(rec.EffectivePrefillTPS),
+		csvFloat(rec.StaticPrefillTPS),
+		csvFloat(rec.CacheEstimatedTTFTSavedMs),
+		csvInt(rec.NearTieCount),
+		rec.TieBreakReason,
+		csvBool(rec.ShadowWouldShed),
+		csvBool(rec.ShadowIdleAlternative),
+		csvFloat(rec.ShadowEstimateMs),
+		csvFloat(rec.ShadowDeadlineMs),
+		csvInt(rec.BreakerRejections),
+		csvInt(rec.SoftFilterRejections),
+		rec.TerminalSource,
+		csvI64(rec.ReservedMicroUSD),
+		csvI64(rec.SettledMicroUSD),
+		csvI64(rec.OverageMicroUSD),
+		csvI64(rec.RefundMicroUSD),
 		csvTime(rec.CreatedAt),
 		csvTime(rec.UpdatedAt),
 	}
@@ -467,6 +622,77 @@ func rejectionCSVRow(rec store.RejectionRecord) []string {
 		csvI64(rec.OverBy),
 		csvTime(rec.CreatedAt),
 	}
+}
+
+var candidateCSVHeader = []string{
+	"request_id", "attempt", "provider_id", "rank", "selected", "eligible", "rejection_reason",
+	"cost_ms", "state_ms", "queue_ms", "pending_ms", "backlog_ms", "this_req_ms", "health_ms",
+	"capacity_rate_ms", "ttft_ms", "effective_queue", "effective_tps", "static_tps",
+	"effective_prefill_tps", "static_prefill_tps", "batch_size",
+	"chip_family", "hardware_tier", "memory_gb", "slot_state", "memory_pressure", "thermal_state",
+	"gpu_memory_active_gb", "free_for_load_gb", "wedge_suspected", "affinity_applied",
+	"affinity_discount_ms", "capacity_reject_rate", "created_at",
+}
+
+func writeCandidateCSV(w http.ResponseWriter, records []store.InferenceRouteCandidateRecord) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write(candidateCSVHeader); err != nil {
+		return err
+	}
+	for i := range records {
+		rec := records[i]
+		if err := cw.Write([]string{
+			rec.RequestID, csvInt(rec.Attempt), rec.ProviderID, csvInt(rec.Rank),
+			csvBool(rec.Selected), csvBool(rec.Eligible), rec.RejectionReason,
+			csvFloat(rec.CostMs), csvFloat(rec.StateMs), csvFloat(rec.QueueMs),
+			csvFloat(rec.PendingMs), csvFloat(rec.BacklogMs), csvFloat(rec.ThisReqMs), csvFloat(rec.HealthMs),
+			csvFloat(rec.CapacityRateMs), csvFloat(rec.TTFTMs), csvInt(rec.EffectiveQueue),
+			csvFloat(rec.EffectiveTPS), csvFloat(rec.StaticTPS),
+			csvFloat(rec.EffectivePrefillTPS), csvFloat(rec.StaticPrefillTPS), csvInt(rec.BatchSize),
+			rec.ChipFamily, rec.HardwareTier, csvInt(rec.MemoryGB), rec.SlotState,
+			csvFloat(rec.MemoryPressure), rec.ThermalState,
+			csvFloat(rec.GPUMemoryActiveGB), csvFloat(rec.FreeForLoadGB), csvBool(rec.WedgeSuspected),
+			csvBool(rec.AffinityApplied), csvFloat(rec.AffinityDiscountMs), csvFloat(rec.CapacityRejectRate),
+			csvTime(rec.CreatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+var capacitySampleCSVHeader = []string{
+	"provider_id", "provider_version", "provider_status", "provider_trust_level",
+	"hardware_chip_family", "hardware_tier", "memory_gb", "current_model",
+	"warm_model_count", "slot_count", "backend_running", "backend_waiting",
+	"observed_decode_tps", "active_token_budget_used", "active_token_budget_max",
+	"queued_token_budget", "memory_pressure", "cpu_usage", "thermal_state",
+	"gpu_memory_active_gb", "gpu_memory_peak_gb", "gpu_memory_cache_gb",
+	"free_for_load_gb", "wedge_suspected", "created_at",
+}
+
+func writeCapacitySampleCSV(w http.ResponseWriter, records []store.ProviderCapacitySample) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write(capacitySampleCSVHeader); err != nil {
+		return err
+	}
+	for i := range records {
+		rec := records[i]
+		if err := cw.Write([]string{
+			rec.ProviderID, rec.ProviderVersion, rec.ProviderStatus, rec.ProviderTrustLevel,
+			rec.HardwareChipFamily, rec.HardwareTier, csvInt(rec.MemoryGB), rec.CurrentModel,
+			csvInt(rec.WarmModelCount), csvInt(rec.SlotCount), csvInt(rec.BackendRunning), csvInt(rec.BackendWaiting),
+			csvFloat(rec.ObservedDecodeTPS), csvI64(rec.ActiveTokenUsed), csvI64(rec.ActiveTokenMax),
+			csvI64(rec.QueuedTokenBudget), csvFloat(rec.MemoryPressure), csvFloat(rec.CPUUsage), rec.ThermalState,
+			csvFloat(rec.GPUMemoryActiveGB), csvFloat(rec.GPUMemoryPeakGB), csvFloat(rec.GPUMemoryCacheGB),
+			csvFloat(rec.FreeForLoadGB), csvBool(rec.WedgeSuspected), csvTime(rec.CreatedAt),
+		}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
 }
 
 // --- scalar formatting ----------------------------------------------------

@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	metadataDetailsHeader = "X-Darkbloom-Metadata-Details"
-	metadataDetailsField  = "metadata_details"
+	metadataDetailsHeader       = "X-Darkbloom-Metadata-Details"
+	metadataDetailsField        = "metadata_details"
+	chatCompletionMetadataField = "metadata"
 )
 
 // committedProviderInfo is the consumer-safe provider snapshot taken at
@@ -254,17 +255,25 @@ func hasChatCompletionMetadata(pr *registry.PendingRequest) bool {
 	return pr != nil && pr.MetadataDetails && len(pr.ResponseMetadata) > 0
 }
 
+func deleteChatCompletionMetadata(obj map[string]any) {
+	for key := range obj {
+		if strings.EqualFold(key, chatCompletionMetadataField) {
+			delete(obj, key)
+		}
+	}
+}
+
 func attachChatCompletionMetadata(obj map[string]any, pr *registry.PendingRequest) {
 	if obj == nil {
 		return
 	}
 	// Provider output is untrusted. Reserve this top-level key even when the
 	// caller opted out, then add only the coordinator-authored snapshot.
-	delete(obj, "metadata")
+	deleteChatCompletionMetadata(obj)
 	if !hasChatCompletionMetadata(pr) {
 		return
 	}
-	obj["metadata"] = json.RawMessage(pr.ResponseMetadata)
+	obj[chatCompletionMetadataField] = json.RawMessage(pr.ResponseMetadata)
 }
 
 func chatCompletionMetadata(pr *registry.PendingRequest) *types.ChatCompletionMetadata {

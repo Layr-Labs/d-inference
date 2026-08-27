@@ -24,10 +24,11 @@ func stripProviderChatMetadataJSON(raw string) (string, bool) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return "", true
 	}
-	if _, exists := obj["metadata"]; !exists {
+	before := len(obj)
+	deleteChatCompletionMetadata(obj)
+	if len(obj) == before {
 		return raw, false
 	}
-	delete(obj, "metadata")
 	sanitized, err := marshalForwardBody(obj)
 	if err != nil {
 		return "", true
@@ -35,13 +36,39 @@ func stripProviderChatMetadataJSON(raw string) (string, bool) {
 	return string(sanitized), true
 }
 
+func containsChatMetadataKeyToken(raw string) bool {
+	for searchFrom := 0; searchFrom < len(raw); {
+		relativeStart := strings.IndexByte(raw[searchFrom:], '"')
+		if relativeStart < 0 {
+			return false
+		}
+		start := searchFrom + relativeStart + 1
+		end := start
+		for end < len(raw) && raw[end] != '"' {
+			if raw[end] == '\\' {
+				end++
+			}
+			end++
+		}
+		if end >= len(raw) {
+			return false
+		}
+		if strings.EqualFold(raw[start:end], chatCompletionMetadataField) {
+			return true
+		}
+		searchFrom = end + 1
+	}
+	return false
+}
+
 // stripProviderChatMetadata reserves the top-level metadata field for the
 // coordinator. Provider-originated chat chunks may carry arbitrary additive
 // fields, so every matching SSE event is parsed and stripped before relay.
 func stripProviderChatMetadata(chunk string) string {
-	// The normal key takes the literal fast path. A disguised equivalent must
-	// contain a JSON Unicode escape, which is parsed on the uncommon slow path.
-	if !strings.Contains(chunk, `"metadata"`) && !strings.Contains(chunk, `\u`) {
+	// Case variants take the allocation-free quoted-token scan. An escaped
+	// equivalent contains a JSON Unicode escape and is parsed on the uncommon
+	// slow path.
+	if !containsChatMetadataKeyToken(chunk) && !strings.Contains(chunk, `\u`) {
 		return chunk
 	}
 	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")

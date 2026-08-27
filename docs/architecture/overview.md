@@ -85,11 +85,11 @@ pre-commit failures do not have provider headers
 ([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
 `POST /v1/chat/completions` can copy those fields into a JSON `metadata` object
 when the caller sets `metadata_details=true`
-([`response_metadata.go:51-99`](../../coordinator/api/response_metadata.go#L51-L99),
-[`response_metadata.go:241-267`](../../coordinator/api/response_metadata.go#L241-L267)).
+([`response_metadata.go:52-100`](../../coordinator/api/response_metadata.go#L52-L100),
+[`response_metadata.go:242-276`](../../coordinator/api/response_metadata.go#L242-L276)).
 That object also includes region/country GeoIP of the serving provider; city,
 coordinates, lookup source, and raw IPs are excluded
-([`response_metadata.go:208-239`](../../coordinator/api/response_metadata.go#L208-L239)).
+([`response_metadata.go:209-240`](../../coordinator/api/response_metadata.go#L209-L240)).
 
 ## Privacy model
 

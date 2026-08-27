@@ -54,6 +54,9 @@ func TestNonStreamingChatMetadataDetails(t *testing.T) {
 	if strings.Contains(string(body), "serial") {
 		t.Fatalf("body leaked a serial: %s", body)
 	}
+	if strings.Contains(string(body), "forged-provider") {
+		t.Fatalf("body leaked provider-supplied metadata: %s", body)
+	}
 	<-providerDone
 }
 
@@ -92,6 +95,9 @@ func TestNonStreamingChatMetadataDetailsHeader(t *testing.T) {
 		t.Fatalf("header opt-in expected metadata object, body = %s", body)
 	}
 	assertChatMetadataMatchesHeaders(t, resp.Header, meta)
+	if strings.Contains(string(body), "forged-provider") {
+		t.Fatalf("body leaked provider-supplied metadata: %s", body)
+	}
 	<-providerDone
 }
 
@@ -120,8 +126,11 @@ func TestNonStreamingChatOmitsMetadataByDefault(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), `"metadata"`) {
+	if strings.Contains(strings.ToLower(string(body)), `"metadata"`) {
 		t.Fatalf("default response must not include metadata: %s", body)
+	}
+	if strings.Contains(string(body), "forged-provider") {
+		t.Fatalf("default response leaked provider-supplied metadata: %s", body)
 	}
 	if resp.Header.Get("X-Provider-Trust-Level") == "" {
 		t.Fatal("headers must still carry provider details when the body flag is off")
@@ -153,6 +162,9 @@ func TestStreamingChatMetadataDetailsOnTerminalChunk(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "forged-provider") {
+		t.Fatalf("stream leaked provider-supplied metadata: %s", body)
 	}
 
 	events := parseSSEDataLines(string(body))
@@ -274,7 +286,7 @@ func TestStreamingChatReservesMetadataOnProviderError(t *testing.T) {
 				ResponseMetadata: tc.responseMeta,
 			}
 			firstChunks := []string{
-				`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"metadata":{"provider_id":"forged"}}`,
+				`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"Metadata":{"provider_id":"forged"}}`,
 			}
 			initialError := protocol.InferenceErrorMessage{Error: "backend failed", StatusCode: http.StatusInternalServerError}
 
@@ -461,12 +473,12 @@ func serveOneChatCompletion(t *testing.T, ctx context.Context, conn *websocket.C
 	}
 	if stream {
 		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}],"metadata":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
+			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}],"Metadata":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
 		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"metadata":{"provider_id":"forged-provider"}}`+"\n\n")
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"METADATA":{"provider_id":"forged-provider"}}`+"\n\n")
 	} else {
 		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
-			`data: {"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"meta-model","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"metadata":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
+			`data: {"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"meta-model","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"MeTaDaTa":{"provider_id":"forged-provider","provider_attested":false}}`+"\n\n")
 	}
 	complete := protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,

@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go:3371-3379`](coordinator/api/dispatch.go#L3371-L3379) and [`response_metadata.go:208-267`](coordinator/api/response_metadata.go#L208-L267).
+Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go:3371-3379`](coordinator/api/dispatch.go#L3371-L3379) and [`response_metadata.go:209-276`](coordinator/api/response_metadata.go#L209-L276).
 
 | Level | Verification |
 |-------|--------------|

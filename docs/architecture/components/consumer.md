@@ -40,19 +40,19 @@ OpenAI-compatible SDKs often hide custom headers, so
 when the caller sets `metadata_details: true` (or
 `X-Darkbloom-Metadata-Details: true`). The coordinator consumes the flag before
 provider encryption
-([`response_metadata.go:51-99`](../../../coordinator/api/response_metadata.go#L51-L99)),
+([`response_metadata.go:52-100`](../../../coordinator/api/response_metadata.go#L52-L100)),
 builds `metadata` with region/country-only `location`
-([`response_metadata.go:208-239`](../../../coordinator/api/response_metadata.go#L208-L239)),
-and reserves that top-level key against provider-supplied values before
-attaching its snapshot
-([`chat_metadata_stream.go:14-59`](../../../coordinator/api/chat_metadata_stream.go#L14-L59),
-[`response_metadata.go:241-267`](../../../coordinator/api/response_metadata.go#L241-L267)).
+([`response_metadata.go:209-240`](../../../coordinator/api/response_metadata.go#L209-L240)),
+and reserves that top-level key and all case-insensitive aliases against
+provider-supplied values before attaching its snapshot
+([`chat_metadata_stream.go:14-87`](../../../coordinator/api/chat_metadata_stream.go#L14-L87),
+[`response_metadata.go:242-276`](../../../coordinator/api/response_metadata.go#L242-L276)).
 Device serials, city, coordinates, lookup source, and raw IPs are never
 included. `location` is body-only, not a header. Successful streams attach
 metadata to the terminal chunk; failed committed streams emit it immediately
 before the terminal in-band error
 ([`consumer.go:2191-2222`](../../../coordinator/api/consumer.go#L2191-L2222),
-[`chat_metadata_stream.go:72-95`](../../../coordinator/api/chat_metadata_stream.go#L72-L95)).
+[`chat_metadata_stream.go:99-122`](../../../coordinator/api/chat_metadata_stream.go#L99-L122)).
 
 ## Supported operations
 

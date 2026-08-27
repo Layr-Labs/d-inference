@@ -45,7 +45,7 @@ IP). To read these fields from an OpenAI SDK that does not surface custom
 headers, send `metadata_details: true` (or
 `X-Darkbloom-Metadata-Details: true`) on `POST /v1/chat/completions` and read
 the JSON `metadata` object
-([`response_metadata.go:208-267`](../../coordinator/api/response_metadata.go#L208-L267)).
+([`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276)).
 See [`api-contracts.md`](../reference/api-contracts.md).
 
 ## Code-identity attestation

@@ -55,7 +55,7 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
-| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the committed `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` values plus region/country GeoIP of the serving provider. City, coordinates, lookup source, raw IPs, and provider-supplied `metadata` are omitted. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The coordinator consumes the flag before provider encryption. Default `false`. See [`response_metadata.go:51-99`](../../coordinator/api/response_metadata.go#L51-L99), [`response_metadata.go:208-267`](../../coordinator/api/response_metadata.go#L208-L267), [`chat_metadata_stream.go:14-59`](../../coordinator/api/chat_metadata_stream.go#L14-L59), and [`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379). |
+| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the committed `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` values plus region/country GeoIP of the serving provider. City, coordinates, lookup source, raw IPs, and provider-supplied case-insensitive variants of `metadata` are omitted. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The coordinator consumes the flag before provider encryption. Default `false`. See [`response_metadata.go:52-100`](../../coordinator/api/response_metadata.go#L52-L100), [`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276), [`chat_metadata_stream.go:14-87`](../../coordinator/api/chat_metadata_stream.go#L14-L87), and [`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379). |
 
 The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).
 
@@ -132,9 +132,9 @@ Rollback is fail closed: first stop admitting new constrained traffic or point t
 `metadata` is omitted unless the caller opted in with `metadata_details=true`
 or `X-Darkbloom-Metadata-Details: true`. It never includes device serials,
 city, raw IPs, coordinates, GeoIP lookup source, or provider-supplied
-`metadata`. `location` is region/country-level GeoIP of the serving provider
+case-insensitive variants of `metadata`. `location` is region/country-level GeoIP of the serving provider
 when known
-([`response_metadata.go:208-267`](../../coordinator/api/response_metadata.go#L208-L267)).
+([`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276)).
 
 #### Response (streaming)
 
@@ -148,7 +148,7 @@ terminal usage or extras chunk before one `data: [DONE]`
 ([`consumer.go:2191-2222`](../../coordinator/api/consumer.go#L2191-L2222)).
 If a committed stream fails, the authoritative metadata event is emitted
 immediately before the terminal in-band error
-([`chat_metadata_stream.go:72-95`](../../coordinator/api/chat_metadata_stream.go#L72-L95)).
+([`chat_metadata_stream.go:99-122`](../../coordinator/api/chat_metadata_stream.go#L99-L122)).
 
 ### `POST /v1/responses`
 

@@ -20,6 +20,14 @@ func TestStripProviderChatMetadata(t *testing.T) {
 			input: `data: {"choices":[],"metadata":{"provider_attested":true,"provider_id":"forged"}}`,
 		},
 		{
+			name:  "title-case top-level field",
+			input: `data: {"choices":[],"Metadata":{"provider_attested":true,"provider_id":"forged"}}`,
+		},
+		{
+			name:  "uppercase top-level field",
+			input: `data: {"choices":[],"METADATA":{"provider_attested":true,"provider_id":"forged"}}`,
+		},
+		{
 			name:  "unicode-escaped top-level field",
 			input: `data: {"choices":[],"\u006detadata":{"provider_attested":true,"provider_id":"forged"}}`,
 		},
@@ -44,7 +52,7 @@ func TestStripProviderChatMetadata(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := stripProviderChatMetadata(tc.input)
-			if strings.Contains(got, `"metadata"`) ||
+			if strings.Contains(strings.ToLower(got), `"metadata"`) ||
 				strings.Contains(got, `\u006detadata`) ||
 				strings.Contains(got, `"forged"`) {
 				t.Fatalf("provider metadata survived: %s", got)
@@ -70,15 +78,21 @@ func TestAttachChatCompletionMetadataReservesProviderField(t *testing.T) {
 	t.Parallel()
 
 	optedOut := map[string]any{
-		"metadata": map[string]any{"provider_id": "forged"},
+		"metadata": map[string]any{"provider_id": "forged-exact"},
+		"Metadata": map[string]any{"provider_id": "forged-title"},
+		"METADATA": map[string]any{"provider_id": "forged-upper"},
 	}
 	attachChatCompletionMetadata(optedOut, &registry.PendingRequest{})
-	if _, exists := optedOut["metadata"]; exists {
-		t.Fatalf("provider metadata survived opt-out: %#v", optedOut)
+	for key := range optedOut {
+		if strings.EqualFold(key, chatCompletionMetadataField) {
+			t.Fatalf("provider metadata alias %q survived opt-out: %#v", key, optedOut)
+		}
 	}
 
 	optedIn := map[string]any{
-		"metadata": map[string]any{"provider_id": "forged"},
+		"metadata": map[string]any{"provider_id": "forged-exact"},
+		"Metadata": map[string]any{"provider_id": "forged-title"},
+		"METADATA": map[string]any{"provider_id": "forged-upper"},
 	}
 	pr := &registry.PendingRequest{
 		MetadataDetails:  true,
@@ -92,5 +106,8 @@ func TestAttachChatCompletionMetadataReservesProviderField(t *testing.T) {
 	if strings.Contains(string(encoded), "forged") ||
 		!strings.Contains(string(encoded), `"provider_id":"coordinator"`) {
 		t.Fatalf("provider metadata was not replaced: %s", encoded)
+	}
+	if len(optedIn) != 1 {
+		t.Fatalf("expected one coordinator metadata field, got %#v", optedIn)
 	}
 }

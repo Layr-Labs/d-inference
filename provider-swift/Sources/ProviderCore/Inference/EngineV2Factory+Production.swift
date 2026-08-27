@@ -592,6 +592,7 @@ extension EngineV2Factory {
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
+        activationReserveBytes: UInt64? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBuild {
@@ -601,6 +602,7 @@ extension EngineV2Factory {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
+            activationReserveBytes: activationReserveBytes,
             environment: environment,
             pagedPreflightOverride: pagedPreflightOverride)
         return try assembleProductionBuild(
@@ -622,12 +624,16 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
+        activationReserveBytes: UInt64? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
+        let resolvedActivationReserveBytes =
+            activationReserveBytes
+            ?? UnifiedMemoryCap.resolvedActivationReserveBytes()
         // Upper-bound sanity: a KV admission ceiling larger than physical
         // unified memory is nonsensical (only reachable via a bad upstream
         // computation) and would make the engine admit far past what can ever
@@ -927,7 +933,8 @@ extension EngineV2Factory {
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 inputs: .init(
                     physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes,
+                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        activationReserveBytes: resolvedActivationReserveBytes),
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):

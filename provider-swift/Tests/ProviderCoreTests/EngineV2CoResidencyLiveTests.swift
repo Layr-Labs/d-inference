@@ -161,6 +161,7 @@ struct EngineV2CoResidencyLiveTests {
         let grantA0 = await bridgeA.engineKVBytesCapacity()
         let budgetAlone = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes),
+            activationReserveBytes: sizingA.activationReserveBytes,
             configReserveBytes: reserveBytes)
         // The explicit backend selection must have been honoured — a
         // degraded arm measures the wrong thing.
@@ -193,8 +194,16 @@ struct EngineV2CoResidencyLiveTests {
         // finding.
         let gemmaSizingPreview = EngineV2KVSizing.ResliceSlot(
             modelId: Self.gemmaQatID, fp16KVBytesPerToken: 20_480, maxContextLength: 262_144)
+        let gemmaActivationReserve = ModelScanner.resolveLocalPath(
+            modelID: Self.gemmaQatID
+        ).map {
+            ModelActivationPolicy.reserveBytes(
+                configURL: $0.appendingPathComponent("config.json"))
+        } ?? UnifiedMemoryCap.resolvedActivationReserveBytes()
         let previewBudget = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes) + 15 * Self.gib,
+            activationReserveBytes: max(
+                sizingA.activationReserveBytes, gemmaActivationReserve),
             configReserveBytes: reserveBytes)
         let previewTargets = EngineV2KVSizing.resliceGrants(
             existing: [
@@ -295,6 +304,8 @@ struct EngineV2CoResidencyLiveTests {
         let grantB = await bridgeB.engineKVBytesCapacity()
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+            activationReserveBytes: max(
+                sizingA.activationReserveBytes, sizingB.activationReserveBytes),
             configReserveBytes: reserveBytes)
         let expected = EngineV2KVSizing.resliceGrants(
             existing: [
@@ -365,6 +376,7 @@ struct EngineV2CoResidencyLiveTests {
         let grantA2 = await bridgeA.engineKVBytesCapacity()
         let budgetAfterUnload = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes),
+            activationReserveBytes: sizingA.activationReserveBytes,
             configReserveBytes: reserveBytes)
         if paged {
             // The regrow is deferred, not taken: the survivor is left

@@ -213,10 +213,11 @@ public actor StandaloneServer {
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
     private var slots: [String: CachedSlot] = [:]
-    private var modelsLoading: Set<String> = []
+    private var modelsLoading: [String: UInt64] = [:]
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activationReserveGeneration: UInt64 = 0
     private var slotReservations: [String: Int] = [:]
     private var evictingModels: Set<String> = []
     private var models: [ModelInfo]
@@ -649,10 +650,7 @@ public actor StandaloneServer {
         including candidate: UInt64? = nil
     ) -> UInt64 {
         var reserves = slots.values.map(\.sizing.activationReserveBytes)
-        reserves.append(contentsOf: modelsLoading.compactMap { modelId in
-            models.first(where: { $0.id == modelId })
-                .map { ModelActivationPolicy.reportedOrDefault($0.activationReserveBytes) }
-        })
+        reserves.append(contentsOf: modelsLoading.values)
         return ModelActivationPolicy.fleetReserveBytes(
             reserves, including: candidate)
     }
@@ -660,8 +658,11 @@ public actor StandaloneServer {
     private func publishFleetActivationReserve(
         including candidate: UInt64? = nil
     ) async {
+        activationReserveGeneration &+= 1
+        let generation = activationReserveGeneration
         await kvBudget.setActivationReserveBytes(
-            fleetActivationReserveBytes(including: candidate))
+            fleetActivationReserveBytes(including: candidate),
+            generation: generation)
     }
 
     private func requiredLoadGb(
@@ -883,6 +884,8 @@ public actor StandaloneServer {
         // the build call — by the time the catch runs, the box holds the
         // last strong reference and `release()` frees the weights.
         let bundle: ProviderEngineBundle
+        let activationReserveBytes = fleetActivationReserveBytes(
+            including: sizing.activationReserveBytes)
         do {
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
@@ -896,6 +899,7 @@ public actor StandaloneServer {
                 kvBytesCapacity: targets[modelId] ?? 0,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 kvBudget: kvBudget,
+                activationReserveBytes: activationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
@@ -1256,7 +1260,7 @@ public actor StandaloneServer {
             return
         }
 
-        if modelsLoading.contains(modelId) {
+        if modelsLoading[modelId] != nil {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
                 loadingWaiters[modelId, default: []].append(cont)
             }
@@ -1269,11 +1273,10 @@ public actor StandaloneServer {
             return
         }
 
-        guard let modelInfo = models.first(where: { $0.id == modelId }) else {
+        guard let modelIndex = models.firstIndex(where: { $0.id == modelId }) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
-        let modelActivationReserveBytes =
-            ModelActivationPolicy.reportedOrDefault(modelInfo.activationReserveBytes)
+        var modelInfo = models[modelIndex]
 
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
@@ -1300,7 +1303,7 @@ public actor StandaloneServer {
             touchSlot(modelId)
             return
         }
-        if modelsLoading.contains(modelId) {
+        if modelsLoading[modelId] != nil {
             try await ensureModelLoaded(modelId)
             return
         }
@@ -1319,8 +1322,16 @@ public actor StandaloneServer {
         }
         isLoadingAny = true
 
+        let activationProfile = ModelActivationPolicy.resolve(
+            configURL: modelPath.appendingPathComponent("config.json"))
+        let modelActivationReserveBytes = activationProfile.reserveBytes
+        if modelInfo.activationReserveBytes != modelActivationReserveBytes {
+            modelInfo.activationReserveBytes = modelActivationReserveBytes
+            models[modelIndex] = modelInfo
+        }
+
         let pendingLoadID = "pending-load:\(modelId)"
-        modelsLoading.insert(modelId)
+        modelsLoading[modelId] = modelActivationReserveBytes
         do {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
@@ -1344,6 +1355,16 @@ public actor StandaloneServer {
             }
             let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
             try Task.checkCancellation()
+            let confirmedActivationProfile = ModelActivationPolicy.resolve(
+                configURL: modelPath.appendingPathComponent("config.json"))
+            guard confirmedActivationProfile == activationProfile else {
+                if let refreshedIndex = models.firstIndex(where: { $0.id == modelId }) {
+                    models[refreshedIndex].activationReserveBytes =
+                        confirmedActivationProfile.reserveBytes
+                }
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' config changed before loading — retry required")
+            }
 
             // Keep incoming weights visible to the process-wide KV ledger while
             // loadContainer is suspended. Existing-model requests continue to
@@ -1373,6 +1394,18 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
+            let postLoadActivationProfile = ModelActivationPolicy.resolve(
+                configURL: modelPath.appendingPathComponent("config.json"))
+            guard postLoadActivationProfile == activationProfile else {
+                if let refreshedIndex = models.firstIndex(where: { $0.id == modelId }) {
+                    models[refreshedIndex].activationReserveBytes =
+                        postLoadActivationProfile.reserveBytes
+                }
+                newcomer.release()
+                MLX.Memory.clearCache()
+                throw StandaloneServerError.capacityUnavailable(
+                    "Model '\(modelId)' config changed while loading — unloaded")
+            }
             let postLoadCacheHash = reusableSSDRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
                 : nil

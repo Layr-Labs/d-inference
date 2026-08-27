@@ -127,9 +127,7 @@ extension ModelScanner {
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
             && configDeclaresVision(at: configPath)
         let activationReserveBytes = ModelActivationPolicy.reserveBytes(
-            modelType: modelType,
-            configURL: configPath,
-            isVision: isVision)
+            configURL: configPath)
 
         // Template-render self-check (DAR-130 class): render the model's chat
         // template(s) against canonical request fixtures so the coordinator can

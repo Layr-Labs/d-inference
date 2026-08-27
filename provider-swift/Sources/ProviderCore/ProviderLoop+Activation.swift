@@ -13,9 +13,9 @@ extension ProviderLoop {
         ModelActivationPolicy.reportedOrDefault(model.activationReserveBytes)
     }
 
-    /// Conservative baseline used by the scalar `free_for_load_gb` heartbeat
-    /// field. The coordinator adds back the difference for a lower-reserve
-    /// candidate using that model's advertised `activation_reserve_bytes`.
+    /// Conservative baseline used by the legacy scalar `free_for_load_gb`
+    /// heartbeat field. Current coordinators instead use the separately
+    /// reported pre-activation capacity with each candidate's exact reserve.
     func advertisedActivationReserveBytes() -> UInt64 {
         ModelActivationPolicy.fleetReserveBytes(
             advertisedModels.values.lazy.map { Self.activationReserveBytes(for: $0) })
@@ -23,9 +23,7 @@ extension ProviderLoop {
 
     func fleetActivationReserveBytes(including candidate: UInt64? = nil) -> UInt64 {
         var reserves = modelSlots.values.map(\.sizing.activationReserveBytes)
-        reserves.append(contentsOf: modelsLoading.compactMap { modelId in
-            advertisedModels[modelId].map { Self.activationReserveBytes(for: $0) }
-        })
+        reserves.append(contentsOf: modelsLoading.values)
         return ModelActivationPolicy.fleetReserveBytes(
             reserves, including: candidate)
     }
@@ -48,7 +46,10 @@ extension ProviderLoop {
     }
 
     func publishFleetActivationReserve(including candidate: UInt64? = nil) async {
+        activationReserveGeneration &+= 1
+        let generation = activationReserveGeneration
         await kvBudget.setActivationReserveBytes(
-            fleetActivationReserveBytes(including: candidate))
+            fleetActivationReserveBytes(including: candidate),
+            generation: generation)
     }
 }

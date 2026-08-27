@@ -217,14 +217,18 @@ public actor ProviderLoop {
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
 
-    /// Guards against concurrent loads. `modelsLoading` tracks which models
-    /// are mid-load; waiters suspend until the first loader finishes.
+    /// Guards against concurrent loads. `modelsLoading` retains each in-flight
+    /// load's resolved activation reserve; waiters suspend until the first
+    /// loader finishes. Keeping the value here makes the fleet reserve
+    /// independent of the mutable advertised-model inventory.
     /// `isLoadingAny` serializes loads so two large models don't interleave
     /// eviction decisions and overcommit memory.
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
-    internal var modelsLoading: Set<String> = []
+    internal var modelsLoading: [String: UInt64] = [:]
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
+    /// Monotonic fence for cross-actor activation-reserve publications.
+    internal var activationReserveGeneration: UInt64 = 0
     internal var isShuttingDown: Bool = false
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`

@@ -13,6 +13,14 @@ import Foundation
 public enum ModelActivationPolicy {
     static let bytesPerGiB: UInt64 = 1 << 30
 
+    /// One immutable classification of a checkpoint's `config.json`. Loaders
+    /// capture this before weight allocation and again after it; equality binds
+    /// a lowered reserve to the exact configuration that was loaded.
+    struct Resolution: Sendable, Equatable {
+        let configSHA256: String?
+        let reserveBytes: UInt64
+    }
+
     /// Exact `config.json` measured by the v0.8.0 batch-8 sweep:
     /// `mlx-community/gpt-oss-20b-MXFP4-Q8`, snapshot
     /// `773a7da77e569019bb0fd17a554b263738d669a3`.
@@ -46,24 +54,43 @@ public enum ModelActivationPolicy {
             env: environment)
     }
 
-    /// Resolve from a local `config.json`. The bounded read and digest bind a
-    /// lower reserve to the exact measured execution profile; a missing,
-    /// oversized, or modified config retains the conservative reserve.
+    /// Resolve from a local `config.json`. Model type, vision posture,
+    /// architecture, and digest all come from the same immutable byte snapshot;
+    /// callers never supply a potentially stale model name or scan result.
     public static func reserveBytes(
-        modelType: String?,
         configURL: URL,
-        isVision: Bool,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
+        resolve(configURL: configURL, environment: environment).reserveBytes
+    }
+
+    /// Return the digest-bound resolution used to bracket a model load.
+    static func resolve(
+        configURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Resolution {
         guard let configData = KVEstimation.readBoundedConfigJSON(configURL) else {
-            return UnifiedMemoryCap.resolvedActivationReserveBytes(env: environment)
+            return Resolution(
+                configSHA256: nil,
+                reserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                    env: environment))
         }
-        return reserveBytes(
-            modelType: modelType,
-            architecture: KVEstimation.parseModelArchitecture(configData: configData),
-            isVision: isVision,
-            configSHA256: sha256Hex(configData),
-            environment: environment)
+
+        let json = (try? JSONSerialization.jsonObject(with: configData))
+            as? [String: Any]
+        let textConfig = json?["text_config"] as? [String: Any]
+        let modelType = textConfig?["model_type"] as? String
+            ?? json?["model_type"] as? String
+        let isVision = json?["vision_config"] != nil
+        let digest = sha256Hex(configData)
+        return Resolution(
+            configSHA256: digest,
+            reserveBytes: reserveBytes(
+                modelType: modelType,
+                architecture: KVEstimation.parseModelArchitecture(configData: configData),
+                isVision: isVision,
+                configSHA256: digest,
+                environment: environment))
     }
 
     static func profileReserveBytes(

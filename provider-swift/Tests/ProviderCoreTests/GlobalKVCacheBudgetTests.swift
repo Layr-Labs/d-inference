@@ -125,6 +125,22 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(await budget.reserveBytes(requestID: "fits-after-profile-change", bytes: 2 * gib))
 }
 
+@Test func globalKVCacheBudgetRejectsStaleActivationReservePublication() async {
+    let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 3 * gib) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 64 * gib, active: 0, cache: 0, systemAvailable: 8 * gib)
+    }
+
+    await budget.setActivationReserveBytes(11 * gib / 2, generation: 2)
+    await budget.setActivationReserveBytes(3 * gib, generation: 1)
+    #expect(!(await budget.reserveBytes(
+        requestID: "stale-lower-reserve", bytes: 3 * gib)))
+
+    await budget.setActivationReserveBytes(3 * gib, generation: 3)
+    #expect(await budget.reserveBytes(
+        requestID: "newer-lower-reserve", bytes: 4 * gib))
+}
+
 /// Q6 (serve-while-load): a loading model's weights are not in MLX active/cache
 /// until `loadModelContainer` finishes allocating them. `reservePendingLoad`
 /// makes that footprint visible to KV reservations on ALREADY-loaded models, so

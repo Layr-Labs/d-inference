@@ -223,6 +223,8 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
+        activationReserveBytes: UInt64 =
+            UnifiedMemoryCap.resolvedActivationReserveBytes(),
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -244,6 +246,7 @@ enum EngineV2SlotFactory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBudget: kvBudget,
+            activationReserveBytes: activationReserveBytes,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
@@ -272,6 +275,8 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
+        activationReserveBytes: UInt64 =
+            UnifiedMemoryCap.resolvedActivationReserveBytes(),
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -395,6 +400,7 @@ enum EngineV2SlotFactory {
                     kvBackend: kvBackendSelection,
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,
+                    activationReserveBytes: activationReserveBytes,
                     environment: environment,
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {

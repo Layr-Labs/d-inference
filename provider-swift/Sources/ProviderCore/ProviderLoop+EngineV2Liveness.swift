@@ -91,7 +91,7 @@ extension ProviderLoop {
     ) async {
         guard let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),
-            !modelsLoading.contains(modelId)
+            modelsLoading[modelId] == nil
         else { return }
         let bridge = slot.engineV2
 
@@ -100,7 +100,7 @@ extension ProviderLoop {
         // have swapped the slot while we awaited the bridge actor.
         guard modelSlots[modelId]?.engineV2 === bridge,
             !modelsUnloading.contains(modelId),
-            !modelsLoading.contains(modelId),
+            modelsLoading[modelId] == nil,
             !isShuttingDown
         else { return }
 
@@ -222,9 +222,11 @@ extension ProviderLoop {
             // engineV2Runtime (replacing the old bridge's entry).
 
             MLX.Memory.clearCache()
+            let activationReserveBytes = fleetActivationReserveBytes()
             var postBuildServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: newBridge.kvBackendKind,
-                pagedPoolBytes: await newBridge.kvBackendPoolBytes())
+                pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
+                activationReserveBytes: activationReserveBytes)
             // Scripted hook engines are not concrete EngineV2 instances and
             // cannot expose MTP metrics; their prepared bundle status is the
             // test seam's runtime truth. Production still requires live metrics.
@@ -264,7 +266,8 @@ extension ProviderLoop {
                 MLX.Memory.clearCache()
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: newBridge.kvBackendKind,
-                    pagedPoolBytes: await newBridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
+                    activationReserveBytes: activationReserveBytes)
             }
             if !postBuildServeable {
                 await engineV2Runtime.unregister(modelId: modelId)

@@ -590,6 +590,8 @@ extension ProviderLoop {
                 mtpStatus: status)
         } else {
             let slotLogger = logger
+            let activationReserveBytes = fleetActivationReserveBytes(
+                including: sizing.activationReserveBytes)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,
@@ -601,6 +603,7 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
+                activationReserveBytes: activationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:

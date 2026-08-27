@@ -106,6 +106,32 @@ private func measuredGPTOSSArchitecture(
         == UnifiedMemoryCap.defaultActivationReserveBytes)
 }
 
+@Test func loadResolutionDetectsConfigDriftEvenWhenReserveIsUnchanged() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(
+            "activation-profile-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let config = directory.appendingPathComponent("config.json")
+
+    try Data(#"{"model_type":"unknown","hidden_size":1024}"#.utf8)
+        .write(to: config)
+    let before = ModelActivationPolicy.resolve(
+        configURL: config, environment: [:])
+    let unchanged = ModelActivationPolicy.resolve(
+        configURL: config, environment: [:])
+    #expect(before == unchanged)
+    #expect(before.reserveBytes == UnifiedMemoryCap.defaultActivationReserveBytes)
+
+    try Data(#"{"model_type":"unknown","hidden_size":2048}"#.utf8)
+        .write(to: config)
+    let after = ModelActivationPolicy.resolve(
+        configURL: config, environment: [:])
+    #expect(after != before)
+    #expect(after.reserveBytes == before.reserveBytes)
+}
+
 @Test func fleetReserveUsesLargestResidentOrLoadingProfile() {
     let measured = 3 * activationGiB
     let conservative = UnifiedMemoryCap.defaultActivationReserveBytes

@@ -23,6 +23,8 @@ public actor GlobalKVCacheBudget {
     /// the current resident/loading model set. nil uses the conservative
     /// ``UnifiedMemoryCap`` fallback.
     private var activationReserveBytes: UInt64?
+    /// Rejects stale cross-actor publications that resume out of order.
+    private var activationReserveGeneration: UInt64 = 0
     /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
     /// the live KV gate just as the load gate holds it back, so runtime KV can't
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
@@ -193,7 +195,16 @@ public actor GlobalKVCacheBudget {
     /// this before candidate weights begin loading and after every load/unload
     /// terminal, keeping concurrent KV admission aligned with load and re-slice
     /// arithmetic.
-    public func setActivationReserveBytes(_ bytes: UInt64) {
+    public func setActivationReserveBytes(
+        _ bytes: UInt64,
+        generation: UInt64? = nil
+    ) {
+        if let generation {
+            guard generation >= activationReserveGeneration else { return }
+            activationReserveGeneration = generation
+        } else if activationReserveGeneration < .max {
+            activationReserveGeneration += 1
+        }
         activationReserveBytes = bytes > 0
             ? bytes
             : UnifiedMemoryCap.resolvedActivationReserveBytes()

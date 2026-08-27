@@ -210,7 +210,7 @@ extension ProviderLoop {
             return
         }
 
-        if modelsLoading.contains(modelId) {
+        if modelsLoading[modelId] != nil {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
                 loadingWaiters[modelId, default: []].append(cont)
             }
@@ -232,12 +232,11 @@ extension ProviderLoop {
             )
         }
 
-        guard let modelInfo = advertisedModels[modelId] else {
+        guard var modelInfo = advertisedModels[modelId] else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not in advertised model list"
             )
         }
-        let modelActivationReserveBytes = Self.activationReserveBytes(for: modelInfo)
         var mtpPreparation = await specDecPreparation(
             modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
 
@@ -253,7 +252,7 @@ extension ProviderLoop {
             if isShuttingDown { throw CancellationError() }
         }
         if modelSlots[modelId] != nil { return }
-        if modelsLoading.contains(modelId) {
+        if modelsLoading[modelId] != nil {
             try await ensureModelLoaded(
                 modelId: modelId, allowEviction: allowEviction)
             return
@@ -298,11 +297,23 @@ extension ProviderLoop {
             }
         }
 
+        // Classify only after every preparation/gate suspension, immediately
+        // before the load becomes visible to the shared memory ledger.
+        let activationProfile = ModelActivationPolicy.resolve(
+            configURL: modelPath.appendingPathComponent("config.json"))
+        let modelActivationReserveBytes = activationProfile.reserveBytes
+        let activationProfileChanged =
+            modelInfo.activationReserveBytes != modelActivationReserveBytes
+        if activationProfileChanged {
+            modelInfo.activationReserveBytes = modelActivationReserveBytes
+            advertisedModels[modelId] = modelInfo
+        }
+
         // Q6 (serve-while-load): id for the pending-load reservation placed in
         // kvBudget once the gate passes and released once the weights are
         // resident. Declared out here so the catch can release it on any path.
         let pendingLoadID = "pending-load:\(modelId)"
-        modelsLoading.insert(modelId)
+        modelsLoading[modelId] = modelActivationReserveBytes
         do {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -347,6 +358,14 @@ extension ProviderLoop {
             let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+            let confirmedActivationProfile = ModelActivationPolicy.resolve(
+                configURL: modelPath.appendingPathComponent("config.json"))
+            guard confirmedActivationProfile == activationProfile else {
+                let message =
+                    "Model '\(modelId)' config changed before loading — retry required"
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
 
             // Q6: reserve this load's weight footprint in the shared KV budget so
             // a concurrent KV reservation on an already-loaded model can't grant
@@ -377,6 +396,16 @@ extension ProviderLoop {
             if !reusableSSDRequested {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
+            if activationProfileChanged {
+                var refreshedModel = modelInfo
+                refreshedModel.weightHash = preLoadHash.hash
+                if let client = coordinatorClient {
+                    await client.advertiseModel(refreshedModel)
+                }
+                if preLoadHash.hash != nil {
+                    outboundSend?.send(.modelsUpdate(models: [refreshedModel]))
+                }
+            }
 
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
@@ -392,6 +421,20 @@ extension ProviderLoop {
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+
+            // Bind a lowered reserve to the exact config bytes that survived
+            // container loading. Any mutation during the load aborts before
+            // engine construction or slot publication.
+            let postLoadActivationProfile = ModelActivationPolicy.resolve(
+                configURL: modelPath.appendingPathComponent("config.json"))
+            guard postLoadActivationProfile == activationProfile else {
+                newcomer.release()
+                MLX.Memory.clearCache()
+                let message =
+                    "Model '\(modelId)' config changed while loading — unloaded"
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
 
             // TOCTOU guard: reusable SSD cache participation requires two fresh
             // cryptographic reads bracketing the container load. Unlike the old
@@ -951,7 +994,12 @@ extension ProviderLoop {
         guard let modelInfo = advertisedModels[modelId] else {
             return false
         }
-        let modelActivationReserveBytes = Self.activationReserveBytes(for: modelInfo)
+        let modelActivationReserveBytes = ModelScanner.resolveLocalPath(modelID: modelId)
+            .map {
+                ModelActivationPolicy.reserveBytes(
+                    configURL: $0.appendingPathComponent("config.json"))
+            }
+            ?? Self.activationReserveBytes(for: modelInfo)
         // The optional assistant deliberately plays NO role here: it cannot
         // cause a fast rejection (a target that fits must remain loadable and
         // can fall back to plain decode), and this pre-accept path must not

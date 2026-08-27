@@ -113,6 +113,7 @@ import Testing
     #expect(config.backend.maxModelSlots == 7)
     #expect(config.backend.idleTimeoutMins == 30)
     #expect(config.backend.engineV2KVBackend == "paged")
+    #expect(config.backend.mtpMode == .on)
     #expect(config.backend.mtp == true)
 }
 

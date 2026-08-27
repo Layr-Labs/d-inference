@@ -250,5 +250,7 @@ public enum ProviderCore {
     // bounded forecast while preserving hard absolute expiry.
     // 0.8.13 serves Qwen image/video requests through the bounded vision path,
     // including single-decode media ingest and first-content-safe video caps.
-    public static let version = "0.8.13"
+    // 0.8.14 adds production EngineV2 support for Qwen3-VL-MoE and defaults
+    // verified inline Qwen MTP on through model-aware automatic policy.
+    public static let version = "0.8.14"
 }

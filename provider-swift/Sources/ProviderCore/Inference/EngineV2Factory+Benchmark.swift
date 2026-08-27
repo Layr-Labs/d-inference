@@ -2,7 +2,7 @@
 //
 // Benchmark-facing seam: perf harnesses must measure the exact module served
 // in production. Gemma 4 VLM checkpoints expose their directly owned
-// `Gemma4TextModel`; no extraction, re-keying, or second module is involved.
+// `Gemma4TextModel`; Qwen3-VL is served directly as its loaded wrapper.
 
 import Foundation
 import MLXLMCommon
@@ -11,8 +11,8 @@ import MLXVLM
 extension EngineV2Factory {
 
     /// Resolve the CBv2-serving model for a loaded checkpoint: the model
-    /// itself for text checkpoints, or the exact VLM-owned text tower for
-    /// Gemma 4 VLM checkpoints.
+    /// itself for text and direct Qwen3-VL checkpoints, the exact VLM-owned
+    /// text tower for Gemma 4, or the extracted Qwen3.5 MoE language target.
     public static func benchmarkServingModel(
         model: any LanguageModel,
         isVLM: Bool,
@@ -21,6 +21,9 @@ extension EngineV2Factory {
     ) throws -> any LanguageModel {
         guard isVLM else { return model }
         if model is MLXVLM.Gemma4 {
+            return try directServingModel(model: model, isVLM: true)
+        }
+        if model is MLXVLM.Qwen3VL {
             return try directServingModel(model: model, isVLM: true)
         }
         guard model is MLXVLM.Qwen35MoE else {

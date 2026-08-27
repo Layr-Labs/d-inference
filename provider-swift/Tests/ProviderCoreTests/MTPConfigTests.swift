@@ -1,10 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 //
-// MTP config + hygiene surface (Gemma 4 MTP plan §4 D5): the `[backend]`
-// `mtp` / `mtp_drafter_path` TOML keys, the `mtp` beta-feature registry
-// entry (`darkbloom beta enable mtp` is registry-driven, zero CLI code),
-// and the `gemma4_assistant` supported-set carve-out (a hand-downloaded
-// drafter checkpoint must never be advertised as a servable chat model).
+// MTP config + policy surface: the tri-state `[backend].mtp_mode`, legacy
+// boolean decoding, beta toggle normalization, shared target policy, and the
+// supported-set carve-out that prevents assistant checkpoints from being
+// advertised as servable chat models.
 
 import Testing
 
@@ -31,7 +30,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent keys default to mtp=false, no drafter path")
+    @Test("absent mode defaults to automatic Qwen-only policy")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -42,91 +41,146 @@ struct MTPConfigKeyTests {
             port = 8100
             """)
 
+        #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5_moe"))
+        #expect(!config.backend.mtpMode.enablesMTP(forModelType: "gemma4"))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
-    @Test("present keys decode")
-    func decodesPresentKeys() {
-        let config = ConfigManager.parse(
+    @Test("explicit auto, on, and off modes decode")
+    func decodesModes() {
+        for (raw, expected) in [
+            ("auto", MTPMode.auto),
+            ("on", MTPMode.on),
+            ("off", MTPMode.off),
+        ] {
+            let config = ConfigManager.parse(
+                """
+                [provider]
+                name = "test-provider"
+
+                [backend]
+                mtp_mode = "\(raw)"
+                """)
+            #expect(config.backend.mtpMode == expected)
+        }
+    }
+
+    @Test("legacy booleans apply only when mtp_mode is absent")
+    func legacyPrecedence() {
+        let legacyOn = ConfigManager.parse(
             """
             [provider]
             name = "test-provider"
-
             [backend]
             mtp = true
-            mtp_drafter_path = "/opt/drafters/gemma4-assistant-4bit"
             """)
-
-        #expect(config.backend.mtp == true)
-        #expect(config.backend.mtpDrafterPath == "/opt/drafters/gemma4-assistant-4bit")
-    }
-
-    @Test("mtp works without a drafter path (fleet spec_dec path)")
-    func mtpWithoutPath() {
-        let config = ConfigManager.parse(
+        let legacyOff = ConfigManager.parse(
             """
             [provider]
             name = "test-provider"
-
             [backend]
+            mtp = false
+            """)
+        let modeWins = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp_mode = "off"
             mtp = true
             """)
 
-        #expect(config.backend.mtp == true)
-        #expect(config.backend.mtpDrafterPath == nil)
+        #expect(legacyOn.backend.mtpMode == .on)
+        #expect(legacyOff.backend.mtpMode == .off)
+        #expect(modeWins.backend.mtpMode == .off)
     }
 
-    // ConfigManager.parse falls back to a full default config on any decode
-    // failure (documented behavior: a malformed provider.toml must never
-    // brick a provider) — so a wrongly-typed value yields the safe default
-    // (MTP off), never a crash or a half-parsed config.
-    @Test("wrongly-typed mtp value falls back to defaults (off)")
-    func invalidMTPValueFallsBack() {
+    @Test("explicit modes apply across Qwen and Gemma targets")
+    func targetPolicy() {
+        for type in ["qwen3_5_moe", " QWEN3_5_MOE "] {
+            #expect(MTPMode.auto.enablesMTP(forModelType: type))
+            #expect(MTPMode.on.enablesMTP(forModelType: type))
+            #expect(!MTPMode.off.enablesMTP(forModelType: type))
+        }
+        for type in ["gemma4", "gemma4_text", "qwen3", nil] as [String?] {
+            #expect(!MTPMode.auto.enablesMTP(forModelType: type))
+            #expect(MTPMode.on.enablesMTP(forModelType: type))
+            #expect(!MTPMode.off.enablesMTP(forModelType: type))
+        }
+    }
+
+    @Test("provider and standalone configs use the same target decision")
+    func providerAndStandaloneSharePolicy() {
+        let backend = BackendSettings(mtpMode: .auto)
+        let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
+
+        for type in ["qwen3_5_moe", "gemma4", nil] as [String?] {
+            #expect(
+                backend.mtpMode.enablesMTP(forModelType: type)
+                    == standalone.mtpMode.enablesMTP(forModelType: type))
+        }
+    }
+
+    @Test("process environment remains a final negative-polarity kill switch")
+    func killSwitchPolicy() {
+        #expect(SpecDecArtifactFunnel.killSwitchEnabled(environment: [:]))
+        for value in ["0", "false", "no", "off", " OFF "] {
+            #expect(
+                !SpecDecArtifactFunnel.killSwitchEnabled(
+                    environment: ["DARKBLOOM_CBV2_MTP": value]))
+        }
+        #expect(
+            SpecDecArtifactFunnel.killSwitchEnabled(
+                environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+    }
+
+    @Test("invalid mode falls back to the safe default configuration")
+    func invalidModeFallsBack() {
         let config = ConfigManager.parse(
             """
             [provider]
             name = "test-provider"
-
             [backend]
-            mtp = "yes"
+            mtp_mode = "sometimes"
             """)
 
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
-    @Test("wrongly-typed mtp_drafter_path falls back to defaults")
-    func invalidDrafterPathFallsBack() {
-        let config = ConfigManager.parse(
-            """
-            [provider]
-            name = "test-provider"
-
-            [backend]
-            mtp = true
-            mtp_drafter_path = 42
-            """)
-
-        #expect(config.backend.mtp == false)
-        #expect(config.backend.mtpDrafterPath == nil)
-    }
-
-    @Test("serialization round-trips both keys")
+    @Test("serialization emits only the tri-state key")
     func serializationRoundTrips() {
         let original = ProviderConfig(
             provider: ProviderSettings(name: "test-provider"),
-            backend: BackendSettings(mtp: true, mtpDrafterPath: "/tmp/drafter"),
+            backend: BackendSettings(mtpMode: .on, mtpDrafterPath: "/tmp/drafter"),
             coordinator: CoordinatorSettings()
         )
 
         let toml = ConfigManager.serialize(original)
         let decoded = ConfigManager.parse(toml)
 
-        #expect(toml.contains("mtp = true"))
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(toml.contains("mtp_drafter_path"))
-        #expect(decoded.backend.mtp == true)
+        #expect(decoded.backend.mtpMode == .on)
         #expect(decoded.backend.mtpDrafterPath == "/tmp/drafter")
+    }
+
+    @Test("legacy input normalizes to mtp_mode when saved")
+    func legacySerializationNormalizes() {
+        let decoded = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = true
+            """)
+        let toml = ConfigManager.serialize(decoded)
+
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
     }
 
     @Test("nil drafter path is not emitted")
@@ -139,6 +193,8 @@ struct MTPConfigKeyTests {
 
         let toml = ConfigManager.serialize(original)
 
+        #expect(toml.contains("mtp_mode = 'auto'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(!toml.contains("mtp_drafter_path"))
     }
 }
@@ -156,31 +212,37 @@ struct MTPBetaFeatureTests {
         )
     }
 
-    @Test("registry exposes mtp, restart-required, default off")
+    @Test("registry exposes mtp as an explicit override of automatic policy")
     func registryEntry() throws {
         let feature = try #require(BetaFeatures.feature(id: "mtp"))
         #expect(feature.id == "mtp")
         #expect(feature.requiresRestart == true)
+        #expect(feature.configAddress?.section == "backend")
+        #expect(feature.configAddress?.key == "mtp_mode")
         #expect(feature.isEnabled(in: freshConfig()) == false)
+        #expect(!feature.isPinned(true, in: freshConfig()))
+        #expect(!feature.isPinned(false, in: freshConfig()))
         // Case-insensitive lookup, like every other beta id.
         #expect(BetaFeatures.feature(id: "MTP")?.id == "mtp")
     }
 
-    @Test("apply toggles config.backend.mtp both ways")
+    @Test("apply writes explicit on and off modes")
     func applyTogglesField() {
         let feature = BetaFeatures.feature(id: "mtp")!
         var config = freshConfig()
 
         feature.apply(true, to: &config)
-        #expect(config.backend.mtp == true)
+        #expect(config.backend.mtpMode == .on)
         #expect(feature.isEnabled(in: config) == true)
+        #expect(feature.isPinned(true, in: config))
         #expect(BetaFeatures.enabledIDs(in: config) == [
             "gemma-prefill-layer18", "gemma-weighted-r1", "mtp",
         ])
 
         feature.apply(false, to: &config)
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode == .off)
         #expect(feature.isEnabled(in: config) == false)
+        #expect(feature.isPinned(false, in: config))
         #expect(BetaFeatures.enabledIDs(in: config) == [
             "gemma-prefill-layer18", "gemma-weighted-r1",
         ])
@@ -214,7 +276,8 @@ struct MTPBetaFeatureTests {
         let toml = ConfigManager.serialize(config)
         let decoded = ConfigManager.parse(toml)
 
-        #expect(toml.contains("mtp = true"))
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(feature.isEnabled(in: decoded) == true)
     }
 }

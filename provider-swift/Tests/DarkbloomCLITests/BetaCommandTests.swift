@@ -105,10 +105,10 @@ struct BetaCommandTests {
         #expect(after == before)
     }
 
-    @Test("disable with an absent key still writes a default-off feature")
+    @Test("disable with an absent key materializes an explicit off override")
     func disableMaterializesAbsentKey() throws {
-        // MTP defaults off: disabling an absent key used to no-op without
-        // persisting the operator's intent.
+        // MTP defaults to automatic Qwen-only policy. Disabling an absent key
+        // must persist the operator's stronger all-target rollback.
         let url = try makeTempConfig("""
             [provider]
             name = "beta-test"
@@ -120,8 +120,30 @@ struct BetaCommandTests {
         }
 
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(written.contains("mtp = false"))
-        #expect(tomlKeyPresent(written, section: "backend", key: "mtp"))
+        #expect(written.contains("mtp_mode = \"off\""))
+        #expect(!written.contains("\nmtp = "))
+        #expect(tomlKeyPresent(written, section: "backend", key: "mtp_mode"))
+    }
+
+    @Test("automatic MTP is not mistaken for an explicit off pin")
+    func disableReplacesAutomaticMode() throws {
+        let url = try makeTempConfig("""
+            [provider]
+            name = "beta-test"
+
+            [backend]
+            mtp_mode = "auto"
+            """)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        try withGuardedCanonicalConfig {
+            try setBetaFeature("mtp", enabled: false, configPath: url.path)
+        }
+
+        let written = try String(contentsOf: url, encoding: .utf8)
+        #expect(written.contains("mtp_mode = \"off\""))
+        #expect(!written.contains("mtp_mode = \"auto\""))
+        #expect(!written.contains("\nmtp = "))
     }
 
     @Test("disable flips a pinned key and keeps its neighbour")

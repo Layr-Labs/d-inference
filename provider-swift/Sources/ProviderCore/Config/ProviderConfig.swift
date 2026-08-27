@@ -67,6 +67,31 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         self.updateJitterSeconds = try container.decodeIfPresent(UInt64.self, forKey: .updateJitterSeconds) ?? 300
     }
 }
+/// Operator policy for multi-token prediction.
+///
+/// `auto` is deliberately architecture-based rather than model-id-based:
+/// Qwen 3.5/3.6 MoE checkpoints share `qwen3_5_moe`, while Gemma remains an
+/// explicit opt-in. Artifact inspection and the process-wide kill switch are
+/// still enforced later by `SpecDecArtifactFunnel`.
+public enum MTPMode: String, Sendable, Equatable, Codable {
+    case auto
+    case on
+    case off
+
+    func enablesMTP(forModelType modelType: String?) -> Bool {
+        switch self {
+        case .on:
+            return true
+        case .off:
+            return false
+        case .auto:
+            return modelType?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() == "qwen3_5_moe"
+        }
+    }
+}
+
 
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
@@ -161,13 +186,23 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
-    /// MTP (multi-token prediction / speculative decoding) opt-in for CBv2
-    /// (`mtp` under `[backend]`, default false — beta id `mtp`). When enabled,
-    /// slot build resolves a Gemma drafter (`mtp_drafter_path` if set, else the
-    /// catalog entry's `spec_dec` download) and binds it to the engine. Drafter
-    /// resolution/load is fail-open: any failure means plain decode, never a
-    /// slot failure. `DARKBLOOM_CBV2_MTP` remains the engine-side kill switch.
-    public var mtp: Bool
+    /// MTP (multi-token prediction / speculative decoding) policy
+    /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
+    /// Automatic mode activates only Qwen 3.5/3.6 MoE targets; Gemma remains
+    /// opt-in. The legacy `mtp = true|false` key is accepted only when
+    /// `mtp_mode` is absent. Serialization emits only `mtp_mode`.
+    ///
+    /// Artifact resolution/load remains fail-open to plain decode, and
+    /// `DARKBLOOM_CBV2_MTP=0` remains the final process-wide kill switch.
+    public var mtpMode: MTPMode
+    /// Source-compatible view of the former boolean setting. Reading is true
+    /// only for an explicit `.on`; assigning performs an explicit on/off
+    /// override rather than materializing an automatic decision without a
+    /// model type.
+    public var mtp: Bool {
+        get { mtpMode == .on }
+        set { mtpMode = newValue ? .on : .off }
+    }
     /// Explicit provider-side atomic first-token deadline policy. Nil means the
     /// key was absent, so runtime resolution inherits the legacy environment
     /// control and otherwise securely enforces. Optional encoding preserves
@@ -217,7 +252,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
         startupSelftestFailClosed: Bool = false,
-        mtp: Bool = false,
+        mtp: Bool? = nil,
+        mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpDrafterPath: String? = nil
     ) {
@@ -235,7 +271,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
-        self.mtp = mtp
+        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
     }
@@ -255,7 +291,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
-        case mtp
+        case legacyMTP = "mtp"
+        case mtpMode = "mtp_mode"
         case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
     }
@@ -297,7 +334,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
-        self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? false
+        if container.contains(.mtpMode) {
+            self.mtpMode = try container.decode(MTPMode.self, forKey: .mtpMode)
+        } else if let legacyMTP = try container.decodeIfPresent(Bool.self, forKey: .legacyMTP) {
+            self.mtpMode = legacyMTP ? .on : .off
+        } else {
+            self.mtpMode = .auto
+        }
         self.prefillDeadlineMode =
             try container.decodeIfPresent(
                 PrefillDeadlineMode.self,
@@ -309,6 +352,27 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.retiredKeysPresent = RetiredCodingKeys.allCases
             .filter { retired.contains($0) }
             .map(\.rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(port, forKey: .port)
+        try container.encodeIfPresent(model, forKey: .model)
+        try container.encode(enabledModels, forKey: .enabledModels)
+        try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
+        try container.encode(maxModelSlots, forKey: .maxModelSlots)
+        try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
+        try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
+        try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(startupPreload, forKey: .startupPreload)
+        try container.encode(preloadModels, forKey: .preloadModels)
+        try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)
+        try container.encode(startupSelftest, forKey: .startupSelftest)
+        try container.encode(startupSelftestFailClosed, forKey: .startupSelftestFailClosed)
+        try container.encode(mtpMode, forKey: .mtpMode)
+        try container.encodeIfPresent(prefillDeadlineMode, forKey: .prefillDeadlineMode)
+        try container.encodeIfPresent(mtpDrafterPath, forKey: .mtpDrafterPath)
     }
 }
 

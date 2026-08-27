@@ -80,9 +80,11 @@ public struct StandaloneServerConfig: Sendable {
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
-    /// MTP beta configuration. Defaults off; the CLI/config owner passes these
-    /// through when standalone MTP is intentionally enabled.
-    public let mtp: Bool
+    /// MTP policy inherited from provider config. Automatic mode enables only
+    /// inline Qwen 3.5/3.6 MoE MTP; Gemma remains explicitly opt-in.
+    public let mtpMode: MTPMode
+    /// Source-compatible view for callers that still inspect the old boolean.
+    public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
 
     public init(
@@ -96,7 +98,8 @@ public struct StandaloneServerConfig: Sendable {
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtp: Bool = false,
+        mtp: Bool? = nil,
+        mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -109,7 +112,7 @@ public struct StandaloneServerConfig: Sendable {
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.prefillDeadlineMode = prefillDeadlineMode
-        self.mtp = mtp
+        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.mtpDrafterPath = mtpDrafterPath
     }
 }

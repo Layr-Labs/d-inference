@@ -215,7 +215,7 @@ func setBetaFeature(
         // the default, but an explicit enable/disable means "make it so,
         // durably" — materialize the key so a future default flip cannot
         // silently move this provider.
-        if feature.isEnabled(in: config) == enabled,
+        if feature.isPinned(enabled, in: config),
            let address = feature.configAddress,
            let content = try? String(contentsOf: savePath, encoding: .utf8),
            tomlKeyPresent(content, section: address.section, key: address.key) {

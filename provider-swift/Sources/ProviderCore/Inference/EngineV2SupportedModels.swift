@@ -5,17 +5,19 @@
 // v0.7.5 serves EVERYTHING through ContinuousBatchingV2 — there is no
 // legacy fallback — so a model is advertised to the coordinator ONLY when
 // its family has a CBv2 adapter. This predicate is the scan/advertise-time
-// mirror of the `EngineV2Factory.makeProductionEngine` switch (Gemma4Text +
-// GPT-OSS module families), keyed on the `model_type` string config.json
-// declares (the value `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
+// mirror of the `EngineV2Factory.makeProductionEngine` switch, keyed on the
+// `model_type` string config.json declares (the value
+// `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
 //
-//   * `gpt_oss`      — GPT-OSS (GPTOSSModel)
-//   * `gemma4`       — Gemma 4 VLM wrapper, serving through its directly
-//                      owned text tower plus vision prefill
-//   * `gemma4_text`  — Gemma 4 text target
-//   * `qwen3_5_moe` — Qwen 3.5/3.6 MoE VLM target with recurrent state
+//   * `gpt_oss`       — GPT-OSS (GPTOSSModel)
+//   * `gemma4`        — Gemma 4 VLM wrapper, serving through its directly
+//                       owned text tower plus vision prefill
+//   * `gemma4_text`   — Gemma 4 text target
+//   * `qwen3_5_moe`   — Qwen 3.5/3.6 MoE VLM target with recurrent state
+//   * `qwen3_vl_moe`  — Qwen3-VL MoE wrapper, served directly through its
+//                       CBv2 language-model adapter and vision prefill
 //
-// Everything else (gemma3, other qwen families, llama, …) is
+// Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
 // (WARN log), so the coordinator never routes to it. A load request for an
 // unsupported id (stale catalog) then fails the advertised-set guard in
@@ -42,6 +44,7 @@ public enum EngineV2SupportedModels {
         guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
         if raw == "qwen3_5_moe" { return true }
+        if raw == "qwen3_vl_moe" { return true }
         return gemma4TargetTypes.contains(raw)
     }
 

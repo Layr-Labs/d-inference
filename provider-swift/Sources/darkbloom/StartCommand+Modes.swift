@@ -96,7 +96,7 @@ extension Start {
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
-                mtp: config.backend.mtp,
+                mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath
             ),
             models: advertised

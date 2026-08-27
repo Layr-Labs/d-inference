@@ -102,3 +102,16 @@ struct StatusDaemonHealthLineTests {
         }
     }
 }
+
+@Test("main status renders automatic, forced-on, and forced-off MTP postures")
+func mainStatusBetaPostures() {
+    func config(_ mode: MTPMode) -> ProviderConfig {
+        ProviderConfig(
+            provider: ProviderSettings(name: "test-provider"),
+            backend: BackendSettings(mtpMode: mode))
+    }
+
+    #expect(betaFeaturesStatus(config(.auto)).contains("mtp=auto (model-aware)"))
+    #expect(betaFeaturesStatus(config(.on)).contains("mtp=on"))
+    #expect(betaFeaturesStatus(config(.off)).contains("mtp=off"))
+}

@@ -15,7 +15,7 @@ struct Beta: AsyncParsableCommand {
         authority for daemon, `--foreground`, and `--local` processes.
 
         Subcommands:
-          list                 Show all beta features and whether each is on (default).
+          list                 Show all beta features and their on/off/auto state (default).
           enable <feature>     Turn a beta feature on.
           disable <feature>    Turn a beta feature off.
           status [feature]     Show details for all features, or one.
@@ -32,12 +32,25 @@ struct Beta: AsyncParsableCommand {
 
 // MARK: - JSON payload
 
-private struct BetaFeatureReport: Encodable {
+struct BetaFeatureReport: Encodable {
     let id: String
     let title: String
-    let enabled: Bool
+    let state: String
+    let enabled: Bool?
     let requiresRestart: Bool
     let summary: String
+}
+
+func betaFeatureListMark(_ state: BetaFeatureState) -> String {
+    switch state {
+    case .auto: return "auto"
+    case .on: return "on "
+    case .off: return "off"
+    }
+}
+
+func betaFeatureStatusLabel(_ state: BetaFeatureState) -> String {
+    state.statusLabel
 }
 
 // MARK: - list
@@ -45,7 +58,7 @@ private struct BetaFeatureReport: Encodable {
 extension Beta {
     struct List: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "List beta features and whether each is enabled."
+            abstract: "List beta features and their on/off/auto state."
         )
 
         @OptionGroup var configOptions: ConfigOptions
@@ -59,10 +72,12 @@ extension Beta {
 
             if json {
                 let payload = BetaFeatures.all.map { feature in
-                    BetaFeatureReport(
+                    let state = feature.state(in: config)
+                    return BetaFeatureReport(
                         id: feature.id,
                         title: feature.title,
-                        enabled: feature.isEnabled(in: config),
+                        state: state.rawValue,
+                        enabled: state.enabled,
                         requiresRestart: feature.requiresRestart,
                         summary: feature.summary
                     )
@@ -77,7 +92,7 @@ extension Beta {
                 print("  (none available in this build)")
             } else {
                 for feature in BetaFeatures.all {
-                    let mark = feature.isEnabled(in: config) ? "on " : "off"
+                    let mark = betaFeatureListMark(feature.state(in: config))
                     print("  [\(mark)] \(feature.id)  —  \(feature.summary)")
                 }
             }
@@ -118,7 +133,7 @@ extension Beta {
             print("Config: \(describeConfigPath(snapshot))")
             for feature in features {
                 print("")
-                print("\(feature.title) (\(feature.id)): \(feature.isEnabled(in: config) ? "ENABLED" : "disabled")")
+                print("\(feature.title) (\(feature.id)): \(betaFeatureStatusLabel(feature.state(in: config)))")
                 print("  \(feature.details)")
                 if feature.requiresRestart {
                     print("  Requires `darkbloom restart` after a change.")
@@ -215,7 +230,7 @@ func setBetaFeature(
         // the default, but an explicit enable/disable means "make it so,
         // durably" — materialize the key so a future default flip cannot
         // silently move this provider.
-        if feature.isEnabled(in: config) == enabled,
+        if feature.isPinned(enabled, in: config),
            let address = feature.configAddress,
            let content = try? String(contentsOf: savePath, encoding: .utf8),
            tomlKeyPresent(content, section: address.section, key: address.key) {

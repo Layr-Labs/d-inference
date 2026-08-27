@@ -186,8 +186,8 @@ enum EngineV2SlotFactory {
     /// - Parameters:
     ///   - modelId: catalog id the slot serves under.
     ///   - modelType: `model_type` from config.json (EOS policy input).
-    ///   - isVLM: config declares `vision_config` — the engine directly uses
-    ///     the `Gemma4TextModel` owned by the loaded VLM wrapper.
+    ///   - isVLM: config declares `vision_config` — Gemma serves its owned
+    ///     text tower, while Qwen3-VL serves the loaded wrapper directly.
     ///   - modelDirectory: checkpoint dir (prompt-contract identity input).
     ///   - tokenizer: the container's tokenizer handle.
     ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,

@@ -2,17 +2,14 @@
 //
 // ContinuousBatchingV2 — media-prefill construction for VLM slots.
 //
-// v0.7.2 routed only TEXT requests on a VLM-loaded Gemma 4 slot through the
-// v2 engine (over the directly owned/shared `Gemma4TextModel` tower); v0.7.5
-// added IMAGE requests via embedding-spliced vision prefill; v0.7.5 adds
-// VIDEO (and mixed image+video), removing the last media reason to keep a
-// legacy path. The engine contract is unchanged: `CBv2Request.multimodal`
-// carries placeholder-token spans plus one precomputed
-// `[1, spanTokens, hidden]` embedding per span, and the engine splices them
-// verbatim over the scaled text embeddings (the exact `maskedScatter`
-// semantics of MLXVLM Gemma4's `prepare`), applying the blockwise
-// bidirectional span mask and snapping prefill chunks to block edges. This
-// file builds that submission on the provider side:
+// Gemma 4 and Qwen3.5 retain their existing image/video paths. Qwen3-VL MoE
+// is served directly by CBv2 for text and images; video remains fail-closed
+// until its tower and position behavior are production-proven. The engine
+// contract carries placeholder-token spans plus one precomputed
+// `[1, spanTokens, hidden]` embedding per span. Qwen3-VL additionally carries
+// DeepStack arrays ordered by language-layer injection point and media span,
+// explicit M-RoPE positions, and causal visual spans. The engine splices these
+// arrays over text embeddings before forwarding the loaded model directly.
 //
 //   1. decode media EXACTLY as the legacy path does
 //      (`MediaIngest.buildUserInput` — same caps, same errors; inline videos
@@ -58,12 +55,12 @@
 //      at every `eval` site (not just on block exit — the handler records and
 //      RETURNS), so an MLX fault becomes a Swift throw the catch arms above
 //      already handle: one failed request, not one dead provider.
-//   2. The Qwen tower is driven ONE IMAGE AT A TIME and ONE VIDEO AT A TIME
-//      (full T×H×W grid) and each subject is admitted against
-//      `MTLDevice.maxBufferLength` first (`VisionTowerBudget`), so the
-//      dominant fault — the tower's N×N attention intermediate growing
-//      quadratically in the request's TOTAL patch count — is neither produced
-//      nor left for the allocator to discover. See `EngineV2VisionTowerRun`.
+//   2. Every Qwen tower is driven ONE IMAGE AT A TIME; the existing Qwen3.5
+//      video path remains one full T×H×W clip at a time. Each subject is
+//      admitted against `MTLDevice.maxBufferLength` first
+//      (`VisionTowerBudget`), so the dominant N×N attention allocation grows
+//      with one media subject rather than the request's total patch count.
+//      Qwen3-VL video is rejected before processor/tower work.
 //
 // BACKEND NOTE: CBv2 multimodal prefill requires a KV backend whose layer
 // caches AFFIRM `CBv2MultimodalSpanCapableCache.honorsSpanMaskContexts`;
@@ -73,10 +70,11 @@
 // bidirectional-within-block overlay in `PagedLayerCache.attendQueryBlock`
 // (WS-2.2) — so `EngineV2KVBackendPolicy.applySlotVetoes` no longer forces
 // VLM slots to contiguous unconditionally; it forces them only while the
-// paged cache does NOT vouch. The submit-time rejection is therefore still
-// unreachable in production, but for a different and better reason: not
-// "vision never reaches paged", but "vision only reaches a backend that
-// affirmed it can serve it". If it ever fires it maps to a deterministic
+// paged cache does NOT vouch. Qwen3-VL's model capability veto independently
+// forces contiguous KV, so its image path cannot reach the unproven paged
+// route. The submit-time rejection is otherwise unreachable in production:
+// media reaches only a backend that affirmed it can serve span masks. If that
+// rejection ever fires it maps to a deterministic
 // 4xx via `multimodal_rejected:` (see
 // `EngineV2Translation.admissionErrorMessage`) and doubles as the loud
 // signal that the claim and the implementation disagreed.
@@ -117,6 +115,9 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// The tower/projector seam returned zero feature arrays for media the
     /// processor did produce pixels for.
     case emptyVisionFeatures(kind: EngineV2VisionPrefill.SpanKind)
+    /// A Qwen3-VL image returned a different DeepStack level count or a level
+    /// without exactly one embedding for that image.
+    case misalignedDeepstack(mediaIndex: Int)
     /// The request carries video but the model config declares no video
     /// placeholder token id (video explicitly disabled for the checkpoint).
     case videoPlaceholderUnavailable
@@ -169,6 +170,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
             return "engine_v2 media prefill: processor produced no image or video pixels"
         case .emptyVisionFeatures(let kind):
             return "engine_v2 media prefill: vision tower returned no \(kind.rawValue) features"
+        case .misalignedDeepstack(let index):
+            return "engine_v2 media prefill: image \(index) returned misaligned DeepStack features"
         case .videoPlaceholderUnavailable:
             return "engine_v2 media prefill: model config has no video placeholder token id"
         case .conflictingPlaceholderIds(let id):
@@ -200,8 +203,8 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     }
 }
 
-/// Builds `CBv2MultimodalInput` submissions for image/video requests on a
-/// v2-bridged Gemma 4 VLM slot. Pure functions; no state.
+/// Builds `CBv2MultimodalInput` submissions for supported VLM slots. Pure
+/// functions; no state.
 public enum EngineV2VisionPrefill {
 
     /// The media kind of one carved span (a span is always exactly one
@@ -242,6 +245,9 @@ public enum EngineV2VisionPrefill {
         public let promptTokens: [Int]
         public let spans: [CBv2ImageSpan]
         public let embeddings: [MLXArray]
+        /// Optional Qwen DeepStack embeddings. Outer order is the language
+        /// layer injection order; each inner array follows `spans`.
+        public let deepstackEmbeddings: [[MLXArray]]
         public let attention: CBv2MultimodalAttention
         public let positionState: CBv2PositionState?
         /// Coarse request shape (image / video / mixed) for telemetry.
@@ -249,6 +255,7 @@ public enum EngineV2VisionPrefill {
 
         public init(
             promptTokens: [Int], spans: [CBv2ImageSpan], embeddings: [MLXArray],
+            deepstackEmbeddings: [[MLXArray]] = [],
             attention: CBv2MultimodalAttention = .bidirectionalSpans,
             positionState: CBv2PositionState? = nil,
             mediaKind: EngineV2MediaKind
@@ -256,6 +263,7 @@ public enum EngineV2VisionPrefill {
             self.promptTokens = promptTokens
             self.spans = spans
             self.embeddings = embeddings
+            self.deepstackEmbeddings = deepstackEmbeddings
             self.attention = attention
             self.positionState = positionState
             self.mediaKind = mediaKind
@@ -267,9 +275,13 @@ public enum EngineV2VisionPrefill {
         /// vision work.
         public func multimodalInput() -> CBv2MultimodalInput {
             let arrays = embeddings
+            let deepstack = deepstackEmbeddings
+            let deepstackProvider: (() throws -> [[MLXArray]])? =
+                deepstack.isEmpty ? nil : { deepstack }
             return CBv2MultimodalInput(
                 spans: spans, attention: attention,
-                positionState: positionState
+                positionState: positionState,
+                deepstackEmbeddings: deepstackProvider
             ) { arrays }
         }
     }
@@ -338,6 +350,19 @@ public enum EngineV2VisionPrefill {
         if let error = translatedFault(box.firstError) { throw error }
     }
 
+    /// Evaluate Qwen3-VL position ids and cross the MLX error boundary before
+    /// the caller may inspect position state or build a submission.
+    @inline(__always)
+    static func evaluateQwen3VLPositionIds<Result>(
+        mlxErrors: MLX.ErrorBox,
+        evalPositionIds: () -> Void,
+        then makeResult: () throws -> Result
+    ) throws -> Result {
+        evalPositionIds()
+        try throwIfMLXFaulted(mlxErrors)
+        return try makeResult()
+    }
+
     /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
     /// public initializer, so the translation lives here where tests can
     /// reach it.
@@ -349,15 +374,19 @@ public enum EngineV2VisionPrefill {
         return recorded
     }
 
-    /// Run the processor, then dispatch to the loaded family's builder. Runs
-    /// under the container's serial isolation, with MLX faults routed into
-    /// Swift throws by the caller.
+    /// Reject unsupported direct-wrapper media, run the processor, then
+    /// dispatch to the loaded family's builder. Runs under the container's
+    /// serial isolation, with MLX faults routed into Swift throws by the caller.
     private static func buildSubmission(
         ctx: ModelContext,
         userInput: UserInput,
         towerLimits: VisionTowerBudget.Limits,
         mlxErrors: MLX.ErrorBox
     ) async throws -> PreparedSubmission {
+        if ctx.model is MLXVLM.Qwen3VL, !userInput.videos.isEmpty {
+            throw EngineV2VisionPrefillError.unsupportedMedia(
+                qwen3VLUnsupportedVideoDetail)
+        }
         let lmInput = try await ctx.processor.prepare(input: userInput)
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
@@ -368,6 +397,11 @@ public enum EngineV2VisionPrefill {
         // token array only.
         let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
 
+        if let wrapper = ctx.model as? MLXVLM.Qwen3VL {
+            return try buildQwen3VLSubmission(
+                wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
+        }
         if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
             return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
@@ -381,10 +415,70 @@ public enum EngineV2VisionPrefill {
             wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens)
     }
 
-    /// Qwen3-VL: causal visual tokens, M-RoPE position state, a vision tower
-    /// driven ONE IMAGE AT A TIME and ONE VIDEO AT A TIME (the full T×H×W
-    /// grid — never one temporal frame; that would break temporal packing).
-    /// See `qwenPerImageVisionFeatures` / `qwenPerVideoVisionFeatures`.
+    static let qwen3VLUnsupportedVideoDetail =
+        "Qwen3-VL video media is not production-proven"
+
+    /// Video remains outside the proven Qwen3-VL CBv2 contract. Keep this
+    /// check pure and before any tower work so routing tests can pin the exact
+    /// unsupported-media refusal used by production.
+    static func validateQwen3VLMedia(_ lmInput: LMInput) throws {
+        if lmInput.video != nil {
+            throw EngineV2VisionPrefillError.unsupportedMedia(
+                qwen3VLUnsupportedVideoDetail)
+        }
+    }
+
+    /// Qwen3-VL MoE: image-only until video parity is proven, causal visual
+    /// spans, explicit M-RoPE state, and every DeepStack level aligned with
+    /// the final tower embeddings.
+    private static func buildQwen3VLSubmission(
+        wrapper: MLXVLM.Qwen3VL,
+        lmInput: LMInput,
+        promptTokens: [Int],
+        towerLimits: VisionTowerBudget.Limits,
+        mlxErrors: MLX.ErrorBox
+    ) throws -> PreparedSubmission {
+        try validateQwen3VLMedia(lmInput)
+        guard let image = lmInput.image,
+            let imageGrids = image.frames,
+            !imageGrids.isEmpty
+        else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+        }
+
+        let vision = try qwen3VLPerImageVisionFeatures(
+            wrapper: wrapper, pixels: image.pixels, grids: imageGrids,
+            towerLimits: towerLimits, mlxErrors: mlxErrors)
+        let carved = try carveSpans(
+            tokens: promptTokens,
+            imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+            imageSpanLengths: vision.features.map { $0.dim(1) },
+            videoPlaceholderId: nil,
+            videoSpanLengths: [])
+        let position = try wrapper.positionResult(
+            tokens: lmInput.text.tokens,
+            imageGrids: imageGrids,
+            videoGrids: nil,
+            attentionMask: lmInput.text.mask)
+        return try evaluateQwen3VLPositionIds(
+            mlxErrors: mlxErrors,
+            evalPositionIds: { eval(position.promptPositionIds) }
+        ) {
+            PreparedSubmission(
+                promptTokens: promptTokens,
+                spans: carved.map(\.span),
+                embeddings: vision.features,
+                deepstackEmbeddings: vision.deepstack,
+                attention: .causal,
+                positionState: CBv2PositionState(
+                    promptPositionIds: position.promptPositionIds,
+                    decodeDeltas: position.decodeState.deltas),
+                mediaKind: .image)
+        }
+    }
+
+    /// Qwen3.5 MoE: causal visual tokens, M-RoPE position state, and its
+    /// existing image/video tower seams.
     private static func buildQwenSubmission(
         wrapper: MLXVLM.Qwen35MoE,
         lmInput: LMInput,

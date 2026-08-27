@@ -149,9 +149,12 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // dominated paged's throughput and prefix-adoption wins. Paged remains
 // fully supported behind an explicit `engine_v2_kv_backend = "paged"` (see
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
+// 0.8.14 adds production EngineV2 support for Qwen3-VL-MoE and defaults
+// verified inline Qwen MTP on via model-aware automatic policy; Gemma remains
+// opt-in and DARKBLOOM_CBV2_MTP=0 remains the fleet rollback.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.13"
+var LatestProviderVersion = "0.8.14"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send

@@ -9,13 +9,16 @@ extension ProviderLoop {
     /// load remains a local-only catalog-cache/artifact-cache consultation.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
-        guard backend.mtp,
+        guard backend.mtpMode != .off,
             backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
             SpecDecArtifactFunnel.killSwitchEnabled(
                 environment: ProcessInfo.processInfo.environment),
             let modelId = advertisedModels.values
                 // Inline Qwen assistants need no catalog prewarm.
-                .filter({ EngineV2SupportedModels.isGemma4Target(modelType: $0.modelType) })
+                .filter({
+                    EngineV2SupportedModels.isGemma4Target(modelType: $0.modelType)
+                        && backend.mtpMode.enablesMTP(forModelType: $0.modelType)
+                })
                 .map(\.id)
                 .sorted()
                 .first
@@ -43,7 +46,8 @@ extension ProviderLoop {
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
-                enabled: loopConfig.config.backend.mtp,
+                enabled: loopConfig.config.backend.mtpMode.enablesMTP(
+                    forModelType: modelInfo.modelType),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 allowDownload: allowDownload,

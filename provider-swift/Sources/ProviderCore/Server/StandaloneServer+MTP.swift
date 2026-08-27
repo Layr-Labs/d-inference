@@ -8,11 +8,12 @@ extension StandaloneServer {
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
-                enabled: config.mtp,
+                enabled: config.mtpMode.enablesMTP(forModelType: modelInfo.modelType),
                 localPath: config.mtpDrafterPath,
                 modelDirectory: modelDirectory,
-                // `darkbloom start --local` is coordinator-independent. Only an
-                // explicit operator-provided path may activate MTP here.
+                // `darkbloom start --local` is coordinator-independent.
+                // Automatic Qwen MTP uses only its already-downloaded inline
+                // artifact; Gemma requires both explicit `.on` and a local path.
                 allowDownload: false,
                 environment: ProcessInfo.processInfo.environment))
     }

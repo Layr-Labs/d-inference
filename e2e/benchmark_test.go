@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -151,30 +152,84 @@ func TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture(t *testing.T) {
 	require.Equal(t, measured.ExpectKVBackend, control.ExpectKVBackend)
 }
 
+func canonicalCapacityRejection(rr testbed.RequestResult) bool {
+	if rr.StatusCode != http.StatusTooManyRequests || rr.Error == nil {
+		return false
+	}
+	const errorPrefix = "status 429: "
+	raw := rr.Error.Error()
+	if !strings.HasPrefix(raw, errorPrefix) {
+		return false
+	}
+
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(strings.TrimPrefix(raw, errorPrefix)), &envelope) != nil ||
+		envelope.Error.Code != "rate_limit_exceeded" {
+		return false
+	}
+
+	message := envelope.Error.Message
+	return strings.HasPrefix(message, "all providers at capacity after ") ||
+		(strings.HasPrefix(message, "all providers for model ") &&
+			strings.Contains(message, " are at capacity"))
+}
+
 func canonicalFullCapacityRejection(result *testbed.LoadResult) bool {
 	if result == nil || result.SuccessCount != 0 || len(result.RequestResults) == 0 {
 		return false
 	}
 	for _, rr := range result.RequestResults {
-		if rr.StatusCode != http.StatusTooManyRequests {
+		if !canonicalCapacityRejection(rr) {
 			return false
 		}
 	}
 	return true
 }
 
-func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
-	all429 := &testbed.LoadResult{
-		RequestResults: []testbed.RequestResult{
-			{StatusCode: http.StatusTooManyRequests},
-			{StatusCode: http.StatusTooManyRequests},
-		},
+func benchmarkErrorResult(status int, code, message string) testbed.RequestResult {
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
+	return testbed.RequestResult{
+		StatusCode: status,
+		Error:      fmt.Errorf("status %d: %s", status, body),
 	}
-	require.True(t, canonicalFullCapacityRejection(all429))
-	require.False(t, canonicalFullCapacityRejection(&testbed.LoadResult{}))
-	require.False(t, canonicalFullCapacityRejection(&testbed.LoadResult{
-		RequestResults: []testbed.RequestResult{{StatusCode: http.StatusInternalServerError}},
+}
+
+func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
+	capacity := benchmarkErrorResult(
+		http.StatusTooManyRequests,
+		"rate_limit_exceeded",
+		"all providers at capacity after 2 attempt(s): timeout waiting for first response")
+	queueFull := benchmarkErrorResult(
+		http.StatusTooManyRequests,
+		"rate_limit_exceeded",
+		`all providers for model "m" are at capacity and queue is full`)
+	require.True(t, canonicalFullCapacityRejection(&testbed.LoadResult{
+		RequestResults: []testbed.RequestResult{capacity, queueFull},
 	}))
+
+	for _, rejected := range []testbed.RequestResult{
+		{StatusCode: http.StatusTooManyRequests},
+		benchmarkErrorResult(http.StatusTooManyRequests, "rate_limit_exceeded",
+			`model "m" is temporarily rate-limited — retry after 10s`),
+		benchmarkErrorResult(http.StatusTooManyRequests, "rate_limit_exceeded",
+			`all providers for model "m" are above the 9s TTFT target`),
+		benchmarkErrorResult(http.StatusTooManyRequests, "rate_limit_exceeded",
+			`no provider could produce first content within the remaining deadline for model "m"`),
+		benchmarkErrorResult(http.StatusInternalServerError, "provider_error", "inference failed"),
+	} {
+		require.False(t, canonicalFullCapacityRejection(&testbed.LoadResult{
+			RequestResults: []testbed.RequestResult{rejected},
+		}))
+	}
+
+	require.False(t, canonicalFullCapacityRejection(&testbed.LoadResult{}))
 	require.False(t, canonicalFullCapacityRejection(&testbed.LoadResult{
 		SuccessCount:   1,
 		RequestResults: []testbed.RequestResult{{StatusCode: http.StatusOK}},

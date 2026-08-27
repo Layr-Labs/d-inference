@@ -6,13 +6,18 @@
   `qwen3_vl_moe` architecture is admitted through the contiguous
   ContinuousBatchingV2 path. Text decode uses per-row M-RoPE positions; image
   prefill carries causal visual spans, every DeepStack level, and the model's
-  embedding activation dtype. Paged KV, video, packed prefill, prefix reuse,
-  compiled decode, and MTP remain fail-closed for this family.
+  embedding activation dtype. Homogeneous routed-expert gate/up projections are
+  fused at load time, reducing each MoE layer from three gathered projections
+  to two while retaining a strict split fallback for heterogeneous
+  quantization. Paged KV, video, packed prefill, prefix reuse, compiled decode,
+  and MTP remain fail-closed for this family.
 - **Qwen 3.5/3.6 inline MTP defaults to automatic** — New
   `mtp_mode = "auto" | "on" | "off"` keeps Gemma opt-in while valid inline
   `qwen3_5_moe` artifacts activate by default. Explicit `off` and
-  `DARKBLOOM_CBV2_MTP=0` remain independent rollback controls; legacy
-  `mtp = true|false` input is accepted and normalized on save.
+  `DARKBLOOM_CBV2_MTP=0` remain independent rollback controls. Config schema
+  v3 migrates the legacy generated `mtp = false` default to `auto` so upgraded
+  providers receive the policy, retains legacy `true` as `on`, and preserves a
+  new explicit `mtp_mode = "off"` override.
 - Provider and coordinator fallback version authorities move together to
   `0.8.14`; there is no new wire protocol.
 

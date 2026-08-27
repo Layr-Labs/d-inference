@@ -1,5 +1,35 @@
 import Foundation
 
+/// User-facing posture for a beta setting. Most features are boolean, while
+/// MTP's automatic posture is model-aware and must not be rendered as off.
+public enum BetaFeatureState: String, Sendable, Equatable, Codable {
+    case auto
+    case on
+    case off
+
+    /// Boolean compatibility projection. Automatic has no honest global
+    /// boolean value because it is on for eligible models and off for others.
+    public var enabled: Bool? {
+        switch self {
+        case .auto: return nil
+        case .on: return true
+        case .off: return false
+        }
+    }
+
+    public var displayValue: String {
+        self == .auto ? "auto (model-aware)" : rawValue
+    }
+
+    public var statusLabel: String {
+        switch self {
+        case .auto: return "AUTOMATIC (model-aware)"
+        case .on: return "ENABLED"
+        case .off: return "disabled"
+        }
+    }
+}
+
 /// A user-facing configurable *beta* feature.
 ///
 /// Beta features are intentionally **config-backed**, not environment-variable
@@ -32,6 +62,7 @@ public struct BetaFeature: Sendable, Identifiable {
     public let configAddress: (section: String, key: String)?
 
     private let read: @Sendable (ProviderConfig) -> Bool
+    private let readState: @Sendable (ProviderConfig) -> BetaFeatureState
     private let readPinnedValue: @Sendable (ProviderConfig) -> Bool?
     private let write: @Sendable (Bool, inout ProviderConfig) -> Void
 
@@ -43,6 +74,7 @@ public struct BetaFeature: Sendable, Identifiable {
         requiresRestart: Bool,
         configAddress: (section: String, key: String)? = nil,
         read: @escaping @Sendable (ProviderConfig) -> Bool,
+        stateRead: (@Sendable (ProviderConfig) -> BetaFeatureState)? = nil,
         pinnedRead: (@Sendable (ProviderConfig) -> Bool?)? = nil,
         write: @escaping @Sendable (Bool, inout ProviderConfig) -> Void
     ) {
@@ -53,13 +85,21 @@ public struct BetaFeature: Sendable, Identifiable {
         self.requiresRestart = requiresRestart
         self.configAddress = configAddress
         self.read = read
+        self.readState = stateRead ?? { read($0) ? .on : .off }
         self.readPinnedValue = pinnedRead ?? { Optional(read($0)) }
         self.write = write
     }
 
-    /// Whether the feature is currently enabled in `config`.
+    /// Whether the feature can currently be active in `config`. For automatic
+    /// settings this is true when eligible models may use the feature; use
+    /// ``state(in:)`` when the distinction between on and auto matters.
     public func isEnabled(in config: ProviderConfig) -> Bool {
         read(config)
+    }
+
+    /// Tri-state posture shown by CLI status surfaces.
+    public func state(in config: ProviderConfig) -> BetaFeatureState {
+        readState(config)
     }
 
     /// Whether config explicitly pins the requested boolean override.
@@ -137,7 +177,14 @@ public enum BetaFeatures {
             """,
             requiresRestart: true,
             configAddress: (section: "backend", key: "mtp_mode"),
-            read: { $0.backend.mtpMode == .on },
+            read: { $0.backend.mtpMode != .off },
+            stateRead: { config in
+                switch config.backend.mtpMode {
+                case .auto: return .auto
+                case .on: return .on
+                case .off: return .off
+                }
+            },
             pinnedRead: { config in
                 switch config.backend.mtpMode {
                 case .auto: return nil
@@ -159,7 +206,7 @@ public enum BetaFeatures {
         return all.first { $0.id.lowercased() == needle }
     }
 
-    /// The ids of all features currently enabled in `config`.
+    /// The ids of features that are on or automatic for eligible models.
     public static func enabledIDs(in config: ProviderConfig) -> [String] {
         all.filter { $0.isEnabled(in: config) }.map(\.id)
     }

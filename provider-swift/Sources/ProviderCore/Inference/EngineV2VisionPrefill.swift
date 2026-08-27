@@ -350,6 +350,19 @@ public enum EngineV2VisionPrefill {
         if let error = translatedFault(box.firstError) { throw error }
     }
 
+    /// Evaluate Qwen3-VL position ids and cross the MLX error boundary before
+    /// the caller may inspect position state or build a submission.
+    @inline(__always)
+    static func evaluateQwen3VLPositionIds<Result>(
+        mlxErrors: MLX.ErrorBox,
+        evalPositionIds: () -> Void,
+        then makeResult: () throws -> Result
+    ) throws -> Result {
+        evalPositionIds()
+        try throwIfMLXFaulted(mlxErrors)
+        return try makeResult()
+    }
+
     /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
     /// public initializer, so the translation lives here where tests can
     /// reach it.
@@ -447,18 +460,21 @@ public enum EngineV2VisionPrefill {
             imageGrids: imageGrids,
             videoGrids: nil,
             attentionMask: lmInput.text.mask)
-        eval(position.promptPositionIds)
-
-        return PreparedSubmission(
-            promptTokens: promptTokens,
-            spans: carved.map(\.span),
-            embeddings: vision.features,
-            deepstackEmbeddings: vision.deepstack,
-            attention: .causal,
-            positionState: CBv2PositionState(
-                promptPositionIds: position.promptPositionIds,
-                decodeDeltas: position.decodeState.deltas),
-            mediaKind: .image)
+        return try evaluateQwen3VLPositionIds(
+            mlxErrors: mlxErrors,
+            evalPositionIds: { eval(position.promptPositionIds) }
+        ) {
+            PreparedSubmission(
+                promptTokens: promptTokens,
+                spans: carved.map(\.span),
+                embeddings: vision.features,
+                deepstackEmbeddings: vision.deepstack,
+                attention: .causal,
+                positionState: CBv2PositionState(
+                    promptPositionIds: position.promptPositionIds,
+                    decodeDeltas: position.decodeState.deltas),
+                mediaKind: .image)
+        }
     }
 
     /// Qwen3.5 MoE: causal visual tokens, M-RoPE position state, and its

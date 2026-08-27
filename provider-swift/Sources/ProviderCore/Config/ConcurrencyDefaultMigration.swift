@@ -1,5 +1,92 @@
 import Foundation
 import TOMLKit
+/// One-time migration from the generated boolean MTP setting to the tri-state
+/// policy. Before config version 3, `ConfigManager.save` emitted `mtp = false`
+/// into every default config, so treating that literal as a new explicit
+/// rollback would strand the installed fleet on target-only decoding.
+///
+/// The new `mtp_mode` key is always authoritative. Only the legacy boolean is
+/// version-sensitive: old false becomes automatic, old true remains forced on,
+/// and a legacy false deliberately written into a version-3 config means off.
+public enum MTPModeDefaultMigration {
+    public static let targetConfigVersion = 3
+
+    public static func resolvedMode(
+        onDiskVersion: Int?,
+        explicitMode: MTPMode?,
+        legacyValue: Bool?
+    ) -> MTPMode {
+        if let explicitMode {
+            return explicitMode
+        }
+        guard let legacyValue else {
+            return .auto
+        }
+        if legacyValue {
+            return .on
+        }
+        let predatesTriState = onDiskVersion.map { $0 < targetConfigVersion } ?? true
+        return predatesTriState ? .auto : .off
+    }
+
+    private struct MigrationDocument: Decodable {
+        struct Backend: Decodable {
+            let legacyMTP: Bool?
+            let mtpMode: String?
+
+            enum CodingKeys: String, CodingKey {
+                case legacyMTP = "mtp"
+                case mtpMode = "mtp_mode"
+            }
+        }
+
+        let backend: Backend?
+    }
+
+    private static let backendHeaderPattern =
+        #"(?m)^[ \t]*\[backend\][ \t]*(?:[#;].*)?$"#
+    private static let tableHeaderPattern = #"(?m)^[ \t]*\["#
+    private static let legacyAssignmentPattern =
+        #"(?m)^([ \t]*)mtp[ \t]*=[ \t]*(true|false)((?:[ \t]*[#;].*)?)[ \t]*$"#
+
+    /// Normalize an old generated `mtp` line without reserializing the rest of
+    /// the operator's TOML (and therefore without dropping comments).
+    static func rewriteLegacyAssignment(in content: String, onDiskVersion: Int?) -> String {
+        let predatesTriState = onDiskVersion.map { $0 < targetConfigVersion } ?? true
+        guard predatesTriState,
+            let document = try? TOMLDecoder().decode(MigrationDocument.self, from: content),
+            document.backend?.mtpMode == nil,
+            let legacyValue = document.backend?.legacyMTP,
+            let headerRegex = try? NSRegularExpression(pattern: backendHeaderPattern),
+            let tableRegex = try? NSRegularExpression(pattern: tableHeaderPattern),
+            let assignmentRegex = try? NSRegularExpression(pattern: legacyAssignmentPattern)
+        else { return content }
+
+        let full = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let header = headerRegex.firstMatch(in: content, range: full) else {
+            return content
+        }
+        let bodyStart = header.range.location + header.range.length
+        let remainder = NSRange(location: bodyStart, length: full.length - bodyStart)
+        let nextHeader = tableRegex.firstMatch(in: content, range: remainder)
+        let bodyEnd = nextHeader?.range.location ?? full.length
+        let backendBody = NSRange(location: bodyStart, length: bodyEnd - bodyStart)
+        guard let assignment = assignmentRegex.firstMatch(in: content, range: backendBody),
+            let lineRange = Range(assignment.range(at: 0), in: content)
+        else { return content }
+
+        let capture: (Int) -> Substring = { index in
+            Range(assignment.range(at: index), in: content).map { content[$0] } ?? ""
+        }
+        let mode = legacyValue ? "on" : "auto"
+        var rewritten = content
+        rewritten.replaceSubrange(
+            lineRange,
+            with: capture(1) + "mtp_mode = \"\(mode)\"" + capture(3))
+        return rewritten
+    }
+}
+
 
 /// One `provider.toml` schema upgrade: a `config_version` bump plus, for
 /// exactly ONE cap value, a rewrite of `engine_v2_max_concurrent`.
@@ -205,10 +292,9 @@ public enum ConcurrencyDefaultMigration {
     /// carries a stamp whose value does not parse (prepending a second one
     /// would produce a duplicate key and break the file outright).
     ///
-    /// An unstamped file is dated but never value-migrated. It predates
-    /// v0.8.0, so any cap it holds is either the 4 that release generated —
-    /// which is v0.8.1's default anyway — or a value a human typed. Stamping
-    /// straight to the current version is what makes a later hand-edit stick.
+    /// An unstamped file is dated without applying a concurrency-default
+    /// migration. It does, however, predate tri-state MTP, so a generated
+    /// legacy boolean is normalized before the current stamp is added.
     public static func migrate(content: String) -> Outcome? {
         let current = ProviderConfig.currentConfigVersion
 
@@ -216,7 +302,9 @@ public enum ConcurrencyDefaultMigration {
         else {
             // A top-level key is legal only ahead of the first table header,
             // and position 0 always satisfies that.
-            return Outcome(text: "config_version = \(current)\n" + content, applied: [])
+            let migrated = MTPModeDefaultMigration.rewriteLegacyAssignment(
+                in: content, onDiskVersion: nil)
+            return Outcome(text: "config_version = \(current)\n" + migrated, applied: [])
         }
 
         guard let onDiskVersion = stampedVersion(in: content), onDiskVersion < current
@@ -235,6 +323,8 @@ public enum ConcurrencyDefaultMigration {
             text = rewritten
             applied.append(step)
         }
+        text = MTPModeDefaultMigration.rewriteLegacyAssignment(
+            in: text, onDiskVersion: onDiskVersion)
 
         guard let restamped = rewriteStamp(in: text, to: current) else { return nil }
         return Outcome(text: restamped, applied: applied)

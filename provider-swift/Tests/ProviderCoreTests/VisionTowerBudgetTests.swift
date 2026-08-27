@@ -457,6 +457,42 @@ struct EngineV2VisionMLXFaultTests {
         #expect(limit == 50)
     }
 
+    @Test("Qwen3-VL position eval faults stop before state read or submission")
+    func qwen3VLPositionEvalFaultStopsImmediately() {
+        struct LaterSubmissionError: Error {}
+        var didReadPositionState = false
+        var didConstructSubmission = false
+
+        do {
+            _ = try MLX.withError { (mlxErrors: MLX.ErrorBox) in
+                try EngineV2VisionPrefill.evaluateQwen3VLPositionIds(
+                    mlxErrors: mlxErrors,
+                    evalPositionIds: {
+                        mlxErrors.firstError = MLX.MLXError.caught(
+                            "injected Qwen3-VL position eval fault")
+                    }
+                ) {
+                    didReadPositionState = true
+                    didConstructSubmission = true
+                    throw LaterSubmissionError()
+                }
+            }
+            Issue.record("the injected position-eval fault must throw")
+        } catch is LaterSubmissionError {
+            Issue.record("later submission work hid the position-eval fault")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .towerFault = error else {
+                Issue.record("the position-eval fault must surface as a translated tower fault")
+                return
+            }
+        } catch {
+            Issue.record("unexpected position-eval error: \(error)")
+        }
+
+        #expect(!didReadPositionState)
+        #expect(!didConstructSubmission)
+    }
+
     @Test("a non-MLX recorded error is passed through unchanged")
     func nonMLXFaultPassesThrough() {
         struct Marker: Error, Equatable {}

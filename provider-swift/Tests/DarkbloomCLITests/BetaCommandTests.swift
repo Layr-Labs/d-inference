@@ -41,10 +41,30 @@ struct BetaCommandTests {
         try body()
     }
 
+
+    @Test("beta projections distinguish automatic MTP from on and off")
+    func automaticProjection() throws {
+        #expect(betaFeatureListMark(.auto) == "auto")
+        #expect(betaFeatureListMark(.on) == "on ")
+        #expect(betaFeatureListMark(.off) == "off")
+        #expect(betaFeatureStatusLabel(.auto) == "AUTOMATIC (model-aware)")
+
+        let report = BetaFeatureReport(
+            id: "mtp",
+            title: "MTP",
+            state: BetaFeatureState.auto.rawValue,
+            enabled: BetaFeatureState.auto.enabled,
+            requiresRestart: true,
+            summary: "automatic")
+        let data = try JSONEncoder().encode(report)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains(#""state":"auto""#))
+        #expect(!json.contains(#""enabled""#))
+    }
     @Test("enable with an absent section writes the key despite the matching default")
     func enableMaterializesAbsentKey() throws {
         let url = try makeTempConfig("""
-            config_version = 2
+            config_version = 3
 
             [provider]
             name = "beta-test"
@@ -86,7 +106,7 @@ struct BetaCommandTests {
     @Test("a key pinned at the target value is a no-op without a rewrite")
     func pinnedKeyIsNoOp() throws {
         let url = try makeTempConfig("""
-            config_version = 2
+            config_version = 3
 
             [provider]
             name = "beta-test"
@@ -120,7 +140,7 @@ struct BetaCommandTests {
         }
 
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(written.contains("mtp_mode = \"off\""))
+        #expect(written.contains("mtp_mode = 'off'"))
         #expect(!written.contains("\nmtp = "))
         #expect(tomlKeyPresent(written, section: "backend", key: "mtp_mode"))
     }
@@ -141,8 +161,8 @@ struct BetaCommandTests {
         }
 
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(written.contains("mtp_mode = \"off\""))
-        #expect(!written.contains("mtp_mode = \"auto\""))
+        #expect(written.contains("mtp_mode = 'off'"))
+        #expect(!written.contains("mtp_mode = 'auto'"))
         #expect(!written.contains("\nmtp = "))
     }
 

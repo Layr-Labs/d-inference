@@ -25,8 +25,7 @@ struct Status: AsyncParsableCommand {
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
-        let enabledBeta = BetaFeatures.enabledIDs(in: config)
-        print("Beta features: \(enabledBeta.isEmpty ? "none" : enabledBeta.joined(separator: ", ")) (manage with `darkbloom beta`)")
+        print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
@@ -190,4 +189,14 @@ struct Status: AsyncParsableCommand {
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h\((s % 3600) / 60)m"
     }
+}
+
+/// Render every configured beta posture rather than only the force-enabled
+/// subset. In particular, MTP automatic mode is model-aware and must not
+/// disappear from `darkbloom status` or look like an explicit rollback.
+func betaFeaturesStatus(_ config: ProviderConfig) -> String {
+    guard !BetaFeatures.all.isEmpty else { return "none" }
+    return BetaFeatures.all.map { feature in
+        "\(feature.id)=\(feature.state(in: config).displayValue)"
+    }.joined(separator: ", ")
 }

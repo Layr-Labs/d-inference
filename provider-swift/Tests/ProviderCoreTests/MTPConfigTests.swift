@@ -67,17 +67,27 @@ struct MTPConfigKeyTests {
         }
     }
 
-    @Test("legacy booleans apply only when mtp_mode is absent")
+    @Test("legacy booleans migrate by config generation and mtp_mode stays authoritative")
     func legacyPrecedence() {
         let legacyOn = ConfigManager.parse(
             """
+            config_version = 2
             [provider]
             name = "test-provider"
             [backend]
             mtp = true
             """)
-        let legacyOff = ConfigManager.parse(
+        let generatedLegacyOff = ConfigManager.parse(
             """
+            config_version = 2
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = false
+            """)
+        let currentLegacyOff = ConfigManager.parse(
+            """
+            config_version = 3
             [provider]
             name = "test-provider"
             [backend]
@@ -85,6 +95,7 @@ struct MTPConfigKeyTests {
             """)
         let modeWins = ConfigManager.parse(
             """
+            config_version = 2
             [provider]
             name = "test-provider"
             [backend]
@@ -93,7 +104,8 @@ struct MTPConfigKeyTests {
             """)
 
         #expect(legacyOn.backend.mtpMode == .on)
-        #expect(legacyOff.backend.mtpMode == .off)
+        #expect(generatedLegacyOff.backend.mtpMode == .auto)
+        #expect(currentLegacyOff.backend.mtpMode == .off)
         #expect(modeWins.backend.mtpMode == .off)
     }
 
@@ -183,6 +195,27 @@ struct MTPConfigKeyTests {
         #expect(!toml.contains("\nmtp = "))
     }
 
+    @Test("generated legacy false normalizes once and re-saves idempotently")
+    func generatedLegacyFalseNormalizesIdempotently() {
+        let decoded = ConfigManager.parse(
+            """
+            config_version = 2
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = false
+            """)
+
+        let firstSave = ConfigManager.serialize(decoded)
+        let secondSave = ConfigManager.serialize(ConfigManager.parse(firstSave))
+
+        #expect(decoded.backend.mtpMode == .auto)
+        #expect(firstSave.contains("config_version = 3"))
+        #expect(firstSave.contains("mtp_mode = 'auto'"))
+        #expect(!firstSave.contains("\nmtp = "))
+        #expect(secondSave == firstSave)
+    }
+
     @Test("nil drafter path is not emitted")
     func nilPathNotEmitted() {
         let original = ProviderConfig(
@@ -212,14 +245,16 @@ struct MTPBetaFeatureTests {
         )
     }
 
-    @Test("registry exposes mtp as an explicit override of automatic policy")
+    @Test("registry exposes automatic MTP as model-aware rather than disabled")
     func registryEntry() throws {
         let feature = try #require(BetaFeatures.feature(id: "mtp"))
         #expect(feature.id == "mtp")
         #expect(feature.requiresRestart == true)
         #expect(feature.configAddress?.section == "backend")
         #expect(feature.configAddress?.key == "mtp_mode")
-        #expect(feature.isEnabled(in: freshConfig()) == false)
+        #expect(feature.isEnabled(in: freshConfig()) == true)
+        #expect(feature.state(in: freshConfig()) == .auto)
+        #expect(feature.state(in: freshConfig()).enabled == nil)
         #expect(!feature.isPinned(true, in: freshConfig()))
         #expect(!feature.isPinned(false, in: freshConfig()))
         // Case-insensitive lookup, like every other beta id.

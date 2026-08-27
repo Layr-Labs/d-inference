@@ -414,30 +414,29 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// (`config_version`, top level, written by the startup stamp in
     /// `migrateConfigIfNeeded`).
     ///
-    /// Its whole job is to date the file, so that a cap the release wrote can
-    /// be told apart from one an operator typed — for exactly one boot per
-    /// schema generation. That evidence is spent at the migration below; once
-    /// the file carries the new stamp, its cap means what it says forever.
+    /// Its job is to date generated values so a schema migration can tell them
+    /// apart from an operator's current explicit choices. That evidence is
+    /// spent once; after the file carries the new stamp, its values mean what
+    /// they say forever.
     ///
-    /// Decoding always reports ``currentConfigVersion`` — the field
-    /// describes the schema this process speaks, and the pre-migration state
-    /// is reported through ``appliedMigrations`` instead.
+    /// Decoding always reports ``currentConfigVersion`` — the field describes
+    /// the schema this process speaks. Cap migrations that require an operator
+    /// warning are reported through ``appliedMigrations`` instead.
     public var configVersion: Int
-    /// Ids of the one-time migrations this decode applied, for the startup
-    /// WARN (see `RetiredKnobWarnings`). Derived, never encoded — the same
-    /// contract as ``BackendSettings/retiredKeysPresent``.
+    /// Ids of migrations this decode must surface in a startup warning (see
+    /// `RetiredKnobWarnings`). Derived, never encoded — the same contract as
+    /// ``BackendSettings/retiredKeysPresent``.
     public internal(set) var appliedMigrations: [String] = []
 
     /// Current `provider.toml` schema version.
     ///
     ///   * absent = pre-v0.8.0
     ///   * 1 = v0.8.0, which raised the concurrency default 4 -> 8
-    ///   * 2 = v0.8.1, which reverts it to 4 alongside the contiguous KV
-    ///     default
+    ///   * 2 = v0.8.1, which reverted it to 4 with contiguous KV
+    ///   * 3 = tri-state MTP; generated legacy false migrates to automatic
     ///
-    /// Bump this in the same commit as the ``ConcurrencyDefaultMigration``
-    /// step that consumes the previous value, never on its own.
-    public static let currentConfigVersion = 2
+    /// Bump only with a versioned migration that consumes the previous value.
+    public static let currentConfigVersion = MTPModeDefaultMigration.targetConfigVersion
 
     public init(
         provider: ProviderSettings,
@@ -464,9 +463,24 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case configVersion = "config_version"
     }
 
+    /// Parent-level probe for fields whose migration depends on the top-level
+    /// config stamp. `BackendSettings` cannot see `config_version` while it is
+    /// decoding its nested table.
+    private struct BackendMTPMigrationProbe: Decodable {
+        let legacyMTP: Bool?
+        let mtpMode: MTPMode?
+
+        enum CodingKeys: String, CodingKey {
+            case legacyMTP = "mtp"
+            case mtpMode = "mtp_mode"
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        let mtpProbe = try container.decodeIfPresent(
+            BackendMTPMigrationProbe.self, forKey: .backend)
         var backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
@@ -474,8 +488,9 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
 
-        // One-time concurrency-default migrations, selected by the stamp the
-        // file carries.
+        // Generated-value migrations selected by the stamp the file carries.
+        // MTP false from a pre-tri-state schema becomes automatic unless the
+        // authoritative `mtp_mode` key is present. Legacy true remains on.
         //
         // Deliberately narrow: a step fires only on the exact cap the release
         // generated, so an operator who picked any other value in range is
@@ -491,6 +506,10 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         // The predicate is shared with the on-disk rewrite so this in-memory
         // change and the durable text surgery cannot disagree.
         let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
+        backend.mtpMode = MTPModeDefaultMigration.resolvedMode(
+            onDiskVersion: onDiskVersion,
+            explicitMode: mtpProbe?.mtpMode,
+            legacyValue: mtpProbe?.legacyMTP)
         let migrated = ConcurrencyDefaultMigration.resolvedCap(
             onDiskVersion: onDiskVersion,
             cap: backend.engineV2MaxConcurrent,

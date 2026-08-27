@@ -431,15 +431,15 @@ import Testing
     }
 }
 
-// The guard against the exact failure this release exists to avoid: bumping
-// the default constant without adding a migration step reaches fresh installs
-// only and silently leaves the whole fleet where it was.
-@Test func newestMigrationStepLandsOnTheCurrentDefault() throws {
-    let newest = try #require(ConcurrencyDefaultMigration.steps.last)
-    #expect(newest.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
-    // And it carries the file to the schema version this binary speaks, so no
-    // second boot is needed to finish the job.
-    #expect(newest.toVersion == ProviderConfig.currentConfigVersion)
+// Guard both generated-value migrations against drifting from the defaults
+// and schema generation they are meant to establish.
+@Test func migrationStepsLandOnTheirCurrentPolicies() throws {
+    let newestConcurrency = try #require(ConcurrencyDefaultMigration.steps.last)
+    #expect(newestConcurrency.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
+    #expect(newestConcurrency.toVersion <= ProviderConfig.currentConfigVersion)
+    #expect(
+        MTPModeDefaultMigration.targetConfigVersion
+            == ProviderConfig.currentConfigVersion)
 }
 
 // The stamp has to survive the serializer, or a deliberate cap could never be

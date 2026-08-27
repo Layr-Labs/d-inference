@@ -254,6 +254,11 @@ func TestConsumerSafeLocationOmitsPreciseGeo(t *testing.T) {
 	if got == nil || got.City != "Austin" || got.CountryCode != "US" {
 		t.Fatalf("coarse location = %+v", got)
 	}
+	if consumerSafeLocation(&store.ProviderLocation{
+		Latitude: 30.2672, Longitude: -97.7431, Source: "ip-api-pro",
+	}) != nil {
+		t.Fatal("coords-only location must stay omitted")
+	}
 }
 
 func TestConfigurePendingCopiesMetadataDetails(t *testing.T) {

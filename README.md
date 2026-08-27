@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced to consumers on every response via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). `POST /v1/chat/completions` can copy those same consumer-safe fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`), including city/region GeoIP of the serving provider (`metadata.location`; no coordinates or raw IPs):
+Providers carry one of three trust levels, surfaced to consumers on every response via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). `POST /v1/chat/completions` can copy those header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes city/region GeoIP of the serving provider (`metadata.location`; not a header; no coordinates, lookup source, or raw IPs):
 
 | Level | Verification |
 |-------|--------------|

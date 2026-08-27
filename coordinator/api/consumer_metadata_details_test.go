@@ -384,8 +384,17 @@ func assertChatMetadataMatchesHeaders(t *testing.T, header http.Header, meta map
 	if _, ok := loc["latitude"]; ok {
 		t.Errorf("location must not include latitude: %#v", loc)
 	}
+	if _, ok := loc["longitude"]; ok {
+		t.Errorf("location must not include longitude: %#v", loc)
+	}
+	if _, ok := loc["accuracy_radius_km"]; ok {
+		t.Errorf("location must not include accuracy radius: %#v", loc)
+	}
 	if _, ok := loc["source"]; ok {
 		t.Errorf("location must not include lookup source: %#v", loc)
+	}
+	if _, ok := loc["updated_at"]; ok {
+		t.Errorf("location must not include lookup timestamp: %#v", loc)
 	}
 }
 

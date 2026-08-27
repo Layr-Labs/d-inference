@@ -80,9 +80,10 @@ consumer HTTP path is wrapped as
 `requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
 (`coordinator/api/server.go:1411`). Provider trust and timing are always
 returned as `X-Provider-*` / `X-Timing` headers. `POST /v1/chat/completions`
-also copies those consumer-safe fields into a JSON `metadata` object when the
-caller sets `metadata_details=true`, including city/region GeoIP of the serving
-provider (`metadata.location`; no coordinates or raw IPs)
+can copy those header fields into a JSON `metadata` object when the
+caller sets `metadata_details=true`. That object also includes city/region
+GeoIP of the serving provider (`metadata.location`; not a header; no
+coordinates, lookup source, or raw IPs)
 (`coordinator/api/response_metadata.go`).
 
 ## Privacy model

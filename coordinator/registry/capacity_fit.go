@@ -4,9 +4,9 @@ import "math"
 
 // A fit bias must preserve fleet spread. A hard best-fit rule monopolizes the
 // smallest class whenever requests complete between arrivals; bounding the
-// rendezvous weight at 2 gives a constrained machine at most twice an otherwise
+// rendezvous weight at 1.5 gives a constrained machine at most 1.5× an otherwise
 // equivalent machine's share.
-const maxStructuralFitWeight = 2.0
+const maxStructuralFitWeight = 1.5
 
 // routingStructuralFit returns the provider's structural token size class.
 // Admission has already established that the request fits now; the ceiling

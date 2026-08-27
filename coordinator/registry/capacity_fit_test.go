@@ -28,8 +28,8 @@ func TestStructuralFitWeightedRendezvousPreservesSpread(t *testing.T) {
 			counts[selected.provider.ID]++
 		}
 		share := float64(counts[preferredID]) / requests
-		if share < 0.58 || share > 0.72 {
-			t.Fatalf("%s preferred share = %.3f, want bounded ~2:1 bias; counts=%v", name, share, counts)
+		if share < 0.52 || share > 0.68 {
+			t.Fatalf("%s preferred share = %.3f, want bounded ~1.5:1 bias; counts=%v", name, share, counts)
 		}
 		for _, candidate := range candidates {
 			if counts[candidate.provider.ID] == 0 {
@@ -152,7 +152,7 @@ func TestReserveProviderExFleetScaleUsesStructuralSizeClasses(t *testing.T) {
 		reg.SetProviderIdle(selected.ID)
 	}
 	tightShare := float64(counts[32]) / shortRequests
-	if tightShare < 0.55 || tightShare > 0.78 || counts[128] == 0 {
+	if tightShare < 0.50 || tightShare > 0.72 || counts[128] == 0 {
 		t.Fatalf("short-request size-class split = %v (tight share %.3f), want bounded preference without starvation", counts, tightShare)
 	}
 

@@ -50,7 +50,7 @@ The problem was not aggregate capacity.
   request clock and provider-side atomic admission.
 - Existing near-cost, equal-load, cache-equivalent ties use bounded weighted
   rendezvous over structural token-budget class. If every budget is unknown,
-  RAM class is the fallback. A constrained provider gets at most 2× an
+  RAM class is the fallback. A constrained provider gets at most 1.5× an
   equivalent larger provider's share; mixed knowledge stays uniform.
 
 The checked-in deployment configuration remains `shadow`. The version and structural-fit

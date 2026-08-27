@@ -397,14 +397,17 @@ func TestBenchmark_SingleProviderNonStreaming(t *testing.T) {
 }
 
 func TestBenchmark_MultiModelMultiProvider(t *testing.T) {
-	runBenchmark(t, "7-provider-multi-model",
+	runBenchmark(t, "3-provider-multi-model",
 		testbed.SuiteConfig{
 			// Both models must be CBv2-servable (v0.7.5 one-engine) — a
 			// non-CBv2 checkpoint never registers, so its share of the
-			// round-robin would only measure routing failures.
+			// round-robin would only measure routing failures. Keep this at
+			// 2+1: all provider processes share one 48 GB virtual Apple runner,
+			// so the former 4+3 topology could not construct every 12–14.5 GB
+			// slot and measured host overcommit rather than network fan-out.
 			ModelSpecs: []testbed.ModelSpec{
-				{ModelID: testbed.DefaultTestModelID(), NumProviders: 4},
-				{ModelID: testbed.SecondaryTestModelID(), NumProviders: 3},
+				{ModelID: testbed.DefaultTestModelID(), NumProviders: 2},
+				{ModelID: testbed.SecondaryTestModelID(), NumProviders: 1},
 			},
 			NumUsers:      5,
 			QueueCapacity: 200,

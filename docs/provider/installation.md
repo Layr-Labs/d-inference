@@ -179,5 +179,5 @@ the profile.
 | `Error: Darkbloom requires macOS with Apple Silicon` | Wrong OS or architecture | Run on an Apple Silicon Mac |
 | `Bundle hash mismatch` | Corrupted download or tampered bundle | Re-run the installer; check `/v1/releases/latest` |
 | `Code signature could not be verified` | Binary unsigned or modified | Re-download from the coordinator |
-| `darkbloom: command not found` | Current shell was not updated (`curl \| bash` cannot change it) | `export PATH="$HOME/.darkbloom/bin:$PATH"` or open a new terminal |
+| `darkbloom: command not found` | Current shell was not updated (`curl \| bash` cannot change it; `scripts/install.sh:319-424`) | `export PATH="$HOME/.darkbloom/bin:$PATH"` or open a new terminal |
 | `Coordinator unreachable` | Firewall / DNS / coordinator maintenance | Check `curl https://api.darkbloom.dev/health` |

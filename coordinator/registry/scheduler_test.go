@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -660,5 +661,43 @@ func TestReserveProviderExRecordsCrashedSlotReason(t *testing.T) {
 	}
 	if !sawCrashed {
 		t.Fatalf("crashed slot missing from candidates: %+v", decision.Candidates)
+	}
+}
+
+func TestReserveProviderExPersistsSoftRejectsDespiteCatalogFlood(t *testing.T) {
+	reg := New(testLogger())
+	model := "catalog-flood-model"
+	owned := makeSchedulerProvider(t, reg, "owned", model, 30)
+	public := makeSchedulerProvider(t, reg, "public", model, 30)
+	setProviderAccount(owned, "acct-A")
+	setProviderAccount(public, "acct-B")
+	for i := 0; i < 20; i++ {
+		makeSchedulerProvider(t, reg, fmt.Sprintf("other-%02d", i), "unrelated-model", 30)
+	}
+
+	req := &PendingRequest{
+		RequestID:             "catalog-flood",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		PreferOwner:           true,
+		OwnerAccountID:        "acct-A",
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil || selected.ID != owned.ID {
+		t.Fatalf("selected %v, want owned", selected)
+	}
+	var sawPublic bool
+	for _, c := range decision.Candidates {
+		if c.ProviderID != "public" {
+			continue
+		}
+		sawPublic = true
+		if c.Eligible || c.RejectionReason != store.CandidateRejectPreferOwner {
+			t.Fatalf("public row = %+v", c)
+		}
+	}
+	if !sawPublic {
+		t.Fatalf("prefer_owner drop missing after catalog flood; candidates=%+v", decision.Candidates)
 	}
 }

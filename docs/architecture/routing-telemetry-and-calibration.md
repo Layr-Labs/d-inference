@@ -236,7 +236,9 @@ regret** analysis.
 the winner was slow/failed, **would the runner-up have been faster?** If the #2
 candidate consistently beats the #1 we picked, the cost model is mis-ranking and
 we know exactly which term to fix. This is the highest-leverage analysis in the
-whole plan and is impossible without per-candidate rows.
+whole plan and is impossible without per-candidate rows. The persist cap (8
+rejects) keeps scored/soft-filter/TTFT losses first; catalog/liveness misses
+fill leftover slots so a large fleet cannot starve the calibration signal.
 
 ### 4.8 Fleet time-series — `provider_capacity_samples` (Phase 3, optional)
 Sampled heartbeat snapshots (e.g. 1/min/provider), independent of requests:

@@ -2,6 +2,8 @@ package registry
 
 import (
 	"sort"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -48,9 +50,8 @@ type RouteCandidateSnapshot struct {
 }
 
 func appendRejected(dst []rejectedCandidate, rec rejectedCandidate) []rejectedCandidate {
-	if len(dst) >= maxPersistedRejected*2 {
-		return dst
-	}
+	// Persist cap is applied in snapshotRouteCandidates with priority so a
+	// fleet of catalog/liveness misses cannot starve TTFT/soft-filter rows.
 	return append(dst, rec)
 }
 
@@ -90,6 +91,13 @@ func snapshotRouteCandidates(winner *routingCandidate, scan candidateScan, reser
 		}
 		rejected = append(rejected, rejectedSnapToSnapshot(rec.snap, rec.reason))
 	}
+	sort.SliceStable(rejected, func(i, j int) bool {
+		pi, pj := rejectPersistPriority(rejected[i].RejectionReason), rejectPersistPriority(rejected[j].RejectionReason)
+		if pi != pj {
+			return pi < pj
+		}
+		return rejected[i].ProviderID < rejected[j].ProviderID
+	})
 	if len(rejected) > maxPersistedRejected {
 		rejected = rejected[:maxPersistedRejected]
 	}
@@ -137,6 +145,26 @@ func snapshotRouteCandidates(winner *routingCandidate, scan candidateScan, reser
 		out = append(out, row)
 	}
 	return out
+}
+
+// rejectPersistPriority ranks why a candidate lost for the persist cap.
+// Lower is kept first: scored/soft-filter/TTFT losses are the calibration
+// signal; catalog/liveness misses are fleet-sized noise.
+func rejectPersistPriority(reason string) int {
+	switch reason {
+	case store.CandidateRejectPreferOwner, store.CandidateRejectAvoidVersion, store.CandidateRejectMinDecodeTPS:
+		return 0
+	case store.CandidateRejectTTFT:
+		return 1
+	case store.CandidateRejectCapacity, store.CandidateRejectModelTooLarge, store.CandidateRejectVision,
+		store.CandidateRejectSlotCrashed, store.CandidateRejectSlotReloading, store.CandidateRejectThermalCritical:
+		return 2
+	case store.CandidateRejectLoadCooldown, store.CandidateRejectErrorCooldown, store.CandidateRejectCapacityCooldown,
+		store.CandidateRejectBreaker, store.CandidateRejectHealthEjection, store.CandidateRejectTrait:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func providerIDOf(c *routingCandidate) string {

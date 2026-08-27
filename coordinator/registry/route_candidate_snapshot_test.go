@@ -124,3 +124,54 @@ func TestSnapshotRouteCandidatesKeepsSoftFilterRejects(t *testing.T) {
 		t.Fatal("soft-filtered public candidate missing")
 	}
 }
+
+func TestSnapshotRouteCandidatesPrefersInformativeRejects(t *testing.T) {
+	owned := &Provider{ID: "owned"}
+	public := &Provider{ID: "public"}
+	winner := &routingCandidate{
+		provider:  owned,
+		costMs:    2000,
+		snapshot:  routingSnapshot{provider: owned},
+		breakdown: costBreakdown{Total: 2000},
+	}
+	filtered := &routingCandidate{
+		provider:  public,
+		costMs:    800,
+		snapshot:  routingSnapshot{provider: public},
+		breakdown: costBreakdown{Total: 800},
+	}
+	scan := candidateScan{pool: []*routingCandidate{winner}}
+	for i := 0; i < 12; i++ {
+		p := &Provider{ID: string(rune('a'+i)) + "-catalog"}
+		scan.rejected = append(scan.rejected, rejectedCandidate{
+			snap:   routingSnapshot{provider: p},
+			reason: store.CandidateRejectCatalog,
+		})
+	}
+	scan.rejected = append(scan.rejected, rejectedCandidate{
+		candidate: filtered,
+		snap:      filtered.snapshot,
+		reason:    store.CandidateRejectPreferOwner,
+	})
+
+	got := snapshotRouteCandidates(winner, scan, true)
+	var sawSoft bool
+	rejected := 0
+	for _, row := range got {
+		if !row.Eligible {
+			rejected++
+		}
+		if row.ProviderID == "public" {
+			sawSoft = true
+			if row.RejectionReason != store.CandidateRejectPreferOwner || row.CostMs != 800 {
+				t.Fatalf("prefer_owner row = %+v", row)
+			}
+		}
+	}
+	if !sawSoft {
+		t.Fatalf("prefer_owner drop must survive a catalog flood; snapshots=%+v", got)
+	}
+	if rejected > maxPersistedRejected {
+		t.Fatalf("rejected rows = %d, want <= %d", rejected, maxPersistedRejected)
+	}
+}

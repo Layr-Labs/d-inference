@@ -120,6 +120,36 @@ func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
 	}))
 }
 
+func TestBenchmarkControlAttemptLimit(t *testing.T) {
+	cfg := testbed.SuiteConfig{ModelSpecs: []testbed.ModelSpec{
+		{ModelID: "m/one", NumProviders: 2},
+		{ModelIDs: []string{"m/one", "m/two"}, NumProviders: 3},
+	}}
+
+	require.Equal(t, 6, benchmarkControlAttemptLimit(cfg, "m/one"))
+	require.Equal(t, 4, benchmarkControlAttemptLimit(cfg, "m/two"))
+	require.Equal(t, 1, benchmarkControlAttemptLimit(cfg, "m/missing"))
+}
+
+func benchmarkControlAttemptLimit(cfg testbed.SuiteConfig, modelID string) int {
+	providers := 0
+	for _, spec := range cfg.ModelSpecs {
+		for _, id := range spec.IDs() {
+			if id == modelID {
+				providers += spec.NumProviders
+				break
+			}
+		}
+	}
+	if providers == 0 {
+		return 1
+	}
+	// A timed-out first evaluation can still warm its Metal kernels. One attempt
+	// per provider plus one lets the coordinator rotate past every cold local
+	// process and then prove that a warmed route can actually serve.
+	return providers + 1
+}
+
 func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
 	t.Helper()
 	for _, modelID := range suite.Config.AllModelIDs() {
@@ -130,12 +160,29 @@ func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
 		control.Concurrency = 1
 		control.MaxTokens = 1
 
-		result := testbed.NewLoadGenerator(suite, control).Run()
-		require.Equal(t, 1, result.SuccessCount,
-			"prewarmed model %s must serve a low-load control before saturation is measurable",
-			modelID)
-		require.Len(t, result.RequestResults, 1)
-		require.Equal(t, http.StatusOK, result.RequestResults[0].StatusCode)
+		attemptLimit := benchmarkControlAttemptLimit(suite.Config, modelID)
+		succeeded := false
+		var lastError error
+		for attempt := 1; attempt <= attemptLimit; attempt++ {
+			result := testbed.NewLoadGenerator(suite, control).Run()
+			if result.SuccessCount == 1 &&
+				len(result.RequestResults) == 1 &&
+				result.RequestResults[0].StatusCode == http.StatusOK {
+				succeeded = true
+				break
+			}
+
+			require.Len(t, result.RequestResults, 1)
+			lastError = result.RequestResults[0].Error
+			require.Equal(t, http.StatusTooManyRequests, result.RequestResults[0].StatusCode,
+				"prewarmed model %s control attempt %d/%d failed outside the canonical capacity path: %v",
+				modelID, attempt, attemptLimit, lastError)
+			t.Logf("prewarmed model %s control attempt %d/%d hit the first-evaluation capacity deadline; retrying",
+				modelID, attempt, attemptLimit)
+		}
+		require.True(t, succeeded,
+			"prewarmed model %s must serve a low-load control within %d attempts before saturation is measurable; last error: %v",
+			modelID, attemptLimit, lastError)
 	}
 }
 

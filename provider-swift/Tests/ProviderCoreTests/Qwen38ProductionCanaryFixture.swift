@@ -228,9 +228,9 @@ struct Qwen38ProductionCanaryFixture: @unchecked Sendable {
         let video = try dataURI(videoURL, mime: "video/quicktime")
         let response = try await service.createChatCompletion(
             request: mediaRequest(
-                prompt: "Name the image logo and the video's test pattern. Mention MLX and color bars.",
+                prompt: "In at most 8 words, identify both: logo=MLX; video pattern=color bars.",
                 parts: [.imageURL(image), .videoURL(video)],
-                maxTokens: 128))
+                maxTokens: 64))
         let text = responseText(response)
         #expect(text.localizedCaseInsensitiveContains("MLX"))
         #expect(

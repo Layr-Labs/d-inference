@@ -13,7 +13,7 @@ darkbloom logs --last 1h
 ### `darkbloom: command not found`
 
 The installer adds `~/.darkbloom/bin` to `~/.zshrc`, `~/.bashrc`, and the bash
-login file (`~/.bash_profile` or `~/.profile`). `curl | bash` cannot change the
+login file (`~/.bash_profile`, else `~/.bash_login`, else `~/.profile`). `curl | bash` cannot change the
 parent shell, so either open a new terminal or run:
 
 ```bash

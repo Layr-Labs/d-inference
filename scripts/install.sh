@@ -410,18 +410,20 @@ setup_shell_path() {
     # bash interactive (bash launched from zsh, Linux, some IDEs).
     ensure_path_in_file "$HOME/.bashrc"
 
-    # bash login: macOS Terminal starts a login shell. That reads
-    # ~/.bash_profile, or ~/.profile when bash_profile is absent — never
-    # ~/.zshrc. Creating bash_profile when profile already exists would
-    # shadow profile, so prefer the file bash will actually load.
+    # Bash login reads the first of ~/.bash_profile, ~/.bash_login,
+    # ~/.profile — never ~/.zshrc. Create bash_profile only when none of
+    # those exist, so we do not shadow an existing login file.
     if [ -f "$HOME/.bash_profile" ]; then
         ensure_path_in_file "$HOME/.bash_profile"
-        [ -f "$HOME/.profile" ] && ensure_path_in_file "$HOME/.profile"
+    elif [ -f "$HOME/.bash_login" ]; then
+        ensure_path_in_file "$HOME/.bash_login"
     elif [ -f "$HOME/.profile" ]; then
         ensure_path_in_file "$HOME/.profile"
     else
         ensure_path_in_file "$HOME/.bash_profile"
     fi
+    [ -f "$HOME/.bash_login" ] && ensure_path_in_file "$HOME/.bash_login"
+    [ -f "$HOME/.profile" ] && ensure_path_in_file "$HOME/.profile"
 
     if [ -f "$HOME/.config/fish/config.fish" ] \
         || [ "$(basename "${SHELL:-}")" = "fish" ]; then

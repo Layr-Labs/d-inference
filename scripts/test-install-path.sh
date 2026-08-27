@@ -92,6 +92,19 @@ assert_file_has_path "$PROFILE_HOME/.profile"
 assert_file_missing "$PROFILE_HOME/.bash_profile"
 assert_command_on_path "$PROFILE_HOME" "$PROFILE_HOME/.profile"
 
+# --- Prefer existing ~/.bash_login over creating ~/.bash_profile -----------
+BASH_LOGIN="$ROOT/bash-login"
+mkdir -p "$BASH_LOGIN"
+printf '# existing bash_login\n' > "$BASH_LOGIN/.bash_login"
+seed_binary "$BASH_LOGIN"
+run_setup "$BASH_LOGIN"
+assert_file_has_path "$BASH_LOGIN/.bash_login"
+assert_file_missing "$BASH_LOGIN/.bash_profile"
+assert_command_on_path "$BASH_LOGIN" "$BASH_LOGIN/.bash_login"
+LOGIN2=$(HOME="$BASH_LOGIN" bash --login -c 'command -v darkbloom' 2>/dev/null || true)
+[ "$LOGIN2" = "$BASH_LOGIN/.darkbloom/bin/darkbloom" ] \
+    || fail "bash --login with only ~/.bash_login did not find darkbloom; got ${LOGIN2:-empty}"
+
 # --- Existing bash_profile + profile both get patched ----------------------
 BOTH="$ROOT/both"
 mkdir -p "$BOTH"

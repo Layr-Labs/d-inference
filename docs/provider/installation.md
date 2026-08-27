@@ -26,10 +26,10 @@ templating. `scripts/install.sh` is the sole editable source;
    the binaries from `Darkbloom.app/Contents/MacOS/` when the `.app` bundle is
    used.
 7. **Updates `PATH`** — appends `export PATH="$HOME/.darkbloom/bin:$PATH"` to
-   `~/.zshrc`, `~/.bashrc`, and the bash login file (`~/.bash_profile`, or
-   `~/.profile` when that is what bash will read). `curl | bash` cannot change
-   the current terminal; the installer also tries `/usr/local/bin` and
-   Homebrew's bin for a symlink already on `PATH`.
+   `~/.zshrc`, `~/.bashrc`, and the bash login file bash will actually read
+   (`~/.bash_profile`, else `~/.bash_login`, else `~/.profile`). `curl | bash`
+   cannot change the current terminal; the installer also tries `/usr/local/bin`
+   and Homebrew's bin for a symlink already on `PATH`.
 8. **Migrates legacy state** — copies tokens/keys from `~/.dginf` or
    `~/.eigeninference` if present.
 9. **Provisions Secure Enclave identity** — runs `darkbloom-enclave info`.

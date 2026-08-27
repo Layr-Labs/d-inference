@@ -19,9 +19,18 @@ import (
 var (
 	benchmarkMarkdownMu sync.Mutex
 	benchmarkMarkdown   strings.Builder
+	benchmarkControlMu  sync.Mutex
+	benchmarkControls   = make(map[benchmarkControlKey]struct{})
 )
 
-const benchmarkFirstContentDeadlineBase = 30 * time.Second
+const benchmarkControlFirstContentDeadlineBase = 30 * time.Second
+
+type benchmarkControlKey struct {
+	modelID         string
+	kvBackend       string
+	expectKVBackend string
+	maxConcurrent   int
+}
 
 func init() {
 	benchmarkMarkdown.WriteString("# Benchmark Results\n\n")
@@ -38,15 +47,6 @@ func envOr(key, fallback string) string {
 }
 
 func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
-	// The benchmark runner hosts several 12–14.5 GB provider processes on one
-	// 48 GB virtual Apple machine. Keep its first-content budget separate from
-	// the production 9-second SLO exercised by the blocking integration lane;
-	// otherwise local GPU contention turns a throughput run into synthetic
-	// first-token 429s before any sample can complete.
-	if cfg.FirstContentDeadlineBase <= 0 {
-		cfg.FirstContentDeadlineBase = benchmarkFirstContentDeadlineBase
-	}
-
 	if cfg.ExpectKVBackend != "" || os.Getenv(testbed.EnvExpectKVBackend) != "" {
 		// Preserve the verifier's environment fallback verbatim, including its
 		// fail-closed validation of malformed expectations.
@@ -67,6 +67,35 @@ func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
 		cfg.ExpectKVBackend = requested
 	}
 	return cfg
+}
+
+func benchmarkControlSuiteConfig(measured testbed.SuiteConfig, modelID string) testbed.SuiteConfig {
+	return benchmarkSuiteConfig(testbed.SuiteConfig{
+		ModelSpecs:                 []testbed.ModelSpec{{ModelID: modelID, NumProviders: 1}},
+		NumUsers:                   1,
+		QueueCapacity:              10,
+		QueueTimeout:               measured.QueueTimeout,
+		FirstContentDeadlineBase:   benchmarkControlFirstContentDeadlineBase,
+		SeedBalance:                measured.SeedBalance,
+		UseMemoryStore:             measured.UseMemoryStore,
+		EnableEphemeralPrefixCache: measured.EnableEphemeralPrefixCache,
+		KVBackend:                  measured.KVBackend,
+		MaxConcurrent:              measured.MaxConcurrent,
+		ExpectKVBackend:            measured.ExpectKVBackend,
+	})
+}
+
+func benchmarkControlCacheKey(cfg testbed.SuiteConfig, modelID string) benchmarkControlKey {
+	expected := cfg.ExpectKVBackend
+	if expected == "" {
+		expected = os.Getenv(testbed.EnvExpectKVBackend)
+	}
+	return benchmarkControlKey{
+		modelID:         modelID,
+		kvBackend:       testbed.ResolveKVBackend(cfg.KVBackend),
+		expectKVBackend: expected,
+		maxConcurrent:   cfg.MaxConcurrent,
+	}
 }
 
 func TestBenchmarkSuiteConfigPrewarmsResolvedBackend(t *testing.T) {
@@ -101,13 +130,25 @@ func TestBenchmarkSuiteConfigPreservesExpectedBackendEnvironment(t *testing.T) {
 	}
 }
 
-func TestBenchmarkSuiteConfigUsesBenchmarkDeadline(t *testing.T) {
-	require.Equal(t, benchmarkFirstContentDeadlineBase,
-		benchmarkSuiteConfig(testbed.SuiteConfig{}).FirstContentDeadlineBase)
+func TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture(t *testing.T) {
+	measured := testbed.SuiteConfig{
+		ModelSpecs:      []testbed.ModelSpec{{ModelID: "m/one", NumProviders: 7}},
+		QueueTimeout:    42 * time.Second,
+		SeedBalance:     123,
+		KVBackend:       testbed.KVBackendPaged,
+		MaxConcurrent:   8,
+		ExpectKVBackend: testbed.KVBackendPaged,
+	}
+	control := benchmarkControlSuiteConfig(measured, "m/two")
 
-	const explicit = 45 * time.Second
-	require.Equal(t, explicit,
-		benchmarkSuiteConfig(testbed.SuiteConfig{FirstContentDeadlineBase: explicit}).FirstContentDeadlineBase)
+	require.Equal(t, 1, control.TotalProviders())
+	require.Equal(t, []string{"m/two"}, control.AllModelIDs())
+	require.Equal(t, benchmarkControlFirstContentDeadlineBase, control.FirstContentDeadlineBase)
+	require.Equal(t, measured.QueueTimeout, control.QueueTimeout)
+	require.Equal(t, measured.SeedBalance, control.SeedBalance)
+	require.Equal(t, measured.KVBackend, control.KVBackend)
+	require.Equal(t, measured.MaxConcurrent, control.MaxConcurrent)
+	require.Equal(t, measured.ExpectKVBackend, control.ExpectKVBackend)
 }
 
 func canonicalFullCapacityRejection(result *testbed.LoadResult) bool {
@@ -140,45 +181,67 @@ func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
 	}))
 }
 
-func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
+func requireBenchmarkControls(
+	t *testing.T,
+	ctx context.Context,
+	measuredCfg testbed.SuiteConfig,
+) {
 	t.Helper()
-	for _, modelID := range suite.Config.AllModelIDs() {
-		control := testbed.DefaultRequestConfig()
-		control.ModelID = modelID
-		control.Streaming = false
-		control.TotalRequests = 1
-		control.Concurrency = 1
-		control.MaxTokens = 1
+	for _, modelID := range measuredCfg.AllModelIDs() {
+		controlCfg := benchmarkControlSuiteConfig(measuredCfg, modelID)
+		key := benchmarkControlCacheKey(controlCfg, modelID)
 
-		result := testbed.NewLoadGenerator(suite, control).Run()
-		require.Equal(t, 1, result.SuccessCount,
-			"prewarmed model %s must serve a low-load control before saturation is measurable",
-			modelID)
-		require.Len(t, result.RequestResults, 1)
-		require.Equal(t, http.StatusOK, result.RequestResults[0].StatusCode)
+		func() {
+			benchmarkControlMu.Lock()
+			defer benchmarkControlMu.Unlock()
+			if _, ok := benchmarkControls[key]; ok {
+				return
+			}
+
+			t.Logf("proving model %s with an isolated one-provider control before measured topology startup",
+				modelID)
+			controlSuite := testbed.NewSuite(controlCfg)
+			require.NoError(t, controlSuite.Start(ctx), "benchmark control suite startup failed")
+			defer controlSuite.Stop()
+
+			control := testbed.DefaultRequestConfig()
+			control.ModelID = modelID
+			control.Streaming = false
+			control.TotalRequests = 1
+			control.Concurrency = 1
+			control.MaxTokens = 1
+
+			result := testbed.NewLoadGenerator(controlSuite, control).Run()
+			require.Equal(t, 1, result.SuccessCount,
+				"isolated prewarmed model %s must serve before saturation is measurable",
+				modelID)
+			require.Len(t, result.RequestResults, 1)
+			require.Equal(t, http.StatusOK, result.RequestResults[0].StatusCode)
+			benchmarkControls[key] = struct{}{}
+		}()
 	}
 }
 
 // runBenchmark records full capacity saturation as a valid benchmark outcome
-// only after every model serves a low-load control request. The blocking
-// integration suite owns broader functional guarantees; this approval-gated
-// workflow measures throughput and overload posture. A zero-success measured
-// cell is valid only when every request received the canonical 429 — transport
-// errors and 5xx responses still fail the run.
+// only after every model serves through an isolated one-provider control. The
+// measured topology still uses the production first-content deadline; the
+// blocking integration suite owns broader functional and SLO guarantees. A
+// zero-success measured cell is valid only when every request received the
+// canonical 429 — transport errors and 5xx responses still fail the run.
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {
 	t.Helper()
 
 	ctx := context.Background()
 	suiteCfg = benchmarkSuiteConfig(suiteCfg)
+	requireBenchmarkControls(t, ctx, suiteCfg)
+
 	s := testbed.NewSuite(suiteCfg)
 	require.NoError(t, s.Start(ctx), "suite startup failed")
 	t.Cleanup(s.Stop)
 
 	t.Logf("[%s] %d providers (%v), %d users, models=%v, requests=%d, concurrency=%d, streaming=%v, first_content_deadline_base=%s",
 		name, suiteCfg.TotalProviders(), suiteCfg.ModelSpecs, suiteCfg.NumUsers, suiteCfg.AllModelIDs(),
-		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming, suiteCfg.FirstContentDeadlineBase)
-
-	requireBenchmarkControls(t, s)
+		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming, s.Config.FirstContentDeadlineBase)
 
 	lg := testbed.NewLoadGenerator(s, reqCfg)
 	result := lg.Run()

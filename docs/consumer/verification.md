@@ -33,9 +33,11 @@ response receipt without exposing its device serial. Consumers can verify that
 receipt against the published key.
 
 The same consumer-safe provider fields (`provider_id`, `provider_attested`,
-`provider_trust_level`, `attestation_se_public_key`, timing, …) are always on
-the `X-Provider-*` / `X-Timing` headers. To read them from an OpenAI SDK that
-does not surface custom headers, send `metadata_details: true` (or
+`provider_trust_level`, `attestation_se_public_key`, timing) are always on
+the `X-Provider-*` / `X-Timing` headers. City/region GeoIP of the serving
+provider is included only in the opt-in JSON `metadata.location` object
+(no coordinates, no raw IP). To read these from an OpenAI SDK that does not
+surface custom headers, send `metadata_details: true` (or
 `X-Darkbloom-Metadata-Details: true`) on `POST /v1/chat/completions` and read
 the JSON `metadata` object. See [`api-contracts.md`](../reference/api-contracts.md).
 

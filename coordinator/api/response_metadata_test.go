@@ -12,6 +12,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestTruthyRequestFlag(t *testing.T) {
@@ -158,11 +159,26 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 		},
 		TrustLevel:  registry.TrustHardware,
 		MDAVerified: true,
+		Location: &store.ProviderLocation{
+			City:        "Austin",
+			Region:      "Texas",
+			RegionCode:  "TX",
+			Country:     "United States",
+			CountryCode: "US",
+			Latitude:    30.2672,
+			Longitude:   -97.7431,
+			Timezone:    "America/Chicago",
+			Source:      "ip-api-pro",
+		},
 	}
 	collected := collectCommittedProviderInfo(provider)
 	if collected.SEPublicKey != "se-pub" {
 		t.Fatalf("se public key = %q", collected.SEPublicKey)
 	}
+	if collected.Location == nil || collected.Location.City != "Austin" || collected.Location.CountryCode != "US" {
+		t.Fatalf("location = %+v", collected.Location)
+	}
+	info.Location = collected.Location
 	meta := buildChatCompletionMetadata(info, "job-1", &types.RequestTimingDetails{ParseUs: 10})
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -170,6 +186,9 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "SECRET-SERIAL") || strings.Contains(string(raw), "serial") {
 		t.Fatalf("metadata leaked a device serial: %s", raw)
+	}
+	if strings.Contains(string(raw), "30.2672") || strings.Contains(string(raw), "-97.7431") || strings.Contains(string(raw), "ip-api") || strings.Contains(string(raw), "latitude") {
+		t.Fatalf("metadata leaked precise geo or lookup source: %s", raw)
 	}
 	var decoded types.ChatCompletionMetadata
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -180,6 +199,9 @@ func TestChatCompletionMetadataOmitsDeviceSerial(t *testing.T) {
 	}
 	if decoded.JobID != "job-1" || decoded.Timing == nil || decoded.Timing.ParseUs != 10 {
 		t.Fatalf("job/timing missing: %+v", decoded)
+	}
+	if decoded.Location == nil || decoded.Location.City != "Austin" || decoded.Location.Region != "Texas" || decoded.Location.Timezone != "America/Chicago" {
+		t.Fatalf("location missing from body: %+v", decoded.Location)
 	}
 }
 
@@ -215,6 +237,22 @@ func TestSnapshotAndAttachChatCompletionMetadata(t *testing.T) {
 	snapshotChatCompletionMetadata(skipped, committedProviderInfo{ProviderID: "prov-9"})
 	if hasChatCompletionMetadata(skipped) {
 		t.Fatal("opt-out requests must not snapshot metadata")
+	}
+}
+
+func TestConsumerSafeLocationOmitsPreciseGeo(t *testing.T) {
+	t.Parallel()
+	if consumerSafeLocation(nil) != nil {
+		t.Fatal("nil location must stay omitted")
+	}
+	if consumerSafeLocation(&store.ProviderLocation{}) != nil {
+		t.Fatal("empty location must stay omitted")
+	}
+	got := consumerSafeLocation(&store.ProviderLocation{
+		City: "Austin", CountryCode: "US", Latitude: 30.2672, Source: "ip-api-pro",
+	})
+	if got == nil || got.City != "Austin" || got.CountryCode != "US" {
+		t.Fatalf("coarse location = %+v", got)
 	}
 }
 

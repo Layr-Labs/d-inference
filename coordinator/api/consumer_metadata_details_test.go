@@ -283,6 +283,21 @@ func startChatMetadataTestServer(t *testing.T, model string) (*httptest.Server, 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		if p := reg.GetProvider(id); p != nil {
+			p.Mu().Lock()
+			p.Location = &store.ProviderLocation{
+				City:        "Austin",
+				Region:      "Texas",
+				RegionCode:  "TX",
+				Country:     "United States",
+				CountryCode: "US",
+				Latitude:    30.2672,
+				Longitude:   -97.7431,
+				Timezone:    "America/Chicago",
+				Source:      "ip-api-pro",
+			}
+			p.Mu().Unlock()
+		}
 	}
 	return ts, conn, pubKey
 }
@@ -355,6 +370,22 @@ func assertChatMetadataMatchesHeaders(t *testing.T, header http.Header, meta map
 	}
 	if got, _ := meta["job_id"].(string); got == "" {
 		t.Error("job_id missing")
+	}
+	loc, _ := meta["location"].(map[string]any)
+	if loc == nil {
+		t.Fatal("metadata.location missing")
+	}
+	if got, _ := loc["city"].(string); got != "Austin" {
+		t.Errorf("location.city = %v, want Austin", loc["city"])
+	}
+	if got, _ := loc["country_code"].(string); got != "US" {
+		t.Errorf("location.country_code = %v, want US", loc["country_code"])
+	}
+	if _, ok := loc["latitude"]; ok {
+		t.Errorf("location must not include latitude: %#v", loc)
+	}
+	if _, ok := loc["source"]; ok {
+		t.Errorf("location must not include lookup source: %#v", loc)
 	}
 }
 

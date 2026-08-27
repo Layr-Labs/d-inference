@@ -89,23 +89,36 @@ type RequestTimingDetails struct {
 }
 
 // ChatCompletionMetadata is the opt-in consumer-safe provider, attestation,
-// and timing block returned on POST /v1/chat/completions when the caller sets
-// metadata_details=true (or X-Darkbloom-Metadata-Details: true). These are the
-// same fields already exposed on X-Provider-* / X-Timing / X-Inference-Job-ID
-// headers; the body copy exists because OpenAI-compatible SDKs often hide
-// custom headers. Device serials are never included.
+// timing, and coarse location block returned on POST /v1/chat/completions when
+// the caller sets metadata_details=true (or X-Darkbloom-Metadata-Details: true).
+// Provider/attestation/timing match the X-Provider-* / X-Timing headers.
+// Location is city/region GeoIP only — coordinates, lookup source, and raw
+// IPs are omitted. Device serials are never included.
 type ChatCompletionMetadata struct {
-	ProviderID             string                `json:"provider_id,omitempty"`
-	ProviderAttested       bool                  `json:"provider_attested"`
-	ProviderTrustLevel     string                `json:"provider_trust_level,omitempty"`
-	ProviderEncrypted      bool                  `json:"provider_encrypted"`
-	ProviderChip           string                `json:"provider_chip,omitempty"`
-	ProviderMachineModel   string                `json:"provider_machine_model,omitempty"`
-	ProviderSecureEnclave  *bool                 `json:"provider_secure_enclave,omitempty"`
-	ProviderMDAVerified    bool                  `json:"provider_mda_verified"`
-	AttestationSEPublicKey string                `json:"attestation_se_public_key,omitempty"`
-	JobID                  string                `json:"job_id,omitempty"`
-	Timing                 *RequestTimingDetails `json:"timing,omitempty"`
+	ProviderID             string                  `json:"provider_id,omitempty"`
+	ProviderAttested       bool                    `json:"provider_attested"`
+	ProviderTrustLevel     string                  `json:"provider_trust_level,omitempty"`
+	ProviderEncrypted      bool                    `json:"provider_encrypted"`
+	ProviderChip           string                  `json:"provider_chip,omitempty"`
+	ProviderMachineModel   string                  `json:"provider_machine_model,omitempty"`
+	ProviderSecureEnclave  *bool                   `json:"provider_secure_enclave,omitempty"`
+	ProviderMDAVerified    bool                    `json:"provider_mda_verified"`
+	AttestationSEPublicKey string                  `json:"attestation_se_public_key,omitempty"`
+	JobID                  string                  `json:"job_id,omitempty"`
+	Timing                 *RequestTimingDetails   `json:"timing,omitempty"`
+	Location               *ProviderApproxLocation `json:"location,omitempty"`
+}
+
+// ProviderApproxLocation is the city/region-level GeoIP area of the serving
+// provider. Coordinates, lookup source, and raw IPs are omitted: this is the
+// same coarse grain already used in operational telemetry, not a precise pin.
+type ProviderApproxLocation struct {
+	City        string `json:"city,omitempty"`
+	Region      string `json:"region,omitempty"`
+	RegionCode  string `json:"region_code,omitempty"`
+	Country     string `json:"country,omitempty"`
+	CountryCode string `json:"country_code,omitempty"`
+	Timezone    string `json:"timezone,omitempty"`
 }
 
 // ── Responses API ────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -26,6 +27,7 @@ type committedProviderInfo struct {
 	SecureEnclave *bool
 	MDAVerified   bool
 	SEPublicKey   string
+	Location      *types.ProviderApproxLocation
 }
 
 func truthyRequestFlag(v any) bool {
@@ -106,6 +108,11 @@ func collectCommittedProviderInfo(provider *registry.Provider) committedProvider
 	trustLevel := provider.TrustLevel
 	attestResult := provider.AttestationResult
 	mdaVerified := provider.MDAVerified
+	var locCopy *store.ProviderLocation
+	if provider.Location != nil {
+		cp := *provider.Location
+		locCopy = &cp
+	}
 	provider.Mu().Unlock()
 
 	info := committedProviderInfo{
@@ -116,6 +123,7 @@ func collectCommittedProviderInfo(provider *registry.Provider) committedProvider
 		Chip:         provider.Hardware.ChipName,
 		MachineModel: provider.Hardware.MachineModel,
 		MDAVerified:  mdaVerified,
+		Location:     consumerSafeLocation(locCopy),
 	}
 	if attestResult != nil {
 		se := attestResult.SecureEnclaveAvailable
@@ -210,6 +218,24 @@ func buildChatCompletionMetadata(info committedProviderInfo, jobID string, timin
 		AttestationSEPublicKey: info.SEPublicKey,
 		JobID:                  jobID,
 		Timing:                 timing,
+		Location:               info.Location,
+	}
+}
+
+func consumerSafeLocation(loc *store.ProviderLocation) *types.ProviderApproxLocation {
+	if loc == nil {
+		return nil
+	}
+	if loc.City == "" && loc.Region == "" && loc.RegionCode == "" && loc.Country == "" && loc.CountryCode == "" && loc.Timezone == "" {
+		return nil
+	}
+	return &types.ProviderApproxLocation{
+		City:        loc.City,
+		Region:      loc.Region,
+		RegionCode:  loc.RegionCode,
+		Country:     loc.Country,
+		CountryCode: loc.CountryCode,
+		Timezone:    loc.Timezone,
 	}
 }
 

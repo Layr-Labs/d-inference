@@ -21,6 +21,8 @@ var (
 	benchmarkMarkdown   strings.Builder
 )
 
+const benchmarkFirstContentDeadlineBase = 30 * time.Second
+
 func init() {
 	benchmarkMarkdown.WriteString("# Benchmark Results\n\n")
 	benchmarkMarkdown.WriteString(fmt.Sprintf("Runner: `%s` | Date: %s\n\n",
@@ -36,6 +38,15 @@ func envOr(key, fallback string) string {
 }
 
 func benchmarkSuiteConfig(cfg testbed.SuiteConfig) testbed.SuiteConfig {
+	// The benchmark runner hosts several 12–14.5 GB provider processes on one
+	// 48 GB virtual Apple machine. Keep its first-content budget separate from
+	// the production 9-second SLO exercised by the blocking integration lane;
+	// otherwise local GPU contention turns a throughput run into synthetic
+	// first-token 429s before any sample can complete.
+	if cfg.FirstContentDeadlineBase <= 0 {
+		cfg.FirstContentDeadlineBase = benchmarkFirstContentDeadlineBase
+	}
+
 	if cfg.ExpectKVBackend != "" || os.Getenv(testbed.EnvExpectKVBackend) != "" {
 		// Preserve the verifier's environment fallback verbatim, including its
 		// fail-closed validation of malformed expectations.
@@ -90,6 +101,15 @@ func TestBenchmarkSuiteConfigPreservesExpectedBackendEnvironment(t *testing.T) {
 	}
 }
 
+func TestBenchmarkSuiteConfigUsesBenchmarkDeadline(t *testing.T) {
+	require.Equal(t, benchmarkFirstContentDeadlineBase,
+		benchmarkSuiteConfig(testbed.SuiteConfig{}).FirstContentDeadlineBase)
+
+	const explicit = 45 * time.Second
+	require.Equal(t, explicit,
+		benchmarkSuiteConfig(testbed.SuiteConfig{FirstContentDeadlineBase: explicit}).FirstContentDeadlineBase)
+}
+
 func canonicalFullCapacityRejection(result *testbed.LoadResult) bool {
 	if result == nil || result.SuccessCount != 0 || len(result.RequestResults) == 0 {
 		return false
@@ -120,36 +140,6 @@ func TestBenchmarkCapacitySaturationPolicy(t *testing.T) {
 	}))
 }
 
-func TestBenchmarkControlAttemptLimit(t *testing.T) {
-	cfg := testbed.SuiteConfig{ModelSpecs: []testbed.ModelSpec{
-		{ModelID: "m/one", NumProviders: 2},
-		{ModelIDs: []string{"m/one", "m/two"}, NumProviders: 3},
-	}}
-
-	require.Equal(t, 6, benchmarkControlAttemptLimit(cfg, "m/one"))
-	require.Equal(t, 4, benchmarkControlAttemptLimit(cfg, "m/two"))
-	require.Equal(t, 1, benchmarkControlAttemptLimit(cfg, "m/missing"))
-}
-
-func benchmarkControlAttemptLimit(cfg testbed.SuiteConfig, modelID string) int {
-	providers := 0
-	for _, spec := range cfg.ModelSpecs {
-		for _, id := range spec.IDs() {
-			if id == modelID {
-				providers += spec.NumProviders
-				break
-			}
-		}
-	}
-	if providers == 0 {
-		return 1
-	}
-	// A timed-out first evaluation can still warm its Metal kernels. One attempt
-	// per provider plus one lets the coordinator rotate past every cold local
-	// process and then prove that a warmed route can actually serve.
-	return providers + 1
-}
-
 func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
 	t.Helper()
 	for _, modelID := range suite.Config.AllModelIDs() {
@@ -160,29 +150,12 @@ func requireBenchmarkControls(t *testing.T, suite *testbed.Suite) {
 		control.Concurrency = 1
 		control.MaxTokens = 1
 
-		attemptLimit := benchmarkControlAttemptLimit(suite.Config, modelID)
-		succeeded := false
-		var lastError error
-		for attempt := 1; attempt <= attemptLimit; attempt++ {
-			result := testbed.NewLoadGenerator(suite, control).Run()
-			if result.SuccessCount == 1 &&
-				len(result.RequestResults) == 1 &&
-				result.RequestResults[0].StatusCode == http.StatusOK {
-				succeeded = true
-				break
-			}
-
-			require.Len(t, result.RequestResults, 1)
-			lastError = result.RequestResults[0].Error
-			require.Equal(t, http.StatusTooManyRequests, result.RequestResults[0].StatusCode,
-				"prewarmed model %s control attempt %d/%d failed outside the canonical capacity path: %v",
-				modelID, attempt, attemptLimit, lastError)
-			t.Logf("prewarmed model %s control attempt %d/%d hit the first-evaluation capacity deadline; retrying",
-				modelID, attempt, attemptLimit)
-		}
-		require.True(t, succeeded,
-			"prewarmed model %s must serve a low-load control within %d attempts before saturation is measurable; last error: %v",
-			modelID, attemptLimit, lastError)
+		result := testbed.NewLoadGenerator(suite, control).Run()
+		require.Equal(t, 1, result.SuccessCount,
+			"prewarmed model %s must serve a low-load control before saturation is measurable",
+			modelID)
+		require.Len(t, result.RequestResults, 1)
+		require.Equal(t, http.StatusOK, result.RequestResults[0].StatusCode)
 	}
 }
 
@@ -201,9 +174,9 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 	require.NoError(t, s.Start(ctx), "suite startup failed")
 	t.Cleanup(s.Stop)
 
-	t.Logf("[%s] %d providers (%v), %d users, models=%v, requests=%d, concurrency=%d, streaming=%v",
+	t.Logf("[%s] %d providers (%v), %d users, models=%v, requests=%d, concurrency=%d, streaming=%v, first_content_deadline_base=%s",
 		name, suiteCfg.TotalProviders(), suiteCfg.ModelSpecs, suiteCfg.NumUsers, suiteCfg.AllModelIDs(),
-		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming)
+		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming, suiteCfg.FirstContentDeadlineBase)
 
 	requireBenchmarkControls(t, s)
 

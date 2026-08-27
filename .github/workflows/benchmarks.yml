@@ -3,7 +3,7 @@
 # WHY A SEPARATE WORKFLOW: this job runs under the `benchmarks` environment,
 # whose required-reviewer rule (repo Settings -> Environments -> benchmarks)
 # makes every run wait for a manual approval — a deliberate cost control for
-# a 30-minute macOS runner job that posts PR comments. While it shared a
+# a 45-minute macOS runner job that posts PR comments. While it shared a
 # workflow with the E2E integration job, that pending approval held the
 # WHOLE "Integration Tests" workflow in `waiting` on every PR (26/26 runs
 # this release), hiding the integration job's actual conclusion behind a
@@ -27,7 +27,7 @@ jobs:
   benchmark:
     name: E2E Benchmarks
     runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: benchmarks
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
@@ -84,7 +84,7 @@ jobs:
         run: |
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
+          go test ./e2e/ -count=1 -v -timeout 40m -p=1 \
             -run 'TestBenchmark'
 
       - name: Post benchmark results

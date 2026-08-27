@@ -165,6 +165,42 @@ struct ConfigVersionStampTests {
         }
     }
 
+    @Test("unrewritable legacy MTP forms keep their old stamp and stay automatic")
+    func preservesVersionForValidUnrewritableMTPForms() throws {
+        let forms = [
+            """
+            config_version = 2
+            backend.mtp = false
+
+            [provider]
+            name = "test-provider"
+            """,
+            """
+            config_version = 2
+            backend = { mtp = false }
+
+            [provider]
+            name = "test-provider"
+            """,
+        ]
+
+        for original in forms {
+            try withTempConfig(original) { path in
+                #expect(migrateConfigSchema(in: path).isEmpty)
+                let firstText = try read(path)
+                let firstConfig = try ConfigManager.load(from: path)
+                #expect(firstText == original)
+                #expect(firstConfig.backend.mtpMode == .auto)
+
+                #expect(migrateConfigSchema(in: path).isEmpty)
+                let secondText = try read(path)
+                let secondConfig = try ConfigManager.load(from: path)
+                #expect(secondText == original)
+                #expect(secondConfig.backend.mtpMode == .auto)
+            }
+        }
+    }
+
     @Test("explicit mtp_mode off remains authoritative during the version bump")
     func preservesExplicitMTPOff() throws {
         try withTempConfig(

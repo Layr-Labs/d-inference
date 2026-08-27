@@ -43,6 +43,17 @@ public enum MTPModeDefaultMigration {
         let backend: Backend?
     }
 
+    static func requiresLegacyNormalization(
+        in content: String,
+        onDiskVersion: Int?
+    ) -> Bool {
+        let predatesTriState = onDiskVersion.map { $0 < targetConfigVersion } ?? true
+        guard predatesTriState,
+            let document = try? TOMLDecoder().decode(MigrationDocument.self, from: content)
+        else { return false }
+        return document.backend?.mtpMode == nil && document.backend?.legacyMTP != nil
+    }
+
     private static let backendHeaderPattern =
         #"(?m)^[ \t]*\[backend\][ \t]*(?:[#;].*)?$"#
     private static let tableHeaderPattern = #"(?m)^[ \t]*\["#
@@ -52,10 +63,8 @@ public enum MTPModeDefaultMigration {
     /// Normalize an old generated `mtp` line without reserializing the rest of
     /// the operator's TOML (and therefore without dropping comments).
     static func rewriteLegacyAssignment(in content: String, onDiskVersion: Int?) -> String {
-        let predatesTriState = onDiskVersion.map { $0 < targetConfigVersion } ?? true
-        guard predatesTriState,
+        guard requiresLegacyNormalization(in: content, onDiskVersion: onDiskVersion),
             let document = try? TOMLDecoder().decode(MigrationDocument.self, from: content),
-            document.backend?.mtpMode == nil,
             let legacyValue = document.backend?.legacyMTP,
             let headerRegex = try? NSRegularExpression(pattern: backendHeaderPattern),
             let tableRegex = try? NSRegularExpression(pattern: tableHeaderPattern),
@@ -301,9 +310,16 @@ public enum ConcurrencyDefaultMigration {
         guard content.range(of: versionAssignmentProbe, options: .regularExpression) != nil
         else {
             // A top-level key is legal only ahead of the first table header,
-            // and position 0 always satisfies that.
+            // and position 0 always satisfies that. Do not stamp a valid TOML
+            // representation we cannot normalize textually: the old version is
+            // what keeps its legacy false value resolving to automatic mode on
+            // every subsequent boot.
+            let requiresMTPNormalization =
+                MTPModeDefaultMigration.requiresLegacyNormalization(
+                    in: content, onDiskVersion: nil)
             let migrated = MTPModeDefaultMigration.rewriteLegacyAssignment(
                 in: content, onDiskVersion: nil)
+            guard !requiresMTPNormalization || migrated != content else { return nil }
             return Outcome(text: "config_version = \(current)\n" + migrated, applied: [])
         }
 
@@ -323,8 +339,18 @@ public enum ConcurrencyDefaultMigration {
             text = rewritten
             applied.append(step)
         }
+        let requiresMTPNormalization =
+            MTPModeDefaultMigration.requiresLegacyNormalization(
+                in: text, onDiskVersion: onDiskVersion)
+        let beforeMTPNormalization = text
         text = MTPModeDefaultMigration.rewriteLegacyAssignment(
             in: text, onDiskVersion: onDiskVersion)
+        if requiresMTPNormalization, text == beforeMTPNormalization {
+            // Preserve the old stamp when dotted-key or inline-table syntax is
+            // semantically migratable but cannot be rewritten without
+            // reserializing the operator's file and dropping comments.
+            return text == content ? nil : Outcome(text: text, applied: applied)
+        }
 
         guard let restamped = rewriteStamp(in: text, to: current) else { return nil }
         return Outcome(text: restamped, applied: applied)

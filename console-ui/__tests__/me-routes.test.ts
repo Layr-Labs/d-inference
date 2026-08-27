@@ -43,6 +43,25 @@ describe("GET /api/me/providers", () => {
   });
 });
 
+describe("GET /api/me/provider-admission-attempts", () => {
+  it("proxies account-scoped hardware admission history", async () => {
+    upstream.fetch.mockResolvedValueOnce(upstreamOk({ attempts: [] }));
+    const { GET } = await import(
+      "@/app/api/me/provider-admission-attempts/route"
+    );
+    const req = makeRequest("/api/me/provider-admission-attempts", {
+      headers: { authorization: "Bearer privy-token-123" },
+    });
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const [upstreamUrl, upstreamOpts] = upstream.fetch.mock.calls[0];
+    expect(upstreamUrl).toBe(
+      `${DEFAULT_COORD}/v1/me/provider-admission-attempts`
+    );
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+  });
+});
+
 describe("GET /api/me/provider-models", () => {
   // The proxy is a thin passthrough: eligibility filtering and alias
   // translation live coordinator-side in /v1/me/self-route-models (tested in

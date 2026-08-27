@@ -107,8 +107,11 @@ extension ProviderLoop {
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
 
-        // 2. Build attestation blob for registration
-        let attestation = buildRegistrationAttestation()
+        // 2. Prepare per-registration attestation generation. The coordinator
+        // enforces a short freshness window, so every reconnect must sign a new
+        // timestamp rather than reusing a daemon-start blob.
+        let registrationAttestationProvider =
+            makeRegistrationAttestationProvider()
 
         // 3. Hash the colocated mlx.metallib so the coordinator (and any
         // user inspecting attestation) can correlate the GPU kernel set
@@ -147,7 +150,7 @@ extension ProviderLoop {
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
             walletAddress: nil,
-            attestation: attestation,
+            attestationProvider: registrationAttestationProvider,
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
@@ -290,8 +293,8 @@ extension ProviderLoop {
                         await reconcileDesiredModels(entries, send: send)
                     }
 
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                case .trustStatus(let trustStatus):
+                    handleTrustStatus(trustStatus)
                 }
             }
         } onCancel: {
@@ -436,20 +439,23 @@ extension ProviderLoop {
 
     // MARK: - Attestation
 
-    private func buildRegistrationAttestation() -> RawJSON? {
+    private func makeRegistrationAttestationProvider()
+        -> RegistrationAttestationProvider?
+    {
         guard let builder = attestationBuilder else {
             logger.info("No Secure Enclave identity -- registration without attestation")
             return nil
         }
-        do {
+        let hardware = loopConfig.hardware
+        let encryptionPublicKey = keyPair.publicKeyBase64
+        let providerBinaryHash = binaryHash
+        return {
             let jsonData = try builder.buildAttestationJSON(
-                encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
+                encryptionPublicKey: encryptionPublicKey,
+                binaryHash: providerBinaryHash,
+                hardware: hardware
             )
             return RawJSON(rawBytes: jsonData)
-        } catch {
-            logger.error("Failed to build attestation: \(error)")
-            return nil
         }
     }
 

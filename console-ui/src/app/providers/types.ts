@@ -104,6 +104,10 @@ export interface MyProvider {
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
   mda_verified: boolean;
+  hardware_admitted?: boolean;
+  hardware_admission_revoked?: boolean;
+  mda_freshness_verified?: boolean;
+  // Legacy wire alias for mda_freshness_verified.
   se_key_bound: boolean;
   se_public_key?: string;
   // X25519 E2E key (same value as /v1/encryption-key); present only for
@@ -150,6 +154,41 @@ export interface MyProvidersResponse {
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
+}
+
+export interface HardwareAdmissionFailure {
+  code: string;
+  metric: string;
+  observed: number;
+  required: number;
+  unit: string;
+}
+
+export interface HardwareAdmissionAttempt {
+  id: number;
+  provider_id: string;
+  serial_number?: string;
+  policy_version: number;
+  mode: string;
+  decision: string;
+  reason_code?: string;
+  hardware: MyHardware & {
+    fp16_millitflops?: number;
+    catalog_known?: boolean;
+  };
+  failed_checks?: HardwareAdmissionFailure[];
+  created_at: string;
+}
+
+export interface HardwareAdmissionAttemptsResponse {
+  attempts: HardwareAdmissionAttempt[];
+}
+
+// Response from DELETE /v1/me/providers/{serial}.
+export interface DeleteProviderResponse {
+  deleted: boolean;
+  serial: string;
+  rows_removed: number;
 }
 
 export interface MyFleetCounts {

@@ -564,9 +564,12 @@ func (s *Server) isAdminAuthorized(w http.ResponseWriter, r *http.Request) bool 
 		return true
 	}
 
-	// Check Privy admin.
+	// Only an interactive Privy JWT may inherit admin authority from its user.
+	// API keys and provider device tokens can resolve to the same user record,
+	// but possession of those machine credentials must not authorize admin APIs.
 	user := auth.UserFromContext(r.Context())
-	if user != nil && s.isAdmin(user) {
+	if credentialKindFromContext(r.Context()) == credentialPrivy &&
+		user != nil && s.isAdmin(user) {
 		return true
 	}
 

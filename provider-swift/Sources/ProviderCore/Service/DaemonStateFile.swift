@@ -58,14 +58,77 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var connectivity: Connectivity?
 
     public struct Trust: Codable, Sendable, Equatable {
+        public struct Hardware: Codable, Sendable, Equatable {
+            public var machineModel: String?
+            public var chipName: String?
+            public var chipFamily: String?
+            public var chipTier: String?
+            public var memoryGb: Int?
+            public var gpuCores: Int?
+            public var memoryBandwidthGbs: Int?
+            public var fp16MilliTflops: Int?
+            public var catalogKnown: Bool
+
+            init(_ source: CoordinatorMessage.TrustStatus.Hardware) {
+                machineModel = source.machineModel
+                chipName = source.chipName
+                chipFamily = source.chipFamily
+                chipTier = source.chipTier
+                memoryGb = source.memoryGb
+                gpuCores = source.gpuCores
+                memoryBandwidthGbs = source.memoryBandwidthGbs
+                fp16MilliTflops = source.fp16MilliTflops
+                catalogKnown = source.catalogKnown
+            }
+        }
+
+        public struct RequirementMiss: Codable, Sendable, Equatable {
+            public var code: String
+            public var metric: String
+            public var observed: Int
+            public var required: Int
+            public var unit: String
+
+            init(_ source: CoordinatorMessage.TrustStatus.RequirementMiss) {
+                code = source.code
+                metric = source.metric
+                observed = source.observed
+                required = source.required
+                unit = source.unit
+            }
+        }
+
         public var trustLevel: String
         public var status: String
         public var reason: String
+        public var reasonCode: String?
+        public var policyVersion: Int64?
+        public var catalogVersion: String?
+        public var retryable: Bool?
+        public var hardware: Hardware?
+        public var failedChecks: [RequirementMiss]?
         public var receivedAt: Double
-        public init(trustLevel: String, status: String, reason: String, receivedAt: Double) {
+        public init(
+            trustLevel: String,
+            status: String,
+            reason: String,
+            reasonCode: String? = nil,
+            policyVersion: Int64? = nil,
+            catalogVersion: String? = nil,
+            retryable: Bool? = nil,
+            hardware: CoordinatorMessage.TrustStatus.Hardware? = nil,
+            failedChecks: [CoordinatorMessage.TrustStatus.RequirementMiss]? = nil,
+            receivedAt: Double
+        ) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
+            self.reasonCode = reasonCode
+            self.policyVersion = policyVersion
+            self.catalogVersion = catalogVersion
+            self.retryable = retryable
+            self.hardware = hardware.map(Hardware.init)
+            self.failedChecks = failedChecks?.map(RequirementMiss.init)
             self.receivedAt = receivedAt
         }
     }

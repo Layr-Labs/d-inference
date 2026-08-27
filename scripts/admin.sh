@@ -110,6 +110,79 @@ cmd_models_list() {
     curl -fsSL "$COORDINATOR_URL/v1/models/catalog" | python3 -m json.tool
 }
 
+cmd_hardware_policy_get() {
+    authed_curl "$COORDINATOR_URL/v1/admin/hardware-admission/policy" | python3 -m json.tool
+}
+
+cmd_hardware_policy_machines() {
+    authed_curl "$COORDINATOR_URL/v1/admin/hardware-admission/machines" | python3 -m json.tool
+}
+
+cmd_hardware_policy_revoke() {
+    local serial="${1:?Usage: $0 hardware-policy revoke <serial> <reason>}"
+    local reason="${2:?reason is required}"
+    local body
+    body="$(python3 - "$reason" <<'PY'
+import json
+import sys
+print(json.dumps({"reason": sys.argv[1]}))
+PY
+)"
+    authed_curl -X DELETE "$COORDINATOR_URL/v1/admin/hardware-admission/machines/$serial" \
+        -H "Content-Type: application/json" -d "$body" | python3 -m json.tool
+}
+
+cmd_hardware_policy_restore() {
+    local serial="${1:?Usage: $0 hardware-policy restore <serial> <reason>}"
+    local reason="${2:?reason is required}"
+    local body
+    body="$(python3 - "$serial" "$reason" <<'PY'
+import json
+import sys
+print(json.dumps({"serial_number": sys.argv[1], "reason": sys.argv[2]}))
+PY
+)"
+    authed_curl -X POST "$COORDINATOR_URL/v1/admin/hardware-admission/machines/restore" \
+        -H "Content-Type: application/json" -d "$body" | python3 -m json.tool
+}
+
+cmd_hardware_policy_set() {
+    local mode="${1:?Usage: $0 hardware-policy set <disabled|shadow|enforce> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason] [--break-glass]}"
+    local memory_gb="${2:?memory-gb is required}"
+    local bandwidth_gbs="${3:?bandwidth-gbs is required}"
+    local fp16_millitflops="${4:?fp16-millitflops is required}"
+    local expected_version="${5:?expected-version is required}"
+    local reason="${6:-operator policy update}"
+    local break_glass_arg="${7:-}"
+    if [ "$reason" = "--break-glass" ]; then
+        reason="operator break-glass rollback"
+        break_glass_arg="--break-glass"
+    fi
+    if [ -n "$break_glass_arg" ] && [ "$break_glass_arg" != "--break-glass" ]; then
+        echo "Unknown hardware-policy option: $break_glass_arg" >&2
+        exit 1
+    fi
+    local body
+    body="$(python3 - "$mode" "$memory_gb" "$bandwidth_gbs" "$fp16_millitflops" "$expected_version" "$reason" "$break_glass_arg" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "mode": sys.argv[1],
+    "min_memory_gb": int(sys.argv[2]),
+    "min_memory_bandwidth_gbs": int(sys.argv[3]),
+    "min_fp16_millitflops": int(sys.argv[4]),
+    "expected_current_version": int(sys.argv[5]),
+    "reason": sys.argv[6],
+    "break_glass": sys.argv[7] == "--break-glass",
+}))
+PY
+)"
+    authed_curl -X PUT "$COORDINATOR_URL/v1/admin/hardware-admission/policy" \
+        -H "Content-Type: application/json" \
+        -d "$body" | python3 -m json.tool
+}
+
 cmd_raw() {
     local method="${1:?Usage: $0 raw <METHOD> <path> [body]}"
     local path="${2:?Usage: $0 raw <METHOD> <path> [body]}"
@@ -148,6 +221,16 @@ case "${1:-help}" in
             *) echo "Usage: $0 models [list]" ;;
         esac
         ;;
+    hardware-policy)
+        case "${2:-get}" in
+            get) cmd_hardware_policy_get ;;
+            machines) cmd_hardware_policy_machines ;;
+            revoke) cmd_hardware_policy_revoke "${3:-}" "${4:-}" ;;
+            restore) cmd_hardware_policy_restore "${3:-}" "${4:-}" ;;
+            set) cmd_hardware_policy_set "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}" ;;
+            *) echo "Usage: $0 hardware-policy [get|machines|set|revoke|restore]" ;;
+        esac
+        ;;
     raw)
         cmd_raw "${2:-}" "${3:-}" "${4:-}"
         ;;
@@ -161,6 +244,11 @@ case "${1:-help}" in
         echo "  releases latest [platform]     Show latest active release"
         echo "  releases deactivate <version>  Deactivate a release"
         echo "  models list                    List model catalog"
+        echo "  hardware-policy get            Show active provider hardware policy"
+        echo "  hardware-policy machines       List admitted machines and recent decisions"
+        echo "  hardware-policy revoke <serial> <reason>"
+        echo "  hardware-policy restore <serial> <reason>"
+        echo "  hardware-policy set <mode> <memory-gb> <bandwidth-gbs> <fp16-millitflops> <expected-version> [reason] [--break-glass]"
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""
         echo "Environment:"

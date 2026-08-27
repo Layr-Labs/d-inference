@@ -37,6 +37,25 @@ const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as 
   calculateCapacityRevenue: typeof calculateCapacityRevenue;
 };
 
+vi.mock("@/app/providers/useProviderRequirements", () => ({
+  useProviderRequirements: () => ({
+    status: "ready",
+    requirements: {
+      policy: {
+        version: 0,
+        mode: "disabled",
+        min_memory_gb: 0,
+        min_memory_bandwidth_gbs: 0,
+        min_fp16_millitflops: 0,
+        catalog_version: "apple-silicon-v1",
+      },
+      accepting_new_providers: true,
+      grandfather_existing: true,
+      metric_definitions: {},
+    },
+  }),
+}));
+
 function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
   fireEvent.change(screen.getByLabelText("Mac model"), { target: { value: macType } });
   fireEvent.change(screen.getByLabelText("Chip family"), { target: { value: chip } });
@@ -171,7 +190,9 @@ describe("EarnPage", () => {
     expect(
       await screen.findByText("We're starting with Macs that have 48 GB or more"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Register your interest" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Register this Mac's hardware interest" }),
+    ).toHaveAttribute("href", "/provider-waitlist?chip=M4+Pro&memory_gb=24");
     expect(screen.queryByText(MONTHLY_EARNING)).not.toBeInTheDocument();
   });
 });

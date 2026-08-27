@@ -29,7 +29,9 @@ public struct AttestationBlob: Codable, Sendable {
     public let binaryHash: String?
     public let chipName: String
     public let encryptionPublicKey: String?
+    public let gpuCores: UInt32?
     public let hardwareModel: String
+    public let memoryGb: UInt64?
     public let osVersion: String
     public let publicKey: String
     public let rdmaDisabled: Bool
@@ -45,7 +47,9 @@ public struct AttestationBlob: Codable, Sendable {
         case binaryHash
         case chipName
         case encryptionPublicKey
+        case gpuCores
         case hardwareModel
+        case memoryGb
         case osVersion
         case publicKey
         case rdmaDisabled
@@ -169,16 +173,23 @@ public final class AttestationBuilder: @unchecked Sendable {
     ///     to this attestation.
     ///   - binaryHash: Optional SHA-256 hex hash of the provider binary. The
     ///     coordinator verifies this matches the expected blessed version.
+    ///   - hardware: The exact hardware snapshot advertised in registration.
+    ///     Supplying it prevents a second fallible system probe from disagreeing
+    ///     with the signed registration claims.
     public func buildAttestation(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        hardware: HardwareInfo? = nil
     ) throws -> SignedAttestation {
+        let signedHardware = hardware ?? (try? HardwareDetector.detect())
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
-            chipName: detectChipName(),
+            chipName: signedHardware?.chipName ?? detectChipName(),
             encryptionPublicKey: encryptionPublicKey,
-            hardwareModel: detectHardwareModel(),
+            gpuCores: signedHardware?.gpuCores,
+            hardwareModel: signedHardware?.machineModel ?? detectHardwareModel(),
+            memoryGb: signedHardware?.memoryGb,
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),
@@ -213,11 +224,13 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// preserve the exact encoding needed for signature verification.
     public func buildAttestationJSON(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        hardware: HardwareInfo? = nil
     ) throws -> Data {
         let signed = try buildAttestation(
             encryptionPublicKey: encryptionPublicKey,
-            binaryHash: binaryHash
+            binaryHash: binaryHash,
+            hardware: hardware
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

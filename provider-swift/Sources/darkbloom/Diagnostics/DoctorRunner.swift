@@ -39,7 +39,11 @@ enum DoctorRunner {
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
         if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
-            let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
+            let advice = TrustReasonCatalog.advice(
+                level: trust.trustLevel,
+                status: trust.status,
+                reason: trust.reason,
+                reasonCode: trust.reasonCode)
             let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
             out.append(Diagnostic(section: .trust, name: "trust level",
                                   level: level,

@@ -49,6 +49,7 @@ type AttestationBlob struct {
 	BinaryHash               string `json:"binaryHash,omitempty"`
 	ChipName                 string `json:"chipName"`
 	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
+	GPUCores                 *int   `json:"gpuCores,omitempty"`
 	HardwareModel            string `json:"hardwareModel"`
 	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
 	// include this hardcoded-false field in their SIGNED blob JSON, so it must
@@ -56,6 +57,7 @@ type AttestationBlob struct {
 	// signed bytes. New providers omit it (nil). Remove once the fleet floor
 	// passes v0.6.31.
 	HypervisorActive       *bool  `json:"hypervisorActive,omitempty"`
+	MemoryGB               *int   `json:"memoryGb,omitempty"`
 	OSVersion              string `json:"osVersion"`
 	PublicKey              string `json:"publicKey"`
 	RDMADisabled           bool   `json:"rdmaDisabled"`
@@ -104,6 +106,8 @@ type VerificationResult struct {
 	BinaryHash               string
 	HardwareModel            string
 	ChipName                 string
+	MemoryGB                 int
+	GPUCores                 int
 	SerialNumber             string
 	SecureEnclaveAvailable   bool
 	SIPEnabled               bool
@@ -143,6 +147,12 @@ func Verify(signed SignedAttestation) VerificationResult {
 		RDMADisabled:             signed.Attestation.RDMADisabled,
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
+	}
+	if signed.Attestation.MemoryGB != nil {
+		result.MemoryGB = *signed.Attestation.MemoryGB
+	}
+	if signed.Attestation.GPUCores != nil {
+		result.GPUCores = *signed.Attestation.GPUCores
 	}
 
 	// Parse timestamp
@@ -319,11 +329,17 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	if blob.EncryptionPublicKey != "" {
 		m["encryptionPublicKey"] = blob.EncryptionPublicKey
 	}
+	if blob.GPUCores != nil {
+		m["gpuCores"] = *blob.GPUCores
+	}
 	// Legacy fleet compat (< v0.6.31): old providers include the retired
 	// hypervisorActive field in the signed blob — reproduce it EXACTLY when
 	// present so their signatures keep verifying; new providers omit it.
 	if blob.HypervisorActive != nil {
 		m["hypervisorActive"] = *blob.HypervisorActive
+	}
+	if blob.MemoryGB != nil {
+		m["memoryGb"] = *blob.MemoryGB
 	}
 	if blob.SerialNumber != "" {
 		m["serialNumber"] = blob.SerialNumber

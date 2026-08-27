@@ -15,6 +15,76 @@ the models you want to serve.
 | **macOS** | 14 (Sonoma) | Newer is better; install script enforces Darwin + arm64 |
 | **Network** | Outbound HTTPS to coordinator | No inbound port is required |
 
+## New-machine admission policy
+
+The 8 GB figure above is the CLI's absolute ability-to-start floor. The
+coordinator can apply a stricter, runtime-configurable policy to **new public
+provider onboarding** using unified memory, catalogued memory bandwidth, and
+estimated FP16 vector throughput. Existing admitted physical machines are
+grandfathered when enforcement is activated and continue to use the normal live
+trust, runtime-integrity, and routing checks.
+
+Current public requirements are available from:
+
+```bash
+curl -fsSL https://api.darkbloom.dev/v1/provider-requirements
+```
+
+Machines that are not currently eligible can register hardware interest with an
+email, chip, memory, optional GPU-core count, or a custom “Others Machines”
+description at `https://console.darkbloom.dev/provider-waitlist`. This is a
+capacity-planning registry only; submitting does not create an email
+notification subscription.
+
+Operators manage immutable policy versions with
+`scripts/admin.sh hardware-policy get|set`, and can inspect the admitted-machine
+inventory with `scripts/admin.sh hardware-policy machines`. A policy should run
+in `shadow` mode before `enforce`; the first enforcement activation atomically
+records the trusted serials already in the fleet as grandfathered.
+Enforcement requires at least one positive capacity threshold plus configured
+MDM and APNs code-attestation dependencies; the coordinator refuses an unsafe
+activation or startup.
+
+The initial enforced policy is intentionally simple: **48 GiB minimum unified
+memory**, with bandwidth and FP16 thresholds disabled. After deployment, an
+operator activates it using the current policy version returned by `get`:
+
+```bash
+scripts/admin.sh hardware-policy get
+scripts/admin.sh hardware-policy set enforce 48 0 0 <expected-version> \
+  "Launch gate: 48 GiB minimum; other capacity metrics optional"
+```
+
+Bandwidth and FP16 throughput are derived from the coordinator's versioned Apple
+Silicon catalog. They are not accepted from arbitrary provider values. A new
+machine's memory and its GPU-core count when detectable are included in its
+signed Secure Enclave attestation and must match registration. Memory is
+mandatory for the launch gate; an unavailable GPU-core measurement is recorded
+as zero and does not block the memory-only policy. First admission is committed
+only after MDM verification, official-code attestation, and a fresh Apple Device
+Attestation correlated to the live SE public-key digest.
+
+This is an operational capacity gate, not an Apple-attested hardware-SKU proof.
+MDA attests device identity and security state, but not RAM, GPU cores, or the
+residency of an application key named in a caller-selected freshness nonce.
+Those hardware fields remain provider measurements constrained by the
+coordinator catalog. A colluding relay or deliberately modified provider can
+therefore misrepresent capacity; runtime load failures, performance telemetry,
+and operator revocation remain the enforcement backstops for adversarial nodes.
+
+Implementation references:
+
+- `coordinator/api/hardware_admission.go:545-608` — signed identity and capacity
+  claim checks.
+- `coordinator/api/hardware_admission.go:1147-1172` — public policy response
+  consumed by setup and earnings pages.
+- `coordinator/hardwareadmission/policy.go:125-179` — threshold evaluation;
+  zero bandwidth/FP16 floors are disabled.
+- `coordinator/registry/persistence.go:339-361` — synchronous identity snapshot
+  before first admission.
+- `coordinator/registry/hardware_admission.go:147-176` — routing-fence commit
+  after the durable serial decision.
+
 ## Recommended configurations
 
 | Workload | Mac | RAM | Notes |

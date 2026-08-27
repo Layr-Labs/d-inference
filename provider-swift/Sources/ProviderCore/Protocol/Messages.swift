@@ -1379,10 +1379,65 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var trustLevel: String
         public var status: String
         public var reason: String
-        public init(trustLevel: String, status: String, reason: String = "") {
+        public var reasonCode: String?
+        public var policyVersion: Int64?
+        public var catalogVersion: String?
+        public var retryable: Bool?
+        public var hardware: Hardware?
+        public var failedChecks: [RequirementMiss]
+
+        public struct Hardware: Codable, Sendable, Equatable {
+            public var machineModel: String?
+            public var chipName: String?
+            public var chipFamily: String?
+            public var chipTier: String?
+            public var memoryGb: Int?
+            public var gpuCores: Int?
+            public var memoryBandwidthGbs: Int?
+            public var fp16MilliTflops: Int?
+            public var catalogKnown: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case machineModel = "machine_model"
+                case chipName = "chip_name"
+                case chipFamily = "chip_family"
+                case chipTier = "chip_tier"
+                case memoryGb = "memory_gb"
+                case gpuCores = "gpu_cores"
+                case memoryBandwidthGbs = "memory_bandwidth_gbs"
+                case fp16MilliTflops = "fp16_millitflops"
+                case catalogKnown = "catalog_known"
+            }
+        }
+
+        public struct RequirementMiss: Codable, Sendable, Equatable {
+            public var code: String
+            public var metric: String
+            public var observed: Int
+            public var required: Int
+            public var unit: String
+        }
+
+        public init(
+            trustLevel: String,
+            status: String,
+            reason: String = "",
+            reasonCode: String? = nil,
+            policyVersion: Int64? = nil,
+            catalogVersion: String? = nil,
+            retryable: Bool? = nil,
+            hardware: Hardware? = nil,
+            failedChecks: [RequirementMiss] = []
+        ) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
+            self.reasonCode = reasonCode
+            self.policyVersion = policyVersion
+            self.catalogVersion = catalogVersion
+            self.retryable = retryable
+            self.hardware = hardware
+            self.failedChecks = failedChecks
         }
     }
 }
@@ -1417,6 +1472,11 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason
+        case reasonCode = "reason_code"
+        case policyVersion = "policy_version"
+        case catalogVersion = "catalog_version"
+        case retryable, hardware
+        case failedChecks = "failed_checks"
         case models
     }
 
@@ -1478,6 +1538,14 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+            try container.encodeIfPresent(t.reasonCode, forKey: .reasonCode)
+            try container.encodeIfPresent(t.policyVersion, forKey: .policyVersion)
+            try container.encodeIfPresent(t.catalogVersion, forKey: .catalogVersion)
+            try container.encodeIfPresent(t.retryable, forKey: .retryable)
+            try container.encodeIfPresent(t.hardware, forKey: .hardware)
+            if !t.failedChecks.isEmpty {
+                try container.encode(t.failedChecks, forKey: .failedChecks)
+            }
         }
     }
 
@@ -1538,7 +1606,15 @@ extension CoordinatorMessage: Codable {
             self = .trustStatus(TrustStatus(
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
-                reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
+                reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
+                reasonCode: try container.decodeIfPresent(String.self, forKey: .reasonCode),
+                policyVersion: try container.decodeIfPresent(Int64.self, forKey: .policyVersion),
+                catalogVersion: try container.decodeIfPresent(String.self, forKey: .catalogVersion),
+                retryable: try container.decodeIfPresent(Bool.self, forKey: .retryable),
+                hardware: try container.decodeIfPresent(
+                    TrustStatus.Hardware.self, forKey: .hardware),
+                failedChecks: try container.decodeIfPresent(
+                    [TrustStatus.RequirementMiss].self, forKey: .failedChecks) ?? []
             ))
         }
     }

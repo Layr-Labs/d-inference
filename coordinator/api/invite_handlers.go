@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,27 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // requireAdminKey checks that the request is from an admin (either admin key or Privy admin).
 // Returns true if authorized, false if it wrote an error response.
 func (s *Server) requireAdminKey(w http.ResponseWriter, r *http.Request) bool {
-	// Check 1: Bearer token matches admin key
-	token := extractBearerToken(r)
-	if token != "" && s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-		return true
-	}
-
-	// Check 2: Privy admin
-	user := auth.UserFromContext(r.Context())
-	if user != nil && s.isAdmin(user) {
-		return true
-	}
-
-	writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
-	return false
+	return s.isAdminAuthorized(w, r)
 }
 
 // handleAdminCreateInviteCode handles POST /v1/admin/invite-codes.

@@ -55,9 +55,18 @@ The provider is the decryption endpoint. The coordinator routes ciphertext to it
 
 ## How each binding is established
 
-### 1. SE identity ↔ hardware (MDA)
+### 1. MDA freshness correlation (not application-key attestation)
 
-At registration the provider sends an SE-signed attestation blob containing the SE public key, `K`, serial number, and security state. The coordinator later requests Apple MDA via MicroMDM and supplies a `DeviceAttestationNonce` equal to `SHA256(SE public key)`. Apple embeds that hash in the signed MDA certificate as the `FreshnessCode` OID. The coordinator checks that the returned freshness code matches the hash of the SE public key it already accepted. This cryptographically binds the SE key to genuine Apple hardware.
+At registration the provider sends an SE-signed attestation blob containing the SE public key, `K`, serial number, and security state. The coordinator later requests Apple MDA via MicroMDM and supplies a `DeviceAttestationNonce` equal to `SHA256(SE public key)`. Apple embeds that hash in the signed MDA certificate as the `FreshnessCode` OID. The coordinator checks that the returned freshness code matches the hash of the SE public key it already accepted.
+
+MDA signs a caller-selected nonce; it does not
+attest that the application key named by that nonce was generated on, or is
+resident on, the MDA device. The check proves that the Apple-signed response is
+fresh for this request and prevents a cached chain from being reused after the
+provider key changes. Hardware trust therefore composes three independent
+signals—MDA device identity, live SE-key possession, and APNs code identity—but
+does not provide a cryptographic co-location proof against a cooperating relay
+on another enrolled Mac.
 
 Code:
 

@@ -496,8 +496,17 @@ func deleteProviderTrustReuseOnce(st trustReuseStore, seKey string) error {
 //	(f) an MDM client is configured (FIX C) — the fast-skip only ever SUBSTITUTES
 //	    for a live MDM round-trip, so on a no-MDM / misconfigured deploy there is no
 //	    live fallback and we must not grant hardware from a (possibly stale) cache.
+//	(g) when hardware admission is enforced, official-code attestation completed
+//	    for this exact connection.
 func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Provider, resp *protocol.AttestationResponseMessage, statusFieldsTrusted bool) bool {
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
+		return false
+	}
+	// A machine qualifying under the hardware policy for the first time must
+	// complete live MDM and key-correlated Apple MDA checks before its positive
+	// admission is committed. Trust reuse may accelerate reconnects only after
+	// that first durable admission exists.
+	if s.hasPendingHardwareAdmission(providerID) {
 		return false
 	}
 	// (f) require MDM to be configured. The trust-reuse fast-skip is purely an
@@ -520,8 +529,8 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	if resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled {
 		return false
 	}
-	// (e) never fast-skip a hard-untrusted provider. (GrantHardwareIfNotUntrusted
-	// below is the authoritative atomic backstop; this is an early-out.)
+	// (e) never fast-skip a hard-untrusted provider. The admission-aware grant
+	// below is the authoritative atomic backstop; this is an early-out.
 	if provider.ChallengeShouldStop() {
 		return false
 	}
@@ -549,9 +558,10 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	if !ok {
 		return false
 	}
-	// Atomically grant hardware unless a concurrent hard untrust raced in (closes
-	// the TOCTOU; mirrors verifyProviderViaMDM's grant).
-	if !provider.GrantHardwareIfNotUntrusted() {
+	// Atomically grant hardware unless a concurrent hard untrust or enforced
+	// code-identity gate blocks it. The server wrapper also serializes this grant
+	// with policy activation so trust reuse cannot cross the grandfather cutoff.
+	if !s.grantProviderHardwareTrust(provider) {
 		return false
 	}
 	provider.SetMDMFailureReason("")

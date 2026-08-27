@@ -38,6 +38,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/hardwareadmission"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -75,7 +76,23 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyCredentialKind
 )
+
+type credentialKind uint8
+
+const (
+	credentialUnknown credentialKind = iota
+	credentialPrivy
+	credentialAdminKey
+	credentialAPIKey
+	credentialProviderToken
+)
+
+func credentialKindFromContext(ctx context.Context) credentialKind {
+	kind, _ := ctx.Value(ctxKeyCredentialKind).(credentialKind)
+	return kind
+}
 
 // requestIDFromContext returns the per-request correlation ID set by
 // the logging middleware. Empty if the request didn't pass through the
@@ -184,15 +201,17 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool     // emails that have admin access
-	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
-	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
+	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
+	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool // emails that have admin access
+	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	mdmWebhookSecret              string          // optional shared secret MicroMDM must present on the webhook
+	mdaRequestMu                  sync.Mutex
+	mdaRequests                   map[string]mdaRequestState
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
@@ -309,6 +328,15 @@ type Server struct {
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
 	minProviderVersion string
 
+	hardwareAdmissionMu             sync.RWMutex
+	hardwareAdmissionApplyMu        sync.Mutex
+	hardwareAdmissionPolicy         hardwareadmission.Policy
+	hardwareAdmissionPendingMu      sync.Mutex
+	hardwareAdmissionPending        map[string]pendingHardwareAdmission
+	hardwareAdmissionFinalizeRetry  map[string]struct{}
+	hardwareAdmissionRetryMu        sync.Mutex
+	hardwareAdmissionReconcileRetry map[int64]struct{}
+
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
 	// It can only POST /v1/releases — no admin access.
 	releaseKey string
@@ -396,6 +424,10 @@ type Server struct {
 	// Nil means unlimited.
 	financialRateLimiter *ratelimit.Limiter
 
+	// providerWaitlistRateLimiter throttles the unauthenticated provider
+	// availability form by source IP. Nil fails closed in the route.
+	providerWaitlistRateLimiter *ratelimit.Limiter
+
 	// serviceRateLimiter applies an elevated per-account limit to trusted
 	// service accounts (store.RoleService), e.g. an upstream aggregator like
 	// OpenRouter that fans out many end-users behind one key. When nil,
@@ -450,6 +482,12 @@ func (s *Server) SetRateLimiter(rl *ratelimit.Limiter) {
 // balance-mutating endpoints. Pass nil to disable.
 func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
 	s.financialRateLimiter = rl
+}
+
+// SetProviderWaitlistRateLimiter configures the mandatory source-IP limiter
+// for public provider availability signups.
+func (s *Server) SetProviderWaitlistRateLimiter(rl *ratelimit.Limiter) {
+	s.providerWaitlistRateLimiter = rl
 }
 
 // SetServiceRateLimiter configures the elevated limiter used for service-role
@@ -718,25 +756,28 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
-		registry:                 reg,
-		store:                    st,
-		ledger:                   payments.NewLedger(st),
-		logger:                   logger,
-		mux:                      http.NewServeMux(),
-		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
-		telemetryLimiter:         newTelemetryLimiter(),
-		readCache:                newTTLCache(),
-		geoResolver:              newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:              make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:       newCodeAttestThrottle(),
-		trustReuseCache:          newTrustReuseCache(),
-		settlements:              newSettlementHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
-		firstContentDeadlineBase: firstContentDeadlineBase,
+		registry:                        reg,
+		store:                           st,
+		ledger:                          payments.NewLedger(st),
+		logger:                          logger,
+		mux:                             http.NewServeMux(),
+		knownRuntimeManifest:            &RuntimeManifest{},
+		metrics:                         NewMetrics(),
+		telemetryLimiter:                newTelemetryLimiter(),
+		readCache:                       newTTLCache(),
+		geoResolver:                     newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:                     make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:              newCodeAttestThrottle(),
+		trustReuseCache:                 newTrustReuseCache(),
+		settlements:                     newSettlementHolder(),
+		zombieCanceller:                 newZombieStreamCanceller(),
+		serviceReservations:             newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:                  newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:                   mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase:        firstContentDeadlineBase,
+		hardwareAdmissionPending:        make(map[string]pendingHardwareAdmission),
+		hardwareAdmissionFinalizeRetry:  make(map[string]struct{}),
+		hardwareAdmissionReconcileRetry: make(map[int64]struct{}),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -761,6 +802,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.minProviderVersion = strings.TrimSpace(cfg.MinProviderVersion)
 	s.r2CDNURL = strings.TrimRight(cfg.R2CDNURL, "/")
 	s.releaseKey = cfg.ReleaseKey
+	s.initializeHardwareAdmission(cfg)
 
 	return s
 }
@@ -1797,6 +1839,7 @@ func (s *Server) routes() {
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/provider-admission-attempts", s.requirePrivyAuth(s.handleMyHardwareAdmissionAttempts))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
@@ -1806,6 +1849,8 @@ func (s *Server) routes() {
 	// No auth needed — trust comes from MDM SecurityInfo verification after
 	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
+	s.mux.HandleFunc("GET /v1/provider-requirements", s.handleProviderRequirements)
+	s.mux.HandleFunc("POST /v1/provider-waitlist", s.rateLimitProviderWaitlist(s.handleProviderWaitlistSignup))
 
 	// Attestation status — public, no auth needed. Raw device identity and MDA
 	// certificates remain coordinator-private because the leaf embeds serial/UDID.
@@ -1895,6 +1940,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
+	s.mux.HandleFunc("PUT /v1/admin/hardware-admission/policy", s.requireAuth(s.handleAdminHardwareAdmissionPolicy))
+	s.mux.HandleFunc("GET /v1/admin/hardware-admission/machines", s.requireAuth(s.handleAdminHardwareAdmissionMachines))
+	s.mux.HandleFunc("DELETE /v1/admin/hardware-admission/machines/{serial}", s.requireAuth(s.handleAdminRevokeHardwareAdmission))
+	s.mux.HandleFunc("POST /v1/admin/hardware-admission/machines/restore", s.requireAuth(s.handleAdminRestoreHardwareAdmission))
+	s.mux.HandleFunc("GET /v1/admin/provider-waitlist", s.requireAuth(s.handleAdminProviderWaitlist))
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but
@@ -1989,7 +2040,7 @@ func (s *Server) routes() {
 // the metrics registry at construction time.
 func (s *Server) registerDefaultGauges() {
 	s.metrics.RegisterGauge("providers_online", func() float64 {
-		return float64(s.registry.ProviderCount())
+		return float64(s.registry.OnlineCount())
 	})
 	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
 		if s.minProviderVersion != "" {
@@ -2284,6 +2335,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2291,6 +2343,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialAdminKey)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2298,6 +2351,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		kind := credentialAPIKey
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
@@ -2336,6 +2390,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				// until TTL. GetProviderToken is cheap and provider-token traffic
 				// is low-volume.
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
+				kind = credentialProviderToken
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
@@ -2371,6 +2426,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, kind)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -2404,6 +2460,7 @@ func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 		ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -2499,24 +2556,22 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 	}
 }
 
-// publicCORSPaths are endpoints whose GET is unauthenticated, read-only public
-// data. Their GET is served with a wildcard CORS origin so the marketing site
-// (darkbloom.dev) and any third party can read them from the browser. NOTE:
-// some of these paths (e.g. /v1/pricing) ALSO serve authenticated PUT/DELETE —
-// the wildcard applies only to GET; non-GET methods fall through to the
-// credentialed, single-origin CORS below.
-var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+// publicCORSMethods is the exact unauthenticated method that is safe from any
+// browser origin. Other methods on the same path remain single-origin.
+var publicCORSMethods = map[string]string{
+	"/v1/models/catalog":        http.MethodGet,
+	"/v1/pricing":               http.MethodGet,
+	"/v1/stats":                 http.MethodGet,
+	"/v1/network/series":        http.MethodGet,
+	"/v1/provider-requirements": http.MethodGet,
+	"/v1/provider-waitlist":     http.MethodPost,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are
 // locked to a single origin derived from the CORS_ORIGIN environment variable
 // (defaulting to the production console domain); a wildcard is never used for
-// those. A GET to a public read-only endpoint (see publicCORSPaths) is readable
-// from any origin, without credentials, so a wildcard is safe and intended.
+// those. Public methods listed above are available from any origin without
+// credentials, so a wildcard is safe and intended.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	origin := s.corsOrigin
 	if origin == "" {
@@ -2534,16 +2589,19 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if publicCORSPaths[r.URL.Path] && effectiveMethod == http.MethodGet {
-			// Public, non-credentialed GET — any origin may read it.
+		publicMethod, publicPath := publicCORSMethods[r.URL.Path]
+		if publicPath && effectiveMethod == publicMethod {
+			// Public, non-credentialed request — any origin may use it.
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", publicMethod+", OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 			w.Header().Set("Vary", "Origin")
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

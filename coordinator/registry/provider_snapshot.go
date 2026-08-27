@@ -5,18 +5,19 @@ package registry
 // under the registry lock, so the engine can iterate the fleet without holding
 // any registry mutex or reaching into Provider internals.
 type ProviderSnapshot struct {
-	ID             string
-	ProviderKey    string // base64 X25519 public key — earnings/session identity
-	SerialNumber   string
-	HardwareModel  string // SE-signed Apple model id (e.g. "Mac15,8"); "" if unattested
-	MemoryGB       int    // self-reported unified memory (Phase 0 tier source)
-	TrustLevel     TrustLevel
-	Attested       bool
-	Online         bool    // status is online (not offline/untrusted)
-	ModelLoaded    bool    // an advertised model is currently loaded for routing
-	CurrentModel   string  // model currently loaded/served; "" if none
-	MemoryPressure float64 // live system metric (0..1)
-	ThermalState   string  // nominal/fair/serious/critical
+	ID               string
+	ProviderKey      string // base64 X25519 public key — earnings/session identity
+	SerialNumber     string
+	HardwareModel    string // SE-signed Apple model id (e.g. "Mac15,8"); "" if unattested
+	MemoryGB         int    // self-reported unified memory (Phase 0 tier source)
+	TrustLevel       TrustLevel
+	Attested         bool
+	HardwareAdmitted bool
+	Online           bool    // status is online (not offline/untrusted)
+	ModelLoaded      bool    // an advertised model is currently loaded for routing
+	CurrentModel     string  // model currently loaded/served; "" if none
+	MemoryPressure   float64 // live system metric (0..1)
+	ThermalState     string  // nominal/fair/serious/critical
 }
 
 // ListProviders returns a read-only snapshot of every connected provider. It is
@@ -38,18 +39,19 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 		}
 		warm := warmServingModel(p)
 		out = append(out, ProviderSnapshot{
-			ID:             p.ID,
-			ProviderKey:    p.PublicKey,
-			SerialNumber:   serial,
-			HardwareModel:  hardwareModel,
-			MemoryGB:       p.Hardware.MemoryGB,
-			TrustLevel:     p.TrustLevel,
-			Attested:       p.Attested,
-			Online:         p.Status == StatusOnline || p.Status == StatusServing,
-			ModelLoaded:    warm != "",
-			CurrentModel:   warm,
-			MemoryPressure: p.SystemMetrics.MemoryPressure,
-			ThermalState:   p.SystemMetrics.ThermalState,
+			ID:               p.ID,
+			ProviderKey:      p.PublicKey,
+			SerialNumber:     serial,
+			HardwareModel:    hardwareModel,
+			MemoryGB:         p.Hardware.MemoryGB,
+			TrustLevel:       p.TrustLevel,
+			Attested:         p.Attested,
+			HardwareAdmitted: r.providerHardwareEligibleLocked(p),
+			Online:           p.Status == StatusOnline || p.Status == StatusServing,
+			ModelLoaded:      warm != "",
+			CurrentModel:     warm,
+			MemoryPressure:   p.SystemMetrics.MemoryPressure,
+			ThermalState:     p.SystemMetrics.ThermalState,
 		})
 		p.mu.Unlock()
 	}

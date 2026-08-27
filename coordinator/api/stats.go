@@ -103,6 +103,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if !s.registry.ProviderHardwareAdmitted(p) {
+			return
+		}
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
 		// totals, provider counts, per-model provider counts, or active power.
@@ -330,6 +333,9 @@ func (s *Server) aggregateProviderLocations() (
 	regions := make(map[regionKey]*regionAgg)
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if !s.registry.ProviderHardwareAdmitted(p) {
+			return
+		}
 		// Private-only providers are not part of the public fleet — keep them off
 		// the public network map and out of its provider/hardware counts.
 		if p.PrivateOnly {

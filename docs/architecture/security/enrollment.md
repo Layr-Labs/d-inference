@@ -79,11 +79,18 @@ the chain privately for trust reuse. The chain is not published because its
 leaf certificate embeds the serial number and UDID. Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
-- MDA dispatch and key binding: `coordinator/api/provider.go:2342-2429`
+- MDA dispatch and freshness correlation: `coordinator/api/provider.go`
 
-### SE key binding via freshness nonce
+### Live-key freshness correlation
 
-When requesting MDA, the coordinator supplies a `DeviceAttestationNonce` equal to the SHA-256 of the provider's SE public key. Apple embeds the raw bytes in the `FreshnessCode` OID, cryptographically binding the SE identity to the Apple-attested hardware. The coordinator checks `bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])` before treating the MDA as bound. Code: `coordinator/api/provider.go:2350-2361`.
+When requesting MDA, the coordinator supplies a `DeviceAttestationNonce` equal
+to the SHA-256 of the provider's SE public key. Apple embeds the raw bytes in the
+`FreshnessCode` OID. The coordinator checks
+`bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])`, which proves a
+fresh response for the selected key digest and prevents cross-key cached-chain
+reuse. MDA does not attest that the named application key resides on that
+device; MDA device identity, live key possession, and APNs code identity remain
+independent signals.
 
 ## ACME `device-attest-01` (removed 2026-07-03)
 

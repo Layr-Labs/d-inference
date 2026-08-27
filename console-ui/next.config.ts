@@ -1,5 +1,17 @@
 import type { NextConfig } from "next";
 
+const defaultCoordinatorUrl = "https://api.darkbloom.dev";
+const configuredCoordinatorUrl =
+  process.env.NEXT_PUBLIC_COORDINATOR_URL || defaultCoordinatorUrl;
+
+export function coordinatorConnectOrigin(configuredUrl: string): string {
+  const coordinator = new URL(configuredUrl);
+  if (!["http:", "https:"].includes(coordinator.protocol)) {
+    throw new Error("NEXT_PUBLIC_COORDINATOR_URL must use http or https");
+  }
+  return coordinator.origin;
+}
+
 // Content-Security-Policy directives.
 // - 'unsafe-inline' for style-src: required by Next.js for injected styles.
 // - 'unsafe-inline' + 'unsafe-eval' for script-src: required by Privy SDK
@@ -10,20 +22,25 @@ import type { NextConfig } from "next";
 // - frame-src / child-src: Privy auth iframe, WalletConnect verify iframes,
 //   Cloudflare Turnstile, Stripe Checkout.
 // - worker-src: app workers (Privy/wagmi may spawn blob: workers).
-const cspDirectives = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://js.stripe.com https://challenges.cloudflare.com",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "connect-src 'self' https://api.darkbloom.dev https://*.privy.io wss://*.privy.io https://*.rpc.privy.systems https://www.google-analytics.com https://api.stripe.com https://*.walletconnect.com wss://*.walletconnect.com https://*.walletconnect.org wss://*.walletconnect.org wss://www.walletlink.org",
-  "frame-src 'self' https://auth.privy.io https://js.stripe.com https://challenges.cloudflare.com https://verify.walletconnect.com https://verify.walletconnect.org",
-  "child-src 'self' https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org",
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join("; ");
+export function contentSecurityPolicy(coordinatorUrl: string): string {
+  const coordinatorOrigin = coordinatorConnectOrigin(coordinatorUrl);
+  return [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://js.stripe.com https://challenges.cloudflare.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    `connect-src 'self' ${coordinatorOrigin} https://*.privy.io wss://*.privy.io https://*.rpc.privy.systems https://www.google-analytics.com https://api.stripe.com https://*.walletconnect.com wss://*.walletconnect.com https://*.walletconnect.org wss://*.walletconnect.org wss://www.walletlink.org`,
+    "frame-src 'self' https://auth.privy.io https://js.stripe.com https://challenges.cloudflare.com https://verify.walletconnect.com https://verify.walletconnect.org",
+    "child-src 'self' https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org",
+    "worker-src 'self' blob:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join("; ");
+}
+
+const cspDirectives = contentSecurityPolicy(configuredCoordinatorUrl);
 
 const securityHeaders = [
   { key: "Content-Security-Policy", value: cspDirectives },

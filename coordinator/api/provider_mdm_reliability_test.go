@@ -628,7 +628,7 @@ func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 }
 
 // TestVerifyProviderViaMDM_DefersGrantWhenUntrusted covers the atomic
-// GrantHardwareIfNotUntrusted guard: even a fully-passing SecurityInfo must NOT
+// exact-connection hardware-grant guard: even a passing SecurityInfo must NOT
 // promote a provider that is currently untrusted (a challenge-loop deroute racing
 // the in-flight verify), which would otherwise leave hardware/untrusted.
 func TestVerifyProviderViaMDM_DefersGrantWhenUntrusted(t *testing.T) {

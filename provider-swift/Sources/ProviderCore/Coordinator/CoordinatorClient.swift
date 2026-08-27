@@ -83,6 +83,11 @@ public actor CoordinatorClient {
     /// state. This does not force a reconnect; challenge responses already use
     /// the live map, and this keeps future registrations consistent.
     internal var modelWeightHashOverrides: [String: String]?
+    /// A deterministic coordinator onboarding rejection quiesces the reconnect
+    /// loop. Manual daemon restart clears it by constructing a fresh client;
+    /// the live daemon retries on a slow cadence so a lowered policy/catalog
+    /// update eventually takes effect without a 1–30 second reconnect storm.
+    internal var terminalAdmissionRejection: CoordinatorMessage.TrustStatus?
 
     private let shutdownFlag = ShutdownFlag()
 
@@ -259,6 +264,14 @@ public actor CoordinatorClient {
     /// blip; no-op when no connection is up (registration hasn't happened
     /// yet — the register that follows will already carry the current set).
     public func forceReconnect() {
+        closeCurrentConnection()
+    }
+
+    internal func applyTrustStatusPolicy(_ status: CoordinatorMessage.TrustStatus) {
+        guard status.status == "onboarding_rejected", status.retryable == false else {
+            return
+        }
+        terminalAdmissionRejection = status
         closeCurrentConnection()
     }
 

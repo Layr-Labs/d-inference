@@ -21,6 +21,9 @@ const (
 	CandidateRejectPreferOwner      = "prefer_owner"
 	CandidateRejectAvoidVersion     = "avoid_version"
 	CandidateRejectMinDecodeTPS     = "min_decode_tps"
+	CandidateRejectSlotCrashed      = "slot_crashed"
+	CandidateRejectSlotReloading    = "slot_reloading"
+	CandidateRejectThermalCritical  = "thermal_critical"
 )
 
 // InferenceRouteCandidateRecord is one provider the scheduler considered for a

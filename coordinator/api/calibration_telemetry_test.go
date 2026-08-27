@@ -77,6 +77,41 @@ func TestRouteCandidatesFromDecision(t *testing.T) {
 	if len(got) != 1 || got[0].RequestID != "req-1" || got[0].Attempt != 2 || got[0].ProviderID != "p1" {
 		t.Fatalf("converted = %+v", got)
 	}
+	if got := routeCandidatesFromDecision("", 0, []registry.RouteCandidateSnapshot{{ProviderID: "p1"}}); got != nil {
+		t.Fatalf("empty request id must drop candidates, got %+v", got)
+	}
+}
+
+func TestRecordRoutingDecisionPersistsCandidatesOnNilProvider(t *testing.T) {
+	srv, st := testServer(t)
+	d := &dispatchState{
+		s:     srv,
+		model: "fail-fast-model",
+		pr:    &registry.PendingRequest{RequestID: "req-fail-fast"},
+	}
+	d.recordRoutingDecision(registry.RoutingDecision{
+		Candidates: []registry.RouteCandidateSnapshot{{
+			ProviderID: "slow", Rank: -1, Eligible: false,
+			RejectionReason: store.CandidateRejectTTFT, CostMs: 90_000,
+		}},
+	}, errTTFTTooSlow, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []store.InferenceRouteCandidateRecord
+	for time.Now().Before(deadline) {
+		got = st.InferenceRouteCandidatesSince(time.Time{})
+		if len(got) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 1 || got[0].RequestID != "req-fail-fast" || got[0].RejectionReason != store.CandidateRejectTTFT {
+		t.Fatalf("nil-provider candidates = %+v", got)
+	}
+	routes := st.InferenceRouteRecordsSince(time.Time{})
+	if len(routes) != 1 || routes[0].RequestID != "req-fail-fast" || routes[0].Outcome != "ttft_429" {
+		t.Fatalf("nil-provider route = %+v", routes)
+	}
 }
 
 func TestCandidateAndCapacityCSVHeaders(t *testing.T) {

@@ -207,11 +207,11 @@ type routingCandidate struct {
 	cacheEstimatedTTFTSavedMs float64
 }
 
-// candidateRejection enumerates why a provider that passed structural
-// gates (status, trust, slot state, thermal) was nonetheless excluded
-// from selection. Used to populate RoutingDecision counters so callers
-// can distinguish "no provider serves this model" from "every fitting
-// provider is full".
+// candidateRejection enumerates why a provider that passed the routing
+// gates (catalog, cooldown, breaker, liveness, traits) was nonetheless
+// excluded from selection. Used to populate RoutingDecision counters so
+// callers can distinguish "no provider serves this model" from "every
+// fitting provider is full" and from unschedulable slot/thermal state.
 type candidateRejection int
 
 const (
@@ -227,6 +227,9 @@ const (
 	// this provider (until it loads a VLM build), so like rejectModelTooLarge it
 	// must NOT inflate the transient busy/429 signal.
 	rejectVisionUnsupported
+	rejectSlotCrashed
+	rejectSlotReloading
+	rejectThermalCritical
 )
 
 // modelMemoryHeadroomFactor is the FALLBACK multiple of the on-disk weight size
@@ -812,6 +815,12 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			case rejectVisionUnsupported:
 				visionRejections++
 				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectVision})
+			case rejectSlotCrashed:
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectSlotCrashed})
+			case rejectSlotReloading:
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectSlotReloading})
+			case rejectThermalCritical:
+				rejected = appendRejected(rejected, rejectedCandidate{snap: snap, reason: store.CandidateRejectThermalCritical})
 			}
 			continue
 		}
@@ -865,20 +874,20 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// only; otherwise fall back to the full pool (a public provider, charged
 	// normally). Exclusive self-route already filtered to owned above.
 	pool := candidates
-	softReason := ""
+	// First filter to drop a provider wins. Chaining PreferOwner → AvoidVersion
+	// → MinDecodeTPS must not relabel an earlier drop with a later reason
+	// (prod minDecodeTPS is 15, so a public machine dropped by prefer-owner
+	// was previously stamped min_decode_tps whenever the owned pool also
+	// shrank).
+	softDrops := make(map[string]string)
 	if pr.PreferOwner {
-		owned := make([]*routingCandidate, 0, len(candidates))
-		for _, c := range candidates {
+		owned := make([]*routingCandidate, 0, len(pool))
+		for _, c := range pool {
 			if providerOwnedBy(c.provider, pr.OwnerAccountID) {
 				owned = append(owned, c)
 			}
 		}
-		if len(owned) > 0 && len(owned) < len(candidates) {
-			pool = owned
-			softReason = store.CandidateRejectPreferOwner
-		} else if len(owned) > 0 {
-			pool = owned
-		}
+		pool = applySoftFilter(pool, owned, store.CandidateRejectPreferOwner, softDrops)
 	}
 
 	// Version-diverse retry (SOFT): when a previous attempt failed on a given
@@ -894,12 +903,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				diverse = append(diverse, c)
 			}
 		}
-		if len(diverse) > 0 && len(diverse) < len(pool) {
-			pool = diverse
-			softReason = store.CandidateRejectAvoidVersion
-		} else if len(diverse) > 0 {
-			pool = diverse
-		}
+		pool = applySoftFilter(pool, diverse, store.CandidateRejectAvoidVersion, softDrops)
 	}
 
 	// Decode-floor quality preference (SOFT, Routing v2 W2): when a per-request
@@ -916,33 +920,18 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				quality = append(quality, c)
 			}
 		}
-		if len(quality) > 0 && len(quality) < len(pool) {
-			pool = quality
-			softReason = store.CandidateRejectMinDecodeTPS
-		} else if len(quality) > 0 {
-			pool = quality
-		}
+		pool = applySoftFilter(pool, quality, store.CandidateRejectMinDecodeTPS, softDrops)
 	}
 
 	softFilterRejections := 0
-	if softReason != "" {
-		inPool := make(map[string]struct{}, len(pool))
-		for _, c := range pool {
-			if id := providerIDOf(c); id != "" {
-				inPool[id] = struct{}{}
-			}
+	for _, c := range candidates {
+		id := providerIDOf(c)
+		reason, ok := softDrops[id]
+		if !ok || reason == "" {
+			continue
 		}
-		for _, c := range candidates {
-			id := providerIDOf(c)
-			if id == "" {
-				continue
-			}
-			if _, ok := inPool[id]; ok {
-				continue
-			}
-			softFilterRejections++
-			rejected = appendRejected(rejected, rejectedCandidate{candidate: c, snap: c.snapshot, reason: softReason})
-		}
+		softFilterRejections++
+		rejected = appendRejected(rejected, rejectedCandidate{candidate: c, snap: c.snapshot, reason: reason})
 	}
 
 	return candidateScan{
@@ -978,6 +967,45 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	scan.tieBreakReason = sel.tieBreakReason
 	r.logRoutingDecision(model, pr, sel.winner, scan.candidateCount)
 	return sel.winner, scan
+}
+
+// applySoftFilter keeps filtered when it is a non-empty subset (or equal),
+// otherwise fail-opens to pool. Drops are recorded under reason only for
+// providers this step actually removed; later filters must not overwrite.
+func applySoftFilter(pool, filtered []*routingCandidate, reason string, dropped map[string]string) []*routingCandidate {
+	if len(filtered) == 0 {
+		return pool
+	}
+	if len(filtered) < len(pool) {
+		recordSoftFilterDrops(pool, filtered, reason, dropped)
+		return filtered
+	}
+	return filtered
+}
+
+func recordSoftFilterDrops(before, after []*routingCandidate, reason string, dropped map[string]string) {
+	if reason == "" || dropped == nil {
+		return
+	}
+	kept := make(map[string]struct{}, len(after))
+	for _, c := range after {
+		if id := providerIDOf(c); id != "" {
+			kept[id] = struct{}{}
+		}
+	}
+	for _, c := range before {
+		id := providerIDOf(c)
+		if id == "" {
+			continue
+		}
+		if _, ok := kept[id]; ok {
+			continue
+		}
+		if _, already := dropped[id]; already {
+			continue
+		}
+		dropped[id] = reason
+	}
 }
 
 type routingSelection struct {
@@ -1677,14 +1705,21 @@ func committedTokenBudget(snap routingSnapshot) int64 {
 func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
-		return nil, rejectNone, false
+		switch snap.slotState {
+		case "crashed":
+			return nil, rejectSlotCrashed, false
+		case "reloading":
+			return nil, rejectSlotReloading, false
+		default:
+			return nil, rejectNone, false
+		}
 	}
 	if !snap.hasHeadroom {
 		return nil, rejectCapacity, false
 	}
 
 	if snap.systemMetrics.ThermalState == "critical" {
-		return nil, rejectNone, false
+		return nil, rejectThermalCritical, false
 	}
 
 	reqMax := pr.RequestedMaxTokens

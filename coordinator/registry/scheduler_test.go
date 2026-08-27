@@ -3,6 +3,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestReserveProviderSkipsSelfSigned(t *testing.T) {
@@ -535,5 +537,128 @@ func TestReserveProviderAllowedProviderSerialsWithExclusion(t *testing.T) {
 	}
 	if decision.CandidateCount != 0 {
 		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
+	}
+}
+
+func TestApplySoftFilterRecordsFirstDropReason(t *testing.T) {
+	a := &routingCandidate{provider: &Provider{ID: "owned-fast"}}
+	b := &routingCandidate{provider: &Provider{ID: "owned-slow"}}
+	c := &routingCandidate{provider: &Provider{ID: "public-fast"}}
+	pool := []*routingCandidate{a, b, c}
+	dropped := map[string]string{}
+
+	pool = applySoftFilter(pool, []*routingCandidate{a, b}, store.CandidateRejectPreferOwner, dropped)
+	pool = applySoftFilter(pool, []*routingCandidate{a}, store.CandidateRejectMinDecodeTPS, dropped)
+
+	if dropped["public-fast"] != store.CandidateRejectPreferOwner {
+		t.Fatalf("public drop = %q, want prefer_owner (first filter), dropped=%v", dropped["public-fast"], dropped)
+	}
+	if dropped["owned-slow"] != store.CandidateRejectMinDecodeTPS {
+		t.Fatalf("slow owned drop = %q, want min_decode_tps, dropped=%v", dropped["owned-slow"], dropped)
+	}
+	if _, ok := dropped["owned-fast"]; ok {
+		t.Fatalf("survivor must not be recorded as dropped: %v", dropped)
+	}
+	if len(pool) != 1 || providerIDOf(pool[0]) != "owned-fast" {
+		t.Fatalf("pool after chained filters = %+v", pool)
+	}
+
+	beforeFailOpen := len(dropped)
+	kept := applySoftFilter(pool, nil, store.CandidateRejectAvoidVersion, dropped)
+	if len(kept) != 1 || providerIDOf(kept[0]) != "owned-fast" {
+		t.Fatal("empty filter must fail-open and keep the pool")
+	}
+	if len(dropped) != beforeFailOpen {
+		t.Fatalf("fail-open must not record drops, dropped=%v", dropped)
+	}
+}
+
+func TestReserveProviderExRecordsChainedSoftFilterReasons(t *testing.T) {
+	reg := New(testLogger())
+	model := "chained-soft-filter-model"
+
+	ownedFast := makeSchedulerProvider(t, reg, "owned-fast", model, 30)
+	ownedSlow := makeSchedulerProvider(t, reg, "owned-slow", model, 30)
+	ownedOld := makeSchedulerProvider(t, reg, "owned-old", model, 30)
+	publicFast := makeSchedulerProvider(t, reg, "public-fast", model, 30)
+	setProviderAccount(ownedFast, "acct-A")
+	setProviderAccount(ownedSlow, "acct-A")
+	setProviderAccount(ownedOld, "acct-A")
+	setProviderAccount(publicFast, "acct-B")
+	setProviderVersion(ownedFast, "0.6.30")
+	setProviderVersion(ownedSlow, "0.6.30")
+	setProviderVersion(ownedOld, "0.6.29")
+	setProviderVersion(publicFast, "0.6.30")
+	ownedSlow.mu.Lock()
+	ownedSlow.BackendCapacity.Slots[0].NumRunning = 5
+	ownedSlow.BackendCapacity.Slots[0].ObservedDecodeTPS = 8
+	ownedSlow.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:             "chained-soft",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		PreferOwner:           true,
+		OwnerAccountID:        "acct-A",
+		MinDecodeTPS:          15,
+		Traits:                RequestTraits{AvoidVersion: "0.6.29"},
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil || selected.ID != ownedFast.ID {
+		t.Fatalf("selected %v, want owned-fast", selected)
+	}
+
+	reasonByID := map[string]string{}
+	for _, c := range decision.Candidates {
+		reasonByID[c.ProviderID] = c.RejectionReason
+		if c.ProviderID == "owned-fast" {
+			if !c.Eligible || !c.Selected {
+				t.Fatalf("owned-fast row = %+v", c)
+			}
+		}
+	}
+	if reasonByID["public-fast"] != store.CandidateRejectPreferOwner {
+		t.Fatalf("public-fast reason = %q, want prefer_owner; reasons=%v", reasonByID["public-fast"], reasonByID)
+	}
+	if reasonByID["owned-old"] != store.CandidateRejectAvoidVersion {
+		t.Fatalf("owned-old reason = %q, want avoid_version; reasons=%v", reasonByID["owned-old"], reasonByID)
+	}
+	if reasonByID["owned-slow"] != store.CandidateRejectMinDecodeTPS {
+		t.Fatalf("owned-slow reason = %q, want min_decode_tps; reasons=%v", reasonByID["owned-slow"], reasonByID)
+	}
+}
+
+func TestReserveProviderExRecordsCrashedSlotReason(t *testing.T) {
+	reg := New(testLogger())
+	model := "crashed-slot-reason-model"
+	good := makeSchedulerProvider(t, reg, "good", model, 30)
+	crashed := makeSchedulerProvider(t, reg, "crashed", model, 200)
+	crashed.mu.Lock()
+	crashed.BackendCapacity.Slots[0].State = "crashed"
+	crashed.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:             "crash-reason",
+		Model:                 model,
+		EstimatedPromptTokens: 10,
+		RequestedMaxTokens:    32,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil || selected.ID != good.ID {
+		t.Fatalf("selected %v, want good", selected)
+	}
+	var sawCrashed bool
+	for _, c := range decision.Candidates {
+		if c.ProviderID != "crashed" {
+			continue
+		}
+		sawCrashed = true
+		if c.Eligible || c.RejectionReason != store.CandidateRejectSlotCrashed {
+			t.Fatalf("crashed row = %+v", c)
+		}
+	}
+	if !sawCrashed {
+		t.Fatalf("crashed slot missing from candidates: %+v", decision.Candidates)
 	}
 }

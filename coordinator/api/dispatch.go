@@ -2011,9 +2011,11 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	var backupProvider *registry.Provider
 	var attemptedBackupProvider *registry.Provider
 	var backupPR *registry.PendingRequest
+	var backupDecision registry.RoutingDecision
 	var backupErr string
 	var backupErrCode int
 	backupRouteRecorded := false
+	backupAttempted := false
 	backupRouteRequestID := ""
 	backupRouteAttempt := d.attempt
 
@@ -2040,7 +2042,8 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		}
 		backupExclude[provider.ID] = struct{}{}
 
-		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
+		backupAttempted = true
+		backupProvider, backupPR, backupDecision, backupErr, backupErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
@@ -2073,6 +2076,11 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		}
 		if backupRouteRecorded {
 			d.s.updateInferenceRouteOutcomeWithModel(backupRouteRequestID, backupRouteAttempt, d.model, d.errorRoutingOutcome("error", dispatchErrorClass(backupErr), backupErrCode))
+		} else if backupAttempted && backupPR != nil {
+			// Reserve returned no backup. Keep the minted request ID so the
+			// scored/rejected candidate rows still persist (ttft_429 /
+			// model_too_large / no_provider).
+			d.recordRoutingDecisionFor(nil, backupPR, backupPR.RequestID, d.attempt, backupDecision, backupErr, "")
 		}
 		// No backup available. Keep waiting for primary with remaining deadline.
 		s.logger.Info("speculative_dispatch_no_backup",

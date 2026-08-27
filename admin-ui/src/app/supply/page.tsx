@@ -87,7 +87,7 @@ const COLUMNS: Column<SupplyPressureModel>[] = [
   },
   {
     key: "unavailableSheds24h",
-    header: "No provider 24h",
+    header: "No eligible provider 24h",
     align: "right",
     render: (model) => <PressureCount value={model.unavailableSheds24h} />,
   },

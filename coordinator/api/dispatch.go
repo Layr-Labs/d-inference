@@ -183,10 +183,11 @@ type dispatchState struct {
 	// later genuine provider fault has replaced it.
 	lastFailureDeadline bool
 	// unservable is set when the dispatch loop stops because the request cannot
-	// be served (deterministic-context rejection, or a transient that exhausted
-	// maxCapacityClassRetries). unservableReason preserves that distinction for
-	// the rejection ledger. The exhausted ladder then emits a single
-	// uptime-neutral 429 instead of retrying/5xx'ing.
+	// be served (deterministic-context rejection, or transient capacity that
+	// exhausted either eligible candidates or maxCapacityClassRetries).
+	// unservableReason preserves that distinction for the rejection ledger. The
+	// exhausted ladder then emits a single uptime-neutral 429 instead of
+	// retrying/5xx'ing.
 	unservable       bool
 	unservableReason string
 	// terminalClientError is set when a dispatched provider returned a DETERMINISTIC
@@ -1184,6 +1185,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			if d.lastErr == "" {
 				d.setLastError(dispatchErr, dispatchErrCode)
 			}
+			// A small fleet can run out of eligible candidates before reaching
+			// maxCapacityClassRetries. Preserve the same capacity_exhausted
+			// terminal used by the retry cap instead of falling through to the
+			// legacy unservable_token_budget bucket.
+			if d.classifyLastRejection() == rejectionTransientCapacity {
+				d.unservable = true
+				d.unservableReason = rejectionReasonCapacityExhausted
+			}
 			return outcomeFailFast
 		}
 		// No idle provider — try queueing.
@@ -1594,8 +1603,8 @@ const rejectionReasonTemplateRenderFailed = "template_render_failed"
 //     failover (the per-provider breaker quarantines a persistently-sick node).
 //
 // When it returns true it sets d.unservable + d.unservableReason so the exhausted
-// ladder emits exactly one uptime-neutral 429 (not a storm, not a raw 5xx). It is
-// A deadline refusal also returns false but remains the current terminal. It is a
+// ladder emits exactly one uptime-neutral 429 (not a storm, not a raw 5xx). A
+// deadline refusal also returns false but remains the current terminal. It is a
 // no-op (returns false, no counters) for non-capacity outcomes, so timeouts and
 // faults are unaffected.
 //
@@ -1637,11 +1646,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// through the legacy capacity substrings, gets classified as a generic
 	// fault, and walks the unbounded fault-failover ladder to a final 503
 	// instead of the bounded capacity retries and uptime-neutral 429.
-	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext)
-	if kind != rejectionDeadlineUnreachable &&
-		d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
-		kind = rejectionTransientCapacity
-	}
+	kind := d.classifyLastRejection()
 	switch kind {
 	case rejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
@@ -1666,6 +1671,20 @@ func (d *dispatchState) shouldStopFailover() bool {
 	default:
 		return false
 	}
+}
+
+func (d *dispatchState) classifyLastRejection() rejectionKind {
+	kind := classifyRejection(
+		d.lastErrReason,
+		d.lastErr,
+		d.lastErrProviderBudget,
+		d.modelMaxContext,
+	)
+	if kind != rejectionDeadlineUnreachable &&
+		d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
+		return rejectionTransientCapacity
+	}
+	return kind
 }
 
 // latchJinjaTerminalReject latches the terminal 422 for a deterministic
@@ -3174,14 +3193,14 @@ exhausted:
 			// request-terminal precedence. Later neutral deadline/capacity
 			// refusals still own their own route rows but cannot hide the fault.
 		case exhaustedUnservable:
-			// The loop stopped early because no provider can serve this request
-			// (deterministic context overflow, or a capacity transient that
-			// exhausted maxCapacityClassRetries). We already know the verdict, so
-			// skip the quick-capacity probe and the 5xx→429 reclassification below:
-			// emit a single uptime-neutral 429. This is the proactive complement to
-			// the always-on backstop — it converts the request BEFORE storming the
-			// fleet, not after 64 attempts.
-			s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			// The loop stopped early on either a deterministic context overflow
+			// or transient capacity exhaustion. Keep those metrics disjoint:
+			// only the former is an oversized request.
+			metric := "routing.oversized_request_rejected"
+			if reason == rejectionReasonCapacityExhausted {
+				metric = "routing.capacity_exhausted_rejected"
+			}
+			s.ddIncr(metric, []string{"model:" + d.model, "stage:dispatch"})
 		case exhaustedDeadline:
 			// Every refusal was health-neutral and did not consume the generic
 			// capacity retry cap. Once no untried candidate remains, expose one

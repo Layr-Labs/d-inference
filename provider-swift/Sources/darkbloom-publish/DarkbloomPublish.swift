@@ -9,6 +9,6 @@ struct DarkbloomPublish: AsyncParsableCommand {
             Runs on Linux or macOS. Used by the publish-model.sh wrapper on \
             a GCP VM to produce a manifest.json before bytes are uploaded to R2.
             """,
-        subcommands: [HashCommand.self]
+        subcommands: [HashCommand.self, ExtractTemplateCommand.self]
     )
 }

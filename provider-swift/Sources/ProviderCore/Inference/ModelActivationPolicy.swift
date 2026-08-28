@@ -153,6 +153,37 @@ public enum ModelActivationPolicy {
             : UnifiedMemoryCap.resolvedActivationReserveBytes()
     }
 
+    /// Reserve encoded in the legacy scalar load-capacity heartbeat.
+    ///
+    /// A quiescent provider can evict every resident model before loading, so
+    /// only the largest possible candidate profile remains. A busy provider
+    /// cannot assume eviction; its scalar must cover the current residency set
+    /// plus whichever one advertised, non-resident model has the largest effect.
+    /// Matching model ids replace rather than duplicate a profile.
+    static func compatibilityLoadReserveBytes(
+        current: [String: UInt64],
+        advertised: [String: UInt64],
+        canEvictAll: Bool
+    ) -> UInt64 {
+        if canEvictAll {
+            return largestReserveBytes(advertised.values)
+        }
+
+        var largest: UInt64 = current.isEmpty
+            ? 0
+            : fleetReserveBytes(current.values)
+        for (modelId, candidateReserve) in advertised {
+            var withCandidate = current
+            withCandidate[modelId] = max(
+                withCandidate[modelId] ?? 0,
+                candidateReserve)
+            largest = max(largest, fleetReserveBytes(withCandidate.values))
+        }
+        return largest > 0
+            ? largest
+            : UnifiedMemoryCap.resolvedActivationReserveBytes()
+    }
+
     /// Architecture binding for the measured gpt-oss-20b profile. The config
     /// digest above also covers the full per-layer quantization map, so it binds
     /// kernel/storage shape without depending on whichever catalog id carries

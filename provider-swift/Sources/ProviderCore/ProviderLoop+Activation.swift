@@ -6,11 +6,15 @@ import Foundation
 ///
 /// The model scanner resolves each checkpoint's measured profile once and
 /// advertises that byte value. Runtime policy carries the same value into the
-/// loaded slot, uses the maximum across co-resident models, and publishes that
-/// maximum to the process-wide KV ledger before weights can arrive.
+/// loaded slot, sums independently executable co-resident profiles, and
+/// publishes that total to the process-wide KV ledger before weights can arrive.
 extension ProviderLoop {
     static func activationReserveBytes(for model: ModelInfo) -> UInt64 {
         ModelActivationPolicy.reportedOrDefault(model.activationReserveBytes)
+    }
+
+    func advertisedActivationReservesByModel() -> [String: UInt64] {
+        advertisedModels.mapValues { Self.activationReserveBytes(for: $0) }
     }
 
     /// Conservative baseline used by the legacy scalar `free_for_load_gb`
@@ -18,12 +22,12 @@ extension ProviderLoop {
     /// reported pre-activation capacity with each candidate's exact reserve.
     func advertisedActivationReserveBytes() -> UInt64 {
         ModelActivationPolicy.largestReserveBytes(
-            advertisedModels.values.lazy.map { Self.activationReserveBytes(for: $0) })
+            advertisedActivationReservesByModel().values)
     }
 
-    func fleetActivationReserveBytes(
+    func fleetActivationReservesByModel(
         including candidate: (modelId: String, reserveBytes: UInt64)? = nil
-    ) -> UInt64 {
+    ) -> [String: UInt64] {
         var reserves = modelsLoading
         for (modelId, slot) in modelSlots {
             reserves[modelId] = max(
@@ -35,7 +39,14 @@ extension ProviderLoop {
                 reserves[candidate.modelId] ?? 0,
                 candidate.reserveBytes)
         }
-        return ModelActivationPolicy.fleetReserveBytes(reserves.values)
+        return reserves
+    }
+
+    func fleetActivationReserveBytes(
+        including candidate: (modelId: String, reserveBytes: UInt64)? = nil
+    ) -> UInt64 {
+        ModelActivationPolicy.fleetReserveBytes(
+            fleetActivationReservesByModel(including: candidate).values)
     }
 
     static func loadHeadroomGb(activationReserveBytes: UInt64) -> Double {
@@ -61,7 +72,9 @@ extension ProviderLoop {
     func publishFleetActivationReserve(
         including candidate: (modelId: String, reserveBytes: UInt64)? = nil
     ) async {
-        activationReserveGeneration &+= 1
+        if activationReserveGeneration < .max {
+            activationReserveGeneration += 1
+        }
         let generation = activationReserveGeneration
         await kvBudget.setActivationReserveBytes(
             fleetActivationReserveBytes(including: candidate),

@@ -120,14 +120,15 @@ extension ProviderLoop {
         let canAssumeFullEviction =
             !hasInflightWork && !isLoadingAny && modelsLoading.isEmpty
 
-        // Max model weight we could load right now. The compatibility scalar
-        // subtracts the largest advertised activation profile so old
-        // coordinators remain conservative. The second scalar stops before
-        // activation (but after the minimum KV floor), allowing current
-        // coordinators to subtract the candidate's exact reported reserve
-        // without trying to invert a value already clamped at zero. That second
-        // scalar is emitted only while fully idle; an active resident model's
-        // fleet reserve cannot be replaced by a smaller candidate reserve.
+        // Max model weight we could load right now. When fully idle, the
+        // compatibility scalar subtracts the largest advertised candidate
+        // profile because all resident models are evictable. While busy/loading,
+        // it subtracts the current fleet sum plus the worst additional candidate
+        // so old coordinators cannot over-admit a concurrent load. The second
+        // scalar stops before activation (but after the minimum KV floor),
+        // allowing current coordinators to subtract the candidate's exact
+        // reported reserve without trying to invert a value already clamped at
+        // zero. That exact basis is emitted only while fully idle.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
         // models on a cold load — BUT ONLY when nothing is being served or
@@ -156,9 +157,11 @@ extension ProviderLoop {
             reserveBytes: loadReserve,
             headroomGb: Double(UnifiedMemoryCap.minimumLoadKVBytes) / gbDivisor,
             outstandingReservationBytes: outstandingKV)
-        let compatibilityActivationReserveBytes = max(
-            advertisedActivationReserveBytes(),
-            fleetActivationReserveBytes())
+        let compatibilityActivationReserveBytes =
+            ModelActivationPolicy.compatibilityLoadReserveBytes(
+                current: fleetActivationReservesByModel(),
+                advertised: advertisedActivationReservesByModel(),
+                canEvictAll: canAssumeFullEviction)
         let freeForLoadGb = max(
             0,
             freeForLoadBeforeActivationGb

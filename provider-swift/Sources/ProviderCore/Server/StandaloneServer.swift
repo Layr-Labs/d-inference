@@ -666,7 +666,9 @@ public actor StandaloneServer {
     private func publishFleetActivationReserve(
         including candidate: (modelId: String, reserveBytes: UInt64)? = nil
     ) async {
-        activationReserveGeneration &+= 1
+        if activationReserveGeneration < .max {
+            activationReserveGeneration += 1
+        }
         let generation = activationReserveGeneration
         await kvBudget.setActivationReserveBytes(
             fleetActivationReserveBytes(including: candidate),

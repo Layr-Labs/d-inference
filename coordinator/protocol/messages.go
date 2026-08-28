@@ -389,11 +389,12 @@ type BackendCapacity struct {
 	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
-	// reserve, and activation+min-KV load headroom for the largest advertised
-	// activation profile, clamped to real OS-available memory, and treating idle
-	// resident models as evictable. This is the conservative compatibility value
-	// for older coordinators. A pointer so a legacy provider that doesn't report
-	// it is nil (→ coordinator falls back to the total-memory heuristic).
+	// reserve, legal resident-model eviction, and activation+min-KV load
+	// headroom. A quiescent provider charges its largest candidate profile; a
+	// busy/loading provider charges its current fleet sum plus the worst
+	// additional candidate. This is the conservative compatibility value for
+	// older coordinators. A pointer so a legacy provider that doesn't report it
+	// is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 	// FreeForLoadBeforeActivationGB is the same live loadable-weight basis after
 	// the minimum KV floor but before activation reserve. Current coordinators

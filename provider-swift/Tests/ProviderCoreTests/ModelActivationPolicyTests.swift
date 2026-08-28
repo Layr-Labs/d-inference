@@ -152,3 +152,34 @@ private func measuredGPTOSSArchitecture(
     #expect(ModelActivationPolicy.largestReserveBytes(
         [measured, conservative]) == conservative)
 }
+
+@Test func compatibilityLoadReserveTracksEvictionState() {
+    let measured = 3 * activationGiB
+    let conservative = UnifiedMemoryCap.defaultActivationReserveBytes
+    let current = ["resident": measured]
+    let advertised = [
+        "resident": measured,
+        "cold": conservative,
+    ]
+
+    #expect(ModelActivationPolicy.compatibilityLoadReserveBytes(
+        current: current,
+        advertised: advertised,
+        canEvictAll: true
+    ) == conservative)
+    #expect(ModelActivationPolicy.compatibilityLoadReserveBytes(
+        current: current,
+        advertised: advertised,
+        canEvictAll: false
+    ) == measured + conservative)
+}
+
+@Test func compatibilityLoadReserveDoesNotDoubleCountMatchingModel() {
+    let measured = 3 * activationGiB
+
+    #expect(ModelActivationPolicy.compatibilityLoadReserveBytes(
+        current: ["same": measured],
+        advertised: ["same": measured],
+        canEvictAll: false
+    ) == measured)
+}

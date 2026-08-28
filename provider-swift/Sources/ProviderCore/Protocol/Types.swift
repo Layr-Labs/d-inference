@@ -759,10 +759,11 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var totalMemoryGb: Double
     /// Max additional model-WEIGHT footprint (GB) the provider can load right
     /// now, accounting for the 90% unified cap, OS/operator reserve, real
-    /// OS-available memory, eviction of idle resident models, and load headroom
-    /// for the largest activation profile in the advertised model set. Kept as
-    /// the conservative compatibility value for old coordinators. 0 means
-    /// "cannot load anything new right now".
+    /// OS-available memory, legal resident-model eviction, and activation
+    /// headroom. A quiescent provider charges its largest candidate profile; a
+    /// busy/loading provider charges its current fleet sum plus the worst
+    /// additional candidate. Kept as the conservative compatibility value for
+    /// old coordinators. 0 means "cannot load anything new right now".
     public var freeForLoadGb: Double
     /// Max additional model-WEIGHT footprint after the cap, OS/operator
     /// reserve, outstanding KV, eviction, and the minimum serveable KV floor,

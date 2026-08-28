@@ -5,6 +5,13 @@
 // to a conversation history. Fold those turns into one leading system message
 // before Jinja rendering instead of letting the template throw a deterministic
 // "System message must be at the beginning" error.
+//
+// Qwen3-VL (qwen3_vl_moe / qwen3_vl) shares that template contract: its
+// system role is consumed only at messages[0], so a mid-conversation system
+// turn is silently DROPPED from the rendered prompt — multi-system
+// conversations lose the later instruction entirely (the OpenRouter
+// multi-system failure) rather than erroring. The same leading-system fold
+// fixes both families.
 
 import Foundation
 import MLXLMServer
@@ -15,6 +22,7 @@ enum Qwen35TemplateFix {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased(),
             modelType == "qwen3_5" || modelType == "qwen3_5_moe"
+                || modelType == "qwen3_vl_moe"
         {
             return true
         }
@@ -26,6 +34,8 @@ enum Qwen35TemplateFix {
             || modelId.contains("qwen3_6")
             || modelId.contains("qwen3.8")
             || modelId.contains("qwen3_8")
+            || modelId.contains("qwen3-vl")
+            || modelId.contains("qwen3_vl")
     }
 
     static func normalizeMessages(

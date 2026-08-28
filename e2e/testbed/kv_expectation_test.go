@@ -2,6 +2,7 @@ package testbed
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -177,5 +178,104 @@ func TestVerifyRegistryKVBackendsRefusesAnEmptyFleet(t *testing.T) {
 		context.Background(), r, KVBackendPaged, time.Second, kvExpectationLogger())
 	if err == nil {
 		t.Fatal("expectation with nothing to assert must fail, not vacuously pass")
+	}
+}
+
+func TestPrewarmRegistrySlotInvokesLoadAndRequiresReadyCapacity(t *testing.T) {
+	r := registry.New(kvExpectationLogger())
+	registerExpectationProvider(r, "box-ready", "m/one")
+	backend := registry.KVBackendContiguous
+	r.Heartbeat("box-ready", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{{
+				Model:                "m/one",
+				State:                "idle",
+				MaxConcurrency:       4,
+				ActiveTokenBudgetMax: 8192,
+				KVBackend:            &backend,
+			}},
+		},
+	})
+
+	var sentProvider, sentModel string
+	err := prewarmRegistrySlot(
+		context.Background(), r, "box-ready", "m/one", KVBackendContiguous,
+		time.Second, kvExpectationLogger(),
+		func(providerID, model string) error {
+			sentProvider, sentModel = providerID, model
+			return nil
+		},
+		nil)
+	if err != nil {
+		t.Fatalf("ready slot failed pre-warm: %v", err)
+	}
+	if sentProvider != "box-ready" || sentModel != "m/one" {
+		t.Fatalf("load_model target = %s/%s, want box-ready/m/one",
+			sentProvider, sentModel)
+	}
+}
+
+func TestPrewarmRegistrySlotTimesOutWithExactSlotEvidence(t *testing.T) {
+	r := registry.New(kvExpectationLogger())
+	registerExpectationProvider(r, "box-cold", "m/one")
+
+	sends := 0
+	err := prewarmRegistrySlot(
+		context.Background(), r, "box-cold", "m/one", KVBackendContiguous,
+		25*time.Millisecond, kvExpectationLogger(),
+		func(string, string) error {
+			sends++
+			return nil
+		},
+		nil)
+	if err == nil {
+		t.Fatal("cold slot passed pre-warm without a capacity heartbeat")
+	}
+	if sends != 1 {
+		t.Fatalf("load_model sends = %d, want exactly 1", sends)
+	}
+	for _, want := range []string{
+		"box-cold/m/one", "present=false", "pending_load=false", "provider stdout/stderr",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("timeout error %q does not name %q", err.Error(), want)
+		}
+	}
+}
+
+func TestPrewarmRegistrySlotSurfacesProviderLoadFailureImmediately(t *testing.T) {
+	r := registry.New(kvExpectationLogger())
+	registerExpectationProvider(r, "box-failed", "m/one")
+
+	sends := 0
+	probes := 0
+	start := time.Now()
+	err := prewarmRegistrySlot(
+		context.Background(), r, "box-failed", "m/one", KVBackendContiguous,
+		time.Minute, kvExpectationLogger(),
+		func(string, string) error {
+			sends++
+			return nil
+		},
+		func() error {
+			probes++
+			return errors.New("daemon-state load_error: model load rejected")
+		})
+	if err == nil {
+		t.Fatal("provider load failure was ignored")
+	}
+	if sends != 1 || probes != 1 {
+		t.Fatalf("load sends/probes = %d/%d, want 1/1", sends, probes)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("terminal provider load failure waited instead of failing immediately")
+	}
+	for _, want := range []string{"box-failed/m/one", "model load rejected", "provider stdout/stderr"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("load failure %q does not name %q", err.Error(), want)
+		}
 	}
 }

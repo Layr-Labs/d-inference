@@ -208,11 +208,12 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 }
 
 const (
-	qwen38ConcreteModel = registry.Qwen38NAXModelID
-	qwen38Alias         = "qwen3.8-27b"
-	qwen38TargetRev     = "301e9e2767fd0efcfab7883004720ba3c9a552a1"
-	qwen38MTPModel      = "EigenLabs/Qwen3.8-27B-MTP-4bit"
-	qwen38MTPRev        = "329261c5e0b3f9c233485e682cb3b67b88c20a55"
+	qwen38ConcreteModel  = registry.Qwen38NAXModelID
+	qwen38Alias          = "qwen3.8-27b"
+	qwen38TargetRev      = "301e9e2767fd0efcfab7883004720ba3c9a552a1"
+	qwen38MTPModel       = "EigenLabs/Qwen3.8-27B-MTP-4bit"
+	qwen38MTPRev         = "329261c5e0b3f9c233485e682cb3b67b88c20a55"
+	qwen38PrewarmTimeout = 10 * time.Minute
 )
 
 type qwen38E2EConfig struct {
@@ -476,6 +477,98 @@ func qwen38SuiteConfig(cfg qwen38E2EConfig) testbed.SuiteConfig {
 	}
 }
 
+func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
+	switch requested {
+	case "", testbed.KVBackendAuto:
+		// The provider's production .auto selection resolves contiguous.
+		return testbed.KVBackendContiguous, nil
+	case testbed.KVBackendPaged, testbed.KVBackendContiguous:
+		return requested, nil
+	default:
+		return "", fmt.Errorf("unsupported Qwen3.8 testbed KV backend %q", requested)
+	}
+}
+
+func TestQwen38ExpectedBuiltKVBackend(t *testing.T) {
+	for requested, want := range map[string]string{
+		"":                          testbed.KVBackendContiguous,
+		testbed.KVBackendAuto:       testbed.KVBackendContiguous,
+		testbed.KVBackendContiguous: testbed.KVBackendContiguous,
+		testbed.KVBackendPaged:      testbed.KVBackendPaged,
+	} {
+		got, err := qwen38ExpectedBuiltKVBackend(requested)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+	_, err := qwen38ExpectedBuiltKVBackend("invalid")
+	require.Error(t, err)
+}
+
+func qwen38LoadFailureProbe(provider *testbed.Provider) func() error {
+	return func() error {
+		if !provider.Running() {
+			return errors.New("provider process exited during model load")
+		}
+		raw, err := os.ReadFile(provider.DaemonStatePath())
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read provider daemon state: %w", err)
+		}
+		var state struct {
+			Slots []struct {
+				Model     string  `json:"model"`
+				LoadError *string `json:"load_error"`
+			} `json:"slots"`
+		}
+		if err := json.Unmarshal(raw, &state); err != nil {
+			// The daemon owns this asynchronously-written observation. A
+			// transient partial read is not a model-load verdict; retry.
+			return nil
+		}
+		for _, slot := range state.Slots {
+			if slot.Model == qwen38ConcreteModel &&
+				slot.LoadError != nil &&
+				strings.TrimSpace(*slot.LoadError) != "" {
+				return fmt.Errorf("daemon-state load_error: %s", *slot.LoadError)
+			}
+		}
+		return nil
+	}
+}
+
+func prewarmQwen38(t *testing.T, s *testbed.Suite) {
+	t.Helper()
+	providerIDs := s.Coordinator.Registry.ProviderIDs()
+	require.Len(t, providerIDs, 1, "Qwen3.8 E2E requires one exact provider slot")
+	expectedBackend, err := qwen38ExpectedBuiltKVBackend(
+		testbed.ResolveKVBackend(s.Config.KVBackend))
+	require.NoError(t, err)
+
+	err = testbed.PrewarmRegistrySlot(
+		s.Ctx,
+		s.Coordinator.Registry,
+		providerIDs[0],
+		qwen38ConcreteModel,
+		expectedBackend,
+		qwen38PrewarmTimeout,
+		s.Logger,
+		qwen38LoadFailureProbe(s.Providers[0]),
+	)
+	if err == nil {
+		return
+	}
+	daemonState, stateErr := os.ReadFile(s.Providers[0].DaemonStatePath())
+	if stateErr != nil {
+		t.Fatalf("Qwen3.8 production pre-warm failed: %v; "+
+			"provider daemon state unavailable: %v; inspect provider stdout/stderr above",
+			err, stateErr)
+	}
+	t.Fatalf("Qwen3.8 production pre-warm failed: %v\nprovider daemon state: %s",
+		err, daemonState)
+}
+
 func postQwen38Request(
 	t *testing.T, s *testbed.Suite, body map[string]any,
 ) (*http.Response, []byte) {
@@ -631,6 +724,7 @@ func TestIntegration_Qwen38RealProcessToolsAndVideo(t *testing.T) {
 	}
 	require.NoError(t, err, "Qwen3.8 suite startup failed")
 	t.Cleanup(s.Stop)
+	prewarmQwen38(t, s)
 	assertQwen38Catalog(t, s)
 
 	toolBody := map[string]any{

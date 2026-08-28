@@ -95,7 +95,8 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	})
 	publicKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
+		Type:    protocol.TypeRegister,
+		Version: minProviderVersionForReconnectAttestation,
 		Hardware: protocol.Hardware{
 			ChipName:   "Apple M5 Max",
 			ChipFamily: "M5",
@@ -179,35 +180,173 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	}
 }
 
-func TestProviderRegistrationRejectsReplayedAttestation(t *testing.T) {
+func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
+	cases := []struct {
+		name      string
+		version   string
+		timestamp time.Time
+		accepted  bool
+	}{
+		{
+			name:      "missing version retains legacy reconnect semantics",
+			timestamp: time.Now().Add(-10 * time.Minute),
+			accepted:  true,
+		},
+		{
+			name:      "last legacy release accepts reconnect replay",
+			version:   "0.8.14",
+			timestamp: time.Now().Add(-10 * time.Minute),
+			accepted:  true,
+		},
+		{
+			name:      "capability release rejects stale replay",
+			version:   minProviderVersionForReconnectAttestation,
+			timestamp: time.Now().Add(-10 * time.Minute),
+		},
+		{
+			name:      "newer release rejects stale replay",
+			version:   "0.8.16",
+			timestamp: time.Now().Add(-10 * time.Minute),
+		},
+		{
+			name:      "capability release accepts future skew just under boundary",
+			version:   minProviderVersionForReconnectAttestation,
+			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew - time.Second),
+			accepted:  true,
+		},
+		{
+			name:      "capability release accepts future skew at boundary",
+			version:   minProviderVersionForReconnectAttestation,
+			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew),
+			accepted:  true,
+		},
+		{
+			name:      "capability release rejects future skew over boundary",
+			version:   minProviderVersionForReconnectAttestation,
+			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew + time.Second),
+		},
+		{
+			name:      "capability release accepts fresh reconnect",
+			version:   minProviderVersionForReconnectAttestation,
+			timestamp: time.Now(),
+			accepted:  true,
+		},
+	}
+
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			reg := registry.New(logger)
+			srv := NewServer(
+				reg,
+				store.NewMemory(store.Config{AdminKey: "test-key"}),
+				ServerConfig{},
+				logger,
+			)
+			publicKey := testPublicKeyB64()
+			regMsg := &protocol.RegisterMessage{
+				Type:      protocol.TypeRegister,
+				Version:   tc.version,
+				PublicKey: publicKey,
+				Attestation: buildTestAttestationJSONWithFields(
+					t, publicKey, "", "", tc.timestamp, nil),
+			}
+			provider := reg.Register(fmt.Sprintf("reconnect-%d", index), nil, regMsg)
+			srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+
+			provider.Mu().Lock()
+			defer provider.Mu().Unlock()
+			if tc.accepted {
+				if provider.Status == registry.StatusUntrusted ||
+					provider.AttestationResult == nil ||
+					!provider.AttestationResult.Valid {
+					t.Fatalf("freshness-compatible registration rejected: status=%s result=%+v",
+						provider.Status, provider.AttestationResult)
+				}
+				if provider.LastChallengeVerified.IsZero() {
+					t.Fatal("accepted registration did not initialize periodic challenge freshness")
+				}
+				return
+			}
+			if provider.Status != registry.StatusUntrusted ||
+				provider.AttestationResult == nil ||
+				provider.AttestationResult.Error != "attestation timestamp outside freshness window" {
+				t.Fatalf("replayed attestation state = status=%s result=%+v",
+					provider.Status, provider.AttestationResult)
+			}
+			if len(provider.RuntimeCapabilities) != 0 {
+				t.Fatalf("replayed attestation retained capabilities: %v",
+					provider.RuntimeCapabilities)
+			}
+		})
+	}
+}
+
+func TestLegacyRegistrationReplayCannotPromoteProtectedRuntimeCapabilities(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: registry.Qwen38NAXModelID}})
 	srv := NewServer(
 		reg,
 		store.NewMemory(store.Config{AdminKey: "test-key"}),
 		ServerConfig{},
 		logger,
 	)
+	metallibHash := strings.Repeat("a", 64)
 	publicKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
-		Type:      protocol.TypeRegister,
+		Type:    protocol.TypeRegister,
+		Version: "0.8.14",
+		Hardware: protocol.Hardware{
+			ChipName:   "Apple M5 Max",
+			ChipFamily: "M5",
+		},
+		Models:    []protocol.ModelInfo{{ID: registry.Qwen38NAXModelID}},
+		Backend:   "mlx-swift",
 		PublicKey: publicKey,
 		Attestation: buildTestAttestationJSONWithFields(
-			t, publicKey, "", "", time.Now().Add(-10*time.Minute), nil),
+			t,
+			publicKey,
+			"",
+			"",
+			time.Now().Add(-10*time.Minute),
+			map[string]interface{}{
+				"chipFamily":   "M5",
+				"chipName":     "Apple M5 Max",
+				"metallibHash": metallibHash,
+				"runtimeCapabilities": []string{
+					registry.ProviderCapabilityAppleM5,
+					registry.ProviderCapabilityMLXNAX,
+				},
+			},
+		),
+		RuntimeCapabilities: []string{
+			registry.ProviderCapabilityAppleM5,
+			registry.ProviderCapabilityMLXNAX,
+		},
+		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
-	provider := reg.Register("replayed", nil, regMsg)
+	provider := reg.Register("legacy-reconnect", nil, regMsg)
 	srv.verifyProviderAttestation(provider.ID, provider, regMsg)
 	provider.Mu().Lock()
-	defer provider.Mu().Unlock()
-	if provider.Status != registry.StatusUntrusted ||
-		provider.AttestationResult == nil ||
-		provider.AttestationResult.Error != "attestation timestamp outside freshness window" {
-		t.Fatalf("replayed attestation state = status=%s result=%+v",
-			provider.Status, provider.AttestationResult)
+	provider.RuntimeVerified = true
+	provider.RuntimeManifestChecked = true
+	provider.MetallibVerified = true
+	provider.ChallengeVerifiedSIP = true
+	provider.LastChallengeVerified = time.Now()
+	provider.Mu().Unlock()
+	reg.SetTrustLevel(provider.ID, registry.TrustHardware)
+	provider.SetFreshCodeAttested()
+	if err := reg.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
+		t.Fatalf("legacy capability reconciliation failed: %v", err)
 	}
+
 	if len(provider.RuntimeCapabilities) != 0 {
-		t.Fatalf("replayed attestation retained capabilities: %v",
+		t.Fatalf("legacy reconnect promoted protected capabilities: %v",
 			provider.RuntimeCapabilities)
+	}
+	if got := reg.ModelProviderSnapshot()[registry.Qwen38NAXModelID]; got != 0 {
+		t.Fatalf("legacy reconnect exposed exact Qwen build: %d", got)
 	}
 }
 

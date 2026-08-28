@@ -272,6 +272,30 @@ func TestAdjustedFreeForLoadLeavesLegacyScalarUnchanged(t *testing.T) {
 	}
 }
 
+func TestAdjustedFreeForLoadUsesCompatibilityScalarWhenBusy(t *testing.T) {
+	reportedFree := 2.0
+	beforeActivation := 13.5
+	p := &Provider{
+		Version: "0.8.0",
+		Models: []protocol.ModelInfo{
+			{ID: "gpt-oss", ActivationReserveBytes: 3 * bytesPerGB},
+		},
+		BackendCapacity: &protocol.BackendCapacity{
+			FreeForLoadGB:                 &reportedFree,
+			FreeForLoadBeforeActivationGB: &beforeActivation,
+		},
+		pendingReqs: map[string]*PendingRequest{
+			"active": {},
+		},
+	}
+
+	got := adjustedFreeForLoadGBLocked(p, "gpt-oss")
+	if got == nil || *got != reportedFree {
+		t.Fatalf("busy adjusted free-for-load = %v, want compatibility %.1f GiB",
+			got, reportedFree)
+	}
+}
+
 // A reported 0 ("can't load anything now") must reject any cold load, not fall
 // back to the heuristic (nil is the only fallback trigger).
 func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
@@ -286,6 +310,13 @@ func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
 	}
 	if freeMemoryAdmits(snap, 100, 256) {
 		t.Fatal("reported free-for-load 0 must reject a cold load")
+	}
+
+	// The report remains authoritative while another request is pending. The
+	// legacy free-memory fallback would incorrectly admit this shape.
+	snap.totalPending = 1
+	if freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("busy cold load must reject when reported free-for-load is 0")
 	}
 }
 

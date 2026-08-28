@@ -1333,13 +1333,16 @@ func advertisedActivationReserveBytesLocked(p *Provider, model string) uint64 {
 // model. Current providers report an unclamped pre-activation basis, after every
 // other live load constraint including the minimum KV floor; subtracting the
 // candidate's provider-resolved reserve reproduces the load gate even when the
-// compatibility scalar was clamped to zero. Older providers omit the basis, so
-// their conservative scalar is used unchanged. Caller holds p.mu.
+// compatibility scalar was clamped to zero. The basis is valid only while fully
+// idle; if coordinator work became pending after the heartbeat, or an older/busy
+// provider omitted it, the conservative scalar is used unchanged. Caller holds
+// p.mu.
 func adjustedFreeForLoadGBLocked(p *Provider, model string) *float64 {
 	if p.BackendCapacity == nil {
 		return nil
 	}
-	if p.BackendCapacity.FreeForLoadBeforeActivationGB == nil {
+	if p.pendingCount() > 0 ||
+		p.BackendCapacity.FreeForLoadBeforeActivationGB == nil {
 		return p.BackendCapacity.FreeForLoadGB
 	}
 	candidateReserve := servabilityActivationReserveBytes(
@@ -1453,31 +1456,26 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	kvCacheGB := float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
 	required += kvCacheGB
 
-	// When the model is available on disk but not currently loaded, the
-	// provider will evict idle models to make room (LRU eviction), so we check
-	// whether the model can be loaded rather than requiring it to fit alongside
-	// existing loaded models. The provider handles the swap autonomously.
-	//
-	// However, if the provider has in-flight requests (totalPending > 0), it
-	// cannot evict the currently-serving model. In that case, fall through to the
-	// standard free-memory check which requires room alongside active models.
-	if snap.availableOnDisk && !snap.modelLoaded && snap.totalPending == 0 {
-		// Preferred: the provider reports freeForLoadGB — the max model WEIGHT it
-		// can load right now, already net of the 90% unified cap, OS/operator
-		// reserve, activation+min-KV headroom, real OS-available memory, and
-		// eviction of idle models. The single source of truth, normalized to the
-		// provider's padded-GiB load basis so it exactly mirrors the provider's own
-		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
-		// weights).
+	// When a cold model is available on disk, prefer the provider's live
+	// loadable-weight report in both idle and busy states. An idle provider may
+	// report the candidate-specific pre-activation basis because every resident
+	// model is evictable. A busy provider reports only the conservative scalar,
+	// which retains active weights and the resident fleet activation reserve.
+	if snap.availableOnDisk && !snap.modelLoaded {
 		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
 			return admit
 		}
-		// Fallback for legacy providers that don't report freeForLoadGB: the old
-		// total-memory heuristic (provider evicts idle models, so compare against
-		// total rather than free). Coarser — can't see the unified cap or OS
-		// baseline — but only used until the fleet reports the field.
-		const osReserveGB = 4.0
-		return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		if snap.totalPending == 0 {
+			// Fallback for legacy providers that don't report freeForLoadGB: the
+			// old total-memory heuristic (provider evicts idle models, so compare
+			// against total rather than free). Coarser — can't see the unified cap
+			// or OS baseline — but only used until the fleet reports the field.
+			const osReserveGB = 4.0
+			return snap.modelSizeGB+kvCacheGB+osReserveGB <= snap.totalMemoryGB
+		}
+		// A legacy/budgetless busy provider has no authoritative load report and
+		// cannot evict its serving model. Preserve the old alongside-resident
+		// fallback below.
 	}
 
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB

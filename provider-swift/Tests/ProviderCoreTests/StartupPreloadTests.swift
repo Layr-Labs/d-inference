@@ -105,6 +105,9 @@ struct StartupPreloaderTests {
     private func makeDeps(
         recorder: PreloadRecorder,
         freeMemoryGb: Double = 1_000,
+        requiredMemoryGb: @escaping @Sendable (StartupPreloader.Candidate) async -> Double = {
+            $0.requiredGb
+        },
         loadError: @escaping @Sendable (String) -> (any Error)? = { _ in nil },
         selfTest: Bool = false,
         selfTestError: @escaping @Sendable (String) -> (any Error)? = { _ in nil },
@@ -120,6 +123,7 @@ struct StartupPreloaderTests {
         }
         return StartupPreloader.Dependencies(
             freeMemoryGb: { freeMemoryGb },
+            requiredMemoryGb: requiredMemoryGb,
             load: { id in
                 recorder.recordLoad(id)
                 if let error = loadError(id) { throw error }
@@ -167,6 +171,29 @@ struct StartupPreloaderTests {
         #expect(summary.loaded == ["mid-8b", "small-1b"])
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
+    }
+
+    @Test("memory admission uses the current runtime requirement")
+    func memoryAdmissionRecomputesRuntimeRequirement() async {
+        let recorder = PreloadRecorder()
+        let preloader = StartupPreloader(
+            deps: makeDeps(
+                recorder: recorder,
+                freeMemoryGb: 8,
+                requiredMemoryGb: { candidate in
+                    candidate.modelId == "needs-resident-floor"
+                        ? 9
+                        : candidate.requiredGb
+                }))
+
+        let summary = await preloader.run(candidates: [
+            candidate("needs-resident-floor", requiredGb: 6),
+            candidate("fits", requiredGb: 2),
+        ])
+
+        #expect(summary.skippedInsufficientMemory == ["needs-resident-floor"])
+        #expect(summary.loaded == ["fits"])
+        #expect(recorder.loads == ["fits"])
     }
 
     @Test("a failed load logs, is recorded, and does not stop later candidates")

@@ -485,7 +485,7 @@ public actor StandaloneServer {
     }
 
     func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
-        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+        await kvBudget.recordPendingLoadForTesting(requestID: requestID, bytes: bytes)
     }
 
     /// The resident slot's engine KV grant in bytes (re-slice assertions).
@@ -1372,8 +1372,13 @@ public actor StandaloneServer {
             let pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(
-                requestID: pendingLoadID, bytes: pendingLoadBytes)
+            guard await kvBudget.reservePendingLoadIfCapacity(
+                requestID: pendingLoadID,
+                bytes: pendingLoadBytes
+            ) else {
+                throw StandaloneServerError.capacityUnavailable(
+                    "Insufficient memory after concurrent KV admission while loading '\(modelId)'")
+            }
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
@@ -1603,14 +1608,14 @@ public actor StandaloneServer {
             await publishFleetActivationReserve()
             standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
-            modelsLoading.remove(modelId)
+            modelsLoading.removeValue(forKey: modelId)
             isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
         } catch {
-            modelsLoading.remove(modelId)
+            modelsLoading.removeValue(forKey: modelId)
             isLoadingAny = false
             // Idempotent when the reservation was never placed or was already
             // handed off to MLX's live-memory view after a successful load.

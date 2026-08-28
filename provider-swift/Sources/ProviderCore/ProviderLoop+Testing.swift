@@ -420,7 +420,7 @@ extension ProviderLoop {
     func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
 
     func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
-        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+        await kvBudget.recordPendingLoadForTesting(requestID: requestID, bytes: bytes)
     }
 
     func outstandingKVReservationBytesForTesting() async -> UInt64 {

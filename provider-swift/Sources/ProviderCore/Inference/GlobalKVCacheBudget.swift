@@ -257,8 +257,8 @@ public actor GlobalKVCacheBudget {
         return true
     }
 
-    /// Reserve a loading model's WEIGHT footprint for the duration of its load,
-    /// unconditionally. A model's weights are not yet visible in MLX active/cache
+    /// Atomically reserve a loading model's WEIGHT footprint for the duration of
+    /// its load. A model's weights are not yet visible in MLX active/cache
     /// while `loadModelContainer` is still allocating them, so a KV reservation
     /// granted on an ALREADY-loaded model during that window would compute its
     /// headroom blind to the incoming weights and could push total usage past the
@@ -266,15 +266,19 @@ public actor GlobalKVCacheBudget {
     /// footprint here makes those in-flight weights visible to `reserve` /
     /// `reserveBytes`, so concurrent KV can only claim `headroom − weights`.
     ///
-    /// Unconditional (never fails): the load gate has already admitted the model,
-    /// so this is bookkeeping for the load that WILL happen, not a second gate.
-    /// It reserves only the weight estimate, so concurrent KV that still fits
-    /// underneath is admitted; only reservations that would over-commit are
-    /// rejected (caller surfaces 429/retry). Released once the weights are
-    /// resident (and thus reflected in `mlxUsed`). Pair with `release`.
-    public func reservePendingLoad(requestID: String, bytes: UInt64) {
-        guard bytes > 0 else { return }
-        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+    /// The earlier load-gate sample may be stale after an actor suspension (for
+    /// example MTP admission). This method performs the final capacity check and
+    /// insertion in one actor turn, so KV admitted during that suspension makes
+    /// the load fail cleanly instead of creating an over-committed ledger. It
+    /// reserves only the weight estimate; concurrent KV that still fits below it
+    /// remains admissible. Released once the weights are resident (and therefore
+    /// reflected in `mlxUsed`). Pair with `release`.
+    public func reservePendingLoadIfCapacity(
+        requestID: String,
+        bytes: UInt64
+    ) -> Bool {
+        guard bytes > 0, reservations[requestID] == nil else { return false }
+        return commit(requestID: requestID, bytes: bytes)
     }
 
     /// Atomically replace the in-flight load reservation when target weights
@@ -484,6 +488,14 @@ public actor GlobalKVCacheBudget {
     }
 
     // MARK: - Test support
+
+    /// Inject bookkeeping that deliberately bypasses capacity admission. Tests
+    /// use this to exercise stale-reservation auditing and transfer semantics;
+    /// Runtime load paths must use `reservePendingLoadIfCapacity`.
+    func recordPendingLoadForTesting(requestID: String, bytes: UInt64) {
+        guard bytes > 0 else { return }
+        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+    }
 
     /// The off-actor reclaimer, so tests can drive `reclaimIfNeeded`/`sweep`
     /// deterministically (they run the injected `clearCache` synchronously on the

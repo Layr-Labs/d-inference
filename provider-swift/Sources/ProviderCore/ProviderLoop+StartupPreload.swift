@@ -190,6 +190,9 @@ extension ProviderLoop {
         }
         let deps = StartupPreloader.Dependencies(
             freeMemoryGb: { await me.startupPreloadFreeMemoryGb() },
+            requiredMemoryGb: { candidate in
+                await me.startupPreloadRequiredMemoryGb(for: candidate)
+            },
             load: { modelId in try await me.startupPreloadLoad(modelId: modelId) },
             selfTest: selfTestClosure,
             selfTestFailClosed: failClosed,
@@ -248,6 +251,17 @@ extension ProviderLoop {
             return await override()
         }
         return await availableMemoryGb()
+    }
+
+    private func startupPreloadRequiredMemoryGb(
+        for candidate: StartupPreloader.Candidate
+    ) -> Double {
+        guard let info = advertisedModels[candidate.modelId] else {
+            return candidate.requiredGb
+        }
+        return requiredLoadGb(
+            weightsGb: info.estimatedMemoryGb,
+            candidateActivationReserveBytes: Self.activationReserveBytes(for: info))
     }
 
     private func startupPreloadLoad(modelId: String) async throws {

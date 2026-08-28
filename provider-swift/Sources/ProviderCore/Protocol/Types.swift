@@ -769,7 +769,10 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// but BEFORE activation reserve. Current coordinators subtract each
     /// candidate's reported `ModelInfo.activationReserveBytes` from this
     /// unclamped base, avoiding information loss when `freeForLoadGb` is zero.
-    /// nil identifies an older provider.
+    /// Reported only while the provider is fully idle with no load transition,
+    /// when every resident model is evictable; nil also identifies an older
+    /// provider. A busy/loading provider omits it because its fleet activation
+    /// reserve must remain.
     public var freeForLoadBeforeActivationGb: Double?
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.

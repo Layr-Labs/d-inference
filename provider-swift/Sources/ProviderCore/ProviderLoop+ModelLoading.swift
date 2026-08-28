@@ -376,7 +376,15 @@ extension ProviderLoop {
             let pendingLoadBytes = Self.pendingLoadReservationBytes(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
+            guard await kvBudget.reservePendingLoadIfCapacity(
+                requestID: pendingLoadID,
+                bytes: pendingLoadBytes
+            ) else {
+                let message =
+                    "Insufficient memory after concurrent KV admission while loading '\(modelId)'"
+                recordModelLoadError(model: modelId, message: message)
+                throw InferenceError.modelLoadFailed(message)
+            }
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
             // Cold-start load timing (slot-level `model_load_time_ms`): from
@@ -739,14 +747,14 @@ extension ProviderLoop {
             await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
-            modelsLoading.remove(modelId)
+            modelsLoading.removeValue(forKey: modelId)
             isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
         } catch {
-            modelsLoading.remove(modelId)
+            modelsLoading.removeValue(forKey: modelId)
             isLoadingAny = false
             // Release the pending-load reservation on every failure path (no-op
             // if it was never placed, or already released on the success path).

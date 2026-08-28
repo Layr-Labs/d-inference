@@ -215,7 +215,7 @@ struct SpecDecLoadGateTests {
             memorySnapshot: {
                 .init(total: 10_000, active: 0, cache: 0, systemAvailable: 10_000)
             })
-        await budget.reservePendingLoad(requestID: "load", bytes: 1_200)
+        await budget.recordPendingLoadForTesting(requestID: "load", bytes: 1_200)
         #expect(await budget.outstandingReservedBytes() == 1_200)
         await budget.replacePendingLoadReservation(requestID: "load", bytes: 200)
         #expect(await budget.outstandingReservedBytes() == 200)
@@ -232,7 +232,7 @@ struct SpecDecLoadGateTests {
             memorySnapshot: {
                 .init(total: 8 * unit, active: 0, cache: 0, systemAvailable: .max)
             })
-        await budget.reservePendingLoad(requestID: "load", bytes: 6 * unit)
+        await budget.recordPendingLoadForTesting(requestID: "load", bytes: 6 * unit)
         #expect(!(await budget.reserveBytes(requestID: "rejected-1", bytes: unit)))
         #expect(await budget.rejectionStreakArmedForTesting())
 

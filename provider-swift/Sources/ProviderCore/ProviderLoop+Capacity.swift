@@ -117,7 +117,9 @@ extension ProviderLoop {
         // coordinators remain conservative. The second scalar stops before
         // activation (but after the minimum KV floor), allowing current
         // coordinators to subtract the candidate's exact reported reserve
-        // without trying to invert a value already clamped at zero.
+        // without trying to invert a value already clamped at zero. That second
+        // scalar is emitted only while fully idle; an active resident model's
+        // fleet reserve cannot be replaced by a smaller candidate reserve.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
         // models on a cold load — BUT ONLY when nothing is being served. MLX
@@ -146,10 +148,13 @@ extension ProviderLoop {
             reserveBytes: loadReserve,
             headroomGb: Double(UnifiedMemoryCap.minimumLoadKVBytes) / gbDivisor,
             outstandingReservationBytes: outstandingKV)
+        let compatibilityActivationReserveBytes = max(
+            advertisedActivationReserveBytes(),
+            fleetActivationReserveBytes())
         let freeForLoadGb = max(
             0,
             freeForLoadBeforeActivationGb
-                - Double(advertisedActivationReserveBytes()) / gbDivisor)
+                - Double(compatibilityActivationReserveBytes) / gbDivisor)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -167,7 +172,13 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
-            freeForLoadBeforeActivationGb: freeForLoadBeforeActivationGb,
+            // A lower-reserve candidate is safe to subtract only when every
+            // current slot is idle and evictable and no load is already
+            // transitioning. Otherwise the resident/loading fleet reserve must
+            // remain, so make coordinators use the conservative scalar.
+            freeForLoadBeforeActivationGb:
+                hasInflightWork || !modelsLoading.isEmpty
+                    ? nil : freeForLoadBeforeActivationGb,
             mlxCacheReclaimer: reclaimerTelemetry
         )
         state.inferenceActive = totalActive > 0

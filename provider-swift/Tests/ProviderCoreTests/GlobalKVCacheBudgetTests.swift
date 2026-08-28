@@ -142,7 +142,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 /// Q6 (serve-while-load): a loading model's weights are not in MLX active/cache
-/// until `loadModelContainer` finishes allocating them. `reservePendingLoad`
+/// until `loadModelContainer` finishes allocating them.
+/// `reservePendingLoadIfCapacity`
 /// makes that footprint visible to KV reservations on ALREADY-loaded models, so
 /// a concurrent request can't grant KV headroom that, plus the incoming weights,
 /// blows the cap. It reserves only the weights (so KV that still fits underneath
@@ -158,7 +159,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 
     // A 30 GiB model begins loading; its weights aren't in mlxUsed yet, so we
     // reserve them. Only ~24.6 GiB is now left for KV.
-    await budget.reservePendingLoad(requestID: "pending-load:B", bytes: 30 * gib)
+    #expect(await budget.reservePendingLoadIfCapacity(
+        requestID: "pending-load:B", bytes: 30 * gib))
     // Without the fix this 40 GiB reservation would be granted (54.6 free) and,
     // plus the 30 GiB load, blow the cap. It must be rejected now.
     #expect(!(await budget.reserveBytes(requestID: "kv-too-big", bytes: 40 * gib)))
@@ -170,6 +172,30 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // full headroom.
     await budget.release(requestID: "pending-load:B")
     #expect(await budget.reserveBytes(requestID: "kv-after", bytes: 40 * gib))
+}
+
+/// A load gate can suspend before it records incoming weights. The final
+/// capacity check and insertion must be one actor operation so KV granted during
+/// that suspension forces a clean load refusal instead of over-committing RAM.
+@Test func pendingLoadReservationRejectsKVWonDuringSuspension() async {
+    let budget = GlobalKVCacheBudget(
+        capFraction: 1,
+        activationReserveBytes: 3 * gib
+    ) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 16 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+
+    #expect(await budget.reserveBytes(
+        requestID: "concurrent-kv", bytes: 6 * gib))
+    #expect(!(await budget.reservePendingLoadIfCapacity(
+        requestID: "pending-load", bytes: 8 * gib)))
+    #expect(await budget.outstandingReservedBytes() == 6 * gib)
+    #expect(!(await budget.reservationIDsForTesting().contains("pending-load")))
+
+    await budget.release(requestID: "concurrent-kv")
+    #expect(await budget.reservePendingLoadIfCapacity(
+        requestID: "pending-load", bytes: 8 * gib))
 }
 
 /// The live KV gate must honor an operator `memory_reserve_gb` that exceeds the
@@ -256,7 +282,8 @@ private func makeAuditBudget(
     let budget = makeAuditBudget(log: log)
 
     // The leak: consumes the whole 6 GiB effective cap (8 GiB − 2 GiB floor).
-    await budget.reservePendingLoad(requestID: "pending-load:leaked", bytes: 6 * gib)
+    await budget.recordPendingLoadForTesting(
+        requestID: "pending-load:leaked", bytes: 6 * gib)
 
     // Rejections must persist past BOTH the stale TTL and the audit
     // threshold. Loop instead of one long sleep so the streak has failures
@@ -286,7 +313,8 @@ private func makeAuditBudget(
     // TTL far above the test duration: everything stays "fresh".
     let budget = makeAuditBudget(log: log, staleTTL: .seconds(60))
 
-    await budget.reservePendingLoad(requestID: "pending-load:live", bytes: 6 * gib)
+    await budget.recordPendingLoadForTesting(
+        requestID: "pending-load:live", bytes: 6 * gib)
 
     for _ in 0 ..< 12 {
         _ = await budget.reserve(
@@ -315,7 +343,8 @@ private func makeAuditBudget(
         log: log, staleTTL: .milliseconds(30), continuityWindow: .milliseconds(30))
 
     // A long-running piece of LIVE work whose reservation outlives the TTL.
-    await budget.reservePendingLoad(requestID: "pending-load:live-decode", bytes: 6 * gib)
+    await budget.recordPendingLoadForTesting(
+        requestID: "pending-load:live-decode", bytes: 6 * gib)
     try await Task.sleep(for: .milliseconds(50))  // now older than the stale TTL
 
     // Rejection 1 arms the streak; a >window idle gap follows.
@@ -341,14 +370,16 @@ private func makeAuditBudget(
     let budget = makeAuditBudget(log: log)
 
     // The wedge: consumes the whole 6 GiB effective cap.
-    await budget.reservePendingLoad(requestID: "pending-load:wedge", bytes: 6 * gib)
+    await budget.recordPendingLoadForTesting(
+        requestID: "pending-load:wedge", bytes: 6 * gib)
 
     // 12 × 10 ms of continuous rejections (well past the 40 ms threshold),
     // but unrelated in-flight work keeps completing — each release resets
     // the streak, so the audit must never fire.
     for i in 0 ..< 12 {
         _ = await budget.reserve(requestID: "storm-\(i)", kvBytesPerToken: 1, tokenCount: Int(gib))
-        await budget.reservePendingLoad(requestID: "tick-\(i)", bytes: 1)
+        await budget.recordPendingLoadForTesting(
+            requestID: "tick-\(i)", bytes: 1)
         await budget.release(requestID: "tick-\(i)")
         try await Task.sleep(for: .milliseconds(10))
     }
@@ -364,7 +395,8 @@ private func makeAuditBudget(
     let log = AuditEventLog()
     let budget = makeAuditBudget(log: log)
 
-    await budget.reservePendingLoad(requestID: "pending-load:leaked", bytes: 6 * gib)
+    await budget.recordPendingLoadForTesting(
+        requestID: "pending-load:leaked", bytes: 6 * gib)
 
     var audited = false
     for i in 0 ..< 30 {

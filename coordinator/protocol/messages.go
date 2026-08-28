@@ -398,7 +398,10 @@ type BackendCapacity struct {
 	// FreeForLoadBeforeActivationGB is the same live loadable-weight basis after
 	// the minimum KV floor but before activation reserve. Current coordinators
 	// subtract the candidate's exact reported reserve from this unclamped value;
-	// nil identifies providers that only report the compatibility scalar.
+	// current providers report it only while fully idle with no load transition,
+	// when every resident model is evictable. Nil identifies a busy, loading, or
+	// legacy provider, for which the conservative compatibility scalar remains
+	// authoritative.
 	FreeForLoadBeforeActivationGB *float64 `json:"free_for_load_before_activation_gb,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`

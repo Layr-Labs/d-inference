@@ -46,6 +46,10 @@ public struct StartupPreloader: Sendable {
     public struct Dependencies: Sendable {
         /// Memory (GB) currently free for a model load (the load-gate view).
         public var freeMemoryGb: @Sendable () async -> Double
+        /// Current load requirement. Runtime wiring recomputes this immediately
+        /// before admission so a larger reserve from an earlier preload remains
+        /// charged; tests default to the candidate's static requirement.
+        public var requiredMemoryGb: @Sendable (Candidate) async -> Double
         /// Full model load: weights + EngineV2 bridge/warmup
         /// (production: `ensureModelLoaded`).
         public var load: @Sendable (String) async throws -> Void
@@ -64,6 +68,9 @@ public struct StartupPreloader: Sendable {
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
+            requiredMemoryGb: @escaping @Sendable (Candidate) async -> Double = {
+                $0.requiredGb
+            },
             load: @escaping @Sendable (String) async throws -> Void,
             selfTest: (@Sendable (String) async throws -> Duration)? = nil,
             selfTestFailClosed: Bool = false,
@@ -72,6 +79,7 @@ public struct StartupPreloader: Sendable {
             log: @escaping @Sendable (String) -> Void = { _ in }
         ) {
             self.freeMemoryGb = freeMemoryGb
+            self.requiredMemoryGb = requiredMemoryGb
             self.load = load
             self.selfTest = selfTest
             self.selfTestFailClosed = selfTestFailClosed
@@ -109,11 +117,12 @@ public struct StartupPreloader: Sendable {
             let modelId = candidate.modelId
 
             // Memory admission WITHOUT eviction (see the design rules above).
+            let requiredGb = await deps.requiredMemoryGb(candidate)
             let freeGb = await deps.freeMemoryGb()
-            guard freeGb >= candidate.requiredGb else {
+            guard freeGb >= requiredGb else {
                 deps.log(
                     "WARN: startup preload skipping '\(modelId)': needs "
-                        + "\(Self.gb(candidate.requiredGb)) GB, \(Self.gb(freeGb)) GB free — "
+                        + "\(Self.gb(requiredGb)) GB, \(Self.gb(freeGb)) GB free — "
                         + "will lazy-load on first request")
                 summary.skippedInsufficientMemory.append(modelId)
                 continue

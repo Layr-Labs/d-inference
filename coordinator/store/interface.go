@@ -825,6 +825,16 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
+// ProviderEarningsWindows contains complete account aggregates for the two
+// provider dashboard windows. Money includes base rewards; job counts count
+// inference work only.
+type ProviderEarningsWindows struct {
+	Last24hMicroUSD int64
+	Last24hJobs     int64
+	Last7dMicroUSD  int64
+	Last7dJobs      int64
+}
+
 // ProviderPayout records a provider payout event. This is separate from
 // account-linked provider earnings because some providers are paid directly
 // without being linked to a Privy account.

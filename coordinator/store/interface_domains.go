@@ -518,6 +518,10 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// GetAccountEarningsWindows returns complete 24-hour and 7-day aggregates
+	// for an account. Money includes base rewards; job counts exclude them.
+	GetAccountEarningsWindows(accountID string, cutoff24h, cutoff7d time.Time) (ProviderEarningsWindows, error)
+
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
 

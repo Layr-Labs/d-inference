@@ -39,7 +39,7 @@ pub fn normalize(
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
     let mut tools = template_tools(&body)?;
-    apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
+    let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
     validate_tool_history(&messages)?;
@@ -52,7 +52,16 @@ pub fn normalize(
         tools = tools.map(crate::gemma4::normalize_tools);
     }
 
-    let additional_context = template_additional_context(&body)?;
+    let forced_qwen_tool = requires_tool_call
+        && (model_id == "EigenLabs/Qwen3.8-27B-4bit"
+            || model_type.is_some_and(|value| {
+                value
+                    .trim()
+                    .to_ascii_lowercase()
+                    .replace('-', "_")
+                    .starts_with("qwen3_5")
+            }));
+    let additional_context = template_additional_context(&body, forced_qwen_tool)?;
 
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
@@ -77,6 +86,7 @@ pub fn normalize(
 
 fn template_additional_context(
     body: &Map<String, Value>,
+    forced_qwen_tool: bool,
 ) -> Result<Map<String, Value>, NormalizeError> {
     let mut context = Map::new();
     let effort = body
@@ -107,15 +117,22 @@ fn template_additional_context(
         .and_then(Value::as_object)
         .and_then(|kwargs| kwargs.get("enable_thinking"))
         .and_then(Value::as_bool);
-    let enable_thinking = nested.or(top_level).or(kwargs).or_else(|| {
-        effort
-            .filter(|value| {
-                value.eq_ignore_ascii_case("none")
-                    || value.eq_ignore_ascii_case("off")
-                    || *value == "0"
-            })
-            .map(|_| false)
-    });
+    let enable_thinking = if forced_qwen_tool {
+        // Must mirror ProviderCore: Qwen required/named tool choices use a
+        // tool-only prompt because XML post-validation rejects visible
+        // reasoning before <tool_call>.
+        Some(false)
+    } else {
+        nested.or(top_level).or(kwargs).or_else(|| {
+            effort
+                .filter(|value| {
+                    value.eq_ignore_ascii_case("none")
+                        || value.eq_ignore_ascii_case("off")
+                        || *value == "0"
+                })
+                .map(|_| false)
+        })
+    };
     if let Some(enabled) = enable_thinking {
         context.insert("enable_thinking".into(), Value::Bool(enabled));
     }
@@ -762,7 +779,7 @@ fn apply_tool_choice_policy(
     body: &Map<String, Value>,
     messages: &mut Vec<Value>,
     tools: &mut Option<Vec<Value>>,
-) -> Result<(), NormalizeError> {
+) -> Result<bool, NormalizeError> {
     validate_tool_names(tools.as_deref().unwrap_or_default())?;
     if let Some(parallel) = body.get("parallel_tool_calls")
         && !parallel.is_boolean()
@@ -778,7 +795,7 @@ fn apply_tool_choice_policy(
             .and_then(Value::as_str)
     });
     if choice.is_none() || mode == Some("auto") {
-        return Ok(());
+        return Ok(false);
     }
     if mode == Some("none") {
         add_instruction(
@@ -787,7 +804,7 @@ fn apply_tool_choice_policy(
             false,
         );
         *tools = None;
-        return Ok(());
+        return Ok(false);
     }
     if !matches!(mode, Some("required" | "function")) {
         return Err(NormalizeError::InvalidTools);
@@ -839,7 +856,7 @@ fn apply_tool_choice_policy(
         "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
     };
     add_instruction(messages, &instruction, true);
-    Ok(())
+    Ok(true)
 }
 
 fn add_instruction(messages: &mut Vec<Value>, instruction: &str, repeat_user: bool) {
@@ -1245,6 +1262,34 @@ mod tests {
         assert_eq!(kwargs["enable_thinking"], json!(true));
         assert_eq!(kwargs["preserve_thinking"], json!(false));
         assert!(!kwargs.contains_key("reasoning_effort"));
+    }
+
+    #[test]
+    fn forced_qwen_tools_disable_thinking_for_prompt_parity() {
+        for choice in [
+            json!("required"),
+            json!({"type":"function","function":{"name":"weather"}}),
+        ] {
+            let context = normalize_context(json!({
+                "model":"EigenLabs/Qwen3.8-27B-4bit",
+                "messages":[{"role":"user","content":"weather"}],
+                "tools":[{
+                    "type":"function",
+                    "function":{
+                        "name":"weather",
+                        "parameters":{"type":"object","properties":{}}
+                    }
+                }],
+                "tool_choice":choice,
+                "reasoning":{"enabled":true},
+                "enable_thinking":true,
+                "reasoning_effort":"high",
+                "preserve_thinking":true
+            }));
+            assert_eq!(context["enable_thinking"], json!(false));
+            assert_eq!(context["reasoning_effort"], json!("high"));
+            assert_eq!(context["preserve_thinking"], json!(true));
+        }
     }
 
     #[test]

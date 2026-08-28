@@ -144,11 +144,15 @@ actor SpecDecArtifactFunnel {
                 artifact: nil,
                 status: .disabled(.catalogUnavailable, configured: request.enabled))
         }
+        guard Self.killSwitchEnabled(environment: request.environment) else {
+            return .init(
+                artifact: nil,
+                status: .disabled(
+                    .killSwitchDisabled,
+                    configured: request.enabled))
+        }
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
-        }
-        guard Self.killSwitchEnabled(environment: request.environment) else {
-            return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
         }
         if Self.isQwen35Target(modelType: request.modelType),
             let directory = request.modelDirectory,

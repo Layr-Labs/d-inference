@@ -97,6 +97,10 @@ extension CoordinatorClient {
                 timestamp: challenge.timestamp
             ))
 
+        case .codeAttestationResumeChallenge(let challenge):
+            eventContinuation?.yield(
+                .codeAttestationResumeChallenge(challenge.codeChallenge))
+
         case .runtimeStatus(let status):
             if status.verified {
                 logger.info(.runtimeIntegrityVerified)

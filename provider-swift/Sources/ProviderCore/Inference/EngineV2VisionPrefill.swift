@@ -299,16 +299,14 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil,
-        templateControls: ChatTemplateControls? = nil
+        templateControls: ChatTemplateControls = .init()
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: reasoningEffort,
-            templateControls: templateControls)
+            from: request, templateControls: templateControls)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
@@ -389,6 +387,7 @@ public enum EngineV2VisionPrefill {
             throw EngineV2VisionPrefillError.unsupportedMedia(
                 qwen3VLUnsupportedVideoDetail)
         }
+        try Task.checkCancellation()
         let lmInput = try await ctx.processor.prepare(input: userInput)
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
@@ -404,13 +403,8 @@ public enum EngineV2VisionPrefill {
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
-        if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
-            return try buildQwenSubmission(
-                wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
-                towerLimits: towerLimits, mlxErrors: mlxErrors)
-        }
         if let wrapper = ctx.model as? MLXVLM.Qwen35 {
-            return try buildDenseQwenSubmission(
+            return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
@@ -485,10 +479,11 @@ public enum EngineV2VisionPrefill {
         }
     }
 
-    /// Qwen3.5 MoE: causal visual tokens, M-RoPE position state, and its
-    /// existing image/video tower seams.
+    /// Dense and MoE Qwen3.5/Qwen3.8: causal visual tokens, request-owned
+    /// M-RoPE position state, one image per tower invocation, and one full
+    /// T×H×W tower invocation per video.
     private static func buildQwenSubmission(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         lmInput: LMInput,
         promptTokens: [Int],
         towerLimits: VisionTowerBudget.Limits,
@@ -562,83 +557,6 @@ public enum EngineV2VisionPrefill {
         // Features are already materialized per image/video; only the
         // position ids are still lazy here.
         eval(position.promptPositionIds)
-        return PreparedSubmission(
-            promptTokens: promptTokens,
-            spans: carved.map(\.span),
-            embeddings: embeddings,
-            attention: .causal,
-            positionState: CBv2PositionState(
-                promptPositionIds: position.promptPositionIds,
-                decodeDeltas: position.decodeState.deltas),
-            mediaKind: lmInput.video == nil
-                ? .image : (lmInput.image == nil ? .video : .mixed))
-    }
-
-    /// Dense Qwen3.8: causal visual tokens and M-RoPE position state. Dense
-    /// video is split into one temporal patch group per tower call so the
-    /// quadratic vision attention allocation is bounded by one frame.
-    private static func buildDenseQwenSubmission(
-        wrapper: MLXVLM.Qwen35,
-        lmInput: LMInput,
-        promptTokens: [Int],
-        towerLimits: VisionTowerBudget.Limits,
-        mlxErrors: MLX.ErrorBox
-    ) throws -> PreparedSubmission {
-        var imageFeatures: [MLXArray] = []
-        var imageGrids: [THW] = []
-        if let image = lmInput.image {
-            guard let grids = image.frames, !grids.isEmpty else {
-                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
-            }
-            imageGrids = grids
-            imageFeatures = try qwenPerImageVisionFeatures(
-                wrapper: wrapper, pixels: image.pixels, grids: grids,
-                towerLimits: towerLimits, mlxErrors: mlxErrors)
-        }
-
-        var videoFeatures: [MLXArray] = []
-        var videoGrids: [THW] = []
-        if let video = lmInput.video {
-            guard let grids = video.frames, !grids.isEmpty else {
-                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
-            }
-            videoGrids = grids
-            videoFeatures = try qwenPerVideoFrameVisionFeatures(
-                wrapper: wrapper, pixels: video.pixels, grids: grids,
-                towerLimits: towerLimits, mlxErrors: mlxErrors)
-        }
-        guard !imageFeatures.isEmpty || !videoFeatures.isEmpty else {
-            throw EngineV2VisionPrefillError.noProcessedMedia
-        }
-
-        let carved = try carveSpans(
-            tokens: promptTokens,
-            imagePlaceholderId: imageFeatures.isEmpty ? nil : wrapper.imagePlaceholderTokenId,
-            imageSpanLengths: imageFeatures.map { $0.dim(1) },
-            videoPlaceholderId: videoFeatures.isEmpty ? nil : wrapper.videoPlaceholderTokenId,
-            videoSpanLengths: videoFeatures.map { $0.dim(1) })
-
-        var embeddings: [MLXArray] = []
-        embeddings.reserveCapacity(carved.count)
-        var imageCursor = 0
-        var videoCursor = 0
-        for entry in carved {
-            switch entry.kind {
-            case .image:
-                embeddings.append(imageFeatures[imageCursor])
-                imageCursor += 1
-            case .video:
-                embeddings.append(videoFeatures[videoCursor])
-                videoCursor += 1
-            }
-        }
-
-        let position = try wrapper.positionResult(
-            tokens: lmInput.text.tokens,
-            imageGrids: imageGrids.isEmpty ? nil : imageGrids,
-            videoGrids: videoGrids.isEmpty ? nil : videoGrids,
-            attentionMask: lmInput.text.mask)
-        eval(position.promptPositionIds)
         try throwIfMLXFaulted(mlxErrors)
         return PreparedSubmission(
             promptTokens: promptTokens,
@@ -651,6 +569,7 @@ public enum EngineV2VisionPrefill {
             mediaKind: lmInput.video == nil
                 ? .image : (lmInput.image == nil ? .video : .mixed))
     }
+
 
     /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
     /// tower whose own seam already forwards one image (or one sampled video

@@ -44,6 +44,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let capabilities: [String]?
     public let runtimeParameters: [String: JSONValue]?
     public let metadata: [String: JSONValue]?
+    public let requiredProviderCapabilities: [ProviderRuntimeCapability]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -68,6 +69,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case capabilities
         case runtimeParameters = "runtime_parameters"
         case metadata
+        case requiredProviderCapabilities = "required_provider_capabilities"
     }
 
     public init(
@@ -92,7 +94,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         maxOutputLength: Int? = nil,
         capabilities: [String]? = nil,
         runtimeParameters: [String: JSONValue]? = nil,
-        metadata: [String: JSONValue]? = nil
+        metadata: [String: JSONValue]? = nil,
+        requiredProviderCapabilities: [ProviderRuntimeCapability]? = nil
     ) {
         self.id = id
         self.s3Name = s3Name
@@ -116,6 +119,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.capabilities = capabilities
         self.runtimeParameters = runtimeParameters
         self.metadata = metadata
+        self.requiredProviderCapabilities = requiredProviderCapabilities
     }
 }
 
@@ -155,6 +159,7 @@ public enum ModelCatalogError: Error, CustomStringConvertible, LocalizedError, S
     case decodeFailed(String)
     case modelNotInCatalog(String)
     case downloadFailed(String)
+    case ineligible(String)
 
     public var description: String {
         switch self {
@@ -163,6 +168,7 @@ public enum ModelCatalogError: Error, CustomStringConvertible, LocalizedError, S
         case .decodeFailed(let d):          "could not decode catalog response: \(d)"
         case .modelNotInCatalog(let id):    "model '\(id)' is not in the coordinator catalog"
         case .downloadFailed(let d):        "download failed: \(d)"
+        case .ineligible(let d):            d
         }
     }
 

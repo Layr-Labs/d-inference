@@ -1,10 +1,37 @@
 /// Binary self-hash computation and file hashing utilities.
 
 import CryptoKit
+import Darwin
 import Foundation
+import ProviderMetallibControl
 import os
 
 private let hashLogger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+
+enum RuntimeMetallibBindingError: Error {
+    case sourceUnavailable
+    case snapshotCreateFailed
+    case snapshotUnlinkFailed
+}
+
+final class RuntimeMetallibSnapshot: @unchecked Sendable {
+    let fileDescriptor: Int32
+    let digest: String
+    let loaderPath: String
+
+    init(fileDescriptor: Int32, digest: String) {
+        self.fileDescriptor = fileDescriptor
+        self.digest = digest
+        self.loaderPath = "/dev/fd/\(fileDescriptor)"
+    }
+
+    deinit {
+        Darwin.close(fileDescriptor)
+    }
+}
+
+private let runtimeMetallibBindingLock = NSLock()
+nonisolated(unsafe) private var boundRuntimeMetallib: RuntimeMetallibSnapshot?
 
 // MARK: - Binary Self-Hash
 
@@ -91,49 +118,136 @@ public func hashFilesSorted(_ paths: [String]) -> String? {
 
 // MARK: - Metallib hashing
 
-/// Locate the `mlx.metallib` file the running provider would actually load
-/// at GPU init time. Order of search:
+/// Locate the `mlx.metallib` the C++ MLX loader will actually select.
 ///
-///   1. `${MLX_METALLIB_PATH}` if set (override for tests / vendored builds).
-///   2. Sibling of the running executable (`<exe_dir>/mlx.metallib`).
-///   3. Common bundled fallbacks (`bin/mlx.metallib` next to the exe dir).
-///   4. nil if nothing matches.
+/// MLX checks the binary directory in this order:
+///   1. `<executable-dir>/mlx.metallib`
+///   2. `<executable-dir>/Resources/mlx.metallib`
 ///
-/// The release pipeline drops the metallib next to `darkbloom`, so case (2)
-/// covers both production installs and `swift build` runs that follow the
-/// README's pip-install workaround.
-public func locateMetallib() -> URL? {
-    if let env = ProcessInfo.processInfo.environment["MLX_METALLIB_PATH"], !env.isEmpty {
-        let url = URL(fileURLWithPath: env)
-        if FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-    }
-
-    guard let exePath = executablePath() else { return nil }
-    let exeDir = (exePath as NSString).deletingLastPathComponent
-    let candidates = [
-        URL(fileURLWithPath: exeDir).appendingPathComponent("mlx.metallib"),
-        URL(fileURLWithPath: exeDir)
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/mlx.metallib"),
-        URL(fileURLWithPath: exeDir)
-            .deletingLastPathComponent()
-            .appendingPathComponent("bin/mlx.metallib"),
-    ]
-    for candidate in candidates {
-        if FileManager.default.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-    }
-    return nil
+/// `MLX_METALLIB_PATH` is intentionally ignored: MLX does not read that
+/// environment variable. A custom file is load-bearing only after an explicit
+/// `mlx::core::metal::set_metallib_path` C-API call; ProviderCore makes no such
+/// call. Hashing an env-only path would attest one file while MLX loads another.
+public func locateRuntimeMetallib() -> URL? {
+    guard let path = executablePath() else { return nil }
+    return locateRuntimeMetallib(
+        executableURL: URL(fileURLWithPath: path),
+        fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+    )
 }
 
-/// SHA-256 hash of the live `mlx.metallib`. Returns nil if the file isn't
-/// found (which means the binary will crash on the first MLX call -- caller
-/// should surface that prominently).
+/// Dependency-injected form used to prove loader precedence without mutating the
+/// running test bundle.
+func locateRuntimeMetallib(
+    executableURL: URL,
+    fileExists: (URL) -> Bool
+) -> URL? {
+    let directory = executableURL.deletingLastPathComponent()
+    let candidates = [
+        directory.appendingPathComponent("mlx.metallib"),
+        directory.appendingPathComponent("Resources/mlx.metallib"),
+    ]
+    return candidates.first(where: fileExists)
+}
+
+/// Copy the selected metallib into an unlinked, open file and hash the bytes
+/// during that copy. `/dev/fd/N` lets MLX load the exact retained inode; later
+/// replacements of the public colocated pathname cannot change loaded bytes.
+func makeRuntimeMetallibSnapshot(
+    sourceURL: URL,
+    onAnonymousReady: ((String) -> Void)? = nil
+) throws -> RuntimeMetallibSnapshot {
+    guard let source = FileHandle(forReadingAtPath: sourceURL.path) else {
+        throw RuntimeMetallibBindingError.sourceUnavailable
+    }
+    defer { try? source.close() }
+
+    var template = Array(
+        (NSTemporaryDirectory() + "darkbloom-mlx-metallib.XXXXXX").utf8CString
+    )
+    let descriptor = template.withUnsafeMutableBufferPointer {
+        mkstemp($0.baseAddress)
+    }
+    guard descriptor >= 0 else {
+        throw RuntimeMetallibBindingError.snapshotCreateFailed
+    }
+    let temporaryPath = String(cString: template)
+    guard unlink(temporaryPath) == 0 else {
+        Darwin.close(descriptor)
+        throw RuntimeMetallibBindingError.snapshotUnlinkFailed
+    }
+    // From this point onward no filesystem name exists for the writable fd.
+    // A same-UID peer cannot open/retain a second writer during copy+hash.
+    onAnonymousReady?(temporaryPath)
+    var retainDescriptor = false
+    defer {
+        if !retainDescriptor {
+            Darwin.close(descriptor)
+        }
+    }
+
+    let destination = FileHandle(
+        fileDescriptor: descriptor,
+        closeOnDealloc: false
+    )
+    var hasher = SHA256()
+    while true {
+        let bytes = try source.read(upToCount: 1024 * 1024) ?? Data()
+        if bytes.isEmpty { break }
+        try destination.write(contentsOf: bytes)
+        hasher.update(data: bytes)
+    }
+    try destination.synchronize()
+    _ = fchmod(descriptor, S_IRUSR)
+    try destination.seek(toOffset: 0)
+    retainDescriptor = true
+    return RuntimeMetallibSnapshot(
+        fileDescriptor: descriptor,
+        digest: hasher.finalize().hexString
+    )
+}
+
+/// Pin MLX to an anonymous snapshot before the first GPU diagnostic/operation.
+/// The returned digest describes the retained inode MLX loads, not a mutable
+/// public pathname.
+public func bindRuntimeMetallibForMLX() -> String? {
+    runtimeMetallibBindingLock.lock()
+    defer { runtimeMetallibBindingLock.unlock() }
+    if let boundRuntimeMetallib {
+        return boundRuntimeMetallib.digest
+    }
+    guard let source = locateRuntimeMetallib() else { return nil }
+    do {
+        let snapshot = try makeRuntimeMetallibSnapshot(sourceURL: source)
+        snapshot.loaderPath.withCString {
+            darkbloom_mlx_set_metallib_path($0)
+        }
+        boundRuntimeMetallib = snapshot
+        return snapshot.digest
+    } catch {
+        hashLogger.error("Failed to bind runtime metallib: \(error)")
+        return nil
+    }
+}
+
+/// SHA-256 hash of the metallib the live MLX loader selects. Returns nil when
+/// neither loader-visible path exists; capability detection then fails closed.
 public func metallibHash() -> String? {
-    guard let url = locateMetallib() else { return nil }
+    runtimeMetallibBindingLock.lock()
+    defer { runtimeMetallibBindingLock.unlock() }
+    return boundRuntimeMetallib?.digest
+}
+
+func runtimeMetallibHash(
+    executableURL: URL,
+    fileExists: (URL) -> Bool
+) -> String? {
+    guard let url = locateRuntimeMetallib(
+        executableURL: executableURL,
+        fileExists: fileExists
+    ) else {
+        return nil
+    }
     return hashFile(atPath: url.path)
 }
 

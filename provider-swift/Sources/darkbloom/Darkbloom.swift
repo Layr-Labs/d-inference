@@ -330,17 +330,24 @@ func advertisedModels(
     from models: [ModelInfo],
     config: ProviderConfig,
     modelOverrides: [String] = [],
-    includeDisabled: Bool = false
+    includeDisabled: Bool = false,
+    runtimeCapabilities: Set<ProviderRuntimeCapability>? = nil
 ) -> [ModelInfo] {
+    let selected: [ModelInfo]
     if !modelOverrides.isEmpty {
         let byID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
-        return modelOverrides.compactMap { byID[$0] }
+        selected = modelOverrides.compactMap { byID[$0] }
+    } else if includeDisabled || config.backend.enabledModels.isEmpty {
+        selected = models
+    } else {
+        let enabled = Set(config.backend.enabledModels)
+        selected = models.filter { enabled.contains($0.id) }
     }
-    guard !includeDisabled, !config.backend.enabledModels.isEmpty else {
-        return models
+    guard let runtimeCapabilities else { return selected }
+    return selected.filter {
+        ModelRuntimeRequirements.isEligible(
+            modelID: $0.id, available: runtimeCapabilities)
     }
-    let enabled = Set(config.backend.enabledModels)
-    return models.filter { enabled.contains($0.id) }
 }
 
 func attachWeightHashes(to models: [ModelInfo]) -> (

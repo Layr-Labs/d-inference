@@ -107,6 +107,8 @@ extension ProviderLoop {
         try throwIfRefusingNewLocalWork()
         do {
             try await ensureModelLoaded(modelId: modelId)
+        } catch is ModelRuntimeIneligibleError {
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         } catch let err as InferenceError {
             // Map load failures to the engine's typed errors (404 / 503).
             switch err {

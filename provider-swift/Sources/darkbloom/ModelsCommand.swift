@@ -188,6 +188,9 @@ extension Models {
 
         mutating func run() async throws {
             let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let runtimeCapabilities = snapshot.hardware.map {
+                ProviderRuntimeCapabilityDetector.detectLive(hardware: $0)
+            } ?? []
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
@@ -206,7 +209,10 @@ extension Models {
             }
 
             print("Downloading \(entry.displayName) (\(entry.id))…")
-            let downloader = ModelDownloader(r2CDNURL: r2CDN, catalogClient: client)
+            let downloader = ModelDownloader(
+                r2CDNURL: r2CDN,
+                catalogClient: client,
+                runtimeCapabilities: runtimeCapabilities)
             do {
                 try await downloader.download(model: entry) { progress in
                     let mb = Double(progress.bytesDownloaded) / 1_048_576

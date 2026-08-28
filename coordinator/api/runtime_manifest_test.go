@@ -75,6 +75,22 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 	}
 }
 
+func TestRuntimeManifestApprovalRequiresExplicitMetallibEntry(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	if runtimeManifestApprovesMetallib(
+		&RuntimeManifest{TemplateHashes: map[string]string{}},
+		map[string]string{"mlx_metallib": hash},
+	) {
+		t.Fatal("missing approved mlx_metallib entry was accepted")
+	}
+	if !runtimeManifestApprovesMetallib(
+		&RuntimeManifest{TemplateHashes: map[string]string{"mlx_metallib": hash}},
+		map[string]string{"mlx_metallib": hash},
+	) {
+		t.Fatal("explicit matching mlx_metallib entry was rejected")
+	}
+}
+
 func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	srv.SetRuntimeManifest(&RuntimeManifest{

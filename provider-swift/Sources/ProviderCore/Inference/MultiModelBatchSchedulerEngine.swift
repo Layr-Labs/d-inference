@@ -122,8 +122,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reserveModel: @escaping @Sendable (String) async -> Void = { _ in },
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
-        reasoningEffort: String? = nil,
-        templateControls: ChatTemplateControls? = nil,
+        templateControls: ChatTemplateControls = .init(),
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -138,7 +137,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
         self.templateControls = templateControls
-            ?? ChatTemplateControls(reasoningEffort: reasoningEffort)
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs

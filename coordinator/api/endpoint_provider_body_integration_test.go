@@ -56,6 +56,13 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 	if err := st.PromoteModelVersion(model, "v1"); err != nil {
 		t.Fatal(err)
 	}
+	const alias = "endpoint-lowering-alias"
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: alias, DesiredBuild: model, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
 	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model}}, publicKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	for _, id := range reg.ProviderIDs() {
@@ -121,7 +128,7 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			}
 
 			writeEncryptedTestChunk(t, ctx, conn, request, publicKey,
-				`data: {"id":"chatcmpl-endpoint","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
+				`data: {"id":"chatcmpl-endpoint","object":"chat.completion.chunk","created":1700000000,"model":"endpoint-lowering-model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 			complete, _ := json.Marshal(protocol.InferenceCompleteMessage{
 				Type:         protocol.TypeInferenceComplete,
 				RequestID:    request.RequestID,
@@ -157,14 +164,27 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			absentResult:        []string{`"delta":{"content":"ok"}`},
 		},
 		{
+			name:        "chat completions stream",
+			path:        "/v1/chat/completions",
+			requestBody: `{"model":"endpoint-lowering-alias","messages":[{"role":"user","content":"Chat endpoint"}],"max_tokens":32,"stream":true}`,
+			wantMessages: []protocol.ChatMessage{
+				{Role: "user", Content: "Chat endpoint"},
+			},
+			wantRuntimeDefaults: true,
+			wantResponse: []string{
+				`"object":"chat.completion.chunk"`, `"content":"ok"`, `data: [DONE]`,
+			},
+		},
+		{
 			name:        "responses",
 			path:        "/v1/responses",
 			requestBody: `{"model":"endpoint-lowering-model","input":"Responses endpoint","max_output_tokens":32,"stream":true}`,
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Responses endpoint"},
 			},
-			absent:       []string{"input", "endpoint", "max_output_tokens"},
-			wantResponse: []string{`event: response.output_text.delta`, `"delta":"ok"`},
+			absent:              []string{"input", "endpoint", "max_output_tokens"},
+			wantRuntimeDefaults: true,
+			wantResponse:        []string{`event: response.output_text.delta`, `"delta":"ok"`},
 		},
 		{
 			name:        "messages stream",

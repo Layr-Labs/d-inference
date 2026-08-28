@@ -70,14 +70,20 @@ struct Qwen38ProductionCanaryFixture: @unchecked Sendable {
         let preparation = await funnel.prepare(.init(
             modelId: Qwen38ProductionCanary.targetModelID,
             modelType: Qwen38ProductionCanary.modelType,
-            enabled: true,
+            enabled: MTPMode.auto.enablesMTP(
+                forModelID: Qwen38ProductionCanary.targetModelID),
             localPath: assistantDirectory.path,
             modelDirectory: modelDirectory,
             allowDownload: false,
             environment: ["DARKBLOOM_CBV2_MTP": "1"]))
         await funnel.shutdown()
         try? FileManager.default.removeItem(at: store)
-        return preparation
+        guard let artifact = preparation.artifact else { return preparation }
+        let pinned = artifact.recordingSourceRevision(
+            Qwen38ProductionCanary.assistantRevision)
+        return SpecDecPreparation(
+            artifact: pinned,
+            status: .candidate(pinned))
     }
 
     func service(bundle: ProviderEngineBundle) -> MLXOpenAIService {
@@ -269,7 +275,7 @@ struct Qwen38ProductionCanaryFixture: @unchecked Sendable {
             request: request,
             tokenizer: tokenizer.inner,
             modelType: Qwen38ProductionCanary.modelType,
-            reasoningEffort: nil)
+            templateControls: .init())
     }
 
     private func responseText(_ response: OpenAIChatCompletionResponse) -> String {

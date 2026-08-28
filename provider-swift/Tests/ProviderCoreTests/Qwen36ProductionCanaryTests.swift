@@ -704,7 +704,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
             request: request,
             tokenizer: tokenizer.inner,
             modelType: Qwen36ProductionCanary.modelType,
-            reasoningEffort: nil)
+            templateControls: .init())
     }
 
     func cancelAfterFirstDelta(

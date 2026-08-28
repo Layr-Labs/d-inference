@@ -3,6 +3,19 @@ import Network
 import Testing
 @testable import ProviderCore
 
+private final class RegistrationAttestationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> RawJSON {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return RawJSON(rawBytes: Data(
+            #"{"attestation":{"sequence":\#(value)},"signature":"sig"}"#.utf8))
+    }
+}
+
 @Test func coordinatorRegistrationEncodingUsesProtocolCodec() throws {
     let rawAttestation = #"{"signature":"sig","attestation":{"hardwareModel":"Mac16,5","sipEnabled":true}}"#
     let config = CoordinatorClientConfig(
@@ -53,6 +66,28 @@ import Testing
     #expect(register.runtimeHash == "runtimehash")
     #expect(register.templateHashes["chatml"] == "templatehash")
     #expect(register.privacyCapabilities?.textBackendInprocess == true)
+}
+
+@Test func coordinatorRegistrationRegeneratesAttestationOnReconnect() throws {
+    let sequence = RegistrationAttestationSequence()
+    let config = CoordinatorClientConfig(
+        url: "wss://coordinator.example/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx-swift",
+        registrationAttestation: { sequence.next() }
+    )
+
+    let first = try clientJSONObject(
+        CoordinatorClientCodec.encodeRegistration(from: config))
+    let second = try clientJSONObject(
+        CoordinatorClientCodec.encodeRegistration(from: config))
+    let firstAttestation = try #require(first["attestation"] as? [String: Any])
+    let secondAttestation = try #require(second["attestation"] as? [String: Any])
+    let firstBlob = try #require(firstAttestation["attestation"] as? [String: Any])
+    let secondBlob = try #require(secondAttestation["attestation"] as? [String: Any])
+    #expect(firstBlob["sequence"] as? Int == 1)
+    #expect(secondBlob["sequence"] as? Int == 2)
 }
 
 @Test func registrationHonorsLateApnsTokenOverride() throws {
@@ -115,9 +150,16 @@ import Testing
         estimatedMemoryGb: 1,
         toolConstraintTemplateHash: "wrong")
     let qwen38 = ModelInfo(
-        id: "mlx-community/Qwen3.8-27B-4bit",
+        id: "EigenLabs/Qwen3.8-27B-4bit",
         modelType: "qwen3_5",
         parameters: 27_000_000_000,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
+    let otherQwen = ModelInfo(
+        id: "EigenLabs/Qwen3.6-35B-A3B-4bit",
+        modelType: "qwen3_5_moe",
+        parameters: 35_000_000_000,
         quantization: "4bit",
         sizeBytes: 1,
         estimatedMemoryGb: 1)
@@ -126,11 +168,12 @@ import Testing
         hardware: clientSampleHardware(),
         models: [
             clientSampleModel(), gemma, typeOnlyGemma, misleadingID,
-            driftedTemplate, qwen38,
+            driftedTemplate, otherQwen, qwen38,
         ],
         backendName: "mlx_swift_lm",
         publicKey: "cHVibGlj",
-        attestation: RawJSON(rawBytes: Data(#"{"signature":"sig"}"#.utf8)))
+        attestation: RawJSON(rawBytes: Data(#"{"signature":"sig"}"#.utf8)),
+        runtimeCapabilities: [.appleM5, .mlxNAX])
 
     let data = try CoordinatorClientCodec.encodeRegistration(from: config)
     let object = try clientJSONObject(data)

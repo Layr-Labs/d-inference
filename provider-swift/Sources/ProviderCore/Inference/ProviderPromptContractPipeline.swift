@@ -19,18 +19,6 @@ enum ProviderPromptContractPipeline {
             templateControls: templateControls)
     }
 
-    static func tokenize(
-        prepared: ToolChoicePromptPolicy.Prepared,
-        request: OpenAIChatCompletionRequest,
-        tokenizer: any MLXLMCommon.Tokenizer,
-        modelType: String?,
-        reasoningEffort: String?
-    ) throws -> [Int] {
-        try tokenize(
-            prepared: prepared, request: request, tokenizer: tokenizer,
-            modelType: modelType,
-            templateControls: ChatTemplateControls(reasoningEffort: reasoningEffort))
-    }
 
     static func tokenize(
         prepared: ToolChoicePromptPolicy.Prepared,
@@ -50,6 +38,7 @@ enum ProviderPromptContractPipeline {
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request,
                 controls: templateControls,
-                modelType: modelType))
+                modelType: modelType,
+                hasMedia: MediaIngest.hasMedia(request)))
     }
 }

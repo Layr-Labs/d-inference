@@ -1422,14 +1422,14 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "qwen3.8-27b-4bit": .init(
+                    "qwen3.8-27b": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
                         modelType: "qwen3_5",
                         engineV2Bridge: bridge)
                 ]
             })
         let request = OpenAIChatCompletionRequest(
-            model: "qwen3.8-27b-4bit",
+            model: "qwen3.8-27b",
             messages: [.init(role: .user, content: .text("weather"))],
             tools: [.init(function: .init(name: "get_weather"))],
             toolChoice: .mode(.required),
@@ -1455,14 +1455,14 @@ struct EngineV2RequestRoutingTests {
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
-                    "qwen3.8-27b-4bit": .init(
+                    "qwen3.8-27b": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
                         modelType: "qwen3_5",
                         engineV2Bridge: bridge)
                 ]
             })
         let request = OpenAIChatCompletionRequest(
-            model: "qwen3.8-27b-4bit",
+            model: "qwen3.8-27b",
             messages: [.init(role: .user, content: .text("weather"))],
             tools: [.init(function: .init(name: "get_weather"))],
             toolChoice: .mode(.required),

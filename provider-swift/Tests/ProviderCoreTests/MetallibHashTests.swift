@@ -2,89 +2,103 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Marked `.serialized` to avoid needless contention within this suite. The
-/// shared environment guard also excludes mutations from live-test fixtures.
-@Suite("metallib hash + locator", .serialized)
+@Suite("metallib hash + runtime-loader locator", .serialized)
 struct MetallibHashTests {
+    @Test("env override cannot replace the colocated runtime metallib")
+    func conflictingEnvironmentAndColocatedFiles() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mlx-loader-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-    @Test("MLX_METALLIB_PATH override takes precedence")
-    func envOverridePrecedence() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("fake-mlx-\(UUID().uuidString).metallib")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        try Data("not really a metallib but exists".utf8).write(to: tmp)
+        let executable = root.appendingPathComponent("darkbloom")
+        let colocated = root.appendingPathComponent("mlx.metallib")
+        let environmentOnly = root.appendingPathComponent("approved-env.metallib")
+        try Data("executable".utf8).write(to: executable)
+        try Data("runtime-colocated".utf8).write(to: colocated)
+        try Data("different-approved-env".utf8).write(to: environmentOnly)
 
-        MLXMetallibEnvironment.withPath(tmp.path) {
-            let located = locateMetallib()
-            #expect(located?.path == tmp.path)
-        }
-    }
-
-    @Test("metallibHash returns a 64-character hex string when located")
-    func metallibHashShape() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("fake-mlx-\(UUID().uuidString).metallib")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        try Data(repeating: 0x42, count: 1024).write(to: tmp)
-
-        MLXMetallibEnvironment.withPath(tmp.path) {
-            guard let hash = metallibHash() else {
-                Issue.record("metallibHash returned nil for an existing file at \(tmp.path)")
-                return
+        MLXMetallibEnvironment.withPath(environmentOnly.path) {
+            let exists: (URL) -> Bool = {
+                FileManager.default.fileExists(atPath: $0.path)
             }
-            #expect(hash.count == 64)
-            let hex = Set("0123456789abcdef")
-            #expect(hash.allSatisfy { hex.contains($0) })
+            #expect(locateRuntimeMetallib(
+                executableURL: executable,
+                fileExists: exists
+            )?.path == colocated.path)
+            #expect(runtimeMetallibHash(
+                executableURL: executable,
+                fileExists: exists
+            ) == hashFile(atPath: colocated.path))
+            #expect(runtimeMetallibHash(
+                executableURL: executable,
+                fileExists: exists
+            ) != hashFile(atPath: environmentOnly.path))
         }
     }
 
-    @Test("metallibHash is stable across calls for the same file")
-    func metallibHashStable() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("fake-mlx-\(UUID().uuidString).metallib")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        try Data("hello mlx".utf8).write(to: tmp)
+    @Test("runtime locator mirrors colocated then Resources precedence")
+    func runtimeLoaderPrecedence() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mlx-precedence-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("darkbloom")
+        let resourceMetallib = resources.appendingPathComponent("mlx.metallib")
+        try Data("executable".utf8).write(to: executable)
+        try Data("resource".utf8).write(to: resourceMetallib)
+        let exists: (URL) -> Bool = {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
 
-        let competing = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("competing-mlx-\(UUID().uuidString).metallib")
-        defer { try? FileManager.default.removeItem(at: competing) }
-        try Data("different metallib".utf8).write(to: competing)
+        #expect(locateRuntimeMetallib(
+            executableURL: executable,
+            fileExists: exists
+        )?.path == resourceMetallib.path)
 
-        let mutationAttempted = DispatchSemaphore(value: 0)
-        let mutationCompleted = DispatchSemaphore(value: 0)
+        let colocated = root.appendingPathComponent("mlx.metallib")
+        try Data("colocated".utf8).write(to: colocated)
+        #expect(locateRuntimeMetallib(
+            executableURL: executable,
+            fileExists: exists
+        )?.path == colocated.path)
+    }
 
-        MLXMetallibEnvironment.withPath(tmp.path) {
-            let firstHash = metallibHash()
-            let mutationThread = Thread {
-                mutationAttempted.signal()
-                MLXMetallibEnvironment.withPath(competing.path) {}
-                mutationCompleted.signal()
+    @Test("anonymous runtime snapshot survives post-registration path swap")
+    func boundSnapshotSurvivesSourceSwap() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mlx-snapshot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("mlx.metallib")
+        try Data("approved-runtime-bytes".utf8).write(to: source)
+        var namedWriterOpened = false
+        let snapshot = try makeRuntimeMetallibSnapshot(
+            sourceURL: source,
+            onAnonymousReady: { temporaryPath in
+                namedWriterOpened =
+                    FileHandle(forWritingAtPath: temporaryPath) != nil
             }
-            mutationThread.start()
+        )
+        #expect(!namedWriterOpened)
+        let approvedDigest = snapshot.digest
+        try Data("swapped-after-registration".utf8).write(to: source)
 
-            #expect(mutationAttempted.wait(timeout: .now() + 5) == .success)
-            #expect(mutationCompleted.wait(timeout: .now() + 0.05) == .timedOut)
-
-            let secondHash = metallibHash()
-            #expect(firstHash != nil)
-            #expect(firstHash == secondHash)
-        }
-
-        #expect(mutationCompleted.wait(timeout: .now() + 5) == .success)
+        #expect(hashFile(atPath: source.path) != approvedDigest)
+        #expect(hashFile(atPath: snapshot.loaderPath) == approvedDigest)
     }
 
-    @Test("locateMetallib returns nil when nothing is found and no env override")
-    func locateReturnsNilWhenAbsent() {
-        // Point env at a path that doesn't exist; locator should fall
-        // through to the binary-adjacent search and may or may not find one
-        // (it could find one in the test bundle's .build path). We assert
-        // on the env override semantics only.
-        MLXMetallibEnvironment.withPath("/var/empty/definitely-not-here.metallib") {
-            // Env override misses → falls back to binary-adjacent search. The
-            // test binary may or may not have a colocated metallib; we don't
-            // assert one way or the other, just that the function returns
-            // without crashing.
-            _ = locateMetallib()
-        }
+    @Test("runtime locator fails closed when loader-visible files are absent")
+    func runtimeLocatorAbsent() {
+        let executable = URL(fileURLWithPath: "/no/such/provider/darkbloom")
+        #expect(locateRuntimeMetallib(
+            executableURL: executable,
+            fileExists: { _ in false }
+        ) == nil)
+        #expect(runtimeMetallibHash(
+            executableURL: executable,
+            fileExists: { _ in false }
+        ) == nil)
     }
 }

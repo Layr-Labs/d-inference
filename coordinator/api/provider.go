@@ -55,6 +55,9 @@ const (
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
 	ChallengeResponseTimeout = 30 * time.Second
+	// RegistrationAttestationMaxAge bounds replay of a previously valid signed
+	// registration claim. Challenge nonces provide ongoing liveness afterward.
+	RegistrationAttestationMaxAge = 2 * time.Minute
 
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
@@ -184,6 +187,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		if s.codeAttestThrottle != nil {
+			s.codeAttestThrottle.clearResumeChallenges(providerID)
+		}
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -294,6 +300,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
+			if provider != nil {
+				s.logger.Warn("rejecting second register on provider connection",
+					"provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "provider already registered")
+				return
+			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
@@ -364,6 +376,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
+				provider.MetallibVerified = runtimeOK &&
+					runtimeManifestApprovesMetallib(
+						s.knownRuntimeManifest, regMsg.TemplateHashes)
+				if !runtimeOK || !provider.MetallibVerified {
+					provider.RuntimeCapabilities = nil
+					provider.FreshCodeAttested = false
+				}
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
@@ -401,6 +420,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
 			}
 
@@ -416,7 +438,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
+			}
+
+			if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+				s.logger.Warn("provider attested runtime claims rejected",
+					"provider_id", providerID,
+					"reason", err.Error(),
+				)
+				s.registry.MarkUntrusted(providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "attested runtime claims mismatch")
+				return
 			}
 
 			// Declaratively tell the provider the desired build per alias it
@@ -1345,6 +1380,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
 		provider.RuntimeManifestChecked = runtimeOK
+		provider.MetallibVerified = runtimeOK &&
+			runtimeManifestApprovesMetallib(
+				s.knownRuntimeManifest, resp.TemplateHashes)
+		if !runtimeOK || !provider.MetallibVerified {
+			provider.RuntimeCapabilities = nil
+			provider.FreshCodeAttested = false
+		}
 		if resp.PythonHash != "" {
 			provider.PythonHash = resp.PythonHash
 		}
@@ -1385,6 +1427,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 					}
 				}
 			}
+			_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 			return
 		}
 	}
@@ -1402,7 +1445,21 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		provider.Mu().Lock()
 		provider.RuntimeVerified = false
 		provider.RuntimeManifestChecked = false
+		provider.MetallibVerified = false
+		provider.RuntimeCapabilities = nil
+		provider.FreshCodeAttested = false
 		provider.Mu().Unlock()
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
+	}
+
+	if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+		s.logger.Warn("provider live runtime claims no longer match attestation",
+			"provider_id", providerID,
+			"reason", err.Error(),
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "attested runtime claims mismatch")
 		return
 	}
 
@@ -2573,6 +2630,16 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
+	if !attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+		result.Valid = false
+		result.Error = "attestation timestamp outside freshness window"
+		provider.SetAttestationResult(&result)
+		s.registry.MarkUntrusted(providerID)
+		s.logger.Warn("provider registration attestation replay rejected",
+			"provider_id", providerID)
+		return
+	}
+
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
 	// attested Secure Enclave identity. If a provider wants to serve private
 	// text, the attestation must carry the same encryption public key.
@@ -3378,6 +3445,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	var providers []providerAttestation
 
+	publicProviderModels := s.registry.PublicProviderModels()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
@@ -3387,14 +3455,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
 		mdaResult := p.MDAResult
-		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
-		// challenge goroutine, so its slice header must be read under p.mu. Copy
-		// the IDs out within this same locked section rather than ranging the
-		// field after unlock.
-		modelIDs := make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			modelIDs = append(modelIDs, m.ID)
-		}
 		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
@@ -3415,7 +3475,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			MDAVerified: mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, modelIDs...)
+		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName

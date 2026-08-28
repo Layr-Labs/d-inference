@@ -11,6 +11,7 @@ public struct ProviderLoopConfig: Sendable {
     public let config: ProviderConfig
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
+    public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     public let modelHashes: [String: String]
     /// Snapshot fingerprints captured at the same time as `modelHashes` (see
     /// `WeightHasher.snapshotFingerprint`). Seeding these lets the first
@@ -29,6 +30,7 @@ public struct ProviderLoopConfig: Sendable {
         config: ProviderConfig,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil
@@ -39,6 +41,7 @@ public struct ProviderLoopConfig: Sendable {
         self.config = config
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
+        self.runtimeCapabilities = runtimeCapabilities
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint

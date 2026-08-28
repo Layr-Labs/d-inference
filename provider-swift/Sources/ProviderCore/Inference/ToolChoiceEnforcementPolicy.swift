@@ -14,6 +14,8 @@ enum ToolChoiceEnforcementPolicy {
         case qwenPostValidation
     }
 
+    static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
+
     static func forcedStrategy(
         mode: ToolConstraintMode,
         modelContext: ChatTemplateFixContext
@@ -41,7 +43,8 @@ enum ToolChoiceEnforcementPolicy {
             return model.toolConstraintTemplateHash
                 == Gemma4ToolConstraintContract.pinnedTemplateSHA256
         }
-        return Qwen35TemplateFix.applies(to: context)
+        return model.id == qwen38ConstrainedModelID
+            && Qwen35TemplateFix.applies(to: context)
     }
 
     static func validateParser(

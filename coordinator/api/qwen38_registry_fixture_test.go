@@ -12,17 +12,22 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
 
 const (
-	qwen38ConcreteModel = "mlx-community/Qwen3.8-27B-4bit"
-	qwen38PublicAlias   = "qwen/qwen3.8-27b"
-	qwen38TargetRev     = "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
-	qwen38MTPModel      = "mlx-community/Qwen3.8-27B-MTP-4bit"
-	qwen38MTPRev        = "b643c01b6d3b094e325edb6ebd832e16c486c575"
+	qwen38ConcreteModel     = registry.Qwen38NAXModelID
+	qwen38CallableAlias     = "qwen3.8-27b"
+	qwen38OpenRouterSlug    = "qwen/qwen3.8-27b"
+	qwen38TargetRev         = "301e9e2767fd0efcfab7883004720ba3c9a552a1"
+	qwen38MTPModel          = "EigenLabs/Qwen3.8-27B-MTP-4bit"
+	qwen38MTPRev            = "329261c5e0b3f9c233485e682cb3b67b88c20a55"
+	qwen38TestSpecDecPrefix = "test-fixtures/spec-dec/qwen3.8-27b-mtp-4bit/r1"
+	qwen38TestManifestHash  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	qwen38TestConfigHash    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
 func qwen38RegistryFixture() *store.ModelRegistryEntry {
@@ -36,8 +41,12 @@ func qwen38RegistryFixture() *store.ModelRegistryEntry {
 		MaxOutputLength:  32768,
 		MinRAMGB:         48,
 		Capabilities:     []string{"tools", "reasoning", "json_mode", "vision", "video"},
-		Status:           "active",
-		Description:      "Dense Qwen3.8 vision-language model with bounded image and video input.",
+		RequiredProviderCapabilities: []string{
+			registry.ProviderCapabilityAppleM5,
+			registry.ProviderCapabilityMLXNAX,
+		},
+		Status:      "active",
+		Description: "Dense Qwen3.8 vision-language model with bounded image and video input.",
 		RuntimeParameters: map[string]any{
 			"reasoning_parser":       "qwen3",
 			"tool_call_parser":       "qwen3_coder",
@@ -46,20 +55,22 @@ func qwen38RegistryFixture() *store.ModelRegistryEntry {
 		Metadata: map[string]any{
 			huggingFaceIDMetadataKey: qwen38ConcreteModel,
 			"source_revision":        qwen38TargetRev,
-			"mtp_artifact_id":        qwen38MTPModel,
-			"mtp_source_revision":    qwen38MTPRev,
+			// These deterministic values describe this test fixture only. The
+			// production spec-dec payload remains approval-gated and must use
+			// the reviewed R2 manifest/config digests and sizes.
 			"spec_dec": map[string]any{
-				"r2_prefix":          "v2-specdec/qwen3.8-27b-mtp-4bit/2026-08-24-r1",
-				"manifest_sha256":    testHash,
+				"assistant_model_id": qwen38MTPModel,
+				"r2_prefix":          qwen38TestSpecDecPrefix,
+				"manifest_sha256":    qwen38TestManifestHash,
 				"total_size_bytes":   int64(536_870_912),
 				"file_count":         2,
 				"max_file_count":     2,
 				"allowed_file_types": []string{"config", "weight"},
-				"config_sha256":      testHash,
+				"config_sha256":      qwen38TestConfigHash,
 				"revision":           qwen38MTPRev,
 			},
-			"runtime_compatibility": "provider>=0.8.11",
-			"openrouter_slug":       qwen38PublicAlias,
+			"runtime_compatibility": "provider>=0.8.15",
+			"openrouter_slug":       qwen38OpenRouterSlug,
 			"openrouter_is_ready":   true,
 		},
 		CreatedAt: time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC),
@@ -137,14 +148,14 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: qwen38PublicAlias, DisplayName: entry.DisplayName,
+		AliasID: qwen38CallableAlias, DisplayName: entry.DisplayName,
 		DesiredBuild: qwen38ConcreteModel, Active: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()
 
-	build, isAlias, ok := reg.ResolveModel(qwen38PublicAlias)
+	build, isAlias, ok := reg.ResolveModel(qwen38CallableAlias)
 	if !ok || !isAlias || build != qwen38ConcreteModel {
 		t.Fatalf("alias resolution = %q isAlias=%v ok=%v", build, isAlias, ok)
 	}
@@ -154,6 +165,61 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	conn := connectAndPrepareProvider(
 		t, ctx, ts.URL, reg, qwen38ConcreteModel, testPublicKeyB64(), 18.0)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// The generic WebSocket helper intentionally does not manufacture runtime
+	// attestation. This fixture exercises the post-verification capacity surface,
+	// so advance the connected M5+NAX provider through the same verified state
+	// that the attestation/runtime handlers establish in production.
+	providerIDs := reg.ProviderIDs()
+	if len(providerIDs) != 1 {
+		t.Fatalf("connected providers = %v, want one", providerIDs)
+	}
+	provider := reg.GetProvider(providerIDs[0])
+	if provider == nil {
+		t.Fatal("connected provider missing from registry")
+	}
+	signedCapabilities := []string{
+		registry.ProviderCapabilityAppleM5,
+		registry.ProviderCapabilityMLXNAX,
+	}
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid:                  true,
+		ChipFamily:             "M5",
+		ChipName:               "Apple M5 Max",
+		MetallibHash:           testHash,
+		RuntimeCapabilities:    signedCapabilities,
+		SecureEnclaveAvailable: true,
+		SIPEnabled:             true,
+		SecureBootEnabled:      true,
+	})
+	provider.Mu().Lock()
+	if provider.Hardware.ChipFamily != "M5" ||
+		!reflect.DeepEqual(provider.ReportedRuntimeCapabilities, signedCapabilities) {
+		hardware, capabilities := provider.Hardware, provider.ReportedRuntimeCapabilities
+		provider.Mu().Unlock()
+		t.Fatalf("fixture provider did not report M5+NAX: hardware=%+v capabilities=%v",
+			hardware, capabilities)
+	}
+	provider.TrustLevel = registry.TrustHardware
+	provider.Attested = true
+	provider.CodeAttested = true
+	provider.FreshCodeAttested = true
+	provider.RuntimeManifestChecked = true
+	provider.RuntimeVerified = true
+	provider.MetallibVerified = true
+	provider.ChallengeVerifiedSIP = true
+	provider.LastChallengeVerified = time.Now()
+	provider.Mu().Unlock()
+	if err := reg.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
+		t.Fatalf("reconcile signed runtime capabilities: %v", err)
+	}
+	provider.Mu().Lock()
+	effectiveCapabilities := append([]string(nil), provider.RuntimeCapabilities...)
+	provider.Mu().Unlock()
+	if !reflect.DeepEqual(effectiveCapabilities, signedCapabilities) {
+		t.Fatalf("effective runtime capabilities = %v, want %v",
+			effectiveCapabilities, signedCapabilities)
+	}
 
 	t.Run("catalog item", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -179,16 +245,24 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 			t.Fatalf("runtime defaults = %#v", runtime)
 		}
 		metadata, _ := model["metadata"].(map[string]any)
-		if metadata["source_revision"] != qwen38TargetRev || metadata["mtp_artifact_id"] != qwen38MTPModel || metadata["mtp_source_revision"] != qwen38MTPRev {
-			t.Fatalf("artifact metadata = %#v", metadata)
+		if metadata["source_revision"] != qwen38TargetRev {
+			t.Fatalf("target artifact metadata = %#v", metadata)
+		}
+		if _, exists := metadata["mtp_artifact_id"]; exists {
+			t.Fatalf("flat mtp_artifact_id must not survive: %#v", metadata)
+		}
+		if _, exists := metadata["mtp_source_revision"]; exists {
+			t.Fatalf("flat mtp_source_revision must not survive: %#v", metadata)
 		}
 		specDec, ok := metadata["spec_dec"].(map[string]any)
-		if !ok || specDec["r2_prefix"] != "v2-specdec/qwen3.8-27b-mtp-4bit/2026-08-24-r1" ||
-			specDec["manifest_sha256"] != testHash || specDec["config_sha256"] != testHash ||
+		if !ok || specDec["assistant_model_id"] != qwen38MTPModel ||
+			specDec["r2_prefix"] != qwen38TestSpecDecPrefix ||
+			specDec["manifest_sha256"] != qwen38TestManifestHash ||
+			specDec["config_sha256"] != qwen38TestConfigHash ||
 			specDec["total_size_bytes"] != float64(536_870_912) || specDec["file_count"] != float64(2) ||
 			specDec["max_file_count"] != float64(2) || specDec["revision"] != qwen38MTPRev ||
 			!reflect.DeepEqual(specDec["allowed_file_types"], []any{"config", "weight"}) {
-			t.Fatalf("spec_dec metadata = %#v", metadata["spec_dec"])
+			t.Fatalf("test-only spec_dec metadata = %#v", metadata["spec_dec"])
 		}
 	})
 
@@ -205,7 +279,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		model := findQwen38ModelEntry(t, response.Data)
 		assertQwen38PublicFields(t, model.ContextLength, model.MaxOutputLength,
 			model.InputModalities, model.OutputModalities, model.SupportedFeatures)
-		if model.ID != qwen38PublicAlias || model.HuggingFaceID != qwen38ConcreteModel {
+		if model.ID != qwen38CallableAlias || model.HuggingFaceID != qwen38ConcreteModel {
 			t.Fatalf("alias identity = %+v", model)
 		}
 		if model.Pricing == nil || model.Pricing.Prompt != "0.00000005" || model.Pricing.Completion != "0.0000002" {
@@ -231,7 +305,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		}
 		var model *types.OpenRouterModel
 		for i := range response.Data {
-			if response.Data[i].ID == qwen38PublicAlias {
+			if response.Data[i].ID == qwen38CallableAlias {
 				model = &response.Data[i]
 				break
 			}
@@ -241,7 +315,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		}
 		assertQwen38PublicFields(t, model.ContextLength, model.MaxOutputLength,
 			model.InputModalities, model.OutputModalities, model.SupportedFeatures)
-		if !model.IsReady || model.OpenRouter == nil || model.OpenRouter.Slug != qwen38PublicAlias {
+		if !model.IsReady || model.OpenRouter == nil || model.OpenRouter.Slug != qwen38OpenRouterSlug {
 			t.Fatalf("OpenRouter readiness/slug = %+v", model)
 		}
 	})
@@ -272,7 +346,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 func findQwen38ModelEntry(t *testing.T, entries []types.ModelEntry) types.ModelEntry {
 	t.Helper()
 	for _, entry := range entries {
-		if entry.ID == qwen38PublicAlias {
+		if entry.ID == qwen38CallableAlias {
 			return entry
 		}
 	}

@@ -12,9 +12,11 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
-/// Template-only controls recovered from the sealed OpenAI body. The
-/// upstream request type does not model these top-level fields, but Qwen3.8's
-/// published template consumes all three.
+/// Template-only controls recovered from the sealed OpenAI body. They remain
+/// out-of-band because the upstream request type does not model the top-level
+/// Qwen3.8 fields. `enableThinking` is already resolved across top-level and
+/// `chat_template_kwargs`; the typed request's nested `reasoning.enabled`
+/// remains authoritative when the template context is built.
 public struct ChatTemplateControls: Sendable, Equatable {
     public let reasoningEffort: String?
     public let enableThinking: Bool?
@@ -28,6 +30,18 @@ public struct ChatTemplateControls: Sendable, Equatable {
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
         self.preserveThinking = preserveThinking
+    }
+
+    var effortDisablesThinking: Bool {
+        guard let value = reasoningEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        else { return false }
+        return ["none", "off", "0"].contains(value)
+    }
+
+    var hasExplicitThinkingControl: Bool {
+        enableThinking != nil || reasoningEffort != nil
     }
 }
 
@@ -49,44 +63,27 @@ extension MultiModelBatchSchedulerEngine {
         {
             context["reasoning_effort"] = effectiveEffort
         }
-        if let reasoningEnabled = controls.enableThinking ?? request.reasoning?.enabled {
-            context["enable_thinking"] = reasoningEnabled
-        } else if hasMedia {
-            // Qwen 3.5/3.6 templates default thinking ON when this key is
-            // absent. A long ungrounded think block both misses vision
-            // captions (OpenRouter flower regex) and burns the first-content
-            // clock on video. Clients that want thinking send
-            // `reasoning.enabled`.
+
+        // Reviewed precedence: the typed nested control wins over both raw-body
+        // aliases; explicit booleans win over effort shorthands; only the exact
+        // none/off/0 spellings disable through reasoning_effort. `minimal` is
+        // preserved as an effort value and intentionally is not rewritten to
+        // false.
+        if let nested = request.reasoning?.enabled {
+            context["enable_thinking"] = nested
+        } else if let explicit = controls.enableThinking {
+            context["enable_thinking"] = explicit
+        } else if controls.effortDisablesThinking {
+            context["enable_thinking"] = false
+        } else if hasMedia && !controls.hasExplicitThinkingControl {
+            // Qwen templates default thinking on. Grounded media defaults off
+            // only when the caller supplied no thinking control at all.
             context["enable_thinking"] = false
         }
         if let preserveThinking = controls.preserveThinking {
             context["preserve_thinking"] = preserveThinking
         }
         return context.isEmpty ? nil : context
-    }
-
-    static func templateAdditionalContext(
-        for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?,
-        modelType: String? = nil,
-        hasMedia: Bool = false
-    ) -> [String: any Sendable]? {
-        templateAdditionalContext(
-            for: request,
-            controls: ChatTemplateControls(reasoningEffort: reasoningEffort),
-            modelType: modelType,
-            hasMedia: hasMedia)
-    }
-
-    static func templateAdditionalContext(
-        for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?
-    ) -> [String: any Sendable]? {
-        templateAdditionalContext(
-            for: request,
-            reasoningEffort: reasoningEffort,
-            modelType: nil,
-            hasMedia: false)
     }
 
     /// Translate an upstream `OpenAIChatCompletionRequest` into the

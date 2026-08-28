@@ -495,6 +495,7 @@ enum SpecDecStore {
                     directory: artifact.directory,
                     source: .catalog,
                     revision: reference.revision,
+                    sourceRevision: artifact.sourceRevision,
                     artifactBytes: verification.artifactBytes,
                     residentBytes: SpecDecLimits.residentEstimate(
                         artifactBytes: verification.artifactBytes),
@@ -523,6 +524,9 @@ enum SpecDecStore {
                 return .fallback(
                     .localArtifactInvalid,
                     detail: "local assistant changed after admission")
+            }
+            if let sourceRevision = artifact.sourceRevision {
+                return .resolved(refreshed.recordingSourceRevision(sourceRevision))
             }
             return .resolved(refreshed)
         case .inline:

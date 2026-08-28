@@ -249,7 +249,7 @@ struct InboundDecodeTests {
     // MARK: - reasoning_effort extraction
 
     private func effort(_ json: String) -> String? {
-        ProviderLoop.extractReasoningEffort(from: Data(json.utf8))
+        ProviderLoop.extractChatTemplateControls(from: Data(json.utf8)).reasoningEffort
     }
 
     @Test("reasoning_effort is extracted verbatim")
@@ -289,6 +289,31 @@ struct InboundDecodeTests {
         let json = #"{"model":"m","messages":[],"reasoning_effort":3,"enable_thinking":true,"preserve_thinking":false}"#
         let controls = ProviderLoop.extractChatTemplateControls(from: Data(json.utf8))
         #expect(controls.reasoningEffort == nil)
+        #expect(controls.enableThinking == true)
+        #expect(controls.preserveThinking == false)
+    }
+
+    @Test("top-level enable_thinking wins over chat_template_kwargs")
+    func qwenThinkingAliasPrecedence() {
+        let kwargsOnly = ProviderLoop.extractChatTemplateControls(
+            from: Data(
+                #"{"model":"m","messages":[],"chat_template_kwargs":{"enable_thinking":true}}"#
+                    .utf8))
+        #expect(kwargsOnly.enableThinking == true)
+
+        let both = ProviderLoop.extractChatTemplateControls(
+            from: Data(
+                #"{"model":"m","messages":[],"enable_thinking":false,"chat_template_kwargs":{"enable_thinking":true}}"#
+                    .utf8))
+        #expect(both.enableThinking == false)
+    }
+
+    @Test("malformed top-level thinking does not discard a valid kwargs alias")
+    func malformedTopLevelThinkingFallsThroughToKwargs() {
+        let controls = ProviderLoop.extractChatTemplateControls(
+            from: Data(
+                #"{"model":"m","messages":[],"enable_thinking":"yes","chat_template_kwargs":{"enable_thinking":true},"preserve_thinking":false}"#
+                    .utf8))
         #expect(controls.enableThinking == true)
         #expect(controls.preserveThinking == false)
     }

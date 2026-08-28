@@ -49,14 +49,15 @@ const (
 	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
 
 	// Coordinator → Provider.
-	TypeInferenceRequest     = "inference_request"
-	TypeCancel               = "cancel"
-	TypeAttestationChallenge = "attestation_challenge"
-	TypeRuntimeStatus        = "runtime_status"
-	TypeLoadModel            = "load_model"
-	TypePrefetchModel        = "prefetch_model"
-	TypeDesiredModels        = "desired_models"
-	TypeTrustStatus          = "trust_status"
+	TypeInferenceRequest               = "inference_request"
+	TypeCancel                         = "cancel"
+	TypeAttestationChallenge           = "attestation_challenge"
+	TypeCodeAttestationResumeChallenge = "code_attestation_resume_challenge"
+	TypeRuntimeStatus                  = "runtime_status"
+	TypeLoadModel                      = "load_model"
+	TypePrefetchModel                  = "prefetch_model"
+	TypeDesiredModels                  = "desired_models"
+	TypeTrustStatus                    = "trust_status"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -185,6 +186,7 @@ type RegisterMessage struct {
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
 	Backend                     string                             `json:"backend"`
+	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
 	PublicKey                   string                             `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
 	EncryptedResponseChunks     bool                               `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
@@ -723,6 +725,13 @@ type AttestationChallengeMessage struct {
 	Type      string `json:"type"`
 	Nonce     string `json:"nonce"`     // base64-encoded random 32-byte nonce
 	Timestamp string `json:"timestamp"` // ISO 8601 timestamp
+}
+
+// CodeAttestationResumeChallenge proves possession of the cached registration
+// X25519 private key over the live WebSocket without spending another APNs push.
+type CodeAttestationResumeChallenge struct {
+	Type          string           `json:"type"`
+	CodeChallenge EncryptedPayload `json:"code_challenge"`
 }
 
 // AttestationResponseMessage is sent by the provider in response to an

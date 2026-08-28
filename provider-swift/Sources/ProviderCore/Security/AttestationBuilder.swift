@@ -27,12 +27,17 @@ private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "atte
 public struct AttestationBlob: Codable, Sendable {
     public let authenticatedRootEnabled: Bool
     public let binaryHash: String?
+    /// Structured hardware family and live runtime identity are signed here,
+    /// not inferred from unsigned Register siblings at the coordinator.
+    public let chipFamily: String?
     public let chipName: String
     public let encryptionPublicKey: String?
     public let hardwareModel: String
+    public let metallibHash: String?
     public let osVersion: String
     public let publicKey: String
     public let rdmaDisabled: Bool
+    public let runtimeCapabilities: [ProviderRuntimeCapability]?
     public let secureBootEnabled: Bool
     public let secureEnclaveAvailable: Bool
     public let serialNumber: String?
@@ -43,12 +48,15 @@ public struct AttestationBlob: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case authenticatedRootEnabled
         case binaryHash
+        case chipFamily
         case chipName
         case encryptionPublicKey
         case hardwareModel
+        case metallibHash
         case osVersion
         case publicKey
         case rdmaDisabled
+        case runtimeCapabilities
         case secureBootEnabled
         case secureEnclaveAvailable
         case serialNumber
@@ -171,17 +179,25 @@ public final class AttestationBuilder: @unchecked Sendable {
     ///     coordinator verifies this matches the expected blessed version.
     public func buildAttestation(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        chipFamily: ChipFamily? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        metallibHash: String? = nil
     ) throws -> SignedAttestation {
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
+            chipFamily: chipFamily?.rawValue,
             chipName: detectChipName(),
             encryptionPublicKey: encryptionPublicKey,
             hardwareModel: detectHardwareModel(),
+            metallibHash: metallibHash,
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),
+            runtimeCapabilities: runtimeCapabilities.isEmpty
+                ? nil
+                : runtimeCapabilities.sorted(),
             secureBootEnabled: checkSecureBootEnabled(),
             secureEnclaveAvailable: SecureEnclave.isAvailable,
             serialNumber: detectSerialNumber(),
@@ -213,11 +229,17 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// preserve the exact encoding needed for signature verification.
     public func buildAttestationJSON(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        chipFamily: ChipFamily? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        metallibHash: String? = nil
     ) throws -> Data {
         let signed = try buildAttestation(
             encryptionPublicKey: encryptionPublicKey,
-            binaryHash: binaryHash
+            binaryHash: binaryHash,
+            chipFamily: chipFamily,
+            runtimeCapabilities: runtimeCapabilities,
+            metallibHash: metallibHash
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

@@ -7,8 +7,10 @@ import MLXLMCommon
 @testable import ProviderCore
 
 enum Qwen38ProductionCanary {
-    static let targetModelID = "mlx-community/Qwen3.8-27B-4bit"
-    static let assistantModelID = "mlx-community/Qwen3.8-27B-MTP-4bit"
+    static let targetModelID = "EigenLabs/Qwen3.8-27B-4bit"
+    static let targetRevision = "301e9e2767fd0efcfab7883004720ba3c9a552a1"
+    static let assistantModelID = "EigenLabs/Qwen3.8-27B-MTP-4bit"
+    static let assistantRevision = "329261c5e0b3f9c233485e682cb3b67b88c20a55"
     static let modelType = "qwen3_5"
     static let parityMaxTokens = 128
     static let mtpWarmupMaxTokens = 24
@@ -38,18 +40,27 @@ enum Qwen38ProductionCanary {
     }
 
     static func load() async throws -> Qwen38ProductionCanaryFixture {
-        guard HardwareDetector.totalMemoryGB() >= 48 else {
-            throw Qwen38ProductionCanaryError.insufficientMemory(HardwareDetector.totalMemoryGB())
-        }
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw Qwen38ProductionCanaryError.missingMetallib
+        }
+        let hardware = try HardwareDetector.detect()
+        let capabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: hardware)
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: targetModelID, available: capabilities)
+        guard eligibility.isEligible else {
+            throw Qwen38ProductionCanaryError.ineligibleHardware(
+                eligibility.missing.map(\.rawValue).sorted())
         }
 
         let environment = ProcessInfo.processInfo.environment
         let target = try resolveArtifact(
-            override: environment[targetPathOverride], modelID: targetModelID)
+            override: environment[targetPathOverride],
+            modelID: targetModelID,
+            revision: targetRevision)
         let assistant = try resolveArtifact(
-            override: environment[assistantPathOverride], modelID: assistantModelID)
+            override: environment[assistantPathOverride],
+            modelID: assistantModelID,
+            revision: assistantRevision)
         let assistantLayerCount = try mtpLayerCount(assistant)
         guard assistantLayerCount == 1 else {
             throw Qwen38ProductionCanaryError.invalidAssistantLayerCount(
@@ -103,18 +114,37 @@ enum Qwen38ProductionCanary {
             assistantLayerCount: assistantLayerCount)
     }
 
-    static func resolveArtifact(override: String?, modelID: String) throws -> URL {
+    static func resolveArtifact(
+        override: String?,
+        modelID: String,
+        revision: String
+    ) throws -> URL {
+        let url: URL
         if let override, !override.isEmpty {
-            let url = URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw Qwen38ProductionCanaryError.missingArtifact(modelID, url.path)
+            url = URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+        } else {
+            guard let cache = ModelScanner.defaultCacheDirectory() else {
+                throw Qwen38ProductionCanaryError.missingArtifact(
+                    modelID, "Hugging Face cache")
             }
-            return url
+            url = cache
+                .appendingPathComponent(
+                    "models--\(modelID.replacingOccurrences(of: "/", with: "--"))",
+                    isDirectory: true)
+                .appendingPathComponent("snapshots", isDirectory: true)
+                .appendingPathComponent(revision, isDirectory: true)
+                .standardizedFileURL
         }
-        guard let url = ModelScanner.resolveLocalPath(modelID: modelID) else {
-            throw Qwen38ProductionCanaryError.missingArtifact(modelID, "Hugging Face cache")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Qwen38ProductionCanaryError.missingArtifact(modelID, url.path)
         }
-        return url.standardizedFileURL
+        guard url.lastPathComponent == revision else {
+            throw Qwen38ProductionCanaryError.revisionMismatch(
+                modelID: modelID,
+                expected: revision,
+                path: url.path)
+        }
+        return url
     }
 
     static func mtpLayerCount(_ artifact: URL) throws -> Int {
@@ -253,8 +283,12 @@ enum Qwen38ProductionCanary {
         let acceptance = proposed > 0 ? Double(accepted) / Double(proposed) : 0
         return String(
             format:
-                "QWEN38_CANARY chip=%@ ram_gb=%llu tokens=%d target_seconds=%.4f target_tps=%.3f mtp_seconds=%.4f mtp_tps=%.3f speedup=%.4fx mtp_acceptance=%.4f",
+                "QWEN38_CANARY target_model=%@ target_revision=%@ assistant_model=%@ assistant_revision=%@ mtp_path=separate chip=%@ ram_gb=%llu tokens=%d target_seconds=%.4f target_tps=%.3f mtp_seconds=%.4f mtp_tps=%.3f speedup=%.4fx mtp_acceptance=%.4f",
             locale: Locale(identifier: "en_US_POSIX"),
+            targetModelID,
+            targetRevision,
+            assistantModelID,
+            assistantRevision,
             hardware?.chipName ?? "unknown",
             hardware?.memoryGb ?? HardwareDetector.totalMemoryGB(),
             target.tokens.count,
@@ -269,11 +303,12 @@ enum Qwen38ProductionCanary {
 
 enum Qwen38ProductionCanaryError: Error, CustomStringConvertible {
     case missingArtifact(String, String)
+    case revisionMismatch(modelID: String, expected: String, path: String)
     case invalidAssistant(String)
     case invalidAssistantLayerCount(String, Int)
     case missingMedia(String)
     case missingMetallib
-    case insufficientMemory(UInt64)
+    case ineligibleHardware([String])
     case notVLM(String)
     case engineUnavailable
     case emptyGeneration
@@ -286,6 +321,8 @@ enum Qwen38ProductionCanaryError: Error, CustomStringConvertible {
         switch self {
         case .missingArtifact(let id, let path):
             "Qwen3.8 artifact \(id) is missing at \(path)"
+        case .revisionMismatch(let modelID, let expected, let path):
+            "Qwen3.8 artifact \(modelID) at \(path) is not the required revision \(expected)"
         case .invalidAssistant(let path):
             "Qwen3.8 MTP artifact at \(path) lacks config.json or safetensors weights"
         case .invalidAssistantLayerCount(let path, let count):
@@ -294,8 +331,8 @@ enum Qwen38ProductionCanaryError: Error, CustomStringConvertible {
             "Qwen3.8 canary media fixture is missing at \(path)"
         case .missingMetallib:
             "mlx.metallib is unavailable; run scripts/fetch-metallib.sh before the live canary"
-        case .insufficientMemory(let memory):
-            "Qwen3.8 canary requires at least 48 GiB unified memory; host reports \(memory) GiB"
+        case .ineligibleHardware(let missing):
+            "Qwen3.8 canary requires shared provider capabilities: \(missing.joined(separator: ","))"
         case .notVLM(let path):
             "Qwen3.8 artifact at \(path) does not declare vision_config"
         case .engineUnavailable:

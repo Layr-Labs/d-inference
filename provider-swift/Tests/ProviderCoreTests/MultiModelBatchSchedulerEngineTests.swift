@@ -240,9 +240,9 @@ func templateContextForwardsReasoningEnabled() {
         reasoning: .init(enabled: false))
 
     let enabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: enabled, reasoningEffort: nil)
+        for: enabled, controls: .init())
     let disabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: disabled, reasoningEffort: nil)
+        for: disabled, controls: .init())
 
     #expect(enabledContext?["enable_thinking"] as? Bool == true)
     #expect(disabledContext?["enable_thinking"] as? Bool == false)
@@ -256,7 +256,7 @@ func templateContextComposesReasoningControls() {
         reasoning: .init(enabled: true))
 
     let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, reasoningEffort: "high")
+        for: request, controls: .init(reasoningEffort: "high"))
 
     #expect(context?["enable_thinking"] as? Bool == true)
     #expect(context?["reasoning_effort"] as? String == "high")
@@ -269,23 +269,63 @@ func templateContextDowngradesGPTOSSHighReasoningEffort() {
         messages: [.init(role: .user, content: .text("hi"))])
 
     let high = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, reasoningEffort: "high")
+        for: request, controls: .init(reasoningEffort: "high"))
     let medium = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, reasoningEffort: "medium")
+        for: request, controls: .init(reasoningEffort: "medium"))
     let low = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, reasoningEffort: "low")
+        for: request, controls: .init(reasoningEffort: "low"))
     let opaqueAlias = OpenAIChatCompletionRequest(
         model: "opaque-alias",
         messages: [.init(role: .user, content: .text("hi"))])
     let identifiedByModelType = MultiModelBatchSchedulerEngine.templateAdditionalContext(
         for: opaqueAlias,
-        reasoningEffort: "high",
+        controls: .init(reasoningEffort: "high"),
         modelType: "gpt_oss")
 
     #expect(high?["reasoning_effort"] as? String == "medium")
     #expect(medium?["reasoning_effort"] as? String == "medium")
     #expect(low?["reasoning_effort"] as? String == "low")
     #expect(identifiedByModelType?["reasoning_effort"] as? String == "medium")
+}
+
+@Test("nested reasoning.enabled wins over raw-body template controls")
+func templateContextUsesReviewedNestedPrecedence() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: false))
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(
+            reasoningEffort: "high",
+            enableThinking: true,
+            preserveThinking: true),
+        hasMedia: true)
+
+    #expect(context?["enable_thinking"] as? Bool == false)
+    #expect(context?["reasoning_effort"] as? String == "high")
+    #expect(context?["preserve_thinking"] as? Bool == true)
+}
+
+@Test("none off and zero disable; minimal remains an explicit effort")
+func templateContextNormalizesOnlyReviewedDisableSpellings() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("hi"))])
+    for value in ["none", " OFF ", "0"] {
+        let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request,
+            controls: .init(reasoningEffort: value),
+            hasMedia: true)
+        #expect(context?["enable_thinking"] as? Bool == false)
+    }
+
+    let minimal = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(reasoningEffort: "minimal"),
+        hasMedia: true)
+    #expect(minimal?["reasoning_effort"] as? String == "minimal")
+    #expect(minimal?["enable_thinking"] == nil)
 }
 
 // MARK: - Engine error mapping (P2 #6)

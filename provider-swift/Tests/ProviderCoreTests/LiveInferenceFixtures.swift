@@ -115,9 +115,9 @@ enum LiveInferenceFixtures {
                 } else {
                     try fm.moveItem(at: temporary, to: destination)
                 }
-                // Mirror to MLX_METALLIB_PATH so our own `locateMetallib()`
-                // (which trusts _NSGetExecutablePath, i.e. the xctest host
-                // path) can find it too if anyone else queries.
+                // Preserve the fixture's source hint for other test helpers.
+                // Production attestation ignores this env var and hashes the
+                // runner-local file just installed above, matching MLX C++.
                 MLXMetallibEnvironment.setPath(destination.path)
                 return destination
             } catch {

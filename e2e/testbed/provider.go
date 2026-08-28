@@ -218,6 +218,9 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	if maxConcurrent > 0 {
 		fmt.Fprintf(&b, "engine_v2_max_concurrent = %d\n", maxConcurrent)
 	}
+	if cfg.MTPDrafterPath != "" {
+		fmt.Fprintf(&b, "mtp_drafter_path = %q\n", cfg.MTPDrafterPath)
+	}
 	return b.String(), nil
 }
 

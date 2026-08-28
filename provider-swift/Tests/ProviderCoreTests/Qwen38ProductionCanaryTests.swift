@@ -12,9 +12,10 @@ import Testing
 ///
 /// This is intentionally opt-in: it loads roughly 17 GiB of target weights,
 /// exercises the real Metal vision path, then rebuilds the production bundle
-/// with the separate MTP artifact. The test resolves normal Hugging Face cache
-/// snapshots, but stages the assistant's config and weight as regular hard
-/// links because the production local-artifact trust boundary rejects symlinks.
+/// with the separate MTP artifact. The test resolves only the exact immutable
+/// Hugging Face snapshots named below, then stages the assistant's config and
+/// weight as regular hard links because the production local-artifact trust
+/// boundary rejects symlinks.
 @Suite("Qwen3.8 production artifact canary", .serialized)
 struct Qwen38ProductionCanaryTests {
     @Test(
@@ -26,6 +27,19 @@ struct Qwen38ProductionCanaryTests {
     func fullVLMAndSeparateMTPArtifact() async throws {
         let fixture = try await Qwen38ProductionCanary.load()
         defer { fixture.removeStagedAssistant() }
+        #expect(Qwen38ProductionCanary.targetModelID == "EigenLabs/Qwen3.8-27B-4bit")
+        #expect(
+            Qwen38ProductionCanary.targetRevision
+                == "301e9e2767fd0efcfab7883004720ba3c9a552a1")
+        #expect(
+            Qwen38ProductionCanary.assistantModelID
+                == "EigenLabs/Qwen3.8-27B-MTP-4bit")
+        #expect(
+            Qwen38ProductionCanary.assistantRevision
+                == "329261c5e0b3f9c233485e682cb3b67b88c20a55")
+        #expect(fixture.modelDirectory.lastPathComponent == Qwen38ProductionCanary.targetRevision)
+        #expect(MTPMode.auto.enablesMTP(
+            forModelID: Qwen38ProductionCanary.targetModelID))
         #expect(fixture.assistantLayerCount == 1)
 
         var liveBundle: ProviderEngineBundle?
@@ -65,6 +79,10 @@ struct Qwen38ProductionCanaryTests {
                 preparation.artifact,
                 "SpecDecArtifactFunnel did not resolve the staged Qwen3.8 MTP artifact")
             #expect(artifact.source == .local)
+            #expect(artifact.revision.hasPrefix("local-"))
+            #expect(
+                artifact.sourceRevision
+                    == Qwen38ProductionCanary.assistantRevision)
             #expect(preparation.status.configured)
 
             let mtpBundle = try await fixture.makeBundle(preparation: preparation)
@@ -73,6 +91,10 @@ struct Qwen38ProductionCanaryTests {
             #expect(initialMTP.configured)
             #expect(initialMTP.active)
             #expect(initialMTP.assistantSource == .local)
+            #expect(initialMTP.assistantRevision?.hasPrefix("local-") == true)
+            #expect(
+                initialMTP.assistantSourceRevision
+                    == Qwen38ProductionCanary.assistantRevision)
             #expect(initialMTP.assistantResidentBytes > 0)
             #expect(mtpBundle.assistantBytes > 0)
 

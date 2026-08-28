@@ -74,6 +74,79 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	}
 }
 
+func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
+	th := newCodeAttestThrottle()
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
+	if !th.reuseAttestationForProcess(
+		"se", "0.8.17", "token", "node-key-A",
+	) {
+		t.Fatal("same-process reconnect should reuse exact process-key proof")
+	}
+	if th.reuseAttestationForProcess(
+		"se", "0.8.17", "token", "node-key-B",
+	) {
+		t.Fatal("new process key replayed prior code proof")
+	}
+	if th.reuseAttestationForProcess(
+		"se", "0.8.18", "token", "node-key-A",
+	) {
+		t.Fatal("cross-version process proof reused")
+	}
+	if th.reuseAttestationForProcess(
+		"se", "0.8.17", "rotated-token", "node-key-A",
+	) {
+		t.Fatal("rotated token reused process proof")
+	}
+
+	seeded := newCodeAttestThrottle()
+	seeded.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A",
+	}})
+	if !seeded.reuseAttestationForProcess(
+		"se", "0.8.17", "token", "node-key-A",
+	) {
+		t.Fatal("persisted process-key binding did not survive seed")
+	}
+}
+
+func TestCodeAttestResumeChallengeIsBoundOneTimeAndExpires(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	th := newCodeAttestThrottle()
+	th.now = func() time.Time { return now }
+	th.recordResumeChallenge("nonce", "provider", "node", "se", "token")
+	if !th.consumeResumeChallenge("nonce", "provider", "node", "se", "token") {
+		t.Fatal("exact live resume proof did not match")
+	}
+	if th.consumeResumeChallenge("nonce", "provider", "node", "se", "token") {
+		t.Fatal("resume proof replayed")
+	}
+
+	th.recordResumeChallenge("expired", "provider", "node", "se", "token")
+	now = now.Add(th.challengeValidity)
+	if th.consumeResumeChallenge(
+		"expired", "provider", "node", "se", "token",
+	) {
+		t.Fatal("expired resume proof matched")
+	}
+}
+
+func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
+	th := newCodeAttestThrottle()
+	th.recordChallengeForIdentity("se", "nonce", "token", "K1")
+	if th.matchChallengeForIdentity("se", "nonce", "token", "K2") ||
+		th.consumeChallengeForIdentity("se", "nonce", "token", "K2") {
+		t.Fatal("K2 matched APNs challenge encrypted to K1")
+	}
+	if !th.matchChallengeForIdentity("se", "nonce", "token", "K1") ||
+		!th.consumeChallengeForIdentity("se", "nonce", "token", "K1") {
+		t.Fatal("K1 could not consume its own APNs challenge")
+	}
+	if th.consumeChallengeForIdentity("se", "nonce", "token", "K1") {
+		t.Fatal("APNs challenge replayed")
+	}
+}
+
 // TestCodeAttestThrottleModeAwareBudget proves Fix 3: alert pushes use a far
 // shorter per-device budget than background pushes, so a missed alert push retries
 // promptly instead of being pinned to the long background budget.

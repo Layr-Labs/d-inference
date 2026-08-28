@@ -59,7 +59,7 @@ struct Qwen35TemplateFixesTests {
         #expect(Qwen35TemplateFix.applies(
             to: .init(modelId: "mlx-community/Qwen3.6-35B", modelType: nil)))
         #expect(Qwen35TemplateFix.applies(
-            to: .init(modelId: "mlx-community/Qwen3.8-27B-4bit", modelType: nil)))
+            to: .init(modelId: "EigenLabs/Qwen3.8-27B-4bit", modelType: nil)))
         #expect(!Qwen35TemplateFix.applies(
             to: .init(modelId: "qwen3-8b", modelType: "qwen3")))
         #expect(!Qwen35TemplateFix.applies(
@@ -240,7 +240,7 @@ struct Qwen35TemplateFixesTests {
             request: request,
             tokenizer: TokenizerHandle(QwenSystemFirstTokenizer()),
             modelType: "qwen3_5_moe",
-            reasoningEffort: nil)
+            templateControls: .init())
         #expect(floor == 3)
     }
 

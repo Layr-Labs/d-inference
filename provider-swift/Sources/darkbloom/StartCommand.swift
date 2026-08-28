@@ -94,6 +94,8 @@ struct Start: AsyncParsableCommand {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
+        let runtimeCapabilities =
+            ProviderRuntimeCapabilityDetector.detectLive(hardware: hardware)
 
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
@@ -106,21 +108,24 @@ struct Start: AsyncParsableCommand {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                hardware: hardware
+                hardware: hardware,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else if foreground {
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
                 config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                coordinatorURL: effectiveCoordinator,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else {
             try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator,
-                configPath: configOptions.config == nil ? nil : snapshot.configPath
+                configPath: configOptions.config == nil ? nil : snapshot.configPath,
+                runtimeCapabilities: runtimeCapabilities
             )
         }
     }

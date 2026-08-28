@@ -414,6 +414,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			max_output_length INTEGER NOT NULL DEFAULT 0,
 			min_ram_gb INTEGER NOT NULL DEFAULT 0,
 			capabilities TEXT[] NOT NULL DEFAULT '{}',
+			required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL DEFAULT 'beta',
 			description TEXT NOT NULL DEFAULT '',
 			runtime_parameters JSONB NOT NULL DEFAULT '{}',
@@ -449,6 +450,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`UPDATE model_registry
+		 SET required_provider_capabilities = (
+		   SELECT ARRAY_AGG(DISTINCT capability ORDER BY capability)
+		   FROM UNNEST(required_provider_capabilities ||
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[]) AS capability
+		 )
+		 WHERE id = 'EigenLabs/Qwen3.8-27B-4bit'
+		   AND NOT (required_provider_capabilities @>
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[])`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
 		`CREATE TABLE IF NOT EXISTS model_version_files (
 			id BIGSERIAL PRIMARY KEY,
@@ -972,11 +986,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			se_pubkey TEXT PRIMARY KEY,
 			version TEXT NOT NULL DEFAULT '',
 			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			apns_token TEXT NOT NULL DEFAULT ''
+			apns_token TEXT NOT NULL DEFAULT '',
+			node_public_key TEXT NOT NULL DEFAULT ''
 		)`,
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS node_public_key TEXT NOT NULL DEFAULT ''`,
 
 		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
 		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
@@ -4918,7 +4934,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4927,7 +4943,10 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	var out []CodeAttestation
 	for rows.Next() {
 		var rec CodeAttestation
-		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt, &rec.APNsToken); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
+			&rec.APNsToken, &rec.NodePublicKey,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
 		out = append(out, rec)
@@ -4946,11 +4965,14 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO code_attestations (se_pubkey, version, attested_at, apns_token)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO code_attestations (
+			se_pubkey, version, attested_at, apns_token, node_public_key
+		 ) VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			version = $2, attested_at = $3, apns_token = $4`,
-		rec.SEPubKey, rec.Version, rec.AttestedAt, rec.APNsToken,
+			version = $2, attested_at = $3,
+			apns_token = $4, node_public_key = $5`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt,
+		rec.APNsToken, rec.NodePublicKey,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)

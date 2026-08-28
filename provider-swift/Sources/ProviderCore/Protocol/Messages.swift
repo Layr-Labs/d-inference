@@ -187,6 +187,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
+        public var runtimeCapabilities: [ProviderRuntimeCapability]
         /// When true, this machine serves only its owner's self-route requests,
         /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
         public var privateOnly: Bool
@@ -222,6 +223,7 @@ public enum ProviderMessage: Sendable, Equatable {
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
+            runtimeCapabilities: [ProviderRuntimeCapability] = [],
             privateOnly: Bool = false,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil,
@@ -247,6 +249,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
+            self.runtimeCapabilities = runtimeCapabilities.sorted()
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
@@ -743,6 +746,7 @@ extension ProviderMessage: Codable {
         case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
+        case runtimeCapabilities = "runtime_capabilities"
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
@@ -833,6 +837,9 @@ extension ProviderMessage: Codable {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
+            if !r.runtimeCapabilities.isEmpty {
+                try container.encode(r.runtimeCapabilities.sorted(), forKey: .runtimeCapabilities)
+            }
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
             }
@@ -1040,6 +1047,8 @@ extension ProviderMessage: Codable {
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                runtimeCapabilities: try container.decodeIfPresent(
+                    [ProviderRuntimeCapability].self, forKey: .runtimeCapabilities) ?? [],
                 privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment),
@@ -1260,6 +1269,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
+    case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
@@ -1310,6 +1320,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public init(nonce: String, timestamp: String) {
             self.nonce = nonce
             self.timestamp = timestamp
+        }
+    }
+
+    public struct CodeAttestationResumeChallenge: Sendable, Equatable {
+        public var codeChallenge: EncryptedPayload
+        public init(codeChallenge: EncryptedPayload) {
+            self.codeChallenge = codeChallenge
         }
     }
 
@@ -1394,6 +1411,7 @@ extension CoordinatorMessage: Codable {
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
+        case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
@@ -1412,6 +1430,7 @@ extension CoordinatorMessage: Codable {
         case prefixCacheProtocol = "prefix_cache_protocol"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
+        case codeChallenge = "code_challenge"
         case verified, mismatches
         case modelId = "model_id"
         case priority
@@ -1447,6 +1466,11 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.timestamp, forKey: .timestamp)
+
+        case .codeAttestationResumeChallenge(let challenge):
+            try container.encode(
+                TypeValue.codeAttestationResumeChallenge, forKey: .type)
+            try container.encode(challenge.codeChallenge, forKey: .codeChallenge)
 
         case .runtimeStatus(let s):
             try container.encode(TypeValue.runtimeStatus, forKey: .type)
@@ -1511,6 +1535,14 @@ extension CoordinatorMessage: Codable {
                 nonce: try container.decode(String.self, forKey: .nonce),
                 timestamp: try container.decode(String.self, forKey: .timestamp)
             ))
+
+        case .codeAttestationResumeChallenge:
+            self = .codeAttestationResumeChallenge(
+                CodeAttestationResumeChallenge(
+                    codeChallenge: try container.decode(
+                        EncryptedPayload.self, forKey: .codeChallenge)
+                )
+            )
 
         case .runtimeStatus:
             self = .runtimeStatus(RuntimeStatus(

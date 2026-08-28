@@ -96,6 +96,21 @@ private func funnelModel(id: String = "gemma-4-target", metadata: [String: JSONV
         metadata: metadata)
 }
 
+private func qwen38SpecDecMetadata() -> [String: JSONValue] {
+    [
+        "spec_dec": .object([
+            ("r2_prefix", .string("v2-specdec/eigenlabs-qwen38-mtp/329261c5e0b3f9c233485e682cb3b67b88c20a55")),
+            ("manifest_sha256", .string(String(repeating: "a", count: 64))),
+            ("config_sha256", .string(String(repeating: "b", count: 64))),
+            ("total_size_bytes", .int(1)),
+            ("file_count", .int(2)),
+            ("max_file_count", .int(2)),
+            ("allowed_file_types", .array([.string("config"), .string("weight")])),
+            ("revision", .string("329261c5e0b3f9c233485e682cb3b67b88c20a55")),
+        ])
+    ]
+}
+
 private let localAssistantConfig = Data(#"{"model_type":"gemma4_assistant"}"#.utf8)
 
 private func makeLocalAssistant() throws -> URL {
@@ -256,30 +271,75 @@ struct SpecDecArtifactFunnelTests {
         #expect(await catalog.calls == 0)
     }
 
-    @Test("dense Qwen target without inline MTP falls through to catalog metadata")
-    func qwenStandaloneAssistantUsesCatalogPath() async throws {
+    @Test("dense Qwen target without spec_dec falls back target-only with metadata_missing")
+    func qwenStandaloneAssistantMissingMetadataFallsBack() async throws {
         let directory = try makeDenseQwenTargetWithoutInlineMTP()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let catalog = FunnelCatalog(funnelModel(id: "qwen/qwen3.8-27b"))
+        let modelID = MTPMode.automaticTargetModelID
+        let catalog = FunnelCatalog(funnelModel(id: modelID))
         let prepared = await funnel(
             catalog: catalog, root: FileManager.default.temporaryDirectory
         ).prepare(
             .init(
-                modelId: "qwen/qwen3.8-27b",
+                modelId: modelID,
                 modelType: "qwen3_5",
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
-                allowDownload: true,
+                allowDownload: false,
                 environment: [:]))
 
         #expect(prepared.artifact == nil)
+        #expect(prepared.status.configured)
         #expect(prepared.status.reason == .metadataMissing)
-        // The catalog refresh is deliberately deadline-bounded and may lose
-        // its race under concurrent test load. The stable contract is that a
-        // dense checkpoint without inline tensors reaches metadata handling
-        // rather than being rejected as an invalid inline artifact.
-        #expect(prepared.status.reason != .inlineArtifactInvalid)
+    }
+
+    @Test("dense Qwen invalid spec_dec falls back target-only with metadata_malformed")
+    func qwenStandaloneAssistantInvalidMetadataFallsBack() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let modelID = MTPMode.automaticTargetModelID
+        let catalog = FunnelCatalog(funnelModel(
+            id: modelID,
+            metadata: ["spec_dec": .object([("r2_prefix", .string("../escape"))])]))
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: modelID,
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                allowDownload: false,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .metadataMalformed)
+    }
+
+    @Test("dense Qwen verified metadata without downloaded bytes stays target-only")
+    func qwenStandaloneAssistantNotDownloadedFallsBack() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen38-specdec-miss-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let modelID = MTPMode.automaticTargetModelID
+        let catalog = FunnelCatalog(funnelModel(
+            id: modelID, metadata: qwen38SpecDecMetadata()))
+        let prepared = await funnel(catalog: catalog, root: store).prepare(
+            .init(
+                modelId: modelID,
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                allowDownload: false,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .artifactNotCached)
     }
 
     @Test("HF-cache symlinked snapshot passes inspection and admits inline MTP")
@@ -451,7 +511,7 @@ struct SpecDecArtifactFunnelTests {
         #expect(SpecDecStore.inspectLocalArtifact(path: root.path) == nil)
     }
 
-    @Test("default off and kill switch are target-only before catalog lookup")
+    @Test("kill switch wins over config; both remain target-only before catalog lookup")
     func disabledStates() async {
         let catalog = FunnelCatalog(funnelModel())
         let artifactFunnel = funnel(
@@ -466,8 +526,17 @@ struct SpecDecArtifactFunnelTests {
                 modelId: "gemma", modelType: "gemma4", enabled: true,
                 localPath: nil, allowDownload: true,
                 environment: ["DARKBLOOM_CBV2_MTP": "off"]))
+        let bothOff = await artifactFunnel.prepare(
+            .init(
+                modelId: MTPMode.automaticTargetModelID,
+                modelType: "qwen3_5",
+                enabled: false,
+                localPath: nil,
+                allowDownload: true,
+                environment: ["DARKBLOOM_CBV2_MTP": "off"]))
         #expect(off.status == .disabled(.configDisabled, configured: false))
         #expect(killed.status == .disabled(.killSwitchDisabled, configured: true))
+        #expect(bothOff.status == .disabled(.killSwitchDisabled, configured: false))
         #expect(await catalog.calls == 0)
     }
 

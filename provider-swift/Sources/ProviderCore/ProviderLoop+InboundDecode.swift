@@ -64,35 +64,35 @@ extension ProviderLoop {
         }
     }
 
-    /// Pull the OpenAI `reasoning_effort` field out of a raw request body.
-    ///
-    /// This lives outside `OpenAIChatCompletionRequest` (the upstream type
-    /// doesn't model it), so we decode it directly. Returns a trimmed,
-    /// non-empty string or `nil`. Extraction remains format-agnostic; the
-    /// prompt pipeline applies any model-specific serving policy before
-    /// rendering (currently GPT-OSS `high` → `medium`).
-    internal static func extractReasoningEffort(from data: Data) -> String? {
-        extractChatTemplateControls(from: data).reasoningEffort
-    }
-
-    /// Qwen3.8 template controls that are intentionally not protocol fields.
-    /// Unknown/malformed values are ignored independently so one bad optional
-    /// control never discards another valid one.
+    /// Recover Qwen3.8 template controls that intentionally are not protocol
+    /// fields. Each optional field is decoded independently so one malformed
+    /// value never discards another valid control. The top-level
+    /// `enable_thinking` spelling wins over the equivalent
+    /// `chat_template_kwargs` spelling; the typed nested `reasoning.enabled`
+    /// is applied later and wins over both.
     internal static func extractChatTemplateControls(
         from data: Data
     ) -> ChatTemplateControls {
         struct EffortProbe: Decodable { let reasoning_effort: String? }
         struct ThinkingProbe: Decodable { let enable_thinking: Bool? }
         struct PreserveProbe: Decodable { let preserve_thinking: Bool? }
+        struct KwargsProbe: Decodable {
+            struct Kwargs: Decodable { let enable_thinking: Bool? }
+            let chat_template_kwargs: Kwargs?
+        }
+
         let decoder = JSONDecoder()
         let rawEffort = (try? decoder.decode(EffortProbe.self, from: data))?
             .reasoning_effort
         let effort = rawEffort?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let topLevel = (try? decoder.decode(ThinkingProbe.self, from: data))?
+            .enable_thinking
+        let kwargs = (try? decoder.decode(KwargsProbe.self, from: data))?
+            .chat_template_kwargs?.enable_thinking
         return ChatTemplateControls(
             reasoningEffort: effort?.isEmpty == false ? effort : nil,
-            enableThinking: (try? decoder.decode(ThinkingProbe.self, from: data))?
-                .enable_thinking,
+            enableThinking: topLevel ?? kwargs,
             preserveThinking: (try? decoder.decode(PreserveProbe.self, from: data))?
                 .preserve_thinking)
     }
@@ -144,18 +144,6 @@ extension ProviderLoop {
     /// stream / upstream regression). Re-runs the engine's exact applyChatTemplate
     /// path so the count matches what was prefilled; VLM parts aren't in the text
     /// template so vision under-counts (a floor, never an overcharge). 0 on failure.
-    internal static func promptTokenFloor(
-        request: OpenAIChatCompletionRequest,
-        tokenizer: TokenizerHandle,
-        modelType: String?,
-        reasoningEffort: String?
-    ) -> Int {
-        promptTokenFloor(
-            request: request,
-            tokenizer: tokenizer,
-            modelType: modelType,
-            templateControls: ChatTemplateControls(reasoningEffort: reasoningEffort))
-    }
 
     internal static func promptTokenFloor(
         request: OpenAIChatCompletionRequest,
@@ -167,7 +155,8 @@ extension ProviderLoop {
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request, controls: templateControls, modelType: modelType)
+            for: request, controls: templateControls, modelType: modelType,
+            hasMedia: MediaIngest.hasMedia(request))
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

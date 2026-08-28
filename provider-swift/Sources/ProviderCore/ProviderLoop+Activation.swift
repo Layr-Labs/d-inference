@@ -17,15 +17,25 @@ extension ProviderLoop {
     /// heartbeat field. Current coordinators instead use the separately
     /// reported pre-activation capacity with each candidate's exact reserve.
     func advertisedActivationReserveBytes() -> UInt64 {
-        ModelActivationPolicy.fleetReserveBytes(
+        ModelActivationPolicy.largestReserveBytes(
             advertisedModels.values.lazy.map { Self.activationReserveBytes(for: $0) })
     }
 
-    func fleetActivationReserveBytes(including candidate: UInt64? = nil) -> UInt64 {
-        var reserves = modelSlots.values.map(\.sizing.activationReserveBytes)
-        reserves.append(contentsOf: modelsLoading.values)
-        return ModelActivationPolicy.fleetReserveBytes(
-            reserves, including: candidate)
+    func fleetActivationReserveBytes(
+        including candidate: (modelId: String, reserveBytes: UInt64)? = nil
+    ) -> UInt64 {
+        var reserves = modelsLoading
+        for (modelId, slot) in modelSlots {
+            reserves[modelId] = max(
+                reserves[modelId] ?? 0,
+                slot.sizing.activationReserveBytes)
+        }
+        if let candidate {
+            reserves[candidate.modelId] = max(
+                reserves[candidate.modelId] ?? 0,
+                candidate.reserveBytes)
+        }
+        return ModelActivationPolicy.fleetReserveBytes(reserves.values)
     }
 
     static func loadHeadroomGb(activationReserveBytes: UInt64) -> Double {
@@ -35,6 +45,7 @@ extension ProviderLoop {
     }
 
     func requiredLoadGb(
+        modelId: String,
         weightsGb: Double,
         candidateActivationReserveBytes: UInt64
     ) -> Double {
@@ -42,10 +53,14 @@ extension ProviderLoop {
             weightsGb: weightsGb,
             headroomGb: Self.loadHeadroomGb(
                 activationReserveBytes: fleetActivationReserveBytes(
-                    including: candidateActivationReserveBytes)))
+                    including: (
+                        modelId: modelId,
+                        reserveBytes: candidateActivationReserveBytes))))
     }
 
-    func publishFleetActivationReserve(including candidate: UInt64? = nil) async {
+    func publishFleetActivationReserve(
+        including candidate: (modelId: String, reserveBytes: UInt64)? = nil
+    ) async {
         activationReserveGeneration &+= 1
         let generation = activationReserveGeneration
         await kvBudget.setActivationReserveBytes(

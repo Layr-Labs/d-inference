@@ -1364,10 +1364,23 @@ func adjustedFreeForLoadGBLocked(p *Provider, model string) *float64 {
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
 func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
+	return reportedFreeForLoadAdmitsAdditional(
+		catalogSizeGB, 0, freeForLoadGB)
+}
+
+// reportedFreeForLoadAdmitsAdditional extends the weight-only planner check for
+// a concrete request. free_for_load_gb already leaves the provider's 1 GiB
+// minimum KV floor, so only KV demand above that floor must be charged again.
+func reportedFreeForLoadAdmitsAdditional(
+	catalogSizeGB, additionalRequiredGB float64,
+	freeForLoadGB *float64,
+) (admit bool, reported bool) {
 	if freeForLoadGB == nil || catalogSizeGB <= 0 {
 		return false, false
 	}
-	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+	requiredGB := catalogSizeGB*coldLoadCatalogGBToMemGiB +
+		math.Max(0, additionalRequiredGB)
+	return requiredGB <= *freeForLoadGB, true
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -1462,7 +1475,17 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	// model is evictable. A busy provider reports only the conservative scalar,
 	// which retains active weights and the resident fleet activation reserve.
 	if snap.availableOnDisk && !snap.modelLoaded {
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		// The provider's load scalar already reserves 1 GiB for minimum
+		// serveable KV. Charge this request's estimated KV above that floor so a
+		// weight-fitting cold model cannot load and immediately reject the
+		// request for token-budget exhaustion.
+		const providerMinimumLoadKVGB = 1.0
+		additionalKVGB := math.Max(0, kvCacheGB-providerMinimumLoadKVGB)
+		if admit, reported := reportedFreeForLoadAdmitsAdditional(
+			snap.modelSizeGB,
+			additionalKVGB,
+			snap.freeForLoadGB,
+		); reported {
 			return admit
 		}
 		if snap.totalPending == 0 {

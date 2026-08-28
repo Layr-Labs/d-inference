@@ -281,9 +281,10 @@ private func makeAuditBudget(
     let log = AuditEventLog()
     let budget = makeAuditBudget(log: log)
 
-    // The leak: consumes the whole 6 GiB effective cap (8 GiB − 2 GiB floor).
-    await budget.recordPendingLoadForTesting(
-        requestID: "pending-load:leaked", bytes: 6 * gib)
+    // The leaked request consumes the whole 6 GiB effective cap
+    // (8 GiB − 2 GiB floor).
+    #expect(await budget.reserveBytes(
+        requestID: "request:leaked", bytes: 6 * gib))
 
     // Rejections must persist past BOTH the stale TTL and the audit
     // threshold. Loop instead of one long sleep so the streak has failures
@@ -299,10 +300,36 @@ private func makeAuditBudget(
 
     #expect(healed, "budget never healed — the stale reservation was not dropped")
     let ids = await budget.reservationIDsForTesting()
-    #expect(!ids.contains("pending-load:leaked"))
+    #expect(!ids.contains("request:leaked"))
     let operations = log.operations()
     #expect(operations.contains("kv_budget_sustained_rejection"))
     #expect(operations.contains("kv_budget_stale_reservation_dropped"))
+}
+
+/// Pending-load entries protect incoming weights that are not visible in MLX
+/// memory yet. Even an old entry during a total rejection streak cannot be
+/// deleted safely; only the load owner may release it.
+@Test func sustainedRejectionAuditNeverDropsPendingLoad() async throws {
+    let log = AuditEventLog()
+    let budget = makeAuditBudget(
+        log: log,
+        staleTTL: .milliseconds(30),
+        continuityWindow: .milliseconds(30))
+
+    #expect(await budget.reservePendingLoadIfCapacity(
+        requestID: "pending-load:slow", bytes: 6 * gib))
+    try await Task.sleep(for: .milliseconds(50))
+    for _ in 0 ..< 12 {
+        _ = await budget.reserve(
+            requestID: "req-\(UUID().uuidString)",
+            kvBytesPerToken: 1,
+            tokenCount: Int(gib))
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(log.operations().contains("kv_budget_sustained_rejection"))
+    #expect(!log.operations().contains("kv_budget_stale_reservation_dropped"))
+    #expect(await budget.reservationIDsForTesting().contains("pending-load:slow"))
 }
 
 /// Fresh (younger than the TTL) reservations are live work and must survive

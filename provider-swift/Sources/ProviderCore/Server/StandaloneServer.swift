@@ -647,16 +647,24 @@ public actor StandaloneServer {
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
     private func fleetActivationReserveBytes(
-        including candidate: UInt64? = nil
+        including candidate: (modelId: String, reserveBytes: UInt64)? = nil
     ) -> UInt64 {
-        var reserves = slots.values.map(\.sizing.activationReserveBytes)
-        reserves.append(contentsOf: modelsLoading.values)
-        return ModelActivationPolicy.fleetReserveBytes(
-            reserves, including: candidate)
+        var reserves = modelsLoading
+        for (modelId, slot) in slots {
+            reserves[modelId] = max(
+                reserves[modelId] ?? 0,
+                slot.sizing.activationReserveBytes)
+        }
+        if let candidate {
+            reserves[candidate.modelId] = max(
+                reserves[candidate.modelId] ?? 0,
+                candidate.reserveBytes)
+        }
+        return ModelActivationPolicy.fleetReserveBytes(reserves.values)
     }
 
     private func publishFleetActivationReserve(
-        including candidate: UInt64? = nil
+        including candidate: (modelId: String, reserveBytes: UInt64)? = nil
     ) async {
         activationReserveGeneration &+= 1
         let generation = activationReserveGeneration
@@ -666,6 +674,7 @@ public actor StandaloneServer {
     }
 
     private func requiredLoadGb(
+        modelId: String,
         weightsGb: Double,
         candidateActivationReserveBytes: UInt64
     ) -> Double {
@@ -673,12 +682,15 @@ public actor StandaloneServer {
             weightsGb: weightsGb,
             headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(
                 activationReserveBytes: fleetActivationReserveBytes(
-                    including: candidateActivationReserveBytes)
+                    including: (
+                        modelId: modelId,
+                        reserveBytes: candidateActivationReserveBytes))
             )) / Double(ModelActivationPolicy.bytesPerGiB))
     }
 
     private func fleetKVBudgetBytes(
         extraWeightBytes: Int,
+        candidateModelId: String? = nil,
         candidateActivationReserveBytes: UInt64? = nil
     ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
@@ -689,11 +701,18 @@ public actor StandaloneServer {
         }
         let physical = v2TestHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
+        let candidate: (modelId: String, reserveBytes: UInt64)?
+        if let candidateModelId, let candidateActivationReserveBytes {
+            candidate = (
+                modelId: candidateModelId,
+                reserveBytes: candidateActivationReserveBytes)
+        } else {
+            candidate = nil
+        }
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
-            activationReserveBytes: fleetActivationReserveBytes(
-                including: candidateActivationReserveBytes),
+            activationReserveBytes: fleetActivationReserveBytes(including: candidate),
             configReserveBytes: 0)
     }
 
@@ -818,6 +837,7 @@ public actor StandaloneServer {
             maxContextLength: sizing.maxContextLength)
         var fleetBudget = fleetKVBudgetBytes(
             extraWeightBytes: sizing.weightsBytes,
+            candidateModelId: modelId,
             candidateActivationReserveBytes: sizing.activationReserveBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
@@ -839,6 +859,7 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(
                 extraWeightBytes: sizing.weightsBytes,
+                candidateModelId: modelId,
                 candidateActivationReserveBytes: sizing.activationReserveBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
@@ -885,7 +906,9 @@ public actor StandaloneServer {
         // last strong reference and `release()` frees the weights.
         let bundle: ProviderEngineBundle
         let activationReserveBytes = fleetActivationReserveBytes(
-            including: sizing.activationReserveBytes)
+            including: (
+                modelId: modelId,
+                reserveBytes: sizing.activationReserveBytes))
         do {
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
@@ -1053,16 +1076,20 @@ public actor StandaloneServer {
     }
 
     private func ensureMemoryHeadroomForLoad(
+        modelId: String,
         weightsGb: Double,
         candidateActivationReserveBytes: UInt64
     ) async throws {
         while true {
             let requiredGb = requiredLoadGb(
+                modelId: modelId,
                 weightsGb: weightsGb,
                 candidateActivationReserveBytes: candidateActivationReserveBytes)
             guard requiredGb.isFinite, requiredGb > 0 else { return }
             await publishFleetActivationReserve(
-                including: candidateActivationReserveBytes)
+                including: (
+                    modelId: modelId,
+                    reserveBytes: candidateActivationReserveBytes))
             if await availableMemoryGb() >= requiredGb {
                 return
             }
@@ -1336,9 +1363,11 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
             try await ensureMemoryHeadroomForLoad(
+                modelId: modelId,
                 weightsGb: modelInfo.estimatedMemoryGb,
                 candidateActivationReserveBytes: modelActivationReserveBytes)
             let targetRequiredGb = requiredLoadGb(
+                modelId: modelId,
                 weightsGb: modelInfo.estimatedMemoryGb,
                 candidateActivationReserveBytes: modelActivationReserveBytes)
             if let artifact = mtpPreparation.artifact {
@@ -1472,7 +1501,9 @@ public actor StandaloneServer {
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
             let effectiveActivationReserveBytes = fleetActivationReserveBytes(
-                including: modelActivationReserveBytes)
+                including: (
+                    modelId: modelId,
+                    reserveBytes: modelActivationReserveBytes))
             if !KVHeadroomProbe.hasServeableKVHeadroom(
                 activationReserveBytes: effectiveActivationReserveBytes)
             {

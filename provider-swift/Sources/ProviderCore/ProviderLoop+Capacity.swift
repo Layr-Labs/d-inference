@@ -109,8 +109,16 @@ extension ProviderLoop {
             totalActive += engineV2.activeRequests
         }
 
+        // This is the final actor hop in the load-capacity path. Snapshot every
+        // actor-local busy/loading flag and every MLX counter only after it
+        // returns, then publish without another suspension; otherwise a request
+        // could start during the hop while the scalar still assumed its resident
+        // weights were evictable.
+        let outstandingKV = await kvBudget.outstandingReservedBytes()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
+        let canAssumeFullEviction =
+            !hasInflightWork && !isLoadingAny && modelsLoading.isEmpty
 
         // Max model weight we could load right now. The compatibility scalar
         // subtracts the largest advertised activation profile so old
@@ -122,25 +130,25 @@ extension ProviderLoop {
         // fleet reserve cannot be replaced by a smaller candidate reserve.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
-        // models on a cold load — BUT ONLY when nothing is being served. MLX
+        // models on a cold load — BUT ONLY when nothing is being served or
+        // loaded. MLX
         // memory is global (it also covers the local inference endpoint, whose
         // streams are tracked by localReservations, not modelSlots), so a model
         // serving a local request is NOT evictable. `hasInflightWork` is the
-        // comprehensive signal (coordinator inflight + local streams): when work
-        // is in flight we treat NOTHING as reclaimable (conservative, never
-        // advertises an actively-served model's weights as free); only when fully
-        // idle do we assume idle models can be evicted.
+        // comprehensive serving signal (coordinator inflight + local streams);
+        // `isLoadingAny`/`modelsLoading` cover load transitions. In either case
+        // we treat NOTHING as reclaimable. Only a fully quiescent host assumes
+        // every idle model can be evicted.
         let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
         let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
         let mlxUsed = mlxActiveBytes + mlxCacheBytes
-        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
+        let reclaimableMlx: UInt64 = canAssumeFullEviction ? mlxUsed : 0
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(
             configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
         // Subtract KV already promised to in-flight requests (coordinator + local
         // streams), exactly as the real load gate (availableMemoryGb) does, so the
         // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
-        let outstandingKV = await kvBudget.outstandingReservedBytes()
         let freeForLoadBeforeActivationGb = ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
@@ -177,8 +185,7 @@ extension ProviderLoop {
             // transitioning. Otherwise the resident/loading fleet reserve must
             // remain, so make coordinators use the conservative scalar.
             freeForLoadBeforeActivationGb:
-                hasInflightWork || !modelsLoading.isEmpty
-                    ? nil : freeForLoadBeforeActivationGb,
+                canAssumeFullEviction ? freeForLoadBeforeActivationGb : nil,
             mlxCacheReclaimer: reclaimerTelemetry
         )
         state.inferenceActive = totalActive > 0

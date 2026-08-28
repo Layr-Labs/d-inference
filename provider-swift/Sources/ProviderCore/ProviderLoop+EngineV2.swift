@@ -156,6 +156,7 @@ extension ProviderLoop {
     /// activation reserve, honoring the operator `memory_reserve_gb`.
     private func fleetKVBudgetBytes(
         extraWeightBytes: Int,
+        candidateModelId: String? = nil,
         candidateActivationReserveBytes: UInt64? = nil
     ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
@@ -166,11 +167,18 @@ extension ProviderLoop {
         }
         let physical = engineV2SlotHooks?.physicalMemoryBytes
             ?? ProcessInfo.processInfo.physicalMemory
+        let candidate: (modelId: String, reserveBytes: UInt64)?
+        if let candidateModelId, let candidateActivationReserveBytes {
+            candidate = (
+                modelId: candidateModelId,
+                reserveBytes: candidateActivationReserveBytes)
+        } else {
+            candidate = nil
+        }
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
-            activationReserveBytes: fleetActivationReserveBytes(
-                including: candidateActivationReserveBytes),
+            activationReserveBytes: fleetActivationReserveBytes(including: candidate),
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
     }
@@ -316,6 +324,7 @@ extension ProviderLoop {
             maxContextLength: sizing.maxContextLength)
         var fleetBudget = fleetKVBudgetBytes(
             extraWeightBytes: sizing.weightsBytes,
+            candidateModelId: modelId,
             candidateActivationReserveBytes: sizing.activationReserveBytes)
         var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
@@ -341,6 +350,7 @@ extension ProviderLoop {
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(
                 extraWeightBytes: sizing.weightsBytes,
+                candidateModelId: modelId,
                 candidateActivationReserveBytes: sizing.activationReserveBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
@@ -591,7 +601,9 @@ extension ProviderLoop {
         } else {
             let slotLogger = logger
             let activationReserveBytes = fleetActivationReserveBytes(
-                including: sizing.activationReserveBytes)
+                including: (
+                    modelId: modelId,
+                    reserveBytes: sizing.activationReserveBytes))
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,

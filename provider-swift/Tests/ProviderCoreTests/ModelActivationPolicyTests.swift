@@ -132,13 +132,23 @@ private func measuredGPTOSSArchitecture(
     #expect(after.reserveBytes == before.reserveBytes)
 }
 
-@Test func fleetReserveUsesLargestResidentOrLoadingProfile() {
+@Test func fleetReserveSumsConcurrentResidentAndLoadingProfiles() {
     let measured = 3 * activationGiB
     let conservative = UnifiedMemoryCap.defaultActivationReserveBytes
 
     #expect(ModelActivationPolicy.fleetReserveBytes([measured]) == measured)
     #expect(ModelActivationPolicy.fleetReserveBytes(
-        [measured], including: conservative) == conservative)
+        [measured], including: conservative) == measured + conservative)
     #expect(ModelActivationPolicy.fleetReserveBytes(
-        [conservative], including: measured) == conservative)
+        [conservative], including: measured) == conservative + measured)
+    #expect(ModelActivationPolicy.fleetReserveBytes(
+        [UInt64.max], including: 1) == .max)
+}
+
+@Test func advertisedReserveUsesLargestSingleCandidateProfile() {
+    let measured = 3 * activationGiB
+    let conservative = UnifiedMemoryCap.defaultActivationReserveBytes
+
+    #expect(ModelActivationPolicy.largestReserveBytes(
+        [measured, conservative]) == conservative)
 }

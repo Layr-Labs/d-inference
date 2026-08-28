@@ -320,7 +320,9 @@ extension ProviderLoop {
             // Make the candidate's profile visible to process-wide KV admission
             // before either the load gate or weight allocation can consume it.
             await publishFleetActivationReserve(
-                including: modelActivationReserveBytes)
+                including: (
+                    modelId: modelId,
+                    reserveBytes: modelActivationReserveBytes))
 
             // Load gate: require room for the WEIGHTS plus headroom for ONE
             // request, not a full-concurrency multiple. Concurrency beyond one
@@ -338,6 +340,7 @@ extension ProviderLoop {
                 extraWeightBytes: 0)
             do {
                 try await evictUntilAvailable(
+                    modelId: modelId,
                     weightsGb: targetWeightsGb,
                     candidateActivationReserveBytes: modelActivationReserveBytes,
                     allowEviction: allowEviction)
@@ -348,6 +351,7 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
             let requiredGb = requiredLoadGb(
+                modelId: modelId,
                 weightsGb: targetWeightsGb,
                 candidateActivationReserveBytes: modelActivationReserveBytes)
             // The assistant is optional and must never make an otherwise
@@ -535,7 +539,9 @@ extension ProviderLoop {
             // clearCache-then-measure self-heal.
             MLX.Memory.clearCache()
             let effectiveActivationReserveBytes = fleetActivationReserveBytes(
-                including: modelActivationReserveBytes)
+                including: (
+                    modelId: modelId,
+                    reserveBytes: modelActivationReserveBytes))
             if !KVHeadroomProbe.hasServeableKVHeadroom(
                 activationReserveBytes: effectiveActivationReserveBytes)
             {
@@ -941,11 +947,13 @@ extension ProviderLoop {
     /// self-heal) that throws instead of reclaiming — a later preload must
     /// not churn out an earlier one.
     private func evictUntilAvailable(
+        modelId loadingModelId: String,
         weightsGb: Double,
         candidateActivationReserveBytes: UInt64,
         allowEviction: Bool = true
     ) async throws {
         while await availableMemoryGb() < requiredLoadGb(
+            modelId: loadingModelId,
             weightsGb: weightsGb,
             candidateActivationReserveBytes: candidateActivationReserveBytes)
         {
@@ -963,6 +971,7 @@ extension ProviderLoop {
                 MLX.Memory.clearCache()
                 let retried = await availableMemoryGb()
                 let requiredGb = requiredLoadGb(
+                    modelId: loadingModelId,
                     weightsGb: weightsGb,
                     candidateActivationReserveBytes: candidateActivationReserveBytes)
                 if retried >= requiredGb { return }
@@ -978,7 +987,9 @@ extension ProviderLoop {
             logger.info("Evicting idle model \(modelId) to free memory")
             await unloadModel(modelId)
             await publishFleetActivationReserve(
-                including: candidateActivationReserveBytes)
+                including: (
+                    modelId: loadingModelId,
+                    reserveBytes: candidateActivationReserveBytes))
         }
     }
 
@@ -1028,6 +1039,7 @@ extension ProviderLoop {
             return false
         }
         let requiredGb = requiredLoadGb(
+            modelId: modelId,
             weightsGb: modelInfo.estimatedMemoryGb,
             candidateActivationReserveBytes: modelActivationReserveBytes)
 

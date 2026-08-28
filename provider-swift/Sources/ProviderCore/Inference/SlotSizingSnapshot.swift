@@ -59,8 +59,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     public let defaultMaxTokens: Int
     /// Measured-profile activation reserve resolved at scan/load time,
     /// including the raise-only operator override. Fleet memory policy uses
-    /// the maximum across resident slots because MLX evaluations serialize on
-    /// the process-global eval lock.
+    /// the sum across resident slots because independent EngineV2 queues can
+    /// keep multiple asynchronous MLX working sets live concurrently.
     public let activationReserveBytes: UInt64
 
     /// `auxiliaryWeightBytes`: resident weight bytes that live OUTSIDE the

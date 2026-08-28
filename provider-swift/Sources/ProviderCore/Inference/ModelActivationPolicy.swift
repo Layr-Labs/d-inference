@@ -119,16 +119,33 @@ public enum ModelActivationPolicy {
             modelReserveBytes: bytes)
     }
 
-    /// Process-wide reserve for a residency set. MLX evaluations are serialized
-    /// by the process-global eval lock, so transient working sets cannot overlap;
-    /// the maximum resident-model reserve is sufficient and summing them would
-    /// strand memory. An empty set stays conservative for the next unknown load.
+    /// Process-wide reserve for a residency set. Each resident model owns an
+    /// independent EngineV2 queue, and MLX's `asyncEval` lock serializes graph
+    /// submission only—not GPU completion. Their transient working sets can
+    /// therefore overlap, so the hard-cap invariant requires the saturating sum
+    /// of every concurrently resident/loading model's measured reserve. An empty
+    /// set stays conservative for the next unknown load.
     static func fleetReserveBytes<S: Sequence>(
         _ residentReserves: S,
         including candidate: UInt64? = nil
     ) -> UInt64 where S.Element == UInt64 {
         var reserve = candidate ?? 0
         for value in residentReserves {
+            let (sum, overflow) = reserve.addingReportingOverflow(value)
+            reserve = overflow ? .max : sum
+        }
+        return reserve > 0
+            ? reserve
+            : UnifiedMemoryCap.resolvedActivationReserveBytes()
+    }
+
+    /// Conservative single-candidate profile used by the legacy load-capacity
+    /// scalar. It deliberately does not sum the advertised catalog: only
+    /// resident/loading profiles may execute concurrently.
+    static func largestReserveBytes<S: Sequence>(_ reserves: S) -> UInt64
+    where S.Element == UInt64 {
+        var reserve: UInt64 = 0
+        for value in reserves {
             reserve = max(reserve, value)
         }
         return reserve > 0

@@ -260,6 +260,7 @@ extension ProviderLoop {
             return candidate.requiredGb
         }
         return requiredLoadGb(
+            modelId: candidate.modelId,
             weightsGb: info.estimatedMemoryGb,
             candidateActivationReserveBytes: Self.activationReserveBytes(for: info))
     }

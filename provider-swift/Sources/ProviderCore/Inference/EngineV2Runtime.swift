@@ -64,8 +64,9 @@ public actor EngineV2Runtime {
         /// Sum of resident model weights across all slots, including each
         /// bridge's own model.
         public let totalResidentWeightBytes: UInt64
-        /// Maximum activation working-set reserve required by any resident
-        /// model. MLX evaluations serialize, so resident transients do not sum.
+        /// Sum of activation working-set reserves for resident models.
+        /// Independent EngineV2 queues submit asynchronous MLX work whose
+        /// allocation lifetimes can overlap.
         public let activationReserveBytes: UInt64
         /// Operator `memory_reserve_gb`, in bytes (see `EngineV2KVSizing`).
         public let configReserveBytes: UInt64

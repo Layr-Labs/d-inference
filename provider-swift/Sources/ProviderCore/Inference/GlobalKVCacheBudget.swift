@@ -31,12 +31,18 @@ public actor GlobalKVCacheBudget {
     private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
 
-    /// One ledger entry: the promised bytes plus when the promise was made.
+    enum ReservationKind: Sendable, Equatable {
+        case request
+        case pendingLoad
+    }
+
+    /// One ledger entry: the promised bytes, owner kind, and creation time.
     /// The creation instant exists solely for the stale-reservation audit —
     /// a reservation that outlives any plausible request/load lifetime while
     /// the budget rejects everything is, by definition, leaked bookkeeping.
     struct Reservation: Sendable {
         var bytes: UInt64
+        let kind: ReservationKind
         let createdAt: ContinuousClock.Instant
     }
 
@@ -53,13 +59,11 @@ public actor GlobalKVCacheBudget {
     // as one CONTINUOUS streak (gaps between rejections no longer than
     // `rejectionStreakContinuityWindow`; a wedged box under coordinator
     // routing rejects far more often than that) — the budget logs the FULL
-    // reservation table at ERROR severity and drops any reservation older
-    // than `staleReservationTTL` with a WARN. Live requests/loads hold
-    // their reservations for seconds-to-minutes, so a multi-minute-old
-    // reservation during a full-rejection streak is leaked bookkeeping,
-    // not live work. The streak resets on any successful commit AND on any
-    // release of a real reservation (either proves the system is making
-    // progress, so live work must never age into the stale-drop).
+    // reservation table at ERROR severity and drops stale REQUEST reservations
+    // with a WARN. Pending-load reservations are never age-dropped: until their
+    // owner completes, they protect incoming weights absent from MLX counters.
+    // The streak resets on any successful commit AND on any release of a real
+    // reservation (either proves the system is making progress).
     private var rejectionStreakStart: ContinuousClock.Instant?
     private var lastRejectionAt: ContinuousClock.Instant?
     private var lastAuditAt: ContinuousClock.Instant?
@@ -86,10 +90,9 @@ public actor GlobalKVCacheBudget {
     /// sustains the streak, while anything sparser is idle-gapped traffic
     /// the audit must ignore.
     static let defaultRejectionStreakContinuityWindow: Duration = .seconds(30)
-    /// A reservation older than this is considered leaked *during a
-    /// sustained full-rejection streak*. Requests hold reservations for the
-    /// request duration (worst realistic long decode: minutes); pending-load
-    /// reservations for the container-allocation window (also minutes).
+    /// A request reservation older than this is considered leaked *during a
+    /// sustained full-rejection streak*. Pending-load reservations are exempt
+    /// because deleting one can allow KV to overlap not-yet-visible weights.
     static let defaultStaleReservationTTL: Duration = .seconds(600)
     /// Rate limit between audits so a wedged box logs one CRITICAL per
     /// interval, not one per rejected request.
@@ -278,7 +281,10 @@ public actor GlobalKVCacheBudget {
         bytes: UInt64
     ) -> Bool {
         guard bytes > 0, reservations[requestID] == nil else { return false }
-        return commit(requestID: requestID, bytes: bytes)
+        return commit(
+            requestID: requestID,
+            bytes: bytes,
+            kind: .pendingLoad)
     }
 
     /// Atomically replace the in-flight load reservation when target weights
@@ -287,10 +293,16 @@ public actor GlobalKVCacheBudget {
         let previous = reservations[requestID]?.bytes
         if bytes == 0 {
             reservations.removeValue(forKey: requestID)
-        } else if let createdAt = reservations[requestID]?.createdAt {
-            reservations[requestID] = Reservation(bytes: bytes, createdAt: createdAt)
+        } else if let existing = reservations[requestID] {
+            reservations[requestID] = Reservation(
+                bytes: bytes,
+                kind: existing.kind,
+                createdAt: existing.createdAt)
         } else {
-            reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+            reservations[requestID] = Reservation(
+                bytes: bytes,
+                kind: .pendingLoad,
+                createdAt: .now)
         }
         // Removing or shrinking a real pending-load promise proves the ledger
         // is making progress, exactly like `release`. Do not let a rejection
@@ -342,14 +354,21 @@ public actor GlobalKVCacheBudget {
     /// coordinator and per-provider breaker reroute, and the background reclaim
     /// keeps the pool small so most admissions succeed without ever near-missing.
     /// Caller has validated `bytes > 0` and no existing reservation.
-    private func commit(requestID: String, bytes: UInt64) -> Bool {
+    private func commit(
+        requestID: String,
+        bytes: UInt64,
+        kind: ReservationKind = .request
+    ) -> Bool {
         let available = availableReservationBytes()
         guard bytes <= available else {
             reclaimer.scheduleReclaim(shortfall: bytes - available)   // non-blocking; flush runs off-actor
             recordCommitRejection()
             return false
         }
-        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        reservations[requestID] = Reservation(
+            bytes: bytes,
+            kind: kind,
+            createdAt: .now)
         rejectionStreakStart = nil
         lastRejectionAt = nil
         return true
@@ -362,13 +381,11 @@ public actor GlobalKVCacheBudget {
     /// the coordinator keeps routing, the provider keeps rejecting, and the
     /// cache-pool reclaimer isn't helping — log the full reservation table at
     /// ERROR severity and drop any reservation older than
-    /// `staleReservationTTL` with a WARN. Live requests hold reservations for
-    /// seconds-to-minutes and release them on every terminal path; pending
-    /// loads release once weights are resident. A reservation that has
-    /// out-lived the TTL *while nothing at all is being admitted* is leaked
-    /// bookkeeping, and dropping it converts a permanent reject-everything
-    /// wedge into a self-healed blip. Rate-limited to one audit per
-    /// `auditMinInterval`.
+    /// `staleReservationTTL` with a WARN. Pending loads release once weights are
+    /// resident and are never age-dropped because those weights are not yet
+    /// reflected in MLX counters. An old request reservation while nothing at
+    /// all is being admitted is treated as leaked bookkeeping. Rate-limited to
+    /// one audit per `auditMinInterval`.
     ///
     /// "Straight" is enforced two ways (both required, or sparse traffic
     /// could satisfy the threshold by wall clock alone and drop LIVE work):
@@ -417,7 +434,15 @@ public actor GlobalKVCacheBudget {
                 "reservations": .string(table),
             ])
 
-        let staleIDs = reservations.filter { now - $0.value.createdAt >= staleReservationTTL }
+        // A pending-load reservation protects weights that are not yet visible
+        // in MLX counters. Its owner may legitimately spend many minutes in
+        // hashing/container allocation, and age alone can never prove that load
+        // dead. Dropping it would reopen the exact serve-while-load OOM window
+        // this ledger closes. Request reservations retain the legacy self-heal.
+        let staleIDs = reservations.filter {
+            $0.value.kind == .request
+                && now - $0.value.createdAt >= staleReservationTTL
+        }
         guard !staleIDs.isEmpty else { return }
         for (id, r) in staleIDs {
             reservations.removeValue(forKey: id)
@@ -494,7 +519,10 @@ public actor GlobalKVCacheBudget {
     /// Runtime load paths must use `reservePendingLoadIfCapacity`.
     func recordPendingLoadForTesting(requestID: String, bytes: UInt64) {
         guard bytes > 0 else { return }
-        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        reservations[requestID] = Reservation(
+            bytes: bytes,
+            kind: .pendingLoad,
+            createdAt: .now)
     }
 
     /// The off-actor reclaimer, so tests can drive `reclaimIfNeeded`/`sweep`

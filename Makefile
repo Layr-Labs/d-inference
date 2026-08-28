@@ -2,6 +2,7 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
+        analytics-install analytics-test analytics-run \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -41,6 +42,18 @@ prompt-sidecar-build: ## Build the Rust sidecar for the host platform
 	cd coordinator/promptsidecar && cargo build --locked --release --bin promptsidecar
 
 prompt-sidecar: prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build ## Format + lint + test + build Rust sidecar
+
+# ---- Local analytics (Python + DuckDB) -------------------------------------
+
+analytics-install: ## Install the local analytics processor into analytics/.venv
+	python3 -m venv analytics/.venv
+	analytics/.venv/bin/pip install -e ./analytics
+
+analytics-test: analytics-install ## Run local analytics processor tests
+	PYTHONPATH=analytics/tests analytics/.venv/bin/python -m unittest discover -s analytics/tests -v
+
+analytics-run: analytics-install ## Convert eligible local event hours to Parquet
+	analytics/.venv/bin/darkbloom-analytics run
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 

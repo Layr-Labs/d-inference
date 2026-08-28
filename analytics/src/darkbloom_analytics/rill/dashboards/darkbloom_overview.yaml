@@ -1,0 +1,22 @@
+type: explore
+display_name: Darkbloom Overview
+metrics_view: darkbloom_overview
+
+dimensions: '*'
+measures: '*'
+defaults:
+  measures:
+    - jobs
+    - prompt_tokens
+    - completion_tokens
+    - errors
+    - cancellations
+    - average_total_ms
+    - earned_usd
+  dimensions:
+    - model
+    - serving_mode
+    - outcome
+    - kv_backend
+    - mtp_active
+  time_range: P30D

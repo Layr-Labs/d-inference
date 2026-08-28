@@ -1,0 +1,35 @@
+version: 1
+type: metrics_view
+model: hourly_rollups
+timeseries: hour_start
+smallest_time_grain: hour
+
+dimensions:
+  - column: model
+  - column: serving_mode
+  - column: outcome
+  - column: kv_backend
+  - column: mtp_active
+
+measures:
+  - name: jobs
+    label: Jobs
+    expression: sum(jobs)
+  - name: prompt_tokens
+    label: Prompt tokens
+    expression: sum(prompt_tokens)
+  - name: completion_tokens
+    label: Completion tokens
+    expression: sum(completion_tokens)
+  - name: errors
+    label: Errors
+    expression: sum(errors)
+  - name: cancellations
+    label: Cancellations
+    expression: sum(cancellations)
+  - name: average_total_ms
+    label: Average total latency (ms)
+    expression: sum(total_duration_sum_ms) / nullif(sum(jobs), 0)
+  - name: earned_usd
+    label: Earned (USD)
+    expression: sum(earned_micro_usd) / 1000000.0

@@ -1,0 +1,24 @@
+type: explore
+display_name: Darkbloom Recent Jobs
+metrics_view: darkbloom_jobs
+
+dimensions: '*'
+measures: '*'
+defaults:
+  measures:
+    - jobs
+    - successful_jobs
+    - failed_jobs
+    - prompt_tokens
+    - completion_tokens
+    - average_ttft_ms
+    - p95_ttft_ms
+    - average_total_ms
+    - average_decode_tps
+  dimensions:
+    - model
+    - serving_mode
+    - outcome
+    - error_class
+    - streaming
+  time_range: P1D

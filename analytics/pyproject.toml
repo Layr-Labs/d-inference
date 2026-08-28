@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "darkbloom-local-analytics"
+version = "0.1.0"
+description = "Short-lived local NDJSON to Parquet processor for Darkbloom"
+requires-python = ">=3.11"
+dependencies = ["duckdb>=1.4,<2"]
+
+[project.scripts]
+darkbloom-analytics = "darkbloom_analytics.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/darkbloom_analytics"]

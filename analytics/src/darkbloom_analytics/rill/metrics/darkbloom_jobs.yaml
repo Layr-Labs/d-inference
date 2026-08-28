@@ -1,0 +1,46 @@
+version: 1
+type: metrics_view
+model: jobs_all
+timeseries: event_at
+smallest_time_grain: second
+
+dimensions:
+  - column: model
+  - column: serving_mode
+  - column: outcome
+  - column: error_class
+  - column: kv_backend
+  - column: mtp_active
+  - column: streaming
+
+measures:
+  - name: jobs
+    label: Jobs
+    expression: count(*)
+  - name: successful_jobs
+    label: Successful jobs
+    expression: count(*) FILTER (WHERE outcome = 'success')
+  - name: failed_jobs
+    label: Failed jobs
+    expression: count(*) FILTER (WHERE outcome = 'failed')
+  - name: prompt_tokens
+    label: Prompt tokens
+    expression: sum(prompt_tokens)
+  - name: completion_tokens
+    label: Completion tokens
+    expression: sum(completion_tokens)
+  - name: average_ttft_ms
+    label: Average TTFT (ms)
+    expression: avg(ttft_ms)
+  - name: p95_ttft_ms
+    label: P95 TTFT (ms)
+    expression: quantile_cont(ttft_ms, 0.95)
+  - name: average_total_ms
+    label: Average total latency (ms)
+    expression: avg(total_ms)
+  - name: average_decode_tps
+    label: Average decode tokens/sec
+    expression: avg(decode_tps)
+  - name: earned_usd
+    label: Earned (USD)
+    expression: sum(earned_micro_usd) / 1000000.0

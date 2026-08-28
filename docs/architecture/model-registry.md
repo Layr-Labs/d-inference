@@ -130,13 +130,14 @@ carries a hash per advertised model, and any mismatch against
 
 ### 5. Providers select a source, verify, then announce
 
+
 `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient.swift` reads
 `GET /v1/models/catalog` (optionally `?type=text&include_aliases=1`) and
 `GET /v1/models/catalog/manifest/{id}`. `ModelDownloader` has two flows that
 share one contract — every file is checked against its manifest size and
 SHA-256 before it leaves staging, and the aggregate is recomputed with
 `WeightHasher.hashFilesWithRelativeKey` before the snapshot is published to
-`~/.cache/huggingface/hub/models--{org}--{name}/snapshots/local/` with a
+`{hf-cli Cache Dir}/models--{org}--{name}/snapshots/local/` with a
 `refs/main` pointer so `ModelScanner` discovers it:
 
 | Flow | Entry point | Used by | Notes |

@@ -84,6 +84,120 @@ struct DoctorChecksTests {
         #expect(describeMDMEnrollment(.checkFailed) == "unknown (profiles tool failed)")
     }
 
+    @Test("hfCacheSourceSuffix names the env var that redirected the cache")
+    func hfCacheSource() {
+        #expect(hfCacheSourceSuffix(environment: [:]) == "")
+        #expect(hfCacheSourceSuffix(environment: ["HF_HOME": "/v/hf"]) == " (via $HF_HOME)")
+        #expect(hfCacheSourceSuffix(environment: ["HF_HUB_CACHE": "/v/hub"])
+            == " (via $HF_HUB_CACHE)")
+        #expect(hfCacheSourceSuffix(environment: ["HUGGINGFACE_HUB_CACHE": "/v/legacy"])
+            == " (via $HUGGINGFACE_HUB_CACHE)")
+        #expect(hfCacheSourceSuffix(environment: ["XDG_CACHE_HOME": "/v/xdg"])
+            == " (via $XDG_CACHE_HOME)")
+
+        // HF_HUB_CACHE wins, matching huggingface_hub precedence.
+        #expect(
+            hfCacheSourceSuffix(environment: [
+                "HF_HOME": "/v/hf", "HF_HUB_CACHE": "/v/hub",
+                "HUGGINGFACE_HUB_CACHE": "/v/legacy", "XDG_CACHE_HOME": "/v/xdg",
+            ]) == " (via $HF_HUB_CACHE)"
+        )
+
+        // Blank values are not a redirect and fall through.
+        #expect(hfCacheSourceSuffix(environment: ["HF_HOME": "  "]) == "")
+        #expect(hfCacheSourceSuffix(environment: ["HF_HUB_CACHE": "", "HF_HOME": "/v/hf"])
+            == " (via $HF_HOME)")
+    }
+
+    @Test("hfCacheCheck warns when the cache path is a regular file")
+    func hfCacheCheckRejectsFile() throws {
+        let base = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let file = base.appendingPathComponent("hub")
+        try "not a directory".write(to: file, atomically: true, encoding: .utf8)
+
+        let check = hfCacheCheck(
+            environment: [ModelScanner.hfHubCacheEnvKey: file.path],
+            homeDirectory: base
+        )
+        // A plain fileExists() check called this PASS while the scanner found
+        // nothing.
+        #expect(check.status == .warn)
+        #expect(check.detail.contains("not a directory"))
+        #expect(check.detail.contains("$HF_HUB_CACHE"))
+    }
+
+    @Test("hfCacheCheck warns when a missing cache path is configured")
+    func hfCacheCheckMissingPath() throws {
+        let base = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-missing-\(UUID().uuidString)", isDirectory: true)
+
+        let check = hfCacheCheck(
+            environment: [ModelScanner.hfHomeEnvKey: base.path],
+            homeDirectory: base
+        )
+        #expect(check.status == .warn)
+        #expect(check.detail.contains("not found"))
+    }
+
+    /// The upgrade hazard: an operator who exported HF_HOME for other tooling
+    /// would silently advertise zero models.
+    @Test("hfCacheCheck warns when the redirected cache is empty but home is not")
+    func hfCacheCheckEmptyRedirect() throws {
+        let root = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-empty-\(UUID().uuidString)", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let redirected = root.appendingPathComponent("elsewhere", isDirectory: true)
+        let fm = FileManager.default
+        try fm.createDirectory(
+            at: home.appendingPathComponent(".cache/huggingface/hub/models--acme--Tiny",
+                                            isDirectory: true),
+            withIntermediateDirectories: true)
+        try fm.createDirectory(at: redirected.appendingPathComponent("hub", isDirectory: true),
+                               withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let check = hfCacheCheck(
+            environment: [ModelScanner.hfHomeEnvKey: redirected.path],
+            homeDirectory: home
+        )
+        #expect(check.status == .warn)
+        #expect(check.detail.contains("empty"))
+        #expect(check.detail.contains("models are in"))
+
+        // With models present in the redirected cache it passes.
+        try fm.createDirectory(
+            at: redirected.appendingPathComponent("hub/models--acme--Other", isDirectory: true),
+            withIntermediateDirectories: true)
+        let ok = hfCacheCheck(
+            environment: [ModelScanner.hfHomeEnvKey: redirected.path],
+            homeDirectory: home
+        )
+        #expect(ok.status == .pass)
+        #expect(ok.detail.contains("(via $HF_HOME)"))
+    }
+
+    @Test("hfCacheCheck passes on the default cache with no env override")
+    func hfCacheCheckDefault() throws {
+        let home = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-default-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".cache/huggingface/hub", isDirectory: true),
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let check = hfCacheCheck(environment: [:], homeDirectory: home)
+        #expect(check.status == .pass)
+        #expect(check.detail.hasSuffix(".cache/huggingface/hub"))
+    }
+
     @Test("CheckStatus markers and boot verdict mapping are stable")
     func statusMarkers() {
         #expect(CheckStatus.pass.marker == "[PASS]")

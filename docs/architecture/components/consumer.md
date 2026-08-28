@@ -28,11 +28,31 @@ See [`provider/self-route.md`](../../provider/self-route.md).
 
 ## Response extensions
 
-Responses include:
+Successful, provider-committed inference responses include Darkbloom provider
+headers (`X-Provider-Attested`, `X-Provider-Trust-Level`, `X-Provider-Id`,
+`X-Provider-Chip`, `X-Provider-Encrypted`, `X-Provider-Secure-Enclave`,
+`X-Timing`, …). Validation, capacity, and other pre-commit failures do not have
+a selected provider and therefore do not carry these headers
+([`dispatch.go:3371-3379`](../../../coordinator/api/dispatch.go#L3371-L3379)).
 
-- `provider_attested` (bool)
-- `provider_trust_level` (string, e.g. `hardware`)
-- `X-Timing` header decomposing per-request latency.
+OpenAI-compatible SDKs often hide custom headers, so
+`POST /v1/chat/completions` can copy the committed fields into the JSON body
+when the caller sets `metadata_details: true` (or
+`X-Darkbloom-Metadata-Details: true`). The coordinator consumes the flag before
+provider encryption
+([`response_metadata.go:52-100`](../../../coordinator/api/response_metadata.go#L52-L100)),
+builds `metadata` with region/country-only `location`
+([`response_metadata.go:209-240`](../../../coordinator/api/response_metadata.go#L209-L240)),
+and reserves that top-level key and all case-insensitive aliases against
+provider-supplied values before attaching its snapshot
+([`chat_metadata_stream.go:14-82`](../../../coordinator/api/chat_metadata_stream.go#L14-L82),
+[`response_metadata.go:242-276`](../../../coordinator/api/response_metadata.go#L242-L276)).
+Device serials, city, coordinates, lookup source, and raw IPs are never
+included. `location` is body-only, not a header. Successful streams attach
+metadata to the terminal chunk; failed committed streams emit it immediately
+before the terminal in-band error
+([`consumer.go:2191-2222`](../../../coordinator/api/consumer.go#L2191-L2222),
+[`chat_metadata_stream.go:94-117`](../../../coordinator/api/chat_metadata_stream.go#L94-L117)).
 
 ## Supported operations
 

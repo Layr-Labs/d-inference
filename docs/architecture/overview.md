@@ -77,9 +77,19 @@ Key subsystems:
 
 Consumers use any OpenAI-compatible client pointed at the coordinator. The
 consumer HTTP path is wrapped as
-`requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
-(`coordinator/api/server.go:1411`). Responses include Darkbloom-specific fields
-`provider_attested` and `provider_trust_level`.
+`drainGate → requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
+([`server.go:1755-1766`](../../coordinator/api/server.go#L1755-L1766)). After a request
+commits to a provider, the coordinator returns provider trust, timing, and job
+identity as `X-Provider-*`, `X-Timing`, and `X-Inference-Job-ID` headers;
+pre-commit failures do not have provider headers
+([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
+`POST /v1/chat/completions` can copy those fields into a JSON `metadata` object
+when the caller sets `metadata_details=true`
+([`response_metadata.go:52-100`](../../coordinator/api/response_metadata.go#L52-L100),
+[`response_metadata.go:242-276`](../../coordinator/api/response_metadata.go#L242-L276)).
+That object also includes region/country GeoIP of the serving provider; city,
+coordinates, lookup source, and raw IPs are excluded
+([`response_metadata.go:209-240`](../../coordinator/api/response_metadata.go#L209-L240)).
 
 ## Privacy model
 

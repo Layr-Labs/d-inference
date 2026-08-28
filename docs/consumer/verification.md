@@ -32,6 +32,22 @@ Inference responses expose the provider's Secure Enclave public key and signed
 response receipt without exposing its device serial. Consumers can verify that
 receipt against the published key.
 
+On a provider-committed response, the consumer-safe provider fields
+(`provider_id`, `provider_attested`, `provider_trust_level`,
+`attestation_se_public_key`, timing) are exposed through `X-Provider-*` /
+`X-Timing` headers. Pre-commit validation, capacity, and availability errors do
+not have a selected provider and therefore do not have provider headers
+([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
+
+Region/country GeoIP of the serving provider is included only in the opt-in
+JSON `metadata.location` object (no city, coordinates, lookup source, or raw
+IP). To read these fields from an OpenAI SDK that does not surface custom
+headers, send `metadata_details: true` (or
+`X-Darkbloom-Metadata-Details: true`) on `POST /v1/chat/completions` and read
+the JSON `metadata` object
+([`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276)).
+See [`api-contracts.md`](../reference/api-contracts.md).
+
 ## Code-identity attestation
 
 The strongest production gate is APNs-based code-identity attestation. It is

@@ -1247,7 +1247,10 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
               return (
                 <div
                   key={bucket.key}
-                  className="group absolute -translate-x-1/2 -translate-y-1/2"
+                  // -translate-x-1/2 makes this a stacking context, so the
+                  // tooltip's own z-index cannot lift it past the bubble-area
+                  // legend (z-20). Raise the whole marker on hover instead.
+                  className="group absolute -translate-x-1/2 -translate-y-1/2 hover:z-30"
                   style={{ left: `${point.x}%`, top: `${point.y}%` }}
                 >
                   <div

@@ -791,16 +791,17 @@ func TestIntegration_Qwen38RealProcessToolsAndVideo(t *testing.T) {
 		toolCompletion.Usage.PromptTokens+toolCompletion.Usage.CompletionTokens,
 		toolCompletion.Usage.TotalTokens)
 
-	video, err := os.ReadFile(filepath.Join("fixtures", "solid-blue-1s.mp4"))
+	video, err := os.ReadFile(filepath.Join(
+		"..", "libs", "mlx-swift-lm", "Tests", "MLXLMTests", "Resources", "1080p_30.mov"))
 	require.NoError(t, err)
-	require.Less(t, len(video), 4<<10, "video fixture must stay bounded")
-	videoURI := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(video)
+	require.Less(t, len(video), 128<<10, "canonical color-bar video fixture must stay bounded")
+	videoURI := "data:video/quicktime;base64," + base64.StdEncoding.EncodeToString(video)
 	videoBody := map[string]any{
 		"model": qwen38Alias,
 		"messages": []map[string]any{{
 			"role": "user",
 			"content": []map[string]any{
-				{"type": "text", "text": "What is the dominant color in this video? Reply with one color word."},
+				{"type": "text", "text": "Describe the main test pattern in this video in a short phrase."},
 				{"type": "video_url", "video_url": map[string]string{"url": videoURI}},
 			},
 		}},
@@ -828,7 +829,11 @@ func TestIntegration_Qwen38RealProcessToolsAndVideo(t *testing.T) {
 	require.Len(t, videoCompletion.Choices, 1)
 	grounded := strings.TrimSpace(videoCompletion.Choices[0].Message.Content)
 	require.NotEmpty(t, grounded, "decrypted video response must contain grounded text")
-	require.Contains(t, strings.ToLower(grounded), "blue", "response must be grounded in the blue fixture")
+	normalizedGrounded := strings.ToLower(grounded)
+	require.True(t,
+		strings.Contains(normalizedGrounded, "color bar") ||
+			strings.Contains(normalizedGrounded, "colour bar"),
+		"response must identify the canonical color-bar fixture: %q", grounded)
 	require.Greater(t, videoCompletion.Usage.PromptTokens, 0)
 	require.Greater(t, videoCompletion.Usage.CompletionTokens, 0)
 	require.Equal(t,

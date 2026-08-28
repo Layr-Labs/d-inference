@@ -80,13 +80,16 @@ final class PrefixCacheLookupReceiptFinalizer: @unchecked Sendable {
     private var callback: (@Sendable (PrefixCacheLookupResult) -> Void)?
     private var terminalCallback: (@Sendable (OutboundMessage) -> Void)?
     private let deliveryWaitObserver: (@Sendable () -> Void)?
+    private let terminalObserver: (@Sendable (OutboundMessage) -> Void)?
 
     init(
         callback: (@Sendable (PrefixCacheLookupResult) -> Void)?,
-        deliveryWaitObserver: (@Sendable () -> Void)? = nil
+        deliveryWaitObserver: (@Sendable () -> Void)? = nil,
+        terminalObserver: (@Sendable (OutboundMessage) -> Void)? = nil
     ) {
         self.callback = callback
         self.deliveryWaitObserver = deliveryWaitObserver
+        self.terminalObserver = terminalObserver
     }
 
     func configureV2(
@@ -150,6 +153,7 @@ final class PrefixCacheLookupReceiptFinalizer: @unchecked Sendable {
         send: SendHandle
     ) {
         finalize(failure: fallbackFailure, tier: tier)
+        terminalObserver?(message)
         condition.lock()
         let terminal = terminalCallback
         condition.unlock()

@@ -76,7 +76,8 @@ func makeLocalInferenceApplication(
         acquire: acquire,
         tokenizerProvider: tokenizerProvider,
         availableModels: availableModels,
-        defaultMaxTokens: defaultMaxTokens
+        defaultMaxTokens: defaultMaxTokens,
+        analyticsServingMode: "local"
     )
     let service = MLXOpenAIService(engine: engine)
     let router = MLXServerApplication.buildRouter(service: service)

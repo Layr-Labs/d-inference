@@ -112,6 +112,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Absolute provider-local deadline derived once when the coordinator frame
     /// was received. Nil for local HTTP and legacy coordinator requests.
     private let firstContentDeadline: FirstContentDeadline?
+    /// Enables the local-only terminal job event for this request path.
+    private let analyticsServingMode: String?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -126,7 +128,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
-        firstContentDeadline: FirstContentDeadline? = nil
+        firstContentDeadline: FirstContentDeadline? = nil,
+        analyticsServingMode: String? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
@@ -142,6 +145,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = engineV2Usage
         self.allowInternalToolSchemaMetadata = true
         self.firstContentDeadline = firstContentDeadline
+        self.analyticsServingMode = analyticsServingMode
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -163,7 +167,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerResolution,
         availableModels: @escaping @Sendable () async -> [String],
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        analyticsServingMode: String? = nil
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -194,6 +199,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
+        self.analyticsServingMode = analyticsServingMode
     }
 
     // MARK: - MLXServerEngine
@@ -208,6 +214,28 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let tracker = analyticsServingMode.map {
+            InferenceAnalyticsTracker(
+                servingMode: $0,
+                model: request.model,
+                streaming: request.stream ?? false)
+        }
+        do {
+            return try await streamChatCompletionImplementation(
+                request: request,
+                analytics: tracker)
+        } catch {
+            tracker?.finish(
+                outcome: InferenceAnalyticsClassification.outcome(for: error),
+                errorClass: InferenceAnalyticsClassification.errorClass(for: error))
+            throw error
+        }
+    }
+
+    private func streamChatCompletionImplementation(
+        request: OpenAIChatCompletionRequest,
+        analytics: InferenceAnalyticsTracker?
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         try checkFirstContentDeadline()
 
@@ -441,13 +469,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     )
                     try checkFirstContentDeadline()
+                    analytics?.noteAdmitted()
                     return try await makeDeadlineCheckedEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
                         toolHandler: nil,
                         prepared: prepared,
                         releaseBox: releaseBox,
-                        synthesizeThinkOpen: synthesizeThinkOpen
+                        synthesizeThinkOpen: synthesizeThinkOpen,
+                        analytics: analytics
                     )
                 } catch let failure as PreContentDeadlineFailure {
                     await mediaGate.release(requestId: mediaReqId)
@@ -696,13 +726,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
+        analytics?.noteAdmitted()
         return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen
+            synthesizeThinkOpen: synthesizeThinkOpen,
+            analytics: analytics
         )
     }
 
@@ -732,7 +764,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        synthesizeThinkOpen: Bool = false,
+        analytics: InferenceAnalyticsTracker?
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -747,7 +780,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen)
+            synthesizeThinkOpen: synthesizeThinkOpen,
+            analytics: analytics)
         do {
             try checkFirstContentDeadline()
             return stream
@@ -770,7 +804,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        synthesizeThinkOpen: Bool = false,
+        analytics: InferenceAnalyticsTracker?
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -803,14 +838,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     if Task.isCancelled {
                         await cancelUpstream()
                         await releaseBox.fire()
+                        analytics?.finish(outcome: "cancelled", errorClass: "cancelled")
                         continuation.finish()
                         return
                     }
                     switch event {
                     case .chunk(let text):
-                        if firstTokenAt == nil { firstTokenAt = Date() }
+                        if firstTokenAt == nil {
+                            firstTokenAt = Date()
+                        }
                         lastTokenAt = Date()
                         if !text.isEmpty {
+                            analytics?.noteFirstContent()
                             if let handler = toolHandler {
                                 if let visible = handler.processChunk(text),
                                     !visible.isEmpty
@@ -824,6 +863,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             }
                                         await cancelUpstream()
                                         await releaseBox.fire()
+                                        analytics?.finish(
+                                            outcome: "failed",
+                                            errorClass: "tool_policy",
+                                            promptTokens: promptTokenCount,
+                                            completionTokens: completionTokens)
                                         continuation.finish(
                                             throwing: MultiModelBatchSchedulerEngineError
                                                 .toolChoiceViolation(
@@ -874,6 +918,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // A typed terminal wins over any legacy string: it carries
                     // the cause + usage the status mapper and coordinator need.
                     await releaseBox.fire()
+                    if case .platformTerminal(let cause, _, let usage) = failedTerminal {
+                        analytics?.finish(
+                            outcome: cause == .cancelled ? "cancelled" : "failed",
+                            errorClass: cause.rawValue,
+                            promptTokens: Int(clamping: usage.promptTokens),
+                            completionTokens: Int(clamping: usage.completionTokens),
+                            cachedPromptTokens: Int(clamping: usage.cachedTokens ?? 0))
+                    }
                     continuation.finish(throwing: failedTerminal)
                     return
                 }
@@ -886,6 +938,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             severity: .error)
                     }
                     await releaseBox.fire()
+                    let classified = MultiModelBatchSchedulerEngineError
+                        .fromSchedulerMessage(failed)
+                    analytics?.finish(
+                        outcome: InferenceAnalyticsClassification.outcome(for: classified),
+                        errorClass: InferenceAnalyticsClassification.errorClass(for: classified),
+                        promptTokens: promptTokenCount,
+                        completionTokens: completionTokens)
                     // P2 #6: parse the scheduler's structured error
                     // prefix (`token_budget_exhausted: ...`, `... queue
                     // full`, `timed out waiting for capacity`, etc.)
@@ -920,6 +979,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         toolCalls, prepared: prepared)
                 } catch {
                     await releaseBox.fire()
+                    analytics?.finish(
+                        outcome: InferenceAnalyticsClassification.outcome(for: error),
+                        errorClass: InferenceAnalyticsClassification.errorClass(for: error),
+                        promptTokens: promptTokenCount,
+                        completionTokens: completionTokens)
                     continuation.finish(throwing: error)
                     return
                 }
@@ -948,9 +1012,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     )
                 )
                 await releaseBox.fire()
+                analytics?.finish(
+                    outcome: "success",
+                    promptTokens: promptTokenCount,
+                    completionTokens: completionTokens)
                 continuation.finish()
             }
             continuation.onTermination = { @Sendable _ in
+                analytics?.finish(outcome: "cancelled", errorClass: "cancelled")
                 task.cancel()
                 Task {
                     await cancelUpstream()

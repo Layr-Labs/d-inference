@@ -80,6 +80,8 @@ struct Start: AsyncParsableCommand {
         if let idleTimeout {
             effectiveConfig.backend.idleTimeoutMins = idleTimeout
         }
+        LocalAnalytics.shared.configure(enabled: effectiveConfig.analytics.enabled)
+        defer { LocalAnalytics.shared.shutdown() }
 
         // These controls are process-start latches in MLX/MLXLM. Project the
         // authoritative TOML before requireMetal() performs the first MLX touch.

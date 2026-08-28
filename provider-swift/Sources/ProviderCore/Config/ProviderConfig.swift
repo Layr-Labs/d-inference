@@ -404,10 +404,34 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     }
 }
 
+/// Local, privacy-safe inference job analytics.
+///
+/// Disabled by default so upgrading Darkbloom never starts a new persistent
+/// data stream without the operator opting in. The destination is deliberately
+/// fixed at `~/.darkbloom/analytics`; downstream Parquet/Rill concerns are not
+/// provider configuration.
+public struct AnalyticsSettings: Sendable, Equatable, Codable {
+    public var enabled: Bool
+
+    public init(enabled: Bool = false) {
+        self.enabled = enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+}
+
 public struct ProviderConfig: Sendable, Equatable, Codable {
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
+    public var analytics: AnalyticsSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
     /// Schema version of the `provider.toml` this config came from
@@ -442,6 +466,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
+        analytics: AnalyticsSettings = AnalyticsSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
         configVersion: Int = ProviderConfig.currentConfigVersion
@@ -449,6 +474,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
+        self.analytics = analytics
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
         self.configVersion = configVersion
@@ -458,6 +484,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case provider
         case backend
         case coordinator
+        case analytics
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
         case configVersion = "config_version"
@@ -483,6 +510,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
             BackendMTPMigrationProbe.self, forKey: .backend)
         var backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
+        self.analytics = try container.decodeIfPresent(AnalyticsSettings.self, forKey: .analytics) ?? AnalyticsSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations

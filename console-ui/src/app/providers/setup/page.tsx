@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Cpu,
   Monitor,
@@ -13,6 +14,7 @@ import {
   Copy,
   Check,
 } from "lucide-react";
+import { useProviderRequirements } from "../useProviderRequirements";
 
 function CopyableCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -89,7 +91,7 @@ const REQUIREMENTS = [
   {
     icon: Cpu,
     title: "Apple Silicon Mac",
-    description: "M1, M2, M3, or M4 series (any tier). GPU inference runs natively on the Neural Engine and GPU.",
+    description: "M1 through M5 series. GPU inference runs natively with MLX on unified-memory Apple Silicon.",
   },
   {
     icon: Monitor,
@@ -132,6 +134,54 @@ const FAQ = [
 ];
 
 export default function ProviderSetupPage() {
+  const providerRequirementsState = useProviderRequirements();
+  const providerRequirements = providerRequirementsState.requirements;
+  const policy = providerRequirements?.policy;
+  const setupPolicyKnown =
+    providerRequirementsState.status === "ready" && policy !== undefined;
+  const hardwareTitle = policy?.min_memory_gb
+    ? `${policy.min_memory_gb}GB+ RAM`
+    : "Unified Memory";
+  const hardwareMinimums = [
+    policy?.min_memory_gb
+      ? `${policy.min_memory_gb} GiB memory`
+      : null,
+    policy?.min_memory_bandwidth_gbs
+      ? `${policy.min_memory_bandwidth_gbs} GB/s bandwidth`
+      : null,
+    policy?.min_fp16_millitflops
+      ? `${(policy.min_fp16_millitflops / 1000).toFixed(1)} FP16 TFLOPS`
+      : null,
+  ].filter(Boolean);
+  let hardwareDescription = "Checking the coordinator's current new-machine policy…";
+  if (providerRequirementsState.status === "error") {
+    hardwareDescription =
+      "Current onboarding requirements are temporarily unavailable. The coordinator remains authoritative when this Mac connects.";
+  } else if (policy?.mode === "disabled") {
+    hardwareDescription =
+      "8GB is the absolute runtime minimum; the coordinator currently has no stricter onboarding floor.";
+  } else if (hardwareMinimums.length > 0 && policy?.mode === "shadow") {
+    hardwareDescription = `Shadow evaluation checks ${hardwareMinimums.join(
+      ", "
+    )}; it does not block onboarding until enforcement is enabled.`;
+  } else if (policy?.mode === "shadow") {
+    hardwareDescription =
+      "The coordinator is observing new-machine admission in shadow mode without a capacity floor.";
+  } else if (hardwareMinimums.length > 0 && policy?.mode === "enforce") {
+    hardwareDescription = `New providers must meet ${hardwareMinimums.join(
+      ", "
+    )}. Existing admitted machines remain grandfathered.`;
+  }
+  const requirementCards = REQUIREMENTS.map((requirement) =>
+    requirement.title === "16GB+ RAM"
+      ? {
+          ...requirement,
+          title: hardwareTitle,
+          description: hardwareDescription,
+        }
+      : requirement
+  );
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-12">
       {/* Hero */}
@@ -156,8 +206,30 @@ export default function ProviderSetupPage() {
       {/* Requirements */}
       <div>
         <h2 className="text-lg font-semibold text-text-primary mb-4">Requirements</h2>
+        {policy && policy.mode !== "disabled" && (
+          <div className="mb-4 rounded-xl border border-accent-amber/25 bg-accent-amber/10 px-4 py-3 text-sm text-text-secondary">
+            <span className="font-semibold text-text-primary">
+              New-machine policy v{policy.version} is {policy.mode}.
+            </span>{" "}
+            Hardware is verified by the coordinator when the provider connects;
+            linking an account alone does not guarantee admission.
+            {policy.mode === "enforce" && (
+              <>
+                {" "}
+                If this Mac is below the current floor,{" "}
+                <Link
+                  href="/provider-waitlist"
+                  className="font-semibold text-accent-brand hover:text-accent-brand-hover"
+                >
+                    register hardware interest
+                </Link>
+                .
+              </>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-4">
-          {REQUIREMENTS.map(({ icon: Icon, title, description }) => (
+          {requirementCards.map(({ icon: Icon, title, description }) => (
             <div key={title} className="rounded-xl bg-bg-secondary shadow-sm p-5">
               <div className="w-10 h-10 rounded-lg bg-accent-brand/10 flex items-center justify-center mb-3">
                 <Icon size={20} className="text-accent-brand" />
@@ -172,28 +244,42 @@ export default function ProviderSetupPage() {
       {/* Step by step */}
       <div>
         <h2 className="text-lg font-semibold text-text-primary mb-6">Setup Guide</h2>
-        <div className="space-y-6">
-          {STEPS.map(({ icon: Icon, title, description, command }, i) => (
-            <div key={title} className="flex gap-4">
-              <div className="flex flex-col items-center">
-                <div className="w-10 h-10 rounded-full bg-accent-brand/10 flex items-center justify-center shrink-0">
-                  <span className="text-sm font-bold text-accent-brand">{i + 1}</span>
+        {setupPolicyKnown ? (
+          <div className="space-y-6">
+            {STEPS.map(({ icon: Icon, title, description, command }, i) => (
+              <div key={title} className="flex gap-4">
+                <div className="flex flex-col items-center">
+                  <div className="w-10 h-10 rounded-full bg-accent-brand/10 flex items-center justify-center shrink-0">
+                    <span className="text-sm font-bold text-accent-brand">{i + 1}</span>
+                  </div>
+                  {i < STEPS.length - 1 && (
+                    <div className="w-px flex-1 bg-border-dim mt-2" />
+                  )}
                 </div>
-                {i < STEPS.length - 1 && (
-                  <div className="w-px flex-1 bg-border-dim mt-2" />
-                )}
-              </div>
-              <div className="flex-1 pb-6">
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon size={16} className="text-text-tertiary" />
-                  <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+                <div className="flex-1 pb-6">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Icon size={16} className="text-text-tertiary" />
+                    <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+                  </div>
+                  <p className="text-sm text-text-secondary mb-3">{description}</p>
+                  <CopyableCommand command={command} />
                 </div>
-                <p className="text-sm text-text-secondary mb-3">{description}</p>
-                <CopyableCommand command={command} />
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div role="alert" className="rounded-xl border border-accent-amber/25 bg-accent-amber/10 px-4 py-4 text-sm text-text-secondary">
+            Setup is paused until the coordinator&apos;s current new-machine
+            requirements can be verified.{" "}
+            <Link
+              href="/provider-waitlist"
+              className="font-semibold text-accent-brand hover:text-accent-brand-hover"
+            >
+              Register hardware interest
+            </Link>
+            .
+          </div>
+        )}
       </div>
 
       {/* FAQ */}

@@ -30,16 +30,24 @@ export function VerificationModeProvider({ children }: { children: React.ReactNo
   const [mode, setMode] = useState<VerificationMode>("normal");
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "technical" || stored === "normal") {
-      setMode(stored);
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === "technical" || stored === "normal") {
+        setMode(stored);
+      }
+    } catch {
+      // Storage can be denied in privacy-restricted browser contexts.
     }
   }, []);
 
   const toggle = useCallback(() => {
     setMode((prev) => {
       const next = prev === "normal" ? "technical" : "normal";
-      localStorage.setItem(STORAGE_KEY, next);
+      try {
+        localStorage.setItem(STORAGE_KEY, next);
+      } catch {
+        // The in-memory preference still works for this page session.
+      }
       return next;
     });
   }, []);

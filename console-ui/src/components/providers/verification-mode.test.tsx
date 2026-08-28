@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { VerificationModeProvider, useVerificationMode } from "./verification-mode";
 import { STORAGE_KEYS } from "@/lib/constants";
@@ -24,6 +24,10 @@ function Probe() {
 beforeEach(() => {
   localStorage.clear();
   renders = [];
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("VerificationModeProvider hydration determinism", () => {
@@ -79,5 +83,23 @@ describe("VerificationModeProvider hydration determinism", () => {
     );
 
     expect(screen.getByTestId("mode").textContent).toBe("normal");
+  });
+
+  it("renders and toggles when browser storage is denied", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+
+    render(
+      <VerificationModeProvider>
+        <Probe />
+      </VerificationModeProvider>,
+    );
+    expect(screen.getByTestId("mode").textContent).toBe("normal");
+    expect(() => fireEvent.click(screen.getByTestId("mode"))).not.toThrow();
+    expect(screen.getByTestId("mode").textContent).toBe("technical");
   });
 });

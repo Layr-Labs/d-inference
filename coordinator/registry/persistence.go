@@ -9,12 +9,43 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+type providerPersistenceLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (r *Registry) lockProviderPersistence(providerID string) func() {
+	r.providerPersistenceLocksMu.Lock()
+	if r.providerPersistenceLocks == nil {
+		r.providerPersistenceLocks = make(map[string]*providerPersistenceLock)
+	}
+	lock := r.providerPersistenceLocks[providerID]
+	if lock == nil {
+		lock = &providerPersistenceLock{}
+		r.providerPersistenceLocks[providerID] = lock
+	}
+	lock.refs++
+	r.providerPersistenceLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		r.providerPersistenceLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 && r.providerPersistenceLocks[providerID] == lock {
+			delete(r.providerPersistenceLocks, providerID)
+		}
+		r.providerPersistenceLocksMu.Unlock()
+	}
+}
 
 func (r *Registry) SetStore(st store.Store) {
 	r.store = st
@@ -187,8 +218,8 @@ func providerRecordStats(raw json.RawMessage, requestsServed, tokensGenerated in
 	return decoded
 }
 
-// PersistProvider unconditionally persists provider state to the store.
-// Use for critical state changes (attestation, trust level, disconnect).
+// PersistProvider asynchronously persists provider state while this exact
+// connection remains current.
 func (r *Registry) PersistProvider(p *Provider) {
 	r.persistProviderNow(p)
 }
@@ -236,81 +267,166 @@ func (r *Registry) persistProviderNow(p *Provider) {
 	saferun.Go(r.logger, "registry.persistProvider", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
-		p.mu.Lock()
-		hardwareJSON, _ := json.Marshal(p.Hardware)
-		modelsJSON, _ := json.Marshal(p.Models)
-		var attestJSON json.RawMessage
-		if p.AttestationResult != nil {
-			attestJSON, _ = json.Marshal(p.AttestationResult)
-		}
-		seKey := ""
-		serial := ""
-		if p.AttestationResult != nil {
-			seKey = p.AttestationResult.PublicKey
-			serial = p.AttestationResult.SerialNumber
-		}
-		providerKey := p.PublicKey // X25519 key — earnings/session identity (base rewards)
-		var mdaCertJSON json.RawMessage
-		if len(p.MDACertChain) > 0 {
-			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
-		}
-		var lastChallenge *time.Time
-		if !p.LastChallengeVerified.IsZero() {
-			t := p.LastChallengeVerified
-			lastChallenge = &t
-		}
-
-		var locationCopy *store.ProviderLocation
-		if p.Location != nil {
-			lc := *p.Location
-			locationCopy = &lc
-		}
-		statsJSON, _ := json.Marshal(p.Stats)
-		lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
-
-		rec := store.ProviderRecord{
-			ID:                         p.ID,
-			Hardware:                   hardwareJSON,
-			Models:                     modelsJSON,
-			Backend:                    p.Backend,
-			Location:                   locationCopy,
-			TrustLevel:                 string(p.TrustLevel),
-			Attested:                   p.Attested,
-			AttestationResult:          attestJSON,
-			SEPublicKey:                seKey,
-			PublicKey:                  p.PublicKey,
-			SerialNumber:               serial,
-			MDAVerified:                p.MDAVerified,
-			MDACertChain:               mdaCertJSON,
-			Version:                    p.Version,
-			RuntimeVerified:            p.RuntimeVerified,
-			PythonHash:                 p.PythonHash,
-			RuntimeHash:                p.RuntimeHash,
-			LastChallengeVerified:      lastChallenge,
-			FailedChallenges:           p.FailedChallenges,
-			AccountID:                  p.AccountID,
-			LifetimeRequestsServed:     p.Stats.RequestsServed,
-			LifetimeTokensGenerated:    p.Stats.TokensGenerated,
-			LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
-			LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
-			LifetimeStats:              statsJSON,
-			LastSessionStats:           lastSessionStatsJSON,
-			RegisteredAt:               time.Now(),
-			LastSeen:                   time.Now(),
-		}
-		p.mu.Unlock()
-
-		if err := r.store.UpsertProvider(ctx, rec); err != nil {
+		current, err := r.PersistProviderSyncIfCurrent(ctx, p)
+		if err != nil {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
-
-		// Keep this connection's session row fresh and backfill
-		// serial/account/provider_key once attestation/linking has populated them.
-		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
-			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
+		if !current {
+			return
 		}
 	})
+}
+
+func (r *Registry) persistProviderSyncWithoutLifecycleLock(
+	ctx context.Context,
+	p *Provider,
+) error {
+	if r.store == nil || p == nil {
+		return nil
+	}
+	p.persistMu.Lock()
+	defer p.persistMu.Unlock()
+	_, err := r.persistProviderSnapshotLocked(ctx, p, false)
+	return err
+}
+
+// persistProviderSnapshotLocked writes the current snapshot while p.persistMu
+// is held. The boolean distinguishes a durable write from the intentional
+// no-op used by providers still behind the first-admission fence.
+func (r *Registry) persistProviderSnapshotLocked(
+	ctx context.Context,
+	p *Provider,
+	allowDisabled bool,
+) (bool, error) {
+	rec, providerKey, enabled := providerRecordSnapshot(p, allowDisabled)
+	if rec.ID == "" {
+		return false, nil
+	}
+	if err := r.store.UpsertProvider(ctx, rec); err != nil {
+		return false, err
+	}
+	if !enabled {
+		return true, nil
+	}
+	if err := r.store.TouchProviderSession(
+		ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PersistProviderSyncIfCurrent persists only the exact live connection. A
+// provider-ID-scoped lifecycle lock prevents replacement during the write
+// without blocking unrelated registry readers or writers on database I/O.
+func (r *Registry) PersistProviderSyncIfCurrent(
+	ctx context.Context,
+	p *Provider,
+) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	unlockPersistence := r.lockProviderPersistence(p.ID)
+	defer unlockPersistence()
+	r.mu.RLock()
+	if current, ok := r.providers[p.ID]; !ok || current != p {
+		r.mu.RUnlock()
+		return false, nil
+	}
+	r.mu.RUnlock()
+	return true, r.persistProviderSyncWithoutLifecycleLock(ctx, p)
+}
+
+// PersistPendingHardwareAdmissionSnapshotIfCurrent checkpoints a first-time
+// provider's complete identity proof before the serial admission is committed.
+// It does not enable heartbeat persistence or create a provider session.
+func (r *Registry) PersistPendingHardwareAdmissionSnapshotIfCurrent(
+	ctx context.Context,
+	p *Provider,
+) (bool, error) {
+	if p == nil || r.store == nil {
+		return false, nil
+	}
+	unlockPersistence := r.lockProviderPersistence(p.ID)
+	defer unlockPersistence()
+	p.persistMu.Lock()
+	defer p.persistMu.Unlock()
+
+	r.mu.RLock()
+	if current, ok := r.providers[p.ID]; !ok || current != p {
+		r.mu.RUnlock()
+		return false, nil
+	}
+	r.mu.RUnlock()
+	return r.persistProviderSnapshotLocked(ctx, p, true)
+}
+
+func providerRecordSnapshot(
+	p *Provider,
+	allowDisabled bool,
+) (store.ProviderRecord, string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	enabled := p.persistenceEnabled
+	if !enabled && !allowDisabled {
+		return store.ProviderRecord{}, "", false
+	}
+	hardwareJSON, _ := json.Marshal(p.Hardware)
+	modelsJSON, _ := json.Marshal(p.Models)
+	var attestJSON json.RawMessage
+	seKey := ""
+	serial := ""
+	if p.AttestationResult != nil {
+		attestJSON, _ = json.Marshal(p.AttestationResult)
+		seKey = p.AttestationResult.PublicKey
+		serial = p.AttestationResult.SerialNumber
+	}
+	var mdaCertJSON json.RawMessage
+	if len(p.MDACertChain) > 0 {
+		mdaCertJSON, _ = json.Marshal(p.MDACertChain)
+	}
+	var lastChallenge *time.Time
+	if !p.LastChallengeVerified.IsZero() {
+		t := p.LastChallengeVerified
+		lastChallenge = &t
+	}
+	var locationCopy *store.ProviderLocation
+	if p.Location != nil {
+		lc := *p.Location
+		locationCopy = &lc
+	}
+	statsJSON, _ := json.Marshal(p.Stats)
+	lastSessionStatsJSON, _ := json.Marshal(p.lastSessionStats)
+	now := time.Now()
+	return store.ProviderRecord{
+		ID:                         p.ID,
+		Hardware:                   hardwareJSON,
+		Models:                     modelsJSON,
+		Backend:                    p.Backend,
+		Location:                   locationCopy,
+		TrustLevel:                 string(p.TrustLevel),
+		Attested:                   p.Attested,
+		AttestationResult:          attestJSON,
+		SEPublicKey:                seKey,
+		PublicKey:                  p.PublicKey,
+		SerialNumber:               serial,
+		MDAVerified:                p.MDAVerified,
+		MDACertChain:               mdaCertJSON,
+		Version:                    p.Version,
+		RuntimeVerified:            p.RuntimeVerified,
+		PythonHash:                 p.PythonHash,
+		RuntimeHash:                p.RuntimeHash,
+		LastChallengeVerified:      lastChallenge,
+		FailedChallenges:           p.FailedChallenges,
+		AccountID:                  p.AccountID,
+		LifetimeRequestsServed:     p.Stats.RequestsServed,
+		LifetimeTokensGenerated:    p.Stats.TokensGenerated,
+		LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,
+		LastSessionTokensGenerated: p.lastSessionStats.TokensGenerated,
+		LifetimeStats:              statsJSON,
+		LastSessionStats:           lastSessionStatsJSON,
+		RegisteredAt:               now,
+		LastSeen:                   now,
+	}, p.PublicKey, enabled
 }
 
 // persistReputation saves a provider's current reputation to the store.

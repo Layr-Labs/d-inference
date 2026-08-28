@@ -194,7 +194,9 @@ import Testing
         binaryHash: "binhash",
         chipName: "Apple M4 Max",
         encryptionPublicKey: "ZW5jcnlwdGlvbi1rZXk=",
+        gpuCores: 40,
         hardwareModel: "Mac16,5",
+        memoryGb: 64,
         osVersion: "15.3.0",
         publicKey: "cHVibGljLWtleQ==",
         rdmaDisabled: true,
@@ -216,6 +218,30 @@ import Testing
     // Sanity: the blob still carries its real posture fields.
     #expect(object["sipEnabled"] as? Bool == true)
     #expect(object["rdmaDisabled"] as? Bool == true)
+    #expect(object["memoryGb"] as? Int == 64)
+    #expect(object["gpuCores"] as? Int == 40)
+}
+
+@Test func attestationBuilderSignsTheAdvertisedHardwareSnapshot() throws {
+    let hardware = HardwareInfo(
+        machineModel: "Mac-Test-Snapshot",
+        chipName: "Apple M9 Ultra Test",
+        chipFamily: .unknown,
+        chipTier: .ultra,
+        memoryGb: 777,
+        memoryAvailableGb: 700,
+        cpuCores: CpuCores(total: 1, performance: 1, efficiency: 0),
+        gpuCores: 321,
+        memoryBandwidthGbs: 999
+    )
+    let builder = AttestationBuilder(identity: StaticAttestationSigner())
+
+    let signed = try builder.buildAttestation(hardware: hardware)
+
+    #expect(signed.attestation.hardwareModel == hardware.machineModel)
+    #expect(signed.attestation.chipName == hardware.chipName)
+    #expect(signed.attestation.memoryGb == hardware.memoryGb)
+    #expect(signed.attestation.gpuCores == hardware.gpuCores)
 }
 
 @Test func statusCanonicalOmitsEmptyFieldsAndSerializesFalse() throws {
@@ -346,5 +372,13 @@ private final class PtraceRecorder: @unchecked Sendable {
                 )
             )
         }
+    }
+}
+
+private struct StaticAttestationSigner: AttestationSigner {
+    let publicKeyBase64 = Data(repeating: 1, count: 64).base64EncodedString()
+
+    func sign(_ data: Data) throws -> Data {
+        Data(data.prefix(16))
     }
 }

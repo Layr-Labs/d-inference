@@ -805,10 +805,36 @@ type RuntimeMismatch struct {
 // TrustStatusMessage is sent by the coordinator to inform a provider of its
 // current trust level for local operator diagnostics.
 type TrustStatusMessage struct {
-	Type       string `json:"type"`
-	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
-	Status     string `json:"status"`      // "online", "untrusted", etc.
-	Reason     string `json:"reason,omitempty"`
+	Type           string                       `json:"type"`
+	TrustLevel     string                       `json:"trust_level"` // "none", "self_signed", "hardware"
+	Status         string                       `json:"status"`      // "online", "untrusted", "onboarding_rejected", etc.
+	Reason         string                       `json:"reason,omitempty"`
+	ReasonCode     string                       `json:"reason_code,omitempty"`
+	PolicyVersion  int64                        `json:"policy_version,omitempty"`
+	CatalogVersion string                       `json:"catalog_version,omitempty"`
+	Retryable      *bool                        `json:"retryable,omitempty"`
+	Hardware       *TrustStatusHardware         `json:"hardware,omitempty"`
+	FailedChecks   []TrustStatusRequirementMiss `json:"failed_checks,omitempty"`
+}
+
+type TrustStatusHardware struct {
+	MachineModel       string `json:"machine_model,omitempty"`
+	ChipName           string `json:"chip_name,omitempty"`
+	ChipFamily         string `json:"chip_family,omitempty"`
+	ChipTier           string `json:"chip_tier,omitempty"`
+	MemoryGB           int    `json:"memory_gb,omitempty"`
+	GPUCores           int    `json:"gpu_cores,omitempty"`
+	MemoryBandwidthGBs int    `json:"memory_bandwidth_gbs,omitempty"`
+	FP16MilliTFLOPS    int    `json:"fp16_millitflops,omitempty"`
+	CatalogKnown       bool   `json:"catalog_known"`
+}
+
+type TrustStatusRequirementMiss struct {
+	Code     string `json:"code"`
+	Metric   string `json:"metric"`
+	Observed int    `json:"observed"`
+	Required int    `json:"required"`
+	Unit     string `json:"unit"`
 }
 
 // ---------------------------------------------------------------------------

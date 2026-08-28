@@ -10,12 +10,63 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
-import type { MyProvidersResponse, MySummaryResponse } from "../types";
+import type {
+  HardwareAdmissionAttempt,
+  HardwareAdmissionAttemptsResponse,
+  MyProvidersResponse,
+  MySummaryResponse,
+} from "../types";
 import type { RoutingCtx } from "./routing";
 
 const REFRESH_MS = 15_000;
 const PROVIDERS_URL = "/api/me/providers";
 const SUMMARY_URL = "/api/me/summary";
+const ADMISSION_ATTEMPTS_URL = "/api/me/provider-admission-attempts";
+
+async function settledJson<T>(
+  result: PromiseSettledResult<Response>
+): Promise<T | null> {
+  if (result.status !== "fulfilled" || !result.value.ok) return null;
+  try {
+    return (await result.value.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+interface FleetSnapshot {
+  providers: MyProvidersResponse;
+  summary: MySummaryResponse | null;
+  attempts: HardwareAdmissionAttempt[] | null;
+}
+
+async function fetchFleetSnapshot(token: string): Promise<FleetSnapshot> {
+  const headers = { Authorization: `Bearer ${token}` };
+  const [providersResult, summaryResult, attemptsResult] =
+    await Promise.allSettled([
+      fetch(PROVIDERS_URL, { headers, cache: "no-store" }),
+      fetch(SUMMARY_URL, { headers, cache: "no-store" }),
+      fetch(ADMISSION_ATTEMPTS_URL, { headers, cache: "no-store" }),
+    ]);
+  if (providersResult.status !== "fulfilled" || !providersResult.value.ok) {
+    const detail =
+      providersResult.status === "fulfilled"
+        ? `HTTP ${providersResult.value.status}`
+        : providersResult.reason?.message || "network error";
+    throw new Error(detail);
+  }
+  const providers =
+    (await providersResult.value.json()) as MyProvidersResponse;
+  const [summary, attemptBody] = await Promise.all([
+    settledJson<MySummaryResponse>(summaryResult),
+    settledJson<HardwareAdmissionAttemptsResponse>(attemptsResult),
+  ]);
+  return {
+    providers,
+    summary,
+    attempts: attemptBody?.attempts ?? null,
+  };
+}
 
 export interface FleetData {
   ready: boolean;
@@ -23,6 +74,7 @@ export interface FleetData {
   login: () => void;
   providersResp: MyProvidersResponse | null;
   summary: MySummaryResponse | null;
+  admissionAttempts: HardwareAdmissionAttempt[];
   ctx: RoutingCtx;
   /** True only during the very first load (before any data arrives). */
   loading: boolean;
@@ -45,80 +97,94 @@ const DEFAULT_CTX_FROM = (resp: MyProvidersResponse | null): RoutingCtx => ({
 });
 
 export function useFleetData(): FleetData {
-  const { ready, authenticated, login, getAccessToken } = useAuth();
+  const { ready, authenticated, user, login, getAccessToken } = useAuth();
+  const userID = (user as { id?: unknown } | null)?.id;
+  const accountID =
+    authenticated && typeof userID === "string" && userID.length > 0
+      ? userID
+      : null;
   const [providersResp, setProvidersResp] = useState<MyProvidersResponse | null>(null);
   const [summary, setSummary] = useState<MySummaryResponse | null>(null);
+  const [admissionAttempts, setAdmissionAttempts] = useState<
+    HardwareAdmissionAttempt[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pollFailed, setPollFailed] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [dataAccountID, setDataAccountID] = useState<string | null>(null);
 
   // Track whether we currently have data without retriggering fetchAll.
   const hasDataRef = useRef(false);
+  const activeAccountRef = useRef<string | null>(accountID);
+  activeAccountRef.current = accountID;
 
   const fetchAll = useCallback(async () => {
+    const requestAccountID = accountID;
+    if (!requestAccountID) return;
     setRefreshing(true);
     try {
       const token = await getAccessToken().catch(() => null);
+      if (activeAccountRef.current !== requestAccountID) return;
       if (!token) {
-        if (!hasDataRef.current) setError("Not authenticated");
-        else setPollFailed(true);
+        const hasData = hasDataRef.current;
+        setError((current) => (hasData ? current : "Not authenticated"));
+        setPollFailed(hasData);
         return;
       }
-      const headers = { Authorization: `Bearer ${token}` };
-
-      // Providers is required; summary is best-effort.
-      const [pRes, sRes] = await Promise.allSettled([
-        fetch(PROVIDERS_URL, { headers, cache: "no-store" }),
-        fetch(SUMMARY_URL, { headers, cache: "no-store" }),
-      ]);
-
-      if (pRes.status !== "fulfilled" || !pRes.value.ok) {
-        const detail =
-          pRes.status === "fulfilled" ? `HTTP ${pRes.value.status}` : pRes.reason?.message || "network error";
-        throw new Error(detail);
-      }
-
-      const providers = (await pRes.value.json()) as MyProvidersResponse;
-      setProvidersResp(providers);
+      const snapshot = await fetchFleetSnapshot(token);
+      if (activeAccountRef.current !== requestAccountID) return;
+      setProvidersResp(snapshot.providers);
+      setDataAccountID(requestAccountID);
       hasDataRef.current = true;
       setError(null);
       setPollFailed(false);
       setLastUpdatedAt(Date.now());
-
-      if (sRes.status === "fulfilled" && sRes.value.ok) {
-        try {
-          setSummary((await sRes.value.json()) as MySummaryResponse);
-        } catch {
-          /* keep prior summary */
-        }
-      }
+      if (snapshot.summary) setSummary(snapshot.summary);
+      if (snapshot.attempts) setAdmissionAttempts(snapshot.attempts);
     } catch (e) {
+      if (activeAccountRef.current !== requestAccountID) return;
       const msg = e instanceof Error ? e.message : String(e);
       if (!hasDataRef.current) setError(msg);
       else setPollFailed(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (activeAccountRef.current === requestAccountID) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [getAccessToken]);
+  }, [accountID, getAccessToken]);
 
-  // When not authenticated, drop the first-load spinner (no fetch will run).
+  // Clear account-scoped state on every identity transition. The return-value
+  // owner gate below also hides it during the render before this effect runs.
   useEffect(() => {
-    if (!authenticated) setLoading(false);
-  }, [authenticated]);
+    hasDataRef.current = false;
+    setProvidersResp(null);
+    setSummary(null);
+    setAdmissionAttempts([]);
+    setDataAccountID(null);
+    setLoading(accountID !== null);
+    setRefreshing(false);
+    setError(null);
+    setPollFailed(false);
+    setLastUpdatedAt(null);
+  }, [accountID]);
 
   // Poll only while the tab is visible; pause in the background (perf F6).
-  useVisiblePolling(fetchAll, REFRESH_MS, authenticated);
+  useVisiblePolling(fetchAll, REFRESH_MS, accountID !== null);
+
+  const ownsVisibleData =
+    accountID !== null && dataAccountID === accountID;
 
   return {
     ready,
     authenticated,
     login,
-    providersResp,
-    summary,
-    ctx: DEFAULT_CTX_FROM(providersResp),
+    providersResp: ownsVisibleData ? providersResp : null,
+    summary: ownsVisibleData ? summary : null,
+    admissionAttempts: ownsVisibleData ? admissionAttempts : [],
+    ctx: DEFAULT_CTX_FROM(ownsVisibleData ? providersResp : null),
     loading,
     refreshing,
     error,

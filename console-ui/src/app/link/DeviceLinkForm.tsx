@@ -112,14 +112,16 @@ export function DeviceLinkForm() {
           </svg>
         </div>
         <h2 className="text-2xl font-semibold text-ink mb-2">
-          Device Linked!
+          Device linked
         </h2>
         <p className="text-text-secondary">
-          Your provider is now connected to your account. Earnings will be
-          credited automatically.
+          Your Mac is connected to your account. Start the provider on the Mac;
+          it will come online after it meets the network&apos;s hardware and
+          attestation requirements.
         </p>
         <p className="text-text-tertiary text-sm mt-4">
-          You can close this page.
+          Run <code className="font-mono">darkbloom start</code>, then check the
+          provider dashboard.
         </p>
       </div>
     );

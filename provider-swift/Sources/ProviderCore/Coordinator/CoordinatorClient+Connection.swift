@@ -12,6 +12,18 @@ extension CoordinatorClient {
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
+            if let rejection = terminalAdmissionRejection {
+                logger.warning(
+                    "Provider onboarding is quiesced: \(rejection.reason). Rechecking coordinator policy in 15 minutes; `darkbloom restart` retries immediately."
+                )
+                do {
+                    try await taskSleep(.seconds(15 * 60))
+                } catch {
+                    break
+                }
+                terminalAdmissionRejection = nil
+                continue
+            }
             logger.info(.connectingToCoordinator)
             logger.info("Coordinator URL: \(self.config.url)")
 

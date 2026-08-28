@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -53,7 +54,7 @@ type TrustLevel string
 const (
 	TrustNone       TrustLevel = "none"        // No attestation provided
 	TrustSelfSigned TrustLevel = "self_signed" // Attestation signed by provider's own key
-	TrustHardware   TrustLevel = "hardware"    // MDM + MDA + SE key bound to Apple-verified hardware
+	TrustHardware   TrustLevel = "hardware"    // live SE proof + independent MDM posture; admission adds MDA/code gates
 )
 
 const BackendMLXSwift = "mlx-swift"
@@ -740,19 +741,34 @@ type RequestTiming struct {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID                string
-	Hardware          protocol.Hardware
-	Models            []protocol.ModelInfo
-	Backend           string
-	Location          *store.ProviderLocation
-	PublicKey         string // base64-encoded X25519 public key for E2E encryption
-	Attested          bool   // true if attestation was verified successfully
-	AttestationResult *attestation.VerificationResult
-	TrustLevel        TrustLevel             // attestation trust level
-	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
-	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
-	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
+	ID                   string
+	Hardware             protocol.Hardware
+	Models               []protocol.ModelInfo
+	Backend              string
+	Location             *store.ProviderLocation
+	PublicKey            string // base64-encoded X25519 public key for E2E encryption
+	Attested             bool   // true if attestation was verified successfully
+	AttestationResult    *attestation.VerificationResult
+	TrustLevel           TrustLevel             // attestation trust level
+	MDAVerified          bool                   // true if Apple Device Attestation cert chain verified
+	MDACertChain         [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
+	MDAResult            *attestation.MDAResult // parsed OIDs from Apple cert
+	MDAFreshnessVerified bool                   // certificate nonce matched this SE key; not current-connection recency
+	// HardwareAdmitted is the coordinator-owned onboarding decision for this
+	// physical machine. It is independent from TrustLevel: owner self-routing may
+	// relax trust, but it must never bypass an enforced new-machine hardware gate.
+	HardwareAdmitted bool
+	// HardwareAdmissionRevoked is an operator-controlled, mode-independent
+	// routing fence. Rolling threshold enforcement back must never resurrect a
+	// machine whose durable admission was explicitly revoked.
+	HardwareAdmissionRevoked bool
+	// HardwareAdmissionStateUnavailable fails routing closed when the coordinator
+	// cannot verify the revocation ledger for an identified machine.
+	HardwareAdmissionStateUnavailable bool
+	// persistenceEnabled is false while an enforce-mode registration is still
+	// awaiting coordinator hardware admission. Rejected machines must not create
+	// provider/session rows that could later be mistaken for legacy onboarding.
+	persistenceEnabled bool
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
@@ -862,6 +878,10 @@ type Provider struct {
 	// lastPersisted tracks when this provider was last written to the store.
 	// Used by PersistProviderThrottled to avoid hammering Postgres on every heartbeat.
 	lastPersisted time.Time
+	// persistMu serializes full provider-record snapshots through store commit.
+	// Without it, an older asynchronous snapshot can land after a synchronous
+	// trust transition and restore stale durable state.
+	persistMu sync.Mutex
 
 	// lastReputationPersisted tracks when this provider's reputation was last
 	// written to the store from the heartbeat path. Used by
@@ -1057,24 +1077,83 @@ func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Unlock()
 }
 
-// GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust
-// unless it is currently untrusted, returning whether it granted. The status
-// check and the trust write happen under a SINGLE lock on purpose: a separate
-// GetStatus() check followed by SetAttested(hardware) is a TOCTOU — a concurrent
-// hard untrust from the challenge loop (binary-hash change / SIP disabled /
-// signature failure) landing in the gap would leave the registry in
-// hardware/untrusted and push a false "online" to the provider. Callers must only
-// run the rest of the grant (sendTrustStatus / persist / MDA) when this returns
-// true. Mirrors the SetMDAProofIfHardware single-lock pattern.
-func (p *Provider) GrantHardwareIfNotUntrusted() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// grantHardwareIfNotUntrustedLocked closes the status-check/trust-write TOCTOU.
+// Registry-level callers also verify exact connection membership before use.
+func (p *Provider) grantHardwareIfNotUntrustedLocked() bool {
 	if p.Status == StatusUntrusted {
 		return false
 	}
 	p.Attested = true
 	p.TrustLevel = TrustHardware
 	return true
+}
+
+// GrantProviderHardwareIfCurrent promotes only the exact registered connection.
+// Holding r.mu through the provider mutation serializes this with Disconnect and
+// prevents an asynchronous MDM callback from reviving or persisting a stale
+// provider pointer after a replacement connection has taken the same ID.
+func (r *Registry) GrantProviderHardwareIfCurrent(p *Provider) bool {
+	granted, _ := r.GrantProviderHardwareAndPersistIfCurrent(
+		context.Background(), p, false)
+	return granted
+}
+
+// GrantProviderHardwareAndPersistIfCurrent optionally makes the trust row
+// durable while holding this provider ID's lifecycle lock. Disconnect and
+// replacement wait on the same keyed lock, so database I/O never holds the
+// global registry lock and a stale connection cannot overwrite its replacement.
+func (r *Registry) GrantProviderHardwareAndPersistIfCurrent(
+	ctx context.Context,
+	p *Provider,
+	persist bool,
+) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	if persist {
+		unlockPersistence := r.lockProviderPersistence(p.ID)
+		defer unlockPersistence()
+		p.persistMu.Lock()
+		defer p.persistMu.Unlock()
+	}
+	r.mu.RLock()
+	current, ok := r.providers[p.ID]
+	if !ok || current != p {
+		r.mu.RUnlock()
+		return false, nil
+	}
+	p.mu.Lock()
+	previousTrust := p.TrustLevel
+	previousAttested := p.Attested
+	granted := p.grantHardwareIfNotUntrustedLocked()
+	p.mu.Unlock()
+	r.mu.RUnlock()
+	if !granted || !persist {
+		return granted, nil
+	}
+
+	rollback := func() {
+		p.mu.Lock()
+		if p.TrustLevel == TrustHardware {
+			p.TrustLevel = previousTrust
+			p.Attested = previousAttested
+		}
+		p.mu.Unlock()
+	}
+	if r.store == nil {
+		rollback()
+		return false, fmt.Errorf("registry: provider store is not configured")
+	}
+	rec, _, enabled := providerRecordSnapshot(p, false)
+	if !enabled {
+		rollback()
+		return false, fmt.Errorf("registry: provider persistence is disabled")
+	}
+	if err := r.store.UpsertProvider(ctx, rec); err != nil {
+		rollback()
+		return false, err
+	}
+	return true, nil
 }
 
 // GetTrustLevel returns the current trust level (thread-safe).
@@ -1107,71 +1186,92 @@ func (p *Provider) GetMDMFailureReason() string {
 	return p.MDMFailureReason
 }
 
-// SetMDAProofIfHardware atomically attaches a late-arriving Apple Device
-// Attestation proof to the provider IFF it currently holds hardware trust and
-// the MDA serial matches the attested serial. Returns true if attached.
-//
-// The trust check and the field writes happen under a single p.mu acquisition on
-// purpose: doing them separately (read GetTrustLevel, then write the fields) is a
-// TOCTOU — a concurrent SetAttested demotion between the check and the write
-// would attach MDA proof to a now-self_signed connection, re-creating the
-// "mda_verified while self_signed" drift. The single lock also closes the data
-// race with handleProviderAttestation, which reads these fields under p.mu.
-func (p *Provider) SetMDAProofIfHardware(certChain [][]byte, mdaResult *attestation.MDAResult) bool {
-	if mdaResult == nil {
+// SetMDAProofIfHardwareFreshForKey is the strict asynchronous/cached-proof path.
+// It verifies under the same lock that the provider still owns the exact SE key
+// whose nonce digest the caller checked, closing the key-rotation TOCTOU. This
+// correlates two proofs; it does not attest that the key resides on the device.
+func (p *Provider) SetMDAProofIfHardwareFreshForKey(
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	expectedSEPublicKey string,
+) bool {
+	if mdaResult == nil || !mdaResult.Valid || expectedSEPublicKey == "" {
 		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.TrustLevel != TrustHardware {
+	if p.TrustLevel != TrustHardware ||
+		p.AttestationResult == nil ||
+		!p.AttestationResult.Valid ||
+		p.AttestationResult.PublicKey != expectedSEPublicKey {
 		return false
 	}
-	if p.AttestationResult == nil || mdaResult.DeviceSerial != p.AttestationResult.SerialNumber {
+	if mdaResult.DeviceSerial != "" &&
+		!strings.EqualFold(
+			strings.TrimSpace(mdaResult.DeviceSerial),
+			strings.TrimSpace(p.AttestationResult.SerialNumber)) {
 		return false
 	}
-	p.MDAVerified = true
-	p.MDACertChain = certChain
-	p.MDAResult = mdaResult
+	p.attachMDAProofLocked(certChain, mdaResult, true)
 	return true
 }
 
-// SetMDAProofIfHardwareBound atomically attaches an Apple Device Attestation proof
-// IFF the provider currently holds hardware trust AND the proof binds to THIS
-// machine — either by SE-key freshness (seKeyBound, the FreshnessCode OID equals
-// SHA-256 of this connection's SE public key) OR by a matching attested serial.
-// Returns true if attached. Unlike SetMDAProofIfHardware (which requires a serial
-// match), this accepts an SE-key binding so a privacy-preserving attestation that
-// omits the serial can still be reused. Same single-lock TOCTOU/race rationale as
-// SetMDAProofIfHardware.
-func (p *Provider) SetMDAProofIfHardwareBound(certChain [][]byte, mdaResult *attestation.MDAResult, seKeyBound bool) bool {
-	if mdaResult == nil {
+func (r *Registry) SetProviderMDAProofIfHardwareFreshForKey(
+	p *Provider,
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	expectedSEPublicKey string,
+) bool {
+	if p == nil {
 		return false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.TrustLevel != TrustHardware {
+	r.mu.RLock()
+	current, ok := r.providers[p.ID]
+	if !ok || current != p {
+		r.mu.RUnlock()
 		return false
 	}
-	serialOK := mdaResult.DeviceSerial != "" && p.AttestationResult != nil &&
-		mdaResult.DeviceSerial == p.AttestationResult.SerialNumber
-	if !seKeyBound && !serialOK {
-		return false
-	}
+	attached := p.SetMDAProofIfHardwareFreshForKey(
+		certChain, mdaResult, expectedSEPublicKey)
+	r.mu.RUnlock()
+	return attached
+}
+
+func (p *Provider) attachMDAProofLocked(
+	certChain [][]byte,
+	mdaResult *attestation.MDAResult,
+	freshnessVerified bool,
+) {
 	p.MDAVerified = true
 	p.MDACertChain = certChain
 	p.MDAResult = mdaResult
-	p.SEKeyBound = seKeyBound
-	return true
+	p.MDAFreshnessVerified = freshnessVerified
 }
 
 // StagedMDAChain returns the durable MDA cert chain restored from the store for
 // this reconnect (nil if none). Thread-safe. The chain is a CANDIDATE only: the
-// caller must re-verify it against Apple's root and re-bind it to the live SE key
+// caller must re-verify it against Apple's root and correlate it to the live SE key
 // before trusting it (see api.attachCachedMDAProof).
 func (p *Provider) StagedMDAChain() [][]byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.restoredMDAChain
+}
+
+// StageMDAChain keeps a verified, live-key-bound MDA chain until hardware trust
+// is available. This closes the valid delivery order where Device Attestation
+// arrives before the late SecurityInfo response that grants hardware trust.
+func (p *Provider) StageMDAChain(chain [][]byte) {
+	if len(chain) == 0 {
+		return
+	}
+	staged := make([][]byte, len(chain))
+	for i := range chain {
+		staged[i] = append([]byte(nil), chain[i]...)
+	}
+	p.mu.Lock()
+	p.restoredMDAChain = staged
+	p.mu.Unlock()
 }
 
 // StageMDAChainFromJSON stages a JSON-encoded ([][]byte) MDA cert chain — recovered
@@ -1663,6 +1763,15 @@ type Registry struct {
 	modelAliases map[string]AliasTarget
 
 	store store.Store
+	// providerPersistenceLocks serialize durable writes with connection
+	// replacement for one provider ID without holding the global registry lock
+	// across database I/O.
+	providerPersistenceLocksMu sync.Mutex
+	providerPersistenceLocks   map[string]*providerPersistenceLock
+	// serialOwners fences duplicate live connections. Claims are updated under
+	// r.mu so simultaneous reconnects cannot evict each other in both directions.
+	serialOwners         map[string]string
+	verifiedSerialOwners map[string]string
 
 	tpsRegistry *TPSRegistry
 
@@ -1671,6 +1780,10 @@ type Registry struct {
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
+	// hardwareAdmissionEnforced turns HardwareAdmitted into a mandatory,
+	// non-relaxable routing/rewards/warming gate. Shadow/disabled policies leave
+	// it false while still evaluating and recording decisions in the API layer.
+	hardwareAdmissionEnforced atomic.Bool
 
 	// pendingModelLoads tracks provider-model pairs that have been sent a
 	// load_model command and are awaiting completion, or are cooling down
@@ -1877,6 +1990,8 @@ type modelLoadAction struct {
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
 		providers:                      make(map[string]*Provider),
+		serialOwners:                   make(map[string]string),
+		verifiedSerialOwners:           make(map[string]string),
 		queue:                          NewRequestQueueFromEnv(),
 		MinTrustLevel:                  TrustHardware,
 		tpsRegistry:                    NewTPSRegistry(),
@@ -2860,6 +2975,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerHardwareEligibleLocked(p) &&
 			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
@@ -3098,6 +3214,18 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 // providers that connect before a model is promoted become routable immediately
 // after the catalog is updated.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, true)
+}
+
+// RegisterPendingHardwareAdmission adds a connection behind the mandatory
+// routing gate without enabling heartbeat persistence or a provider session.
+// Finalization checkpoints the identity proof, commits the serial decision,
+// then calls CommitProviderHardwareAdmission.
+func (r *Registry) RegisterPendingHardwareAdmission(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	return r.register(id, conn, msg, false)
+}
+
+func (r *Registry) register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage, persistenceEnabled bool) *Provider {
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
 	// DecodeTPS=1e9 would otherwise starve all other providers.
@@ -3174,6 +3302,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
 		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
 		TrustLevel:                  TrustNone,
+		HardwareAdmitted:            persistenceEnabled && !r.hardwareAdmissionEnforced.Load(),
+		persistenceEnabled:          persistenceEnabled,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
 		ChallengeVerifiedSIP:        false, // starts false; set true by attestation challenge handler after SIP check
@@ -3194,6 +3324,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// into a new connection" invariant explicit and robust to future Provider reuse.
 	p.ResetChallengeSettled()
 
+	unlockPersistence := r.lockProviderPersistence(id)
 	r.mu.Lock()
 	r.providers[id] = p
 	r.onlineCount.Add(1)
@@ -3206,11 +3337,12 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// old register-time clear was the reconnect exploit — a churning zombie
 	// wiped its record every session.
 	r.mu.Unlock()
+	unlockPersistence()
 
 	// Open a session row for this connection (async; durable uptime history).
 	// serial/account are empty here (set after attestation/linking) and are
 	// backfilled by the throttled TouchProviderSession in persistProviderNow.
-	if r.store != nil {
+	if r.store != nil && persistenceEnabled {
 		sessionID := p.ID
 		saferun.Go(r.logger, "registry.openSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3232,7 +3364,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	)
 
 	// Persist provider record to store (async).
-	r.persistProviderNow(p)
+	if persistenceEnabled {
+		r.persistProviderNow(p)
+	}
 
 	return p
 }
@@ -3252,33 +3386,95 @@ func CloneStringMap(in map[string]string) map[string]string {
 // serial number as the given provider, except the given provider itself.
 // This prevents multiple WebSocket connections from the same physical machine
 // from competing for the same MLX-Swift backend on the host.
-func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
-	if serial == "" {
+func normalizeProviderSerial(serial string) string {
+	return strings.ToUpper(strings.TrimSpace(serial))
+}
+
+func (r *Registry) DisconnectDuplicatesBySerial(keep *Provider, serial string) {
+	serial = normalizeProviderSerial(serial)
+	if keep == nil || serial == "" {
 		return
 	}
+	keepID := keep.ID
 
-	var toEvict []string
-
-	r.mu.RLock()
+	var toEvict []*Provider
+	r.mu.Lock()
+	if current, exists := r.providers[keepID]; !exists || current != keep {
+		r.mu.Unlock()
+		return
+	}
+	if previous := r.serialOwners[serial]; previous != "" && previous != keepID {
+		if prior, exists := r.providers[previous]; exists {
+			toEvict = append(toEvict, prior)
+		}
+	}
+	r.serialOwners[serial] = keepID
 	for id, p := range r.providers {
 		if id == keepID {
 			continue
 		}
-		if p.AttestationResult != nil && p.AttestationResult.SerialNumber == serial {
-			toEvict = append(toEvict, id)
+		p.mu.Lock()
+		matches := p.AttestationResult != nil &&
+			normalizeProviderSerial(p.AttestationResult.SerialNumber) == serial
+		p.mu.Unlock()
+		if matches && !slices.Contains(toEvict, p) {
+			toEvict = append(toEvict, p)
 		}
 	}
-	r.mu.RUnlock()
+	r.mu.Unlock()
 
-	for _, id := range toEvict {
+	for _, duplicate := range toEvict {
 		r.logger.Warn("evicting duplicate provider from same device",
-			"evicted_id", id,
+			"evicted_id", duplicate.ID,
 			"kept_id", keepID,
 			"serial", serial,
 		)
 		// Disconnect closes the socket itself.
-		r.Disconnect(id)
+		r.DisconnectProvider(duplicate)
 	}
+}
+
+// ClaimProviderSerial is the enforce-mode identity fence. The first
+// code-attested live connection owns a serial until it disconnects; concurrent
+// later claimants evict only themselves, so stale eviction lists can never make
+// two verified sessions disconnect each other.
+func (r *Registry) ClaimProviderSerial(provider *Provider, serial string) bool {
+	serial = normalizeProviderSerial(serial)
+	if provider == nil || provider.ID == "" || serial == "" {
+		return false
+	}
+	providerID := provider.ID
+	var duplicates []*Provider
+	r.mu.Lock()
+	if current, exists := r.providers[providerID]; !exists || current != provider {
+		r.mu.Unlock()
+		return false
+	}
+	if owner := r.verifiedSerialOwners[serial]; owner != "" && owner != providerID {
+		if _, live := r.providers[owner]; live {
+			r.mu.Unlock()
+			r.DisconnectProvider(provider)
+			return false
+		}
+	}
+	r.verifiedSerialOwners[serial] = providerID
+	for id, p := range r.providers {
+		if id == providerID {
+			continue
+		}
+		p.mu.Lock()
+		matches := p.AttestationResult != nil &&
+			normalizeProviderSerial(p.AttestationResult.SerialNumber) == serial
+		p.mu.Unlock()
+		if matches {
+			duplicates = append(duplicates, p)
+		}
+	}
+	r.mu.Unlock()
+	for _, duplicate := range duplicates {
+		r.DisconnectProvider(duplicate)
+	}
+	return true
 }
 
 // RemoveProviderBySerial reports whether any currently-connected provider
@@ -4139,9 +4335,29 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	r.disconnect(id, nil)
+}
+
+// DisconnectProvider removes p only when it is still the exact live connection
+// registered under its ID. Async admission and attestation callbacks must use
+// this form so a stale callback cannot evict a replacement connection.
+func (r *Registry) DisconnectProvider(p *Provider) {
+	if p == nil {
+		return
+	}
+	r.disconnect(p.ID, p)
+}
+
+func (r *Registry) disconnect(id string, expected *Provider) {
 	var disconnectedModels []string
+	var persistenceEnabled bool
+	unlockPersistence := r.lockProviderPersistence(id)
+	defer unlockPersistence()
 	r.mu.Lock()
 	p, ok := r.providers[id]
+	if ok && expected != nil && p != expected {
+		ok = false
+	}
 	if ok {
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
@@ -4152,6 +4368,16 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		persistenceEnabled = p.persistenceEnabled
+		if p.AttestationResult != nil {
+			serial := normalizeProviderSerial(p.AttestationResult.SerialNumber)
+			if serial != "" && r.serialOwners[serial] == id {
+				delete(r.serialOwners, serial)
+			}
+			if serial != "" && r.verifiedSerialOwners[serial] == id {
+				delete(r.verifiedSerialOwners, serial)
+			}
+		}
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
 		// cooldowns, health ejection) keys by the STABLE identity when one is
@@ -4270,7 +4496,7 @@ func (r *Registry) Disconnect(id string) {
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
-	if r.store != nil {
+	if r.store != nil && persistenceEnabled {
 		saferun.Go(r.logger, "registry.closeSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -4338,7 +4564,17 @@ func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
 // non-recoverable: the provider stays untrusted until it reconnects and
 // re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.markUntrusted(providerID, false)
+	r.markUntrusted(providerID, nil, false)
+}
+
+// MarkProviderUntrustedIfCurrent hard-deroutes only the exact live connection.
+// Delayed MDM/MDA callbacks must use this form so a stale connection cannot
+// mark a same-ID replacement untrusted.
+func (r *Registry) MarkProviderUntrustedIfCurrent(provider *Provider) bool {
+	if provider == nil {
+		return false
+	}
+	return r.markUntrusted(provider.ID, provider, false)
 }
 
 // MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
@@ -4352,7 +4588,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 // model hash and runtime before RecordChallengeSuccess is reached, so using it
 // as the recovery trigger is safe.
 func (r *Registry) MarkUntrustedTransient(providerID string) {
-	r.markUntrusted(providerID, true)
+	r.markUntrusted(providerID, nil, true)
 }
 
 // markUntrusted is the shared implementation. recoverable=true marks the untrust
@@ -4366,12 +4602,16 @@ func (r *Registry) MarkUntrustedTransient(providerID string) {
 //   - already untrusted + transient (recoverable=true): leave the flag as-is, so
 //     a transient timeout can never *upgrade* a hard deroute to recoverable
 //     (matters for an in-flight challenge timeout that races a hard deroute).
-func (r *Registry) markUntrusted(providerID string, recoverable bool) {
+func (r *Registry) markUntrusted(
+	providerID string,
+	expected *Provider,
+	recoverable bool,
+) bool {
 	r.mu.Lock()
 	p, ok := r.providers[providerID]
-	if !ok {
+	if !ok || (expected != nil && p != expected) {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	hook := r.onHardUntrust // capture under r.mu (race-safe)
 
@@ -4417,6 +4657,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 			hook(seKey)
 		}
 	}
+	return true
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -4634,6 +4875,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
+		hardwareAdmitted := r.providerHardwareEligibleLocked(p)
 		attested := p.Attested
 		attestResult := p.AttestationResult
 		privateReady := r.providerSupportsPrivateTextLocked(p)
@@ -4645,7 +4887,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		copy(models, p.Models)
 		p.mu.Unlock()
 
-		if status == StatusOffline || status == StatusUntrusted {
+		if status == StatusOffline || status == StatusUntrusted || !hardwareAdmitted {
 			continue
 		}
 		// Private-only providers serve only their owner's self-route traffic, so
@@ -4726,6 +4968,7 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 		eligible := p.AccountID == accountID &&
 			p.Status != StatusOffline &&
 			p.Status != StatusUntrusted &&
+			r.providerHardwareEligibleLocked(p) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&
@@ -4816,6 +5059,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
+		hardwareAdmitted := r.providerHardwareEligibleLocked(p)
 		privateReady := r.providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
@@ -4835,7 +5079,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 			continue
 		}
 		// Apply the same routing-eligibility gates as ListModels.
-		if status == StatusOffline || status == StatusUntrusted {
+		if status == StatusOffline || status == StatusUntrusted || !hardwareAdmitted {
 			continue
 		}
 		if !r.trustMeetsMinimum(trust) || !privateReady {
@@ -4965,9 +5209,23 @@ func (r *Registry) modelProviderDec(model string) {
 	}
 }
 
-// OnlineCount returns the number of online providers.
+// OnlineCount returns connected providers that can pass the admission fence.
+// The legacy atomic counter tracks connection/status transitions, but admission
+// can change independently; deriving this gauge prevents pending or revoked
+// providers from being reported as usable fleet capacity.
 func (r *Registry) OnlineCount() int64 {
-	return r.onlineCount.Load()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var count int64
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerHardwareEligibleLocked(p) {
+			count++
+		}
+		p.mu.Unlock()
+	}
+	return count
 }
 
 // CodeAttestationCoverage reports how many currently online (non-offline,
@@ -4981,7 +5239,8 @@ func (r *Registry) CodeAttestationCoverage() (codeAttested, online int) {
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		if p.Status != StatusOffline && p.Status != StatusUntrusted {
+		if p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			r.providerHardwareEligibleLocked(p) {
 			online++
 			if p.CodeAttested {
 				codeAttested++
@@ -4992,16 +5251,28 @@ func (r *Registry) CodeAttestationCoverage() (codeAttested, online int) {
 	return codeAttested, online
 }
 
-// ModelProviderSnapshot returns a snapshot of model_id -> provider count.
+// ModelProviderSnapshot returns admitted online providers per model.
 func (r *Registry) ModelProviderSnapshot() map[string]int64 {
-	r.modelProvidersMu.Lock()
-	snap := make(map[string]int64, len(r.modelProviders))
-	for model, c := range r.modelProviders {
-		if v := c.Load(); v > 0 {
-			snap[model] = v
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snap := make(map[string]int64)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
+			!r.providerHardwareEligibleLocked(p) {
+			p.mu.Unlock()
+			continue
 		}
+		seen := make(map[string]struct{}, len(p.Models))
+		for _, model := range p.Models {
+			if _, duplicate := seen[model.ID]; duplicate {
+				continue
+			}
+			seen[model.ID] = struct{}{}
+			snap[model.ID]++
+		}
+		p.mu.Unlock()
 	}
-	r.modelProvidersMu.Unlock()
 	return snap
 }
 

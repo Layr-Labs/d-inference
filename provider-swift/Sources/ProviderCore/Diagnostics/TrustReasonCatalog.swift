@@ -16,7 +16,46 @@ import Foundation
 public enum TrustReasonCatalog {
     /// Maps a trust update to operator advice. `level`/`status` give context
     /// (e.g. self_signed/online means "online but not earning").
-    public static func advice(level: String, status: String, reason: String) -> DiagnosticAdvice {
+    public static func advice(
+        level: String,
+        status: String,
+        reason: String,
+        reasonCode: String? = nil
+    ) -> DiagnosticAdvice {
+        switch reasonCode {
+        case "hardware_below_minimum":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "this Mac does not meet the network requirements for new providers."
+                    : reason,
+                fix: "use `darkbloom status` to review the reported hardware and current minimums. Join the availability list at https://console.darkbloom.dev/provider-waitlist. Existing admitted Macs remain grandfathered.")
+        case "hardware_identity_required", "hardware_identity_missing":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator requires an attested machine identity before onboarding."
+                    : reason,
+                fix: "run `darkbloom doctor`, complete enrollment, then `darkbloom restart`.")
+        case "hardware_attestation_stale":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator requires a fresh hardware attestation before onboarding."
+                    : reason,
+                fix: "update the provider, keep the Mac awake, then restart so it can complete a fresh attestation.")
+        case "hardware_admission_revoked":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "a network operator revoked this machine's provider admission."
+                    : reason,
+                fix: "threshold changes cannot restore a revoked machine; contact Darkbloom support if this was unexpected.")
+        case "admission_state_unavailable":
+            return DiagnosticAdvice(
+                message: reason.isEmpty
+                    ? "the coordinator could not verify hardware admission state."
+                    : reason,
+                fix: "the daemon retries automatically; no hardware or enrollment change is required.")
+        default:
+            break
+        }
         // Prefix-matched reasons (they carry a variable error suffix).
         if reason.hasPrefix("signature verification failed") {
             return DiagnosticAdvice(
@@ -43,6 +82,10 @@ public enum TrustReasonCatalog {
             return DiagnosticAdvice(
                 message: "hardware-trusted and eligible for traffic.",
                 fix: nil)
+        case "MDM verification passed; awaiting Apple device identity and code attestation":
+            return DiagnosticAdvice(
+                message: "MDM posture passed, but first-time provider admission is still waiting for Apple device identity and official-code attestation. The machine receives no traffic yet.",
+                fix: "keep the Mac awake and signed in so APNs and Apple Device Attestation can complete.")
         case "recovered after transient deroute":
             return DiagnosticAdvice(
                 message: "recovered after a temporary derouting (a brief network/challenge blip).",
@@ -94,8 +137,11 @@ public enum TrustReasonCatalog {
     /// hardware/online = pass; self_signed = warn (online but not earning);
     /// untrusted/offline = fail.
     public static func level(trustLevel: String, status: String) -> DiagnosticLevel {
-        if status == "untrusted" || status == "offline" {
+        if status == "untrusted" || status == "offline" || status == "onboarding_rejected" {
             return .fail
+        }
+        if status == "admission_pending" {
+            return .warn
         }
         switch trustLevel {
         case "hardware", "mda_verified":

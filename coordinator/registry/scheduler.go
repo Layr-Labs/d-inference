@@ -1026,6 +1026,10 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 			p.mu.Unlock()
 			continue
 		}
+		if !r.providerHardwareEligibleLocked(p) {
+			p.mu.Unlock()
+			continue
+		}
 		online++
 		// Owner-servability (not bare advertisement) so the self-route error
 		// messaging matches what routing would actually admit: an owned box

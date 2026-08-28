@@ -1,7 +1,7 @@
 /**
  * One-time migration of localStorage keys from eigeninference to darkbloom.
- * Called at module scope from ThemeProvider (outermost client component) so it
- * runs before any component reads localStorage.
+ * Called by ThemeProvider's state initializer so it runs before descendants
+ * read localStorage.
  */
 
 const KEY_MAP: [string, string][] = [
@@ -17,13 +17,16 @@ let migrated = false;
 
 export function migrateStorage() {
   if (migrated || typeof window === "undefined") return;
-  migrated = true;
-
-  for (const [oldKey, newKey] of KEY_MAP) {
-    const oldVal = localStorage.getItem(oldKey);
-    if (oldVal !== null && localStorage.getItem(newKey) === null) {
-      localStorage.setItem(newKey, oldVal);
-      localStorage.removeItem(oldKey);
+  try {
+    for (const [oldKey, newKey] of KEY_MAP) {
+      const oldVal = localStorage.getItem(oldKey);
+      if (oldVal !== null && localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, oldVal);
+        localStorage.removeItem(oldKey);
+      }
     }
+    migrated = true;
+  } catch {
+    // Storage is optional. Sandboxed/private contexts may deny all access.
   }
 }

@@ -222,6 +222,9 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 
 	out := make([]candidate, 0)
 	for _, p := range e.reg.ListProviders() {
+		if !p.HardwareAdmitted {
+			continue
+		}
 		// Gate 1: attested + trust floor.
 		if !p.Attested || !e.reg.TrustMeetsMinimum(p.TrustLevel) {
 			continue

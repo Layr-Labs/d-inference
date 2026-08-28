@@ -187,19 +187,21 @@ escape hatch. It is not.
 - MDA rides the **same live MicroMDM → APNs command channel** as SecurityInfo
   (it's a `DeviceInformation` command). It is subject to the same APNs delivery
   constraints, so it cannot bypass an MDM/APNs throttle.
-- Its purpose is **identity + anti-relay**: Apple signs a cert chain binding the
-  device to genuine hardware, and the SE-key hash is carried as the attestation
-  nonce (embedded as FreshnessCode, OID `1.2.840.113635.100.8.11.1`) so the SE
-  key is cryptographically bound to *this* machine. That stops a relay attack
-  where one machine answers attestation on behalf of another.
+- Its purpose is **device identity + request freshness**: Apple signs a device
+  certificate chain, and the selected SE-key digest is carried as the
+  attestation nonce (embedded as FreshnessCode, OID
+  `1.2.840.113635.100.8.11.1`). The match prevents cached proof reuse across
+  provider-key rotation. It does not attest key residence or stop a cooperating
+  enrolled Mac from relaying a caller-selected nonce for another machine.
 
 So MDA strengthens *who* a provider is; it does not make trust *more reliable*
 to obtain. Don't reach for it to solve an APNs-delivery problem — the mitigation
 for delivery flakiness is the bounded in-connection retry (§2) plus the durable
 MDA reuse and trust-reuse fast-skip (§3), not extra live commands.
 
-**SIP / Secure Boot posture** comes Apple-signed from SecurityInfo (live). (The
-removed ACME leg would have carried the same posture evidence in cert
+**SIP / Secure Boot posture** comes from a solicited live SecurityInfo response
+on the managed-device channel; it is not part of the MDA certificate signature.
+(The removed ACME leg would have carried posture evidence in certificate
 extensions, OIDs `1.2.840.113635.100.8.13.*` — see §3 if that idea is ever
 revived.)
 

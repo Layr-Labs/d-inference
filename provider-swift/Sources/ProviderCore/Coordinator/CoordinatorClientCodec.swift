@@ -15,7 +15,7 @@ public enum CoordinatorClientCodec {
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
-    ) -> ProviderMessage {
+    ) throws -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
         let effectiveToken = apnsDeviceTokenOverride ?? config.apnsDeviceToken
@@ -46,7 +46,7 @@ public enum CoordinatorClientCodec {
             publicKey: config.publicKey,
             encryptedResponseChunks: true,
             walletAddress: config.walletAddress,
-            attestation: config.attestation,
+            attestation: try config.registrationAttestation(),
             authToken: config.authToken,
             pythonHash: config.runtimeHashes?.pythonHash,
             runtimeHash: config.runtimeHashes?.runtimeHash,
@@ -77,7 +77,7 @@ public enum CoordinatorClientCodec {
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
-            registrationMessage(
+            try registrationMessage(
                 from: config,
                 models: models,
                 version: version,

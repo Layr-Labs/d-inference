@@ -91,7 +91,11 @@ func TestCORSPreflight(t *testing.T) {
 func TestCORSPublicEndpointsAllowAnyOrigin(t *testing.T) {
 	srv, _ := testServer(t)
 
-	for _, path := range []string{"/v1/models/catalog", "/v1/pricing"} {
+	for _, path := range []string{
+		"/v1/models/catalog",
+		"/v1/pricing",
+		"/v1/provider-requirements",
+	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, req)

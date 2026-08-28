@@ -121,11 +121,14 @@ public enum CoordinatorEvent: Sendable {
     /// every change. Replaces the old push-driven migration ramp.
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
-    case trustStatus(trustLevel: String, status: String, reason: String)
+    case trustStatus(CoordinatorMessage.TrustStatus)
 }
 
 
 // MARK: - Configuration
+
+public typealias RegistrationAttestationProvider =
+    @Sendable () throws -> RawJSON?
 
 public struct CoordinatorClientConfig: Sendable {
     public let url: String
@@ -136,6 +139,7 @@ public struct CoordinatorClientConfig: Sendable {
     public let publicKey: String?
     public let walletAddress: String?
     public let attestation: RawJSON?
+    private let attestationProvider: RegistrationAttestationProvider?
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
@@ -159,6 +163,7 @@ public struct CoordinatorClientConfig: Sendable {
         publicKey: String? = nil,
         walletAddress: String? = nil,
         attestation: RawJSON? = nil,
+        attestationProvider: RegistrationAttestationProvider? = nil,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
@@ -175,6 +180,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.publicKey = publicKey
         self.walletAddress = walletAddress
         self.attestation = attestation
+        self.attestationProvider = attestationProvider
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
@@ -182,6 +188,13 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+    }
+
+    func registrationAttestation() throws -> RawJSON? {
+        if let attestationProvider {
+            return try attestationProvider()
+        }
+        return attestation
     }
 }
 

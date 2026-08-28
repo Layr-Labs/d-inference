@@ -1,7 +1,10 @@
 package mdm
 
 import (
+	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
@@ -26,4 +29,17 @@ func ReadConfig() Config {
 	}
 }
 
-func (c Config) Check() error { return nil }
+func (c Config) Check() error {
+	if strings.TrimSpace(c.URL) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(c.URL)
+	if err != nil || parsed.Host == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("MDM URL must be an absolute http or https URL")
+	}
+	if strings.TrimSpace(c.APIKey) == "" {
+		return fmt.Errorf("MDM API key is required when MDM URL is configured")
+	}
+	return nil
+}

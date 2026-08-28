@@ -28,7 +28,7 @@ vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({
     ready: true,
     authenticated: true,
-    user: null,
+    user: { id: "acct-test" },
     login: vi.fn(),
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
@@ -43,7 +43,7 @@ vi.mock("@/components/providers/PrivyClientProvider", () => ({
   useAuthContext: () => ({
     ready: true,
     authenticated: true,
-    user: null,
+    user: { id: "acct-test" },
     login: vi.fn(),
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),

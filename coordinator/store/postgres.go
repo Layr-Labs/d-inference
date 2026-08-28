@@ -202,6 +202,102 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
 
+		`CREATE TABLE IF NOT EXISTS hardware_admission_policies (
+			version BIGSERIAL PRIMARY KEY,
+			mode TEXT NOT NULL,
+			min_memory_gb INT NOT NULL DEFAULT 0,
+			min_memory_bandwidth_gbs INT NOT NULL DEFAULT 0,
+			min_fp16_millitflops INT NOT NULL DEFAULT 0,
+			catalog_version TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			grandfather_cutoff_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_state (
+			singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+			active_policy_version BIGINT REFERENCES hardware_admission_policies(version)
+		)`,
+		`INSERT INTO hardware_admission_state (singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING`,
+		`CREATE TABLE IF NOT EXISTS hardware_admissions (
+			serial_number TEXT PRIMARY KEY,
+			source TEXT NOT NULL,
+			policy_version BIGINT NOT NULL REFERENCES hardware_admission_policies(version),
+			hardware JSONB NOT NULL DEFAULT '{}'::jsonb,
+			admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			revoked_at TIMESTAMPTZ,
+			revoked_by TEXT NOT NULL DEFAULT '',
+			revocation_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revoked_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hardware_admissions ADD COLUMN IF NOT EXISTS revocation_reason TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_events (
+			id BIGSERIAL PRIMARY KEY,
+			serial_number TEXT NOT NULL,
+			action TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS hardware_admission_attempts (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			policy_version BIGINT NOT NULL,
+			mode TEXT NOT NULL,
+			decision TEXT NOT NULL,
+			reason_code TEXT NOT NULL DEFAULT '',
+			hardware JSONB NOT NULL DEFAULT '{}'::jsonb,
+			failed_checks JSONB NOT NULL DEFAULT '[]'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_account
+			ON hardware_admission_attempts(account_id, created_at DESC) WHERE account_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_serial
+			ON hardware_admission_attempts(serial_number, created_at DESC) WHERE serial_number != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_hardware_admission_attempts_created
+			ON hardware_admission_attempts(created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS provider_waitlist_signups (
+			email TEXT PRIMARY KEY,
+			chip TEXT NOT NULL,
+			memory_gb INT NOT NULL CHECK (memory_gb BETWEEN 4 AND 1024),
+			gpu_cores INT NOT NULL DEFAULT 0 CHECK (gpu_cores BETWEEN 0 AND 512),
+			other_machine TEXT NOT NULL DEFAULT '',
+			submitted_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`DO $$ BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'consented_at'
+			) AND NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'provider_waitlist_signups'
+				  AND column_name = 'submitted_at'
+			) THEN
+				ALTER TABLE provider_waitlist_signups
+					RENAME COLUMN consented_at TO submitted_at;
+			END IF;
+			ALTER TABLE provider_waitlist_signups
+				ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+			UPDATE provider_waitlist_signups
+				SET submitted_at = COALESCE(submitted_at, created_at, NOW())
+				WHERE submitted_at IS NULL;
+			ALTER TABLE provider_waitlist_signups
+				ALTER COLUMN submitted_at SET NOT NULL;
+		END $$`,
+		`ALTER TABLE provider_waitlist_signups
+			ADD COLUMN IF NOT EXISTS gpu_cores INT NOT NULL DEFAULT 0
+			CHECK (gpu_cores BETWEEN 0 AND 512)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_waitlist_signups_updated
+			ON provider_waitlist_signups(updated_at DESC)`,
+
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,

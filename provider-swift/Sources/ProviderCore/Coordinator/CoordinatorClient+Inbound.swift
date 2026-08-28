@@ -128,11 +128,8 @@ extension CoordinatorClient {
 
         case .trustStatus(let ts):
             logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
-            eventContinuation?.yield(.trustStatus(
-                trustLevel: ts.trustLevel,
-                status: ts.status,
-                reason: ts.reason
-            ))
+            eventContinuation?.yield(.trustStatus(ts))
+            applyTrustStatusPolicy(ts)
         }
     }
 

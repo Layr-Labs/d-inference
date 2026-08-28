@@ -36,6 +36,16 @@ const FIX_TABLE: Record<string, FixAction> = {
     label: "Start the provider",
     command: "darkbloom start",
   },
+  hardware_admission_revoked: {
+    kind: "guidance",
+    label: "Contact Darkbloom support",
+    note: "Only a network operator can restore an explicitly revoked machine.",
+  },
+  hardware_admission_pending: {
+    kind: "guidance",
+    label: "Keep the Mac awake",
+    note: "Routing begins automatically after code identity and Apple device attestation finish.",
+  },
   runtime_unverified: {
     kind: "command",
     label: "Reinstall",

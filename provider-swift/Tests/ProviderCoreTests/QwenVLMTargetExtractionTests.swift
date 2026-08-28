@@ -279,6 +279,30 @@ struct QwenVLMTargetExtractionTests {
         #expect(extraction.servingModel is Qwen35Model)
     }
 
+    @Test("dense Qwen uses the long-context solo prefill stripe")
+    func denseQwenUsesLongContextSoloStripe() throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+
+        let denseScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: dense,
+            environment: [:])
+        let moeScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: moe,
+            environment: [:])
+
+        #expect(
+            denseScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
+        #expect(
+            moeScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultSoloPrefillStripeTokens)
+    }
+
     @Test("benchmark resolution uses the same extracted Qwen target")
     func benchmarkServingModelUsesQwenExtraction() throws {
         let configData = qwenTargetFixtureJSON()

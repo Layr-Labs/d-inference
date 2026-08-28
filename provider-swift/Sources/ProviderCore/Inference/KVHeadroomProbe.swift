@@ -25,7 +25,7 @@ public enum KVHeadroomProbe {
     }
 
     /// Model-aware variant used by live hosts. `activationReserveBytes` is the
-    /// maximum required by the current resident/loading model set.
+    /// summed reserve for independently executable resident/loading models.
     public static func measuredLiveKVHeadroomBytes(
         activationReserveBytes: UInt64
     ) -> UInt64 {

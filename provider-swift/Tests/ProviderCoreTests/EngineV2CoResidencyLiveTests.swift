@@ -202,8 +202,10 @@ struct EngineV2CoResidencyLiveTests {
         } ?? UnifiedMemoryCap.resolvedActivationReserveBytes()
         let previewBudget = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes) + 15 * Self.gib,
-            activationReserveBytes: max(
-                sizingA.activationReserveBytes, gemmaActivationReserve),
+            activationReserveBytes: ModelActivationPolicy.fleetReserveBytes([
+                sizingA.activationReserveBytes,
+                gemmaActivationReserve,
+            ]),
             configReserveBytes: reserveBytes)
         let previewTargets = EngineV2KVSizing.resliceGrants(
             existing: [
@@ -304,8 +306,10 @@ struct EngineV2CoResidencyLiveTests {
         let grantB = await bridgeB.engineKVBytesCapacity()
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
-            activationReserveBytes: max(
-                sizingA.activationReserveBytes, sizingB.activationReserveBytes),
+            activationReserveBytes: ModelActivationPolicy.fleetReserveBytes([
+                sizingA.activationReserveBytes,
+                sizingB.activationReserveBytes,
+            ]),
             configReserveBytes: reserveBytes)
         let expected = EngineV2KVSizing.resliceGrants(
             existing: [

@@ -936,10 +936,10 @@ extension ProviderLoop {
     }
 
     /// Evict idle models (LRU order) until the candidate's weights plus the
-    /// maximum activation reserve across the surviving residency set fit, or no
+    /// summed activation reserve across the surviving residency set fit, or no
     /// more idle models remain. The requirement is recomputed after each
-    /// eviction: removing a conservative-profile model can lower the process
-    /// reserve as well as release its weights.
+    /// eviction: removing a resident profile lowers the process reserve as well
+    /// as releasing its weights.
     /// Throws if the memory target cannot be met after exhausting evictable models.
     ///
     /// `allowEviction: false` (startup preload) never considers a candidate:

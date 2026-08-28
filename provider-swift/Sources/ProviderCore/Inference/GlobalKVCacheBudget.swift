@@ -19,9 +19,9 @@ public actor GlobalKVCacheBudget {
     /// them; production uses the defaults so this budget and the load gate share
     /// one policy.
     private let capFraction: Double?
-    /// Updated by the model host to the maximum activation reserve required by
-    /// the current resident/loading model set. nil uses the conservative
-    /// ``UnifiedMemoryCap`` fallback.
+    /// Updated by the model host to the summed activation reserve required by
+    /// independently executable resident/loading models. nil uses the
+    /// conservative ``UnifiedMemoryCap`` fallback.
     private var activationReserveBytes: UInt64?
     /// Rejects stale cross-actor publications that resume out of order.
     private var activationReserveGeneration: UInt64 = 0

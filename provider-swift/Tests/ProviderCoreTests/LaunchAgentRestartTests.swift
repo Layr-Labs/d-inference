@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import ProviderCore
 
 /// Tests for the `LaunchAgent` restart error surface. The launchctl
@@ -52,6 +53,84 @@ struct LaunchAgentEnvironmentTests {
         let out = LaunchAgent.passthroughEnvironment(from: env)
         // Only the allowlisted opt-out is forwarded to the daemon; PATH/HOME are not.
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
+    }
+
+    /// The daemon must scan the same HuggingFace cache the installing shell
+    /// does. launchd gives the job an empty environment, so an operator's
+    /// `HF_HOME` reaches it only by being persisted into the plist.
+    @Test func forwardsHuggingFaceCacheLocation() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            ModelScanner.hfHubCacheEnvKey: "/Volumes/models/hf/hub",
+            ModelScanner.legacyHubCacheEnvKey: "/Volumes/models/legacy",
+            ModelScanner.hfHomeEnvKey: "/Volumes/models/hf",
+            ModelScanner.xdgCacheHomeEnvKey: "/Volumes/models/xdg",
+            "UNRELATED_SECRET": "excluded",
+        ])
+        // Every rung of the ladder must ride along: forwarding only some would
+        // have the daemon fall through to a different rung than the shell.
+        #expect(out[ModelScanner.hfHubCacheEnvKey] == "/Volumes/models/hf/hub")
+        #expect(out[ModelScanner.legacyHubCacheEnvKey] == "/Volumes/models/legacy")
+        #expect(out[ModelScanner.hfHomeEnvKey] == "/Volumes/models/hf")
+        #expect(out[ModelScanner.xdgCacheHomeEnvKey] == "/Volumes/models/xdg")
+        #expect(out["UNRELATED_SECRET"] == nil)
+    }
+
+    /// Forwarding a higher-priority variable but dropping a lower one would
+    /// silently move the daemon to another rung.
+    @Test func daemonResolvesTheSameRungAsTheShell() {
+        let home = URL(fileURLWithPath: "/Users/op", isDirectory: true)
+        let foreground = [
+            ModelScanner.hfHomeEnvKey: "/Volumes/models/hf",
+            ModelScanner.xdgCacheHomeEnvKey: "/Volumes/models/xdg",
+        ]
+        let launchd = LaunchAgent.passthroughEnvironment(from: foreground)
+
+        #expect(
+            ModelScanner.cacheDirectory(environment: launchd, homeDirectory: home).path
+                == ModelScanner.cacheDirectory(environment: foreground, homeDirectory: home).path
+        )
+        #expect(ModelScanner.resolveCache(environment: launchd, homeDirectory: home)
+            .environmentKey == ModelScanner.hfHomeEnvKey)
+    }
+
+    /// launchd runs the job with working directory `/`, so a RELATIVE value
+    /// must be absolutised on the way into the plist. Forwarded verbatim it
+    /// would resolve to `<shell cwd>/models/hf/hub` for the CLI and
+    /// `/models/hf/hub` for the daemon -- the exact split this passthrough
+    /// exists to close.
+    @Test func relativeCachePathIsAbsolutisedForTheDaemon() {
+        let home = URL(fileURLWithPath: "/Users/op", isDirectory: true)
+        let shellCwd = URL(fileURLWithPath: "/Users/op/work", isDirectory: true)
+        let foreground = [ModelScanner.hfHomeEnvKey: "models/hf"]
+
+        let launchd = LaunchAgent.passthroughEnvironment(
+            from: foreground, workingDirectory: shellCwd)
+
+        #expect(launchd[ModelScanner.hfHomeEnvKey] == "/Users/op/work/models/hf")
+
+        // Resolved in the daemon (cwd `/`) it must name the same directory the
+        // installing shell meant.
+        let daemonCache = ModelScanner.cacheDirectory(
+            environment: launchd, homeDirectory: home)
+        #expect(daemonCache.path == "/Users/op/work/models/hf/hub")
+    }
+
+    @Test func absoluteCachePathIsForwardedUnchanged() {
+        let launchd = LaunchAgent.passthroughEnvironment(
+            from: [ModelScanner.hfHomeEnvKey: "/Volumes/models/hf"],
+            workingDirectory: URL(fileURLWithPath: "/Users/op/work", isDirectory: true)
+        )
+        #expect(launchd[ModelScanner.hfHomeEnvKey] == "/Volumes/models/hf")
+    }
+
+    @Test func dropsEmptyHuggingFaceCacheVars() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            ModelScanner.hfHomeEnvKey: "",
+            ModelScanner.hfHubCacheEnvKey: "",
+            ModelScanner.legacyHubCacheEnvKey: "",
+            ModelScanner.xdgCacheHomeEnvKey: "",
+        ])
+        #expect(out.isEmpty)
     }
 
     @Test func dropsEmptyAndMissingVars() {

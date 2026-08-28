@@ -66,10 +66,33 @@ memory is available.
 
 ## Storage
 
-Models are cached under the Hugging Face hub directory (typically
-`~/.cache/huggingface/hub`). The exact path is discovered by
+Models are cached under the Hugging Face hub directory. The path is resolved by
 `ModelScanner.defaultCacheDirectory()`
-(`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift:55`).
+(`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`),
+first match wins:
+
+| Source | Cache directory |
+|--------|-----------------|
+| `$HF_HUB_CACHE` | the value itself |
+| `$HUGGINGFACE_HUB_CACHE` | the value itself (legacy alias) |
+| `$HF_HOME` | `$HF_HOME/hub` |
+| `$XDG_CACHE_HOME` | `$XDG_CACHE_HOME/huggingface/hub` |
+| none set | `~/.cache/huggingface/hub` |
+
+This is the same precedence `huggingface_hub` uses, so the provider reads the
+directory `hf download` writes to.
+
+Symlinks are resolved, so a cache kept on an external volume behind a link
+resolves to its real path. Point one of these at the volume to keep weights off
+the boot disk; `darkbloom doctor` prints the resolved path and names the
+variable that selected it. Set the variable in the shell you run
+`darkbloom start` from -- it is persisted into the launchd job (relative values
+are made absolute first), so the background provider scans the same directory
+as the CLI.
+
+The launchd job captures the variable at `start` time and `darkbloom restart`
+only kickstarts the existing job, so after changing or unsetting `HF_HOME` /
+`HF_HUB_CACHE` run `darkbloom stop && darkbloom start` to pick it up.
 
 Plan disk space per model from the catalog output of `darkbloom models catalog`.
 Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.

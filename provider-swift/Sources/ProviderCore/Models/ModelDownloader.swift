@@ -8,6 +8,7 @@
 ///   - ModelDownloader+HTTP.swift       low-level file fetch/stream/hash/publish
 
 import Foundation
+import ProviderCoreFoundation
 
 // MARK: - Downloader
 
@@ -54,7 +55,8 @@ public struct ModelDownloader: Sendable {
     ///   4. `model.safetensors.index.json` + each shard listed inside
     ///
     /// On success, the model is laid out under
-    /// `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/local/`
+    /// `{hf-cache}/models--{org}--{name}/snapshots/local/` (see
+    /// `cacheModelDirectory(for:)` for how the cache root is resolved)
     /// with a `refs/main` pointer so `ModelScanner` discovers it the next
     /// time `darkbloom status` runs.
     public func download(
@@ -87,11 +89,28 @@ public struct ModelDownloader: Sendable {
 
     // MARK: - Internals
 
+    /// Where a downloaded model is written.
+    ///
+    /// Delegates to `ModelScanner` so the destination is the SAME resolved
+    /// cache directory discovery scans (`$HF_HUB_CACHE`, else
+    /// `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
+    /// `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`).
+    /// Hard-coding the home path here would
+    /// download models into a directory the scanner no longer reads whenever an
+    /// operator points HuggingFace at another volume.
     public static func cacheModelDirectory(for modelID: String) -> URL {
-        let safe = modelID.replacingOccurrences(of: "/", with: "--")
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-            .appendingPathComponent("models--\(safe)", isDirectory: true)
+        ModelScanner.cacheModelDirectory(for: modelID)
+    }
+
+    /// Environment-injected form, so a test can pin that the download
+    /// destination follows `$HF_HOME` rather than the home directory.
+    public static func cacheModelDirectory(
+        for modelID: String,
+        environment: [String: String],
+        homeDirectory: URL
+    ) -> URL {
+        ModelScanner.cacheModelDirectory(
+            for: modelID, environment: environment, homeDirectory: homeDirectory)
     }
 
     static func cacheSnapshotDirectory(for modelID: String) -> URL {

@@ -99,7 +99,7 @@ Each `ManifestFile` records path, size, and SHA-256. The aggregate hash is verif
 
 ## Provider download and prefetch
 
-The provider catalog client fetches the active catalog and downloads models into the standard HuggingFace cache layout at `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/local/` (`ModelCatalog.swift:13`, `ModelCatalog.swift:597-608`).
+The provider catalog client fetches the active catalog and downloads models into the standard HuggingFace cache layout at `{cache}/models--{org}--{name}/snapshots/local/` (`ModelCatalog.swift:13`, `ModelCatalog.swift:597-608`), where `{cache}` is the directory resolved by `ModelScanner.defaultCacheDirectory()` -- `$HF_HUB_CACHE`, else `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub` (matching `huggingface_hub`). Download destination and scan location share that one resolver, so they cannot drift apart.
 
 Two paths exist:
 

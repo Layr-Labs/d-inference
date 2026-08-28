@@ -1337,29 +1337,30 @@ struct EngineV2CapacityTests {
                 physicalBytes: physical))
         #expect(alone.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
 
-        // A co-resident model with a larger activation profile raises the
-        // process-wide max and shrinks this bridge's live report by the exact
-        // reserve delta, even before resident weights change.
+        // A co-resident model adds its activation profile to the process-wide
+        // reserve and shrinks this bridge's live report by that exact amount,
+        // independently of the weight delta exercised below.
         let conservativeActivation = 11 * gib / 2
+        let mixedFleetActivation =
+            measuredActivation + conservativeActivation
         let profileClamped = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
                 totalResidentWeightBytes: UInt64(weights),
-                activationReserveBytes: conservativeActivation,
+                activationReserveBytes: mixedFleetActivation,
                 physicalBytes: physical))
-        let activationDelta = conservativeActivation - measuredActivation
         #expect(profileClamped.slots.first?.activeTokenBudgetMax
-            == Int64((grant - Int(activationDelta)) / rate))
+            == Int64((grant - Int(conservativeActivation)) / rate))
 
-        // A 12 GiB model loaded later with the same activation profile shrinks
-        // the reported max by exactly its weights in tokens.
+        // A 12 GiB model loaded later with the same measured profile shrinks the
+        // reported max by its weights plus one additional profile reserve.
         let laterWeights = 12 * gib
         let grown = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
                 totalResidentWeightBytes: UInt64(weights) + laterWeights,
-                activationReserveBytes: measuredActivation,
+                activationReserveBytes: 2 * measuredActivation,
                 physicalBytes: physical))
         #expect(grown.slots.first?.activeTokenBudgetMax
-            == Int64((grant - Int(laterWeights)) / rate))
+            == Int64((grant - Int(laterWeights + measuredActivation)) / rate))
 
         // No fleet context (legacy callers): raw construction figures.
         let uncontexted = await runtime.capacitySummary()

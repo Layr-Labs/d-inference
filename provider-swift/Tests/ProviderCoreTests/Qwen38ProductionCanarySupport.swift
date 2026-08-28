@@ -40,13 +40,41 @@ enum Qwen38ProductionCanary {
     }
 
     static func load() async throws -> Qwen38ProductionCanaryFixture {
-        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+        guard let metallibURL = LiveInferenceFixtures.ensureMetallibColocated() else {
+            printRuntimeCapabilityDiagnostic(
+                requestedMetallib: nil,
+                capabilities: [],
+                status: "failure",
+                detail: "missing_metallib"
+            )
             throw Qwen38ProductionCanaryError.missingMetallib
         }
-        let hardware = try HardwareDetector.detect()
-        let capabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: hardware)
+        let hardware: HardwareInfo
+        do {
+            hardware = try HardwareDetector.detect()
+        } catch {
+            printRuntimeCapabilityDiagnostic(
+                requestedMetallib: metallibURL,
+                capabilities: [],
+                status: "failure",
+                detail: "hardware_detection"
+            )
+            throw error
+        }
+        let capabilities = ProviderRuntimeCapabilityDetector.detectLive(
+            hardware: hardware,
+            metallibURL: metallibURL
+        )
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: targetModelID, available: capabilities)
+        printRuntimeCapabilityDiagnostic(
+            requestedMetallib: metallibURL,
+            capabilities: capabilities,
+            status: eligibility.isEligible ? "success" : "failure",
+            detail: eligibility.isEligible
+                ? "eligible"
+                : "missing_\(eligibility.missing.map(\.rawValue).sorted().joined(separator: ","))"
+        )
         guard eligibility.isEligible else {
             throw Qwen38ProductionCanaryError.ineligibleHardware(
                 eligibility.missing.map(\.rawValue).sorted())
@@ -112,6 +140,25 @@ enum Qwen38ProductionCanary {
             targetSizing: sizing,
             tokenizer: tokenizer,
             assistantLayerCount: assistantLayerCount)
+    }
+
+    private static func printRuntimeCapabilityDiagnostic(
+        requestedMetallib: URL?,
+        capabilities: Set<ProviderRuntimeCapability>,
+        status: String,
+        detail: String
+    ) {
+        let binding = runtimeMetallibBindingInfo()
+        print(
+            "QWEN38_RUNTIME"
+                + " status=\(status)"
+                + " requested_metallib=\(requestedMetallib?.path ?? "none")"
+                + " bound_metallib=\(binding?.sourceURL.path ?? "none")"
+                + " loader_path=\(binding?.loaderPath ?? "none")"
+                + " metallib_hash=\(binding?.digest ?? "none")"
+                + " nax=\(capabilities.contains(.mlxNAX))"
+                + " detail=\(detail)"
+        )
     }
 
     static func resolveArtifact(

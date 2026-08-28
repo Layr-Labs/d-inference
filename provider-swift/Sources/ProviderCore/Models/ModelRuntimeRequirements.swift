@@ -34,7 +34,8 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
 
 /// Pure, dependency-injected capability detection. Production supplies the
 /// already-structured HardwareDetector result plus the live MLX diagnostic and
-/// metallib hasher; tests supply values without touching MLX or the filesystem.
+/// bound metallib hash; tests supply values without touching MLX or the
+/// filesystem.
 public enum ProviderRuntimeCapabilityDetector {
     public static func detect(
         chipFamily: ChipFamily,
@@ -45,23 +46,66 @@ public enum ProviderRuntimeCapabilityDetector {
         if chipFamily == .m5 {
             capabilities.insert(.appleM5)
         }
-        if naxAvailable(), let hash = liveMetallibHash(), !hash.isEmpty {
+        // Resolve the bound hash first. A missing/failed binding must not run a
+        // diagnostic that may initialize MLX against unapproved bytes.
+        if let hash = liveMetallibHash(), !hash.isEmpty, naxAvailable() {
             capabilities.insert(.mlxNAX)
         }
         return capabilities
     }
 
-    /// Call once at the process/registration boundary and retain the returned
-    /// immutable set for every local gate and the registration message.
-    public static func detectLive(hardware: HardwareInfo) -> Set<ProviderRuntimeCapability> {
-        // Bind the exact approved-by-hash bytes to MLX before the diagnostic
-        // initializes its Metal device/library. The retained /dev/fd snapshot
-        // makes later public-path replacement irrelevant to executed kernels.
-        let loadedMetallibHash = bindRuntimeMetallibForMLX()
-        return detect(
+    /// Bind `metallibURL` before the first live GPU diagnostic. Passing nil
+    /// selects the production loader-visible colocated metallib.
+    public static func detectLive(
+        hardware: HardwareInfo,
+        metallibURL: URL? = nil
+    ) -> Set<ProviderRuntimeCapability> {
+        detectLive(
+            hardware: hardware,
+            metallibURL: metallibURL,
+            bindMetallib: { bindRuntimeMetallibForMLX(from: $0) },
+            naxAvailable: { GPU.gemma4ExpertQMMDiagnostics().naxAvailable }
+        )
+    }
+
+    static func detectLive(
+        hardware: HardwareInfo,
+        metallibURL: URL?,
+        bindMetallib: @Sendable (URL?) -> String?,
+        naxAvailable: @Sendable () -> Bool
+    ) -> Set<ProviderRuntimeCapability> {
+        let loadedMetallibHash = bindMetallib(metallibURL)
+        return detectPrepared(
+            hardware: hardware,
+            boundMetallibHash: loadedMetallibHash,
+            naxAvailable: naxAvailable
+        )
+    }
+
+    /// Diagnose a runtime whose metallib was already bound at an earlier
+    /// startup boundary. Call once and retain the immutable returned set for
+    /// every local gate and registration message.
+    public static func detectPrepared(
+        hardware: HardwareInfo,
+        boundMetallibHash: String?
+    ) -> Set<ProviderRuntimeCapability> {
+        detectPrepared(
+            hardware: hardware,
+            boundMetallibHash: boundMetallibHash,
+            naxAvailable: { GPU.gemma4ExpertQMMDiagnostics().naxAvailable }
+        )
+    }
+
+    static func detectPrepared(
+        hardware: HardwareInfo,
+        boundMetallibHash: String?,
+        naxAvailable: @Sendable () -> Bool
+    ) -> Set<ProviderRuntimeCapability> {
+        detect(
             chipFamily: hardware.chipFamily,
-            naxAvailable: { GPU.gemma4ExpertQMMDiagnostics().naxAvailable },
-            liveMetallibHash: { loadedMetallibHash })
+            naxAvailable: naxAvailable,
+            liveMetallibHash: { boundMetallibHash }
+        )
     }
 }
 

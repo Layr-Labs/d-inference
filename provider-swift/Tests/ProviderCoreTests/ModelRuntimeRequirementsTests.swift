@@ -46,6 +46,23 @@ private final class RuntimeLoadWorkRecorder: @unchecked Sendable {
     }
 }
 
+private final class RuntimeDetectionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
 
 @Suite("Provider runtime capabilities")
 struct ProviderRuntimeCapabilityTests {
@@ -69,6 +86,45 @@ struct ProviderRuntimeCapabilityTests {
             #expect(!ModelRuntimeRequirements.isEligible(
                 modelID: qwen38ID, available: capabilities))
         }
+    }
+
+    @Test("live detector binds the explicit URL before the injected NAX predicate")
+    func liveDetectorExplicitBindingOrder() {
+        let explicitURL = URL(
+            fileURLWithPath:
+                "/tmp/ProviderCorePackageTests.xctest/Contents/MacOS/mlx.metallib")
+        let success = RuntimeDetectionRecorder()
+        let capabilities = ProviderRuntimeCapabilityDetector.detectLive(
+            hardware: runtimeHardware(.m5),
+            metallibURL: explicitURL,
+            bindMetallib: { received in
+                #expect(received == explicitURL)
+                success.append("bind")
+                return "bound-snapshot-hash"
+            },
+            naxAvailable: {
+                success.append("nax-diagnostic")
+                return true
+            }
+        )
+        #expect(success.events == ["bind", "nax-diagnostic"])
+        #expect(capabilities == qwen38Caps)
+
+        let failedBinding = RuntimeDetectionRecorder()
+        let failedCapabilities = ProviderRuntimeCapabilityDetector.detectLive(
+            hardware: runtimeHardware(.m5),
+            metallibURL: explicitURL,
+            bindMetallib: { _ in
+                failedBinding.append("bind")
+                return nil
+            },
+            naxAvailable: {
+                failedBinding.append("nax-diagnostic")
+                return true
+            }
+        )
+        #expect(failedBinding.events == ["bind"])
+        #expect(failedCapabilities == [.appleM5])
     }
 
     @Test("exact embedded rule survives an old catalog while lookalikes stay compatible")

@@ -14,13 +14,21 @@ enum RuntimeMetallibBindingError: Error {
     case snapshotUnlinkFailed
 }
 
+public struct RuntimeMetallibBindingInfo: Sendable, Equatable {
+    public let sourceURL: URL
+    public let loaderPath: String
+    public let digest: String
+}
+
 final class RuntimeMetallibSnapshot: @unchecked Sendable {
     let fileDescriptor: Int32
+    let sourceURL: URL
     let digest: String
     let loaderPath: String
 
-    init(fileDescriptor: Int32, digest: String) {
+    init(fileDescriptor: Int32, sourceURL: URL, digest: String) {
         self.fileDescriptor = fileDescriptor
+        self.sourceURL = sourceURL
         self.digest = digest
         self.loaderPath = "/dev/fd/\(fileDescriptor)"
     }
@@ -30,8 +38,86 @@ final class RuntimeMetallibSnapshot: @unchecked Sendable {
     }
 }
 
-private let runtimeMetallibBindingLock = NSLock()
-nonisolated(unsafe) private var boundRuntimeMetallib: RuntimeMetallibSnapshot?
+final class RuntimeMetallibBinder: @unchecked Sendable {
+    private let lock = NSLock()
+    private let locateDefault: @Sendable () -> URL?
+    private let setLoaderPath: @Sendable (String) -> Void
+    private var bound: RuntimeMetallibSnapshot?
+
+    init(
+        locateDefault: @escaping @Sendable () -> URL?,
+        setLoaderPath: @escaping @Sendable (String) -> Void
+    ) {
+        self.locateDefault = locateDefault
+        self.setLoaderPath = setLoaderPath
+    }
+
+    func bind(from explicitURL: URL?) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let requestedURL = explicitURL ?? locateDefault() else {
+            return nil
+        }
+        let sourceURL = requestedURL.standardizedFileURL.resolvingSymlinksInPath()
+
+        if let bound {
+            guard bound.sourceURL == sourceURL else {
+                hashLogger.error(
+                    "Refusing conflicting runtime metallib source: bound=\(bound.sourceURL.path, privacy: .public) requested=\(sourceURL.path, privacy: .public)"
+                )
+                return nil
+            }
+            do {
+                let candidate = try makeRuntimeMetallibSnapshot(sourceURL: sourceURL)
+                guard candidate.digest == bound.digest else {
+                    hashLogger.error(
+                        "Refusing changed runtime metallib bytes at \(sourceURL.path, privacy: .public)"
+                    )
+                    return nil
+                }
+                return bound.digest
+            } catch {
+                hashLogger.error(
+                    "Failed to verify bound runtime metallib at \(sourceURL.path, privacy: .public): \(error)"
+                )
+                return nil
+            }
+        }
+
+        do {
+            let snapshot = try makeRuntimeMetallibSnapshot(sourceURL: sourceURL)
+            setLoaderPath(snapshot.loaderPath)
+            bound = snapshot
+            return snapshot.digest
+        } catch {
+            hashLogger.error(
+                "Failed to bind runtime metallib at \(sourceURL.path, privacy: .public): \(error)"
+            )
+            return nil
+        }
+    }
+
+    func bindingInfo() -> RuntimeMetallibBindingInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let bound else { return nil }
+        return RuntimeMetallibBindingInfo(
+            sourceURL: bound.sourceURL,
+            loaderPath: bound.loaderPath,
+            digest: bound.digest
+        )
+    }
+}
+
+private let runtimeMetallibBinder = RuntimeMetallibBinder(
+    locateDefault: { locateRuntimeMetallib() },
+    setLoaderPath: { path in
+        path.withCString {
+            darkbloom_mlx_set_metallib_path($0)
+        }
+    }
+)
 
 // MARK: - Binary Self-Hash
 
@@ -203,39 +289,31 @@ func makeRuntimeMetallibSnapshot(
     retainDescriptor = true
     return RuntimeMetallibSnapshot(
         fileDescriptor: descriptor,
+        sourceURL: sourceURL.standardizedFileURL.resolvingSymlinksInPath(),
         digest: hasher.finalize().hexString
     )
 }
 
 /// Pin MLX to an anonymous snapshot before the first GPU diagnostic/operation.
+/// Passing `nil` selects the production loader-visible colocated metallib.
+/// Rebinding is idempotent only when both canonical source and digest match;
+/// a different source or changed bytes fail closed without changing MLX state.
+///
 /// The returned digest describes the retained inode MLX loads, not a mutable
 /// public pathname.
-public func bindRuntimeMetallibForMLX() -> String? {
-    runtimeMetallibBindingLock.lock()
-    defer { runtimeMetallibBindingLock.unlock() }
-    if let boundRuntimeMetallib {
-        return boundRuntimeMetallib.digest
-    }
-    guard let source = locateRuntimeMetallib() else { return nil }
-    do {
-        let snapshot = try makeRuntimeMetallibSnapshot(sourceURL: source)
-        snapshot.loaderPath.withCString {
-            darkbloom_mlx_set_metallib_path($0)
-        }
-        boundRuntimeMetallib = snapshot
-        return snapshot.digest
-    } catch {
-        hashLogger.error("Failed to bind runtime metallib: \(error)")
-        return nil
-    }
+public func bindRuntimeMetallibForMLX(from explicitURL: URL? = nil) -> String? {
+    runtimeMetallibBinder.bind(from: explicitURL)
 }
 
-/// SHA-256 hash of the metallib the live MLX loader selects. Returns nil when
-/// neither loader-visible path exists; capability detection then fails closed.
+/// Immutable details for the exact anonymous snapshot currently bound to MLX.
+public func runtimeMetallibBindingInfo() -> RuntimeMetallibBindingInfo? {
+    runtimeMetallibBinder.bindingInfo()
+}
+
+/// SHA-256 hash of the anonymous metallib snapshot bound to the live MLX
+/// loader. Returns nil until binding succeeds.
 public func metallibHash() -> String? {
-    runtimeMetallibBindingLock.lock()
-    defer { runtimeMetallibBindingLock.unlock() }
-    return boundRuntimeMetallib?.digest
+    runtimeMetallibBinder.bindingInfo()?.digest
 }
 
 func runtimeMetallibHash(

@@ -82,9 +82,10 @@ enum LiveInferenceFixtures {
     /// beside the test runner so a stale pre-existing file cannot survive into
     /// the current test invocation.
     ///
-    /// Returns the path to the colocated metallib on success, or `nil` if no
-    /// source metallib could be found -- in which case the caller should skip
-    /// the test rather than crashing in GPU initialization.
+    /// Returns the exact colocated URL on success. Live capability canaries
+    /// must pass this URL to `ProviderRuntimeCapabilityDetector.detectLive`
+    /// before any model load or other MLX operation. Returns nil when no source
+    /// metallib can be found, so the caller can fail without GPU initialization.
     static func ensureMetallibColocated() -> URL? {
         MLXMetallibEnvironment.withExclusiveAccess {
             let fm = FileManager.default

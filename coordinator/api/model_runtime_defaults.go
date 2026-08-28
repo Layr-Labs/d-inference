@@ -11,21 +11,59 @@ var requestRuntimeDefaultKeys = [...]string{
 	"tool_call_parser",
 }
 
-// injectModelRuntimeDefaults fills omitted request fields from the model's
-// registry record. Explicit consumer values always win. Only non-empty string
-// defaults are forwarded so malformed admin metadata cannot turn an otherwise
-// valid inference request into a provider-side JSON decode failure.
-func injectModelRuntimeDefaults(parsed map[string]any, runtimeParameters map[string]any) bool {
+// modelRuntimeDefaults remembers which allowlisted fields came from the caller
+// and which were injected by the coordinator. The distinction matters when an
+// alias switches concrete builds: caller values are immutable, while catalog
+// defaults must follow the build that will actually serve the request.
+type modelRuntimeDefaults struct {
+	callerProvided [len(requestRuntimeDefaultKeys)]bool
+	injected       [len(requestRuntimeDefaultKeys)]bool
+}
+
+func newModelRuntimeDefaults(callerParsed map[string]any) modelRuntimeDefaults {
+	var defaults modelRuntimeDefaults
+	for index, key := range requestRuntimeDefaultKeys {
+		_, defaults.callerProvided[index] = callerParsed[key]
+	}
+	return defaults
+}
+
+// apply reconciles coordinator-owned fields with one concrete model's registry
+// record. Repeated calls support alias fallback and retry: injected values are
+// replaced or removed, while fields present in the original caller body are
+// left untouched. Only non-empty string defaults from the narrow allowlist can
+// enter the forwarded request.
+func (defaults *modelRuntimeDefaults) apply(parsed map[string]any, runtimeParameters map[string]any) bool {
 	changed := false
-	for _, key := range requestRuntimeDefaultKeys {
-		if _, exists := parsed[key]; exists {
+	for index, key := range requestRuntimeDefaultKeys {
+		if defaults.callerProvided[index] {
 			continue
 		}
-		value, ok := runtimeParameters[key].(string)
-		if !ok || strings.TrimSpace(value) == "" {
+
+		value, hasDefault := runtimeParameters[key].(string)
+		hasDefault = hasDefault && strings.TrimSpace(value) != ""
+
+		if defaults.injected[index] {
+			if !hasDefault {
+				if _, exists := parsed[key]; exists {
+					delete(parsed, key)
+					changed = true
+				}
+				defaults.injected[index] = false
+				continue
+			}
+			if current, exists := parsed[key]; !exists || current != value {
+				parsed[key] = value
+				changed = true
+			}
+			continue
+		}
+
+		if _, exists := parsed[key]; exists || !hasDefault {
 			continue
 		}
 		parsed[key] = value
+		defaults.injected[index] = true
 		changed = true
 	}
 	return changed

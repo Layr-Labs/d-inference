@@ -121,7 +121,7 @@ type codeAttestResumeChallenge struct {
 	nodeKey    string
 	seKey      string
 	token      string
-	at         time.Time
+	expiresAt  time.Time
 	done       chan struct{}
 }
 
@@ -540,7 +540,9 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	}
 }
 
-// recordResumeChallenge stores a one-time, connection-bound X25519 PoP nonce.
+// recordResumeChallenge stores a one-time, connection-bound X25519 PoP nonce
+// with the exact resume deadline. APNs challenges intentionally use the longer
+// challengeValidity window; live-connection resume proofs do not.
 func (t *codeAttestThrottle) recordResumeChallenge(
 	nonce, providerID, nodeKey, seKey, token string,
 ) <-chan struct{} {
@@ -548,7 +550,7 @@ func (t *codeAttestThrottle) recordResumeChallenge(
 	done := make(chan struct{})
 	t.resumeChallenges[nonce] = codeAttestResumeChallenge{
 		providerID: providerID, nodeKey: nodeKey, seKey: seKey,
-		token: token, at: t.now(), done: done,
+		token: token, expiresAt: t.now().Add(t.resumeTimeout), done: done,
 	}
 	t.mu.Unlock()
 	return done
@@ -565,6 +567,30 @@ func (t *codeAttestThrottle) clearResumeChallenges(providerID string) {
 	t.mu.Unlock()
 }
 
+func resumeChallengeMatches(
+	challenge codeAttestResumeChallenge,
+	providerID, nodeKey, seKey, token string,
+) bool {
+	return challenge.providerID == providerID &&
+		challenge.nodeKey == nodeKey &&
+		challenge.seKey == seKey &&
+		challenge.token == token
+}
+
+func (t *codeAttestThrottle) resumeChallengeExpiry(
+	nonce, providerID, nodeKey, seKey, token string,
+) (time.Time, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	if !ok || !resumeChallengeMatches(
+		challenge, providerID, nodeKey, seKey, token,
+	) {
+		return time.Time{}, false
+	}
+	return challenge.expiresAt, true
+}
+
 func (t *codeAttestThrottle) matchResumeChallenge(
 	nonce, providerID, nodeKey, seKey, token string,
 ) bool {
@@ -572,11 +598,8 @@ func (t *codeAttestThrottle) matchResumeChallenge(
 	defer t.mu.Unlock()
 	challenge, ok := t.resumeChallenges[nonce]
 	return ok &&
-		t.now().Sub(challenge.at) < t.challengeValidity &&
-		challenge.providerID == providerID &&
-		challenge.nodeKey == nodeKey &&
-		challenge.seKey == seKey &&
-		challenge.token == token
+		t.now().Before(challenge.expiresAt) &&
+		resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token)
 }
 
 func (t *codeAttestThrottle) consumeResumeChallenge(
@@ -585,16 +608,33 @@ func (t *codeAttestThrottle) consumeResumeChallenge(
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	challenge, ok := t.resumeChallenges[nonce]
-	if ok {
-		delete(t.resumeChallenges, nonce)
-		close(challenge.done)
+	if !ok ||
+		!t.now().Before(challenge.expiresAt) ||
+		!resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token) {
+		return false
 	}
-	return ok &&
-		t.now().Sub(challenge.at) < t.challengeValidity &&
-		challenge.providerID == providerID &&
-		challenge.nodeKey == nodeKey &&
-		challenge.seKey == seKey &&
-		challenge.token == token
+	delete(t.resumeChallenges, nonce)
+	close(challenge.done)
+	return true
+}
+
+// expireResumeChallenge atomically lets only the deadline path claim a resume
+// nonce. A response racing the timer either consumes the still-live nonce first
+// or loses to this removal; neither path can both grant proof and start APNs.
+func (t *codeAttestThrottle) expireResumeChallenge(
+	nonce, providerID, nodeKey, seKey, token string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	if !ok ||
+		t.now().Before(challenge.expiresAt) ||
+		!resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token) {
+		return false
+	}
+	delete(t.resumeChallenges, nonce)
+	close(challenge.done)
+	return true
 }
 
 // persistCodeAttestation best-effort writes a successful code-identity round-trip

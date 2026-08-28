@@ -1505,6 +1505,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	_, reasoningProvided := parsed["reasoning"]
 
 	// Accept either chat completions format (messages) or Responses API format
@@ -1662,7 +1663,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// preflight below.
 	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
-		if injectModelRuntimeDefaults(parsed, rec.RuntimeParameters) {
+		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
 			rawBody, _ = marshalForwardBody(parsed)
 		}
 		// Use the registry's max_output_length as the default max_tokens
@@ -1726,6 +1727,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
 		if marshalErr == nil {
 			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
@@ -1936,6 +1943,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// onModelFallback callback. resolvedModel uses the new build to match the
 	// pre-extraction behavior.
 	onModelFallback := func(newModel string) bool {
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeDefaults.apply(parsed, rec.RuntimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
 		body, _ := marshalForwardBody(parsed)
 		body, _, _ = applyResolvedModelReasoningPolicy(
 			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
@@ -3957,6 +3969,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	endpointKind := promptcontract.EndpointCompletions
 	if endpoint == "/v1/messages" {
 		endpointKind = promptcontract.EndpointMessages
@@ -4068,7 +4081,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		// Keep generic endpoints aligned with chat completions: parser defaults
 		// are catalog-owned request semantics, not provider inference guesses.
-		injectModelRuntimeDefaults(parsed, rec.RuntimeParameters)
+		runtimeDefaults.apply(parsed, rec.RuntimeParameters)
 		if rec.MaxOutputLength > 0 {
 			genericMaxOutput = rec.MaxOutputLength
 		}
@@ -4127,6 +4140,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		endpointBody, _ := marshalForwardBody(candidateParsed)
 		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
 			endpointKind, endpointBody)
@@ -4155,6 +4174,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	var loweringErr error
 	routingTraits := routingTraitsForModel(model)
 	refreshGenericBody := func(newModel string) bool {
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeDefaults.apply(parsed, rec.RuntimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)

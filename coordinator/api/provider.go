@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 
 	"net/http"
@@ -1371,84 +1372,52 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify runtime integrity hashes from the signed challenge response.
-	// Swift providers omit Python/vllm hashes, but must still match manifest
-	// entries for external runtime assets such as mlx.metallib.
-	if s.knownRuntimeManifest != nil {
-		runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
-		provider.Mu().Lock()
-		provider.RuntimeVerified = runtimeOK
-		provider.RuntimeManifestChecked = runtimeOK
-		provider.MetallibVerified = runtimeOK &&
-			runtimeManifestApprovesMetallib(
-				s.knownRuntimeManifest, resp.TemplateHashes)
-		if !runtimeOK || !provider.MetallibVerified {
-			provider.RuntimeCapabilities = nil
-			provider.FreshCodeAttested = false
+	// Always ingest the signed runtime identity, even while policy is withdrawn:
+	// otherwise a changed/omitted identity could leave stale approved hashes that
+	// re-promote when the old manifest returns.
+	runtimePolicyActive, runtimeOK, mismatches :=
+		s.applyChallengeRuntimePolicy(provider, resp)
+	if runtimePolicyActive && !runtimeOK {
+		// Log detailed mismatch info for debugging outages.
+		mismatchDetails := make([]string, 0, len(mismatches))
+		for _, m := range mismatches {
+			mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
 		}
-		if resp.PythonHash != "" {
-			provider.PythonHash = resp.PythonHash
-		}
-		if resp.RuntimeHash != "" {
-			provider.RuntimeHash = resp.RuntimeHash
-		}
-		if len(resp.TemplateHashes) > 0 {
-			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-		}
-		provider.Mu().Unlock()
-
-		if !runtimeOK {
-			// Log detailed mismatch info for debugging outages.
-			mismatchDetails := make([]string, 0, len(mismatches))
-			for _, m := range mismatches {
-				mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+		s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
+			"provider_id", providerID,
+			"mismatches", len(mismatches),
+			"details", mismatchDetails,
+			"backend", provider.Backend,
+		)
+		// Send status feedback but do NOT fail the challenge or mark untrusted.
+		// The provider remains connected but is excluded from routing until
+		// it reports matching hashes.
+		if provider.Conn != nil {
+			statusMsg := protocol.RuntimeStatusMessage{
+				Type:       protocol.TypeRuntimeStatus,
+				Verified:   false,
+				Mismatches: mismatches,
 			}
-			s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
-				"provider_id", providerID,
-				"mismatches", len(mismatches),
-				"details", mismatchDetails,
-				"backend", provider.Backend,
-			)
-			// Send status feedback but do NOT fail the challenge or mark untrusted.
-			// The provider remains connected but is excluded from routing until
-			// it reports matching hashes.
-			if provider.Conn != nil {
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   false,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					if err := provider.EnqueueText(context.Background(), statusData); err != nil {
-						s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
-						s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
-					}
+			statusData, err := json.Marshal(statusMsg)
+			if err == nil {
+				if err := provider.EnqueueText(context.Background(), statusData); err != nil {
+					s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
+					s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
 				}
 			}
-			_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
-			return
 		}
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
 	}
 
-	provider.Mu().Lock()
-	version := provider.Version
-	provider.Mu().Unlock()
-	if s.minProviderVersion != "" && version != "" && semverLess(version, s.minProviderVersion) {
-		s.logger.Warn("provider version below minimum during challenge revalidation — excluded from routing",
+	version, versionAllowed := s.applyChallengeMinVersionPolicy(provider)
+	if !versionAllowed {
+		s.logger.Warn("provider version below minimum during challenge revalidation — excluding from routing",
 			"provider_id", providerID,
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
 		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
-		provider.Mu().Lock()
-		provider.RuntimeVerified = false
-		provider.RuntimeManifestChecked = false
-		provider.MetallibVerified = false
-		provider.RuntimeCapabilities = nil
-		provider.FreshCodeAttested = false
-		provider.Mu().Unlock()
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		return
 	}
@@ -1560,6 +1529,73 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			provider.SignalChallengeSettled()
 		}
 	}
+}
+
+// applyChallengeRuntimePolicy first records the exact signed runtime identity,
+// then applies the current manifest policy when one exists. Policy withdrawal
+// keeps runtime gates closed without invalidating an unchanged process proof;
+// any changed or omitted identity clears FreshCodeAttested independently.
+func (s *Server) applyChallengeRuntimePolicy(
+	provider *registry.Provider,
+	resp *protocol.AttestationResponseMessage,
+) (bool, bool, []protocol.RuntimeMismatch) {
+	manifest := s.knownRuntimeManifest
+	policyActive := manifest != nil
+	runtimeOK := false
+	var mismatches []protocol.RuntimeMismatch
+	if policyActive {
+		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
+			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+	}
+
+	provider.Mu().Lock()
+	runtimeIdentityChanged :=
+		resp.PythonHash != provider.PythonHash ||
+			resp.RuntimeHash != provider.RuntimeHash ||
+			!maps.EqualFunc(
+				resp.TemplateHashes,
+				provider.TemplateHashes,
+				strings.EqualFold,
+			)
+
+	provider.RuntimeVerified = policyActive && runtimeOK
+	provider.RuntimeManifestChecked = policyActive && runtimeOK
+	provider.MetallibVerified = policyActive && runtimeOK &&
+		runtimeManifestApprovesMetallib(manifest, resp.TemplateHashes)
+	if !provider.RuntimeVerified ||
+		!provider.MetallibVerified ||
+		runtimeIdentityChanged {
+		provider.RuntimeCapabilities = nil
+	}
+	if runtimeIdentityChanged {
+		provider.FreshCodeAttested = false
+	}
+	provider.PythonHash = resp.PythonHash
+	provider.RuntimeHash = resp.RuntimeHash
+	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
+	provider.Mu().Unlock()
+	return policyActive, runtimeOK, mismatches
+}
+
+// applyChallengeMinVersionPolicy clears only policy-derived runtime state when
+// the coordinator temporarily raises its version floor. The unchanged process
+// proof remains valid and can promote capabilities again if policy rolls back.
+func (s *Server) applyChallengeMinVersionPolicy(
+	provider *registry.Provider,
+) (string, bool) {
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	version := provider.Version
+	if s.minProviderVersion == "" ||
+		version == "" ||
+		!semverLess(version, s.minProviderVersion) {
+		return version, true
+	}
+	provider.RuntimeVerified = false
+	provider.RuntimeManifestChecked = false
+	provider.MetallibVerified = false
+	provider.RuntimeCapabilities = nil
+	return version, false
 }
 
 // handleTransientChallengeFailure records a transient challenge failure

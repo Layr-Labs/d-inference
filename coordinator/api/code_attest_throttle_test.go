@@ -110,25 +110,97 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	}
 }
 
-func TestCodeAttestResumeChallengeIsBoundOneTimeAndExpires(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
-	th.now = func() time.Time { return now }
-	th.recordResumeChallenge("nonce", "provider", "node", "se", "token")
-	if !th.consumeResumeChallenge("nonce", "provider", "node", "se", "token") {
-		t.Fatal("exact live resume proof did not match")
-	}
-	if th.consumeResumeChallenge("nonce", "provider", "node", "se", "token") {
-		t.Fatal("resume proof replayed")
+func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
+	const (
+		nonce      = "nonce"
+		providerID = "provider"
+		nodeKey    = "node"
+		seKey      = "se"
+		token      = "token"
+	)
+	newThrottle := func(now *time.Time) *codeAttestThrottle {
+		th := newCodeAttestThrottle()
+		th.now = func() time.Time { return *now }
+		th.recordResumeChallenge(nonce, providerID, nodeKey, seKey, token)
+		return th
 	}
 
-	th.recordResumeChallenge("expired", "provider", "node", "se", "token")
-	now = now.Add(th.challengeValidity)
-	if th.consumeResumeChallenge(
-		"expired", "provider", "node", "se", "token",
-	) {
-		t.Fatal("expired resume proof matched")
-	}
+	t.Run("29.9 seconds accepted", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		expiresAt, ok := th.resumeChallengeExpiry(
+			nonce, providerID, nodeKey, seKey, token,
+		)
+		if !ok || !expiresAt.Equal(now.Add(30*time.Second)) {
+			t.Fatalf("resume expiry = %v, ok=%v; want exactly 30s", expiresAt, ok)
+		}
+		now = now.Add(29*time.Second + 900*time.Millisecond)
+		if !th.matchResumeChallenge(nonce, providerID, nodeKey, seKey, token) ||
+			!th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof inside the 30s window was rejected")
+		}
+		if th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof replayed")
+		}
+	})
+
+	t.Run("exact deadline rejected and timeout claims nonce", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		now = now.Add(30 * time.Second)
+		if th.matchResumeChallenge(nonce, providerID, nodeKey, seKey, token) ||
+			th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof at the exact 30s deadline was accepted")
+		}
+		if !th.expireResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("timeout could not atomically claim nonce at the exact deadline")
+		}
+	})
+
+	t.Run("after deadline rejected and timeout claims nonce", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		now = now.Add(30*time.Second + time.Nanosecond)
+		if th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof after the 30s deadline was accepted")
+		}
+		if !th.expireResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("timeout could not claim nonce after the deadline")
+		}
+	})
+
+	t.Run("response and timeout race has one winner", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		done, ok := th.resumeChallenges[nonce]
+		if !ok {
+			t.Fatal("recorded resume challenge missing")
+		}
+		now = now.Add(30 * time.Second)
+
+		responseResult := make(chan bool, 1)
+		timeoutResult := make(chan bool, 1)
+		go func() {
+			responseResult <- th.consumeResumeChallenge(
+				nonce, providerID, nodeKey, seKey, token)
+		}()
+		go func() {
+			timeoutResult <- th.expireResumeChallenge(
+				nonce, providerID, nodeKey, seKey, token)
+		}()
+
+		if <-responseResult {
+			t.Fatal("response racing at the exact deadline was accepted")
+		}
+		if !<-timeoutResult {
+			t.Fatal("timeout did not win the exact-deadline race")
+		}
+		select {
+		case <-done.done:
+		default:
+			t.Fatal("winning timeout did not close the challenge")
+		}
+	})
 }
 
 func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
@@ -316,13 +388,25 @@ func TestCodeAttestThrottleRetryDelayJitter(t *testing.T) {
 	}
 }
 
-// TestCodeAttestThrottleDefaultsConsistent pins the cross-knob invariants the
-// fixes depend on: the delivery-acceptance window is the shared reply timeout
-// (Fix 5 ordering), and the alert budget is short while background stays long.
+// TestCodeAttestThrottleDefaultsConsistent pins the cross-knob invariants:
+// live resume PoP expires at 30s, APNs replies remain valid for 300s, and the
+// alert budget is short while the background budget stays long.
 func TestCodeAttestThrottleDefaultsConsistent(t *testing.T) {
 	th := newCodeAttestThrottle()
+	if ChallengeResponseTimeout != 30*time.Second {
+		t.Fatalf("ChallengeResponseTimeout = %s, want exact 30s",
+			ChallengeResponseTimeout)
+	}
+	if th.resumeTimeout != ChallengeResponseTimeout {
+		t.Fatalf("resumeTimeout = %s, want ChallengeResponseTimeout %s",
+			th.resumeTimeout, ChallengeResponseTimeout)
+	}
+	if CodeAttestResponseTimeout != 300*time.Second {
+		t.Fatalf("CodeAttestResponseTimeout = %s, want exact 300s",
+			CodeAttestResponseTimeout)
+	}
 	if th.challengeValidity != CodeAttestResponseTimeout {
-		t.Fatalf("challengeValidity %s must equal CodeAttestResponseTimeout %s",
+		t.Fatalf("APNs challengeValidity = %s, want CodeAttestResponseTimeout %s",
 			th.challengeValidity, CodeAttestResponseTimeout)
 	}
 	if th.retrySpacing >= th.backgroundPushCooldown {

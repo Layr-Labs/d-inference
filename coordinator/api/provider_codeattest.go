@@ -410,9 +410,18 @@ func (s *Server) armCodeIdentityResumeFallback(
 	nonce, nodeKey, seKey, token string,
 	done <-chan struct{},
 ) {
-	timeout := s.codeAttestThrottle.resumeTimeout
+	expiresAt, ok := s.codeAttestThrottle.resumeChallengeExpiry(
+		nonce, providerID, nodeKey, seKey, token,
+	)
+	if !ok {
+		return
+	}
 	saferun.Go(s.logger, "codeAttestResumeFallback", func() {
-		timer := time.NewTimer(timeout)
+		delay := time.Until(expiresAt)
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
@@ -421,7 +430,7 @@ func (s *Server) armCodeIdentityResumeFallback(
 			return
 		case <-timer.C:
 		}
-		if !s.codeAttestThrottle.consumeResumeChallenge(
+		if !s.codeAttestThrottle.expireResumeChallenge(
 			nonce, providerID, nodeKey, seKey, token,
 		) {
 			return // response, disconnect cleanup, or another timer won

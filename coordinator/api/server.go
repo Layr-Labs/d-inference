@@ -1448,22 +1448,22 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		version := provider.Version
 		backend := provider.Backend
 
+		// Manifest policy is coordinator-owned and can be withdrawn, rotated,
+		// or rolled back independently of the connected process. Rebuild all
+		// policy-derived state from scratch, but preserve FreshCodeAttested:
+		// that proof remains bound to this connection's token, keys, and code.
+		// The token/key/code/trust invalidation paths clear it separately.
+		provider.RuntimeVerified = false
+		provider.RuntimeManifestChecked = false
+		provider.MetallibVerified = false
+		provider.RuntimeCapabilities = nil
+
 		if s.knownRuntimeManifest == nil {
-			// Manifest was withdrawn — deroute provider until the next
-			// successful challenge re-verifies it.
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
-			provider.MetallibVerified = false
-			provider.RuntimeCapabilities = nil
-			provider.FreshCodeAttested = false
+			// Manifest was withdrawn — keep the process proof, but deroute the
+			// provider until policy once again approves its reported runtime.
 		} else if s.minProviderVersion != "" &&
 			version != "" &&
 			semverLess(version, s.minProviderVersion) {
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
-			provider.MetallibVerified = false
-			provider.RuntimeCapabilities = nil
-			provider.FreshCodeAttested = false
 			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
@@ -1472,17 +1472,11 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				runtimeHash,
 				templateHashes,
 			)
+			provider.RuntimeVerified = runtimeOK
+			provider.RuntimeManifestChecked = runtimeOK
 			provider.MetallibVerified = runtimeOK &&
 				runtimeManifestApprovesMetallib(
 					s.knownRuntimeManifest, templateHashes)
-			if !runtimeOK || !provider.MetallibVerified {
-				provider.RuntimeCapabilities = nil
-				provider.FreshCodeAttested = false
-			}
-			if !runtimeOK {
-				provider.RuntimeVerified = false
-				provider.RuntimeManifestChecked = false
-			}
 		}
 		provider.Mu().Unlock()
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)

@@ -12,7 +12,7 @@ extension EngineV2Factory {
 
     /// Resolve the CBv2-serving model for a loaded checkpoint: the model
     /// itself for text and direct Qwen3-VL checkpoints, the exact VLM-owned
-    /// text tower for Gemma 4, or the extracted Qwen3.5 MoE language target.
+    /// text tower for Gemma 4, or the extracted Qwen3.5 dense/MoE language target.
     public static func benchmarkServingModel(
         model: any LanguageModel,
         isVLM: Bool,
@@ -26,7 +26,7 @@ extension EngineV2Factory {
         if model is MLXVLM.Qwen3VL {
             return try directServingModel(model: model, isVLM: true)
         }
-        guard model is MLXVLM.Qwen35MoE else {
+        guard model is MLXVLM.Qwen35 else {
             throw EngineV2VLMTextExtractionError.unsupportedWrapper(
                 String(describing: type(of: model)))
         }

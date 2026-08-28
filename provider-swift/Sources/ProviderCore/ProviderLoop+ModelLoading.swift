@@ -197,6 +197,8 @@ extension ProviderLoop {
     internal func ensureModelLoaded(
         modelId: String, allowEviction: Bool = true
     ) async throws {
+        try ModelRuntimeRequirements.requireEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
             throw CancellationError()
         }

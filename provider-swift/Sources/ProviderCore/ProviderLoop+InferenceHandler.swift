@@ -315,14 +315,10 @@ extension ProviderLoop {
             return
         }
 
-        // `reasoning_effort` is not part of the upstream
-        // `OpenAIChatCompletionRequest` shape, so decode it directly from
-        // the request body and thread it into the chat template's render
-        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads the effective value to set the reasoning budget
-        // (`high` currently serves as `medium`); other models ignore the
-        // extra template variable.
-        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        // Recover the one out-of-band template-control value once from the
+        // authenticated plaintext body. The same value is used by text,
+        // vision, and both prompt-token recount paths.
+        let templateControls = Self.extractChatTemplateControls(from: decryptedData)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -666,7 +662,7 @@ extension ProviderLoop {
                 reserveModel: { _ in },
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                reasoningEffort: reasoningEffort,
+                templateControls: templateControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 engineV2Logprobs: logprobsChannel.map {
@@ -1055,7 +1051,7 @@ extension ProviderLoop {
                     request: streamingRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
-                    reasoningEffort: reasoningEffort
+                    templateControls: templateControls
                 ))
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
@@ -1111,7 +1107,7 @@ extension ProviderLoop {
                         request: streamingRequest,
                         tokenizer: tokenizer,
                         modelType: modelType,
-                        reasoningEffort: reasoningEffort
+                        templateControls: templateControls
                     )
                     if promptTokens > 0 {
                         log.warning(

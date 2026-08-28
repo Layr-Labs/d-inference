@@ -112,6 +112,11 @@ public enum ProviderProtocolCodec {
             try fields.append(("template_hashes", encodeValue(register.templateHashes)))
         }
         try appendIfPresent(register.privacyCapabilities, key: "privacy_capabilities", to: &fields)
+        if !register.runtimeCapabilities.isEmpty {
+            try fields.append((
+                "runtime_capabilities",
+                encodeValue(register.runtimeCapabilities.sorted())))
+        }
         // IMPORTANT: this raw-attestation path bypasses the Codable encoder in
         // Messages.swift, so EVERY Register field must be mirrored here too or it
         // silently drops for every ATTESTED registration (the production-common

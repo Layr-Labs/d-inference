@@ -30,7 +30,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode defaults to automatic Qwen-only policy")
+    @Test("absent mode defaults on only for the exact Qwen3.8 target")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -43,8 +43,10 @@ struct MTPConfigKeyTests {
 
         #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtp == false)
-        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5_moe"))
-        #expect(!config.backend.mtpMode.enablesMTP(forModelType: "gemma4"))
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelID: MTPMode.automaticTargetModelID))
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelID: "EigenLabs/Qwen3.6-35B-A3B-4bit"))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -109,17 +111,22 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("explicit modes apply across Qwen and Gemma targets")
+    @Test("automatic and explicit modes use exact model identity")
     func targetPolicy() {
-        for type in ["qwen3_5_moe", " QWEN3_5_MOE "] {
-            #expect(MTPMode.auto.enablesMTP(forModelType: type))
-            #expect(MTPMode.on.enablesMTP(forModelType: type))
-            #expect(!MTPMode.off.enablesMTP(forModelType: type))
-        }
-        for type in ["gemma4", "gemma4_text", "qwen3", nil] as [String?] {
-            #expect(!MTPMode.auto.enablesMTP(forModelType: type))
-            #expect(MTPMode.on.enablesMTP(forModelType: type))
-            #expect(!MTPMode.off.enablesMTP(forModelType: type))
+        let target = MTPMode.automaticTargetModelID
+        let otherModels = [
+            target.lowercased(),
+            "third-party/Qwen3.8-27B-4bit",
+            "EigenLabs/Qwen3.6-35B-A3B-4bit",
+            "EigenLabs/Gemma-4-27B-4bit",
+        ]
+        #expect(MTPMode.auto.enablesMTP(forModelID: target))
+        #expect(MTPMode.on.enablesMTP(forModelID: target))
+        #expect(!MTPMode.off.enablesMTP(forModelID: target))
+        for modelID in otherModels {
+            #expect(!MTPMode.auto.enablesMTP(forModelID: modelID))
+            #expect(MTPMode.on.enablesMTP(forModelID: modelID))
+            #expect(!MTPMode.off.enablesMTP(forModelID: modelID))
         }
     }
 
@@ -128,10 +135,10 @@ struct MTPConfigKeyTests {
         let backend = BackendSettings(mtpMode: .auto)
         let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
 
-        for type in ["qwen3_5_moe", "gemma4", nil] as [String?] {
+        for modelID in [MTPMode.automaticTargetModelID, "other/model"] {
             #expect(
-                backend.mtpMode.enablesMTP(forModelType: type)
-                    == standalone.mtpMode.enablesMTP(forModelType: type))
+                backend.mtpMode.enablesMTP(forModelID: modelID)
+                    == standalone.mtpMode.enablesMTP(forModelID: modelID))
         }
     }
 

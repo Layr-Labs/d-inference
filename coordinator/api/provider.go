@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 
 	"net/http"
@@ -55,6 +56,20 @@ const (
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
 	ChallengeResponseTimeout = 30 * time.Second
+	// RegistrationAttestationMaxAge bounds replay of a previously valid signed
+	// registration claim. Challenge nonces provide ongoing liveness afterward.
+	RegistrationAttestationMaxAge = 2 * time.Minute
+	// RegistrationAttestationMaxFutureSkew is the corresponding positive clock
+	// skew accepted by attestation.CheckTimestamp. Keep the age and future-skew
+	// windows equal while that shared validator uses a symmetric bound.
+	RegistrationAttestationMaxFutureSkew = RegistrationAttestationMaxAge
+
+	// minProviderVersionForReconnectAttestation is the first provider release
+	// that rebuilds and re-signs its registration attestation on every
+	// reconnect. The same release introduced signed protected-runtime claims;
+	// older providers retain challenge-based liveness but cannot receive
+	// effective protected capabilities.
+	minProviderVersionForReconnectAttestation = "0.8.15"
 
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
@@ -184,6 +199,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		if s.codeAttestThrottle != nil {
+			s.codeAttestThrottle.clearResumeChallenges(providerID)
+		}
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -294,6 +312,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
+			if provider != nil {
+				s.logger.Warn("rejecting second register on provider connection",
+					"provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "provider already registered")
+				return
+			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
@@ -364,6 +388,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
+				provider.MetallibVerified = runtimeOK &&
+					runtimeManifestApprovesMetallib(
+						s.knownRuntimeManifest, regMsg.TemplateHashes)
+				if !runtimeOK || !provider.MetallibVerified {
+					provider.RuntimeCapabilities = nil
+					provider.FreshCodeAttested = false
+				}
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
@@ -401,6 +432,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
 			}
 
@@ -416,7 +450,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
+			}
+
+			if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+				s.logger.Warn("provider attested runtime claims rejected",
+					"provider_id", providerID,
+					"reason", err.Error(),
+				)
+				s.registry.MarkUntrusted(providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "attested runtime claims mismatch")
+				return
 			}
 
 			// Declaratively tell the provider the desired build per alias it
@@ -1336,73 +1383,63 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify runtime integrity hashes from the signed challenge response.
-	// Swift providers omit Python/vllm hashes, but must still match manifest
-	// entries for external runtime assets such as mlx.metallib.
-	if s.knownRuntimeManifest != nil {
-		runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
-		provider.Mu().Lock()
-		provider.RuntimeVerified = runtimeOK
-		provider.RuntimeManifestChecked = runtimeOK
-		if resp.PythonHash != "" {
-			provider.PythonHash = resp.PythonHash
+	// Always ingest the signed runtime identity, even while policy is withdrawn:
+	// otherwise a changed/omitted identity could leave stale approved hashes that
+	// re-promote when the old manifest returns.
+	runtimePolicyActive, runtimeOK, mismatches :=
+		s.applyChallengeRuntimePolicy(provider, resp)
+	if runtimePolicyActive && !runtimeOK {
+		// Log detailed mismatch info for debugging outages.
+		mismatchDetails := make([]string, 0, len(mismatches))
+		for _, m := range mismatches {
+			mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
 		}
-		if resp.RuntimeHash != "" {
-			provider.RuntimeHash = resp.RuntimeHash
-		}
-		if len(resp.TemplateHashes) > 0 {
-			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-		}
-		provider.Mu().Unlock()
-
-		if !runtimeOK {
-			// Log detailed mismatch info for debugging outages.
-			mismatchDetails := make([]string, 0, len(mismatches))
-			for _, m := range mismatches {
-				mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+		s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
+			"provider_id", providerID,
+			"mismatches", len(mismatches),
+			"details", mismatchDetails,
+			"backend", provider.Backend,
+		)
+		// Send status feedback but do NOT fail the challenge or mark untrusted.
+		// The provider remains connected but is excluded from routing until
+		// it reports matching hashes.
+		if provider.Conn != nil {
+			statusMsg := protocol.RuntimeStatusMessage{
+				Type:       protocol.TypeRuntimeStatus,
+				Verified:   false,
+				Mismatches: mismatches,
 			}
-			s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
-				"provider_id", providerID,
-				"mismatches", len(mismatches),
-				"details", mismatchDetails,
-				"backend", provider.Backend,
-			)
-			// Send status feedback but do NOT fail the challenge or mark untrusted.
-			// The provider remains connected but is excluded from routing until
-			// it reports matching hashes.
-			if provider.Conn != nil {
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   false,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					if err := provider.EnqueueText(context.Background(), statusData); err != nil {
-						s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
-						s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
-					}
+			statusData, err := json.Marshal(statusMsg)
+			if err == nil {
+				if err := provider.EnqueueText(context.Background(), statusData); err != nil {
+					s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
+					s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
 				}
 			}
-			return
 		}
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
 	}
 
-	provider.Mu().Lock()
-	version := provider.Version
-	provider.Mu().Unlock()
-	if s.minProviderVersion != "" && version != "" && semverLess(version, s.minProviderVersion) {
-		s.logger.Warn("provider version below minimum during challenge revalidation — excluded from routing",
+	version, versionAllowed := s.applyChallengeMinVersionPolicy(provider)
+	if !versionAllowed {
+		s.logger.Warn("provider version below minimum during challenge revalidation — excluding from routing",
 			"provider_id", providerID,
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
 		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
-		provider.Mu().Lock()
-		provider.RuntimeVerified = false
-		provider.RuntimeManifestChecked = false
-		provider.Mu().Unlock()
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
+	}
+
+	if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+		s.logger.Warn("provider live runtime claims no longer match attestation",
+			"provider_id", providerID,
+			"reason", err.Error(),
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "attested runtime claims mismatch")
 		return
 	}
 
@@ -1503,6 +1540,73 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			provider.SignalChallengeSettled()
 		}
 	}
+}
+
+// applyChallengeRuntimePolicy first records the exact signed runtime identity,
+// then applies the current manifest policy when one exists. Policy withdrawal
+// keeps runtime gates closed without invalidating an unchanged process proof;
+// any changed or omitted identity clears FreshCodeAttested independently.
+func (s *Server) applyChallengeRuntimePolicy(
+	provider *registry.Provider,
+	resp *protocol.AttestationResponseMessage,
+) (bool, bool, []protocol.RuntimeMismatch) {
+	manifest := s.knownRuntimeManifest
+	policyActive := manifest != nil
+	runtimeOK := false
+	var mismatches []protocol.RuntimeMismatch
+	if policyActive {
+		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
+			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+	}
+
+	provider.Mu().Lock()
+	runtimeIdentityChanged :=
+		resp.PythonHash != provider.PythonHash ||
+			resp.RuntimeHash != provider.RuntimeHash ||
+			!maps.EqualFunc(
+				resp.TemplateHashes,
+				provider.TemplateHashes,
+				strings.EqualFold,
+			)
+
+	provider.RuntimeVerified = policyActive && runtimeOK
+	provider.RuntimeManifestChecked = policyActive && runtimeOK
+	provider.MetallibVerified = policyActive && runtimeOK &&
+		runtimeManifestApprovesMetallib(manifest, resp.TemplateHashes)
+	if !provider.RuntimeVerified ||
+		!provider.MetallibVerified ||
+		runtimeIdentityChanged {
+		provider.RuntimeCapabilities = nil
+	}
+	if runtimeIdentityChanged {
+		provider.FreshCodeAttested = false
+	}
+	provider.PythonHash = resp.PythonHash
+	provider.RuntimeHash = resp.RuntimeHash
+	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
+	provider.Mu().Unlock()
+	return policyActive, runtimeOK, mismatches
+}
+
+// applyChallengeMinVersionPolicy clears only policy-derived runtime state when
+// the coordinator temporarily raises its version floor. The unchanged process
+// proof remains valid and can promote capabilities again if policy rolls back.
+func (s *Server) applyChallengeMinVersionPolicy(
+	provider *registry.Provider,
+) (string, bool) {
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	version := provider.Version
+	if s.minProviderVersion == "" ||
+		version == "" ||
+		!semverLess(version, s.minProviderVersion) {
+		return version, true
+	}
+	provider.RuntimeVerified = false
+	provider.RuntimeManifestChecked = false
+	provider.MetallibVerified = false
+	provider.RuntimeCapabilities = nil
+	return version, false
 }
 
 // handleTransientChallengeFailure records a transient challenge failure
@@ -2573,6 +2677,31 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
+	enforceReconnectFreshness := regMsg.Version != "" &&
+		!semverLess(regMsg.Version, minProviderVersionForReconnectAttestation)
+	if enforceReconnectFreshness &&
+		!attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+		result.Valid = false
+		result.Error = "attestation timestamp outside freshness window"
+		provider.SetAttestationResult(&result)
+		s.registry.MarkUntrusted(providerID)
+		s.logger.Warn("provider registration attestation replay rejected",
+			"provider_id", providerID)
+		return
+	}
+
+	if !enforceReconnectFreshness {
+		// Pre-0.8.15 providers reuse their signed registration blob across
+		// reconnects. Preserve that legacy identity proof, but discard the
+		// protected-runtime fields before storing it so no later trust or
+		// challenge transition can promote apple_m5/mlx_nax from a replayable
+		// claim. Their periodic nonce challenges remain the liveness proof.
+		result.ChipFamily = ""
+		result.RuntimeCapabilities = nil
+		result.MetallibHash = ""
+		provider.SetAttestationResult(&result)
+	}
+
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
 	// attested Secure Enclave identity. If a provider wants to serve private
 	// text, the attestation must carry the same encryption public key.
@@ -3378,6 +3507,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	var providers []providerAttestation
 
+	publicProviderModels := s.registry.PublicProviderModels()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
@@ -3387,14 +3517,6 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
 		mdaResult := p.MDAResult
-		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
-		// challenge goroutine, so its slice header must be read under p.mu. Copy
-		// the IDs out within this same locked section rather than ranging the
-		// field after unlock.
-		modelIDs := make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			modelIDs = append(modelIDs, m.ID)
-		}
 		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
@@ -3415,7 +3537,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			MDAVerified: mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, modelIDs...)
+		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName

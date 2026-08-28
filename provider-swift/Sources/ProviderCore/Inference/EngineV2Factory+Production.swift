@@ -113,10 +113,20 @@ extension EngineV2Factory {
     /// that model family's routed experts off the tile route.
     public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
 
-    /// Serving default for the solo-prefill stripe (tokens). 2,048 is the
-    /// largest expert-tile-qualified stripe (16,384 assignments at top-8)
-    /// and the measured winner with trust + prompt narrowing.
+    /// Serving default for the solo-prefill stripe (tokens) for model
+    /// families whose prefill geometry is not model-specialized below.
+    /// 2,048 is the largest expert-tile-qualified stripe (16,384
+    /// assignments at top-8) and the measured winner for the Qwen MoE route
+    /// with trust + prompt narrowing.
     public static let defaultSoloPrefillStripeTokens = 2048
+
+    /// Dense Qwen3.5/Qwen3.8 has no routed-expert tile geometry to preserve.
+    /// A larger solo stripe amortizes the repeated weight reads and dispatch
+    /// overhead of long recurrent prefills while the scheduler's solo gate
+    /// keeps it away from decode work and competing requests. Keep this
+    /// separate from the MoE default: the two model families have different
+    /// kernel geometry and memory pressure.
+    public static let defaultDenseQwenSoloPrefillStripeTokens = 4096
 
     /// Env override for the concurrent-partial-prefill cap.
     public static let maxPartialPrefillsKey = "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"
@@ -160,14 +170,28 @@ extension EngineV2Factory {
     /// hatch mirrors the `=1` drain-restore convention.
     public static func soloPrefillStripeTokens(
         abovePlainChunk plainChunk: Int,
+        model: (any LanguageModel)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int? {
         guard let raw = environment[soloPrefillStripeKey] else {
-            return defaultSoloPrefillStripeTokens > plainChunk
-                ? defaultSoloPrefillStripeTokens : nil
+            let defaultStripe = defaultSoloPrefillStripeTokens(for: model)
+            return defaultStripe > plainChunk ? defaultStripe : nil
         }
         guard let value = Int(raw), value > plainChunk else { return nil }
         return value
+    }
+
+    /// Select the conservative default stripe without changing the operator
+    /// override contract. The dense target is the base Qwen35 class; the MoE
+    /// target subclasses it, so test the subclass first.
+    static func defaultSoloPrefillStripeTokens(
+        for model: (any LanguageModel)?
+    ) -> Int {
+        guard let model else { return defaultSoloPrefillStripeTokens }
+        if model is Qwen35Model, !(model is Qwen35MoEModel) {
+            return defaultDenseQwenSoloPrefillStripeTokens
+        }
+        return defaultSoloPrefillStripeTokens
     }
 
     /// Construct the scheduler configuration used by every production backend.
@@ -175,12 +199,14 @@ extension EngineV2Factory {
     /// `EngineV2`, not only the individual environment parsers.
     static func productionSchedulerConfig(
         maxConcurrentRequests: Int,
+        model: (any LanguageModel)? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
         config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
             abovePlainChunk: config.prefillChunkSize,
+            model: model,
             environment: environment)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
@@ -297,7 +323,7 @@ extension EngineV2Factory {
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma.cbv2LayerKinds)
         case let gptoss as GPTOSSModel:
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gptoss.cbv2LayerKinds)
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             guard qwen.cbv2Capabilities.supportsPrefixReuse else { return 0 }
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: qwen.cbv2LayerKinds)
         case let qwen as MLXVLM.Qwen3VL:
@@ -319,7 +345,7 @@ extension EngineV2Factory {
             return gemma.cbv2LayerKinds
         case let gptoss as GPTOSSModel:
             return gptoss.cbv2LayerKinds
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             return qwen.cbv2LayerKinds
         case let qwen as MLXVLM.Qwen3VL:
             return qwen.cbv2LayerKinds
@@ -659,7 +685,7 @@ extension EngineV2Factory {
             layerKinds = gptoss.cbv2LayerKinds
             modelCapabilities = .attentionOnly
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
-        case let qwen as Qwen35MoEModel:
+        case let qwen as Qwen35Model:
             layerKinds = qwen.cbv2LayerKinds
             modelCapabilities = qwen.cbv2Capabilities
             newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
@@ -879,6 +905,7 @@ extension EngineV2Factory {
         // preparation and sets only `enablePrefixCache`.
         let schedulerConfig = productionSchedulerConfig(
             maxConcurrentRequests: maxConcurrentRequests,
+            model: model,
             environment: environment)
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {

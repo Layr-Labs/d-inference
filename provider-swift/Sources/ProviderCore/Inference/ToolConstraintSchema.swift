@@ -1,6 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Fail-closed JSON-Schema subset used by Gemma inference-time tool grammar.
+// Fail-closed JSON-Schema subset used by forced tool-choice enforcement.
+// Gemma consumes it in the sampler grammar; Qwen consumes it at the withheld
+// parser/validation boundary before any call is exposed.
 // The subset is intentionally small and exact. Unsupported assertion keywords
 // are rejected for required/named choices instead of being prompt-only theater.
 
@@ -16,7 +18,7 @@ enum ToolConstraintMode: Sendable, Equatable {
     case required
     case named(String)
 
-    var requiresInferenceGrammar: Bool {
+    var requiresInferenceConstraint: Bool {
         switch self {
         case .none, .required, .named: true
         case .auto: false
@@ -97,7 +99,7 @@ enum ToolConstraintSchemaCompiler {
         guard tools.count <= maxTools else {
             throw ToolConstraintSchemaError.invalid("at most \(maxTools) tools are allowed")
         }
-        if mode.requiresInferenceGrammar {
+        if mode.requiresInferenceConstraint {
             switch mode {
             case .required, .named:
                 guard !tools.isEmpty else {
@@ -130,7 +132,7 @@ enum ToolConstraintSchemaCompiler {
             let raw = tool.function.parameters ?? .object(["type": .string("object")])
             let schema = try compileSchema(
                 raw, depth: 0, path: "\(name).parameters",
-                allowRenderMetadata: mode.requiresInferenceGrammar)
+                allowRenderMetadata: mode.requiresInferenceConstraint)
             guard case .object = schema else {
                 throw ToolConstraintSchemaError.invalid(
                     "\(name).parameters must have type object")

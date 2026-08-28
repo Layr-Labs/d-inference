@@ -171,12 +171,6 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	}
 	s.SyncModelCatalog()
 
-	// Push the new desired build to every connected provider already serving the
-	// alias so they converge without waiting to reconnect. Conservative policy
-	// (DesiredModelsForProvider) means only providers that already advertise a
-	// member of the alias are told.
-	s.fanOutDesiredModels()
-
 	saved, _, _ := s.store.GetModelAlias(req.AliasID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "alias": saved})
 }
@@ -277,11 +271,6 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.SyncModelCatalog()
-	// Push the post-delete desired state to the fleet. A provider whose ONLY
-	// desired entry came from this alias receives an EMPTY set — that is what
-	// marks its in-flight prefetch stale; without it the prefetch would
-	// complete, hard-swap, and drop a build the operator may still want served.
-	s.fanOutDesiredModels()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "alias_id": aliasID})
 }
 

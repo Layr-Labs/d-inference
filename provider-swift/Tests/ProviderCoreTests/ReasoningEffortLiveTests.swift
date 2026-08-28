@@ -64,7 +64,7 @@ struct ReasoningEffortLiveTests {
         func renderedPrompt(effort: String?) throws -> String {
             let ctx = MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request,
-                reasoningEffort: effort,
+                controls: .init(reasoningEffort: effort),
                 modelType: "gpt_oss")
             let tokens = try tokenizer.inner.applyChatTemplate(
                 messages: messages, tools: nil, additionalContext: ctx
@@ -129,7 +129,7 @@ struct ReasoningEffortLiveTests {
             reserveModel: { _ in },
             releaseModel: { _ in },
             defaultMaxTokens: 256,
-            reasoningEffort: "high"
+            templateControls: .init(reasoningEffort: "high")
         )
         let service = MLXOpenAIService(engine: engine)
 

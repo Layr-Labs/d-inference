@@ -262,20 +262,45 @@ struct QwenVLMTargetExtractionTests {
         #expect(defaultModule.bits == 4)
     }
 
-    @Test("plain Qwen wrapper is refused; only the combined MoE wrapper dispatches")
-    func plainQwenWrapperRefused() throws {
+    @Test("dense Qwen wrapper extracts to the wired dense target")
+    func denseQwenWrapperExtracts() throws {
         let configData = qwenTargetFixtureJSON()
         let wrapperConfig = try JSONDecoder.json5().decode(
             MLXVLM.Qwen35Configuration.self, from: configData)
         let directory = try qwenTargetFixtureDirectory(configData: configData)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        #expect(throws: EngineV2VLMTextExtractionError.self) {
-            _ = try EngineV2VLMTextExtraction.extractTextModel(
-                from: MLXVLM.Qwen35(wrapperConfig),
-                modelDirectory: directory,
-                environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
-        }
+        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+            from: MLXVLM.Qwen35(wrapperConfig),
+            modelDirectory: directory,
+            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
+
+        #expect(extraction.family == .qwen35Dense)
+        #expect(extraction.servingModel is Qwen35Model)
+    }
+
+    @Test("dense Qwen uses the long-context solo prefill stripe")
+    func denseQwenUsesLongContextSoloStripe() throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+
+        let denseScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: dense,
+            environment: [:])
+        let moeScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: moe,
+            environment: [:])
+
+        #expect(
+            denseScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
+        #expect(
+            moeScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
     @Test("benchmark resolution uses the same extracted Qwen target")
@@ -368,7 +393,7 @@ struct QwenVLMTargetExtractionTests {
     }
 
 
-    @Test("production factory accepts only the wired Qwen MoE target family")
+    @Test("production factory accepts wired Qwen dense and MoE target families")
     func factoryAcceptanceAndRefusal() throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
@@ -385,13 +410,15 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
         #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
 
-        #expect(throws: EngineV2ProductionError.self) {
-            _ = try EngineV2Factory.prepareProductionBackend(
-                model: Qwen35Model(config),
-                kvBytesCapacity: 1 << 20,
-                maxConcurrentRequests: 2,
-                kvBackend: EngineV2KVBackendSelection.contiguous)
-        }
+        let dense = try EngineV2Factory.prepareProductionBackend(
+            model: Qwen35Model(config),
+            kvBytesCapacity: 1 << 20,
+            maxConcurrentRequests: 2,
+            kvBackend: EngineV2KVBackendSelection.contiguous)
+
+        #expect(dense.kind == EngineV2KVBackendKind.contiguous)
+        #expect(dense.layerKinds.count == 1)
+        #expect(dense.modelCapabilities.supportsPrefixReuse == false)
     }
 
     @Test("Qwen core capability veto forces paged selection to contiguous before preflight")

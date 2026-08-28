@@ -11,11 +11,14 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -114,7 +117,18 @@ func (s *Server) tryCrossVersionReuse(providerID string, provider *registry.Prov
 	return true
 }
 
-func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider *registry.Provider) {
+func (s *Server) codeAttestLoop(
+	ctx context.Context, providerID string, provider *registry.Provider,
+) {
+	s.codeAttestLoopWithResume(ctx, providerID, provider, true)
+}
+
+func (s *Server) codeAttestLoopWithResume(
+	ctx context.Context,
+	providerID string,
+	provider *registry.Provider,
+	allowResume bool,
+) {
 	if s.codeAttestor == nil || provider == nil {
 		return
 	}
@@ -122,6 +136,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	provider.Mu().Lock()
 	apnsToken := provider.APNsDeviceToken
 	version := provider.Version
+	nodeKey := provider.PublicKey
 	var seKey string
 	if provider.AttestationResult != nil {
 		seKey = provider.AttestationResult.PublicKey
@@ -133,23 +148,37 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 			"provider_id", providerID)
 		return
 	}
+	requiresProcessProof := provider.RequiresFreshRuntimeCodeProof()
 
-	// Reuse a recent, same-version, SAME-TOKEN attestation for this device instead
-	// of spending a push — the binary can't have changed (same version), the APNs
-	// token is unchanged (Codex #7), and the proof is fresh.
+	// General reuse remains valid for ordinary models. Protected capability
+	// reuse additionally requires the exact registration X25519 process key that
+	// completed the prior live proof.
 	if s.codeAttestThrottle.reuseAttestation(seKey, version, apnsToken) {
 		provider.SetCodeAttested(true)
 		s.registry.DrainQueuedRequestsForProvider(provider)
 		s.codeAttestMetric("reused")
-		s.logger.Info("code-attest: reused a recent attestation for this device (no push)",
-			"provider_id", providerID)
-		return
+		if !requiresProcessProof {
+			return
+		}
+		if allowResume && s.codeAttestThrottle.reuseAttestationForProcess(
+			seKey, version, apnsToken, nodeKey,
+		) {
+			if s.sendCodeIdentityResumeChallenge(
+				ctx, providerID, provider, nodeKey, seKey, apnsToken,
+			) {
+				s.codeAttestMetric("resume_sent")
+				return
+			}
+			if ctx.Err() != nil {
+				return // canceled resume write must not spend APNs budget
+			}
+		}
 	}
 
 	// Cross-version reuse (every update bumps the version, missing the same-version
 	// reuse above). Try up front; the loop also re-checks since the fences arm
 	// concurrently on a fresh connection.
-	if s.tryCrossVersionReuse(providerID, provider) {
+	if !requiresProcessProof && s.tryCrossVersionReuse(providerID, provider) {
 		return
 	}
 
@@ -163,8 +192,9 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 	pushes := 0
 	prevSent := false // the last push was accepted by APNs but not yet answered
 	for {
-		if provider.GetCodeAttested() {
-			return // attested by the delivery path; nothing more to do
+		if provider.GetCodeAttested() &&
+			(!requiresProcessProof || provider.GetFreshCodeAttested()) {
+			return // delivery path completed the proof required by this provider
 		}
 		if provider.ChallengeShouldStop() {
 			return // hard (non-recoverable) untrust — stop challenging
@@ -172,7 +202,7 @@ func (s *Server) codeAttestLoop(ctx context.Context, providerID string, provider
 
 		// Re-check each iteration: the fences arm concurrently, so a connection that
 		// missed up front may reuse now instead of burning a push.
-		if s.tryCrossVersionReuse(providerID, provider) {
+		if !requiresProcessProof && s.tryCrossVersionReuse(providerID, provider) {
 			return
 		}
 
@@ -261,8 +291,13 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		// Fail-closed: a changed token must complete a fresh round-trip before it
 		// is treated as code-attested (and thus routable) again.
 		provider.CodeAttested = false
+		provider.FreshCodeAttested = false
+		provider.RuntimeCapabilities = nil
 	}
 	provider.Mu().Unlock()
+	if changed {
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+	}
 
 	if changed {
 		// No bypass: drop the cached reuse record (in-memory) AND the persisted
@@ -276,6 +311,7 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		// the new token has its own Apple budget (Codex #9).
 		s.codeAttestThrottle.invalidateReuse(seKey)
 		s.codeAttestThrottle.clearChallenge(seKey)
+		s.codeAttestThrottle.clearResumeChallenges(providerID)
 		s.codeAttestThrottle.clearPushBudget(seKey)
 		s.invalidatePersistedCodeAttestation(seKey)
 		s.codeAttestMetric("rearm_token_changed")
@@ -289,6 +325,124 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 
 	saferun.Go(s.logger, "codeAttestRearm", func() {
 		s.codeAttestLoop(ctx, providerID, provider)
+	})
+}
+
+// sendCodeIdentityResumeChallenge performs a one-time private-key possession
+// check over the live WebSocket. Cached SE+token+K equality only authorizes
+// sending this challenge; it never grants capabilities by itself.
+func (s *Server) sendCodeIdentityResumeChallenge(
+	ctx context.Context,
+	providerID string,
+	provider *registry.Provider,
+	nodeKeyB64, seKey, token string,
+) bool {
+	if s.codeResumeBeforeIdentityCheck != nil {
+		s.codeResumeBeforeIdentityCheck()
+	}
+	provider.Mu().Lock()
+	identityCurrent := provider.PublicKey == nodeKeyB64 &&
+		provider.APNsDeviceToken == token
+	provider.Mu().Unlock()
+	if !identityCurrent {
+		return false
+	}
+	rawKey, err := base64.StdEncoding.DecodeString(nodeKeyB64)
+	if err != nil || len(rawKey) != 32 {
+		return false
+	}
+	var nodeKey [32]byte
+	copy(nodeKey[:], rawKey)
+	session, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		return false
+	}
+	nonceBytes := make([]byte, 32)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return false
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	nonce := base64.StdEncoding.EncodeToString(nonceBytes) + "." +
+		base64.RawURLEncoding.EncodeToString(tokenHash[:])
+	encrypted, err := e2e.Encrypt([]byte(nonce), nodeKey, session)
+	if err != nil {
+		return false
+	}
+	message := protocol.CodeAttestationResumeChallenge{
+		Type: protocol.TypeCodeAttestationResumeChallenge,
+		CodeChallenge: protocol.EncryptedPayload{
+			EphemeralPublicKey: encrypted.EphemeralPublicKey,
+			Ciphertext:         encrypted.Ciphertext,
+		},
+	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		return false
+	}
+	resumeDone := s.codeAttestThrottle.recordResumeChallenge(
+		nonce, providerID, nodeKeyB64, seKey, token)
+	if s.codeResumeSender != nil {
+		if err := s.codeResumeSender(providerID, message); err != nil {
+			s.codeAttestThrottle.consumeResumeChallenge(
+				nonce, providerID, nodeKeyB64, seKey, token)
+			return false
+		}
+		s.armCodeIdentityResumeFallback(
+			ctx, providerID, provider, nonce, nodeKeyB64, seKey, token, resumeDone)
+		return true
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := provider.WriteText(sendCtx, data); err != nil {
+		s.codeAttestThrottle.consumeResumeChallenge(
+			nonce, providerID, nodeKeyB64, seKey, token)
+		return false
+	}
+	s.armCodeIdentityResumeFallback(
+		ctx, providerID, provider, nonce, nodeKeyB64, seKey, token, resumeDone)
+	return true
+}
+
+func (s *Server) armCodeIdentityResumeFallback(
+	ctx context.Context,
+	providerID string,
+	provider *registry.Provider,
+	nonce, nodeKey, seKey, token string,
+	done <-chan struct{},
+) {
+	expiresAt, ok := s.codeAttestThrottle.resumeChallengeExpiry(
+		nonce, providerID, nodeKey, seKey, token,
+	)
+	if !ok {
+		return
+	}
+	saferun.Go(s.logger, "codeAttestResumeFallback", func() {
+		delay := time.Until(expiresAt)
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-timer.C:
+		}
+		if !s.codeAttestThrottle.expireResumeChallenge(
+			nonce, providerID, nodeKey, seKey, token,
+		) {
+			return // response, disconnect cleanup, or another timer won
+		}
+		if s.codeResumeFallbackBeforeAPNs != nil {
+			s.codeResumeFallbackBeforeAPNs()
+		}
+		if ctx.Err() != nil {
+			return // connection canceled after timer won; do not spend APNs budget
+		}
+		s.codeAttestMetric("resume_timeout")
+		s.codeAttestLoopWithResume(ctx, providerID, provider, false)
 	})
 }
 
@@ -335,9 +489,10 @@ func (s *Server) sendCodeIdentityChallenge(ctx context.Context, providerID strin
 	}
 	nonceB64 := base64.StdEncoding.EncodeToString(nonceBytes)
 
-	// Record BEFORE the push so a reply that races back (even on another
-	// connection) is matchable. Keyed by SE key, so it survives reconnects.
-	s.codeAttestThrottle.recordChallenge(sePubKey, nonceB64)
+	// Record the token + process key used for E_K(nonce). A reply landing on a
+	// later connection is accepted only when both identities still match.
+	s.codeAttestThrottle.recordChallengeForIdentity(
+		sePubKey, nonceB64, deviceToken, pubKey)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
@@ -379,8 +534,10 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	if resp == nil {
 		return
 	}
-	if provider.GetCodeAttested() {
-		return // already attested on this connection; ignore duplicate/late replies
+	if provider.GetCodeAttested() &&
+		(!provider.RequiresFreshRuntimeCodeProof() ||
+			provider.GetFreshCodeAttested()) {
+		return // already holds every proof required by this connection
 	}
 
 	provider.Mu().Lock()
@@ -390,6 +547,7 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	}
 	version := provider.Version
 	apnsToken := provider.APNsDeviceToken
+	nodeKey := provider.PublicKey
 	provider.Mu().Unlock()
 
 	if sePubKey == "" {
@@ -399,12 +557,15 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		return
 	}
 
-	// Match against ANY still-valid nonce we pushed to THIS device (survives
-	// reconnect, and accepts a reply to an earlier in-flight challenge in alert
-	// mode; no/expired match => fail-closed) — Codex #8.
-	if resp.Nonce == "" || !s.codeAttestThrottle.matchChallenge(sePubKey, resp.Nonce) {
+	resumeProof := resp.Nonce != "" &&
+		s.codeAttestThrottle.matchResumeChallenge(
+			resp.Nonce, providerID, nodeKey, sePubKey, apnsToken)
+	apnsProof := !resumeProof && resp.Nonce != "" &&
+		s.codeAttestThrottle.matchChallengeForIdentity(
+			sePubKey, resp.Nonce, apnsToken, nodeKey)
+	if !resumeProof && !apnsProof {
 		s.codeAttestMetric("nonce_mismatch")
-		s.logger.Warn("code-attest response nonce mismatch or no outstanding challenge",
+		s.logger.Warn("code-attest response nonce mismatch or expired proof",
 			"provider_id", providerID)
 		return
 	}
@@ -415,15 +576,30 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		s.logger.Warn("code-attest signature verification failed", "provider_id", providerID, "error", err)
 		return
 	}
+	if resumeProof {
+		if !s.codeAttestThrottle.consumeResumeChallenge(
+			resp.Nonce, providerID, nodeKey, sePubKey, apnsToken,
+		) {
+			return // timeout/disconnect/racing response consumed it first
+		}
+	} else if !s.codeAttestThrottle.consumeChallengeForIdentity(
+		sePubKey, resp.Nonce, apnsToken, nodeKey,
+	) {
+		return
+	}
 
-	provider.SetCodeAttested(true)
-	s.codeAttestThrottle.recordAttested(sePubKey, version, apnsToken)
-	// Persist the same record (incl. the bound APNs token) so the reuse cache
-	// survives a coordinator restart/blue-green deploy (W5 Fix 2) yet still forces a
-	// re-challenge if the token later rotates (Codex #7). Behind the store seam +
-	// off the read loop; written only here, after the full round-trip verified above.
-	s.persistCodeAttestation(sePubKey, version, apnsToken)
-	s.codeAttestThrottle.clearChallengeIf(sePubKey, resp.Nonce)
+	if !provider.GrantProcessCodeAttested(apnsToken, nodeKey) {
+		s.codeAttestMetric("identity_rotated")
+		return
+	}
+	if apnsProof {
+		s.codeAttestThrottle.recordAttestedForProcess(
+			sePubKey, version, apnsToken, nodeKey)
+		// Persist the SE+token+process-key binding. Reuse still requires a live
+		// encrypted nonce PoP before protected capabilities are restored.
+		s.persistCodeAttestation(sePubKey, version, apnsToken, nodeKey)
+		// The APNs challenge was atomically consumed after signature verification.
+	}
 	s.codeAttestMetric("attested")
 	s.logger.Info("provider code-attested via APNs", "provider_id", providerID)
 	// Newly eligible for private routing — drain requests that queued waiting for an

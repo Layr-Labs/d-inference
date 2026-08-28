@@ -129,6 +129,11 @@ func (s *Server) openRouterAliasEntries(
 		}
 
 		reg, hasReg := registryByID[primary]
+		var capabilities []string
+		if hasReg {
+			capabilities = reg.Capabilities
+		}
+		inputModalities, outputModalities := deriveModalities(modelType, capabilities)
 		displayName := a.DisplayName
 		if displayName == "" {
 			displayName = openRouterModelName(cm, reg, hasReg, a.AliasID)
@@ -137,8 +142,8 @@ func (s *Server) openRouterAliasEntries(
 			ID:                a.AliasID,
 			HuggingFaceID:     huggingFaceIDForModel(primary, reg.Metadata),
 			Name:              displayName,
-			InputModalities:   []string{"text"},
-			OutputModalities:  []string{"text"},
+			InputModalities:   inputModalities,
+			OutputModalities:  outputModalities,
 			SupportedFeatures: []string{},
 			IsReady:           true,
 		}

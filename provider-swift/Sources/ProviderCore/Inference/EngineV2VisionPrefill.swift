@@ -299,14 +299,14 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil
+        templateControls: ChatTemplateControls = .init()
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: reasoningEffort)
+            from: request, templateControls: templateControls)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
@@ -387,6 +387,7 @@ public enum EngineV2VisionPrefill {
             throw EngineV2VisionPrefillError.unsupportedMedia(
                 qwen3VLUnsupportedVideoDetail)
         }
+        try Task.checkCancellation()
         let lmInput = try await ctx.processor.prepare(input: userInput)
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
@@ -402,7 +403,7 @@ public enum EngineV2VisionPrefill {
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
-        if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
+        if let wrapper = ctx.model as? MLXVLM.Qwen35 {
             return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
@@ -412,7 +413,8 @@ public enum EngineV2VisionPrefill {
                 String(describing: type(of: ctx.model)))
         }
         return try buildGemmaSubmission(
-            wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens)
+            wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
+            mlxErrors: mlxErrors)
     }
 
     static let qwen3VLUnsupportedVideoDetail =
@@ -477,10 +479,11 @@ public enum EngineV2VisionPrefill {
         }
     }
 
-    /// Qwen3.5 MoE: causal visual tokens, M-RoPE position state, and its
-    /// existing image/video tower seams.
+    /// Dense and MoE Qwen3.5/Qwen3.8: causal visual tokens, request-owned
+    /// M-RoPE position state, one image per tower invocation, and one full
+    /// T×H×W tower invocation per video.
     private static func buildQwenSubmission(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         lmInput: LMInput,
         promptTokens: [Int],
         towerLimits: VisionTowerBudget.Limits,
@@ -554,6 +557,7 @@ public enum EngineV2VisionPrefill {
         // Features are already materialized per image/video; only the
         // position ids are still lazy here.
         eval(position.promptPositionIds)
+        try throwIfMLXFaulted(mlxErrors)
         return PreparedSubmission(
             promptTokens: promptTokens,
             spans: carved.map(\.span),
@@ -566,13 +570,15 @@ public enum EngineV2VisionPrefill {
                 ? .image : (lmInput.image == nil ? .video : .mixed))
     }
 
+
     /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
     /// tower whose own seam already forwards one image (or one sampled video
     /// frame) at a time with a fixed per-image patch count.
     private static func buildGemmaSubmission(
         wrapper: MLXVLM.Gemma4,
         lmInput: LMInput,
-        promptTokens: [Int]
+        promptTokens: [Int],
+        mlxErrors: MLX.ErrorBox
     ) throws -> PreparedSubmission {
         // Vision tower + multimodal projector — the SAME arrays the
         // wrapper's own `prepare` scatters: one per image, one per
@@ -640,6 +646,7 @@ public enum EngineV2VisionPrefill {
         // thread (where the fused tower graph would stall every
         // co-batched request's decode step for the duration).
         eval(embeddings)
+        try throwIfMLXFaulted(mlxErrors)
         return PreparedSubmission(
             promptTokens: promptTokens,
             spans: carved.map(\.span),
@@ -872,12 +879,14 @@ public enum EngineV2VisionPrefill {
 /// preparer so the full routing seam is exercisable without model weights.
 public struct EngineV2VisionPlumbing: Sendable {
     let prepare:
-        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?) async throws
+        @Sendable (ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls) async throws
             -> EngineV2VisionPrefill.PreparedSubmission
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?)
+        prepare: @escaping @Sendable (
+            ModelContainer, OpenAIChatCompletionRequest, ChatTemplateControls
+        )
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {
@@ -886,9 +895,10 @@ public struct EngineV2VisionPlumbing: Sendable {
     }
 
     static let production = EngineV2VisionPlumbing(
-        prepare: { container, request, reasoningEffort in
+        prepare: { container, request, templateControls in
             try await EngineV2VisionPrefill.prepare(
-                container: container, request: request, reasoningEffort: reasoningEffort)
+                container: container, request: request,
+                templateControls: templateControls)
         },
         emitTelemetry: { TelemetryClient.shared.emit($0) }
     )

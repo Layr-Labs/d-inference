@@ -69,25 +69,26 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` is deliberately architecture-based rather than model-id-based:
-/// Qwen 3.5/3.6 MoE checkpoints share `qwen3_5_moe`, while Gemma remains an
-/// explicit opt-in. Artifact inspection and the process-wide kill switch are
-/// still enforced later by `SpecDecArtifactFunnel`.
+/// `auto` preserves the distinction between an absent setting and an explicit
+/// rollback. It defaults MTP on only for the exact production Qwen3.8 target;
+/// every other model retains the historical absent-config default of off.
+/// Artifact validation and the process-wide kill switch remain enforced by
+/// `SpecDecArtifactFunnel`.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
-    func enablesMTP(forModelType modelType: String?) -> Bool {
+    static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
+
+    func enablesMTP(forModelID modelID: String) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            return modelType?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased() == "qwen3_5_moe"
+            return modelID == Self.automaticTargetModelID
         }
     }
 }
@@ -188,17 +189,16 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var startupSelftestFailClosed: Bool
     /// MTP (multi-token prediction / speculative decoding) policy
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
-    /// Automatic mode activates only Qwen 3.5/3.6 MoE targets; Gemma remains
-    /// opt-in. The legacy `mtp = true|false` key is accepted only when
-    /// `mtp_mode` is absent. Serialization emits only `mtp_mode`.
+    /// Automatic mode activates only the exact production Qwen3.8 target.
+    /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
+    /// absent. Serialization emits only `mtp_mode`.
     ///
-    /// Artifact resolution/load remains fail-open to plain decode, and
+    /// Artifact resolution/load remains fail-open to target-only decode, and
     /// `DARKBLOOM_CBV2_MTP=0` remains the final process-wide kill switch.
     public var mtpMode: MTPMode
     /// Source-compatible view of the former boolean setting. Reading is true
     /// only for an explicit `.on`; assigning performs an explicit on/off
-    /// override rather than materializing an automatic decision without a
-    /// model type.
+    /// override rather than materializing the automatic model decision.
     public var mtp: Bool {
         get { mtpMode == .on }
         set { mtpMode = newValue ? .on : .off }

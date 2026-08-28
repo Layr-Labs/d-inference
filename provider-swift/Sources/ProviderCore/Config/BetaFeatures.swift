@@ -165,15 +165,17 @@ public enum BetaFeatures {
         BetaFeature(
             id: "mtp",
             title: "Multi-token prediction (speculative decoding)",
-            summary: "Force MTP on for supported CBv2 targets; Qwen 3.5/3.6 defaults to automatic MTP.",
+            summary: "Force MTP on for supported CBv2 targets; the exact Qwen3.8 production target defaults on automatically.",
             details: """
-            Automatic mode enables inline MTP for Qwen 3.5/3.6 MoE targets \
-            after artifact validation while Gemma 4 remains opt-in. Enabling \
-            this beta forces MTP on for supported targets; disabling it forces \
-            MTP off. Drafter resolution and load are fail-open (any problem \
-            falls back to plain decode). A Gemma drafter comes from the \
-            catalog's spec_dec pointer, or set mtp_drafter_path under \
-            [backend] to a local drafter directory.
+            Automatic mode enables the separate MTP artifact only for \
+            EigenLabs/Qwen3.8-27B-4bit after immutable artifact validation; \
+            every other model remains off when config is absent. Enabling this \
+            beta writes an explicit on override for supported targets; disabling \
+            it writes the explicit off rollback. DARKBLOOM_CBV2_MTP=0 remains \
+            the final process-wide kill switch. Resolution and load are \
+            fail-open to target-only decode. Catalog assistants come from the \
+            target's spec_dec pointer, or set mtp_drafter_path under [backend] \
+            to an immutable local assistant directory.
             """,
             requiresRestart: true,
             configAddress: (section: "backend", key: "mtp_mode"),

@@ -337,6 +337,7 @@ struct EngineV2VisionPixelRunTests {
         #expect(runs == [0 ..< 50_176])
     }
 
+
     @Test("grids that under-cover the tensor are refused")
     func underCoverageIsRefused() {
         #expect(throws: EngineV2VisionPrefillError.self) {

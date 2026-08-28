@@ -30,6 +30,10 @@ on:
         description: Comma-separated capabilities (OpenRouter features, e.g. tools,reasoning,json_mode). Leave empty and opt in per model to avoid overstating capabilities.
         required: false
         default: ""
+      required_provider_capabilities:
+        description: Comma-separated provider capabilities required to serve this model (for example apple_m5,mlx_nax). Leave empty unless the model requires them.
+        required: false
+        default: ""
       max_context_length:
         description: Maximum context length
         required: true
@@ -82,6 +86,7 @@ jobs:
           ARCHITECTURE: ${{ inputs.architecture }}
           QUANTIZATION: ${{ inputs.quantization }}
           CAPABILITIES_CSV: ${{ inputs.capabilities_csv }}
+          REQUIRED_PROVIDER_CAPABILITIES: ${{ inputs.required_provider_capabilities }}
           MAX_CONTEXT_LENGTH: ${{ inputs.max_context_length }}
           MAX_OUTPUT_LENGTH: ${{ inputs.max_output_length }}
           MIN_RAM_GB: ${{ inputs.min_ram_gb }}
@@ -100,6 +105,7 @@ jobs:
             --arg architecture "$ARCHITECTURE" \
             --arg quantization "$QUANTIZATION" \
             --arg capabilities_csv "$CAPABILITIES_CSV" \
+            --arg required_provider_capabilities_csv "$REQUIRED_PROVIDER_CAPABILITIES" \
             --argjson max_context_length "$MAX_CONTEXT_LENGTH" \
             --argjson max_output_length "$MAX_OUTPUT_LENGTH" \
             --argjson min_ram_gb "$MIN_RAM_GB" \
@@ -109,7 +115,22 @@ jobs:
             --argjson promote "$PROMOTE" \
             --argjson input_price "$INPUT_PRICE" \
             --argjson output_price "$OUTPUT_PRICE" \
-            '{
+            '
+            def required_provider_capabilities:
+              gsub("^\\s+|\\s+$"; "") as $trimmed
+              | if $trimmed == "" then
+                  []
+                else
+                  ($trimmed | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $values
+                  | if ($values | all(. != "" and test("^[a-z][a-z0-9_]*$"))) then
+                      reduce $values[] as $value
+                        ([]; if index($value) then . else . + [$value] end)
+                    else
+                      error("required_provider_capabilities must be comma-separated lowercase capability names")
+                    end
+                end;
+
+            {
               model_id: $model_id,
               version: $version,
               display_name: $display_name,
@@ -120,6 +141,7 @@ jobs:
               max_output_length: $max_output_length,
               min_ram_gb: $min_ram_gb,
               capabilities: ($capabilities_csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
+              required_provider_capabilities: ($required_provider_capabilities_csv | required_provider_capabilities),
               description: $description,
               runtime_parameters: $runtime_parameters,
               metadata: $metadata,

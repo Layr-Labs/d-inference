@@ -1506,6 +1506,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	_, reasoningProvided := parsed["reasoning"]
 
 	// Accept either chat completions format (messages) or Responses API format
@@ -1589,7 +1590,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	if requiresToolConstraint && requiresVision {
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error",
@@ -1659,20 +1660,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inject model-specific defaults from the registry: reasoning_parser
-	// and max_tokens bound. Single DB lookup (cached for platform prices).
+	// Inject model-specific request defaults from the registry, then apply the
+	// model's max_tokens bound. Single DB lookup (cached for platform prices).
 	maxOutputBound := defaultMaxOutputTokens
 	// modelMaxContext is the model's max context window (0 = unknown), used by the
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
+	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
-		// Reasoning parser from runtime_parameters.
-		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
-			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
-				parsed["reasoning_parser"] = rp
-				rawBody, _ = marshalForwardBody(parsed)
-			}
+		resolvedRuntimeParameters = rec.RuntimeParameters
+		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
+			rawBody, _ = marshalForwardBody(parsed)
 		}
 		// Use the registry's max_output_length as the default max_tokens
 		// bound instead of the hardcoded 8192. This lets models like
@@ -1682,6 +1681,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			maxOutputBound = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	}
+	if err := validateResolvedToolConstraintParser(
+		parsed, validatedMode, model, s.registry.ModelType(model),
+		resolvedRuntimeParameters,
+	); err != nil {
+		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+		writeToolConstraintValidationError(w, err)
+		return
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
@@ -1735,6 +1742,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
 		if marshalErr == nil {
 			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
@@ -1945,6 +1958,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// onModelFallback callback. resolvedModel uses the new build to match the
 	// pre-extraction behavior.
 	onModelFallback := func(newModel string) bool {
+		var runtimeParameters map[string]any
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
+		}
 		body, _ := marshalForwardBody(parsed)
 		body, _, _ = applyResolvedModelReasoningPolicy(
 			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
@@ -4004,6 +4033,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	endpointKind := promptcontract.EndpointCompletions
 	if endpoint == "/v1/messages" {
 		endpointKind = promptcontract.EndpointMessages
@@ -4046,7 +4076,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
 	aliasTraits := registry.RequestTraits{
@@ -4114,6 +4144,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	genericMaxOutput := defaultMaxOutputTokens
 	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		// Keep generic endpoints aligned with chat completions: parser defaults
+		// are catalog-owned request semantics, not provider inference guesses.
+		runtimeDefaults.apply(parsed, rec.RuntimeParameters)
 		if rec.MaxOutputLength > 0 {
 			genericMaxOutput = rec.MaxOutputLength
 		}
@@ -4172,6 +4205,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		endpointBody, _ := marshalForwardBody(candidateParsed)
 		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
 			endpointKind, endpointBody)
@@ -4200,6 +4239,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	var loweringErr error
 	routingTraits := routingTraitsForModel(model)
 	refreshGenericBody := func(newModel string) bool {
+		var runtimeParameters map[string]any
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
+		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
@@ -4209,7 +4264,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		routingTraits.ParallelToolCalls = parallelToolCalls
 		return true
 	}
-	refreshGenericBody(model)
+	if !refreshGenericBody(model) {
+		return
+	}
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).

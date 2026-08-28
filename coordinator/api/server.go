@@ -149,12 +149,11 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // dominated paged's throughput and prefix-adoption wins. Paged remains
 // fully supported behind an explicit `engine_v2_kv_backend = "paged"` (see
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
-// 0.8.14 adds production EngineV2 support for Qwen3-VL-MoE and defaults
-// verified inline Qwen MTP on via model-aware automatic policy; Gemma remains
-// opt-in and DARKBLOOM_CBV2_MTP=0 remains the fleet rollback.
+// 0.8.15 adds the exact Qwen3.8 dense VLM/NAX target and verified inline MTP
+// assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.14"
+var LatestProviderVersion = "0.8.15"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -204,8 +203,11 @@ type Server struct {
 	exactCacheStatusCache         ExactCacheStatus
 	exactCacheStatusCacheExpires  time.Time
 	codeAttestor                  apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeAttestThrottle            *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache               *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	codeResumeSender              func(string, protocol.CodeAttestationResumeChallenge) error
+	codeResumeBeforeIdentityCheck func()              // test seam between cache match and challenge record
+	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
+	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -738,6 +740,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
 	}
+	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -763,6 +766,26 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.releaseKey = cfg.ReleaseKey
 
 	return s
+}
+
+func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
+	provider := s.registry.GetProvider(providerID)
+	if provider == nil {
+		return
+	}
+	provider.Mu().Lock()
+	backend, version := provider.Backend, provider.Version
+	provider.Mu().Unlock()
+	if !s.providerSupportsDesiredModels(backend, version) {
+		return
+	}
+	entries := s.registry.DesiredModelsForProvider(providerID)
+	if err := s.registry.SendDesiredModels(providerID, entries); err != nil {
+		s.logger.Warn("failed to refresh desired_models after capability promotion",
+			"provider_id", providerID,
+			"error", err,
+		)
+	}
 }
 
 // submitTelemetry enqueues a best-effort telemetry write onto the non-blocking
@@ -1019,6 +1042,8 @@ func (s *Server) SyncModelCatalog() {
 			WeightHash: row.ActiveVersion.AggregateSHA256,
 			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
 			MinRAMGB:   row.MinRAMGB,
+			RequiredProviderCapabilities: append(
+				[]string{}, row.RequiredProviderCapabilities...),
 		})
 	}
 	// Advance the prompt-artifact generation before publishing new routing
@@ -1031,6 +1056,11 @@ func (s *Server) SyncModelCatalog() {
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
 	s.syncModelAliases(registryRows)
+	// Catalog capability changes can invalidate an in-flight desired-model
+	// prefetch even when alias pointers did not change. Re-publish the filtered
+	// desired state immediately; newly ineligible providers receive an empty
+	// set, which cancels stale reconciliation work.
+	s.fanOutDesiredModels()
 	s.invalidateCatalogCache()
 }
 
@@ -1096,6 +1126,7 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
+	s.readCache.Invalidate("stats:v1")
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
@@ -1417,16 +1448,22 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		version := provider.Version
 		backend := provider.Backend
 
+		// Manifest policy is coordinator-owned and can be withdrawn, rotated,
+		// or rolled back independently of the connected process. Rebuild all
+		// policy-derived state from scratch, but preserve FreshCodeAttested:
+		// that proof remains bound to this connection's token, keys, and code.
+		// The token/key/code/trust invalidation paths clear it separately.
+		provider.RuntimeVerified = false
+		provider.RuntimeManifestChecked = false
+		provider.MetallibVerified = false
+		provider.RuntimeCapabilities = nil
+
 		if s.knownRuntimeManifest == nil {
-			// Manifest was withdrawn — deroute provider until the next
-			// successful challenge re-verifies it.
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
+			// Manifest was withdrawn — keep the process proof, but deroute the
+			// provider until policy once again approves its reported runtime.
 		} else if s.minProviderVersion != "" &&
 			version != "" &&
 			semverLess(version, s.minProviderVersion) {
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
 			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
@@ -1435,13 +1472,34 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				runtimeHash,
 				templateHashes,
 			)
-			if !runtimeOK {
-				provider.RuntimeVerified = false
-				provider.RuntimeManifestChecked = false
-			}
+			provider.RuntimeVerified = runtimeOK
+			provider.RuntimeManifestChecked = runtimeOK
+			provider.MetallibVerified = runtimeOK &&
+				runtimeManifestApprovesMetallib(
+					s.knownRuntimeManifest, templateHashes)
 		}
 		provider.Mu().Unlock()
+		if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+			s.logger.Warn("runtime policy capability reconciliation failed",
+				"provider_id", providerID, "error", err)
+		}
+		if cleared := s.registry.ClearIneligiblePendingModelLoads(providerID); cleared > 0 {
+			s.logger.Info("cleared pending model loads after runtime policy revocation",
+				"provider_id", providerID, "count", cleared)
+		}
 	}
+}
+
+func runtimeManifestApprovesMetallib(
+	manifest *RuntimeManifest,
+	reported map[string]string,
+) bool {
+	if manifest == nil {
+		return false
+	}
+	expected := strings.TrimSpace(manifest.TemplateHashes["mlx_metallib"])
+	got := strings.TrimSpace(reported["mlx_metallib"])
+	return expected != "" && got != "" && strings.EqualFold(expected, got)
 }
 
 // RuntimeManifest holds the set of accepted hashes for provider runtime components.

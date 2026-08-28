@@ -68,12 +68,13 @@ extension EngineV2Bridge {
         #if canImport(os)
         let reason = snapshot.fallbackReason?.rawValue ?? "none"
         let revision = snapshot.assistantRevision ?? "none"
+        let sourceRevision = snapshot.assistantSourceRevision ?? "none"
         let skipped = snapshot.skippedRows.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         let controller = snapshot.controllerFallbacks.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         Self.mtpLogger.info(
-            "mtp metrics model=\(self.modelId, privacy: .public) configured=\(snapshot.configured) active=\(snapshot.active) reason=\(reason, privacy: .public) revision=\(revision, privacy: .public) assistant_bytes=\(snapshot.assistantResidentBytes) depth=\(snapshot.selectedDepth) decode_bucket=\(snapshot.decodeRowBucket) rounds=\(snapshot.rounds) seeds=\(snapshot.seedRows) proposed=\(snapshot.proposedTokens) accepted=\(snapshot.acceptedDraftTokens) emitted=\(snapshot.committedEmittedTokens) skipped=\(skipped, privacy: .public) controller=\(controller, privacy: .public)"
+            "mtp metrics model=\(self.modelId, privacy: .public) configured=\(snapshot.configured) active=\(snapshot.active) reason=\(reason, privacy: .public) revision=\(revision, privacy: .public) source_revision=\(sourceRevision, privacy: .public) assistant_bytes=\(snapshot.assistantResidentBytes) depth=\(snapshot.selectedDepth) decode_bucket=\(snapshot.decodeRowBucket) rounds=\(snapshot.rounds) seeds=\(snapshot.seedRows) proposed=\(snapshot.proposedTokens) accepted=\(snapshot.acceptedDraftTokens) emitted=\(snapshot.committedEmittedTokens) skipped=\(skipped, privacy: .public) controller=\(controller, privacy: .public)"
         )
         #endif
     }

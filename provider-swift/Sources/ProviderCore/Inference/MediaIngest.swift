@@ -231,7 +231,7 @@ public enum MediaIngest {
     /// their `UserInput.Video` values for the lifetime of the returned input.
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls = .init(),
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxImagesPerRequest: Int = Self.maxImagesPerRequest,
@@ -267,7 +267,9 @@ public enum MediaIngest {
         return UserInput(
             chat: chatMessages,
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request, reasoningEffort: reasoningEffort, hasMedia: true))
+                for: request,
+                controls: templateControls,
+                hasMedia: true))
     }
 
 

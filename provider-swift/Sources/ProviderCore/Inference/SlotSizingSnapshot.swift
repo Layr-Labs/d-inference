@@ -136,10 +136,17 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 rate = fp16KVBytesPerToken(layerKinds: gemma.textModel.cbv2LayerKinds)
             case let qwen as Qwen35MoEModel:
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let qwen as Qwen35Model:
+                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
             case let qwen as MLXVLM.Qwen3VL:
                 // The wrapper is itself the production CBv2 serving model.
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
             case is MLXVLM.Qwen35MoE:
+                return ModuleFacts(
+                    bytes: bytes,
+                    moduleKVRate: nil,
+                    isQwenVLMWrapper: true)
+            case is MLXVLM.Qwen35:
                 return ModuleFacts(
                     bytes: bytes,
                     moduleKVRate: nil,

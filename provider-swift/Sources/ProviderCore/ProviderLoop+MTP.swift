@@ -14,10 +14,10 @@ extension ProviderLoop {
             SpecDecArtifactFunnel.killSwitchEnabled(
                 environment: ProcessInfo.processInfo.environment),
             let modelId = advertisedModels.values
-                // Inline Qwen assistants need no catalog prewarm.
                 .filter({
-                    EngineV2SupportedModels.isGemma4Target(modelType: $0.modelType)
-                        && backend.mtpMode.enablesMTP(forModelType: $0.modelType)
+                    (SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
+                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType))
+                        && backend.mtpMode.enablesMTP(forModelID: $0.id)
                 })
                 .map(\.id)
                 .sorted()
@@ -47,7 +47,7 @@ extension ProviderLoop {
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
-                    forModelType: modelInfo.modelType),
+                    forModelID: modelId),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 allowDownload: allowDownload,
@@ -57,6 +57,7 @@ extension ProviderLoop {
             "mtp: model=\(modelId) configured=\(prepared.status.configured) "
                 + "artifact_ready=\(prepared.artifact != nil) reason=\(reason) "
                 + "revision=\(prepared.status.revision ?? "none") "
+                + "source_revision=\(prepared.status.sourceRevision ?? "none") "
                 + "artifact_bytes=\(prepared.status.artifactBytes)")
         return prepared
     }

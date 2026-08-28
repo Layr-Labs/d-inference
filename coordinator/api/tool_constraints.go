@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 type toolChoiceMode string
@@ -68,11 +71,12 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 	}
 
 	enforceSchema := mode == toolChoiceRequired || mode == toolChoiceNamed
-	if mode.requiresGrammar() {
+	if mode.requiresInferenceConstraint() {
 		if parser, exists := root["tool_call_parser"]; exists && parser != nil {
-			if parser != "gemma" {
+			name, ok := parser.(string)
+			if !ok || !supportsInferenceEnforcedToolChoice(name) {
 				return policy, invalidToolConstraint(
-					"inference-enforced Gemma tool_choice requires tool_call_parser 'gemma'",
+					"inference-enforced tool_choice requires a supported Gemma or Qwen tool_call_parser",
 					"tool_call_parser")
 			}
 		}
@@ -105,6 +109,86 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 		return policy, err
 	}
 	return policy, nil
+}
+
+type inferenceToolParserFamily string
+
+const (
+	inferenceToolParserGemma inferenceToolParserFamily = "gemma"
+	inferenceToolParserQwen  inferenceToolParserFamily = "qwen"
+)
+
+func inferenceToolParserFamilyFor(parser string) inferenceToolParserFamily {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(parser)), "-", "_")
+	switch normalized {
+	case "gemma", "gemma4", "gemma_4":
+		return inferenceToolParserGemma
+	case "qwen3_coder", "qwen3_5", "qwen_xml", "xml", "xml_function":
+		return inferenceToolParserQwen
+	default:
+		return ""
+	}
+}
+
+func supportsInferenceEnforcedToolChoice(parser string) bool {
+	return inferenceToolParserFamilyFor(parser) != ""
+}
+
+func resolvedModelToolParserFamily(
+	modelID, modelType string,
+	runtimeParameters map[string]any,
+) inferenceToolParserFamily {
+	if parser, ok := runtimeParameters["tool_call_parser"].(string); ok {
+		if family := inferenceToolParserFamilyFor(parser); family != "" {
+			return family
+		}
+	}
+	normalizedType := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(modelType)), "-", "_")
+	switch {
+	case modelID == registry.Qwen38NAXModelID,
+		strings.HasPrefix(normalizedType, "qwen3_5"):
+		return inferenceToolParserQwen
+	case strings.HasPrefix(normalizedType, "gemma4"),
+		strings.HasPrefix(normalizedType, "gemma_4"):
+		return inferenceToolParserGemma
+	default:
+		return ""
+	}
+}
+
+func validateResolvedToolConstraintParser(
+	root map[string]any,
+	mode toolChoiceMode,
+	modelID, modelType string,
+	runtimeParameters map[string]any,
+) error {
+	if !mode.requiresInferenceConstraint() {
+		return nil
+	}
+	raw, exists := root["tool_call_parser"]
+	if !exists || raw == nil {
+		return nil // provider infers its parser from the resolved model type
+	}
+	parser, ok := raw.(string)
+	if !ok {
+		return invalidToolConstraint(
+			"tool_call_parser must be a string", "tool_call_parser")
+	}
+	actual := inferenceToolParserFamilyFor(parser)
+	if actual == "" {
+		return invalidToolConstraint(
+			"inference-enforced tool_choice requires a supported Gemma or Qwen tool_call_parser",
+			"tool_call_parser")
+	}
+	expected := resolvedModelToolParserFamily(modelID, modelType, runtimeParameters)
+	if expected != "" && actual != expected {
+		return invalidToolConstraint(
+			fmt.Sprintf(
+				"tool_call_parser %q is incompatible with resolved model %q",
+				parser, modelID),
+			"tool_call_parser")
+	}
+	return nil
 }
 
 func validateConstrainedStops(raw any) error {
@@ -151,13 +235,13 @@ func validateConstrainedStops(raw any) error {
 	return nil
 }
 
-// requiresGrammar reports whether the mode needs a sampler-level grammar, and
-// therefore a provider advertising inference-time tool_choice enforcement.
+// requiresInferenceConstraint reports whether the mode needs provider-side
+// inference-time tool_choice enforcement (a sampler grammar for Gemma or
+// withheld parse/schema validation for Qwen).
 // `none` is deliberately excluded: it is honored by hiding tools from the
 // rendered prompt and rejecting any call the model emits anyway after
-// generation, so it needs no grammar and must not be fenced to the
-// Gemma-class constrained provider pool.
-func (m toolChoiceMode) requiresGrammar() bool {
+// generation, so it must not be fenced to the constrained provider pool.
+func (m toolChoiceMode) requiresInferenceConstraint() bool {
 	return m == toolChoiceRequired || m == toolChoiceNamed
 }
 

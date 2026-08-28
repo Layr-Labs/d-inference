@@ -227,7 +227,7 @@ private func makeRoutingEngine(
     plumbing: EngineV2VisionPlumbing?,
     modelType: String = "gemma4",
     visionGate: VisionMemoryGate? = nil,
-    reasoningEffort: String? = nil
+    templateControls: ChatTemplateControls = .init()
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
@@ -242,7 +242,7 @@ private func makeRoutingEngine(
             ]
         },
         defaultMaxTokens: 64,
-        reasoningEffort: reasoningEffort,
+        templateControls: templateControls,
         engineV2Vision: plumbing
     )
 }
@@ -553,7 +553,7 @@ struct MediaKindClassificationTests {
             for: OpenAIChatCompletionRequest(
                 model: "qwen3.5-35b-a3b",
                 messages: [.init(role: .user, content: .text("hi"))]),
-            reasoningEffort: nil)
+            controls: .init())
         #expect(text?["enable_thinking"] == nil)
     }
 
@@ -561,7 +561,7 @@ struct MediaKindClassificationTests {
     func reasoningEffortTemplateContext() async throws {
         let request = imageRequest()
         let input = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: "high")
+            from: request, templateControls: .init(reasoningEffort: "high"))
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
     }
 
@@ -1167,13 +1167,13 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, templateControls in
+                effort.set(templateControls.reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = makeRoutingEngine(
             container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
-            reasoningEffort: "medium")
+            templateControls: .init(reasoningEffort: "medium"))
 
         _ = try await collectContent(
             try await router.streamChatCompletion(request: imageRequest()))

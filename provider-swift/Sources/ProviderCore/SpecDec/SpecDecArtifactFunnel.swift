@@ -144,14 +144,19 @@ actor SpecDecArtifactFunnel {
                 artifact: nil,
                 status: .disabled(.catalogUnavailable, configured: request.enabled))
         }
+        guard Self.killSwitchEnabled(environment: request.environment) else {
+            return .init(
+                artifact: nil,
+                status: .disabled(
+                    .killSwitchDisabled,
+                    configured: request.enabled))
+        }
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
         }
-        guard Self.killSwitchEnabled(environment: request.environment) else {
-            return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
-        }
         if Self.isQwen35Target(modelType: request.modelType),
-            let directory = request.modelDirectory
+            let directory = request.modelDirectory,
+            SpecDecStore.declaresInlineArtifact(directory: directory)
         {
             switch SpecDecStore.inspectInlineArtifact(directory: directory) {
             case .failure:
@@ -163,7 +168,9 @@ actor SpecDecArtifactFunnel {
                 return .init(artifact: artifact, status: .candidate(artifact))
             }
         }
-        guard Self.isGemma4Target(modelType: request.modelType) else {
+        guard Self.isGemma4Target(modelType: request.modelType)
+            || Self.isQwen35Target(modelType: request.modelType)
+        else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
 
@@ -354,8 +361,10 @@ actor SpecDecArtifactFunnel {
     }
 
     static func isQwen35Target(modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            == "qwen3_5_moe"
+        guard let modelType = modelType?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return modelType == "qwen3_5" || modelType == "qwen3_5_moe"
     }
 
     static func killSwitchEnabled(environment: [String: String]) -> Bool {

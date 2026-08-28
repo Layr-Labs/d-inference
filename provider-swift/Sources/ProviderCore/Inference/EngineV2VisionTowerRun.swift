@@ -81,9 +81,10 @@ extension EngineV2VisionPrefill {
         return runs
     }
 
+
     /// The N² buffer multiple this wrapper's vision tower will allocate, read
     /// from the model's own config against MLX's kernel-selection rule.
-    static func qwenAttentionHeadFactor(_ wrapper: MLXVLM.Qwen35MoE) -> Int {
+    static func qwenAttentionHeadFactor(_ wrapper: MLXVLM.Qwen35) -> Int {
         let vision = wrapper.config.visionConfiguration
         return VisionTowerBudget.attentionHeadFactor(
             hiddenSize: vision.hiddenSize, numHeads: vision.numHeads)
@@ -115,6 +116,7 @@ extension EngineV2VisionPrefill {
         var deepstackLevelCount: Int?
 
         for (index, grid) in grids.enumerated() {
+            try Task.checkCancellation()
             switch VisionTowerBudget.admit(
                 grids: [grid],
                 subject: Self.imageSubject(index: index, of: grids.count),
@@ -162,7 +164,7 @@ extension EngineV2VisionPrefill {
     /// for MLX faults — before the next image's graph is built, so peak device
     /// memory is one image's tower and a fault stops the loop where it happens.
     static func qwenPerImageVisionFeatures(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         pixels: MLXArray,
         grids: [THW],
         towerLimits: VisionTowerBudget.Limits,
@@ -177,6 +179,7 @@ extension EngineV2VisionPrefill {
         var features: [MLXArray] = []
         features.reserveCapacity(grids.count)
         for (index, grid) in grids.enumerated() {
+            try Task.checkCancellation()
             switch VisionTowerBudget.admit(
                 grids: [grid],
                 subject: Self.imageSubject(index: index, of: grids.count),
@@ -213,16 +216,17 @@ extension EngineV2VisionPrefill {
     }
 
     /// One `[1, softTokens, textHidden]` embedding per sampled video frame,
-    /// produced by driving the Qwen3.5 tower once per VIDEO (the full T×H×W
-    /// grid). Splitting a clip into temporal frames BEFORE the tower would
-    /// drop `temporalPatchSize` packing and disagree with `positionResult`,
-    /// which treats each video as one visual-token run of T×spatial tokens.
+    /// produced by driving the Qwen3.5/Qwen3.8 tower once per VIDEO (the full
+    /// T×H×W grid). Splitting a clip into temporal frames BEFORE the tower
+    /// would drop `temporalPatchSize` packing and disagree with
+    /// `positionResult`, which treats each video as one visual-token run of
+    /// T×spatial tokens.
     ///
     /// The seam then splits that one tower output into T frame embeddings;
     /// `carveSpans` carves the matching adjacent spans out of the single
     /// contiguous `<|video_pad|>` run the processor emitted.
     static func qwenPerVideoVisionFeatures(
-        wrapper: MLXVLM.Qwen35MoE,
+        wrapper: MLXVLM.Qwen35,
         pixels: MLXArray,
         grids: [THW],
         towerLimits: VisionTowerBudget.Limits,
@@ -233,10 +237,10 @@ extension EngineV2VisionPrefill {
         }
         let runs = try imagePixelRuns(grids: grids, totalRows: pixels.dim(0))
         let limits = towerLimits.withHeadFactor(qwenAttentionHeadFactor(wrapper))
-
         var features: [MLXArray] = []
         features.reserveCapacity(grids.reduce(0) { $0 + max(0, $1.t) })
         for (index, grid) in grids.enumerated() {
+            try Task.checkCancellation()
             switch VisionTowerBudget.admit(
                 grids: [grid],
                 subject: Self.videoSubject(index: index, of: grids.count),
@@ -247,7 +251,6 @@ extension EngineV2VisionPrefill {
             case .reject(let reason):
                 throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
             }
-
             let single = try wrapper.visionFeatures(
                 videoPixels: pixels[runs[index], 0...], videoGrids: [grid])
             guard single.ordered.count == grid.t, grid.t > 0 else {
@@ -272,4 +275,5 @@ extension EngineV2VisionPrefill {
     static func videoSubject(index: Int, of count: Int) -> String {
         count == 1 ? "this video" : "video \(index + 1) of \(count)"
     }
+
 }

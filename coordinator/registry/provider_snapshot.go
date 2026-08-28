@@ -36,7 +36,7 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 			serial = p.AttestationResult.SerialNumber
 			hardwareModel = p.AttestationResult.HardwareModel
 		}
-		warm := warmServingModel(p)
+		warm := r.warmServingModelLocked(p)
 		out = append(out, ProviderSnapshot{
 			ID:             p.ID,
 			ProviderKey:    p.PublicKey,
@@ -56,29 +56,64 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 	return out
 }
 
-// warmServingModel returns the model that counts as "loaded for routing" for
-// base-rewards eligibility, using the authoritative backend slot state
-// when present (a slot is warm only in "running"/"idle", matching the scheduler
-// at registry.go's warm check), so a crashed/reloading/idle_shutdown slot with
-// stale legacy fields is NOT treated as serving. Falls back to the reported
-// CurrentModel/WarmModels only for legacy providers that send no BackendCapacity.
-// Caller must hold p.mu.
-func warmServingModel(p *Provider) string {
+// warmServingModelLocked returns a model that is both loaded and currently
+// eligible for routing. Raw heartbeat inventory remains on Provider, but cannot
+// earn base rewards after a catalog capability change. Caller holds r.mu and
+// p.mu.
+func (r *Registry) warmServingModelLocked(p *Provider) string {
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
-			if (slot.State == "running" || slot.State == "idle") && slot.Model != "" {
+			if slotStateModelLoaded(slot.State) &&
+				r.providerServesRoutableModelLocked(p, slot.Model, false) {
 				return slot.Model
 			}
 		}
-		return "" // BackendCapacity present but no warm slot → nothing serving
+		return ""
 	}
-	if p.CurrentModel != "" {
+	if p.CurrentModel != "" &&
+		r.providerServesRoutableModelLocked(p, p.CurrentModel, false) {
 		return p.CurrentModel
 	}
-	if len(p.WarmModels) > 0 {
-		return p.WarmModels[0]
+	for _, modelID := range p.WarmModels {
+		if r.providerServesRoutableModelLocked(p, modelID, false) {
+			return modelID
+		}
 	}
 	return ""
+}
+
+// PublicProviderModelSnapshot is the capability-filtered model view exposed by
+// public provider/statistics surfaces.
+type PublicProviderModelSnapshot struct {
+	Models       []string
+	CurrentModel string
+}
+
+// PublicProviderModels returns detached, live catalog-eligible model state for
+// each connected provider. Catalog hot changes are reflected without rewriting
+// the provider's raw inventory.
+func (r *Registry) PublicProviderModels() map[string]PublicProviderModelSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]PublicProviderModelSnapshot, len(r.providers))
+	for id, p := range r.providers {
+		p.mu.Lock()
+		snapshot := PublicProviderModelSnapshot{
+			Models: make([]string, 0, len(p.Models)),
+		}
+		for _, model := range p.Models {
+			if r.providerModelAllowedByCatalogLocked(p, model) {
+				snapshot.Models = append(snapshot.Models, model.ID)
+			}
+		}
+		if p.CurrentModel != "" &&
+			r.providerServesCatalogModelLocked(p, p.CurrentModel) {
+			snapshot.CurrentModel = p.CurrentModel
+		}
+		p.mu.Unlock()
+		out[id] = snapshot
+	}
+	return out
 }
 
 // TrustMeetsMinimum reports whether a trust level satisfies the registry's

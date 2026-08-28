@@ -102,6 +102,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		activePowerWatts float64            // sum of estimated watts over online public providers
 	)
 
+	publicProviderModels := s.registry.PublicProviderModels()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
@@ -122,16 +123,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			status = "online"
 		}
 
-		// Collect available model IDs for this provider. p.Models is replaced
-		// copy-on-write by UpdateModelWeightHashes on the challenge goroutine, so
-		// its slice header must be read under p.mu; copy the IDs out and reuse the
-		// local slice for both the per-provider list and the model histogram below.
-		p.Mu().Lock()
-		provModels := make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			provModels = append(provModels, m.ID)
-		}
-		p.Mu().Unlock()
+		// Use the registry's capability-filtered provider snapshot so a catalog
+		// hot change cannot leave an ineligible pair on the public stats feed.
+		modelSnapshot := publicProviderModels[p.ID]
+		provModels := modelSnapshot.Models
 
 		lastChallengeVerified := ""
 		if last := p.GetLastChallengeVerified(); !last.IsZero() {
@@ -162,7 +157,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"cancel_during_model_load":       p.Stats.CancelDuringModelLoad,
 			"usage_gaps":                     p.Stats.UsageGaps,
 			"models":                         provModels,
-			"current_model":                  p.CurrentModel,
+			"current_model":                  modelSnapshot.CurrentModel,
 			"attested":                       p.Attested,
 			"mda_verified":                   p.MDAVerified,
 			"acme_verified":                  false, // deprecated: ACME leg removed; key kept for older consumers

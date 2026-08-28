@@ -33,5 +33,23 @@ export function modelBrand(modelId: string, family?: string): ModelBrand {
       logoAlt: "Qwen logo",
     };
   }
+  warnUnbranded(modelId, family);
   return { maker: "unknown", makerLabel: "Model" };
+}
+
+// Models reach the console straight from the coordinator catalog, so a maker we
+// have never seen shows up as the generic "Model" label with no logo and
+// nothing else flags it. Qwen sat like that across three builds before anyone
+// noticed. Warn once per identity in dev so the next new maker is obvious.
+const warned = new Set<string>();
+
+function warnUnbranded(modelId: string, family?: string) {
+  if (process.env.NODE_ENV === "production") return;
+  const key = `${modelId} ${family ?? ""}`;
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(
+    `[model-brand] no brand mapping for "${modelId}"${family ? ` (family "${family}")` : ""} — ` +
+      `falling back to the generic "Model" label. Add a branch to modelBrand().`,
+  );
 }

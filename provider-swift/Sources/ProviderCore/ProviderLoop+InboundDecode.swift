@@ -156,7 +156,8 @@ extension ProviderLoop {
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType,
-            hasMedia: MediaIngest.hasMedia(request))
+            hasMedia: MediaIngest.hasMedia(request),
+            requiresToolCall: prepared.requiresToolCall)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

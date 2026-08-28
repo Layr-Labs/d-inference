@@ -1479,7 +1479,14 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 					s.knownRuntimeManifest, templateHashes)
 		}
 		provider.Mu().Unlock()
-		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+			s.logger.Warn("runtime policy capability reconciliation failed",
+				"provider_id", providerID, "error", err)
+		}
+		if cleared := s.registry.ClearIneligiblePendingModelLoads(providerID); cleared > 0 {
+			s.logger.Info("cleared pending model loads after runtime policy revocation",
+				"provider_id", providerID, "count", cleared)
+		}
 	}
 }
 

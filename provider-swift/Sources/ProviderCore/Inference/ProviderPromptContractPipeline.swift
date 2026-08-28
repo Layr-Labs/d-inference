@@ -39,6 +39,7 @@ enum ProviderPromptContractPipeline {
                 for: request,
                 controls: templateControls,
                 modelType: modelType,
-                hasMedia: MediaIngest.hasMedia(request)))
+                hasMedia: MediaIngest.hasMedia(request),
+                requiresToolCall: prepared.requiresToolCall))
     }
 }

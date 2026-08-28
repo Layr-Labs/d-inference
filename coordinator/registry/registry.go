@@ -4122,6 +4122,37 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 	return false
 }
 
+// ClearIneligiblePendingModelLoads releases warm-pool reservations whose
+// provider/model pair no longer passes the command-side catalog and capability
+// gate. Runtime-policy revocation calls this after capability reconciliation so
+// stale protected loads cannot consume the global pending-load budget.
+func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providers[providerID]
+	if !ok {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	prefix := providerID + ":"
+	cleared := 0
+	for key := range r.pendingModelLoads {
+		if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
+			continue
+		}
+		modelID := key[len(prefix):]
+		if r.providerCanAcquireCatalogModelLocked(p, modelID) {
+			continue
+		}
+		delete(r.pendingModelLoads, key)
+		delete(r.pendingModelLoadStarted, key)
+		cleared++
+	}
+	return cleared
+}
+
 // MarkModelWarm adds a model to the provider's WarmModels list if not already
 // present. Called when load_model_status:succeeded arrives before the next
 // heartbeat, so the scheduler sees the provider as warm during queue drain.

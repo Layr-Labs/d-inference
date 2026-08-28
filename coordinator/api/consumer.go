@@ -1662,7 +1662,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
+	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		resolvedRuntimeParameters = rec.RuntimeParameters
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
 			rawBody, _ = marshalForwardBody(parsed)
 		}
@@ -1674,6 +1676,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			maxOutputBound = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	}
+	if err := validateResolvedToolConstraintParser(
+		parsed, validatedMode, model, s.registry.ModelType(model),
+		resolvedRuntimeParameters,
+	); err != nil {
+		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+		writeToolConstraintValidationError(w, err)
+		return
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
@@ -1943,10 +1953,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// onModelFallback callback. resolvedModel uses the new build to match the
 	// pre-extraction behavior.
 	onModelFallback := func(newModel string) bool {
+		var runtimeParameters map[string]any
 		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
-			runtimeDefaults.apply(parsed, rec.RuntimeParameters)
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
 		}
 		body, _ := marshalForwardBody(parsed)
 		body, _, _ = applyResolvedModelReasoningPolicy(
@@ -4174,10 +4195,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	var loweringErr error
 	routingTraits := routingTraitsForModel(model)
 	refreshGenericBody := func(newModel string) bool {
+		var runtimeParameters map[string]any
 		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
-			runtimeDefaults.apply(parsed, rec.RuntimeParameters)
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
 		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
@@ -4188,7 +4220,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		routingTraits.ParallelToolCalls = parallelToolCalls
 		return true
 	}
-	refreshGenericBody(model)
+	if !refreshGenericBody(model) {
+		return
+	}
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).

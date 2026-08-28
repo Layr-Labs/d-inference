@@ -307,6 +307,27 @@ func templateContextUsesReviewedNestedPrecedence() {
     #expect(context?["preserve_thinking"] as? Bool == true)
 }
 
+@Test("forced Qwen tool choices render a tool-only prompt")
+func templateContextDisablesThinkingForForcedQwenTools() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("call the tool"))],
+        reasoning: .init(enabled: true))
+
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(
+            reasoningEffort: "high",
+            enableThinking: true,
+            preserveThinking: true),
+        modelType: "qwen3_5",
+        requiresToolCall: true)
+
+    #expect(context?["enable_thinking"] as? Bool == false)
+    #expect(context?["reasoning_effort"] as? String == "high")
+    #expect(context?["preserve_thinking"] as? Bool == true)
+}
+
 @Test("none off and zero disable; minimal remains an explicit effort")
 func templateContextNormalizesOnlyReviewedDisableSpellings() {
     let request = OpenAIChatCompletionRequest(

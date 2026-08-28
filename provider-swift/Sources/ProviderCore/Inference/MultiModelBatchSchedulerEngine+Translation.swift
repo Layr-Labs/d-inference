@@ -51,7 +51,8 @@ extension MultiModelBatchSchedulerEngine {
         for request: OpenAIChatCompletionRequest,
         controls: ChatTemplateControls,
         modelType: String? = nil,
-        hasMedia: Bool = false
+        hasMedia: Bool = false,
+        requiresToolCall: Bool = false
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
         let fixContext = ChatTemplateFixContext(
@@ -69,7 +70,13 @@ extension MultiModelBatchSchedulerEngine {
         // none/off/0 spellings disable through reasoning_effort. `minimal` is
         // preserved as an effort value and intentionally is not rewritten to
         // false.
-        if let nested = request.reasoning?.enabled {
+        if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext) {
+            // Qwen's XML tool parser treats reasoning before <tool_call> as
+            // visible prose. Required/named tool_choice cannot expose prose,
+            // so the forced-tool contract takes precedence over thinking
+            // controls and renders a tool-only prompt.
+            context["enable_thinking"] = false
+        } else if let nested = request.reasoning?.enabled {
             context["enable_thinking"] = nested
         } else if let explicit = controls.enableThinking {
             context["enable_thinking"] = explicit

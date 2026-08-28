@@ -612,3 +612,51 @@ func TestUntrustDesiredModelsWriteIsLinearizedAfterInFlightNonempty(t *testing.T
 		t.Fatalf("wire order = %+v, want nonempty then final empty revoke", frames)
 	}
 }
+
+func TestClearIneligiblePendingModelLoadsAfterCapabilityRevocation(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{{
+		ID: Qwen38NAXModelID,
+		RequiredProviderCapabilities: []string{
+			ProviderCapabilityAppleM5,
+			ProviderCapabilityMLXNAX,
+		},
+	}})
+	provider := reg.Register("revoked-provider", nil, capabilityTestRegister(
+		Qwen38NAXModelID,
+		"M5",
+		[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX},
+	))
+	attestCapabilityTestProvider(
+		t,
+		reg,
+		provider,
+		"M5",
+		[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX},
+		capabilityTestMetallibHash,
+	)
+
+	reserved := reg.reservePendingModelLoads([]modelLoadAction{{
+		providerID: provider.ID,
+		modelID:    Qwen38NAXModelID,
+	}}, time.Now())
+	if len(reserved) != 1 || !reg.HasPendingModelLoad(provider.ID, Qwen38NAXModelID) {
+		t.Fatal("eligible protected load was not reserved")
+	}
+	if cleared := reg.ClearIneligiblePendingModelLoads(provider.ID); cleared != 0 {
+		t.Fatalf("eligible pending load cleared: %d", cleared)
+	}
+
+	provider.mu.Lock()
+	provider.RuntimeVerified = false
+	provider.RuntimeManifestChecked = false
+	provider.MetallibVerified = false
+	provider.RuntimeCapabilities = nil
+	provider.mu.Unlock()
+	if cleared := reg.ClearIneligiblePendingModelLoads(provider.ID); cleared != 1 {
+		t.Fatalf("cleared pending loads = %d, want 1", cleared)
+	}
+	if reg.HasPendingModelLoad(provider.ID, Qwen38NAXModelID) {
+		t.Fatal("revoked protected load still consumes pending budget")
+	}
+}

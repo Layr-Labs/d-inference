@@ -159,7 +159,7 @@ extension ProviderLoop {
     /// enter the `.installing` phase — still serving while the new bundle
     /// downloads and stages.
     private func claimUpdateStart(updater: SelfUpdater) -> Bool {
-        guard updatePhase == .idle, !isShuttingDown else { return false }
+        guard updatePhase == .idle, !isShuttingDown, !isOperatorDraining else { return false }
         do {
             let session = try updater.beginUpdateSession(
                 operation: "background-auto-update",
@@ -194,12 +194,17 @@ extension ProviderLoop {
         updateSession?.release()
         updateSession = nil
 
-        if let entries = deferredDesiredModels {
-            deferredDesiredModels = nil
-            if let send = outboundSend {
-                logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")
-                await reconcileDesiredModels(entries, send: send)
-            }
+        await replayDeferredDesiredModels(after: "update drain")
+    }
+
+    /// Restore the latest declarative model plan after any drain that returns
+    /// to serving. Both update and operator drains share this queue.
+    internal func replayDeferredDesiredModels(after drain: String) async {
+        guard let entries = deferredDesiredModels else { return }
+        deferredDesiredModels = nil
+        if let send = outboundSend {
+            logger.info("Replaying desired_models deferred during \(drain) (\(entries.count) entr(ies))")
+            await reconcileDesiredModels(entries, send: send)
         }
     }
 

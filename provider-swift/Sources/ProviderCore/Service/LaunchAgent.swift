@@ -435,6 +435,9 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            // Give macOS-initiated termination the same budget as the daemon's
+            // operator drain. Normal CLI actions signal and wait before bootout.
+            "ExitTimeOut": 600,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any
@@ -551,6 +554,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
     case bootstrapFailed(String)
     case bootoutFailed(String)
     case kickstartFailed(String)
+    case signalFailed(String)
     case disableFailed(String)
     case notInstalled
 
@@ -562,6 +566,8 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
             return "launchctl bootout failed: \(detail)"
         case .kickstartFailed(let detail):
             return "launchctl kickstart failed: \(detail)"
+        case .signalFailed(let detail):
+            return "could not ask the provider to drain: \(detail)"
         case .disableFailed(let detail):
             return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:

@@ -13,13 +13,19 @@ struct Stop: AsyncParsableCommand {
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isLoaded()
 
-        // Disarm crash recovery FIRST so the watchdog can't relaunch what we're
-        // stopping, and drop its timer so the next start gets a fresh grace
-        // window (uninstall additionally deletes its plist). Best-effort.
+        do {
+            try await WatchdogDrainTransaction().run {
+                _ = try await drainProviderBeforeLifecycleAction("stopping")
+            }
+        } catch {
+            printError("Stop cancelled: \(error)")
+            throw ExitCode.failure
+        }
+
+        // The transaction already disarmed crash recovery before the provider
+        // exited. Delete its plist only after a successful drain.
         if uninstall {
             try? WatchdogAgent.uninstall()
-        } else {
-            try? WatchdogAgent.stop()
         }
         try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 

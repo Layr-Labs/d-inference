@@ -20,6 +20,12 @@ struct Restart: AsyncParsableCommand {
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isLoaded()
         do {
+            _ = try await drainProviderBeforeLifecycleAction("restarting")
+        } catch {
+            printError("Restart cancelled: \(error)")
+            throw ExitCode.failure
+        }
+        do {
             try LaunchAgent.restart()
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `darkbloom start`.")

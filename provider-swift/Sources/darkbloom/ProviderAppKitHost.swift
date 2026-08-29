@@ -43,6 +43,9 @@ enum ProviderAppKitHost {
 @MainActor
 final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     private let args: [String]
+    private var serveTask: Task<Void, Never>?
+    private var signalSources: [DispatchSourceSignal] = []
+    private var terminationRequested = false
 
     init(args: [String]) {
         self.args = args
@@ -59,8 +62,9 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
         // (apsd redacts the payload as <private> and keeps no cleartext copy —
         // verified on macOS 26.4, see docs/apns-code-attestation-design.md).
         NSApplication.shared.registerForRemoteNotifications()
+        installShutdownSignalSources()
         let args = self.args
-        Task {
+        serveTask = Task {
             do {
                 let command = try Darkbloom.parseAsRoot(args)
                 if let asyncCommand = command as? AsyncParsableCommand {
@@ -70,9 +74,62 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
                     var cmd = command
                     try cmd.run()
                 }
-                exit(0)
+                if terminationRequested {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                } else {
+                    exit(0)
+                }
             } catch {
                 Darkbloom.exit(withError: error)
+            }
+        }
+    }
+
+    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationRequested else { return .terminateLater }
+        terminationRequested = true
+        requestGracefulShutdown(replyToAppKit: true)
+        return .terminateLater
+    }
+
+    private func installShutdownSignalSources() {
+        // SIGINFO is the launchd operator-drain protocol. Its default action is
+        // discard, which makes a new CLI safe against an older daemon. TERM and
+        // INT cover ordinary process and AppKit shutdown requests.
+        for signalNumber in [SIGINFO, SIGTERM, SIGINT] {
+            signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(
+                signal: signalNumber,
+                queue: .main
+            )
+            source.setEventHandler { [weak self] in
+                self?.requestGracefulShutdown(replyToAppKit: false)
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    private func requestGracefulShutdown(replyToAppKit: Bool) {
+        Task {
+            let outcome = await ProviderTerminationRelay.shared.request()
+            switch outcome {
+            case .unavailable:
+                // Startup has not installed a ProviderLoop yet, so no paid
+                // coordinator request can be active. Cancel normal startup.
+                serveTask?.cancel()
+                if replyToAppKit {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
+            case .busy, .timedOut:
+                if replyToAppKit {
+                    terminationRequested = false
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                }
+            case .drained:
+                // ProviderLoop has closed its coordinator. Its normal teardown
+                // now returns the serve task, which exits or replies to AppKit.
+                break
             }
         }
     }

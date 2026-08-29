@@ -17,7 +17,8 @@ extension ProviderLoop {
                 .filter({
                     (SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
                         || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType))
-                        && backend.mtpMode.enablesMTP(forModelID: $0.id)
+                        && backend.mtpMode.enablesMTP(
+                            forModelID: $0.id, modelType: $0.modelType)
                 })
                 .map(\.id)
                 .sorted()
@@ -47,7 +48,7 @@ extension ProviderLoop {
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
-                    forModelID: modelId),
+                    forModelID: modelId, modelType: modelInfo.modelType),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 allowDownload: allowDownload,

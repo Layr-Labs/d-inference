@@ -69,11 +69,18 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` preserves the distinction between an absent setting and an explicit
-/// rollback. It defaults MTP on only for the exact production Qwen3.8 target;
-/// every other model retains the historical absent-config default of off.
-/// Artifact validation and the process-wide kill switch remain enforced by
-/// `SpecDecArtifactFunnel`.
+/// `auto` enables MTP for the exact production Qwen3.8 target (its head is a
+/// separately published artifact resolved by id) and, by `model_type`, for
+/// the Qwen 3.5 family — dense `qwen3_5` (Qwen3.5-9B-class inline heads) and
+/// `qwen3_5_moe` (Qwen3.5/3.6 35B-A3B, inline or catalog heads). This
+/// restores the v0.8.14 family rule that #700 narrowed to the single Qwen3.8
+/// pin, and extends it to the dense checkpoints that never had it. Callers
+/// without a model type keep the pinned-id decision only.
+///
+/// Family coverage alone never activates anything: artifact inspection
+/// (`SpecDecStore`), catalog/spec-dec resolution, and the process-wide kill
+/// switch remain enforced by `SpecDecArtifactFunnel`, so a family checkpoint
+/// with no MTP artifact falls back to target-only with a recorded reason.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
@@ -81,14 +88,25 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
 
     static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
 
-    func enablesMTP(forModelID modelID: String) -> Bool {
+    /// `model_type` values whose checkpoints may carry MTP artifacts. Kept in
+    /// sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel stays the
+    /// single authority on which models it will *resolve*; this set only
+    /// decides which ones `auto` is willing to *ask about*.
+    static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+
+    func enablesMTP(forModelID modelID: String, modelType: String?) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            return modelID == Self.automaticTargetModelID
+            if modelID == Self.automaticTargetModelID { return true }
+            guard let raw = modelType?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(), !raw.isEmpty
+            else { return false }
+            return Self.automaticQwen35ModelTypes.contains(raw)
         }
     }
 }
@@ -189,7 +207,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var startupSelftestFailClosed: Bool
     /// MTP (multi-token prediction / speculative decoding) policy
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
-    /// Automatic mode activates only the exact production Qwen3.8 target.
+    /// Automatic mode activates the exact production Qwen3.8 target plus
+    /// Qwen3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) by model_type.
     /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
     /// absent. Serialization emits only `mtp_mode`.
     ///

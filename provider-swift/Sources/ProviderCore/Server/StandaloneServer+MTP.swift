@@ -12,7 +12,10 @@ enum StandaloneQwen38MTPResolver {
         environment: [String: String]
     ) -> Bool {
         guard modelID == targetModelID,
-            mode.enablesMTP(forModelID: modelID),
+            // The resolver's own id pin (line above) already decided this is
+            // the Qwen3.8 target, so the family model-type rule is moot here;
+            // nil keeps the pinned-id decision only.
+            mode.enablesMTP(forModelID: modelID, modelType: nil),
             explicitPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: environment)
         else { return false }
@@ -175,7 +178,8 @@ extension StandaloneServer {
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
-                enabled: config.mtpMode.enablesMTP(forModelID: modelId),
+                enabled: config.mtpMode.enablesMTP(
+                    forModelID: modelId, modelType: modelInfo.modelType),
                 localPath: config.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 // `darkbloom start --local` is coordinator-independent and

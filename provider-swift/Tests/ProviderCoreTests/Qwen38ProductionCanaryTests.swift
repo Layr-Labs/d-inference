@@ -39,7 +39,8 @@ struct Qwen38ProductionCanaryTests {
                 == "329261c5e0b3f9c233485e682cb3b67b88c20a55")
         #expect(fixture.modelDirectory.lastPathComponent == Qwen38ProductionCanary.targetRevision)
         #expect(MTPMode.auto.enablesMTP(
-            forModelID: Qwen38ProductionCanary.targetModelID))
+            forModelID: Qwen38ProductionCanary.targetModelID,
+            modelType: Qwen38ProductionCanary.modelType))
         #expect(fixture.assistantLayerCount == 1)
 
         var liveBundle: ProviderEngineBundle?

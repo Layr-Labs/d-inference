@@ -631,7 +631,7 @@ struct StandaloneQwen38MTPResolverTests {
     @Test("standalone automatic decision matches remote policy and preserves overrides")
     func localRemotePolicyParity() {
         let target = StandaloneQwen38MTPResolver.targetModelID
-        #expect(MTPMode.auto.enablesMTP(forModelID: target))
+        #expect(MTPMode.auto.enablesMTP(forModelID: target, modelType: nil))
         #expect(StandaloneQwen38MTPResolver.shouldResolve(
             modelID: target, mode: .auto, explicitPath: nil, environment: [:]))
         #expect(StandaloneQwen38MTPResolver.shouldResolve(

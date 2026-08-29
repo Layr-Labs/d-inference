@@ -3191,25 +3191,90 @@ func (s *MemoryStore) ListProviderTrustReuse(_ context.Context) ([]ProviderTrust
 	return out, nil
 }
 
-func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse) error {
+func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
 	if rec.SEPubKey == "" {
-		return nil
+		return ProviderTrustReuseWriteResult{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	current, ok := s.providerTrustReuse[rec.SEPubKey]
+	if ok && (current.RevokedAt != nil ||
+		current.RevocationGeneration != expectedRevocationGeneration) {
+		return ProviderTrustReuseWriteResult{
+			EvidenceGeneration:   current.EvidenceGeneration,
+			RevocationGeneration: current.RevocationGeneration,
+		}, nil
+	}
+	rec.RevocationGeneration = expectedRevocationGeneration
+	if ok {
+		rec.RevocationEventID = current.RevocationEventID
+		rec.EvidenceGeneration = current.EvidenceGeneration + 1
+	}
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
 	s.providerTrustReuse[rec.SEPubKey] = rec
-	return nil
+	return ProviderTrustReuseWriteResult{
+		Applied:              true,
+		EvidenceGeneration:   rec.EvidenceGeneration,
+		RevocationGeneration: rec.RevocationGeneration,
+	}, nil
 }
 
-func (s *MemoryStore) DeleteProviderTrustReuse(_ context.Context, seKey string) error {
-	if seKey == "" {
-		return nil
+func (s *MemoryStore) RecoverProviderTrustReuse(_ context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
+	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.providerTrustReuse, seKey)
-	return nil
+	current, ok := s.providerTrustReuse[rec.SEPubKey]
+	if ok && current.RevocationGeneration != expectedRevocationGeneration {
+		return ProviderTrustReuseWriteResult{
+			EvidenceGeneration:   current.EvidenceGeneration,
+			RevocationGeneration: current.RevocationGeneration,
+		}, nil
+	}
+	rec.RevocationGeneration = expectedRevocationGeneration
+	rec.RevokedAt = nil
+	if ok {
+		rec.RevocationEventID = current.RevocationEventID
+		rec.EvidenceGeneration = current.EvidenceGeneration + 1
+	}
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
+	s.providerTrustReuse[rec.SEPubKey] = rec
+	return ProviderTrustReuseWriteResult{
+		Applied:              true,
+		EvidenceGeneration:   rec.EvidenceGeneration,
+		RevocationGeneration: rec.RevocationGeneration,
+	}, nil
+}
+
+func (s *MemoryStore) RevokeProviderTrustReuse(_ context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error) {
+	if seKey == "" || revocationEventID == "" {
+		return ProviderTrustReuse{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.providerTrustReuse[seKey]
+	if rec.RevocationEventID == revocationEventID {
+		return rec, nil
+	}
+	rec.SEPubKey = seKey
+	rec.TrustLevel = ""
+	rec.RevocationGeneration++
+	rec.RevocationEventID = revocationEventID
+	now := time.Now().UTC()
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
+	if rec.HardwareProofVerifiedAt.IsZero() {
+		rec.HardwareProofVerifiedAt = now
+	}
+	rec.RevokedAt = &now
+	s.providerTrustReuse[seKey] = rec
+	return rec, nil
 }
 
 // --- Provider Log Reports ---

@@ -665,23 +665,26 @@ type ProviderStore interface {
 	// restarts. Best-effort; must not block the read loop.
 	DeleteCodeAttestation(ctx context.Context, seKey string) error
 
-	// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+	// --- Durable provider device evidence ---
 
-	// ListProviderTrustReuse returns all persisted trust-reuse records (for
-	// seeding the in-memory reuse cache at startup).
 	ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error)
 
-	// UpsertProviderTrustReuse creates or updates the trust-reuse record for a
-	// device (keyed by SEPubKey). Called after a successful live MDM verification;
-	// best-effort, must not block the read loop.
-	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error
+	// UpsertProviderTrustReuse records a normal successful full-device proof at
+	// the caller's expected revocation generation. It never clears a durable
+	// tombstone and returns the authoritative durable generations.
+	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error)
 
-	// DeleteProviderTrustReuse removes a device's persisted trust-reuse record
-	// (keyed by SEPubKey). Called when the provider is HARD-untrusted so a later
-	// coordinator restart cannot reseed and fast-skip on a stale pre-untrust
-	// record — keeping "hard untrust always takes effect" durable across restarts.
-	// Best-effort; must not block the read loop.
-	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
+	// RecoverProviderTrustReuse is the only store operation allowed to clear a
+	// tombstone. It succeeds only when expectedRevocationGeneration still equals
+	// the durable generation, so a raced hard-untrust wins.
+	RecoverProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error)
+
+	// RevokeProviderTrustReuse atomically installs one durable hard-untrust event.
+	// Retrying the same non-empty event ID returns the authoritative existing row
+	// unchanged, including after an ambiguous commit. A different event ID always
+	// advances the durable generation and tombstones the row, regardless of stale
+	// coordinator state.
+	RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error)
 
 	// --- Provider Log Reports ---
 

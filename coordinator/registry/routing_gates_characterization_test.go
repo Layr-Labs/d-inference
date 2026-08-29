@@ -3,6 +3,9 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // This file is a behavior-locking characterization suite for the five
@@ -348,5 +351,51 @@ func TestRoutingGateInferenceErrorCooldown(t *testing.T) {
 	}
 	if !hasWarm {
 		t.Error("warm detection must ignore the inference-error cooldown")
+	}
+}
+
+func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *testing.T) {
+	reg := &Registry{
+		providers:               make(map[string]*Provider),
+		releasePolicyGeneration: 1,
+		releasePolicyRequired:   true,
+	}
+	provider := &Provider{
+		ID: "provider", PublicKey: "process-key", Backend: BackendMLXSwift,
+		Version: "0.8.15", APNsDeviceToken: "token",
+		EncryptedResponseChunks: true,
+		RuntimeManifestChecked:  true, ChallengeVerifiedSIP: true,
+		CodeAttested: true,
+		AttestationResult: &attestation.VerificationResult{
+			Valid: true, PublicKey: "se-key", SerialNumber: "SERIAL",
+		},
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
+		},
+		ApplicationEvidence: ApplicationEvidence{
+			SEPublicKey: "se-key", Serial: "SERIAL",
+			ProcessPublicKey: "process-key", APNsToken: "token",
+			BinaryHash: "hash", Version: "0.8.15", Backend: BackendMLXSwift,
+			EvidenceGeneration: 1, PolicyGeneration: 1,
+		},
+	}
+	reg.providers[provider.ID] = provider
+	if !reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("current release evidence should authorize the routing contribution")
+	}
+
+	reg.SetReleasePolicyGeneration(2, true)
+	if reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("policy refresh retained stale release-derived routing authority")
+	}
+	if _, ok := provider.ApplicationEvidenceSnapshot(); ok {
+		t.Fatal("policy refresh did not synchronously clear application evidence")
+	}
+	if !provider.GetCodeAttested() {
+		t.Fatal("policy refresh destroyed independent genuine APNs proof")
 	}
 }

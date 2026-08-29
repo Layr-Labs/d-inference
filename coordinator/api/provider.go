@@ -950,6 +950,7 @@ func generateNonce() (string, error) {
 
 // sendChallenge sends an attestation challenge to a provider and waits for the response.
 func (s *Server) sendChallenge(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+	defer provider.SignalApplicationProofSettled()
 	nonce, err := generateNonce()
 	if err != nil {
 		s.logger.Error("failed to generate challenge nonce", "provider_id", providerID, "error", err)
@@ -1039,6 +1040,8 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // SIP status reported by the provider. If SIP has been disabled since
 // registration, the provider is marked untrusted immediately.
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
+	provider.ClearApplicationEvidence()
+	defer provider.SignalApplicationProofSettled()
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {
 		s.handleChallengeFailure(providerID, "nonce mismatch")
@@ -1455,6 +1458,14 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
 	provider.Mu().Unlock()
 
+	releaseFact := approvedReleaseTransitionFact{}
+	if fact, evidence, ok := s.deriveApprovedReleaseTransition(
+		provider, resp, statusFieldsTrusted,
+	); ok && provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+		releaseFact = fact
+		s.codeAttestMetric("direct_application_proof")
+	}
+
 	// Challenge passed. Refresh stored per-model weight hashes BEFORE
 	// RecordChallengeSuccess: its queue drain re-enters routing, and queued
 	// requests must be admitted against the hashes this verified response just
@@ -1517,7 +1528,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// first; any gate miss (no record, binary changed, posture bad/unsigned,
 		// window elapsed, hard-untrusted) returns false and falls through to the
 		// unchanged full live MDM verify.
-		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
+		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted, releaseFact) {
 			// The fast-skip granted hardware WITHOUT running the full live MDM verify,
 			// so verifyAppleDeviceAttestation never ran on this connection. Reuse the
 			// durable MDA proof (re-verified locally against Apple's root + re-bound to
@@ -2977,17 +2988,19 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		return mdmVerifyTransient
 	}
 
-	// MDM SecurityInfo verification passed — atomically upgrade to hardware trust,
-	// but NOT while the provider is currently untrusted. A missed-challenge deroute
-	// can race this in-flight MDM verify; granting would leave the registry in
-	// hardware/untrusted (routing still rejects it on Status) while telling the
-	// provider it is "online". The atomic check-and-grant closes the TOCTOU between
-	// the status check and the trust write. Recovery from a transient untrust flows
-	// through a passing SE challenge that restores Status, after which a later loop
-	// iteration grants cleanly. (A hard untrust already stops the loop via
-	// ChallengeShouldStop.)
-	if !provider.GrantHardwareIfNotUntrusted() {
-		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
+	// Durable revocation is authoritative. Persist/recover the verified device
+	// evidence at the expected generation before touching live hardware trust;
+	// then the helper atomically rechecks the provider epoch/status while granting.
+	if !s.recordTrustReuse(
+		provider,
+		attestResult.PublicKey,
+		attestResult.SerialNumber,
+		attestResult.BinaryHash,
+		mdmResult.MDMSIPEnabled,
+		mdmResult.MDMSecureBootFull,
+		mdmResult.UDID,
+	) {
+		s.ddIncr("mdm.verification", []string{"outcome:deferred-revocation-cas"})
 		return mdmVerifyTransient
 	}
 	provider.SetMDMFailureReason("")
@@ -3000,24 +3013,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
 		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
 	)
-
-	// Persist the trust upgrade.
 	s.registry.PersistProvider(provider)
-
-	// DAR-326 Phase 0: record this FULL live MDM verification in the trust-reuse
-	// cache (in-memory + durable) so a planned coordinator restart/swap can
-	// fast-skip this device's live MDM round-trip — once a fresh live SE challenge
-	// re-proves the same identity, unchanged binary, and good posture within the
-	// window. Written only here, AFTER the verified MDM pass + hardware grant.
-	s.recordTrustReuse(
-		provider,
-		attestResult.PublicKey,
-		attestResult.SerialNumber,
-		attestResult.BinaryHash,
-		mdmResult.MDMSIPEnabled,
-		mdmResult.MDMSecureBootFull,
-		mdmResult.UDID,
-	)
 
 	// Request Apple Device Attestation — Apple's servers generate a
 	// certificate chain that proves this device's identity. This cert
@@ -3071,13 +3067,21 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		if dev == nil || dev.UDID != udid {
 			continue
 		}
-		// Atomically grant unless the provider became untrusted while the response
-		// was in flight — granting then would leave hardware/untrusted (routing
-		// rejects on Status) and falsely tell the provider it's online. The
-		// check-and-grant is a single lock (closes the TOCTOU); recovery from a
-		// transient untrust flows through a passing SE challenge. Mirrors
-		// verifyProviderViaMDM.
-		if !c.provider.GrantHardwareIfNotUntrusted() {
+		attestationResult := c.provider.GetAttestationResult()
+		if attestationResult == nil || attestationResult.PublicKey == "" {
+			continue
+		}
+		// A late callback has no tombstone-recovery authority. Its normal write
+		// must win the durable generation CAS before the live epoch/status grant.
+		if !s.recordLateTrustReuse(
+			c.provider,
+			attestationResult.PublicKey,
+			c.serial,
+			attestationResult.BinaryHash,
+			true,
+			true,
+			udid,
+		) {
 			continue
 		}
 		c.provider.SetMDMFailureReason("")
@@ -3098,28 +3102,8 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 		)
 		s.registry.PersistProvider(c.provider)
 
-		// DAR-326 FIX B: cache this late grant in the trust-reuse cache too, so it
-		// gets the same restart-survivable fast-skip as the synchronous MDM path.
-		// Posture was confirmed good above (SIP on + Secure Boot full). Uses the
-		// same epoch-checked synchronous write-through (recordTrustReuse) — a
-		// concurrent hard untrust is detected and not persisted. seKey + binary hash
-		// come from the registration-bound SE attestation.
-		//
-		// FIX 1: nil-guard the derivation. The candidate set guaranteed a valid
-		// attestation + non-empty serial, but NOT a non-empty SE key or binary hash
-		// (Swift providers may omit the self-reported binary hash). Skip caching
-		// rather than call recordTrustReuse with empty values (which it would reject
-		// anyway) — keeps the intent explicit and avoids a useless call.
-		c.provider.Mu().Lock()
-		var seKey, binaryHash string
-		if c.provider.AttestationResult != nil {
-			seKey = c.provider.AttestationResult.PublicKey
-			binaryHash = c.provider.AttestationResult.BinaryHash
-		}
-		c.provider.Mu().Unlock()
-		if seKey != "" && binaryHash != "" {
-			s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
-		}
+		// Durable evidence was installed before the live grant above. No cache-only
+		// seed or post-grant write can bypass a tombstone.
 
 		// The late grant earned hardware WITHOUT the synchronous MDM verify (which
 		// runs the MDA leg via verifyAppleDeviceAttestation), so attach the durable

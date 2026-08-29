@@ -51,6 +51,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"golang.org/x/mod/semver"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -173,6 +174,23 @@ func (s *Server) latestReleasedVersion() string {
 	return LatestProviderVersion
 }
 
+type approvedReleasePolicy struct {
+	Version        string
+	Platform       string
+	Backend        string
+	BinaryHash     string
+	MetallibHash   string
+	PythonHash     string
+	RuntimeHash    string
+	TemplateHashes map[string]string
+}
+
+type releaseTrustPolicySnapshot struct {
+	Generation   uint64
+	Required     bool
+	ByBinaryHash map[string][]approvedReleasePolicy
+}
+
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
@@ -231,6 +249,8 @@ type Server struct {
 	manualBinaryHashPolicyConfigured  bool
 	releaseBinaryHashPolicyConfigured bool
 	binaryHashPolicyConfigured        bool
+	releaseTrustPolicy                atomic.Pointer[releaseTrustPolicySnapshot]
+	releaseTrustPolicyGeneration      atomic.Uint64
 
 	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
 	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
@@ -732,7 +752,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
-		trustReuseCache:          newTrustReuseCache(),
+		trustReuseCache:          newTrustReuseCacheWithTTL(cfg.HardwareProofTTL),
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
@@ -1287,6 +1307,12 @@ func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 func (s *Server) SyncBinaryHashes() {
 	releases := s.store.ListReleases()
 	hashes := make(map[string]bool)
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     len(releases) > 0,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
 	policyConfigured := false
 	for _, r := range releases {
 		if !r.Active {
@@ -1303,6 +1329,26 @@ func (s *Server) SyncBinaryHashes() {
 			continue
 		}
 		hashes[normalized] = true
+		templates := make(map[string]string)
+		for _, pair := range strings.Split(r.TemplateHashes, ",") {
+			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				templates[parts[0]] = parts[1]
+			}
+		}
+		trustSnapshot.ByBinaryHash[normalized] = append(
+			trustSnapshot.ByBinaryHash[normalized],
+			approvedReleasePolicy{
+				Version: r.Version, Platform: r.Platform, Backend: r.Backend,
+				BinaryHash: normalized, MetallibHash: r.MetallibHash,
+				PythonHash: r.PythonHash, RuntimeHash: r.RuntimeHash,
+				TemplateHashes: templates,
+			})
+	}
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required)
 	}
 
 	s.binaryHashPolicyMu.Lock()
@@ -1314,6 +1360,118 @@ func (s *Server) SyncBinaryHashes() {
 	s.binaryHashPolicyMu.Unlock()
 
 	s.logger.Info("binary hashes synced from releases", "known_hashes", knownHashCount, "policy_configured", effectivePolicyConfigured)
+}
+
+func (s *Server) deriveApprovedReleaseTransition(
+	provider *registry.Provider,
+	resp *protocol.AttestationResponseMessage,
+	statusFieldsTrusted bool,
+) (approvedReleaseTransitionFact, registry.ApplicationEvidence, bool) {
+	if provider == nil || resp == nil || !statusFieldsTrusted ||
+		resp.SIPEnabled == nil || !*resp.SIPEnabled ||
+		resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled ||
+		provider.ChallengeShouldStop() {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+	freshHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
+	if err != nil {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+	snapshot := s.releaseTrustPolicy.Load()
+	if snapshot == nil {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+
+	provider.Mu().Lock()
+	version, backend, processKey := provider.Version, provider.Backend, provider.PublicKey
+	apnsToken := provider.APNsDeviceToken
+	runtimeVerified := provider.RuntimeVerified
+	manifestChecked := provider.RuntimeManifestChecked
+	metallibVerified := provider.MetallibVerified
+	attested := provider.AttestationResult
+	provider.Mu().Unlock()
+	if !snapshot.Required || processKey == "" || apnsToken == "" ||
+		attested == nil || !attested.Valid ||
+		attested.PublicKey == "" || attested.SerialNumber == "" ||
+		!runtimeVerified || !manifestChecked || !metallibVerified ||
+		(s.minProviderVersion != "" &&
+			(version == "" || semverLess(version, s.minProviderVersion))) {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+	attestedHash, err := normalizeSHA256Hex(attested.BinaryHash, "attested binary_hash")
+	if err != nil || attestedHash != freshHash {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+
+	var current approvedReleasePolicy
+	found := false
+	for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+		if candidate.Version == version && candidate.Backend == backend &&
+			candidate.Platform != "" {
+			current = candidate
+			found = true
+			break
+		}
+	}
+	if !found || !releaseRuntimeMatches(current, resp) {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	}
+
+	approvedFrom := make(map[string]struct{})
+	for binaryHash, candidates := range snapshot.ByBinaryHash {
+		for _, candidate := range candidates {
+			if candidate.Platform == current.Platform &&
+				candidate.Backend == current.Backend &&
+				!semverLess(current.Version, candidate.Version) {
+				approvedFrom[binaryHash] = struct{}{}
+				break
+			}
+		}
+	}
+	metallibHash, _ := normalizeSHA256Hex(
+		resp.TemplateHashes["mlx_metallib"], "mlx_metallib")
+	fact := approvedReleaseTransitionFact{
+		Approved: true, BinaryHash: freshHash, Version: current.Version,
+		Platform: current.Platform, Backend: current.Backend,
+		PolicyGeneration:         snapshot.Generation,
+		ApprovedFromBinaryHashes: approvedFrom,
+	}
+	evidence := registry.ApplicationEvidence{
+		SEPublicKey: attested.PublicKey, Serial: attested.SerialNumber,
+		ProcessPublicKey: processKey, APNsToken: apnsToken,
+		BinaryHash: freshHash,
+		Version:    current.Version, Platform: current.Platform,
+		Backend: current.Backend, RuntimeHash: resp.RuntimeHash,
+		MetallibHash: metallibHash, VerifiedAt: time.Now().UTC(),
+		PolicyGeneration: snapshot.Generation,
+	}
+	return fact, evidence, true
+}
+
+func releaseRuntimeMatches(policy approvedReleasePolicy, resp *protocol.AttestationResponseMessage) bool {
+	if policy.PythonHash != "" && !strings.EqualFold(policy.PythonHash, resp.PythonHash) {
+		return false
+	}
+	if policy.RuntimeHash != "" && !strings.EqualFold(policy.RuntimeHash, resp.RuntimeHash) {
+		return false
+	}
+	if policy.MetallibHash == "" {
+		return false
+	}
+	expectedMetallib, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash")
+	if err != nil {
+		return false
+	}
+	gotMetallib, err := normalizeSHA256Hex(resp.TemplateHashes["mlx_metallib"], "mlx_metallib")
+	if err != nil || gotMetallib != expectedMetallib {
+		return false
+	}
+	for name, expected := range policy.TemplateHashes {
+		if !strings.EqualFold(resp.TemplateHashes[name], expected) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) rebuildBinaryHashPolicyLocked() {
@@ -1511,10 +1669,10 @@ type RuntimeManifest struct {
 	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
 }
 
-// SetRuntimeManifest configures the known-good runtime manifest for provider
-// verification. Pass nil to disable runtime verification (all providers pass).
-// semverGreater returns true if version a is greater than version b.
-// Compares numeric components (e.g. "0.2.31" > "0.2.9" = true).
+// semverGreater returns true when a has higher SemVer precedence than b,
+// including the numeric/alphanumeric prerelease identifier rules. Invalid
+// non-empty versions sort below valid versions so minimum-version gates fail
+// closed.
 func semverGreater(a, b string) bool {
 	if a == "" {
 		return false
@@ -1522,24 +1680,23 @@ func semverGreater(a, b string) bool {
 	if b == "" {
 		return true
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
+	av := a
+	if !strings.HasPrefix(av, "v") {
+		av = "v" + av
 	}
-	return false // equal
+	bv := b
+	if !strings.HasPrefix(bv, "v") {
+		bv = "v" + bv
+	}
+	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
+	switch {
+	case aValid && bValid:
+		return semver.Compare(av, bv) > 0
+	case aValid:
+		return true
+	default:
+		return false
+	}
 }
 
 // semverLess returns true if version a is less than version b.
@@ -1547,6 +1704,8 @@ func semverLess(a, b string) bool {
 	return semverGreater(b, a)
 }
 
+// SetRuntimeManifest configures the known-good runtime manifest for provider
+// verification. Pass nil to disable runtime verification (all providers pass).
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }

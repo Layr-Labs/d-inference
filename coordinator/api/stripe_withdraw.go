@@ -145,6 +145,17 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"instant payouts require a debit card destination — link one in Stripe to enable"))
 		return
 	}
+	// Recipient-agreement transfers take +24h to become available in the
+	// connected balance, so an instant payout created right after the
+	// transfer can never draw on these funds — it would always fail and
+	// fall back to the sweep (with the fee refunded). Reject up front
+	// instead of charging a fee for a delivery speed we can't provide.
+	if method == "instant" &&
+		billing.NormalizeServiceAgreement(acct.ServiceAgreement) == billing.ServiceAgreementRecipient {
+		writeJSON(w, http.StatusBadRequest, errorResponse("instant_unavailable",
+			"instant payouts aren't available for accounts in your country — standard delivery arrives via the automatic payout"))
+		return
+	}
 
 	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
 	if err != nil || amountFloat <= 0 {

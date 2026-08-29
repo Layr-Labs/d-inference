@@ -17,6 +17,13 @@ const (
 	// bank rail. 48h covers all of that with margin.
 	stripeStuckThreshold = 48 * time.Hour
 
+	// stripeStuckThresholdWeekly is the equivalent bound for accounts on a
+	// weekly automatic payout schedule (Japan — Stripe offers no daily
+	// there): up to 7 days to the sweep, +24h availability, plus the bank
+	// rail. Rows younger than this on a weekly account are in normal
+	// transit, not stuck.
+	stripeStuckThresholdWeekly = 10 * 24 * time.Hour
+
 	// stripeReconcileBatch bounds how many stuck rows one sweep inspects.
 	stripeReconcileBatch = 200
 )
@@ -88,39 +95,63 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 	}
 
 	// Group by connected account — one Stripe lookup (and at most one
-	// schedule heal) per account, not per withdrawal.
-	byAcct := map[string]int{}
-	for _, wd := range stuck {
-		byAcct[wd.StripeAccountID]++
+	// schedule heal) per account, not per withdrawal. Track the oldest row
+	// per account so weekly-schedule accounts can be judged against their
+	// own (longer) threshold.
+	type acctStuck struct {
+		count  int
+		oldest time.Time
 	}
-	s.logger.Warn("stripe reconciler: withdrawals stuck in transferred",
+	byAcct := map[string]*acctStuck{}
+	for _, wd := range stuck {
+		st, ok := byAcct[wd.StripeAccountID]
+		if !ok {
+			st = &acctStuck{oldest: wd.CreatedAt}
+			byAcct[wd.StripeAccountID] = st
+		}
+		st.count++
+		if wd.CreatedAt.Before(st.oldest) {
+			st.oldest = wd.CreatedAt
+		}
+	}
+	s.logger.Info("stripe reconciler: withdrawals in transferred past base threshold",
 		"withdrawals", len(stuck), "accounts", len(byAcct), "stuck_threshold", stripeStuckThreshold.String())
 
-	for acctID, count := range byAcct {
+	for acctID, st := range byAcct {
 		if acctID == "" {
 			continue
 		}
 		acct, err := s.billing.StripeConnect().GetAccount(acctID)
 		if err != nil {
 			s.logger.Warn("stripe reconciler: account fetch failed",
-				"stripe_account_id", acctID, "stuck_withdrawals", count, "error", err)
+				"stripe_account_id", acctID, "stuck_withdrawals", st.count, "error", err)
 			continue
 		}
 		if acct.PayoutInterval == "manual" {
 			if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(acctID, acct.Country); err != nil {
 				s.logger.Error("stripe reconciler: payout schedule heal failed",
-					"stripe_account_id", acctID, "stuck_withdrawals", count, "error", err)
+					"stripe_account_id", acctID, "stuck_withdrawals", st.count, "error", err)
 				continue
 			}
 			s.logger.Info("stripe reconciler: healed manual payout schedule to automatic",
-				"stripe_account_id", acctID, "stuck_withdrawals", count)
+				"stripe_account_id", acctID, "stuck_withdrawals", st.count)
+			continue
+		}
+		// Weekly-schedule accounts (JP) legitimately hold rows in
+		// "transferred" far longer than the base threshold — only alert
+		// once the oldest row exceeds the weekly bound.
+		if acct.PayoutInterval == "weekly" &&
+			time.Since(st.oldest) < stripeStuckThresholdWeekly {
+			s.logger.Info("stripe reconciler: withdrawals in normal weekly-payout transit",
+				"stripe_account_id", acctID, "withdrawals", st.count,
+				"oldest_created_at", st.oldest, "weekly_threshold", stripeStuckThresholdWeekly.String())
 			continue
 		}
 		// Schedule is already automatic — the sweep should be moving these.
 		// Loud log for ops: likely payouts_enabled=false (user needs to fix
 		// bank details) or a failed sweep that keeps retrying.
 		s.logger.Warn("stripe reconciler: stuck withdrawals on auto-schedule account",
-			"stripe_account_id", acctID, "stuck_withdrawals", count,
+			"stripe_account_id", acctID, "stuck_withdrawals", st.count,
 			"payouts_enabled", acct.PayoutsEnabled,
 			"disabled_reason", acct.DisabledReason,
 			"payout_interval", acct.PayoutInterval)

@@ -27,6 +27,21 @@ make provider-test            # cd provider-swift && swift test
 make provider                 # build + test
 ```
 
+### Custom Apple Team ID
+
+The signed provider embeds Eigen Labs' Team ID (`SLDQ2GJ6TL`) in its keychain access group and
+application identifier. To build and sign under your own Apple Developer account, regenerate the
+entitlements from their templates before signing:
+
+```bash
+TEAM_ID=YOURTEAMID ./scripts/generate-entitlements.sh
+```
+
+`APPLE_TEAM_ID` is honoured as a fallback. Edit `*.plist.template`, never the generated `*.plist` —
+CI fails the **Release Integrity** check if the two drift apart. Note that the official release
+workflow (`.github/workflows/release-swift.yml`) still pins `SLDQ2GJ6TL` in its provisioning-profile
+and signature gates; a custom Team ID is for local and fork builds.
+
 ## Console UI (Next.js 16)
 
 ```bash

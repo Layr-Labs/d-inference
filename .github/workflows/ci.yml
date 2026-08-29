@@ -16,6 +16,8 @@ jobs:
           ./scripts/check-release-version.sh
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
+          ./scripts/generate-entitlements.sh check
+          ./scripts/test-entitlements-generation.sh
 
   test-coordinator:
     name: Coordinator Tests

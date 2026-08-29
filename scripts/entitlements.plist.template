@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- NO get-task-allow → blocks debugger attachment under Hardened Runtime -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!--
+      Keychain access for E2E key storage.
+      Team prefix is hardcoded because codesign (our release flow) does NOT
+      expand $(AppIdentifierPrefix) — that's an Xcode-only build variable.
+      A literal unexpanded macro gets baked into the entitlements blob and
+      keychain writes fail with errSecMissingEntitlement (-34018).
+      Format per Apple docs: "TEAMID.identifier".
+    -->
+    <key>com.apple.security.keychain-access-groups</key>
+    <array>
+        <string>${TEAM_ID}.io.darkbloom.provider</string>
+    </array>
+</dict>
+</plist>

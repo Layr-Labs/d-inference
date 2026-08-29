@@ -320,6 +320,10 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	// Seed a stale failure reason to prove success clears it.
+	srv.SeedTrustReuseCache(context.Background())
+	p.Mu().Lock()
+	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
+	p.Mu().Unlock()
 	p.SetMDMFailureReason("securityinfo-timeout")
 
 	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
@@ -592,6 +596,10 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	p.SetMDMFailureReason("securityinfo-timeout") // left behind by the timed-out sync attempt
+	srv.SeedTrustReuseCache(context.Background())
+	p.Mu().Lock()
+	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
+	p.Mu().Unlock()
 
 	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
 		SystemIntegrityProtectionEnabled: true,

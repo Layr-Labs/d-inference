@@ -13,10 +13,9 @@ import (
 // codeAttestStore is the minimal slice of store.Store the code-identity reuse
 // cache needs to survive coordinator restarts/blue-green deploys (W5 Fix 2).
 // store.Store satisfies it; tests can inject a fake. SECURITY: persistence is a
-// performance optimization (avoid re-pushing within the reuse window) — it is
-// NEVER consulted to grant CodeAttested. The reuse decision (reuseAttestation)
-// re-applies the version gate + freshness window to whatever was seeded, so a
-// stale/wrong-version persisted row falls through to a real challenge.
+// performance optimization (avoid re-pushing within the reuse window), not an
+// unconditional grant. reuseAttestation re-applies version, freshness, current
+// token, and exact registration process-key gates to every seeded row.
 type codeAttestStore interface {
 	ListCodeAttestations(ctx context.Context) ([]store.CodeAttestation, error)
 	UpsertCodeAttestation(ctx context.Context, rec store.CodeAttestation) error
@@ -39,10 +38,10 @@ type codeAttestStore interface {
 // All maps are keyed by the Secure Enclave public key — the stable per-device
 // identity that survives reconnects and process restarts. Three knobs:
 //   - reuseWindow: how long a successful attestation is honored for a NEW
-//     connection from the same device+version without re-pushing. Bounds the
-//     staleness of the proof (a malicious binary swap within the window could ride
-//     a prior attestation), so it is kept short and version-gated. Within a single
-//     live connection the proof is exact regardless of this window.
+//     connection with the same device, version, APNs token, and exact process
+//     node key without re-pushing. A process-key rotation always forces a fresh
+//     challenge. Within a single live connection the proof is exact regardless
+//     of this window.
 //   - push budget (backgroundPushCooldown / alertPushCooldown): minimum spacing
 //     between pushes to the same device — the hard rate-limit backstop, chosen by
 //     delivery mode. Background stays <= 3 pushes/hour/device; alert can be much
@@ -103,7 +102,7 @@ type codeAttestRecord struct {
 	at      time.Time
 	version string
 	token   string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
-	nodeKey string // registration X25519 process key; strict protected-capability reuse binding
+	nodeKey string // registration X25519 process key ("" = legacy non-reusable row)
 }
 
 // codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
@@ -154,30 +153,12 @@ func defaultJitter(max time.Duration) time.Duration {
 	return time.Duration(rand.Int63n(int64(max)))
 }
 
-// reuseAttestation reports whether the device attested recently with the SAME
-// binary version AND the SAME APNs token, so a fresh connection can inherit the
-// proof without a push. Binding to the token closes the disconnected-rotation gap
-// (Codex #7): a token that rotated while the provider was offline — so
-// maybeRearmCodeAttest never saw the change to delete the row — cannot ride the
-// pre-rotation proof after a restart reseed; it falls through to a real challenge
-// against the new token. A record with NO recorded token (legacy rows persisted
-// before token-binding) still reuses, so introducing this does not trigger a
-// fleet-wide re-push on deploy; those rows are token-bound the next time they
-// attest, and expire within the reuse window regardless.
-func (t *codeAttestThrottle) reuseAttestation(seKey, version, token string) bool {
-	if seKey == "" {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r, ok := t.attested[seKey]
-	if !ok || r.version != version || t.now().Sub(r.at) >= t.reuseWindow {
-		return false
-	}
-	return r.token == "" || r.token == token
-}
-
-func (t *codeAttestThrottle) reuseAttestationForProcess(
+// reuseAttestation reports whether the device attested recently with the same
+// binary version, exact current non-empty APNs token, and exact registration-
+// bound process node key that decrypted E_K(nonce). Legacy token-less or
+// process-key-less rows are never reusable authorization inputs; they must
+// bootstrap a real push.
+func (t *codeAttestThrottle) reuseAttestation(
 	seKey, version, token, nodeKey string,
 ) bool {
 	if seKey == "" || version == "" || token == "" || nodeKey == "" {
@@ -187,30 +168,29 @@ func (t *codeAttestThrottle) reuseAttestationForProcess(
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
 	return ok &&
-		t.now().Sub(r.at) < t.reuseWindow &&
 		r.version == version &&
 		r.token == token &&
-		r.nodeKey == nodeKey
+		r.nodeKey == nodeKey &&
+		t.now().Sub(r.at) < t.reuseWindow
 }
 
-// reuseAttestationCrossVersion is reuseAttestation without the version match —
-// it rides a recent proof across a version bump (which every update causes) so a
-// healthy update isn't forced into a fresh push. Dropping the version alone is
-// unsafe (SE key + token prove the device, not that the binary is legitimate), so
-// the caller (codeAttestLoop) only invokes it behind live binary-identity fences.
-// The token match is STRICT here: both stored and current token must be non-empty
-// and equal (unlike reuseAttestation's legacy empty-token leniency).
-func (t *codeAttestThrottle) reuseAttestationCrossVersion(seKey, token string) bool {
-	if seKey == "" || token == "" {
+// reuseAttestationForTransition supplies the genuine Apple/APNs half of an
+// approved release transition. Version may differ, but the proof must be fresh
+// and bound to the same SE identity, exact current non-empty token, and exact
+// registration-bound process node key that decrypted E_K(nonce).
+func (t *codeAttestThrottle) reuseAttestationForTransition(
+	seKey, token, nodeKey string,
+) bool {
+	if seKey == "" || token == "" || nodeKey == "" {
 		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
-	if !ok || t.now().Sub(r.at) >= t.reuseWindow {
-		return false
-	}
-	return r.token != "" && r.token == token
+	return ok &&
+		r.token == token &&
+		r.nodeKey == nodeKey &&
+		t.now().Sub(r.at) < t.reuseWindow
 }
 
 // pushCooldown returns the per-device push budget for the active delivery mode.
@@ -317,10 +297,10 @@ func (t *codeAttestThrottle) invalidateReuse(seKey string) {
 // rows that could still be reused are kept (an expired row would be ignored by
 // reuseAttestation anyway). It never overwrites a fresher in-memory record (a
 // device that reconnected and re-attested before seeding finished). Returns the
-// number of rows seeded. SECURITY: seeding only populates the cache that
-// reuseAttestation re-validates (version + freshness) on every read — it cannot
-// by itself grant CodeAttested, and a stale/wrong-version row still forces a real
-// challenge.
+// number of rows seeded. SECURITY: seeding only populates the cache;
+// reuseAttestation re-validates version, freshness, token, and exact process key
+// on every read. A stale, mismatched, or legacy process-key-less row still
+// forces a real challenge.
 func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -519,9 +499,9 @@ func (t *codeAttestThrottle) clearChallenge(seKey string) {
 // instance does not re-push the entire fleet (against Apple's ~3/hour/device push
 // budget). Safe to call once during server setup, AFTER the store is set and the
 // attestor is wired; a nil store or nil throttle is a no-op. SECURITY: seeding
-// only repopulates the cache that reuseAttestation re-validates (same version +
-// freshness window) on every read — it cannot grant CodeAttested by itself, and a
-// stale/wrong-version persisted row still falls through to a real challenge.
+// only repopulates the cache that reuseAttestation re-validates (same version,
+// freshness, token, and exact process key) on every read. A stale, mismatched,
+// or legacy process-key-less row still falls through to a real challenge.
 func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	if s == nil || s.codeAttestThrottle == nil || s.store == nil {
 		return

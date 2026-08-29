@@ -15,12 +15,12 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
 	th := newCodeAttestThrottle()
 	th.now = func() time.Time { return cur }
-	const se = "se-key-1"
+	const se, nodeKey = "se-key-1", "node-key-1"
 
 	if !th.allowPush(se, false) {
 		t.Fatal("first push should be allowed")
 	}
-	if th.reuseAttestation(se, "0.6.0", "") {
+	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("no attestation yet → no reuse")
 	}
 	th.recordPush(se)
@@ -34,65 +34,74 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("a background push after the cooldown should be allowed")
 	}
 
-	th.recordAttested(se, "0.6.0", "")
-	if !th.reuseAttestation(se, "0.6.0", "") {
-		t.Fatal("should reuse a fresh, same-version attestation")
+	th.recordAttestedForProcess(se, "0.6.0", "token", nodeKey)
+	if !th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
+		t.Fatal("should reuse a fresh proof bound to the same version, token, and process key")
 	}
-	if th.reuseAttestation(se, "0.6.1", "") {
+	if th.reuseAttestation(se, "0.6.1", "token", nodeKey) {
 		t.Fatal("must NOT reuse across a binary version change")
 	}
 	cur = cur.Add(th.reuseWindow) // window elapsed
-	if th.reuseAttestation(se, "0.6.0", "") {
+	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("reuse must expire after the window")
 	}
 }
 
-// TestCodeAttestThrottleTokenBinding proves Codex #7: a recorded proof is bound to
-// the APNs token, so reuse is granted only for the same token. A token rotation
-// (different token) falls through to a real challenge, while a legacy record with
-// no recorded token still reuses (back-compat, no post-deploy push storm).
+// TestCodeAttestThrottleTokenBinding proves a reusable proof is bound to the
+// exact current non-empty APNs token and process key; rotated, empty, and legacy
+// identity inputs require a real bootstrap challenge.
 func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
 	th := newCodeAttestThrottle()
 	th.now = func() time.Time { return cur }
-	const se = "se-key-1"
+	const se, nodeKey = "se-key-1", "node-key-1"
 
-	th.recordAttested(se, "0.6.0", "tokA")
-	if !th.reuseAttestation(se, "0.6.0", "tokA") {
-		t.Fatal("same token must reuse")
+	th.recordAttestedForProcess(se, "0.6.0", "tokA", nodeKey)
+	if !th.reuseAttestation(se, "0.6.0", "tokA", nodeKey) {
+		t.Fatal("same token and process key must reuse")
 	}
-	if th.reuseAttestation(se, "0.6.0", "tokB") {
+	if th.reuseAttestation(se, "0.6.0", "tokB", nodeKey) {
 		t.Fatal("a rotated (different) token must NOT reuse — it must force a real challenge")
 	}
+	if th.reuseAttestation(se, "0.6.0", "tokA", "node-key-2") {
+		t.Fatal("a different process key reused another process's proof")
+	}
+	if th.reuseAttestation(se, "0.6.0", "tokA", "") {
+		t.Fatal("an empty current process key reused a process-bound proof")
+	}
 
-	// A legacy record with no recorded token (e.g. seeded from a pre-binding row)
-	// still reuses for any token, so introducing token-binding does not re-push the
-	// whole fleet on deploy.
-	th.seed([]store.CodeAttestation{{SEPubKey: "se-legacy", Version: "0.6.0", AttestedAt: cur}})
-	if !th.reuseAttestation("se-legacy", "0.6.0", "any-token") {
-		t.Fatal("a legacy token-less record must still reuse (back-compat)")
+	// Legacy records missing either identity binding cannot satisfy current
+	// registration inputs and must bootstrap a genuine push.
+	th.seed([]store.CodeAttestation{{SEPubKey: "se-legacy-token", Version: "0.6.0", AttestedAt: cur}})
+	if th.reuseAttestation("se-legacy-token", "0.6.0", "any-token", nodeKey) {
+		t.Fatal("a legacy token-less record bypassed current-token binding")
+	}
+	legacyNodeLess := newCodeAttestThrottle()
+	legacyNodeLess.recordAttested("se-legacy-node", "0.6.0", "tokA")
+	if legacyNodeLess.reuseAttestation("se-legacy-node", "0.6.0", "tokA", nodeKey) {
+		t.Fatal("a legacy process-key-less record bypassed current process-key binding")
 	}
 }
 
 func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	th := newCodeAttestThrottle()
 	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
-	if !th.reuseAttestationForProcess(
+	if !th.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-A",
 	) {
 		t.Fatal("same-process reconnect should reuse exact process-key proof")
 	}
-	if th.reuseAttestationForProcess(
+	if th.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-B",
 	) {
 		t.Fatal("new process key replayed prior code proof")
 	}
-	if th.reuseAttestationForProcess(
+	if th.reuseAttestation(
 		"se", "0.8.18", "token", "node-key-A",
 	) {
 		t.Fatal("cross-version process proof reused")
 	}
-	if th.reuseAttestationForProcess(
+	if th.reuseAttestation(
 		"se", "0.8.17", "rotated-token", "node-key-A",
 	) {
 		t.Fatal("rotated token reused process proof")
@@ -103,10 +112,34 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A",
 	}})
-	if !seeded.reuseAttestationForProcess(
+	if !seeded.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-A",
 	) {
 		t.Fatal("persisted process-key binding did not survive seed")
+	}
+}
+
+func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
+	th := newCodeAttestThrottle()
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
+
+	if !th.reuseAttestationForTransition("se", "token", "node-key-A") {
+		t.Fatal("same process key should reuse its proof across an approved version transition")
+	}
+	if th.reuseAttestationForTransition("se", "token", "node-key-B") {
+		t.Fatal("changed process key reused another process's APNs proof")
+	}
+	if th.reuseAttestationForTransition("se", "rotated-token", "node-key-A") {
+		t.Fatal("rotated token reused a transition APNs proof")
+	}
+	if th.reuseAttestationForTransition("se", "token", "") {
+		t.Fatal("empty current process key reused a transition APNs proof")
+	}
+
+	legacy := newCodeAttestThrottle()
+	legacy.recordAttested("se", "0.8.17", "token")
+	if legacy.reuseAttestationForTransition("se", "token", "node-key-A") {
+		t.Fatal("proof without a cached process-key binding reused for a transition")
 	}
 }
 

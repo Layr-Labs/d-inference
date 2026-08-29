@@ -5,8 +5,9 @@ package api
 // Enclave signature over it, proving the running binary's code identity. This
 // file owns the per-connection challenge loop, the same-/cross-version and
 // reconnect reuse fast-paths, the heartbeat-driven re-arm (late/rotated token),
-// the push, and the fail-closed verification chokepoint. CodeAttested is set
-// ONLY by handleCodeAttestationResponse after the full round-trip verifies.
+// the push, and the fail-closed verification chokepoint. CodeAttested comes only
+// from a live verified APNs round trip or a still-fresh APNs proof composed with
+// current generation-bound application evidence.
 
 import (
 	"context"
@@ -48,8 +49,8 @@ func (s *Server) codeAttestMetric(outcome string) {
 // The loop only PUSHES; it never blocks on the reply. The provider's
 // code_attestation_response is verified in the read-loop delivery path
 // (handleCodeAttestationResponse), which flips CodeAttested. So:
-//   - Reuse: if this device (Secure Enclave key) attested recently with the same
-//     binary version, the new connection inherits the proof with NO push.
+//   - Reuse: if this device attested recently with the same binary version,
+//     APNs token, and exact registration process key, it reuses with NO APNs push.
 //   - Reconnect-safe (Fix 1): the pushed nonce is tracked per-device, so a reply
 //     that lands on a DIFFERENT (re)connection still attests; this loop just polls
 //     GetCodeAttested and exits. A push budget held over from the prior connection
@@ -62,57 +63,38 @@ func (s *Server) codeAttestMetric(outcome string) {
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
-// tryCrossVersionReuse rides a recent same-device, same-token attestation across a
-// binary VERSION change so a healthy update isn't forced into a fresh APNs round-
-// trip (which would deroute the provider for the whole re-attest window). Reuse
-// fires only behind ALL fences: valid registration attestation, runtime + manifest
-// verified, SIP-verified challenge, a non-empty version at/above MIN_PROVIDER_VERSION,
-// and the same non-empty APNs token. The SE key + token alone are too weak
-// (NodeKeyPair rotates per startup), so the fences are what prove the current
-// binary is legitimate. Decision + grant run atomically via GrantCodeAttestedIf
-// against the LIVE state, so a concurrent token rotation can't slip a stale-token
-// proof past the gate. Returns true (and drains) when reuse fired.
+// tryCrossVersionReuse combines two independent sources: a fresh-enough genuine
+// Apple/APNs proof bound to this SE identity, current token, and exact process
+// node key, plus the fresh signed live process/posture challenge's exact
+// active-release fact. Neither source can grant code identity alone.
 func (s *Server) tryCrossVersionReuse(providerID string, provider *registry.Provider) bool {
-	// blockedBy names the first fence that prevented reuse, for forensic debugging
-	// of a provider stuck re-challenging instead of reusing (set inside the locked
-	// decision; read only after it returns).
-	blockedBy := ""
-	granted := provider.GrantCodeAttestedIf(func(st registry.CodeIdentityState) bool {
-		// An empty version never satisfies a configured floor (version is optional
-		// on the wire); only treat the floor as cleared when there is no floor.
-		aboveMinVersion := s.minProviderVersion == "" ||
-			(st.Version != "" && !semverLess(st.Version, s.minProviderVersion))
-		switch {
-		case !st.AttestationValid:
-			blockedBy = "attestation_invalid"
-		case !st.RuntimeVerified:
-			blockedBy = "runtime_unverified"
-		case !st.RuntimeManifestChecked:
-			blockedBy = "runtime_manifest_unchecked"
-		case !st.ChallengeVerifiedSIP:
-			blockedBy = "sip_challenge_pending" // armed concurrently; the loop re-checks
-		case !aboveMinVersion:
-			blockedBy = "below_min_version"
-		default:
-			// reuseAttestationCrossVersion takes the throttle lock; the lock order is
-			// always provider → throttle (throttle methods never touch a provider),
-			// so calling it from inside the provider-locked decision is deadlock-safe.
-			if !s.codeAttestThrottle.reuseAttestationCrossVersion(st.SEPublicKey, st.APNsDeviceToken) {
-				blockedBy = "no_fresh_same_token_proof"
-				return false
-			}
-			return true
-		}
+	evidence, ok := provider.ApplicationEvidenceSnapshot()
+	if !ok || evidence.BinaryHash == "" || evidence.ProcessPublicKey == "" ||
+		evidence.APNsToken == "" || evidence.PolicyGeneration == 0 {
 		return false
-	})
-	if !granted {
-		s.logger.Debug("code-attest: cross-version reuse not taken; will challenge/poll",
-			"provider_id", providerID, "blocked_by", blockedBy)
+	}
+	snapshot := s.releaseTrustPolicy.Load()
+	if snapshot == nil || !snapshot.Required ||
+		snapshot.Generation != evidence.PolicyGeneration {
+		return false
+	}
+	provider.Mu().Lock()
+	nodeKey := provider.PublicKey
+	provider.Mu().Unlock()
+	if nodeKey == "" || evidence.ProcessPublicKey != nodeKey {
+		return false
+	}
+	if !s.codeAttestThrottle.reuseAttestationForTransition(
+		evidence.SEPublicKey, evidence.APNsToken, nodeKey) {
+		return false
+	}
+	if !provider.GrantCodeIdentityFromReusableAPNsProof(
+		evidence, evidence.APNsToken) {
 		return false
 	}
 	s.registry.DrainQueuedRequestsForProvider(provider)
-	s.codeAttestMetric("reused_cross_version")
-	s.logger.Info("code-attest: reused a recent attestation across a version change (fenced: attestation+runtime+SIP+min-version verified; no push)",
+	s.codeAttestMetric("reused_approved_release")
+	s.logger.Info("code-attest: combined reusable APNs proof with current approved-release evidence; no new APNs push",
 		"provider_id", providerID)
 	return true
 }
@@ -133,6 +115,21 @@ func (s *Server) codeAttestLoopWithResume(
 		return
 	}
 
+	// Wait for the initial fresh process/posture challenge before deciding
+	// whether a genuine prior APNs proof can be composed with its release fact.
+	// Application evidence alone is never an early-return condition.
+	if settled := provider.ApplicationProofSettledChan(); settled != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-settled:
+		}
+		if s.tryCrossVersionReuse(providerID, provider) {
+			s.codeAttestMetric("direct_application_reused")
+			return
+		}
+	}
+
 	provider.Mu().Lock()
 	apnsToken := provider.APNsDeviceToken
 	version := provider.Version
@@ -150,19 +147,23 @@ func (s *Server) codeAttestLoopWithResume(
 	}
 	requiresProcessProof := provider.RequiresFreshRuntimeCodeProof()
 
-	// General reuse remains valid for ordinary models. Protected capability
-	// reuse additionally requires the exact registration X25519 process key that
-	// completed the prior live proof.
-	if s.codeAttestThrottle.reuseAttestation(seKey, version, apnsToken) {
-		provider.SetCodeAttested(true)
+	// Same-version reuse is process-bound for every model: the cached proof must
+	// name the exact current registration X25519 key that decrypted E_K(nonce).
+	// Protected capabilities additionally require a fresh live encrypted nonce
+	// possession proof before FreshCodeAttested is restored.
+	if s.codeAttestThrottle.reuseAttestation(
+		seKey, version, apnsToken, nodeKey,
+	) {
+		if !provider.GrantReusableCodeAttested(apnsToken, nodeKey) {
+			s.codeAttestMetric("identity_rotated")
+			return
+		}
 		s.registry.DrainQueuedRequestsForProvider(provider)
 		s.codeAttestMetric("reused")
 		if !requiresProcessProof {
 			return
 		}
-		if allowResume && s.codeAttestThrottle.reuseAttestationForProcess(
-			seKey, version, apnsToken, nodeKey,
-		) {
+		if allowResume {
 			if s.sendCodeIdentityResumeChallenge(
 				ctx, providerID, provider, nodeKey, seKey, apnsToken,
 			) {
@@ -175,10 +176,11 @@ func (s *Server) codeAttestLoopWithResume(
 		}
 	}
 
-	// Cross-version reuse (every update bumps the version, missing the same-version
-	// reuse above). Try up front; the loop also re-checks since the fences arm
-	// concurrently on a fresh connection.
-	if !requiresProcessProof && s.tryCrossVersionReuse(providerID, provider) {
+	// A current approved-release fact may compose with a prior genuine APNs
+	// proof only when that proof's E_K(nonce) targeted this exact process key.
+	// A changed process key must complete a fresh APNs challenge before protected
+	// capabilities can be restored.
+	if s.tryCrossVersionReuse(providerID, provider) {
 		return
 	}
 
@@ -200,9 +202,9 @@ func (s *Server) codeAttestLoopWithResume(
 			return // hard (non-recoverable) untrust — stop challenging
 		}
 
-		// Re-check each iteration: the fences arm concurrently, so a connection that
-		// missed up front may reuse now instead of burning a push.
-		if !requiresProcessProof && s.tryCrossVersionReuse(providerID, provider) {
+		// Re-check each iteration: the fresh application verdict and APNs reuse
+		// cache can settle concurrently with this loop.
+		if s.tryCrossVersionReuse(providerID, provider) {
 			return
 		}
 
@@ -288,8 +290,9 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		seKey = provider.AttestationResult.PublicKey
 	}
 	if changed {
-		// Fail-closed: a changed token must complete a fresh round-trip before it
-		// is treated as code-attested (and thus routable) again.
+		// Token rotation invalidates the application/process half and both code
+		// flags, but never the independent device evidence.
+		provider.ApplicationEvidence = registry.ApplicationEvidence{}
 		provider.CodeAttested = false
 		provider.FreshCodeAttested = false
 		provider.RuntimeCapabilities = nil

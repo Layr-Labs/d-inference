@@ -958,31 +958,50 @@ type CodeAttestation struct {
 	SEPubKey      string    `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
 	Version       string    `json:"version"`         // provider binary version that attested
 	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
-	APNsToken     string    `json:"apns_token"`      // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+	APNsToken     string    `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
 	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
 }
 
-// ProviderTrustReuse is the persistent representation of one device's most recent
-// successful FULL live MDM SecurityInfo verification (DAR-326 Phase 0). It is the
-// durable form of api.trustReuseRecord. Keyed by the Secure Enclave public key —
-// the stable per-device identity that survives reconnects AND coordinator
-// restarts. It mirrors CodeAttestation: persistence lets a planned coordinator
-// restart/blue-green swap skip a fleet-wide live MDM SecurityInfo + APNs
-// re-verification herd.
+// ProviderTrustReuse is durable device evidence, not a credential. A row can
+// only avoid a redundant MDM round-trip after a fresh registration-bound
+// Secure-Enclave challenge proves the current process key and posture.
 //
-// SECURITY: the row is written ONLY after a full, verified live MDM
-// verification; it is never created from an unverified heartbeat or self-report.
-// On read, the reuse decision still re-applies a live SE challenge, a serial+SE
-// identity match, a binary-hash match, a fresh good-posture check, and the
-// freshness window, so a persisted row can only ever let the coordinator skip a
-// redundant live MDM round-trip — never extend or fabricate trust.
+// HardwareProofVerifiedAt is the independent MDM/MDA clock. The application
+// clock is audit-only here: current application evidence is connection-scoped
+// and must be recreated from a fresh signed challenge after every reconnect.
+// LastVerifiedBinaryHash is retained for same-binary decisions and audit, but a
+// changed hash is admitted only by the server's active-release policy snapshot.
+//
+// RevocationGeneration, RevocationEventID, and RevokedAt form a durable
+// monotonic tombstone. RevocationEventID identifies one hard-untrust operation:
+// retrying that event is idempotent, while a different event advances the
+// generation even when its coordinator observed stale state. Normal upserts
+// cannot clear the tombstone; only RecoverProviderTrustReuse, called by the
+// reviewed full-device verification path, may clear it at the exact observed
+// generation.
 type ProviderTrustReuse struct {
-	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
-	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
-	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
-	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
-	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
-	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
-	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
-	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
+	SEPubKey                   string     `json:"se_pubkey"`
+	Serial                     string     `json:"serial"`
+	TrustLevel                 string     `json:"trust_level"`
+	LastVerifiedBinaryHash     string     `json:"last_verified_binary_hash"`
+	SIPEnabled                 bool       `json:"sip_enabled"`
+	SecureBootFull             bool       `json:"secure_boot_full"`
+	MDAUDID                    string     `json:"mda_udid"`
+	HardwareProofVerifiedAt    time.Time  `json:"hardware_proof_verified_at"`
+	ApplicationProofVerifiedAt *time.Time `json:"application_proof_verified_at,omitempty"`
+	EvidenceGeneration         uint64     `json:"evidence_generation"`
+	RevocationGeneration       uint64     `json:"revocation_generation"`
+	RevocationEventID          string     `json:"revocation_event_id"`
+	RevokedAt                  *time.Time `json:"revoked_at,omitempty"`
+}
+
+// ProviderTrustReuseWriteResult is the authoritative outcome of a
+// generation-checked evidence write. Applied is false when a newer durable
+// revocation won; callers must never grant hardware in that case. The returned
+// generations always reflect the durable row, including an insert/update that
+// committed successfully.
+type ProviderTrustReuseWriteResult struct {
+	Applied              bool
+	EvidenceGeneration   uint64
+	RevocationGeneration uint64
 }

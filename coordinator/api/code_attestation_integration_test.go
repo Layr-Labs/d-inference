@@ -209,9 +209,9 @@ func TestCodeAttestLoopHealsDroppedPushWithBoundedRetry(t *testing.T) {
 	}
 }
 
-// TestCodeAttestLoopReusesRecentAttestation proves a reconnect from the same
-// device (same SE key + binary version) within the reuse window inherits the proof
-// with NO additional push — respecting Apple's ~3/hour background-push budget.
+// TestCodeAttestLoopReusesRecentAttestation proves same-version reuse is limited
+// to the exact process key that completed the prior proof: a same-key reconnect
+// spends no APNs push, while K2 gets no code trust until one fresh challenge.
 func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -221,10 +221,15 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 
 	var pushes int32
+	expectUntrustedAtFreshProcessPush := false
 	// onSend completes the round-trip for whichever provider is currently attesting.
 	var current *registry.Provider
 	currentPriv := kPriv
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		if expectUntrustedAtFreshProcessPush &&
+			(current.GetCodeAttested() || current.GetFreshCodeAttested()) {
+			t.Fatal("K2 inherited K1 code trust before its fresh APNs proof")
+		}
 		atomic.AddInt32(&pushes, 1)
 		return completeRoundTrip(t, srv, current, "p1", currentPriv, seKey, pubKeyB64, nonceB64)
 	}})
@@ -309,18 +314,21 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 		t.Fatal("copied public key without old X25519 private key passed resume PoP")
 	}
 
-	// General reuse cannot authorize a genuinely new process; it must push.
+	// Same-version K2 on the same SE device/token cannot reuse K1's proof. It
+	// remains untrusted until exactly one fresh E_K2(nonce)+SE challenge completes.
 	p4 := newCodeAttestProvider(kPubB64New, sePubB64)
 	p4.Version = "0.6.0"
 	p4.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
 	current, currentPriv = p4, kPrivNew
 	srv.codeAttestThrottle.backgroundPushCooldown = 0
+	expectUntrustedAtFreshProcessPush = true
 	srv.codeAttestLoop(context.Background(), "p1", p4)
-	if !p4.GetFreshCodeAttested() {
-		t.Fatal("new process should complete a fresh proof")
+	expectUntrustedAtFreshProcessPush = false
+	if !p4.GetCodeAttested() || !p4.GetFreshCodeAttested() {
+		t.Fatal("K2 should complete code trust only after its fresh proof")
 	}
 	if got := atomic.LoadInt32(&pushes); got != 2 {
-		t.Fatalf("new process should force exactly one fresh push; total=%d", got)
+		t.Fatalf("K2 should force exactly one fresh APNs challenge; total pushes=%d", got)
 	}
 
 	// Same-process resume that gets no reply falls back to APNs on this live
@@ -766,5 +774,38 @@ func TestCodeAttestLoopAlertModeUsesShortBudget(t *testing.T) {
 
 	if !provider.GetCodeAttested() {
 		t.Fatal("alert mode must retry on the short alert budget and heal within the deadline")
+	}
+}
+
+func TestReusableCodeAttestedGrantRechecksProcessIdentity(t *testing.T) {
+	provider := &registry.Provider{
+		PublicKey:       "K2",
+		APNsDeviceToken: "token",
+	}
+	if provider.GrantReusableCodeAttested("token", "K1") ||
+		provider.GetCodeAttested() {
+		t.Fatal("K1 proof granted code trust after the provider rotated to K2")
+	}
+	if provider.GrantReusableCodeAttested("old-token", "K2") ||
+		provider.GetCodeAttested() {
+		t.Fatal("old-token proof granted code trust after token rotation")
+	}
+	if provider.GrantReusableCodeAttested("token", "") ||
+		provider.GetCodeAttested() {
+		t.Fatal("empty process key granted reusable code trust")
+	}
+	if !provider.GrantReusableCodeAttested("token", "K2") ||
+		!provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
+		t.Fatal("exact process-bound reuse did not grant CodeAttested-only trust")
+	}
+
+	fresh := &registry.Provider{
+		PublicKey:         "K2",
+		APNsDeviceToken:   "token",
+		FreshCodeAttested: true,
+	}
+	if !fresh.GrantReusableCodeAttested("token", "K2") ||
+		!fresh.GetFreshCodeAttested() {
+		t.Fatal("reusable grant changed an existing FreshCodeAttested verdict")
 	}
 }

@@ -1,0 +1,59 @@
+name: Helm
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - deploy/helm/**
+      - .github/workflows/helm.yml
+  pull_request:
+    paths:
+      - deploy/helm/**
+      - .github/workflows/helm.yml
+
+jobs:
+  coordinator-chart:
+    name: Coordinator Chart (${{ matrix.name }})
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Secret supplied out of band.
+          - name: existing-secret
+            args: --set secrets.existingSecret=coordinator-runtime
+          # Secret synced from Secret Manager by the External Secrets Operator.
+          - name: prod
+            args: -f deploy/helm/coordinator/values-prod.yaml
+    env:
+      CHART: deploy/helm/coordinator
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
+
+      - name: Lint
+        run: helm lint "$CHART" --strict --set image.tag=ci ${{ matrix.args }}
+
+      - name: Template
+        run: |
+          helm template coordinator "$CHART" \
+            --namespace darkbloom \
+            --set image.tag=ci ${{ matrix.args }} \
+            > rendered.yaml
+          test -s rendered.yaml
+
+      # helm lint only warns on templates that fail to render, and helm can emit
+      # invalid YAML, so parse the output rather than trusting the exit code.
+      - name: Rendered output is valid YAML
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml; print(len(list(yaml.safe_load_all(open('rendered.yaml')))), 'documents')"
+
+      - name: Chart rejects a missing image tag
+        run: |
+          if helm template coordinator "$CHART" ${{ matrix.args }} >/dev/null 2>&1; then
+            echo "expected image.tag to be required"
+            exit 1
+          fi

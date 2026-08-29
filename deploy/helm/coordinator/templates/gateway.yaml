@@ -1,0 +1,102 @@
+{{- if .Values.gatewayAPI.enabled }}
+{{- $gatewayName := default (include "coordinator.fullname" .) .Values.gatewayAPI.gatewayName }}
+{{- if .Values.gatewayAPI.createGateway }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $gatewayName }}
+  labels:
+    {{- include "coordinator.labels" . | nindent 4 }}
+  {{- if .Values.gatewayAPI.tls.certmap }}
+  annotations:
+    networking.gke.io/certmap: {{ .Values.gatewayAPI.tls.certmap | quote }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gatewayAPI.gatewayClassName }}
+  listeners:
+    - name: {{ .Values.gatewayAPI.listener.name }}
+      protocol: {{ .Values.gatewayAPI.listener.protocol }}
+      port: {{ .Values.gatewayAPI.listener.port }}
+      {{- with index .Values.gatewayAPI.hostnames 0 }}
+      hostname: {{ . | quote }}
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+      {{- if and (eq .Values.gatewayAPI.listener.protocol "HTTPS") (not .Values.gatewayAPI.tls.certmap) }}
+      tls:
+        mode: {{ .Values.gatewayAPI.tls.mode }}
+        {{- with .Values.gatewayAPI.tls.certificateRefs }}
+        certificateRefs:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- end }}
+---
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "coordinator.fullname" . }}
+  labels:
+    {{- include "coordinator.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $gatewayName }}
+      {{- with .Values.gatewayAPI.gatewayNamespace }}
+      namespace: {{ . }}
+      {{- end }}
+      sectionName: {{ .Values.gatewayAPI.listener.name }}
+  hostnames:
+    {{- toYaml .Values.gatewayAPI.hostnames | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      timeouts:
+        request: {{ .Values.gatewayAPI.httpRoute.timeouts.request | quote }}
+        backendRequest: {{ .Values.gatewayAPI.httpRoute.timeouts.backendRequest | quote }}
+      backendRefs:
+        - name: {{ include "coordinator.fullname" . }}
+          port: {{ .Values.service.port }}
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "coordinator.fullname" . }}
+  labels:
+    {{- include "coordinator.labels" . | nindent 4 }}
+spec:
+  default:
+    timeoutSec: {{ .Values.gatewayAPI.backend.timeoutSec }}
+    sessionAffinity:
+      type: {{ .Values.gatewayAPI.backend.sessionAffinity }}
+    connectionDraining:
+      drainingTimeoutSec: {{ .Values.gatewayAPI.backend.drainingTimeoutSec }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "coordinator.fullname" . }}
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "coordinator.fullname" . }}
+  labels:
+    {{- include "coordinator.labels" . | nindent 4 }}
+spec:
+  default:
+    checkIntervalSec: {{ .Values.gatewayAPI.healthCheck.checkIntervalSec }}
+    timeoutSec: {{ .Values.gatewayAPI.healthCheck.timeoutSec }}
+    healthyThreshold: {{ .Values.gatewayAPI.healthCheck.healthyThreshold }}
+    unhealthyThreshold: {{ .Values.gatewayAPI.healthCheck.unhealthyThreshold }}
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: {{ .Values.gatewayAPI.healthCheck.path | quote }}
+        port: {{ .Values.gatewayAPI.healthCheck.port }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "coordinator.fullname" . }}
+{{- end }}

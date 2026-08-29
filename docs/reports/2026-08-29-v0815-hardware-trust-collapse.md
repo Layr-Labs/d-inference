@@ -354,6 +354,142 @@ routable =
 
 A valid device credential never creates a route by itself. An approved application release never creates a route by itself. A provider can remain connected and trusted while a particular model pair is blocked for missing M5/NAX capability, missing weights, a broken template, no loaded slot, or insufficient request capacity.
 
+### Privacy threat model: Darkbloom trusted, provider owner untrusted
+
+The product threat model trusts Darkbloom's coordinator, release-signing/notarization pipeline, model registry, provider source/binary, consumer client, and the verified Apple platform security boundary. The provider owner/operator, other applications on the provider Mac, provider-controlled storage, and provider-controlled network are untrusted.
+
+This model is achievable only while Apple Secure Boot, SIP, AMFI, Keychain/securityd, Secure Enclave, and MDM/MDA operate as verified. Darkbloom can defend against ordinary owner attempts to replace the binary, launch a fake process, inspect files or network traffic, replay credentials, attach standard debugging tools, or boot with disabled posture. Commodity macOS does not provide a general confidential-compute enclave for arbitrary MLX process memory: a hostile kernel, privileged platform component, working kernel zero-day, or malicious Darkbloom-approved inference release remains inside the confidentiality boundary. The public privacy claim must state that limitation.
+
+#### Trusted computing base
+
+| Trusted | Reason |
+|---|---|
+| Darkbloom coordinator and operators | Authoritative routing, release, model, revocation, and billing policy |
+| Release signing/notarization pipeline | Defines admitted provider application bytes |
+| Model registry/manifests | Defines admitted model/template/runtime bytes and model-specific capabilities |
+| Darkbloom provider binary | The admitted process necessarily decrypts and handles prompt plaintext |
+| Consumer client | Creates request ciphertext and validates coordinator-certified process keys |
+| Apple SE, Secure Boot, SIP, AMFI, Keychain/securityd, MDM/MDA | Enforces persistent key access, signed process boundary, device posture, and enrollment |
+
+| Untrusted | Expected attacks |
+|---|---|
+| Provider owner/account | Fake provider, modified files, debugger attempts, replay, network capture, model substitution |
+| Other local processes/apps | Keychain access attempts, IPC/file inspection, task-port/debug access |
+| Provider storage and network | Ciphertext theft, rollback, traffic observation, artifact replacement |
+| Unsigned, ad-hoc-signed, old, revoked, or unregistered binaries | Attempt to inherit the persistent SE identity or receive requests |
+| Self-reported provider fields | Never authoritative unless included in a verified signed evidence transcript |
+
+#### Current versus proposed trust/privacy behavior
+
+| Area | Current | Proposed |
+|---|---|---|
+| Coordinator content access | E2E request/response ciphertext; coordinator does not need prompt plaintext | Preserve; coordinator certifies the admitted process key but never receives the request key |
+| Persistent SE key | Durable device/app-family signer, but hardware reuse is coupled to an exact binary hash | Enrollment and continuity root only; exact binary remains separate application evidence |
+| APNs | Bootstrap plus recurring challenge/recovery use | First enrollment, token-reachability recovery, broken continuity, explicit high-risk revalidation |
+| MDM/MDA | Per-connection fallback can create a fleet herd | Independent scheduled device-evidence refresh through a bounded, jittered scheduler |
+| Application proof | Binary/runtime facts partly folded into effective trust | Fresh per-process proof for exact active release, runtime, metallib, code identity, node key, nonce, and expiry |
+| Model proof | Registry/hash/template/capability checks exist across several fields | Explicit third evidence plane joined per provider/model pair |
+| M5/NAX | Correct exact-Qwen gate, but easy to misread as global hardware trust | Remains model-scoped: `apple_m5` from device evidence, `mlx_nax` from runtime evidence |
+| Decryption recipient | Current admitted provider connection key | Coordinator-certified boot/process-ephemeral key bound to device, release, runtime, model policy, and expiry |
+| Request key | E2E request key for the selected provider | Prefer one-request or short-lived client-generated key bound to the certified process transcript and deadline |
+| Fake/modified provider | Blocked by missing SE entitlement, signature/hash/runtime/trust gates | Same, with explicit non-substitutable device/application/model checks |
+| Database theft | Trust and routing records are valuable state, but do not contain prompt keys | No row is a bearer credential; fresh SE/process proof and request key remain mandatory |
+| Provider filesystem/network | Prompt transport remains encrypted; signed process still has broad runtime responsibilities | Plaintext worker has no general egress or writable user storage; supervisor sees ciphertext only |
+| Logs/telemetry | Allowlisted structured telemetry, but payload-derived mistakes remain possible | Plaintext process emits fixed-schema numeric outcomes only; no payload-derived strings, dumps, samples, or traces |
+| Memory lifetime | Plaintext and derived tensors live inside the MLX process | Bounded worker/session lifetime, no core dumps, minimized copies, best-effort CPU/GPU cleanup, explicit residual-risk statement |
+| Release rollout | New latest release reaches the fleet globally | Durable staged cohorts; old capacity remains until updated cohort is trusted and model-ready |
+| Audit | Coordinator logs and mutable database state | Prompt-free trust/release/model decision receipts; no public request/provider identity log required because Darkbloom is trusted |
+
+#### Prompt decryption authorization
+
+The persistent SE private key must never itself decrypt consumer prompts. It signs enrollment and fresh connection challenges. On each process launch, the provider creates a fresh X25519/HPKE process key and binds it to:
+
+```text
+same enrolled SE identity and serial
+fresh coordinator nonce and session
+exact active provider release/binary
+runtime manifest and metallib
+expiry and evidence generation
+```
+
+After verifying those facts, the trusted coordinator certifies the process public key. The consumer trusts the coordinator and encrypts only to that certified key, preferably deriving a one-request payload/response key with transcript-bound associated data:
+
+```text
+request ID
+coordinator route/session commitment
+provider process key
+release hash
+model ID and manifest hash
+evidence generation
+deadline
+```
+
+The coordinator relays ciphertext and never receives the decryption key. A fake process, stale process, another provider, another model, old release, replayed request, or copied database row changes the transcript or lacks the live private key and cannot decrypt.
+
+```mermaid
+sequenceDiagram
+  participant U as Consumer client
+  participant C as Trusted coordinator
+  participant S as Signed provider supervisor
+  participant W as Plaintext inference worker
+  participant O as Untrusted provider owner
+
+  S->>C: SE-bound fresh process public key + application evidence
+  C->>C: Verify device, release, runtime, model policy
+  C-->>U: Certified process key + route/model transcript
+  U->>U: Derive one-request payload/response keys
+  U->>C: Transcript-bound ciphertext
+  C->>S: Relay ciphertext
+  S->>W: Ciphertext + one-use grant + read-only model handles
+  W->>W: Decrypt, infer, encrypt response, erase request keys
+  W->>S: Response ciphertext + fixed-schema usage
+  S->>C: Relay ciphertext
+  C-->>U: Response ciphertext
+  O--xU: Sees ciphertext/metadata, not prompt key
+```
+
+#### Provider-owner attack controls
+
+| Attack by provider owner | Required control | Residual risk |
+|---|---|---|
+| Replace or patch provider executable | Developer ID/notarization, active release hash, runtime manifest, Hardened Runtime | Compromise of Darkbloom signing/release authority |
+| Ad-hoc re-sign and request SE key | Team-scoped keychain entitlement enforced by Data Protection Keychain | Another malicious Darkbloom-signed binary with the same entitlement must still be rejected by application evidence |
+| Run a fake provider process | Fresh SE challenge, X25519 binding, exact release/runtime proof | Apple platform compromise |
+| Capture provider network | E2E prompt/response encryption to the certified process key | Timing, model, size, and traffic-volume metadata |
+| Read or replace files | Never persist prompt plaintext; immutable model manifests; SE-wrapped encrypted local cache | Privileged OS/kernel access, framework-owned temporary state |
+| Attach debugger/read process | Hardened Runtime, no `get-task-allow`, library validation, SIP/AMFI, MDM posture, adversarial attachment tests | Hostile kernel/root with a working platform exploit |
+| Disable SIP/Secure Boot | Reboot drops connection; fresh signed posture challenge fails and hard-untrusts | Compromised Apple posture attestation path |
+| Replay old request/evidence | Fresh nonce, session/process key, evidence generation, request deadline, one-use request ID | Rollback of every trusted state store simultaneously |
+| Substitute model/template | Catalog manifest/hash, template self-check, model evidence generation, model-scoped capabilities | Malicious model that Darkbloom itself approves |
+| Leak through logs/telemetry | No payload-derived strings; fixed enums/counters via separate broker; privacy chaos tests | Covert timing/count channels |
+| Leak through valid model output | Release/model governance and output bounds | An admitted malicious model/process can intentionally encode plaintext in a legitimate response |
+
+#### Plaintext process boundary
+
+The admitted inference implementation necessarily sees plaintext. To minimize what the untrusted provider owner can inspect, move toward two signed components:
+
+```text
+Provider supervisor
+  coordinator WebSocket, updater, artifact download, ciphertext relay, telemetry
+  never receives prompt/response keys or plaintext
+
+Plaintext inference worker
+  exact admitted runtime/model, request-key unwrap, inference, response encryption
+  no general network, no writable user files, no free-form logging
+```
+
+The worker should receive encrypted request capsules, one-use grants, fixed-size IPC buffers, and read-only model handles. It should encrypt the response before returning it to the supervisor. Disable core dumps and raw crash upload, avoid plaintext environment variables and temporary files, minimize `String`/copy-on-write prompt copies, zero caller-owned buffers, and terminate secret-bearing sessions on crash or sleep. MLX/Metal and Apple unified-memory allocations are not fully caller-owned or provably scrubbed; cleanup is best effort and must not be marketed as protection from a hostile kernel.
+
+#### Honest privacy claim
+
+The defensible claim is:
+
+> Darkbloom keeps prompt and response content hidden from the coordinator and from an untrusted provider operator's ordinary applications, network capture, filesystem inspection, binary modification, and standard debugging paths. Plaintext exists only inside the admitted Darkbloom inference process on an Apple-verified device.
+
+Required limitation:
+
+> Darkbloom on commodity macOS does not claim confidentiality against a compromised Apple kernel, privileged platform component, physical memory attack, working kernel zero-day, or a malicious provider/model release approved by Darkbloom.
+
 ### Target control flow
 
 ```mermaid
@@ -555,6 +691,21 @@ Automatically pause rollout when hardware-trusted ratio or network capacity fall
 - loss of a model-specific capability clears only affected provider/model routing and pending-load state, not the provider's unrelated model routes;
 - valid device/application evidence with an unloaded model remains connected but non-routable until an authoritative slot reports usable capacity.
 
+#### Provider-owner privacy adversarial tests
+
+- coordinator, database, packet capture, and provider supervisor never receive prompt/response plaintext or request keys;
+- every route/release/model/process/request transcript mutation fails before decryption;
+- copied ciphertext cannot decrypt on another provider, process, release, model, session, request ID, evidence generation, or after its deadline;
+- unsigned, modified, ad-hoc-signed, old, revoked, and unregistered binaries cannot access routing even when a persistent SE key exists on the device;
+- a same-team entitled test binary can exercise the keychain boundary only as configured but cannot pass exact application evidence or receive a certified process key;
+- production-signed provider rejects `lldb`, `task_for_pid`, DTrace/instrumentation, library injection, and core-dump attempts under the accepted SIP/Secure Boot posture;
+- seeded plaintext canaries never appear in unified logs, crash reports, temporary files, environment variables, telemetry, cache files, IPC metadata, supervisor memory, or captured network traffic;
+- sleep/wake, process crash, allocation failure, GPU reset, cancellation, and forced shutdown abandon request keys and never emit plaintext diagnostics;
+- local cache remains ciphertext at rest and cannot be opened without the enrolled SE-wrapped key hierarchy;
+- plaintext inference worker has no general outbound socket or writable user-file capability, while the supervisor can relay only ciphertext and fixed-schema usage;
+- model-specific M5/NAX evidence cannot be reused to authorize another model or treated as a general privacy credential;
+- tests explicitly document that hostile kernel/root, physical memory, and malicious approved-release attacks are outside the commodity-macOS guarantee.
+
 #### Concurrency and fleet simulation
 
 Simulate at least 1,500 providers across:
@@ -610,8 +761,11 @@ Before the next provider release:
 | P0 | Add global MDM scheduler with concurrency cap and jitter | 1,500-provider simulation never exceeds cap or synchronizes retries. |
 | P0 | Add staged provider release controller and automatic pause | Canary/1/5/25/50/100 stages proven; trust/capacity regression pauses rollout. |
 | P0 | Preserve contribution through update states and per-model capacity floors | Updated cohort reloads prior models and returns to ready before the next cohort; no model drops below its floor. |
+| P0 | Bind E2E request keys to coordinator-certified process/release/model evidence | Coordinator, DB, fake provider, stale process, wrong model, replay, and transcript mutation cannot obtain or reuse a request key. |
 | P1 | Separate hardware-proof and application-proof timestamps | Store/API migration reviewed; exact-hash reconnect behavior remains intact. |
 | P1 | Make model-specific capabilities a separate evidence plane | M5/NAX gates only required model pairs; unrelated provider/model routes survive capability loss. |
+| P1 | Split ciphertext supervisor from minimal plaintext inference worker | Worker has no general egress/storage/logging; supervisor never sees plaintext; privacy chaos suite passes. |
+| P1 | Add provider-owner privacy attack suite and explicit assurance levels | Production-signed attach, file, log, crash, replay, cache, sleep/wake, and network attacks are continuously tested; root/kernel limitation is documented. |
 | P1 | Add version/trust/capacity rollout dashboards and alerts | Operators can see connected versus routable hardware providers by version. |
 | P1 | Add coordinator-restart-then-provider-update integration scenario | Reproduces this incident before the fix and remains green after it. |
 | P1 | Publish full-commit coordinator image tags from Cloud Build | Runbook candidate tag exists directly after every successful master build. |
@@ -620,12 +774,15 @@ Before the next provider release:
 ## Lessons
 
 1. Connected provider count is not a capacity metric when routing requires hardware trust.
-2. Hardware posture, application identity, and model readiness are separate proofs and need separate lifecycle policies.
-3. A persistent SE key is a durable device/application-family identity root, not proof of one exact binary.
+2. Hardware posture, application identity, model readiness, and request decryption authority are separate proofs and need separate lifecycle policies.
+3. A persistent SE key is a durable device/application-family identity root, not proof of one exact binary or authority to decrypt prompts.
 4. APNs is a bootstrap/recovery delivery channel, not the routine reconnect or release-update trust mechanism.
-5. M5/NAX is a model-specific Qwen3.8 requirement, not a fleet-wide hardware-trust requirement.
-6. A safe single-provider retry loop can become unsafe when multiplied by the fleet.
-7. Provider releases are production traffic changes even when the coordinator API remains healthy.
-8. Back-to-back coordinator and provider rollouts must be treated as one coupled failure domain.
-9. A release that passes build, signing, notarization, unit tests, and a single-machine canary can still fail through fleet-control-plane synchronization.
-10. Emergency data bridges can be safe only when bounded, backed up, live-proof-gated, and explicitly temporary.
+5. M5/NAX is a model-specific Qwen3.8 requirement, not a fleet-wide hardware-trust or privacy requirement.
+6. Under the product threat model, Darkbloom and the verified Apple platform are trusted; the provider owner and surrounding machine environment are adversarial.
+7. The admitted inference process necessarily sees plaintext, so release integrity and runtime confinement are privacy controls, not only operational controls.
+8. Commodity macOS cannot honestly guarantee confidentiality against a hostile kernel/root or malicious Darkbloom-approved release.
+9. A safe single-provider retry loop can become unsafe when multiplied by the fleet.
+10. Provider releases are production traffic changes even when the coordinator API remains healthy.
+11. Back-to-back coordinator and provider rollouts must be treated as one coupled failure domain.
+12. A release that passes build, signing, notarization, unit tests, and a single-machine canary can still fail through fleet-control-plane synchronization.
+13. Emergency data bridges can be safe only when bounded, backed up, live-proof-gated, and explicitly temporary.

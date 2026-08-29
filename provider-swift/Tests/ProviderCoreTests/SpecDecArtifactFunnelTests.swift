@@ -275,7 +275,7 @@ struct SpecDecArtifactFunnelTests {
     func qwenStandaloneAssistantMissingMetadataFallsBack() async throws {
         let directory = try makeDenseQwenTargetWithoutInlineMTP()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let modelID = MTPMode.automaticTargetModelID
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
         let catalog = FunnelCatalog(funnelModel(id: modelID))
         let prepared = await funnel(
             catalog: catalog, root: FileManager.default.temporaryDirectory
@@ -298,7 +298,7 @@ struct SpecDecArtifactFunnelTests {
     func qwenStandaloneAssistantInvalidMetadataFallsBack() async throws {
         let directory = try makeDenseQwenTargetWithoutInlineMTP()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let modelID = MTPMode.automaticTargetModelID
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
         let catalog = FunnelCatalog(funnelModel(
             id: modelID,
             metadata: ["spec_dec": .object([("r2_prefix", .string("../escape"))])]))
@@ -325,7 +325,7 @@ struct SpecDecArtifactFunnelTests {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("qwen38-specdec-miss-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: store) }
-        let modelID = MTPMode.automaticTargetModelID
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
         let catalog = FunnelCatalog(funnelModel(
             id: modelID, metadata: qwen38SpecDecMetadata()))
         let prepared = await funnel(catalog: catalog, root: store).prepare(
@@ -528,7 +528,7 @@ struct SpecDecArtifactFunnelTests {
                 environment: ["DARKBLOOM_CBV2_MTP": "off"]))
         let bothOff = await artifactFunnel.prepare(
             .init(
-                modelId: MTPMode.automaticTargetModelID,
+                modelId: "EigenLabs/Qwen3.8-27B-4bit",
                 modelType: "qwen3_5",
                 enabled: false,
                 localPath: nil,

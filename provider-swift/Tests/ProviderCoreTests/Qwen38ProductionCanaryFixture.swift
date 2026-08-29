@@ -71,8 +71,7 @@ struct Qwen38ProductionCanaryFixture: @unchecked Sendable {
             modelId: Qwen38ProductionCanary.targetModelID,
             modelType: Qwen38ProductionCanary.modelType,
             enabled: MTPMode.auto.enablesMTP(
-                forModelID: Qwen38ProductionCanary.targetModelID,
-                modelType: Qwen38ProductionCanary.modelType),
+                forModelType: Qwen38ProductionCanary.modelType),
             localPath: assistantDirectory.path,
             modelDirectory: modelDirectory,
             allowDownload: false,

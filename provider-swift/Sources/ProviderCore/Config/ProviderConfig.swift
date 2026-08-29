@@ -69,13 +69,13 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables MTP for the exact production Qwen3.8 target (its head is a
-/// separately published artifact resolved by id) and, by `model_type`, for
-/// the Qwen 3.5 family — dense `qwen3_5` (Qwen3.5-9B-class inline heads) and
-/// `qwen3_5_moe` (Qwen3.5/3.6 35B-A3B, inline or catalog heads). This
-/// restores the v0.8.14 family rule that #700 narrowed to the single Qwen3.8
-/// pin, and extends it to the dense checkpoints that never had it. Callers
-/// without a model type keep the pinned-id decision only.
+/// `auto` enables MTP, by `model_type`, for the Qwen 3.5 family — dense
+/// `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B embedded heads) and `qwen3_5_moe`
+/// (Qwen3.5/3.6 35B-A3B). Every Qwen MTP artifact now ships EMBEDDED in its
+/// target checkpoint (`mtplx_mtp` in config.json), so the pairing travels
+/// with the weights and no model-id pin is needed; the #700-era
+/// `automaticTargetModelID` pin existed only to gate the 27B's then-separate
+/// head and was removed with that resolution path.
 ///
 /// Family coverage alone never activates anything: artifact inspection
 /// (`SpecDecStore`), catalog/spec-dec resolution, and the process-wide kill
@@ -86,22 +86,19 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     case on
     case off
 
-    static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
-
     /// `model_type` values whose checkpoints may carry MTP artifacts. Kept in
     /// sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel stays the
     /// single authority on which models it will *resolve*; this set only
     /// decides which ones `auto` is willing to *ask about*.
     static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
 
-    func enablesMTP(forModelID modelID: String, modelType: String?) -> Bool {
+    func enablesMTP(forModelType modelType: String?) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            if modelID == Self.automaticTargetModelID { return true }
             guard let raw = modelType?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased(), !raw.isEmpty

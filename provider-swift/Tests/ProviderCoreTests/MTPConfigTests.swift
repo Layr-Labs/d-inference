@@ -30,7 +30,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode defaults on for the Qwen3.8 target and the Qwen3.5 family")
+    @Test("absent mode defaults on for the Qwen3.5 family by model type")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -43,16 +43,9 @@ struct MTPConfigKeyTests {
 
         #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtp == false)
-        #expect(config.backend.mtpMode.enablesMTP(
-            forModelID: MTPMode.automaticTargetModelID, modelType: nil))
-        // Family coverage arrives through the checkpoint's model_type, not the
-        // id: callers that only know an id keep the pinned-id decision.
-        #expect(config.backend.mtpMode.enablesMTP(
-            forModelID: "EigenLabs/Qwen3.6-35B-A3B-4bit", modelType: "qwen3_5_moe"))
-        #expect(config.backend.mtpMode.enablesMTP(
-            forModelID: "EigenLabs/Qwen3.5-9B-MLX-4bit-MTP", modelType: "qwen3_5"))
-        #expect(!config.backend.mtpMode.enablesMTP(
-            forModelID: "EigenLabs/Qwen3.6-35B-A3B-4bit", modelType: nil))
+        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5"))
+        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5_moe"))
+        #expect(!config.backend.mtpMode.enablesMTP(forModelType: nil))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -117,49 +110,47 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("automatic mode uses the Qwen3.8 pin plus Qwen3.5-family model types")
+    @Test("automatic mode uses Qwen3.5-family model types; explicit modes ignore them")
     func targetPolicy() {
-        let target = MTPMode.automaticTargetModelID
         // Family ids with their checkpoint model_types. Every one of these
-        // must draft under `.auto` when the funnel can find an artifact.
-        let familyModels: [(id: String, modelType: String)] = [
-            // Qwen 3.5/3.6 35B MoE (inline or catalog heads)
-            ("EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8-mtp", "qwen3_5_moe"),
-            ("EigenLabs/Qwen3.5-35B-A3B-MLX-VL-4bit-g64", "qwen3_5_moe"),
-            // Qwen 3.5 dense (inline heads, e.g. the 9B)
-            ("EigenLabs/Qwen3.5-9B-MLX-4bit-MTP", "qwen3_5"),
-            ("EigenLabs/Qwen3.8-27B-4bit", "qwen3_5"),
+        // must draft under `.auto` when the funnel can find an artifact —
+        // including the embedded 27B that used to resolve through the
+        // external-head pin.
+        let familyModelTypes = [
+            // Qwen 3.5/3.6 35B MoE (embedded or catalog heads)
+            "qwen3_5_moe",
+            // Qwen 3.5 dense (embedded heads: the 9B, the 27B)
+            "qwen3_5",
         ]
-        // Non-family ids and types stay off under `.auto` — Gemma and GPT-OSS
-        // keep their explicit opt-in, and callers that know only an id keep
-        // the pinned-id decision.
-        let nonFamily: [(id: String, modelType: String?)] = [
-            ("EigenLabs/Gemma-4-27B-4bit", "gemma4"),
-            ("mlx-community/gpt-oss-20b", "gpt_oss"),
-            ("mlx-community/Qwen3-VL-30B-A3B-Instruct-MLX-4bit", "qwen3_vl_moe"),
-            ("EigenLabs/Qwen3.6-35B-A3B-4bit", nil),
+        // Non-family types stay off under `.auto` — Gemma and GPT-OSS keep
+        // their explicit opt-in, and no model_type means no automatic decision.
+        let nonFamilyModelTypes: [String?] = [
+            "gemma4",
+            "gemma4_text",
+            "gpt_oss",
+            "qwen3_vl_moe",
+            nil,
+            "  ",
         ]
 
-        #expect(MTPMode.auto.enablesMTP(forModelID: target, modelType: nil))
-        #expect(MTPMode.on.enablesMTP(forModelID: target, modelType: nil))
-        #expect(!MTPMode.off.enablesMTP(forModelID: target, modelType: nil))
-        for model in familyModels {
+        for modelType in familyModelTypes {
             #expect(
-                MTPMode.auto.enablesMTP(forModelID: model.id, modelType: model.modelType),
-                "family model_type must draft under auto: \(model)")
-            #expect(MTPMode.on.enablesMTP(forModelID: model.id, modelType: model.modelType))
-            #expect(!MTPMode.off.enablesMTP(forModelID: model.id, modelType: model.modelType))
+                MTPMode.auto.enablesMTP(forModelType: modelType),
+                "family model_type must draft under auto: \(modelType)")
+            #expect(MTPMode.on.enablesMTP(forModelType: modelType))
+            #expect(!MTPMode.off.enablesMTP(forModelType: modelType))
         }
-        for model in nonFamily {
+        for modelType in nonFamilyModelTypes {
             #expect(
-                !MTPMode.auto.enablesMTP(forModelID: model.id, modelType: model.modelType),
-                "non-family model must not draft under auto: \(model)")
-            #expect(MTPMode.on.enablesMTP(forModelID: model.id, modelType: model.modelType))
-            #expect(!MTPMode.off.enablesMTP(forModelID: model.id, modelType: model.modelType))
+                !MTPMode.auto.enablesMTP(forModelType: modelType),
+                "non-family model_type must not draft under auto: \(modelType ?? "nil")")
+            #expect(MTPMode.on.enablesMTP(forModelType: modelType))
+            #expect(!MTPMode.off.enablesMTP(forModelType: modelType))
         }
         // Model-type matching is case/whitespace-insensitive like every other
         // model_type comparison in the funnel.
-        #expect(MTPMode.auto.enablesMTP(forModelID: "x/y", modelType: " QWEN3_5_MOE "))
+        #expect(MTPMode.auto.enablesMTP(forModelType: " QWEN3_5_MOE "))
+        #expect(MTPMode.auto.enablesMTP(forModelType: "Qwen3_5"))
     }
 
     @Test("provider and standalone configs use the same target decision")
@@ -167,15 +158,10 @@ struct MTPConfigKeyTests {
         let backend = BackendSettings(mtpMode: .auto)
         let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
 
-        for model in [
-            (MTPMode.automaticTargetModelID, nil),
-            ("other/model", nil),
-            ("EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64", "qwen3_5_moe"),
-            ("EigenLabs/Qwen3.5-9B-MLX-4bit-MTP", "qwen3_5"),
-        ] as [(String, String?)] {
+        for modelType in ["qwen3_5_moe", "qwen3_5", "gemma4", nil] as [String?] {
             #expect(
-                backend.mtpMode.enablesMTP(forModelID: model.0, modelType: model.1)
-                    == standalone.mtpMode.enablesMTP(forModelID: model.0, modelType: model.1))
+                backend.mtpMode.enablesMTP(forModelType: modelType)
+                    == standalone.mtpMode.enablesMTP(forModelType: modelType))
         }
     }
 

@@ -21,16 +21,52 @@ guard FanCodeRequirements.ownIdentityIsProduction else {
 
 let paths = FanServicePaths.production
 do {
+    var failureFileMayExist = FileManager.default.fileExists(
+        atPath: paths.lastFailure.path
+    )
+    let previousFailure = try? FanDurableFile.readJSON(
+        FanLastFailure.self,
+        from: paths.lastFailure
+    )
     let backend = try AppleSMCBackend()
     let reader = FanHardwareReader(backend: backend)
-    let recoveryInventory = try reader.discoverForRecovery()
-
-    try FanOwnershipRecovery.reconcile(
+    let startup = try FanStartupRecovery.prepare(
         backend: backend,
-        inventory: recoveryInventory,
-        journalURL: paths.sessionJournal
+        reader: reader,
+        paths: paths
     )
-    let inventory = try reader.discover()
+    let recoveryInventory = startup.recoveryInventory
+    let sensorBaseline = startup.sensorBaseline
+    let inventory: FanInventory
+    let discoveryError: String?
+    do {
+        let discovered = try reader.discover()
+        inventory = discovered
+        if discovered.fans.isEmpty {
+            discoveryError = "fan hardware discovery found no controllable fans"
+        } else if discovered.gpuTemperatureKeys.isEmpty {
+            discoveryError = "GPU sensor discovery returned no plausible readings; retrying in the helper"
+        } else {
+            discoveryError = nil
+        }
+    } catch {
+        inventory = recoveryInventory
+        discoveryError = "fan hardware discovery failed: \(error); retrying in the helper"
+    }
+    var persistedFailure = previousFailure?.message
+    if let discoveryError {
+        failureFileMayExist = true
+        do {
+            try FanDurableFile.writeJSON(
+                FanLastFailure(message: discoveryError),
+                to: paths.lastFailure,
+                permissions: 0o600
+            )
+            persistedFailure = discoveryError
+        } catch {
+            persistedFailure = previousFailure?.message
+        }
+    }
 
     let configuration: FanServiceConfiguration
     do {
@@ -67,7 +103,14 @@ do {
         backend: backend,
         inventory: inventory,
         reader: reader,
-        controller: controller
+        controller: controller,
+        baselineSensorKeys: sensorBaseline?.chipFamily == inventory.chipFamily
+            ? sensorBaseline?.sensorKeys ?? []
+            : [],
+        initialLastError: discoveryError ?? previousFailure?.message,
+        initialPersistedLastError: persistedFailure,
+        initialFailureFileMayExist: failureFileMayExist,
+        initialDiscoveryError: discoveryError
     )
     let xpcService = FanXPCService(
         daemon: daemon,
@@ -99,6 +142,11 @@ do {
         RunLoop.main.run()
     }
 } catch {
+    try? FanDurableFile.writeJSON(
+        FanLastFailure(message: "fan helper startup failed: \(error)"),
+        to: paths.lastFailure,
+        permissions: 0o600
+    )
     logger.fault("fan helper startup failed: \(String(describing: error), privacy: .public)")
     exit(1)
 }

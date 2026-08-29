@@ -94,6 +94,24 @@ journal and restores those fans before accepting a new lease. `Ftst` is cleared
 only when Darkbloom recorded possible ownership. The journal implementation is in
 `DarkbloomFanService/FanDurableFile.swift` and `FanOwnershipRecovery.swift`.
 
+Auto restoration uses a bounded write-and-readback loop shared by live rollback
+and startup journal recovery. Each pass requests Auto for every unresolved fan,
+releases an owned `Ftst` gate, and then rechecks any fan whose firmware state had
+not converged. The ownership journal remains until every tracked state is
+verified.
+
+GPU discovery is also recoverable. The helper rejects provider leases while fan
+or sensor discovery is incomplete and retries discovery every five seconds. A
+runtime invalid sensor first revokes the lease and restores Auto; only after that
+restore succeeds can a fresh inventory omit the bad key and accept a new lease.
+At least half of the chip-family catalog and half of the durable last-known-good
+sensor set must remain. This prevents a transient SMC snapshot from leaving a
+live helper permanently `unsupported` or lowering its quorum after restart.
+
+`darkbloom fan status --json` exposes `hardwareReady`, `recoveryPending`,
+`discoveryError`, and `quarantinedSensorKeys`. The last failure is retained
+across helper restarts and cleared after a healthy policy tick.
+
 Darkbloom refuses to take over a fan or global `Ftst` gate already held by
 another fan-control application. Stop that application and restore its Auto mode
 before enabling Darkbloom.
@@ -108,6 +126,8 @@ Explicit enablement creates only these root-owned files:
 | `/Library/LaunchDaemons/io.darkbloom.fan.plist` | System launchd job |
 | `/Library/Application Support/Darkbloom/fan-policy.json` | Validated policy and provider UID |
 | `/Library/Application Support/Darkbloom/fan-session.json` | Crash-recovery ownership journal, present only while control may be active |
+| `/Library/Application Support/Darkbloom/fan-last-failure.json` | Bounded diagnostic record, removed after recovery or disable |
+| `/Library/Application Support/Darkbloom/fan-sensor-baseline.json` | Durable last-known-good sensor set used to preserve recovery quorum |
 
 The helper links only the fan core, XPC protocol, Foundation, IOKit, and Security.
 It has no coordinator client, network code, provider credentials, model access,
@@ -119,6 +139,11 @@ The signed application bundle contains a dormant helper, but the unprivileged
 self-updater never replaces the root-installed copy. A compatible helper keeps
 working; a protocol mismatch grants no lease and leaves the fans in Auto. Run
 `sudo darkbloom fan enable` again to install a newer bundled helper.
+
+The recovery changes use local fan protocol v2. A v2 provider deliberately
+cannot renew a lease on the original v1 helper, because v1 lacks the restore and
+rediscovery guarantees above. The `fan-helper-v1` bundle capability marker is
+unchanged: it identifies the signed helper artifact, not its local XPC protocol.
 
 The release workflow, installer, and self-updater require agreement between the
 CLI capability string, sealed `fan-helper-v1` marker, nested executable mode, and
@@ -134,7 +159,7 @@ were detected. Do not describe a machine family as validated until a real-device
 test has covered engage, release, provider stop, sleep/wake, helper restart, and
 uninstall restoration.
 
-Current v0.7.9 evidence:
+Current evidence:
 
 | Hardware | Validation |
 |---|---|

@@ -6,6 +6,11 @@ import Testing
 
 @testable import DarkbloomFanHelper
 
+private let m4MaxGPUKeys: [SMCKey] = [
+    "Tg0G", "Tg0H", "Tg1U", "Tg1k",
+    "Tg0K", "Tg0L", "Tg0d", "Tg0e",
+]
+
 @Suite("Fan helper daemon")
 struct FanDaemonTests {
     @Test("provider lease is required and disconnect restores Auto")
@@ -37,6 +42,9 @@ struct FanDaemonTests {
             requireRootOwnership: false
         )
         #expect(!journal.ownsFtst)
+        #expect(journal.verifyAllFans)
+        #expect(journal.verificationFanIndices == [0])
+        #expect(journal.minimumVerificationFanCount == 1)
 
         await harness.daemon.sessionInvalidated(session)
         #expect(harness.backend.byte("F0Md") == 0)
@@ -71,13 +79,13 @@ struct FanDaemonTests {
         #expect(!(await harness.daemon.status()).providerActive)
     }
 
-    @Test("protocol mismatch never grants a lease")
-    func protocolMismatch() async throws {
+    @Test("legacy helper protocol never grants a lease")
+    func legacyProtocolMismatch() async throws {
         let harness = try makeHarness()
         defer { try? FileManager.default.removeItem(at: harness.root) }
         let reply = await harness.daemon.renewLease(
             sessionID: UUID(),
-            protocolVersion: FanIPC.protocolVersion + 1,
+            protocolVersion: FanIPC.protocolVersion - 1,
             providerVersion: "0.7.9"
         )
         #expect(!reply.ok)
@@ -180,6 +188,263 @@ struct FanDaemonTests {
             requireRootOwnership: false
         )
         #expect(journal.ownsFtst)
+        #expect(journal.verifyAllFans)
+        #expect(journal.verificationFanIndices == [0])
+        #expect(journal.minimumVerificationFanCount == 1)
+    }
+
+    @Test("M4 Max invalid sensor restores Auto, rediscovers, and reacquires lease")
+    func m4MaxInvalidSensorRecovery() async throws {
+        let harness = try makeHarness(
+            inventoryGPUKeys: m4MaxGPUKeys,
+            backendGPUKeys: m4MaxGPUKeys
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.backend.rejectNextManualWrite()
+
+        let firstLease = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(firstLease.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+        #expect(harness.backend.byte("Ftst") == 1)
+
+        harness.backend.setNumber("Tg1k", to: -4)
+        await harness.daemon.tick()
+
+        let failed = await harness.daemon.status()
+        #expect(failed.mode == .error)
+        #expect(!failed.providerActive)
+        #expect(failed.recoveryPending == true)
+        #expect(failed.quarantinedSensorKeys == ["Tg1k"])
+        #expect(harness.backend.byte("F0Md") == FanMode.automatic.rawValue)
+        #expect(harness.backend.byte("Ftst") == 0)
+
+        harness.clock.advance(by: 5)
+        await harness.daemon.tick()
+        let recovered = await harness.daemon.status()
+        #expect(recovered.hardwareReady == true)
+        #expect(recovered.mode == .waitingForProvider)
+        #expect(recovered.gpuSensorKeys.count == 7)
+        #expect(!recovered.gpuSensorKeys.contains("Tg1k"))
+
+        let renewed = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(renewed.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+        #expect(harness.backend.byte("F0Md") == FanMode.manual.rawValue)
+    }
+
+    @Test("empty startup inventory rejects leases until sensors recover")
+    func emptyStartupInventoryRediscovery() async throws {
+        let harness = try makeHarness(
+            inventoryGPUKeys: [],
+            backendGPUKeys: m4MaxGPUKeys,
+            initialDiscoveryError: "GPU sensor discovery returned no plausible readings"
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        for key in m4MaxGPUKeys {
+            harness.backend.setNumber(key, to: -4)
+        }
+
+        let rejected = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(!rejected.ok)
+        #expect(rejected.message?.contains("GPU sensor discovery") == true)
+
+        await harness.daemon.tick()
+        let unavailable = await harness.daemon.status()
+        #expect(unavailable.mode == .unsupported)
+        #expect(unavailable.hardwareReady == false)
+        #expect(unavailable.recoveryPending == true)
+        #expect(unavailable.lastError != nil)
+        #expect(FileManager.default.fileExists(atPath: harness.paths.lastFailure.path))
+
+        for key in m4MaxGPUKeys {
+            harness.backend.setNumber(key, to: 50)
+        }
+        harness.clock.advance(by: 5)
+        await harness.daemon.tick()
+
+        let recovered = await harness.daemon.status()
+        #expect(recovered.hardwareReady == true)
+        #expect(recovered.recoveryPending == false)
+        #expect(recovered.gpuSensorKeys == m4MaxGPUKeys.map(\.rawValue))
+        #expect(recovered.lastError == nil)
+        #expect(!FileManager.default.fileExists(atPath: harness.paths.lastFailure.path))
+
+        let accepted = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(accepted.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+    }
+
+    @Test("restart cannot lower the durable M4 sensor quorum")
+    func restartPreservesSensorQuorum() async throws {
+        let reducedKeys = Array(m4MaxGPUKeys.prefix(3)) + ["Tg0j", "Tg0k"]
+        let harness = try makeHarness(
+            inventoryGPUKeys: reducedKeys,
+            backendGPUKeys: reducedKeys,
+            baselineSensorKeys: m4MaxGPUKeys
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+
+        let rejected = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+
+        #expect(!rejected.ok)
+        let status = await harness.daemon.status()
+        #expect(status.hardwareReady == false)
+        #expect(status.recoveryPending == true)
+    }
+
+    @Test("first lease waits for a durable sensor baseline")
+    func leaseWaitsForSensorBaseline() async throws {
+        let harness = try makeHarness(baselineSensorKeys: [])
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+
+        let beforePersistence = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(!beforePersistence.ok)
+        #expect(beforePersistence.message?.contains("not durable") == true)
+
+        await harness.daemon.tick()
+        #expect(FileManager.default.fileExists(
+            atPath: harness.paths.sensorBaseline.path
+        ))
+
+        let afterPersistence = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(afterPersistence.ok)
+    }
+
+    @Test("startup restores journal before rejecting a corrupt sensor baseline")
+    func startupRecoveryPrecedesBaselineValidation() throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.backend.setByte("F0Md", to: FanMode.manual.rawValue)
+        harness.backend.setByte("Ftst", to: 1)
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [0],
+                ownsFtst: true,
+                verifyAllFans: true,
+                verificationFanIndices: [0],
+                minimumVerificationFanCount: 1
+            ),
+            to: harness.paths.sessionJournal,
+            permissions: 0o600,
+            owner: nil
+        )
+        try FanDurableFile.writeData(
+            Data("{}".utf8),
+            to: harness.paths.sensorBaseline,
+            permissions: 0o600,
+            owner: nil
+        )
+        let reader = FanHardwareReader(backend: harness.backend)
+
+        #expect(throws: (any Error).self) {
+            _ = try FanStartupRecovery.prepare(
+                backend: harness.backend,
+                reader: reader,
+                paths: harness.paths,
+                brandString: "Apple M4 Max",
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: FanControlTiming(
+                    ftstSettleSeconds: 0,
+                    retryDelaySeconds: 0,
+                    manualModeAttempts: 1,
+                    automaticRestoreAttempts: 1,
+                    verificationAttempts: 1,
+                    sleep: { _ in }
+                )
+            )
+        }
+
+        #expect(harness.backend.byte("F0Md") == FanMode.automatic.rawValue)
+        #expect(harness.backend.byte("Ftst") == 0)
+        #expect(!FileManager.default.fileExists(
+            atPath: harness.paths.sessionJournal.path
+        ))
+    }
+
+    @Test("missing GPU key revokes the lease and enters rediscovery")
+    func missingSensorRecovery() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        _ = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+
+        harness.backend.removeNumber("Tg1k")
+        await harness.daemon.tick()
+
+        let failed = await harness.daemon.status()
+        #expect(failed.mode == .error)
+        #expect(!failed.providerActive)
+        #expect(failed.recoveryPending == true)
+        #expect(failed.quarantinedSensorKeys == ["Tg1k"])
+
+        harness.clock.advance(by: 5)
+        await harness.daemon.tick()
+        let recovered = await harness.daemon.status()
+        #expect(recovered.hardwareReady == true)
+        #expect(recovered.gpuSensorKeys.count == 7)
+    }
+
+    @Test("lease expiry during a slow engage restores Auto")
+    func leaseExpiresDuringEngage() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        harness.backend.blockNextManualWrite(entered: entered, release: release)
+        _ = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+
+        let daemon = harness.daemon
+        let tick = Task { await daemon.tick() }
+        #expect(await waitForSemaphore(entered, timeout: .now() + 2) == .success)
+        harness.clock.advance(by: FanIPC.leaseDurationSeconds + 1)
+        release.signal()
+        await tick.value
+
+        let status = await harness.daemon.status()
+        #expect(!status.providerActive)
+        #expect(harness.backend.byte("F0Md") == FanMode.automatic.rawValue)
+        #expect(!FileManager.default.fileExists(atPath: harness.paths.sessionJournal.path))
     }
 
     @Test("maintenance never journals or clears a foreign Ftst gate")
@@ -214,7 +479,13 @@ private struct FanDaemonHarness {
     let clock: TestUptime
 }
 
-private func makeHarness() throws -> FanDaemonHarness {
+private func makeHarness(
+    inventoryGPUKeys: [SMCKey] = m4MaxGPUKeys,
+    backendGPUKeys: [SMCKey] = m4MaxGPUKeys,
+    baselineSensorKeys: [SMCKey] = m4MaxGPUKeys,
+    initialLastError: String? = nil,
+    initialDiscoveryError: String? = nil
+) throws -> FanDaemonHarness {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("fan-daemon-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -224,7 +495,10 @@ private func makeHarness() throws -> FanDaemonHarness {
         configuration: root.appendingPathComponent("policy.json"),
         sessionJournal: root.appendingPathComponent("session.json")
     )
-    let backend = DaemonBackend(journalURL: paths.sessionJournal)
+    let backend = DaemonBackend(
+        journalURL: paths.sessionJournal,
+        gpuKeys: backendGPUKeys
+    )
     let inventory = FanInventory(
         chipFamily: .m4,
         fans: [FanCapability(
@@ -235,20 +509,22 @@ private func makeHarness() throws -> FanDaemonHarness {
             targetKey: "F0Tg",
             modeKey: "F0Md"
         )],
-        gpuTemperatureKeys: ["Tg1U"],
+        gpuTemperatureKeys: inventoryGPUKeys,
         ftstKey: "Ftst"
     )
     let reader = FanHardwareReader(backend: backend)
+    let timing = FanControlTiming(
+        ftstSettleSeconds: 0,
+        retryDelaySeconds: 0,
+        manualModeAttempts: 2,
+        automaticRestoreAttempts: 1,
+        verificationAttempts: 1,
+        sleep: { _ in }
+    )
     let controller = TransactionalFanController(
         backend: backend,
         inventory: inventory,
-        timing: FanControlTiming(
-            ftstSettleSeconds: 0,
-            retryDelaySeconds: 0,
-            manualModeAttempts: 2,
-            verificationAttempts: 1,
-            sleep: { _ in }
-        )
+        timing: timing
     )
     let clock = TestUptime()
     let configuration = FanServiceConfiguration(
@@ -272,7 +548,20 @@ private func makeHarness() throws -> FanDaemonHarness {
         controller: controller,
         uptime: { clock.value },
         journalOwner: nil,
-        requireRootJournalOwnership: false
+        requireRootJournalOwnership: false,
+        discoverInventory: {
+            try reader.discover(brandString: "Apple M4 Max")
+        },
+        controllerFactory: { refreshedInventory in
+            TransactionalFanController(
+                backend: backend,
+                inventory: refreshedInventory,
+                timing: timing
+            )
+        },
+        baselineSensorKeys: baselineSensorKeys,
+        initialLastError: initialLastError,
+        initialDiscoveryError: initialDiscoveryError
     )
     return FanDaemonHarness(
         root: root,
@@ -303,29 +592,39 @@ private final class TestUptime: @unchecked Sendable {
 private final class DaemonBackend: SMCBackend, @unchecked Sendable {
     private let lock = NSLock()
     private let journalURL: URL
-    private var numbers: [SMCKey: Double] = [
-        "F0Ac": 0,
-        "F0Mn": 1_350,
-        "F0Mx": 5_000,
-        "F0Tg": 0,
-        "Tg1U": 50,
-    ]
-    private var bytes: [SMCKey: UInt8] = ["F0Md": 0, "Ftst": 0]
+    private var numbers: [SMCKey: Double]
+    private var bytes: [SMCKey: UInt8] = ["FNum": 1, "F0Md": 0, "Ftst": 0]
     private(set) var journalExistedBeforeFirstManualWrite = false
     private(set) var journalClaimedFtstBeforeFirstFtstWrite = false
     private var failAutomaticRestore = false
     private var rejectManualWrite = false
     private var claimFtstOnManualRejection = false
+    private var blockedManualWrite: (
+        entered: DispatchSemaphore,
+        release: DispatchSemaphore
+    )?
 
-    init(journalURL: URL) {
+    init(journalURL: URL, gpuKeys: [SMCKey]) {
         self.journalURL = journalURL
+        self.numbers = [
+            "F0Ac": 0,
+            "F0Mn": 1_350,
+            "F0Mx": 5_000,
+            "F0Tg": 0,
+        ]
+        for key in gpuKeys {
+            numbers[key] = 50
+        }
     }
 
     func keyInfo(for key: SMCKey) throws -> SMCKeyInfo {
         if bytes[key] != nil {
             return SMCKeyInfo(dataSize: 1, dataType: try SMCDataType("ui8 "))
         }
-        return SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt "))
+        if numbers[key] != nil {
+            return SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt "))
+        }
+        throw SMCError.keyNotFound(key)
     }
 
     func read(_ key: SMCKey) throws -> SMCValue {
@@ -338,7 +637,9 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
                 bytes: [byte]
             )
         }
-        let value = numbers[key] ?? 0
+        guard let value = numbers[key] else {
+            throw SMCError.keyNotFound(key)
+        }
         return try SMCValue(
             key: key,
             info: SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt ")),
@@ -350,6 +651,11 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if bytes[key] != nil {
+            if key == "F0Md", raw[0] == 1, let blockedManualWrite {
+                self.blockedManualWrite = nil
+                blockedManualWrite.entered.signal()
+                blockedManualWrite.release.wait()
+            }
             if key == "F0Md", raw[0] == 1, rejectManualWrite {
                 rejectManualWrite = false
                 if claimFtstOnManualRejection {
@@ -410,10 +716,42 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
         lock.unlock()
     }
 
+    func setNumber(_ key: SMCKey, to value: Double) {
+        lock.lock()
+        numbers[key] = value
+        lock.unlock()
+    }
+
+    func removeNumber(_ key: SMCKey) {
+        lock.lock()
+        numbers.removeValue(forKey: key)
+        lock.unlock()
+    }
+
     func rejectNextManualWrite(claimingFtst: Bool = false) {
         lock.lock()
         rejectManualWrite = true
         claimFtstOnManualRejection = claimingFtst
         lock.unlock()
+    }
+
+    func blockNextManualWrite(
+        entered: DispatchSemaphore,
+        release: DispatchSemaphore
+    ) {
+        lock.lock()
+        blockedManualWrite = (entered, release)
+        lock.unlock()
+    }
+}
+
+private func waitForSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: DispatchTime
+) async -> DispatchTimeoutResult {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: semaphore.wait(timeout: timeout))
+        }
     }
 }

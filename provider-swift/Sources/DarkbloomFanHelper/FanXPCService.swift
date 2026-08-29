@@ -123,7 +123,7 @@ final class FanXPCSession: NSObject, DarkbloomFanHelperProtocol, @unchecked Send
             return try FanIPCCoding.encode(value)
         } catch {
             return Data(
-                #"{"ok":false,"message":"fan helper encoding failure","helperVersion":"1","protocolVersion":1}"#.utf8
+                #"{"ok":false,"message":"fan helper encoding failure","helperVersion":"2","protocolVersion":2}"#.utf8
             )
         }
     }

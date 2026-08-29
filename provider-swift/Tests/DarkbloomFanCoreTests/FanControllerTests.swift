@@ -12,6 +12,7 @@ struct FanControllerTests {
             ftstSettleSeconds: 0,
             retryDelaySeconds: 0,
             manualModeAttempts: 3,
+            automaticRestoreAttempts: 1,
             verificationAttempts: 2,
             sleep: { _ in }
         )
@@ -179,6 +180,7 @@ struct FanControllerTests {
                 ftstSettleSeconds: 0,
                 retryDelaySeconds: 0,
                 manualModeAttempts: 1,
+                automaticRestoreAttempts: 1,
                 verificationAttempts: 1,
                 sleep: { _ in }
             )
@@ -686,13 +688,59 @@ struct FanControllerTests {
         #expect(failures.contains(where: { $0.step == .clearFtst }))
         #expect((await controller.currentSession())?.ownsFtst == true)
         #expect(recorder.values.last == FanControlOwnership(
-            fanIndices: [],
+            fanIndices: [0],
             ownsFtst: true
         ))
 
         try await controller.restoreAutomatic()
         #expect(try backend.uint8("Ftst") == 0)
         #expect(await controller.currentSession() == nil)
+    }
+
+    @Test("automatic restore retries stale M4 mode and Ftst readback")
+    func automaticRestoreRetriesStaleReadback() async throws {
+        let backend = makeFanBackend(fanCount: 1)
+        backend.queue([
+            .failBefore(.firmwareRejected(
+                operation: .writeBytes,
+                key: "F0Md",
+                result: 0x82
+            )),
+            .succeed,
+        ], for: "F0Md")
+        let controller = try makeController(
+            backend: backend,
+            timing: FanControlTiming(
+                ftstSettleSeconds: 0,
+                retryDelaySeconds: 0,
+                manualModeAttempts: 3,
+                automaticRestoreAttempts: 3,
+                verificationAttempts: 1,
+                sleep: { _ in }
+            )
+        )
+        let session = try await controller.engage(speedPercent: 80)
+        #expect(session.ownsFtst)
+
+        backend.queue([.replace([1]), .succeed], for: "F0Md")
+        backend.queue([.replace([1]), .succeed], for: "Ftst")
+        backend.installWriteHook { key, bytes in
+            if key == "Ftst", bytes == [0] {
+                backend.setUI8("F0Md", FanMode.manual.rawValue)
+            }
+        }
+
+        try await controller.restoreAutomatic()
+
+        #expect(try backend.uint8("F0Md") == FanMode.automatic.rawValue)
+        #expect(try backend.uint8("Ftst") == 0)
+        #expect(await controller.currentSession() == nil)
+        #expect(backend.operations.filter {
+            $0 == .write("F0Md", [FanMode.automatic.rawValue])
+        }.count == 3)
+        #expect(backend.operations.filter {
+            $0 == .write("Ftst", [0])
+        }.count == 2)
     }
 
     @Test("maintain never treats orphaned Ftst uncertainty as a healthy session")

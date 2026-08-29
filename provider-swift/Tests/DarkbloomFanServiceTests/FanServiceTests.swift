@@ -108,7 +108,7 @@ struct FanServiceTests {
         }
     }
 
-    @Test("startup reconciliation restores only journaled fans and Ftst")
+    @Test("Ftst startup reconciliation verifies every fan")
     func journalRecovery() throws {
         let backend = RecoveryBackend()
         let inventory = recoveryInventory()
@@ -128,12 +128,325 @@ struct FanServiceTests {
             backend: backend,
             inventory: inventory,
             journalURL: journal,
-            requireRootOwnership: false
+            requireRootOwnership: false,
+            timing: recoveryTestTiming()
         )
 
         #expect(backend.byte(for: "F0Md") == 0)
-        #expect(backend.byte(for: "F1Md") == 1)
+        #expect(backend.byte(for: "F1Md") == 0)
         #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("legacy Ftst-only journal restores every discovered fan")
+    func legacyFtstOnlyJournalRecovery() throws {
+        let backend = RecoveryBackend()
+        let inventory = recoveryInventory()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-legacy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("legacy one-fan Ftst journal remains conservative")
+    func legacyOneFanJournalRecovery() throws {
+        let backend = RecoveryBackend()
+        let fullInventory = recoveryInventory()
+        let inventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-one-fan-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [0], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: inventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("v2 one-fan Ftst journal records its hardware count")
+    func v2OneFanJournalRecovery() throws {
+        let backend = RecoveryBackend()
+        let fullInventory = recoveryInventory()
+        let inventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-v2-one-fan-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [0],
+                ownsFtst: true,
+                verifyAllFans: true,
+                verificationFanIndices: [0],
+                minimumVerificationFanCount: 1
+            ),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("Ftst-only journal waits for fan inventory before verification")
+    func legacyJournalWaitsForFanDiscovery() throws {
+        let backend = RecoveryBackend()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-empty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+        let emptyInventory = FanInventory(
+            chipFamily: .m4,
+            fans: [],
+            gpuTemperatureKeys: [],
+            ftstKey: "Ftst"
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: emptyInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "Ftst") == 0)
+        let pending = try FanDurableFile.readJSON(
+            FanSessionJournal.self,
+            from: journal,
+            requireRootOwnership: false
+        )
+        #expect(pending.fanIndices.isEmpty)
+        #expect(!pending.ownsFtst)
+        #expect(pending.verifyAllFans)
+        #expect(pending.minimumVerificationFanCount == 2)
+
+        let fullInventory = recoveryInventory()
+        let partialInventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        backend.setByte("F0Md", to: 0)
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: partialInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(FileManager.default.fileExists(atPath: journal.path))
+
+        backend.setByte("F0Md", to: 1)
+        backend.setByte("Ftst", to: 1)
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: fullInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "F0Md") == 1)
+        #expect(backend.byte(for: "F1Md") == 1)
+        #expect(backend.byte(for: "Ftst") == 1)
+
+        backend.setByte("Ftst", to: 0)
+        backend.setByte("F0Md", to: 0)
+        backend.setByte("F1Md", to: 0)
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: fullInventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("verification marker retains a tracked fan missing from partial discovery")
+    func verificationMarkerSurvivesPartialDiscovery() throws {
+        let backend = RecoveryBackend()
+        backend.setByte("F0Md", to: 0)
+        let inventory = recoveryInventory()
+        let partialInventory = FanInventory(
+            chipFamily: inventory.chipFamily,
+            fans: [inventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: inventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-partial-inventory-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [1],
+                ownsFtst: false,
+                verifyAllFans: true
+            ),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: partialInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        let pending = try FanDurableFile.readJSON(
+            FanSessionJournal.self,
+            from: journal,
+            requireRootOwnership: false
+        )
+        #expect(pending.fanIndices == [1])
+        #expect(pending.verifyAllFans)
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("verification marker retries writes for tracked fans")
+    func verificationMarkerRetriesTrackedFan() throws {
+        let backend = RecoveryBackend(staleAutomaticReadbacks: 1)
+        let fullInventory = recoveryInventory()
+        let inventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-tracked-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [0],
+                ownsFtst: false,
+                verifyAllFans: true
+            ),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: inventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "F0Md") == 1)
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F0Md") == 0)
         #expect(!FileManager.default.fileExists(atPath: journal.path))
     }
 
@@ -185,7 +498,8 @@ struct FanServiceTests {
                 inventory: inventory,
                 journalURL: journal,
                 requireRootOwnership: false,
-                journalOwner: nil
+                journalOwner: nil,
+                timing: recoveryTestTiming()
             )
         }
         #expect(backend.byte(for: "F0Md") == 1)
@@ -198,6 +512,87 @@ struct FanServiceTests {
         )
         #expect(unresolved.fanIndices == [0])
         #expect(!unresolved.ownsFtst)
+    }
+
+    @Test("startup recovery retries stale M4 mode and Ftst readback")
+    func recoveryRetriesStaleReadback() throws {
+        let backend = RecoveryBackend(
+            staleAutomaticReadbacks: 2,
+            staleFtstReadbacks: 2
+        )
+        let inventory = recoveryInventory()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [0], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming(attempts: 3)
+        )
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+        #expect(backend.writes(to: "F0Md", value: 0) == 3)
+        #expect(backend.writes(to: "Ftst", value: 0) == 3)
+    }
+
+    @Test("new status decoder accepts protocol v1 payloads")
+    func statusBackwardCompatibility() throws {
+        let data = Data(#"{"helperVersion":"1","protocolVersion":1,"enabled":true,"configuredUID":502,"providerActive":false,"mode":"unsupported","chip":"M4","gpuSensorKeys":[],"gpuTemperatureC":null,"triggerTemperatureC":45,"releaseTemperatureC":40,"speedPercent":80,"fans":[],"lastError":null,"updatedAt":0}"#.utf8)
+
+        let status = try FanIPCCoding.decode(FanServiceStatus.self, from: data)
+
+        #expect(status.mode == .unsupported)
+        #expect(status.hardwareReady == nil)
+        #expect(status.recoveryPending == nil)
+        #expect(status.discoveryError == nil)
+        #expect(status.quarantinedSensorKeys == nil)
+    }
+
+    @Test("sensor baseline round-trips only catalog keys")
+    func sensorBaselineValidation() throws {
+        let baseline = FanSensorBaseline(
+            chipFamily: .m4,
+            sensorKeys: ["Tg1k", "Tg1U"]
+        )
+        let encoded = try JSONEncoder().encode(baseline)
+        let decoded = try JSONDecoder().decode(
+            FanSensorBaseline.self,
+            from: encoded
+        )
+        #expect(decoded == baseline)
+
+        let invalid = Data(#"{"schema":1,"chip_family":"M4","sensor_keys":[{"rawValue":"Nope"}]}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(FanSensorBaseline.self, from: invalid)
+        }
+    }
+
+    @Test("legacy ownership journal defaults full verification off")
+    func legacyJournalDecoding() throws {
+        let data = Data(#"{"fanIndices":[],"ownsFtst":true}"#.utf8)
+        let journal = try JSONDecoder().decode(
+            FanSessionJournal.self,
+            from: data
+        )
+        #expect(journal.fanIndices.isEmpty)
+        #expect(journal.ownsFtst)
+        #expect(!journal.verifyAllFans)
+        #expect(journal.verificationFanIndices.isEmpty)
+        #expect(journal.minimumVerificationFanCount == 0)
     }
 }
 
@@ -223,9 +618,18 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [SMCKey: UInt8] = ["F0Md": 1, "F1Md": 1, "Ftst": 1]
     private let failFanZeroRestore: Bool
+    private var staleAutomaticReadbacks: Int
+    private var staleFtstReadbacks: Int
+    private var recordedWrites: [(SMCKey, UInt8)] = []
 
-    init(failFanZeroRestore: Bool = false) {
+    init(
+        failFanZeroRestore: Bool = false,
+        staleAutomaticReadbacks: Int = 0,
+        staleFtstReadbacks: Int = 0
+    ) {
         self.failFanZeroRestore = failFanZeroRestore
+        self.staleAutomaticReadbacks = staleAutomaticReadbacks
+        self.staleFtstReadbacks = staleFtstReadbacks
     }
 
     func keyInfo(for _: SMCKey) throws -> SMCKeyInfo {
@@ -244,9 +648,20 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
 
     func write(_ key: SMCKey, bytes: [UInt8]) throws {
         lock.lock()
+        recordedWrites.append((key, bytes[0]))
         if failFanZeroRestore, key == "F0Md", bytes[0] == 0 {
             lock.unlock()
             throw SMCError.injectedFailure("fan zero restore failed")
+        }
+        if key == "F0Md", bytes[0] == 0, staleAutomaticReadbacks > 0 {
+            staleAutomaticReadbacks -= 1
+            lock.unlock()
+            return
+        }
+        if key == "Ftst", bytes[0] == 0, staleFtstReadbacks > 0 {
+            staleFtstReadbacks -= 1
+            lock.unlock()
+            return
         }
         values[key] = bytes[0]
         lock.unlock()
@@ -257,4 +672,27 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
         defer { lock.unlock() }
         return values[key]
     }
+
+    func setByte(_ key: SMCKey, to value: UInt8) {
+        lock.lock()
+        values[key] = value
+        lock.unlock()
+    }
+
+    func writes(to key: SMCKey, value: UInt8) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedWrites.filter { $0.0 == key && $0.1 == value }.count
+    }
+}
+
+private func recoveryTestTiming(attempts: Int = 1) -> FanControlTiming {
+    FanControlTiming(
+        ftstSettleSeconds: 0,
+        retryDelaySeconds: 0,
+        manualModeAttempts: 1,
+        automaticRestoreAttempts: attempts,
+        verificationAttempts: 1,
+        sleep: { _ in }
+    )
 }

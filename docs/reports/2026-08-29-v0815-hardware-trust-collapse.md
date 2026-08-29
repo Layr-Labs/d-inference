@@ -253,29 +253,106 @@ The backup table must remain until the permanent fix is deployed and at least on
 
 ## Permanent fix
 
-### Design principle: separate device trust from application trust
+### Design principle: separate device, application, and model evidence
 
-The coordinator currently conflates two independent proofs.
+The coordinator currently conflates reusable device posture with the current application binary. The permanent design must keep three independently refreshed evidence planes and join them only when deciding whether a provider/model pair may route.
 
-**Device/hardware proof:**
+**Device/hardware evidence:**
 
 ```text
-Secure Enclave identity + serial
-MDM enrollment
-Apple device attestation
-SIP and Secure Boot posture
+persistent Secure Enclave identity + serial
+MDM enrollment and Apple device attestation
+independently refreshed hardware posture
+device-evidence expiry and revocation epoch
 ```
 
-**Application/runtime proof:**
+**Application/runtime evidence:**
 
 ```text
-registered signed provider release
+fresh connection nonce and SE signature
+current X25519 process-key binding
+registered signed/notarized provider release
 live binary hash
-runtime manifest and metallib
-code identity
+runtime manifest, metallib, and code identity
 ```
 
-A provider release should re-prove application identity. It should not require a new live MDM round-trip when the same device presents a recent hardware proof and a fresh signed challenge showing good current posture.
+**Model evidence:**
+
+```text
+catalog-approved model ID and immutable manifest
+model-specific required provider capabilities
+verified model/template/hash state
+loaded backend slot and live capacity
+```
+
+A provider release should re-prove application identity. It should not require a new live MDM round-trip when the same device presents a reusable hardware proof and a fresh signed challenge showing good current posture. Neither device nor application evidence alone permits requests: routing is the per-model join of all three evidence planes plus request-specific capacity.
+
+### Correct SE and APNs mental model
+
+The persistent P-256 private key is generated inside the Secure Enclave, is non-exportable, and persists through the macOS Data Protection Keychain. Darkbloom stores it with `kSecAttrTokenIDSecureEnclave`, `kSecUseDataProtectionKeychain`, `.privateKeyUsage`, and the team-scoped keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The operating system therefore permits key use only to a signed process carrying the authorized entitlement. This proves continuity of the enrolled device/application family; it does **not** by itself prove one exact provider binary or version, because another binary signed by the same team and provisioned for the same access group could invoke the key.
+
+Application APNs proves reachability to one app on one device in one APNs environment. Its token is an address, not a permanent device identity, and Apple may rotate it. During bootstrap, an encrypted APNs nonce plus an SE signature binds the APNs app instance, current node decryption key, and persistent device key. Once that binding and the MDM/MDA device proof exist, ordinary coordinator restarts, WebSocket reconnects, and approved provider updates should use direct coordinator nonce challenges signed by the persistent SE key. APNs should be reserved for first enrollment, token-reachability recovery, broken identity continuity, and explicitly high-risk revalidation.
+
+MDM remains independently necessary, but it should refresh a longer-lived device-evidence lease on a scheduled, jittered cadence rather than run on every reconnect or binary update. The direct SE challenge on every connection proves current key possession and signed SIP/Secure Boot status; the application evidence separately proves the exact registered release/runtime. A hard-untrust or device-evidence expiry still fails closed and requires live MDM.
+
+Platform references:
+
+- [Apple: Protecting keys with the Secure Enclave](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave)
+- [Apple: Sharing access to keychain items among a collection of apps](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps)
+- [Apple: Registering your app with APNs](https://developer.apple.com/documentation/usernotifications/registering-your-app-with-apns)
+
+### Model-specific capability scope
+
+M5/NAX eligibility is not a fleet-wide trust requirement. It applies only to catalog models whose `required_provider_capabilities` demand those capabilities. The current exact protected build is `EigenLabs/Qwen3.8-27B-4bit`; ordinary Gemma, GPT-OSS, Qwen3.5, Qwen3.6, and Qwen3-VL routing continues on any provider satisfying those models' own requirements.
+
+The capability split follows the evidence planes:
+
+```text
+apple_m5
+  comes from device/hardware evidence
+
+mlx_nax
+  comes from current application/runtime/metallib evidence
+
+Qwen3.8 routing eligibility
+  requires apple_m5 AND mlx_nax AND model evidence AND request capacity
+```
+
+A non-M5 provider should remain hardware-trusted and routable for every compatible model. An M5 provider without verified NAX should remain routable for compatible non-NAX models. Losing or revoking `apple_m5` or `mlx_nax` must remove only provider/model pairs that require the missing capability; it must not globally disconnect or deroute the provider unless a separate hard-untrust condition applies.
+
+```mermaid
+flowchart LR
+  D[Device evidence] --> A[apple_m5 capability]
+  R[Application/runtime evidence] --> N[mlx_nax capability]
+  M[Qwen3.8 model evidence] --> J{All model requirements satisfied?}
+  A --> J
+  N --> J
+  J -->|Yes| Q[Qwen3.8 pair eligible]
+  J -->|No| X[Qwen3.8 pair blocked]
+  D --> O[Other compatible model requirements]
+  R --> O
+  O --> P[Provider remains eligible for other models]
+```
+
+### Effective routing decision
+
+For one provider, model, and request:
+
+```text
+routable =
+  connection alive
+  AND reusable device evidence valid
+  AND fresh application evidence valid
+  AND no hard-untrust state
+  AND provider version allowed
+  AND model manifest/hash/template valid
+  AND model-specific required capabilities satisfied
+  AND backend slot loaded and usable
+  AND request fits live memory/token/concurrency/deadline policy
+  AND provider not draining or cooling down
+```
+
+A valid device credential never creates a route by itself. An approved application release never creates a route by itself. A provider can remain connected and trusted while a particular model pair is blocked for missing M5/NAX capability, missing weights, a broken template, no loaded slot, or insufficient request capacity.
 
 ### Target control flow
 
@@ -389,7 +466,36 @@ Use deterministic provider identity hashing so stage membership is stable. Promo
 
 The updater endpoint should return the previous release to providers outside the active stage; it must never request a downgrade from already-upgraded providers.
 
-#### 5. Add release-sequencing gates
+#### 5. Preserve contribution through explicit update states
+
+Evidence separation removes the unnecessary MDM delay, but a provider still cannot serve while its process is restarting or its model slot is unloaded. The updater and coordinator must expose the real lifecycle instead of treating every connected process as equally ready:
+
+```text
+serving
+draining_for_update
+installing
+reconnecting
+application_verifying
+model_reloading
+ready
+blocked
+```
+
+Before issuing an update permit, persist the provider's selected model IDs, slot ordering, MTP mode, KV backend, desired-model generation, and approved model hashes. After restart, verify device/application evidence first, then reload the previously warm models before unrelated catalog targets. Publish `reloading` until the provider reports an authoritative usable backend slot and positive request capacity; only then atomically re-enter routing.
+
+An individual Mac has an unavoidable process-restart and model-reload gap. Continuous network contribution comes from cohort scheduling: old-version cohorts keep serving while one bounded cohort updates, and the next cohort receives permits only after the updated cohort has returned to hardware/application trust and recovered model-specific warm capacity.
+
+The rollout controller must compute a per-model safety floor before every cohort:
+
+```text
+remaining_routable_capacity(model)
+  = current_routable_capacity(model)
+  - capacity_of_next_update_cohort(model)
+```
+
+Do not issue the cohort when any model would fall below its reviewed floor. Global capacity is insufficient because a healthy GPT-OSS pool cannot compensate for losing every Qwen3-VL or Qwen3.8 provider.
+
+#### 6. Add release-sequencing gates
 
 Do not perform a provider rollout immediately after a coordinator restart. Require a clean observation window at least as long as the hardware-proof reuse and APNs delivery recovery policy. At minimum:
 
@@ -402,7 +508,7 @@ Do not perform a provider rollout immediately after a coordinator restart. Requi
 
 Coordinator deploy and provider release approvals must remain separate actions.
 
-#### 6. Add observability and automatic pause
+#### 7. Add observability and automatic pause
 
 Required gauges/counters:
 
@@ -418,7 +524,7 @@ Required gauges/counters:
 
 Automatically pause rollout when hardware-trusted ratio or network capacity falls beyond a reviewed threshold. Raw connected count is not a sufficient health signal.
 
-#### 7. Fix production image provenance
+#### 8. Fix production image provenance
 
 `deploy/gcp/cloudbuild-prod.yaml` must publish the full 40-character commit tag directly. The runbook must not depend on an operator adding a full tag to a short-tagged digest after the build.
 
@@ -438,6 +544,16 @@ Automatically pause rollout when hardware-trusted ratio or network capacity fall
 - expired hardware proof falls back to MDM;
 - runtime-manifest or code-attestation failure prevents cross-release reuse;
 - persisted row alone never grants trust.
+- initial APNs bootstrap binds the persistent SE key, current node key, device, and app topic;
+- ordinary reconnect and approved release update succeed through a direct SE challenge with zero application APNs call;
+- APNs token rotation submitted over an authenticated SE-signed connection does not erase device identity;
+- a same-team binary with the keychain entitlement but no active registered release fails application evidence and never routes;
+- device-evidence expiry or revocation requires bounded live MDM even when the SE key remains accessible;
+- non-M5 hardware remains routable for compatible models while Qwen3.8 is blocked;
+- M5 without verified NAX remains routable for compatible non-NAX models while Qwen3.8 is blocked;
+- M5 plus verified NAX and valid model evidence makes only the Qwen3.8 pair eligible;
+- loss of a model-specific capability clears only affected provider/model routing and pending-load state, not the provider's unrelated model routes;
+- valid device/application evidence with an unloaded model remains connected but non-routable until an authoritative slot reports usable capacity.
 
 #### Concurrency and fleet simulation
 
@@ -460,33 +576,42 @@ Acceptance criteria:
 - routable capacity remains above the reviewed floor;
 - no trust-state resurrection after hard untrust;
 - restart-safe Postgres seeding retains every decision invariant.
+- old-version cohorts retain every model-specific capacity floor while one cohort updates;
+- updated providers re-enter routing only after device/application evidence and authoritative model-slot readiness;
+- an unrelated model's healthy capacity cannot satisfy the safety floor for a depleted model.
 
 #### End-to-end rollout test
 
-A release-controller test must prove staged adoption and automatic pause when a synthetic hardware-trust ratio drops. Promotion must resume only after an explicit operator action and a clean new observation window.
+A release-controller E2E test must prove staged adoption and automatic pause when a synthetic hardware-trust ratio or model-specific routable-capacity floor drops. Promotion must resume only after an explicit operator action and a clean new observation window. The same scenario must prove APNs is used for first enrollment/recovery but not for ordinary reconnect or an approved binary transition with reusable device evidence.
 
 ## Operational runbook changes
 
 Before the next provider release:
 
-1. Confirm the coordinator contains approved-release hardware reuse and bounded MDM scheduling.
+1. Confirm the coordinator contains approved-release hardware reuse, direct SE reconnect/update proof, and bounded MDM scheduling.
 2. Deploy coordinator separately.
 3. Hold until provider, hardware-trust, code-attestation, and MDM queue metrics recover.
-4. Upgrade one canary provider.
-5. Confirm hardware trust survives the binary transition without live MDM.
-6. Promote through staged percentages.
-7. Never raise `EIGENINFERENCE_MIN_PROVIDER_VERSION` during the rollout.
-8. Keep the previous signed release active until the rollout has completed and remained stable.
-9. Use long-enough drains for valid long-running generations unless a human explicitly accepts interruption.
+4. Confirm first-enrollment APNs works and ordinary reconnect uses no APNs/live MDM.
+5. Upgrade one canary provider.
+6. Confirm hardware trust survives the binary transition through a fresh direct SE challenge without APNs/live MDM.
+7. Confirm the canary reloads its prior model set and returns to authoritative usable slot capacity.
+8. Confirm non-M5 and M5-without-NAX canaries remain routable for compatible models while Qwen3.8 stays model-pair-gated.
+9. Promote through staged percentages only while every model-specific capacity floor remains healthy.
+10. Never raise `EIGENINFERENCE_MIN_PROVIDER_VERSION` during the rollout.
+11. Keep the previous signed release active until the rollout has completed and remained stable.
+12. Use long-enough drains for valid long-running generations unless a human explicitly accepts interruption.
 
 ## Action plan
 
 | Priority | Action | Acceptance evidence |
 |---|---|---|
 | P0 | Implement approved-release hardware trust reuse | Unit tests cover every allow/deny gate; one canary upgrade performs zero live MDM and gains hardware after live SE challenge. |
+| P0 | Implement persistent-SE bootstrap and direct reconnect/update proof | First enrollment uses APNs; ordinary reconnect and approved upgrade prove the same SE identity with zero APNs/live MDM calls. |
 | P0 | Add global MDM scheduler with concurrency cap and jitter | 1,500-provider simulation never exceeds cap or synchronizes retries. |
 | P0 | Add staged provider release controller and automatic pause | Canary/1/5/25/50/100 stages proven; trust/capacity regression pauses rollout. |
+| P0 | Preserve contribution through update states and per-model capacity floors | Updated cohort reloads prior models and returns to ready before the next cohort; no model drops below its floor. |
 | P1 | Separate hardware-proof and application-proof timestamps | Store/API migration reviewed; exact-hash reconnect behavior remains intact. |
+| P1 | Make model-specific capabilities a separate evidence plane | M5/NAX gates only required model pairs; unrelated provider/model routes survive capability loss. |
 | P1 | Add version/trust/capacity rollout dashboards and alerts | Operators can see connected versus routable hardware providers by version. |
 | P1 | Add coordinator-restart-then-provider-update integration scenario | Reproduces this incident before the fix and remains green after it. |
 | P1 | Publish full-commit coordinator image tags from Cloud Build | Runbook candidate tag exists directly after every successful master build. |
@@ -495,9 +620,12 @@ Before the next provider release:
 ## Lessons
 
 1. Connected provider count is not a capacity metric when routing requires hardware trust.
-2. Hardware posture and application identity are separate proofs and need separate lifecycle policies.
-3. A safe single-provider retry loop can become unsafe when multiplied by the fleet.
-4. Provider releases are production traffic changes even when the coordinator API remains healthy.
-5. Back-to-back coordinator and provider rollouts must be treated as one coupled failure domain.
-6. A release that passes build, signing, notarization, unit tests, and a single-machine canary can still fail through fleet-control-plane synchronization.
-7. Emergency data bridges can be safe only when bounded, backed up, live-proof-gated, and explicitly temporary.
+2. Hardware posture, application identity, and model readiness are separate proofs and need separate lifecycle policies.
+3. A persistent SE key is a durable device/application-family identity root, not proof of one exact binary.
+4. APNs is a bootstrap/recovery delivery channel, not the routine reconnect or release-update trust mechanism.
+5. M5/NAX is a model-specific Qwen3.8 requirement, not a fleet-wide hardware-trust requirement.
+6. A safe single-provider retry loop can become unsafe when multiplied by the fleet.
+7. Provider releases are production traffic changes even when the coordinator API remains healthy.
+8. Back-to-back coordinator and provider rollouts must be treated as one coupled failure domain.
+9. A release that passes build, signing, notarization, unit tests, and a single-machine canary can still fail through fleet-control-plane synchronization.
+10. Emergency data bridges can be safe only when bounded, backed up, live-proof-gated, and explicitly temporary.

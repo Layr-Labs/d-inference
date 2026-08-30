@@ -112,4 +112,18 @@ struct DoctorChecksTests {
         #expect(check(llama, "competing inference")?.status == .warn)
         #expect(check(llama, "competing inference")?.detail.contains("llama-server") == true)
     }
+
+    /// Regression: `runCapture` used to call `waitUntilExit()` before draining
+    /// the pipe, which deadlocks once the child outgrows the 64 KiB pipe
+    /// buffer. `ps -axo comm=` passes 64 KiB on a busy Mac, so `doctor` hung.
+    /// 256 KiB is four buffers' worth -- it cannot complete without draining.
+    @Test("runCapture drains output larger than the pipe buffer", .timeLimit(.minutes(1)))
+    func runCaptureSurvivesLargeOutput() {
+        let bytes = 256 * 1024
+        let out = LocalContentionSnapshot.runCapture(
+            "/bin/dd",
+            args: ["if=/dev/zero", "bs=1024", "count=\(bytes / 1024)"]
+        )
+        #expect(out?.utf8.count == bytes)
+    }
 }

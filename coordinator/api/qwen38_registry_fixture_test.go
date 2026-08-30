@@ -13,6 +13,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
@@ -243,6 +244,9 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	}
 	provider.SetAttestationResult(&attestation.VerificationResult{
 		Valid:                  true,
+		PublicKey:              "fixture-se",
+		SerialNumber:           "fixture-serial",
+		BinaryHash:             "fixture-binary",
 		ChipFamily:             "M5",
 		ChipName:               "Apple M5 Max",
 		MetallibHash:           testHash,
@@ -251,6 +255,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		SIPEnabled:             true,
 		SecureBootEnabled:      true,
 	})
+	now := time.Now()
 	provider.Mu().Lock()
 	if provider.Hardware.ChipFamily != "M5" ||
 		!reflect.DeepEqual(provider.ReportedRuntimeCapabilities, signedCapabilities) {
@@ -267,7 +272,36 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	provider.RuntimeVerified = true
 	provider.MetallibVerified = true
 	provider.ChallengeVerifiedSIP = true
-	provider.LastChallengeVerified = time.Now()
+	provider.LastChallengeVerified = now
+	provider.Version = "0.8.16"
+	provider.ProcessEvidenceVersion = protocol.ProcessEvidenceV1
+	provider.Models[0].WeightHash = testHash
+	provider.DeviceEvidence = registry.DeviceEvidence{
+		SEPublicKey: "fixture-se", Serial: "fixture-serial",
+		VerifiedAt: now, ExpiresAt: now.Add(time.Hour),
+		EvidenceGeneration: 1, AppleM5: true,
+	}
+	provider.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey: "fixture-se", Serial: "fixture-serial",
+		ProcessPublicKey: provider.PublicKey, BinaryHash: "fixture-binary",
+		Version: provider.Version, Backend: provider.Backend,
+		MetallibHash: testHash, VerifiedAt: now,
+		EvidenceGeneration: 1, MLXNAX: true,
+		CertifiedProcessEvidence: registry.CertifiedProcessEvidence{
+			Version:     protocol.ProcessEvidenceV1,
+			SEPublicKey: "fixture-se", Serial: "fixture-serial",
+			ProcessPublicKey: provider.PublicKey, BinaryHash: "fixture-binary",
+			ProviderVersion: provider.Version, Backend: provider.Backend,
+			MetallibHash: testHash, CoordinatorSessionID: provider.ID,
+			ChallengeGeneration: "fixture-process-proof",
+			ExpiresAt:           now.Add(time.Hour), VerifiedAt: now, MLXNAX: true,
+		},
+	}
+	provider.BackendCapacity = &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{{
+			Model: qwen38ConcreteModel, State: "idle", MaxConcurrency: 1,
+		}},
+	}
 	provider.Mu().Unlock()
 	if err := reg.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
 		t.Fatalf("reconcile signed runtime capabilities: %v", err)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -12,7 +13,8 @@ const (
 	ProviderCapabilityAppleM5 = "apple_m5"
 	ProviderCapabilityMLXNAX  = "mlx_nax"
 
-	Qwen38NAXModelID = "EigenLabs/Qwen3.8-27B-4bit"
+	Qwen38NAXModelID               = "EigenLabs/Qwen3.8-27B-4bit"
+	processEvidenceV1ProviderFloor = "0.8.16"
 )
 
 var qwen38NAXRequiredProviderCapabilities = []string{
@@ -236,44 +238,55 @@ func effectiveRequiredProviderCapabilities(modelID string, configured []string) 
 	return out
 }
 
-// providerMeetsModelRequirementsLocked checks catalog requirements without
-// requiring the model to be in the provider's advertised inventory. It is used
-// before prefetch/desired commands, where the target build may not be on disk
-// yet. Caller holds r.mu and p.mu.
-func (r *Registry) providerMeetsModelRequirementsLocked(p *Provider, modelID string) bool {
-	if modelID == Qwen38NAXModelID {
-		// The protected build is never exposed while Apple hardware trust, APNs
-		// code identity, signed capability binding, or runtime approval is pending.
-		if !p.Attested || p.TrustLevel != TrustHardware || !p.CodeAttested ||
-			p.AttestationResult == nil || !p.AttestationResult.Valid ||
-			!p.RuntimeVerified || !p.RuntimeManifestChecked {
-			return false
-		}
-	}
-	if entry, ok := r.modelCatalog[modelID]; ok {
-		return capabilitySetContainsAll(
-			p.RuntimeCapabilities, entry.RequiredProviderCapabilities)
-	}
-	if modelID == Qwen38NAXModelID {
-		return capabilitySetContainsAll(
-			p.RuntimeCapabilities, qwen38NAXRequiredProviderCapabilities)
-	}
-	return true
+// providerMeetsModelRequirementsLocked is the pure pair-capability check used by
+// alias lineage and heartbeat state ingestion. It deliberately does not require
+// current routability; RuntimeCapabilities contains only coordinator-promoted
+// signed evidence.
+func (r *Registry) providerMeetsModelRequirementsLocked(
+	p *Provider, modelID string,
+) bool {
+	entry := r.modelCatalog[modelID]
+	required := effectiveRequiredProviderCapabilities(
+		modelID, entry.RequiredProviderCapabilities,
+	)
+	return capabilitySetContainsAll(p.RuntimeCapabilities, required)
 }
 
 // providerCanAcquireCatalogModelLocked is the command-side catalog and
 // capability gate. Unlike serving eligibility it does not require an existing
 // advertisement, so it is suitable for prefetch/desired targets.
 func (r *Registry) providerCanAcquireCatalogModelLocked(p *Provider, modelID string) bool {
+	return r.providerModelEligibilityLocked(
+		p, modelID, acquisitionEligibilityPurpose(r.MinTrustLevel), time.Now(),
+	).Eligible
+}
+
+// providerEligibleForDesiredModelLocked keeps the registration-time contract
+// for legacy ordinary providers, but treats desired_models as a model-acquisition
+// command once a provider opts into process_evidence_v1 or the model is
+// capability protected.
+func (r *Registry) providerEligibleForDesiredModelLocked(
+	p *Provider, modelID string,
+) bool {
 	if r.modelCatalog != nil {
-		if _, ok := r.modelCatalog[modelID]; !ok {
+		if _, tracked := r.modelCatalog[modelID]; !tracked {
 			return false
 		}
 	}
-	return r.providerMeetsModelRequirementsLocked(p, modelID)
+	entry := r.modelCatalog[modelID]
+	required := effectiveRequiredProviderCapabilities(
+		modelID, entry.RequiredProviderCapabilities,
+	)
+	if p.ProcessEvidenceVersion == protocol.ProcessEvidenceV1 ||
+		len(required) > 0 {
+		return r.providerCanAcquireCatalogModelLocked(p, modelID)
+	}
+	return capabilitySetContainsAll(p.RuntimeCapabilities, required)
 }
 
-func (r *Registry) providerModelAllowedByCatalogLocked(p *Provider, model protocol.ModelInfo) bool {
+func (r *Registry) providerModelAllowedByCatalogLocked(
+	p *Provider, model protocol.ModelInfo,
+) bool {
 	return r.modelAllowedByCatalogLocked(model) &&
 		r.providerMeetsModelRequirementsLocked(p, model.ID)
 }

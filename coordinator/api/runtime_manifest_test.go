@@ -396,7 +396,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	srv, st := runtimeManifestTestServer(t)
 	oldMetallib := strings.Repeat("a", 64)
 	newMetallib := strings.Repeat("b", 64)
-	const providerVersion = "0.8.15"
+	const providerVersion = "0.8.16"
 	capabilities := []string{
 		registry.ProviderCapabilityAppleM5,
 		registry.ProviderCapabilityMLXNAX,
@@ -421,9 +421,15 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		RuntimeCapabilities:     capabilities,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
+		APNsDeviceToken:         "runtime-token",
+		ProcessEvidenceVersion:  protocol.ProcessEvidenceV1,
 	})
+	srv.registry.SetReleasePolicyGeneration(1, true)
 	provider.SetAttestationResult(&attestation.VerificationResult{
 		Valid:                  true,
+		PublicKey:              "runtime-se",
+		SerialNumber:           "RUNTIME-SERIAL",
+		BinaryHash:             strings.Repeat("c", 64),
 		ChipFamily:             "M5",
 		ChipName:               "Apple M5 Max",
 		MetallibHash:           oldMetallib,
@@ -441,7 +447,54 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
 	provider.ChallengeVerifiedSIP = true
 	provider.LastChallengeVerified = time.Now()
+	now := time.Now()
+	provider.DeviceEvidence = registry.DeviceEvidence{
+		SEPublicKey: "runtime-se", Serial: "RUNTIME-SERIAL",
+		VerifiedAt: now, ExpiresAt: now.Add(time.Hour),
+		EvidenceGeneration: 1, AppleM5: true,
+	}
+	certificate := registry.CertifiedProcessEvidence{
+		Version:     protocol.ProcessEvidenceV1,
+		SEPublicKey: "runtime-se", Serial: "RUNTIME-SERIAL",
+		ProcessPublicKey:     provider.PublicKey,
+		BinaryHash:           strings.Repeat("c", 64),
+		ProviderVersion:      providerVersion,
+		Platform:             "macos-arm64",
+		Backend:              registry.BackendMLXSwift,
+		MetallibHash:         oldMetallib,
+		CoordinatorSessionID: provider.ID,
+		ChallengeGeneration:  "runtime-generation",
+		ExpiresAt:            now.Add(10 * time.Minute), VerifiedAt: now,
+		PolicyGeneration: 1,
+		MLXNAX:           true,
+	}
+	provider.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey: "runtime-se", Serial: "RUNTIME-SERIAL",
+		ProcessPublicKey: provider.PublicKey, APNsToken: "runtime-token",
+		BinaryHash: strings.Repeat("c", 64),
+		Version:    providerVersion, Platform: "macos-arm64",
+		Backend:      registry.BackendMLXSwift,
+		MetallibHash: oldMetallib, VerifiedAt: now,
+		EvidenceGeneration: 1, PolicyGeneration: 1, MLXNAX: true,
+		CertifiedProcessEvidence: certificate,
+	}
+	provider.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model: registry.Qwen38NAXModelID,
+			State: "idle", MaxConcurrency: 4,
+		}},
+	}
 	provider.Mu().Unlock()
+	if !applicationEvidenceMatchesRuntimePolicy(
+		provider.ApplicationEvidence,
+		"",
+		map[string]string{"mlx_metallib": oldMetallib},
+		true,
+		true,
+	) {
+		t.Fatal("precondition: current process evidence does not match the approved runtime")
+	}
 
 	setManifest := func(hash string) {
 		t.Helper()
@@ -464,6 +517,46 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		}
 		srv.SyncRuntimeManifest()
 	}
+	recertifyCurrentProcess := func() {
+		t.Helper()
+		now := time.Now()
+		provider.Mu().Lock()
+		processKey := provider.PublicKey
+		provider.Mu().Unlock()
+		evidence := registry.ApplicationEvidence{
+			SEPublicKey: "runtime-se", Serial: "RUNTIME-SERIAL",
+			ProcessPublicKey: processKey, APNsToken: "runtime-token",
+			BinaryHash: strings.Repeat("c", 64),
+			Version:    providerVersion, Platform: "macos-arm64",
+			Backend:      registry.BackendMLXSwift,
+			MetallibHash: oldMetallib, VerifiedAt: now,
+			PolicyGeneration: 1,
+			MLXNAX:           true,
+			CertifiedProcessEvidence: registry.CertifiedProcessEvidence{
+				Version:     protocol.ProcessEvidenceV1,
+				SEPublicKey: "runtime-se", Serial: "RUNTIME-SERIAL",
+				ProcessPublicKey:     processKey,
+				BinaryHash:           strings.Repeat("c", 64),
+				ProviderVersion:      providerVersion,
+				Platform:             "macos-arm64",
+				Backend:              registry.BackendMLXSwift,
+				MetallibHash:         oldMetallib,
+				CoordinatorSessionID: provider.ID,
+				ChallengeGeneration:  "runtime-recertification",
+				ExpiresAt:            now.Add(10 * time.Minute), VerifiedAt: now,
+				PolicyGeneration: 1,
+				MLXNAX:           true,
+			},
+		}
+		if !provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+			t.Fatal("fresh process recertification was rejected")
+		}
+		if err := srv.registry.ReconcileAttestedRuntimeCapabilities(
+			provider.ID,
+		); err != nil {
+			t.Fatalf("reconcile recertified runtime capabilities: %v", err)
+		}
+	}
 	assertState := func(wantApproved bool) {
 		t.Helper()
 		provider.Mu().Lock()
@@ -473,8 +566,11 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		metallibVerified := provider.MetallibVerified
 		trustLevel := provider.TrustLevel
 		effective := append([]string(nil), provider.RuntimeCapabilities...)
+		reportedRuntimeHash := provider.RuntimeHash
+		reportedTemplateHashes := registry.CloneStringMap(
+			provider.TemplateHashes,
+		)
 		provider.Mu().Unlock()
-
 		if !fresh {
 			t.Fatal("manifest policy revalidation cleared the live process proof")
 		}
@@ -498,7 +594,13 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 				t.Fatalf("promoted desired state = %+v, want protected build", desired)
 			}
 			if models := srv.registry.ListModels(); len(models) != 1 {
-				t.Fatalf("routable models = %d, want 1 after approval", len(models))
+				t.Fatalf(
+					"routable models = %d, want 1 after approval; runtime=%q templates=%v reasons=%v",
+					len(models),
+					reportedRuntimeHash,
+					reportedTemplateHashes,
+					srv.registry.ProviderModelEligibilityReasonCounts(),
+				)
 			}
 			return
 		}
@@ -534,6 +636,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	}
 	assertState(false)
 	setManifest(oldMetallib)
+	recertifyCurrentProcess()
 	assertState(true)
 
 	t.Run("temporary minimum version policy recovers without reconnect", func(t *testing.T) {
@@ -549,6 +652,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 
 		srv.minProviderVersion = ""
 		srv.revalidateConnectedProvidersAgainstRuntimePolicy()
+		recertifyCurrentProcess()
 		assertState(true)
 		provider.Mu().Lock()
 		version = provider.Version
@@ -577,6 +681,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		}
 		assertState(false)
 		setManifest(oldMetallib)
+		recertifyCurrentProcess()
 		assertState(true)
 
 		withdrawManifest()
@@ -616,6 +721,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
 		provider.Mu().Unlock()
 		setManifest(oldMetallib)
+		recertifyCurrentProcess()
 		assertState(true)
 	})
 
@@ -653,6 +759,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
 		provider.Mu().Unlock()
 		setManifest(oldMetallib)
+		recertifyCurrentProcess()
 		assertState(true)
 	})
 
@@ -691,4 +798,38 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 			t.Fatalf("changed runtime identity remained routable: %d models", len(models))
 		}
 	})
+}
+
+func TestApplicationEvidenceRuntimeHashComparisonIsCaseInsensitive(t *testing.T) {
+	runtimeHash := strings.Repeat("a", 64)
+	metallibHash := strings.Repeat("b", 64)
+	evidence := registry.ApplicationEvidence{
+		RuntimeHash:        strings.ToUpper(runtimeHash),
+		MetallibHash:       strings.ToUpper(metallibHash),
+		EvidenceGeneration: 1,
+		CertifiedProcessEvidence: registry.CertifiedProcessEvidence{
+			Version:      protocol.ProcessEvidenceV1,
+			RuntimeHash:  strings.ToUpper(runtimeHash),
+			MetallibHash: strings.ToUpper(metallibHash),
+		},
+	}
+	if !applicationEvidenceMatchesRuntimePolicy(
+		evidence,
+		runtimeHash,
+		map[string]string{"mlx_metallib": metallibHash},
+		true,
+		true,
+	) {
+		t.Fatal("case-equivalent certified runtime hashes were rejected")
+	}
+	evidence.CertifiedProcessEvidence.MetallibHash = strings.Repeat("c", 64)
+	if applicationEvidenceMatchesRuntimePolicy(
+		evidence,
+		runtimeHash,
+		map[string]string{"mlx_metallib": metallibHash},
+		true,
+		true,
+	) {
+		t.Fatal("different certified metallib hash was accepted")
+	}
 }

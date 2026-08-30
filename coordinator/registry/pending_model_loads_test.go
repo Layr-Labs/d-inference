@@ -191,8 +191,15 @@ func TestMemoryBackoffReapedByWarmPoolSweep(t *testing.T) {
 // (both maps) so a reconnect starts clean and the planner is not suppressed.
 func TestDisconnectClearsPendingModelLoad(t *testing.T) {
 	r := New(testLogger())
-	r.Register("p1", nil, testRegisterMessage())
-	r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m1"}}, time.Now())
+	msg := testRegisterMessage()
+	p := r.Register("p1", nil, msg)
+	p.mu.Lock()
+	testMakeTextRoutable(p)
+	p.mu.Unlock()
+	modelID := msg.Models[0].ID
+	r.reservePendingModelLoads([]modelLoadAction{{
+		providerID: "p1", modelID: modelID,
+	}}, time.Now())
 	if !hasPendingLoad(r, "p1") {
 		t.Fatal("reservation did not create a pending entry")
 	}
@@ -203,7 +210,7 @@ func TestDisconnectClearsPendingModelLoad(t *testing.T) {
 		t.Fatal("Disconnect did not clear the provider's pending model load")
 	}
 	r.mu.RLock()
-	_, startedLeft := r.pendingModelLoadStarted[modelLoadKey("p1", "m1")]
+	_, startedLeft := r.pendingModelLoadStarted[modelLoadKey("p1", modelID)]
 	r.mu.RUnlock()
 	if startedLeft {
 		t.Fatal("Disconnect left a dangling pendingModelLoadStarted entry")

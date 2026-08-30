@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+
 	"nhooyr.io/websocket"
 )
 
@@ -621,15 +623,17 @@ func TestProviderWriterWatchdogFiresOnPastDeadline(t *testing.T) {
 
 func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	r := New(testLogger())
-	p := &Provider{
-		ID:          "queue-full-provider",
-		writer:      &providerWriter{queue: make(chan *providerWriteRequest, 1), done: make(chan struct{})},
-		pendingReqs: make(map[string]*PendingRequest),
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{{ID: "m", ModelType: "chat"}}
+	p := r.Register("queue-full-provider", nil, msg)
+	p.mu.Lock()
+	testMakeTextRoutable(p)
+	p.writer = &providerWriter{
+		queue: make(chan *providerWriteRequest, 1),
+		done:  make(chan struct{}),
 	}
+	p.mu.Unlock()
 	p.writer.queue <- &providerWriteRequest{done: make(chan error, 1)}
-	r.mu.Lock()
-	r.providers[p.ID] = p
-	r.mu.Unlock()
 
 	actions := r.reservePendingModelLoads([]modelLoadAction{{providerID: p.ID, modelID: "m"}}, time.Now())
 	if len(actions) != 1 {

@@ -89,8 +89,13 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Structural / trust / privacy / freshness / cooldown / trait gates.
-	if !r.providerPassesRoutingGatesLocked(p, model, traits, false, now) {
+	// Cold spill applies every structural/security/cooldown/trait gate but does
+	// not require the target slot to be loaded yet.
+	purpose := servingEligibilityPurpose(r.MinTrustLevel, false)
+	purpose.requireServingSlot = false
+	if !r.providerPassesRoutingGatesForPurposeLocked(
+		p, model, traits, purpose, now, false, false,
+	) {
 		return false
 	}
 	if p.SystemMetrics.ThermalState == "critical" {

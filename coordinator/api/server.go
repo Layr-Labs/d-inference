@@ -1682,6 +1682,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
 		version := provider.Version
 		backend := provider.Backend
+		applicationEvidence := provider.ApplicationEvidence
 
 		// Manifest policy is coordinator-owned and can be withdrawn, rotated,
 		// or rolled back independently of the connected process. Rebuild all
@@ -1692,7 +1693,6 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		provider.RuntimeManifestChecked = false
 		provider.MetallibVerified = false
 		provider.RuntimeCapabilities = nil
-		provider.ApplicationEvidence = registry.ApplicationEvidence{}
 
 		if s.knownRuntimeManifest == nil {
 			// Manifest was withdrawn — keep the process proof, but deroute the
@@ -1714,6 +1714,15 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				runtimeManifestApprovesMetallib(
 					s.knownRuntimeManifest, templateHashes)
 		}
+		if !applicationEvidenceMatchesRuntimePolicy(
+			applicationEvidence,
+			runtimeHash,
+			templateHashes,
+			provider.RuntimeVerified,
+			provider.MetallibVerified,
+		) {
+			provider.ApplicationEvidence = registry.ApplicationEvidence{}
+		}
 		provider.Mu().Unlock()
 		if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
 			s.logger.Warn("runtime policy capability reconciliation failed",
@@ -1724,6 +1733,38 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				"provider_id", providerID, "count", cleared)
 		}
 	}
+}
+
+func applicationEvidenceMatchesRuntimePolicy(
+	evidence registry.ApplicationEvidence,
+	runtimeHash string,
+	templateHashes map[string]string,
+	runtimeVerified, metallibVerified bool,
+) bool {
+	if !runtimeVerified {
+		return false
+	}
+	if evidence.EvidenceGeneration == 0 {
+		return true
+	}
+	if evidence.RuntimeHash != "" &&
+		!strings.EqualFold(evidence.RuntimeHash, runtimeHash) {
+		return false
+	}
+	reportedMetallib := templateHashes["mlx_metallib"]
+	if evidence.MetallibHash != "" &&
+		(!metallibVerified ||
+			!strings.EqualFold(evidence.MetallibHash, reportedMetallib)) {
+		return false
+	}
+	certificate := evidence.CertifiedProcessEvidence
+	if certificate.Version == protocol.ProcessEvidenceV1 &&
+		(!strings.EqualFold(certificate.RuntimeHash, runtimeHash) ||
+			!strings.EqualFold(certificate.MetallibHash, reportedMetallib) ||
+			(certificate.MLXNAX && !metallibVerified)) {
+		return false
+	}
+	return true
 }
 
 func runtimeManifestApprovesMetallib(

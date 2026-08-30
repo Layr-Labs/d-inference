@@ -697,21 +697,24 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if p.SystemMetrics.ThermalState == "critical" {
 		return warmPoolCandidate{}, warmColdThermal
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
-		return warmPoolCandidate{}, warmColdTrust
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return warmPoolCandidate{}, warmColdStaleChallenge
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return warmPoolCandidate{}, warmColdNotServing
-	}
-	// Don't pre-warm a dedicated-family model (e.g. Gemma 4) onto a non-dedicated
-	// (mixed-catalog) box: routing will never send the model there, so the warm
-	// would be wasted GPU memory and would mislead the demand calc into thinking
-	// the model is already covered. Mirrors the routing/preflight gate.
-	if r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return warmPoolCandidate{}, warmColdDedicated
+	purpose := servingEligibilityPurpose(r.MinTrustLevel, false)
+	purpose.requireServingSlot = false
+	eligibility := r.providerModelEligibilityLocked(p, model, purpose, now)
+	if !eligibility.Eligible {
+		switch eligibility.Reason {
+		case EligibilityProviderOffline, EligibilityProviderUntrusted, EligibilityPrivateOnly:
+			return warmPoolCandidate{}, warmColdOfflineUntrust
+		case EligibilityChallengeStale:
+			return warmPoolCandidate{}, warmColdStaleChallenge
+		case EligibilityCatalogMissing, EligibilityModelNotAdvertised,
+			EligibilityModelHashMismatch, EligibilityCapabilityUnknown,
+			EligibilityCapabilityMissing:
+			return warmPoolCandidate{}, warmColdNotServing
+		case EligibilityDedicatedModel:
+			return warmPoolCandidate{}, warmColdDedicated
+		default:
+			return warmPoolCandidate{}, warmColdTrust
+		}
 	}
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
 	gpuActiveGB := 0.0

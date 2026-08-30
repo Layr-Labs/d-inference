@@ -754,8 +754,10 @@ type DeviceEvidence struct {
 	SEPublicKey          string
 	Serial               string
 	VerifiedAt           time.Time
+	ExpiresAt            time.Time
 	EvidenceGeneration   uint64
 	RevocationGeneration uint64
+	AppleM5              bool
 }
 
 // CertifiedProcessEvidence is a coordinator-owned immutable snapshot of a
@@ -777,6 +779,7 @@ type CertifiedProcessEvidence struct {
 	ExpiresAt            time.Time
 	PolicyGeneration     uint64
 	VerifiedAt           time.Time
+	MLXNAX               bool
 }
 
 // ProcessEvidenceChallengeState is the one outstanding v1 transcript expected
@@ -803,6 +806,7 @@ type ApplicationEvidence struct {
 	VerifiedAt               time.Time
 	EvidenceGeneration       uint64
 	PolicyGeneration         uint64
+	MLXNAX                   bool
 	CertifiedProcessEvidence CertifiedProcessEvidence
 }
 
@@ -991,6 +995,8 @@ type Provider struct {
 	runtimeCapabilitiesReconciled     bool
 	lastReconciledRuntimeCapabilities []string
 	lastDesiredModels                 []protocol.DesiredModelEntry
+	modelEvidenceGeneration           uint64
+	desiredModelGeneration            uint64
 	desiredModelsSendMu               sync.Mutex
 
 	mu          sync.Mutex
@@ -1010,66 +1016,7 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
-	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
-		return false
-	}
-	if !p.RuntimeManifestChecked {
-		return false
-	}
-	// Require coordinator-verified SIP (from attestation challenge) rather
-	// than trusting the provider's self-reported SIPEnabled field.
-	if !p.ChallengeVerifiedSIP {
-		return false
-	}
-	// A configured release policy makes current active-release application
-	// evidence mandatory independently of the APNs rollout deadline. The APNs
-	// proof establishes genuine Apple code identity; this generation-bound fact
-	// establishes that the live binary/runtime is still active and approved.
-	if r.releasePolicyRequired {
-		evidence := p.ApplicationEvidence
-		if evidence.EvidenceGeneration == 0 ||
-			evidence.PolicyGeneration != r.releasePolicyGeneration ||
-			evidence.ProcessPublicKey != p.PublicKey ||
-			evidence.APNsToken == "" ||
-			evidence.APNsToken != p.APNsDeviceToken ||
-			evidence.Version != p.Version ||
-			evidence.Backend != p.Backend ||
-			evidence.BinaryHash == "" ||
-			p.AttestationResult == nil ||
-			evidence.SEPublicKey != p.AttestationResult.PublicKey ||
-			evidence.Serial != p.AttestationResult.SerialNumber {
-			return false
-		}
-		if p.ProcessEvidenceVersion == protocol.ProcessEvidenceV1 {
-			certificate := evidence.CertifiedProcessEvidence
-			if certificate.Version != protocol.ProcessEvidenceV1 ||
-				certificate.CoordinatorSessionID != p.ID ||
-				certificate.ProcessPublicKey != p.PublicKey ||
-				certificate.PolicyGeneration != r.releasePolicyGeneration ||
-				certificate.ChallengeGeneration == "" ||
-				!certificate.ExpiresAt.After(time.Now()) ||
-				!p.CodeAttested {
-				return false
-			}
-		}
-	}
-	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
-		return false
-	}
-	caps := p.PrivacyCapabilities
-	if caps == nil {
-		return false
-	}
-	// Only mlx-swift is routable (enforced by privateTextBackendSupported above).
-	// Python-specific caps (PythonRuntimeLocked, DangerousModulesBlocked) are
-	// retained in the protocol struct for wire backward compat but are no longer
-	// required for routing.
-	return caps.TextBackendInprocess &&
-		caps.TextProxyDisabled &&
-		caps.AntiDebugEnabled &&
-		caps.CoreDumpsDisabled &&
-		caps.EnvScrubbed
+	return r.privateTextEligibilityReasonLocked(p, time.Now()) == EligibilityAllowed
 }
 
 func privateTextBackendSupported(backend string) bool {
@@ -1205,10 +1152,13 @@ func (p *Provider) GrantHardwareEvidenceIfNotUntrusted(evidence DeviceEvidence) 
 	p.Attested = true
 	p.TrustLevel = TrustHardware
 	if evidence.SEPublicKey != "" && evidence.Serial != "" {
-		p.DeviceEvidence = evidence
+		p.DeviceEvidence = normalizeDeviceEvidenceLocked(p, evidence)
 	}
 	p.mu.Unlock()
 	p.reconcileRuntimeCapabilities()
+	if p.registry != nil {
+		p.registry.notifyRuntimeCapabilitiesPromoted(p.ID)
+	}
 	return true
 }
 
@@ -1225,10 +1175,13 @@ func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvi
 	p.Attested = true
 	p.TrustLevel = TrustHardware
 	if evidence.SEPublicKey != "" && evidence.Serial != "" {
-		p.DeviceEvidence = evidence
+		p.DeviceEvidence = normalizeDeviceEvidenceLocked(p, evidence)
 	}
 	p.mu.Unlock()
 	p.reconcileRuntimeCapabilities()
+	if p.registry != nil {
+		p.registry.notifyRuntimeCapabilitiesPromoted(p.ID)
+	}
 	return true
 }
 
@@ -1254,6 +1207,8 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 		return false
 	}
 	certificate := evidence.CertifiedProcessEvidence
+	expectedMLXNAX := attestedMLXNAX(
+		p.AttestationResult, evidence.MetallibHash)
 	if p.ProcessEvidenceVersion == protocol.ProcessEvidenceV1 {
 		if certificate.Version != protocol.ProcessEvidenceV1 ||
 			certificate.SEPublicKey != evidence.SEPublicKey ||
@@ -1268,6 +1223,8 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 			certificate.CoordinatorSessionID != p.ID ||
 			certificate.ChallengeGeneration == "" ||
 			certificate.PolicyGeneration != evidence.PolicyGeneration ||
+			evidence.MLXNAX != expectedMLXNAX ||
+			certificate.MLXNAX != expectedMLXNAX ||
 			certificate.VerifiedAt.IsZero() ||
 			!certificate.ExpiresAt.After(time.Now()) {
 			p.mu.Unlock()
@@ -1283,6 +1240,12 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 	p.mu.Unlock()
 	p.SignalApplicationProofSettled()
 	p.reconcileRuntimeCapabilities()
+	// A policy rotation may have re-promoted the same signed capability set
+	// before this fresh application certificate arrived. Re-fanout eligibility
+	// explicitly; SendDesiredModels deduplicates unchanged wire snapshots.
+	if p.registry != nil {
+		p.registry.notifyRuntimeCapabilitiesPromoted(p.ID)
+	}
 	return true
 }
 
@@ -1478,8 +1441,11 @@ func (p *Provider) GetChallengeVerifiedSIP() bool {
 
 func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.ChallengeVerifiedSIP = v
+	p.mu.Unlock()
+	if !v && p.registry != nil {
+		p.registry.notifyRuntimeCapabilitiesPromoted(p.ID)
+	}
 }
 
 // SetCodeAttested updates general code-proof state at validated call sites.
@@ -1494,6 +1460,9 @@ func (p *Provider) SetCodeAttested(v bool) {
 	}
 	p.mu.Unlock()
 	p.reconcileRuntimeCapabilities()
+	if !v && p.registry != nil {
+		p.registry.notifyRuntimeCapabilitiesPromoted(p.ID)
+	}
 }
 
 // SetFreshCodeAttested records a nonce round-trip completed by this live
@@ -1626,14 +1595,21 @@ func (r *Registry) SetReleasePolicyGeneration(generation uint64, required bool) 
 	r.mu.Lock()
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
-	for _, provider := range r.providers {
+	providerIDs := make([]string, 0, len(r.providers))
+	for providerID, provider := range r.providers {
+		providerIDs = append(providerIDs, providerID)
 		provider.mu.Lock()
 		provider.processEvidenceChallenge = ProcessEvidenceChallengeState{}
 		provider.ApplicationEvidence = ApplicationEvidence{}
 		provider.RuntimeCapabilities = nil
+		provider.lastReconciledRuntimeCapabilities = nil
+		provider.runtimeCapabilitiesReconciled = true
 		provider.mu.Unlock()
 	}
 	r.mu.Unlock()
+	for _, providerID := range providerIDs {
+		r.notifyRuntimeCapabilitiesPromoted(providerID)
+	}
 }
 
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
@@ -2350,18 +2326,27 @@ type CatalogEntry struct {
 // DB-backed registry should do until an operator registers and promotes models.
 func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if entries == nil {
 		r.modelCatalog = nil
-		return
+	} else {
+		catalog := make(map[string]CatalogEntry, len(entries))
+		for _, e := range entries {
+			e.RequiredProviderCapabilities = effectiveRequiredProviderCapabilities(
+				e.ID, e.RequiredProviderCapabilities)
+			e.RequiredProviderCapabilities = append(
+				[]string(nil), e.RequiredProviderCapabilities...)
+			catalog[e.ID] = e
+		}
+		r.modelCatalog = catalog
 	}
-	catalog := make(map[string]CatalogEntry, len(entries))
-	for _, e := range entries {
-		e.RequiredProviderCapabilities = effectiveRequiredProviderCapabilities(
-			e.ID, e.RequiredProviderCapabilities)
-		catalog[e.ID] = e
+	providerIDs := make([]string, 0, len(r.providers))
+	for providerID := range r.providers {
+		providerIDs = append(providerIDs, providerID)
 	}
-	r.modelCatalog = catalog
+	r.mu.Unlock()
+	for _, providerID := range providerIDs {
+		r.notifyRuntimeCapabilitiesPromoted(providerID)
+	}
 }
 
 // AliasTarget is the declarative resolution target for a public alias: a single
@@ -2646,21 +2631,14 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	now time.Time,
 	allowPrivate bool,
 ) bool {
-	// Catalog membership + dedicated-box isolation, mirroring
-	// providerPassesRoutingGatesLockedEx so alias routability (and rollout/drop
-	// measurement) matches actual dispatch routability: a dedicated-family build
-	// is only routable on a provider dedicated to that family. Without this, an
-	// alias whose Desired build is advertised only by a mixed box would resolve
-	// to Desired (then 429 at dispatch) instead of failing over to a Previous
-	// build on a dedicated box. allowPrivate marks the owner self-route context,
-	// exempt like selfRouteOwner.
-	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
-		return false
-	}
-	// Liveness/trust/privacy core. allowPrivate marks the owner self-route
-	// context (relax private-only admission); the trust-floor relaxation is
-	// folded into the minTrust the caller passes (TrustNone for owner routes).
-	if !r.providerLivenessGateLocked(p, minTrust, allowPrivate, now) {
+	purpose := servingEligibilityPurpose(minTrust, allowPrivate)
+	// Structural alias probing intentionally ignores transient slot state for
+	// ordinary cold models. Capability-protected models keep the authoritative
+	// ready-slot requirement so a reloading protected pair is never advertised
+	// as routable merely because unrelated capacity is healthy.
+	if eligibility := r.providerModelEligibilityLocked(
+		p, buildID, purpose, now,
+	); !eligibility.Eligible {
 		return false
 	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
@@ -2919,6 +2897,7 @@ func (r *Registry) mergeProviderModels(
 			p.PrefixCacheStatuses,
 			p.PrefixCacheStatusReported,
 		)
+	p.modelEvidenceGeneration++
 	p.mu.Unlock()
 	if len(cacheStateInvalidated) > 0 {
 		r.mu.RLock()
@@ -3109,8 +3088,9 @@ func (r *Registry) modelTrackedByCatalogLocked(id string) bool {
 // requirements even with catalog filtering disabled. Caller holds r.mu and
 // p.mu.
 func (r *Registry) modelServableForOwnerLocked(p *Provider, m protocol.ModelInfo) bool {
-	return (r.modelAllowedByCatalogLocked(m) || !r.modelTrackedByCatalogLocked(m.ID)) &&
-		r.providerMeetsModelRequirementsLocked(p, m.ID)
+	return r.providerModelEligibilityLocked(
+		p, m.ID, servingEligibilityPurpose(TrustNone, true), time.Now(),
+	).Eligible
 }
 
 // providerServesOwnedRoutableModelLocked is providerServesCatalogModelLocked's
@@ -3144,7 +3124,9 @@ func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, al
 			continue
 		}
 		if allowOffCatalog {
-			if r.modelServableForOwnerLocked(p, m) {
+			if (r.modelAllowedByCatalogLocked(m) ||
+				!r.modelTrackedByCatalogLocked(m.ID)) &&
+				r.providerMeetsModelRequirementsLocked(p, m.ID) {
 				return true
 			}
 			continue
@@ -3507,6 +3489,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
 		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		modelEvidenceGeneration:     1,
 		TrustLevel:                  TrustNone,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
@@ -3706,6 +3689,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	p.modelEvidenceGeneration++
 	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
 	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is
@@ -3825,7 +3809,10 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := r.providerServesCatalogModelLocked(p, modelID)
+	purpose := servingEligibilityPurpose(r.MinTrustLevel, false)
+	purpose.requireServingSlot = false
+	eligible := r.providerModelEligibilityLocked(
+		p, modelID, purpose, time.Now()).Eligible
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -3954,11 +3941,11 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 	if !forceEmpty {
 		for _, entry := range entries {
 			if entry.DesiredBuild == "" ||
-				!r.providerCanAcquireCatalogModelLocked(p, entry.DesiredBuild) {
+				!r.providerEligibleForDesiredModelLocked(p, entry.DesiredBuild) {
 				continue
 			}
 			if entry.PreviousBuild != "" &&
-				!r.providerCanAcquireCatalogModelLocked(p, entry.PreviousBuild) {
+				!r.providerEligibleForDesiredModelLocked(p, entry.PreviousBuild) {
 				entry.PreviousBuild = ""
 			}
 			eligibleEntries = append(eligibleEntries, entry)
@@ -4026,6 +4013,7 @@ func desiredModelEntriesEqual(left, right []protocol.DesiredModelEntry) bool {
 func recordDesiredModelsSent(p *Provider, entries []protocol.DesiredModelEntry) {
 	p.mu.Lock()
 	p.desiredModelsSent = true
+	p.desiredModelGeneration++
 	p.lastDesiredModels = append([]protocol.DesiredModelEntry(nil), entries...)
 	p.mu.Unlock()
 }
@@ -4061,7 +4049,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if t.OpenRouterOnly || t.Desired == "" {
 			continue
 		}
-		if !r.providerCanAcquireCatalogModelLocked(p, t.Desired) {
+		if !r.providerEligibleForDesiredModelLocked(p, t.Desired) {
 			continue
 		}
 
@@ -4084,7 +4072,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			continue
 		}
 		previous := t.Previous
-		if previous != "" && !r.providerCanAcquireCatalogModelLocked(p, previous) {
+		if previous != "" && !r.providerEligibleForDesiredModelLocked(p, previous) {
 			previous = ""
 		}
 		entries = append(entries, protocol.DesiredModelEntry{
@@ -4177,21 +4165,9 @@ func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
 // with stale attestation or failed privacy checks should not suppress swap
 // planning. Caller must hold p.mu. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now time.Time) bool {
-	// Liveness/trust/privacy core, with NO owner relaxation: private-only
-	// providers serve only their owner's self-route traffic, never the public
-	// fleet, and must not suppress public swap planning — otherwise a
-	// private-only machine that happens to hold a queued public model warm makes
-	// the planner believe the model is already served and skip load_model to an
-	// eligible public node, stranding public requests until queue timeout.
-	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
-		return false
-	}
-	// Catalog membership + dedicated-box isolation: for a dedicated-family model
-	// (e.g. Gemma 4), a warm mixed-catalog box is not a usable warm provider —
-	// routing won't send the model there. Treat it as not warm so it neither
-	// suppresses cold-spill/swap planning onto a real dedicated box nor counts
-	// toward the model's warm-capacity demand target.
-	if !r.providerServesRoutableModelLocked(p, model, false) {
+	if eligibility := r.providerModelEligibilityLocked(
+		p, model, servingEligibilityPurpose(r.MinTrustLevel, false), now,
+	); !eligibility.Eligible {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -4251,16 +4227,11 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Liveness/trust/privacy core + catalog membership + dedicated-box
-	// isolation, with NO owner relaxation: this is a public load_model target
-	// picker, so private-only machines never qualify and a dedicated-family
-	// model (e.g. Gemma 4) may only be loaded onto a provider dedicated to it,
-	// never a mixed-catalog box (routing would never use it). Mirrors
-	// providerHasWarmModelLocked.
-	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
-		return 0, false
-	}
-	if !r.providerServesRoutableModelLocked(p, model, false) {
+	purpose := servingEligibilityPurpose(r.MinTrustLevel, false)
+	purpose.requireServingSlot = false
+	if eligibility := r.providerModelEligibilityLocked(
+		p, model, purpose, now,
+	); !eligibility.Eligible {
 		return 0, false
 	}
 
@@ -4382,6 +4353,32 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	return cleared
 }
 
+// invalidateIneligibleCacheIntents drops only cache holders whose exact
+// provider/model join lost eligibility. It deliberately leaves unrelated
+// models on the same provider intact.
+func (r *Registry) invalidateIneligibleCacheIntents(providerID string) {
+	r.mu.RLock()
+	p := r.providers[providerID]
+	tracker := r.cacheRouting
+	if p == nil || tracker == nil {
+		r.mu.RUnlock()
+		return
+	}
+	p.mu.Lock()
+	models := make([]string, 0, len(p.Models))
+	for _, model := range p.Models {
+		if !r.providerCanAcquireCatalogModelLocked(p, model.ID) {
+			models = append(models, model.ID)
+		}
+	}
+	p.mu.Unlock()
+	r.mu.RUnlock()
+	for _, modelID := range models {
+		tracker.invalidateProviderModel(
+			providerID, modelID, cacheHolderRemovalCapabilityChange)
+	}
+}
+
 // MarkModelWarm adds a model to the provider's WarmModels list if not already
 // present. Called when load_model_status:succeeded arrives before the next
 // heartbeat, so the scheduler sees the provider as warm during queue drain.
@@ -4393,7 +4390,14 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 		return
 	}
 	p.mu.Lock()
-	if !r.providerServesCatalogModelLocked(p, modelID) {
+	if r.modelCatalog != nil {
+		if _, tracked := r.modelCatalog[modelID]; !tracked {
+			p.mu.Unlock()
+			r.mu.RUnlock()
+			return
+		}
+	}
+	if !r.providerMeetsModelRequirementsLocked(p, modelID) {
 		p.mu.Unlock()
 		r.mu.RUnlock()
 		return
@@ -4640,6 +4644,7 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		p.DeviceEvidence = DeviceEvidence{}
 		p.ApplicationEvidence = ApplicationEvidence{}
 		p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
 		p.RuntimeCapabilities = nil
@@ -4832,6 +4837,8 @@ func (r *Registry) SetRuntimeCapabilitiesPromotedHook(fn func(providerID string)
 }
 
 func (r *Registry) notifyRuntimeCapabilitiesPromoted(providerID string) {
+	r.ClearIneligiblePendingModelLoads(providerID)
+	r.invalidateIneligibleCacheIntents(providerID)
 	r.mu.RLock()
 	hook := r.onRuntimeCapabilitiesPromoted
 	r.mu.RUnlock()
@@ -4915,8 +4922,8 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	r.mu.Unlock()
 	if !recoverable {
 		p.SignalApplicationProofSettled()
-	}
-	if capabilitiesChanged {
+		r.notifyRuntimeCapabilitiesPromoted(providerID)
+	} else if capabilitiesChanged {
 		_ = r.ReconcileAttestedRuntimeCapabilities(providerID)
 	}
 
@@ -5161,6 +5168,7 @@ func (r *Registry) ListModels() []AggregateModel {
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
 	agg := make(map[string]*modelAgg)
+	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
 		status := p.Status
@@ -5173,7 +5181,11 @@ func (r *Registry) ListModels() []AggregateModel {
 		// connection-scoped capability requirements.
 		models := make([]protocol.ModelInfo, 0, len(p.Models))
 		for _, model := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, model) {
+			if r.providerModelEligibilityLocked(
+				p, model.ID,
+				servingEligibilityPurpose(r.MinTrustLevel, false),
+				now,
+			).Eligible {
 				models = append(models, model)
 			}
 		}
@@ -5764,7 +5776,11 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
-			if !r.providerModelAllowedByCatalogLocked(p, m) {
+			if !r.providerModelEligibilityLocked(
+				p, m.ID,
+				servingEligibilityPurpose(r.MinTrustLevel, false),
+				now,
+			).Eligible {
 				continue
 			}
 			// Use the SAME quality-concurrency-capped headroom the routing/preflight

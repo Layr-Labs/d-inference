@@ -72,8 +72,10 @@ func testRegisterMessage() *protocol.RegisterMessage {
 // for text models: trust level, challenge freshness, manifest verification,
 // and coordinator-verified SIP.
 func testMakeTextRoutable(p *Provider) {
+	now := time.Now()
 	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now()
+	p.Attested = true
+	p.LastChallengeVerified = now
 	p.ChallengeVerifiedSIP = true
 	p.RuntimeManifestChecked = true
 }

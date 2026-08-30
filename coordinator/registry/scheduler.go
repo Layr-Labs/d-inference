@@ -1027,17 +1027,12 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 			continue
 		}
 		online++
-		// Owner-servability (not bare advertisement) so the self-route error
-		// messaging matches what routing would actually admit: an owned box
-		// advertising a stale-hash catalog build reports "model not loaded"
-		// instead of proceeding into a dispatch that can only be rejected.
-		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
+		eligibility := r.providerModelEligibilityLocked(
+			p, model, servingEligibilityPurpose(TrustNone, true), now,
+		)
+		serves := eligibility.Eligible &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
-			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
-			p.RuntimeVerified &&
-			r.providerSupportsPrivateTextLocked(p) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+			(!requiresVision || r.providerServesVisionModelLocked(p, model, true))
 		p.mu.Unlock()
 		if serves {
 			servesModel++
@@ -1116,77 +1111,59 @@ func (r *Registry) providerPassesRoutingGatesLocked(p *Provider, model string, t
 // instead of structural absence (a "no providers" 503) — it must never be set
 // on an actual routing/admission decision. Every other caller goes through the
 // default wrapper above (both always honored). Caller holds r.mu and p.mu.
-func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) bool {
-	// Catalog membership + dedicated-box isolation: a request for a dedicated
-	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
-	// advertised catalog is that family. This single gate is shared by the
-	// dispatch hot path and the OpenRouter capacity preflight, so the filter
-	// restricts the routing candidate set AND the shed (429) decision together
-	// with no drift. A caller self-routing to its OWN machine is exempt — owners
-	// may run mixed boxes.
-	if !r.providerServesRoutableModelLocked(p, model, selfRouteOwner) {
-		return false
-	}
-	// Skip a provider-model pair cooling down after a dispatch-time load
-	// failure ("insufficient memory") — it would instant-503 again, burning a
-	// dispatch attempt.
-	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
-		return false
-	}
-	// Skip a triple quarantined by the inference-error circuit breaker for THIS
-	// request shape: repeated provider-side (5xx) failures — e.g. a deterministic
-	// chat-template render crash on tool schemas — mean a retry here fails
-	// identically, so routing must fall to a different provider. Shape-keyed so a
-	// tool failure does not deroute clean text traffic. Cleared by
-	// RecordInferenceSuccess (same shape) or by TTL expiry.
-	if r.inferenceErrorCooldownActiveLocked(p.ID, model, traits.CooldownShape(), now) {
-		return false
-	}
-	// Skip a (provider, model) pair quarantined by the capacity-reject cooldown:
-	// it kept capacity-rejecting with ZERO interleaved accepts (the black-hole
-	// signature — e.g. a box whose engine misreports its token budget), so a
-	// dispatch here is a guaranteed bounce while its idle-looking heartbeats
-	// keep winning the cost scheduler. A busy box that is also SERVING never
-	// trips this (any accept resets the streak), and the pair is re-probed once
-	// its TTL expires. See capacity_cooldown.go.
-	if !ignoreCapacityCooldown && r.capacityCooldownActiveLocked(p.ID, model, now) {
-		return false
-	}
-	// Skip a provider quarantined by the per-provider node-health breaker: a
-	// node returning GENUINE-FAULT errors (500/502/504 or a
-	// fault-shaped 503) for ~all of its requests is sick regardless of model or
-	// shape, so it is derouted fleet-wide. This catches the node that fault-503s
-	// every request — invisible to the shape-keyed inference-error breaker above
-	// (which skips 503 as a capacity signal). Honored on the normal routing
-	// path; the selectBestCandidateLockedFull fail-open pass sets
-	// ignoreProviderBreaker so a bad fleet-wide rollout can't deroute everyone.
-	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
-		return false
-	}
-	// Skip a provider EJECTED by the stable-identity health breaker (health_ejection.go):
-	// a node whose serial/SE-key/account has collapsed to a near-total served-fault
-	// rate is derouted even across reconnects (the session breaker above is wiped on
-	// every disconnect, which the constantly-disconnecting zombies exploit). Same
-	// fail-open contract: skipped on the ignoreProviderBreaker rescan, and an
-	// un-attestable provider (empty stable id) is never ejected.
-	if !ignoreProviderBreaker && healthEjectionEnabled() {
-		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
-			return false
-		}
-	}
-	// Liveness/trust/privacy core. selfRouteOwner relaxes ONLY the hardware-trust
-	// floor (to TrustNone) and private-only admission for a caller's own
-	// (possibly un-enrolled) machine; every privacy-critical gate still applies.
+func (r *Registry) providerPassesRoutingGatesLockedEx(
+	p *Provider,
+	model string,
+	traits RequestTraits,
+	selfRouteOwner bool,
+	now time.Time,
+	ignoreProviderBreaker, ignoreCapacityCooldown bool,
+) bool {
 	minTrust := r.MinTrustLevel
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if !r.providerLivenessGateLocked(p, minTrust, selfRouteOwner, now) {
+	return r.providerPassesRoutingGatesForPurposeLocked(
+		p, model, traits,
+		servingEligibilityPurpose(minTrust, selfRouteOwner),
+		now, ignoreProviderBreaker, ignoreCapacityCooldown,
+	)
+}
+
+func (r *Registry) providerPassesRoutingGatesForPurposeLocked(
+	p *Provider,
+	model string,
+	traits RequestTraits,
+	purpose eligibilityPurpose,
+	now time.Time,
+	ignoreProviderBreaker, ignoreCapacityCooldown bool,
+) bool {
+	if eligibility := r.providerModelEligibilityLocked(
+		p, model, purpose, now,
+	); !eligibility.Eligible {
 		return false
 	}
-	// Trait eligibility: a render-broken build is fenced for EVERY request shape
-	// (a crashing chat template breaks plain text, tools, and multimodal alike),
-	// while the capability version floors stay trait-scoped (tools-only today).
+	if r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
+		return false
+	}
+	if r.inferenceErrorCooldownActiveLocked(
+		p.ID, model, traits.CooldownShape(), now,
+	) {
+		return false
+	}
+	if !ignoreCapacityCooldown &&
+		r.capacityCooldownActiveLocked(p.ID, model, now) {
+		return false
+	}
+	if !ignoreProviderBreaker && r.providerBreakerOpenLocked(p.ID, now) {
+		return false
+	}
+	if !ignoreProviderBreaker && healthEjectionEnabled() {
+		if sid := stableProviderIdentityLocked(p); sid != "" &&
+			r.healthEjectionOpenLocked(sid, now) {
+			return false
+		}
+	}
 	if !r.providerEligibleForTraitsLocked(p, model, traits) {
 		return false
 	}

@@ -224,6 +224,13 @@ func (s *Server) verifyProcessEvidenceV1(
 			}
 		}
 	}
+	mlxNAX := false
+	for _, capability := range attested.RuntimeCapabilities {
+		if capability == registry.ProviderCapabilityMLXNAX {
+			mlxNAX = true
+			break
+		}
+	}
 	verifiedAt := now.UTC()
 	certificate := registry.CertifiedProcessEvidence{
 		Version: protocol.ProcessEvidenceV1, SEPublicKey: attested.PublicKey,
@@ -234,14 +241,14 @@ func (s *Server) verifyProcessEvidenceV1(
 		CoordinatorSessionID: expected.CoordinatorSessionID,
 		ChallengeGeneration:  expected.ChallengeGeneration,
 		ExpiresAt:            expected.ExpiresAt, PolicyGeneration: snapshot.Generation,
-		VerifiedAt: verifiedAt,
+		VerifiedAt: verifiedAt, MLXNAX: mlxNAX,
 	}
 	evidence := registry.ApplicationEvidence{
 		SEPublicKey: attested.PublicKey, Serial: attested.SerialNumber,
 		ProcessPublicKey: processKey, APNsToken: apnsToken,
 		BinaryHash: freshHash, Version: current.Version, Platform: current.Platform,
 		Backend: current.Backend, RuntimeHash: resp.RuntimeHash,
-		MetallibHash: metallibHash, VerifiedAt: verifiedAt,
+		MetallibHash: metallibHash, VerifiedAt: verifiedAt, MLXNAX: mlxNAX,
 		PolicyGeneration: snapshot.Generation, CertifiedProcessEvidence: certificate,
 	}
 	fact := approvedReleaseTransitionFact{

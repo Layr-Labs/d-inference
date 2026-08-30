@@ -399,3 +399,235 @@ func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *t
 		t.Fatal("policy refresh destroyed independent genuine APNs proof")
 	}
 }
+
+const gateCharOrdinaryModel = "gate-char-ordinary"
+
+func compositeGateProvider(
+	t *testing.T,
+	reg *Registry,
+	id, chip string,
+	capabilities []string,
+) *Provider {
+	t.Helper()
+	msg := capabilityTestRegister(
+		Qwen38NAXModelID, chip, capabilities)
+	msg.Models[0].WeightHash = "approved-qwen-manifest"
+	msg.Models = append(msg.Models, protocol.ModelInfo{ID: gateCharOrdinaryModel})
+	p := reg.Register(id, nil, msg)
+	testMakeTextRoutable(p)
+	attestCapabilityTestProvider(
+		t, reg, p, chip, capabilities, capabilityTestMetallibHash)
+	p.mu.Lock()
+	p.AccountID = "owner"
+	p.BackendCapacity.Slots = append(
+		p.BackendCapacity.Slots,
+		protocol.BackendSlotCapacity{
+			Model: gateCharOrdinaryModel, State: "running", MaxConcurrency: 4,
+		},
+	)
+	p.mu.Unlock()
+	return p
+}
+
+func TestRoutingGateCharacterizationCompositeEvidenceMatrix(t *testing.T) {
+	newRegistry := func() *Registry {
+		reg := New(testLogger())
+		reg.SetModelCatalog([]CatalogEntry{
+			{
+				ID:         Qwen38NAXModelID,
+				WeightHash: "approved-qwen-manifest",
+			},
+			{ID: gateCharOrdinaryModel},
+		})
+		reg.SetModelAliases(map[string]AliasTarget{
+			"protected": {Desired: Qwen38NAXModelID},
+		})
+		return reg
+	}
+	assertRoute := func(
+		t *testing.T, reg *Registry, model string, want bool,
+	) {
+		t.Helper()
+		now := time.Now()
+		checks := []struct {
+			name     string
+			eligible bool
+		}{
+			{"dispatch", findRoutableProvider(reg, model) != nil},
+			{"alias_structural", reg.anyProviderCanRouteBuildLockedForTest(model, now)},
+			{"quick_capacity", reg.quickCapacityHasCandidateForTest(model)},
+			{"model_listing", reg.modelListedForTest(model)},
+		}
+		for _, check := range checks {
+			if check.eligible != want {
+				t.Fatalf(
+					"%s model %q eligibility=%v, want %v",
+					check.name, model, check.eligible, want,
+				)
+			}
+		}
+	}
+
+	t.Run("non-M5 routes ordinary only", func(t *testing.T) {
+		reg := newRegistry()
+		compositeGateProvider(t, reg, "m4", "M4", nil)
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+	})
+	t.Run("M5 without NAX routes ordinary only", func(t *testing.T) {
+		reg := newRegistry()
+		compositeGateProvider(
+			t, reg, "m5-no-nax", "M5",
+			[]string{ProviderCapabilityAppleM5})
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+	})
+	t.Run("M5 NAX exact evidence routes protected pair everywhere", func(t *testing.T) {
+		reg := newRegistry()
+		p := compositeGateProvider(
+			t, reg, "m5-nax", "M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX})
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, true)
+		if _, serves := reg.OwnedProviderSummary(
+			"owner", Qwen38NAXModelID, RequestTraits{}, false,
+		); serves != 1 {
+			t.Fatalf("owned protected view=%d, want 1", serves)
+		}
+		if !reg.providerWarmForTest(p, Qwen38NAXModelID) {
+			t.Fatal("warm detection disagrees with protected dispatch")
+		}
+		if len(reg.DesiredModelsForProvider(p.ID)) != 1 {
+			t.Fatal("desired-model selection disagrees with protected dispatch")
+		}
+	})
+	t.Run("unknown requirement fails only its model pair", func(t *testing.T) {
+		reg := newRegistry()
+		compositeGateProvider(
+			t, reg, "unknown-capability", "M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX})
+		reg.SetModelCatalog([]CatalogEntry{
+			{
+				ID:                           Qwen38NAXModelID,
+				WeightHash:                   "approved-qwen-manifest",
+				RequiredProviderCapabilities: []string{"future_unknown"},
+			},
+			{ID: gateCharOrdinaryModel},
+		})
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+		if counts := reg.ProviderModelEligibilityReasonCounts(); counts[string(EligibilityCapabilityUnknown)] == 0 {
+			t.Fatal("fixed eligibility projection omitted unknown-capability reason")
+		}
+	})
+	t.Run("capability loss invalidates only protected state", func(t *testing.T) {
+		reg := newRegistry()
+		p := compositeGateProvider(
+			t, reg, "loss", "M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX})
+		reg.mu.Lock()
+		reg.pendingModelLoads[modelLoadKey(p.ID, Qwen38NAXModelID)] =
+			time.Now().Add(time.Minute)
+		reg.pendingModelLoads[modelLoadKey(p.ID, gateCharOrdinaryModel)] =
+			time.Now().Add(time.Minute)
+		reg.mu.Unlock()
+		p.mu.Lock()
+		p.ApplicationEvidence.MLXNAX = false
+		p.ApplicationEvidence.CertifiedProcessEvidence.MLXNAX = false
+		p.RuntimeCapabilities = []string{ProviderCapabilityAppleM5}
+		p.mu.Unlock()
+		reg.notifyRuntimeCapabilitiesPromoted(p.ID)
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+		if reg.HasPendingModelLoad(p.ID, Qwen38NAXModelID) {
+			t.Fatal("protected pending load survived capability loss")
+		}
+		if !reg.HasPendingModelLoad(p.ID, gateCharOrdinaryModel) {
+			t.Fatal("unrelated pending load was cleared by capability loss")
+		}
+	})
+	t.Run("device and process expiry globally deroute", func(t *testing.T) {
+		reg := newRegistry()
+		p := compositeGateProvider(
+			t, reg, "expiry", "M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX})
+		p.mu.Lock()
+		p.DeviceEvidence.ExpiresAt = time.Now().Add(-time.Second)
+		p.mu.Unlock()
+		assertRoute(t, reg, gateCharOrdinaryModel, false)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+		if got := reg.DesiredModelsForProvider(p.ID); len(got) != 0 {
+			t.Fatalf("expired device evidence retained desired-model command: %+v", got)
+		}
+		p.mu.Lock()
+		p.DeviceEvidence.ExpiresAt = time.Now().Add(time.Hour)
+		p.ApplicationEvidence.CertifiedProcessEvidence.ExpiresAt =
+			time.Now().Add(-time.Second)
+		p.mu.Unlock()
+		assertRoute(t, reg, gateCharOrdinaryModel, false)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+		if got := reg.DesiredModelsForProvider(p.ID); len(got) != 0 {
+			t.Fatalf("expired process evidence retained desired-model command: %+v", got)
+		}
+	})
+	t.Run("reloading protected slot cannot borrow unrelated capacity", func(t *testing.T) {
+		reg := newRegistry()
+		p := compositeGateProvider(
+			t, reg, "reload", "M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX})
+		p.mu.Lock()
+		for i := range p.BackendCapacity.Slots {
+			if p.BackendCapacity.Slots[i].Model == Qwen38NAXModelID {
+				p.BackendCapacity.Slots[i].State = "reloading"
+			}
+		}
+		p.mu.Unlock()
+		assertRoute(t, reg, gateCharOrdinaryModel, true)
+		assertRoute(t, reg, Qwen38NAXModelID, false)
+		reg.mu.RLock()
+		_, loadEligible := reg.modelLoadCandidatePendingLocked(
+			p, Qwen38NAXModelID, time.Now())
+		reg.mu.RUnlock()
+		if !loadEligible {
+			t.Fatal("protected cold-load planning was blocked by serving-slot readiness")
+		}
+	})
+}
+
+func (r *Registry) anyProviderCanRouteBuildLockedForTest(
+	model string, now time.Time,
+) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		ok := r.providerCanRouteBuildLocked(p, model, r.MinTrustLevel, now, false)
+		p.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Registry) quickCapacityHasCandidateForTest(model string) bool {
+	candidates, _, _ := r.QuickCapacityCheck(
+		model, 16, 32, RequestTraits{})
+	return candidates > 0
+}
+
+func (r *Registry) modelListedForTest(model string) bool {
+	for _, listed := range r.ListModels() {
+		if listed.ID == model && listed.Providers > 0 {
+			return true
+		}
+	}
+	return false
+}
+func (r *Registry) providerWarmForTest(p *Provider, model string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return r.providerHasWarmModelLocked(p, model, time.Now())
+}

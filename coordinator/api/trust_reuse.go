@@ -654,6 +654,7 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 			SEPublicKey:          seKey,
 			Serial:               serial,
 			VerifiedAt:           rec.HardwareProofVerifiedAt,
+			ExpiresAt:            rec.HardwareProofVerifiedAt.Add(s.trustReuseCache.reuseWindow),
 			EvidenceGeneration:   rec.EvidenceGeneration,
 			RevocationGeneration: rec.RevocationGeneration,
 		},
@@ -957,6 +958,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		SEPublicKey:          seKey,
 		Serial:               serial,
 		VerifiedAt:           record.hardwareProofVerifiedAt,
+		ExpiresAt:            record.hardwareProofVerifiedAt.Add(s.trustReuseCache.reuseWindow),
 		EvidenceGeneration:   record.evidenceGeneration,
 		RevocationGeneration: record.revocationGeneration,
 	}, epoch) {

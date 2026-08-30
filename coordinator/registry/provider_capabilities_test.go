@@ -30,22 +30,64 @@ func attestCapabilityTestProvider(
 	metallibHash string,
 ) {
 	t.Helper()
+	now := time.Now()
+	seKey, serial := "capability-se-"+provider.ID, "capability-serial-"+provider.ID
 	provider.SetAttestationResult(&attestation.VerificationResult{
-		Valid:               true,
+		Valid: true, PublicKey: seKey, SerialNumber: serial,
+		BinaryHash:          "capability-binary-" + provider.ID,
 		ChipFamily:          chipFamily,
 		RuntimeCapabilities: append([]string(nil), capabilities...),
 		MetallibHash:        metallibHash,
 	})
 	provider.SetAttested(true, TrustHardware)
 	provider.SetFreshCodeAttested()
+	mlxNAX := capabilitiesRequired(capabilities, ProviderCapabilityMLXNAX)
 	provider.mu.Lock()
+	provider.APNsDeviceToken = "capability-apns-" + provider.ID
+	provider.Version = processEvidenceV1ProviderFloor
+	provider.ProcessEvidenceVersion = protocol.ProcessEvidenceV1
 	provider.RuntimeVerified = true
 	provider.RuntimeManifestChecked = true
 	provider.MetallibVerified = true
+	provider.LastChallengeVerified = now
+	provider.ChallengeVerifiedSIP = true
+	provider.DeviceEvidence = DeviceEvidence{
+		SEPublicKey: seKey, Serial: serial, VerifiedAt: now,
+		ExpiresAt: now.Add(time.Hour), EvidenceGeneration: 1,
+		AppleM5: chipFamily == "M5" &&
+			capabilitiesRequired(capabilities, ProviderCapabilityAppleM5),
+	}
+	certificate := CertifiedProcessEvidence{
+		Version: protocol.ProcessEvidenceV1, SEPublicKey: seKey, Serial: serial,
+		BinaryHash:       "capability-binary-" + provider.ID,
+		ProcessPublicKey: provider.PublicKey, ProviderVersion: provider.Version,
+		Backend: provider.Backend, MetallibHash: metallibHash,
+		CoordinatorSessionID: provider.ID,
+		ChallengeGeneration:  "test-generation", ExpiresAt: now.Add(10 * time.Minute),
+		PolicyGeneration: reg.releasePolicyGeneration, VerifiedAt: now, MLXNAX: mlxNAX,
+	}
+	provider.ApplicationEvidence = ApplicationEvidence{
+		SEPublicKey: seKey, Serial: serial, ProcessPublicKey: provider.PublicKey,
+		APNsToken:  provider.APNsDeviceToken,
+		BinaryHash: "capability-binary-" + provider.ID,
+		Version:    provider.Version, Backend: provider.Backend,
+		MetallibHash: metallibHash, VerifiedAt: now,
+		EvidenceGeneration: 1, PolicyGeneration: reg.releasePolicyGeneration,
+		MLXNAX: mlxNAX, CertifiedProcessEvidence: certificate,
+	}
+	if len(provider.Models) > 0 {
+		provider.BackendCapacity = &protocol.BackendCapacity{
+			TotalMemoryGB: float64(provider.Hardware.MemoryGB),
+			Slots: []protocol.BackendSlotCapacity{{
+				Model: provider.Models[0].ID, State: "idle", MaxConcurrency: 4,
+			}},
+		}
+	}
 	provider.mu.Unlock()
 	if err := reg.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
 		t.Fatalf("reconcile attested capabilities: %v", err)
 	}
+
 }
 
 func TestRuntimeCapabilitiesRegisterCrossCheckAndHeartbeatCannotUpgrade(t *testing.T) {
@@ -225,6 +267,14 @@ func TestProviderCapabilityEligibilityHotCatalogAndCommandDefenses(t *testing.T)
 		t.Fatalf("MarkModelWarm accepted ineligible model: %v", old.WarmModels)
 	}
 	old.mu.Unlock()
+	eligible.mu.Lock()
+	for i := range eligible.BackendCapacity.Slots {
+		if eligible.BackendCapacity.Slots[i].Model == Qwen38NAXModelID {
+			eligible.BackendCapacity.Slots[i].State = "idle_shutdown"
+		}
+	}
+	eligible.CurrentModel = ""
+	eligible.mu.Unlock()
 	if got := reg.ColdSpillProviders(Qwen38NAXModelID, RequestTraits{}, false); got != 1 {
 		t.Fatalf("cold candidates = %d, want only eligible provider", got)
 	}
@@ -534,6 +584,193 @@ func TestCapabilityPromotionRefreshesDesiredModelsOnce(t *testing.T) {
 	reg.MarkUntrusted(provider.ID)
 	if calls != 6 {
 		t.Fatalf("repeated hard untrust duplicated fanout: calls=%d", calls)
+	}
+}
+
+func TestApplicationRecertificationRefanoutsDesiredModelsAfterPolicyRotation(
+	t *testing.T,
+) {
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{{ID: Qwen38NAXModelID}})
+	reg.SetModelAliases(map[string]AliasTarget{"protected": {
+		Desired: Qwen38NAXModelID,
+	}})
+	provider := reg.Register("policy-recertification", nil,
+		capabilityTestRegister(
+			Qwen38NAXModelID,
+			"M5",
+			[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX},
+		))
+
+	calls := 0
+	var sent []protocol.DesiredModelEntry
+	reg.desiredModelsSender = func(
+		_ string, entries []protocol.DesiredModelEntry,
+	) error {
+		calls++
+		sent = append([]protocol.DesiredModelEntry(nil), entries...)
+		return nil
+	}
+	reg.SetRuntimeCapabilitiesPromotedHook(func(providerID string) {
+		_ = reg.SendDesiredModels(
+			providerID, reg.DesiredModelsForProvider(providerID))
+	})
+	attestCapabilityTestProvider(
+		t, reg, provider, "M5",
+		[]string{ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX},
+		capabilityTestMetallibHash,
+	)
+	if calls != 1 || len(sent) != 1 {
+		t.Fatalf("initial promotion calls=%d entries=%+v", calls, sent)
+	}
+
+	provider.mu.Lock()
+	recertified := provider.ApplicationEvidence
+	provider.mu.Unlock()
+	reg.SetReleasePolicyGeneration(2, true)
+	if calls != 2 || len(sent) != 0 {
+		t.Fatalf("policy rotation did not revoke desired state: calls=%d entries=%+v",
+			calls, sent)
+	}
+
+	recertified.PolicyGeneration = 2
+	recertified.VerifiedAt = time.Now()
+	recertified.CertifiedProcessEvidence.PolicyGeneration = 2
+	recertified.CertifiedProcessEvidence.ChallengeGeneration =
+		"recertified-process-generation"
+	recertified.CertifiedProcessEvidence.VerifiedAt = time.Now()
+	recertified.CertifiedProcessEvidence.ExpiresAt = time.Now().Add(time.Minute)
+	if !provider.GrantApplicationEvidenceIfNotUntrusted(recertified) {
+		t.Fatal("fresh application recertification was rejected")
+	}
+	if calls != 3 || len(sent) != 1 ||
+		sent[0].DesiredBuild != Qwen38NAXModelID {
+		t.Fatalf("recertification did not restore desired state: calls=%d entries=%+v",
+			calls, sent)
+	}
+}
+
+func TestDeviceEvidenceGrantRefanoutsDesiredModelsForV1Provider(t *testing.T) {
+	const modelID = "ordinary-v1-model"
+	reg := New(testLogger())
+	reg.SetReleasePolicyGeneration(1, false)
+	reg.SetModelCatalog([]CatalogEntry{{ID: modelID}})
+	reg.SetModelAliases(map[string]AliasTarget{"ordinary": {
+		Desired: modelID,
+	}})
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{{ID: modelID}}
+	msg.Version = processEvidenceV1ProviderFloor
+	msg.ProcessEvidenceVersion = protocol.ProcessEvidenceV1
+	msg.APNsDeviceToken = "ordinary-v1-apns"
+	provider := reg.Register("ordinary-v1", nil, msg)
+	now := time.Now()
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, PublicKey: "ordinary-v1-se",
+		SerialNumber: "ordinary-v1-serial",
+		BinaryHash:   "ordinary-v1-binary",
+	})
+	testMakeTextRoutable(provider)
+	provider.SetFreshCodeAttested()
+	provider.mu.Lock()
+	provider.RuntimeVerified = true
+	provider.MetallibVerified = true
+	provider.mu.Unlock()
+
+	calls := 0
+	var sent []protocol.DesiredModelEntry
+	reg.desiredModelsSender = func(
+		_ string, entries []protocol.DesiredModelEntry,
+	) error {
+		calls++
+		sent = append([]protocol.DesiredModelEntry(nil), entries...)
+		return nil
+	}
+	reg.SetRuntimeCapabilitiesPromotedHook(func(providerID string) {
+		_ = reg.SendDesiredModels(
+			providerID, reg.DesiredModelsForProvider(providerID))
+	})
+	process := CertifiedProcessEvidence{
+		Version:     protocol.ProcessEvidenceV1,
+		SEPublicKey: "ordinary-v1-se", Serial: "ordinary-v1-serial",
+		ProcessPublicKey: provider.PublicKey, BinaryHash: "ordinary-v1-binary",
+		ProviderVersion: provider.Version, Platform: "macos-arm64",
+		Backend: provider.Backend, CoordinatorSessionID: provider.ID,
+		ChallengeGeneration: "ordinary-v1-process",
+		ExpiresAt:           now.Add(time.Hour), PolicyGeneration: 1, VerifiedAt: now,
+	}
+	if !provider.GrantApplicationEvidenceIfNotUntrusted(ApplicationEvidence{
+		SEPublicKey: "ordinary-v1-se", Serial: "ordinary-v1-serial",
+		ProcessPublicKey: provider.PublicKey, APNsToken: msg.APNsDeviceToken,
+		BinaryHash: "ordinary-v1-binary", Version: provider.Version,
+		Platform: "macos-arm64", Backend: provider.Backend,
+		VerifiedAt: now, PolicyGeneration: 1,
+		CertifiedProcessEvidence: process,
+	}) {
+		t.Fatal("application-first evidence grant was rejected")
+	}
+	if calls != 1 || len(sent) != 0 {
+		t.Fatalf("application-first grant did not remain empty: calls=%d entries=%+v",
+			calls, sent)
+	}
+
+	device := DeviceEvidence{
+		SEPublicKey: "ordinary-v1-se", Serial: "ordinary-v1-serial",
+		VerifiedAt: now, ExpiresAt: now.Add(time.Hour),
+		EvidenceGeneration: 1,
+	}
+	if !provider.GrantHardwareEvidenceIfNotUntrusted(device) {
+		t.Fatal("device evidence grant was rejected")
+	}
+	if calls != 2 || len(sent) != 1 || sent[0].DesiredBuild != modelID {
+		t.Fatalf("device grant did not restore desired state: calls=%d entries=%+v",
+			calls, sent)
+	}
+
+	provider.mu.Lock()
+	provider.DeviceEvidence.ExpiresAt = time.Now().Add(-time.Second)
+	provider.mu.Unlock()
+	reg.notifyRuntimeCapabilitiesPromoted(provider.ID)
+	if calls != 3 || len(sent) != 0 {
+		t.Fatalf("expired device lease did not revoke desired state: calls=%d entries=%+v",
+			calls, sent)
+	}
+	device.VerifiedAt = time.Now()
+	device.ExpiresAt = time.Now().Add(time.Hour)
+	device.EvidenceGeneration = 2
+	if !provider.GrantHardwareEvidenceIfNotUntrusted(device) {
+		t.Fatal("device evidence renewal was rejected")
+	}
+	if calls != 4 || len(sent) != 1 || sent[0].DesiredBuild != modelID {
+		t.Fatalf("device renewal did not restore desired state: calls=%d entries=%+v",
+			calls, sent)
+	}
+}
+
+func TestDesiredModelsRejectsBuildOutsidePublishedCatalog(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{{ID: "catalog-model"}})
+	reg.SetModelAliases(map[string]AliasTarget{"removed": {
+		Desired: "removed-model",
+	}})
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{{ID: "removed-model"}}
+	provider := reg.Register("removed-catalog-build", nil, msg)
+	if got := reg.DesiredModelsForProvider(provider.ID); len(got) != 0 {
+		t.Fatalf("removed catalog build retained desired state: %+v", got)
+	}
+	sent := 0
+	reg.desiredModelsSender = func(
+		string, []protocol.DesiredModelEntry,
+	) error {
+		sent++
+		return nil
+	}
+	err := reg.SendDesiredModels(provider.ID, []protocol.DesiredModelEntry{{
+		ModelName: "removed", DesiredBuild: "removed-model",
+	}})
+	if err == nil || sent != 0 {
+		t.Fatalf("removed catalog build sent: err=%v sends=%d", err, sent)
 	}
 }
 
